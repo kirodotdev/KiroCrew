@@ -342,10 +342,10 @@ class TestCronListRendering:
             _at_job("soon", 30),
         ]
         out = await _handle_cron("cron list", jobs)
-        assert "⏭ in 2d 3h" in out
-        assert "⏭ in 5h 30m" in out
-        assert "⏭ in 5m" in out
-        assert "⏭ in <1m" in out
+        assert "next in 2d 3h" in out
+        assert "next in 5h 30m" in out
+        assert "next in 5m" in out
+        assert "next in <1m" in out
 
     @pytest.mark.asyncio
     async def test_last_status_markers_and_disabled_prefix(self):
@@ -362,11 +362,11 @@ class TestCronListRendering:
         ]
         out = await _handle_cron("cron list", jobs)
         lines = {line.split("`")[1]: line for line in out.splitlines() if "`" in line}
-        assert lines["okjob"].endswith(("✓", "m")) and " ✓" in lines["okjob"]
-        assert " ❌" in lines["badjob"]
-        assert lines["offjob"].startswith("⏸️")
+        assert lines["okjob"].split(" | ")[2].endswith(" ok")
+        assert lines["badjob"].split(" | ")[2].endswith(" failed")
+        assert lines["offjob"].startswith("paused")
         # A disabled job has no next run at all.
-        assert "⏭" not in lines["offjob"]
+        assert "| next " not in lines["offjob"]
 
     @pytest.mark.asyncio
     async def test_due_now_renders_now(self):
@@ -378,7 +378,7 @@ class TestCronListRendering:
             created_ts=1.0,
         )
         out = await _handle_cron("cron list", [job])
-        assert "⏭ now" in out
+        assert "next now" in out
 
     @pytest.mark.asyncio
     async def test_message_is_truncated_to_50_chars(self):

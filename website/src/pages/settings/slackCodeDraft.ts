@@ -27,6 +27,8 @@ export interface SlackCodeDraft {
   effort: string
   /** One of APPROVAL_MODES; 'ask' (the default) is stored as unset. */
   approval: string
+  /** `code_channel_defaults.conductor_mode`, "Always use conductor mode"; off is stored as unset. */
+  conductorMode: boolean
 }
 
 /** The approval modes a code channel's session can start in, in picker order.
@@ -56,14 +58,19 @@ export function slackCodeDraftFrom(c: SlackConfigData): SlackCodeDraft {
     model: d?.model ?? INHERIT_MODEL,
     effort: d?.reasoning_effort ?? '',
     approval: approvalFromWire(d?.approval_mode),
+    conductorMode: d?.conductor_mode === true,
   }
 }
 
 /** The PUT fields for the Slack Code slice: only what differs from *saved*, so a
  *  save of an unrelated Slack field never re-validates a default (a stored model
  *  that has since become unavailable must not block a token change). A cleared
- *  picker sends null, which clears the stored value. */
-export function slackCodePayload(d: SlackCodeDraft, saved: SlackCodeDraft): Partial<SlackConfigSave> {
+ *  picker sends null, which clears the stored value. With *conductorLocked*
+ *  (config.local.json sets the switch, or may), `conductor_mode` is left out: the
+ *  card shows it disabled, so a draft edit made before the lock landed is not
+ *  something the person can see or undo, and sending it would refuse the whole
+ *  save. */
+export function slackCodePayload(d: SlackCodeDraft, saved: SlackCodeDraft, conductorLocked = false): Partial<SlackConfigSave> {
   const out: Partial<SlackConfigSave> = {}
   for (const k of SLACK_CODE_SWITCHES) {
     if (d.switches[k] !== saved.switches[k]) out[k] = d.switches[k]
@@ -81,10 +88,13 @@ export function slackCodePayload(d: SlackCodeDraft, saved: SlackCodeDraft): Part
     model: x.model && x.model !== INHERIT_MODEL ? x.model : null,
     reasoning_effort: x.effort || null,
     approval_mode: x.approval === 'ask' ? null : x.approval,
+    conductor_mode: x.conductorMode ? true : null,
   })
   const next = wire(d)
   const prev = wire(saved)
-  const changed = (Object.keys(next) as (keyof typeof next)[]).filter(k => next[k] !== prev[k])
+  const changed = (Object.keys(next) as (keyof typeof next)[])
+    .filter(k => next[k] !== prev[k])
+    .filter(k => !(conductorLocked && k === 'conductor_mode'))
   if (changed.length) {
     out.code_channel_defaults = Object.fromEntries(changed.map(k => [k, next[k]]))
   }

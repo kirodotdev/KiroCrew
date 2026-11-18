@@ -567,6 +567,19 @@ describe('InstanceTabBar', () => {
     expect(msg.className).not.toMatch(/break-all/)
   })
 
+  it("stays quiet when the relay answers that the Crew's host is offline", async () => {
+    // The relay window's reconnecting cover says it; the bar must not add the
+    // relay's raw sentence in red beside the crew pill.
+    const offline = Object.assign(new Error('The Crew is not connected to the relay.'), {
+      status: 503, body: '{"reason":"crew_not_connected","message":"The Crew is not connected to the relay."}',
+    })
+    vi.mocked(api.listInstances).mockRejectedValue(offline)
+    renderWithProviders(<InstanceTabBar variant="inline" />)
+    await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
+    await new Promise(r => setTimeout(r, 0))
+    expect(screen.queryByTestId('instance-tab-bar-list-error')).toBeNull()
+  })
+
   it('marks the list-failure notice so the desktop top bar gives it only spare room', async () => {
     // The desktop top bar's identity ladder measures the group's content width.
     // The notice (up to 320px) would raise that width and collapse the rest of
@@ -675,5 +688,51 @@ describe('clippedChipIds', () => {
 
   it('handles an empty row', () => {
     expect(clippedChipIds([], 300).size).toBe(0)
+  })
+})
+
+describe('InstanceTabBar — relay Crew tabs', () => {
+  const relayStore = () => createTestStore({
+    instances: {
+      warm: {}, activeId: null, mru: [], unread: {},
+      relayTabs: [{ id: 'r1', name: 'Team One' }], relayLive: ['r1'], relayActive: null,
+    },
+  })
+  const installBridge = () => {
+    localStorage.setItem('mc-relay-crew-pane', '1')
+    const api = {
+      openPane: vi.fn(async () => ({ ok: true })),
+      closePane: vi.fn(async () => undefined),
+      onPaneEvent: vi.fn(() => () => {}),
+    }
+    ;(window as unknown as { relayCrewAPI?: unknown }).relayCrewAPI = api
+    onTestFinished(() => { delete (window as unknown as { relayCrewAPI?: unknown }).relayCrewAPI })
+    return api
+  }
+
+  it('shows a relay tab after the SSH tabs, with a close in place of the pin, and picking it keeps the local shell', async () => {
+    installBridge()
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = relayStore()
+    renderWithProviders(<InstanceTabBar />, { store })
+    const u = userEvent.setup()
+    const row = await openSwitcher(u, /Team One/)
+    const rows = screen.getAllByRole('menuitemradio').map(r => r.textContent ?? '')
+    expect(rows.findIndex(t => t.includes('Team One'))).toBeGreaterThan(rows.findIndex(t => t.includes('Cloud One')))
+    expect(screen.queryByTestId('crew-pin-relay:r1')).toBeNull()
+    expect(screen.getByTestId('crew-close-relay:r1')).toHaveAccessibleName(/Close Team One/)
+    await u.click(row)
+    expect(store.getState().instances.relayActive).toBe('r1')
+    expect(store.getState().instances.activeId).toBeNull()
+  })
+
+  it('keeps the bar up for a relay tab alone, and its close goes through main', async () => {
+    const bridge = installBridge()
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([]))
+    renderWithProviders(<InstanceTabBar />, { store: relayStore() })
+    const u = userEvent.setup()
+    await openSwitcher(u, /Team One/)
+    await u.click(screen.getByTestId('crew-close-relay:r1'))
+    expect(bridge.closePane).toHaveBeenCalledWith('r1')
   })
 })

@@ -45,6 +45,11 @@ from kiro_crew import change_card_catalog as catalog
 from kiro_crew.dashboard import change_cards as cards
 from kiro_crew.dashboard import chat_cards
 from kiro_crew.dashboard.change_cards import CardError, CardStore, card_store_for
+from kiro_crew.dashboard.handlers._bounded_read import (
+    TIMED_OUT,
+    bounded_read,
+    timed_out_for_model,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -438,7 +443,20 @@ async def api_cards_agent_capabilities(request: web.Request) -> web.Response:
             {"error": "member is required", "code": "invalid_member"}, status=400
         )
     try:
-        view = await asyncio.to_thread(cards.member_capabilities_view, request.app, member)
+        view = await bounded_read(
+            lambda name: cards.member_capabilities_view(request.app, name),
+            member,
+            what="Capabilities",
+        )
+    except TimeoutError:
+        return web.json_response(
+            {
+                "error": timed_out_for_model(member),
+                "code": "capabilities_unavailable",
+                "reason": TIMED_OUT,
+            },
+            status=503,
+        )
     except catalog.CardCatalogError as exc:
         return _refusal(exc)
     return web.json_response(view)
@@ -1411,6 +1429,15 @@ def _arm_card_undo_cron_guard(
 
         # Only an admitted import card step may write (or take back) carried files.
         request[REQ_CARD_IMPORT_FILES] = rec["id"]
+    if kind == catalog.KIND_CREWMATE_IMPORT and str(plan_step.get("path", "")).endswith(
+        "/dashboard/template"
+    ):
+        from kiro_crew.dashboard.handlers.member_import_dashboard import (
+            REQ_CARD_IMPORT_DASHBOARD,
+        )
+
+        # Only an admitted import card step may set the new Bot's dashboard.
+        request[REQ_CARD_IMPORT_DASHBOARD] = True
     if kind == catalog.KIND_FOLDER_STEERING:
         replaced = (rec.get("params") if op == catalog.OP_UNDO else rec.get("before")) or {}
         request[REQ_CARD_FOLDER_STEERING_EXPECT] = catalog.string_items(

@@ -326,7 +326,11 @@
     "tab_title_session": "{{session}} — {{panel}}",
     "release_notes_not_published_yet": "{{release}} のリリースノートはまだ公開されていません。代わりに {{shown}} のリリースノートを表示しています。",
     "titlebar_menu_disabled_footer": "一部の項目はここでは利用できません。表示されているショートカットは引き続き使用できます。",
-    "titlebar_menu_refused_notice": "「{{item}}」は実行されませんでした。このコマンドは現在ここでは利用できません。"
+    "titlebar_menu_refused_notice": "「{{item}}」は実行されませんでした。このコマンドは現在ここでは利用できません。",
+    "relay_remote_control_off": "この Crew へのリモートアクセスはオフです",
+    "relay_remote_control_off_detail": "Crew のオーナーがリモートアクセスをオフにしました。オンに戻せるのはオーナーだけで、Crew のコンピューターから操作します。",
+    "relay_remote_control_off_waits": "オンに戻ると、このページは自動的に再接続します。",
+    "terminal_owner_only": "ターミナルを使えるのは Crew のオーナーだけです。"
   },
   "appSdk": {
     "chatSession": {
@@ -6459,7 +6463,8 @@
       "sign_out_or_switch": "設定でサインアウト・アカウント切り替え",
       "sign_out_link_config_unreadable": "設定を読み込めなかったため、サインアウトのリンクを表示できません。",
       "switch_in_settings": "設定でアカウント切り替え",
-      "bots_sign_in_in_settings": "設定で Bot の Kiro サインイン"
+      "bots_sign_in_in_settings": "設定で Bot の Kiro サインイン",
+      "kiro_account_in_settings": "設定の Kiro アカウント"
     },
     "artifactChatPanel": {
       "agent_chat": "エージェントチャット",
@@ -7407,9 +7412,12 @@
       "use_folder_project": "{{folder}} に切り替え"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "{{folder}} に整理しました",
       "folder_suggestion": "フォルダーの提案",
+      "keep_it_here": "このままにする",
       "move_to_folder_prompt": "このセッションをこのフォルダーに移動しますか？",
       "no_thanks": "今はしない",
+      "undo_filing": "元に戻す",
       "yes_move_it": "移動"
     },
     "followUpBar": {
@@ -7542,7 +7550,8 @@
       "opens_own_window": "専用のウィンドウで開きます",
       "new_crew": "新規",
       "seen_not_saved": "確認済みとして保存できませんでした。また新規として表示されます。",
-      "open_crew_failed": "{{name}} を開けませんでした。"
+      "open_crew_failed": "{{name}} を開けませんでした。",
+      "sign_in": "Kiro にサインイン"
     },
     "instancesViewport": {
       "connecting": "接続中…",
@@ -7756,6 +7765,8 @@
       "waiting_for_you_to_approve": "承認をお待ちしています…",
       "continue_with_builder_id": "AWS Builder ID で続行",
       "continue_with_company_sso": "会社の SSO で続行",
+      "builder_id_hint": "開発者向けの無料の個人用サインインです。AWS アカウントは不要です。",
+      "company_sso_hint": "AWS IAM Identity Center の仕事用アカウント向けです。Okta や Microsoft Entra 経由でサインインする場合も、会社から提供されたアクセスポータルの URL が必要です。",
       "sso_start_url_label": "会社のサインイン URL",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "会社から提供された AWS アクセスポータルの URL を貼り付けてください。",
@@ -7777,7 +7788,7 @@
       "loopback_fell_back": "サインインの結果がこのコンピューターに直接戻れなかったため、代わりにコードを表示しています。",
       "cancel_unsettled": "サインインをキャンセルできませんでした。サインインはまだ有効です。同じ項目をもう一度押して再試行してください。",
       "pending_cancel_unsettled": "サインインしましたが、ここで開始したサインインをキャンセルできませんでした。タイムアウトするまで開いたままになります。",
-      "card_intro": "Kiro Agent バックエンドのみが使用します。そのエージェントはこの Kiro アカウントとして動作します。Kiro CLI は独自の kiro-cli ログインを使い続けるため、ここでサインインしても変わりません。",
+      "card_intro": "Kiro Agent やその他の Kiro の機能は、どのエージェントハーネスを使っていてもこの Kiro アカウントとして動作します。Kiro CLI は独自の kiro-cli ログインを使い続けるため、ここでサインインしても変わりません。",
       "previous_sign_in_not_removed": "サインインしましたが、以前のサインインを削除できませんでした",
       "previous_sign_in_not_removed_body": "新しいアカウントは保存されましたが、切り替え前のアカウントも残っており、そちらが優先されます。そのアカウントからサインアウトしてから、ここに表示されるサインインを確認してください。"
     },
@@ -8338,6 +8349,8 @@
         "chat_stopped_stalled_body": "チャットが停滞し、復旧できませんでした。チャットを開いて新しいチャットを開始してください。",
         "folder_agent_label_title": "フォルダーのデフォルトエージェントを確認",
         "folder_agent_label_body": "これらのフォルダーのデフォルトエージェントは Bot と同じ名前ですが、新しいチャットはその Bot では実行されません：{{folders}}。その Bot を使うには、フォルダーの設定でデフォルトエージェントとして選択してください。",
+        "folder_agent_key_title": "フォルダーのデフォルトエージェントを確認",
+        "folder_agent_key_body": "以前のアップデートで、これらのフォルダーがカスタムエージェントから同じ名前の Bot に切り替わった可能性があるため、新しいチャットはその Bot で実行されます：{{folders}}。カスタムエージェントを使うつもりだった場合は、フォルダーの設定でもう一度デフォルトエージェントとして選択してください。",
         "repeated_failures_title": "ツールの失敗が繰り返されています",
         "repeated_failures_body": "今週、エージェントのツール呼び出しの一部が何度も失敗しました。このお知らせを開くと一覧を確認でき、教訓にできます。",
         "mcp_share_paused_title": "共有中の MCP サーバーが一時停止しました",
@@ -11025,6 +11038,9 @@
       "expired_detail_bots": "再度サインインするまで、Bot は動作できません。保存されたサインインは失効しており、更新できません。",
       "refused_detail_bots": "このサインインが失効すると、Bot は停止します。動作を続けるには再度サインインしてください。",
       "refused_expired_detail_bots": "再度サインインするまで、Bot は動作できません。このサインインはすでに失効しています。",
+      "expired_detail_account": "再度サインインするまで、Kiro アカウントを使う機能は動作しません。保存されたサインインは失効しており、更新できません。",
+      "refused_detail_account": "このサインインが失効すると、Kiro アカウントを使う機能は停止します。動作を続けるには再度サインインしてください。",
+      "refused_expired_detail_account": "再度サインインするまで、Kiro アカウントを使う機能は動作しません。このサインインはすでに失効しています。",
       "status_unavailable_detail": "サインイン設定を開いて Kiro のサインインを確認するか、エージェントに調べるよう依頼してください。",
       "config_unavailable": "ダッシュボードの設定を読み込めませんでした",
       "config_unavailable_detail": "ページを再読み込みしてもう一度お試しいただくか、エージェントに調査を依頼してください。",
@@ -11240,6 +11256,48 @@
       "shortcut_hint_mac": "⌃⇧M でミュート切り替え",
       "mute_short": "ミュート",
       "unmute_short": "ミュート解除"
+    },
+    "promptStash": {
+      "badge_full_hint": "一時保存がいっぱいです。新しく保存する前に下書きを1件破棄するか復元してください。入力欄が空のときに {{chord}} を押すと最新の下書きを復元します。",
+      "badge_full_hint_touch": "一時保存がいっぱいです。新しく保存する前に下書きを1件破棄するか復元してください。どちらも {{menu}} メニューにあります。",
+      "badge_hint": "このチャットで一時保存した下書きです。入力欄が空のときに {{chord}} を押すと最新の下書きを復元します。",
+      "badge_hint_touch": "このチャットで一時保存した下書きです。{{menu}} メニューから最新の下書きを復元できます。",
+      "badge_other": "{{count}} 件の下書きを一時保存中",
+      "empty": "一時保存した下書きはありません。入力欄に文字があるときに {{chord}} を押すと一時保存できます。",
+      "empty_touch": "一時保存した下書きはありません。文字を入力してから {{menu}} メニューで一時保存できます。",
+      "full": "一時保存がいっぱいです（{{max}} 件）。空きを作るには、一時保存した下書きを1件破棄してください。",
+      "menu_restore": "一時保存した下書きを復元",
+      "menu_restore_has_draft": "先に下書きを一時保存するか送信してください。",
+      "menu_restore_desc_other": "{{count}} 件を一時保存中。最新の下書きを復元します。入力欄が空のときに {{chord}} を押しても同じです。",
+      "menu_restore_desc_touch_other": "{{count}} 件を一時保存中。このメニューから最新の下書きを復元します。",
+      "menu_restore_none": "一時保存した下書きはまだありません。",
+      "menu_stash": "下書きを一時保存",
+      "menu_stash_desc": "文字を一時保存して入力欄を空にします（{{chord}}）。",
+      "menu_stash_desc_touch": "文字を一時保存して入力欄を空にします。",
+      "menu_stash_empty": "文字を入力すると一時保存できます。",
+      "notice_attachments": "一時保存や復元をするには添付を外してください。",
+      "notice_full": "一時保存がいっぱいです（{{max}} 件）。一時保存した下書きを1件破棄して空きを作ってください。",
+      "notice_stashed": "一時保存しました。メッセージ入力欄が空のときに {{chord}} で戻せます。",
+      "notice_stashed_touch": "一時保存しました。{{menu}} メニューから戻せます。",
+      "restored_last": "一時保存した下書きを復元しました。",
+      "restored_other": "一時保存した下書きを復元しました。残りは {{count}} 件です。",
+      "save_failed": "下書きを一時保存できませんでした。ブラウザーのストレージがいっぱいか、利用できません。下書きは入力欄に残っています。",
+      "shortcut_label": "下書きを一時保存する、または空の入力欄に復元する",
+      "stashed_other": "下書きを一時保存しました（{{count}} 件）。入力欄が空のときに {{chord}} を押すと最新の下書きを復元します。",
+      "stashed_touch_other": "下書きを一時保存しました（{{count}} 件）。{{menu}} メニューから最新の下書きを復元できます。",
+      "too_large": "一時保存できませんでした。一時保存の容量が上限に達しています。下書きは入力欄に残っています。空きを作るには、一時保存した下書きを1件破棄してください。",
+      "too_large_single": "一時保存できませんでした。この下書きは一時保存の容量の上限を超えています。下書きは入力欄に残っています。",
+      "clear_others_other": "他のセッションで一時保存した下書き {{count}} 件を消去",
+      "clear_others_confirm_other": "一時保存した下書き {{count}} 件を完全に削除",
+      "cleared_others_other": "他のセッションで一時保存した下書き {{count}} 件を削除しました。この下書きをもう一度一時保存してください。",
+      "menu_discard": "一時保存した下書きを破棄",
+      "menu_discard_desc": "直前に復元した下書き、なければ最新の一時保存を削除します。元に戻せます。",
+      "discarded_last": "一時保存した下書きを破棄しました。",
+      "discard_undone": "破棄した下書きを一時保存に戻しました。",
+      "undo_discard": "元に戻す",
+      "discard_failed": "下書きを破棄できませんでした。ブラウザーのストレージを利用できません。下書きは一時保存されたままです。",
+      "undo_failed": "下書きを一時保存に戻せませんでした。一時保存がいっぱいか、ブラウザーのストレージを利用できません。",
+      "discarded_other": "一時保存した下書きを破棄しました。残りは {{count}} 件です。"
     }
   },
   "hooks": {
@@ -11384,7 +11442,8 @@
         "reason_work": "まだ実行中の作業があります。閉じるとその作業は停止します。",
         "reason_setting": "実行中のものはありません。設定で「{{setting}}」がオンになっているため確認しています。",
         "actions": "会話とメッセージ欄の下書きは保持され、後でセッションを再び開けます。",
-        "confirm": "セッションを閉じる"
+        "confirm": "セッションを閉じる",
+        "reason_other_starter": "このチャットは {{name}} さんが始めました。閉じると、この Crew の全員に対して閉じられます。"
       },
       "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
       "duplicate_unreachable": "このセッションを複製できませんでした。{{productName}} に接続できませんでした。接続を確認してもう一度お試しください。",
@@ -11490,6 +11549,7 @@
   },
   "pages": {
     "mcpPage": {
+      "bot_workers_note": "ここで追加したサーバーは Bot のワーカーには届きません。Bot のワーカーがサーバーを使えるのは、その Bot に追加したときだけです。",
       "title": "MCP サーバー",
       "view_servers": "サーバー",
       "view_sharing": "共有"
@@ -11714,6 +11774,7 @@
       "grants_reconsent_link_full_url": "リンクの完全なアドレス: アプリのホバーカードは、リンクの ? や # 以降の部分も見られます。ここにはサインイン用のコードが含まれることがあります。",
       "grants_reconsent_message_actions": "メッセージアクション：チャットメッセージ上のアプリのメニュー項目が読み取れる内容。",
       "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。",
+      "grants_reconsent_browser_sites": "閲覧サイト：アプリ自身のエージェントが、毎回確認せずに、あなたのブラウザーであなたのログインのまま、これらのページを開き、読み、入力し、クリックできます。",
       "grants_reconsent_frame_sources": "埋め込むサイト：アプリのページがダッシュボード内でこれらのサイトを表示できるようにします。",
       "grants_reconsent_link_open_hosts": "開くリンク: チャットメッセージ内のこれらのサイトへのリンクをクリックしたとき、アプリがそのリンクを開けるようにします。",
       "grants_reconsent_link_open_full_url": "開くリンクの完全なアドレス: アプリはリンクの ? や # 以降の部分も見ます。ここにはサインインコードが含まれることがあります。",
@@ -11828,6 +11889,7 @@
       "update_needs_trust": "{{name}} は更新されませんでした。許可が必要です。アプリ自身の更新ボタンから許可してください。",
       "updated_needs_session_approval_consent": "{{name}} は新たにチャットの制御を要求するため、無効になっています。アプリの詳細で権限を確認し、有効にしてください。",
       "update_needs_repository_trust": "{{name}} はアップデートされませんでした。新しいバージョンが、まだ信頼していないリポジトリから提供されているためです。詳細を開いて「リポジトリを信頼してアップデートする」を選択してください。",
+      "open_app_details": "{{name}} の詳細を開く",
       "refresh_store": "ストアを更新",
       "refreshing_store": "ストアを更新中…",
       "store_catalog_unreachable": "公式アプリカタログに接続できなかったため、ストアはオフライン用の一覧を表示しています。ゲートウェイがインターネットに接続できるか確認してから、もう一度更新してください。"
@@ -13261,7 +13323,7 @@
         "code_channel_worktree_not_ready": "このコードチャンネルの worktree はまだ準備できていないため、メッセージは実行されませんでした。少し待ってからもう一度送信してください。",
         "remote_crew_read_only": "このチャットはリモートのクルーで実行されたため、現在は読み取り専用です。続けるにはクルー自身のセッションを開いてください。",
         "archive_failed_turn_cancelled": "実行中のターンをキャンセルした後、このタブのアーカイブに失敗しました。タブは残っていますが、そのターンは完了していません — 続けるにはメッセージをもう一度送信してください。",
-        "kas_signed_out": "Kiro にサインインしていません。「設定 → エージェントハーネス → Kiro Agent → Kiro サインイン」でサインインしてから、メッセージをもう一度送信してください。",
+        "kas_signed_out": "Kiro にサインインしていません。「設定 → Kiro アカウント」でサインインしてから、メッセージをもう一度送信してください。",
         "kas_signed_out_sign_in_below": "Kiro にサインインしていません。下のボタンでサインインしてから、メッセージをもう一度送信してください。",
         "windows_spawn_blocked": "Windows がエージェントプログラム（{{binary}}）を起動できませんでした。このコンピューターの AppLocker、EDR 製品、またはグループポリシーがブロックした可能性があります。IT 管理者にこのファイルの許可を依頼してから、新しいチャットを開始してください。",
         "tools_not_ready": "組み込みツールの準備が間に合わなかったため、エージェントを開始できませんでした。メッセージはそのまま残っています。少し待ってからもう一度お試しください。繰り返し発生する場合は、詳細がゲートウェイのログにあります。",
@@ -14209,7 +14271,8 @@
       "comments_sent_other": "{{count}}件のコメントを送信しました",
       "your_crewmate": "あなたの Bot",
       "jump_to_new_other": "新着 {{count}} 件 · 最新へ",
-      "could_not_repair_images": "画像を修復できませんでした"
+      "could_not_repair_images": "画像を修復できませんでした",
+      "session_closed_elsewhere": "このチャットはこのウィンドウの外で閉じられました。"
     },
     "chatSidebar": {
       "needsMeCard": {
@@ -15269,11 +15332,11 @@
     },
     "developer": {
       "agentBackendTab": {
-        "orchestrator_memory_label": "オーケストレーターのメモリ",
+        "orchestrator_memory_label": "Kiro Memory",
         "orchestrator_memory_description": "個人チャットで Kiro の既存のメモリを使います。変更はエージェントのセッション開始時に適用されます。更新した設定を使うには、新しいチャットを開始してください。",
-        "orchestrator_memory_hint": "他の Kiro クライアントに保存されたメモリを、{{productName}} の既存のメモリとあわせて使います。ここでは Kiro のメモリは読み取り専用です。{{productName}} の学習の動作と各 Bot の独立したメモリは変わりません。Kiro のメモリはプライベートチャットでは使えますが、一時的なチャットでは除外されます。",
+        "orchestrator_memory_hint": "{{productName}} の既存のメモリとあわせて Kiro Memory を使い、他の Kiro クライアントに保存されたメモリにアクセスします。ここではこれらのメモリは読み取り専用です。{{productName}} の学習の動作と各 Bot の独立したメモリは変わりません。",
         "orchestrator_memory_preview": "プレビュー",
-        "orchestrator_memory_save_failed": "オーケストレーターのメモリ設定を保存できませんでした。もう一度お試しください。",
+        "orchestrator_memory_save_failed": "Kiro Memory の設定を保存できませんでした。もう一度お試しください。",
         "approval_agent_spec": "{{productName}} がそう指定するため、ツールごとに確認します。",
         "approval_seeded_settings": "自分の設定でそう決まっている場合だけ、ツールごとに確認します。{{productName}} はその設定を書き込みますが、効いたかどうかは確認できません。",
         "approval_session_config": "コマンドの実行やファイルの変更の前に確認します。{{productName}} がその設定を入れ、確認します。読み取りだけなら確認しません。",
@@ -15311,6 +15374,9 @@
         "install_check_failed_can_still_switch": "このマシンにインストールされているか確認できませんでした。それでも切り替えられます。未インストールなら、セッション開始時に知らせます。",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_cli_description": "このマシンにインストールされた kiro-cli を、kiro-cli 自身のサインインで使用します。",
+        "kiro_account_not_signed_in": "サインインしていません",
+        "kiro_account_signed_in_as": "{{name}} としてサインイン中",
         "kiro_row_runs_on_kas": "Kiro CLI は現在 Kiro Agent 上で動作します。新しいセッションはすでに Kiro Agent を使っているため、ここで切り替えるものはありません。",
         "kiro_runs_on_kas": "Kiro CLI は現在 Kiro Agent 上で動作するため、新しいセッションはすでにそれを使っています。Kiro Agent を設定として保存しますか？",
         "kiro_runs_on_kas_save": "Kiro Agent を自分の設定として保存",
@@ -15331,7 +15397,6 @@
         "mcp_deny_manage_link": "MCP サーバーの一覧を開く",
         "mcp_deny_rule": "{{name}} で MCP ツールを1つオフにすると、同じサーバーのすべてのツールが止まります。オフにしたものだけではありません。",
         "missing_components": "このマシンにありません: {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "新しいセッションはこのエージェントを使います。開いているセッションは開始時のエージェントのままです。",
         "not_offered_by_this_build": "このビルドはこのエージェントを提供しません。",
         "note_crew_command_channel": "スラッシュコマンドは {{productName}} のコマンド経路を通ります。",
         "note_crew_sandbox_stands_down": "自分専用の隔離環境を持ちます。Windows では常に、macOS では内部の隔離がオンのときに、{{productName}} 側の隔離は行いません。",
@@ -15570,8 +15635,6 @@
         "chat_runtime_sharing_harness_save_failed": "スイッチを保存できませんでした。もう一度お試しください。",
         "chat_runtime_sharing_harness_load_failed": "これらのスイッチを読み込めませんでした。",
         "chat_runtime_sharing_desc_summary": "複数のチャットを 1 つのバックグラウンドプログラムで動かし、パソコンのメモリを節約します。共有するチャットの種類は下で選べます。チャットは同時に返信し、互いのメッセージは見られません。オフにすると、新しいチャットはまた専用のプログラムを使います。",
-        "secrets_vault": "Secrets 保管庫の新しいデザイン",
-        "secrets_vault_desc": "Secrets を開いた項目の横に一覧で表示し、ログインとメモを保存できるようにします。",
         "worker_grill": "難しい選択の前にワーカーが素早く確認",
         "worker_grill_desc": "選び方が2通りあり、間違えると取り返しにくい選択に出会うと、conductor は45分の討論の代わりに、まず2〜3人のワーカーに話し合わせることを提案します。事実はワーカーが自分で確かめ、最後に短い報告をまとめます：結論、理由、あなたの代わりに選んだこと。納得できなければもう一度始められます。",
         "worker_grill_desc_summary": "2〜3人のワーカーが重要な選択を検証し、短い報告を渡します。",
@@ -15590,7 +15653,7 @@
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 独自のエンジンで KAS を実行",
-        "toggle_description": "この {{productName}} リリースでテスト済みの KAS エンジンを、Kiro CLI の代わりに使います。このデバイスだけでなく、この {{productName}} のすべての新しいセッションに適用されます。設定 → エージェントハーネスの Kiro アカウントでサインインします。{{productName}} の再起動後に反映されます。",
+        "toggle_description": "この {{productName}} リリースでテスト済みの KAS エンジンを、Kiro CLI の代わりに使います。このデバイスだけでなく、この {{productName}} のすべての新しいセッションに適用されます。設定 → Kiro アカウントでサインインします。{{productName}} の再起動後に反映されます。",
         "installed": "KAS エンジン {{version}}（自分でインストール）",
         "installed_bundled": "KAS エンジン {{version}}（アプリに同梱）",
         "off_note": "オフ：KAS はインストール済みの Kiro CLI を使います。オン：このリリースに同梱のエンジンを使います。",
@@ -15850,6 +15913,7 @@
       "discard_new_schedule_body": "入力したスケジュールは保存されておらず、失われます。",
       "discard_schedule_confirm": "スケジュールを破棄",
       "display_name": "表示名",
+      "done": "完了",
       "e_g_oncall": "例: oncall",
       "edit_crew_named": "Bot「{{name}}」を編集",
       "edit_model": "デフォルトモデルを編集",
@@ -15913,6 +15977,7 @@
       "view_list_tooltip": "リスト",
       "workspace": "ワークスペース",
       "workspace_2": "ワークスペース",
+      "workspace_created_named": "ワークスペース「{{name}}」を作成しました。",
       "workspace_hint_member": "この Bot が読み書きするフォルダー。切り替えると新しいチャットは新しいフォルダーで最初から始まり、古いフォルダーは保持されます。",
       "workspace_name_is_required": "ワークスペース名は必須です",
       "yes_delete_it": "はい、削除します",
@@ -16827,6 +16892,7 @@
         "sign_in_kas_chat_note": "Kiro Agent のチャットは、ここで行ったサインインを使いません。チャットの「認証」カードからサインインしてください。",
         "sign_in_kas_chat_again_note": "Kiro Agent のチャットは、まだこのサインインを使いません。再度サインインすると、チャット用に保存されます。",
         "sign_in_unsupported_on_kas": "このサーバーは、まだ Kiro Agent エンジンではサインインできません。独自のサインイン設定で構成されていて、Kiro Agent はその設定を使えません。",
+        "sign_in_unsupported_vendor_pending": "このサーバーは、まだ Kiro Agent エンジンではサインインできません。{{provider}} は、承認したアプリからのサインインしか受け付けません。",
         "sign_in_unavailable": "サインイン不可",
         "sign_in_needs_oauth_app": "誰かがサインインする前に、{{provider}} の OAuth アプリが必要です。",
         "oauth_not_a_static_token": "このサーバーは OAuth でサインインするため、静的な Authorization ヘッダーでは接続できません。このサーバーを削除してヘッダーなしで再追加し、有効にしてから、新しいチャットセッションを開始してサインインしてください。",
@@ -18796,7 +18862,9 @@
         "needs_setup": "セットアップが必要",
         "not_connected": "接続されていません",
         "off_by_admin": "管理者により無効",
-        "status_unavailable": "ステータスが利用不可"
+        "status_unavailable": "ステータスが利用不可",
+        "not_set_up": "未設定",
+        "owner_only": "チャンネルを接続または変更できるのは Crew のオーナーだけです。"
       },
       "chatPanel": {
         "advanced": "詳細設定",
@@ -18818,6 +18886,11 @@
         "topic_tags": "トピックタグ",
         "topic_tags_desc": "新しいセッションごとに、サイドバーで「debugging」のようなトピックタグを最大 2 つ付けます。新しいセッションごとにバックグラウンドのモデル呼び出しを 1 回使います。",
         "transcript": "会話表示",
+        "group_messages": "メッセージ",
+        "group_steps": "ステップとツール",
+        "group_files_links": "ファイルとリンク",
+        "group_replies": "返信",
+        "group_context": "コンテキストメーター",
         "about_you": "自分について",
         "answer_only_details_on_request": "回答のみ — いちばん易しい言葉で、詳細は要望時に",
         "auto_add_documents": "ドキュメントの自動追加",
@@ -18940,6 +19013,8 @@
         "feature_tips": "機能ヒント",
         "file_change_chips": "ファイル変更チップ",
         "folder_suggestions": "フォルダーの提案",
+        "folder_suggestions_auto_apply": "フォルダーの提案を自動で適用",
+        "folder_suggestions_auto_apply_desc": "確認せずに、新しいセッションを一致するフォルダーへ整理します。移動先はカードに表示され、元に戻せます。",
         "follow_up_bar_layout": "フォローアップバーレイアウト",
         "fork_keeps_only_the_messages_after_the_chosen_po": "フォークは選択ポイント以降のメッセージのみを保持し、それまでのメッセージは保持しません。",
         "full": "フル",
@@ -19188,7 +19263,8 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "Windows では、キー入力はキーボードフォーカスを奪い、座標クリックは実際のカーソルを動かします。このプラットフォームにはアプリ単位の入力経路がありません。",
         "the_app_lists_in_computer_use_json_could_not_be": "computer_use.json のアプリリストが読み取れなかったため、ここに空で表示されています。ファイルが有効な JSON になるまで、エージェントはそれらに依存するすべてのアクションを拒否します。",
         "your_chat_sessions_were_restarted_so_this_takes": "チャットセッションが再起動されたため、すぐに反映されます。Kiro はセッションごとにツールリストを一度だけ読み取るため、オープンなチャットではそれを取得できなかったはずです。メッセージはまだそこにあります。エージェントは次のメッセージでコンテキストを再度読み取ります。",
-        "your_chat_sessions_were_restarted": "チャットセッションを再起動しました。メッセージはそのまま残っています。"
+        "your_chat_sessions_were_restarted": "チャットセッションを再起動しました。メッセージはそのまま残っています。",
+        "linux_unsupported": "このリリースでは、Computer Use は Linux で利用できません。"
       },
       "crewmatesSection": {
         "reply_threads": "Bot のチャットメッセージへの返信スレッド",
@@ -19399,6 +19475,9 @@
         "show_tray_icon": "トレイアイコンを表示",
         "show_tray_icon_desc": "{{productName}} をシステムトレイ（macOS ではメニューバー）に表示し、そこからウィンドウを開いたりアプリを終了したりできます。",
         "show_tray_icon_locked": "ウィンドウを閉じてもアプリが実行し続ける間は、ウィンドウを再び開く手段としてアイコンが表示されたままになります。アイコンを非表示にするには、先にその設定をオフにしてください。",
+        "minimize_to_tray": "トレイに最小化",
+        "minimize_to_tray_desc": "ウィンドウを最小化すると、タスクバーではなくシステムトレイに隠れます。トレイアイコンをクリックすると再び開きます。",
+        "minimize_to_tray_locked": "使うには先に「トレイアイコンを表示」をオンにしてください。トレイアイコンがウィンドウを再び開く手段になるためです。",
         "choose_zip_file": ".zip ファイルを選択",
         "theme_experience": "エクスペリエンス",
         "theme_experience_sounds": "サウンド",
@@ -19411,6 +19490,12 @@
         "theme_mode_auto": "自動",
         "theme_mode_light": "ライト",
         "theme_mode_dark": "ダーク",
+        "theme_mode_scheduled": "スケジュール",
+        "theme_schedule_light_from": "ライト開始",
+        "theme_schedule_light_from_hint": "スケジュールモードはこの時刻にライトに切り替わります（このデバイスのタイムゾーン）。",
+        "theme_schedule_dark_from": "ダーク開始",
+        "theme_schedule_dark_from_hint": "スケジュールモードはこの時刻にダークに切り替わります（このデバイスのタイムゾーン）。",
+        "theme_schedule_save_failed": "これらの時刻を保存できませんでした。このデバイスでは新しい時刻を使用し、他のデバイスは以前の時刻のままです。もう一度お試しください。",
         "color_mode_solid_tint": "単色",
         "color_mode_gradient": "グラデーション",
         "intensity_soft": "ソフト",
@@ -19581,7 +19666,8 @@
         "remote_port_ttl": "· リモートポート {{port}} · ttl {{ttl}}",
         "warm_cap_tune_with_other": "最大 {{count}} 件のリモートクルーが同時にウォーム状態（ライブトンネル）を保ちます。残りはオンデマンドで再接続します。<setting/> で調整できます。",
         "remote_port_value": "· リモートポート {{port}}",
-        "filled_in_from_a_link": "リンクから入力されました。SSH ホストが自分の使っているマシンか確認してから追加してください。"
+        "filled_in_from_a_link": "リンクから入力されました。SSH ホストが自分の使っているマシンか確認してから追加してください。",
+        "owner_only": "リモートのクルーを管理できるのは Crew のオーナーだけです。"
       },
       "notificationsPanel": {
         "deliver_floor_all": "すべての優先度",
@@ -20320,7 +20406,6 @@
           "folder_none": "未分類",
           "folder_new": "新しいフォルダー…",
           "folder_empty_hint": "フォルダーはまだありません。作成するには「デフォルトのフォルダー」を開いて「新しいフォルダー…」を選ぶか、自動で作成されるデフォルトをそのまま使います。",
-          "folder_auto_create": "{{name}} (自動で作成 · {{agent}})",
           "folder_auto_existing": "{{name}} (デフォルト)",
           "folder_auto_existing_agent": "{{name}} (デフォルト · {{agent}})",
           "folder_auto_ambiguous": "{{name}} (同じ名前のフォルダーが 2 つあるため、どちらも使用されません)",
@@ -20329,6 +20414,12 @@
           "agent": "デフォルトのエージェント",
           "agent_hint": "フォルダーのエージェント、なければ Slack のエージェントを使うには「継承済み」を選択します。",
           "agent_none": "継承済み",
+          "conductor_mode": "常に Conductor mode を使う",
+          "conductor_mode_desc": "新しいコードチャンネルはすべて {{agent}} で始まり、作業を計画してヘルパーエージェントに割り振ります。既定のエージェントやフォルダーのエージェントより優先されます。",
+          "conductor_mode_hint": "すでに動作中のチャンネルはエージェントを変えません。Conductor mode は作業をヘルパーエージェントに任せるので、「コードチャンネルにヘルパーエージェントの起動を許可する」もオンにしてください。",
+          "conductor_mode_helpers_off": "ヘルパーエージェントがオフのため、conductor は作業を割り振れません。このページの「コードチャンネル」にある<toggle>コードチャンネルにヘルパーエージェントの起動を許可する</toggle>をオンにしてください。",
+          "conductor_mode_overlay_unreadable": "オフ：{{path}} を読み込めないため、このスイッチはオフで、ここでは変更できません。ファイルを修正してから {{productName}} を再起動してください。",
+          "agent_conductor_note": "「常に Conductor mode を使う」がオンの間はそちらがエージェントを選びます。ここでの選択はオフにしたときのために保存されます。",
           "model_hint": "エージェント自身のモデルを使うには「継承済み」を選択します。",
           "effort_hint": "エージェント自身のエフォートを使うには「継承済み」を選択します。エフォートレベルのないモデルでは無視されます。",
           "approval_hint": "チャンネルのセッションが開始時にツールの承認をどう扱うかを設定します。あとからチャンネルの最初のメッセージか /kirocrew approval で変更できます。",
@@ -20354,6 +20445,7 @@
           "source_origin": "スレッドから継承済み",
           "source_agent": "エージェントから",
           "source_builtin": "組み込みの既定値",
+          "source_conductor": "Conductor mode",
           "reads_desc": "新しいコードチャンネルと、そのチャンネルが開始するセッションでは、{{productName}} は自分のメモリ、過去のチャット、スキル、ナレッジライブラリの検索も独力で行いますが、それ以外はすべて確認します",
           "trust_desc": "新しいコードチャンネルと、そのチャンネルが開始するセッションでは、{{productName}} は最初に確認せずに機能します",
           "resolution_agent": "継承済みのエージェント：フォルダーのデフォルトのエージェント、なければ Slack のデフォルトのエージェント。",
@@ -20717,7 +20809,8 @@
         "recheck": "再確認",
         "language": "言語",
         "language_for_spoken_replies": "音声で読み上げる返信の言語",
-        "language_provider_default": "プロバイダーの既定"
+        "language_provider_default": "プロバイダーの既定",
+        "no_engine_teammate": "Crew のコンピューターには組み込みの音声エンジンがありません。別のプロバイダーを選ぶか、Crew のオーナーにインストールを依頼してください。"
       },
       "weComPanel": {
         "allow_all_bypass_note": "すべて許可がオンになっています。上記のユーザーIDリストはスキップされます。戻すときのために保持されています。",
@@ -20915,7 +21008,9 @@
         "turn_off_disconnects": "オフにすると、ほかのデバイスは数秒以内に切断されます。",
         "turn_off_needs_terminal": "あとで再度オンにするには、{{productName}} が実行されているマシンのターミナルで <command/> を実行し、{{productName}} を再起動してください。",
         "turn_off_failed": "リモートコントロールをオフにできませんでした",
-        "load_failed": "リモートコントロールの設定を読み込めませんでした"
+        "load_failed": "リモートコントロールの設定を読み込めませんでした",
+        "on_teammate": "リモートコントロールはオンです。アクセス権のある人は Kiro リレー経由でこの Crew にアクセスできます。",
+        "owner_only": "リモートコントロールをオフにできるのは Crew のオーナーだけです。"
       },
       "remoteCrewPanel": {
         "added_by_you": "自分で追加",
@@ -21114,6 +21209,8 @@
         "tier_power": "パワー",
         "tier_power_why": "大規模なファンアウト、長いビルド、多数の並列サブエージェント向けです。",
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · RAM {{ramGb}} GB · ディスク {{diskGb}} GB",
+        "tier_price": "約 {{hourly}}/時間 · 起動したままなら約 {{monthly}}/月（概算）",
+        "price_region_note": "料金は {{priceRegion}} のオンデマンド料金です。他のリージョンでは異なる場合があります。",
         "transport_hint_fargate": "Session Manager 経由で AWS Fargate タスクに到達します。ダッシュボードではなくチャット API を提供します。",
         "transport_hint_ssh": "SSH で接続します。",
         "transport_hint_ssm": "AWS Systems Manager Session Manager 経由で接続します。",
@@ -21918,9 +22015,6 @@
       "profile_dashboard_card_send_hint": "オンのとき、{{name}} の Dashboard タブの返信ボタンを押すと、その返信がワンクリックで {{name}} とのチャットにそのまま投稿されます。オフのとき、ボタンは返信を入力欄に入れ、確認してから送信できます。",
       "profile_dashboard_card_send_failed_on": "ワンクリック送信をオンにできませんでした。オフのままです。もう一度お試しください。",
       "profile_dashboard_card_send_failed_off": "ワンクリック送信をオフにできませんでした。オンのままです。もう一度お試しください。",
-      "profile_show_sessions_in_list_switch": "自分のセッション一覧に表示",
-      "profile_show_sessions_in_list_hint": "{{name}} が開いたチャットを、あなたのセッション一覧にも表示します。セッションタブには常に表示されます。",
-      "profile_show_sessions_in_list_failed": "この設定を保存できませんでした。変更されていません。もう一度お試しください。",
       "goals_loading": "目標を読み込んでいます…",
       "goals_load_failed": "目標を読み込めませんでした。",
       "goals_save_failed": "変更を保存できませんでした。もう一度お試しください。",
@@ -22067,10 +22161,14 @@
       "member_count_filtered_other": "{{n}} 個中 {{shown}} 個の Bot",
       "sessions_group_waiting_on_mate": "{{name}} の返答待ち",
       "sessions_read_failed": "セッションの一覧をすべて読み込めませんでした。開いているセッションを表示しています。",
+      "sessions_panel_empty": "この Bot はまだセッションを開始していません。",
+      "sessions_panel_recap": "要約",
+      "sessions_panel_open_in_chat": "チャットで開く",
+      "sessions_panel_closed": "このセッションは閉じています。ここで読んだり送信したりするには再度開いてください。",
+      "sessions_panel_reopen": "セッションを再度開く",
+      "sessions_panel_remote": "このセッションは {{crew}} で実行されています。そちらで開いてください。",
       "recap_loading": "読み込み中…",
       "recap_failed": "このセッションの詳細を読み込めませんでした。",
-      "recap_show": "詳細",
-      "recap_hide": "閉じる",
       "recap_answer_where": "サイドバーからそのセッションを開いて対応してください",
       "recap_no_report": "まだ報告はありません",
       "recap_status": "状態",
@@ -22194,7 +22292,11 @@
     "envOverrideWithSettingRef": "<settingRef/> がこの環境で設定されているため、ハートビートはオフです。ここでテレメトリを管理するには、設定を解除してください。",
     "localDataBodyOn": "使用状況とコンテキスト記録。パフォーマンスメトリクスは現在このデバイスに記録されています。",
     "localDataBodyOff": "使用状況とコンテキスト記録。パフォーマンスメトリクスは現在このデバイスに記録されていません。",
-    "doNotTrackCaption": "DO_NOT_TRACK=1 を設定すると、パフォーマンスメトリクスとハートビートがオフになります。"
+    "doNotTrackCaption": "DO_NOT_TRACK=1 を設定すると、パフォーマンスメトリクスとハートビートがオフになります。",
+    "localDataTitleShared": "Crew のコンピューターに保持",
+    "localDataBodyShared": "使用状況とコンテキスト記録。パフォーマンスメトリクスは既定で Crew のコンピューターに記録されます。現在オンかどうかは［設定 > プライバシー］の「メトリクスを記録」スイッチで確認できます。",
+    "localDataBodyOnShared": "使用状況とコンテキスト記録。パフォーマンスメトリクスは現在 Crew のコンピューターに記録されています。",
+    "localDataBodyOffShared": "使用状況とコンテキスト記録。パフォーマンスメトリクスは現在 Crew のコンピューターに記録されていません。"
   },
   "settings": {
     "advanced": {
@@ -22340,15 +22442,16 @@
       "connections": {
         "label": "接続",
         "description": "公式サービスを接続して OAuth アプリを設定"
+      },
+      "kiroAccount": {
+        "description": "Kiro へのサインイン、アカウントの切り替え、サインアウト",
+        "go_to": "Kiro アカウントへ移動",
+        "label": "Kiro アカウント"
       }
     },
     "secrets": {
-      "title": "シークレット保管庫",
-      "description": "APIキーと認証情報を安全に保存します。シークレットは暗号化され、エージェントのファイル読み取りやシェルコマンドからのアクセスは拒否されます。シークレットを必要とするコードだけが読み取れます。",
       "managed_title": "{{productName}} が自動的に使用",
-      "managed_description": "{{productName}} が認識し、自動的に使用する認証情報です。ここで値を追加または更新します。",
       "gerrit_http_credential_label": "Gerrit HTTP 認証情報",
-      "gerrit_http_credential_description": "構成済みホスト 1 台の Gerrit チェンジ検索を認証します。そのサーバーの HTTP Credentials 設定で生成した ユーザー名:HTTP パスワード の形式で入力してください。",
       "gerrit_global_unused_multi_host": "複数のホストが構成されている間は Gerrit で使用されません。上で各ホストの認証情報を設定するか、この項目を削除してください。",
       "gerrit_global_unused_host_credential": "ホスト固有の Gerrit 認証情報が優先されるため使用されません。フォールバックが不要なら、この項目を削除してください。",
       "jira_api_token_label": "Jira API トークン",
@@ -22356,17 +22459,11 @@
       "jira_global_unused_multi_host": "複数のホストが構成されている間は Jira で使用されません。上で各ホストの認証情報を設定するか、この項目を削除してください。",
       "jira_global_unused_host_token": "ホスト固有の Jira 認証情報が優先されるため使用されません。フォールバックが不要なら、この項目を削除してください。",
       "jira_host_token_label": "Jira ホスト API トークン",
-      "jira_host_token_description": "構成済みホスト 1 台の Jira 課題検索を認証します。",
       "wakatime_api_key_label": "WakaTime API キー",
       "wakatime_api_key_description": "WakaTime が有効な場合にコーディングアクティビティの同期を認証します。",
       "custom_title": "カスタムシークレット",
-      "custom_description": "MCP サーバーと .env 設定用の暗号化されたキーです。secret://YOUR_KEY として参照します。値がチャットに表示されることはありません。",
-      "custom_authorize": "メンバーチャットのエージェントがシークレットを使って承認済みの API を 1 つ呼び出せるようにするには、エージェントに {{server}} を付与してから、シェルまたはターミナルページで下のコマンドを実行します。",
-      "custom_empty": "カスタムシークレットはまだ保存されていません。追加すると、MCP サーバーから secret://YOUR_KEY として参照できます。",
       "managed_config_error": "$KIROCREW_HOME/config.json（既定: ~/.kiro/crew/config.json）を読み取れなかったため、一部の自動認証情報が非表示です。",
       "managed_name_hint": "ここに保存すると、自動認証情報セクションの {{name}} が更新されます。 — {{productName}}",
-      "managed_unconfigured_hint": "WakaTime または Jira を自動的に使用するには、$KIROCREW_HOME/config.json（既定: ~/.kiro/crew/config.json）で WakaTime を有効にするか Jira ホストを追加します。",
-      "managed_setup_guide": "シークレット設定ガイドを開く",
       "delete_managed_confirm": "「{{name}}」を完全に削除しますか？現在の値は復元できません。",
       "delete_managed_name": "{{name}}を削除",
       "save_managed_name": "{{name}} を保存",
@@ -22375,7 +22472,6 @@
       "saved": "保存済み",
       "name_placeholder": "MY_API_KEY",
       "value_placeholder": "sk-...",
-      "no_secrets": "シークレットはまだ保存されていません。",
       "add_secret": "シークレットを追加",
       "name_label": "名前",
       "value_label": "値",
@@ -22394,7 +22490,6 @@
       "wakatime_unused_hint": "WakaTime が無効な間は使用されません。WakaTime を有効にするか、この項目を削除してください。",
       "wakatime_oauth_tokens_description": "{{productName}} が保管する WakaTime のサインイン情報です。WakaTime パネルで管理します。",
       "wakatime_oauth_tokens_manage": "WakaTime で管理",
-      "connections_client_secret_description": "コネクション OAuth アプリのクライアントシークレット。「設定 → 接続」で管理します。",
       "connections_client_secret_manage": "接続で管理",
       "how_it_works": "仕組み",
       "type_label": "何を保存しますか？",
@@ -22442,7 +22537,9 @@
       "use_in_tool_title": "ツールで使う",
       "use_in_tool_tip": "これをツールの設定（MCP サーバーの環境変数など）に貼り付けます。ツールは実行時に値を受け取り、値そのものがそこに表示されることはありません。",
       "advanced_title": "詳細",
-      "api_call_label": "API 呼び出し"
+      "api_call_label": "API 呼び出し",
+      "owner_only": "シークレットを表示または変更できるのは Crew のオーナーだけです。",
+      "relay_unavailable": "シークレットの表示と変更は Crew のコンピューター上でのみ行えます。Remote Control からはできません。"
     }
   },
   "store": {
@@ -23133,6 +23230,9 @@
     "webhooks_frame": "外部システムが呼び出すことでこの Bot を起動します。トークンの発行と失効は Webhook ページのままです。",
     "loading_template": "読み込み中…",
     "load_error": "この Bot の機能を読み込めませんでした。",
+    "load_error_timed_out": "この Bot の機能の読み込みが時間内に終わりませんでした。追加した機能が多い Bot や、遅いまたは接続できないドライブ上のフォルダーでは、制限時間を超えることがあります。ゲートウェイのログに Bot 名とかかった時間が記録されます。",
+    "load_error_details": "詳細はゲートウェイのログにあります。",
+    "load_retry": "もう一度試す",
     "stat_mcp_servers": "MCP サーバー",
     "memory_empty": "この Bot にはまだプライベートメモリストアがありません。",
     "memory_profile_frame": "この Bot が学習しながらあなたと自分の作業について書き留めるメモで、各セッションに引き継がれます。読んで編集できますが、Bot も更新し続けます。",
@@ -23497,7 +23597,8 @@
     "preview_save_failed": "共有 Crew の設定を保存できませんでした。",
     "preview_restart_failed": "ゲートウェイを再起動できませんでした。",
     "raised_by": "{{name}} さんの操作",
-    "take_over_keeps_draft": "引き継いで入力できます。{{name}} さんの下書きはそのまま残ります。"
+    "take_over_keeps_draft": "引き継いで入力できます。{{name}} さんの下書きはそのまま残ります。",
+    "hero_shared_team": "チームと共有中"
   },
   "milestone": {
     "pr_watch": {
@@ -23590,6 +23691,13 @@
         "pop_out_label_to_its_own_window": "{{label}}を別ウィンドウに切り離す",
         "label_is_open_in_its_own_window_focus_it": "{{label}}は別ウィンドウで開いています — そこにフォーカス"
       }
+    }
+  },
+  "connectedComputers": {
+    "preview": {
+      "description": "このサーバーのチャットは、自分のコンピューター上のフォルダーで作業できます。そのコンピューターで承認するまで、何も共有されません。",
+      "hint": "自分のコンピューターがこのサーバーに接続し、承認したフォルダーだけを共有します。オフにすると共有が止まり、ファイルが削除されることはありません。Remote Crew はその逆で、別のデバイスからこのサーバーを使うための機能です。",
+      "label": "接続されたコンピューター"
     }
   }
 }

@@ -984,6 +984,49 @@ session's messages, the cron list or the subagent list through `useAppApi()`
 A built-in page gets every member as the dashboard has it; outside an app every member
 refuses.
 
+## Browser Media
+
+`useBrowserMedia(sessionKey, { pollMs })` gives your page play, pause, seek and volume
+buttons for the browser tab your app's own agent works in, answered at once and without an
+agent turn. It needs `APP_SDK_LEVEL >= 10`, an approved
+[`permissions.browserSites`](manifest-reference.md), and `/api/browser/media`
+(`BROWSER_MEDIA_PATH`) in `permissions.api`. `sessionKey` is a session your app owns,
+the one whose agent opened the page with the `browser` tool.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+const { media, error, busy, play, pause, seek, setVolume } = sdk.useBrowserMedia(sessionKey, { pollMs: 1000 })
+
+<button disabled={busy} onClick={() => (media?.paused ? play() : pause())}>…</button>
+```
+
+| Member | Does |
+|---|---|
+| `media` | the playing element's state: `kind`, `paused`, `ended`, `currentTime`, `duration` (null when unknown), `volume` (0 to 1), `muted`; null before the first answer |
+| `error` | the last refusal's code: `no_tab` (no tab open for that session yet), `no_media` (no `<video>` or `<audio>` on the page), `redirect_refused` (the page left your approved sites; it was moved to `about:blank`), `not_app_browser`, `not_declared`, `policy_denied` |
+| `play()`, `pause()`, `seek(seconds)`, `setVolume(0..1)`, `refresh()` | one request each: a `POST` per button; `refresh`, the first read and each poll are a `GET` that changes nothing |
+| `onEnded(media)` (option) | called once each time an answer first shows `ended: true`; again only after the element plays and ends anew. A song that has already ended when the page mounts counts once |
+
+For continuous play, poll and let the ending pick the next song:
+
+```tsx
+sdk.useBrowserMedia(sessionKey, {
+  pollMs: 2000,
+  onEnded: () => chat.send('That song ended. Find and play the next one.'),
+})
+```
+
+The signal is derived from the state your page reads, so it only exists while your page is
+mounted and polling. Your backend learns of it when your page posts to one of your own
+routes; with the page closed nothing reads the tab, so nothing fires.
+
+The route acts on the element that is playing, else the largest one shown, in the page's
+top document. It reads no page text. A play may be refused by the
+browser's autoplay rule; the route then clicks the element once, which counts as the tab's
+gesture. The hook draws nothing, so the buttons are yours. Only the dashboard owner's own
+page can call it: the agent's tools and app tokens are refused.
+
 ## Chat Marker Protocol
 
 An agent encodes UI affordances inline in the prose it streams. A surface that renders a transcript
@@ -2053,7 +2096,8 @@ directory entries in `credentialMasks` (`"state/"`), the dashboard's
 installed app's `credentialMasks` to the agent's file tools too and adds the manifest's
 `permissions.chatLaunch` (see
 [manifest-reference.md](manifest-reference.md#permissions)) with
-[`useChatLauncher().createChat`](#app-sdk-hooks-dashboard-ui); each level
+[`useChatLauncher().createChat`](#app-sdk-hooks-dashboard-ui), and
+`permissions.browserSites` with the page's [`useBrowserMedia`](#browser-media); each level
 includes every level below it. Several seams share level 7, three share level 8, and
 level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it

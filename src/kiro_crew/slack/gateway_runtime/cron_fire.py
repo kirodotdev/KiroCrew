@@ -104,7 +104,7 @@ def _annotate_model_downgrade(job: CronJob, text: str) -> str:
     # job.model is LLM-controllable via MCP; redact before it
     # reaches Slack/dashboard through last_result.
     safe_model = redact_credentials(redact_exfiltration_urls(job.model)[0])[0]
-    return f"⚠️ Model '{safe_model}' unavailable; ran with default.\n\n" + text
+    return f"Warning: Model '{safe_model}' unavailable; ran with default.\n\n" + text
 
 
 async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:

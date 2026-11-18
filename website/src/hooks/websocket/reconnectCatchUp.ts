@@ -198,7 +198,9 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
   // still is, see `createReconnectSnapshotWait`).
   ctx.reconnectSnapshot.arm()
   buffers.dropForReconnect()
-  markGatewayConnected(dispatch)
+  // After a host-silent or Remote Control off close the open alone proves nothing: the first frame
+  // marks it connected (`SocketConnection.noteFrame`).
+  if (!socket.awaitsFirstFrame()) markGatewayConnected(dispatch)
   refreshServerStateAfterReconnect(queryClient)
   ctx.seedAutomations()
   dispatch(fetchNotifications()).then(() => ctx.syncPendingApprovals())

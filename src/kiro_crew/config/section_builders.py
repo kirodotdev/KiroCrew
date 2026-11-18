@@ -833,6 +833,8 @@ def _build_code_channel_defaults(raw: object) -> CodeChannelDefaultsConfig:
         model=_code_channel_default_str(data.get("model")),
         reasoning_effort=effort if is_valid_effort(effort) else None,
         approval_mode=_code_channel_approval_mode(data.get("approval_mode")),
+        # Only a real ``true`` is stored on; anything else reads as off (unset).
+        conductor_mode=True if data.get("conductor_mode") is True else None,
     )
 
 

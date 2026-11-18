@@ -27,9 +27,11 @@ owner's (:func:`is_owner_only_for_teammates`):
   token, and a cron job's secret grants (:data:`CRON_SECRET_GRANTS`);
 * managing who may reach the Crew: invites, the access card and the preview switch,
   which ``routes_invites._owner_refusal`` holds to the local operator or this
-  machine's own tailnet user; the mobile setup (``tailnet_mobile``); and the config
-  keys that open a listener or name who is let in (:func:`is_admission_config_key`),
-  which the config PATCH refuses a teammate.
+  machine's own tailnet user; the mobile setup (``tailnet_mobile``); turning Remote
+  Control off (``PUT /api/remote-control``, :data:`REMOTE_ACCESS_WRITES`), which
+  only the host machine can turn back on; and the config keys that open a listener,
+  open tunnels from this machine or name who is let in
+  (:func:`is_admission_config_key`), which the config PATCH refuses a teammate.
 
 A teammate is not the owner for redaction either: what they read stays redacted
 while the owner's switch is off (the recorded credential-redaction decision: the
@@ -54,6 +56,7 @@ from typing import Any
 __all__ = [
     "CHANNEL_CONNECTION_WRITES",
     "CRON_SECRET_GRANTS",
+    "REMOTE_ACCESS_WRITES",
     "TEAMMATE_WS_FLAG",
     "TERMINAL_PATH_PREFIXES",
     "is_admission_config_key",
@@ -85,18 +88,24 @@ CHANNEL_CONNECTION_WRITES = (
 #: the teammate can read the output of.
 CRON_SECRET_GRANTS = re.compile(r"\A/api/crons/[^/]+/secrets/?\Z")
 
+#: Writes that turn the Crew's remote access off: turning it back on takes the host
+#: machine, so a teammate could shut every person out and not undo it.
+REMOTE_ACCESS_WRITES = re.compile(r"\A/api/remote-control/?\Z")
+
 #: Set on an owner socket a teammate opened, so the WebSocket redaction treats it as
 #: a non-owner reader while every owner frame still reaches it.
 TEAMMATE_WS_FLAG = "_shared_crew_teammate"
 
-#: Config subtrees that open a listener or name who may reach the Crew.
-_ADMISSION_CONFIG_ROOTS = ("dashboard.shared_crew", "dashboard.tailscale", "tunnel")
+#: Config subtrees that open a listener, open tunnels from this machine to other
+#: machines, or name who may reach the Crew.
+_ADMISSION_CONFIG_ROOTS = ("dashboard.shared_crew", "dashboard.tailscale", "instances", "tunnel")
 
 
 def is_admission_config_key(path: str) -> bool:
-    """Whether config key *path* opens a listener or is an allow-list.
+    """Whether config key *path* opens a listener or a tunnel, or is an allow-list.
 
-    The Shared Crew, Tailscale and tunnel subtrees, and any allow-list or DM policy by
+    The Shared Crew, Tailscale, remote-instance (``instances``) and tunnel subtrees, and
+    any allow-list or DM policy by
     its name (a segment starting ``allow``, or ``dm_policy``), so a channel added later
     is covered without a table.
     """
@@ -117,7 +126,9 @@ def is_owner_only_for_teammates(request: Any) -> bool:
     if CRON_SECRET_GRANTS.match(path):
         return True
     method = str(getattr(request, "method", "GET") or "GET").upper()
-    return method not in ("GET", "HEAD") and any(
+    if method in ("GET", "HEAD"):
+        return False
+    return bool(REMOTE_ACCESS_WRITES.match(path)) or any(
         rule.match(path) for rule in CHANNEL_CONNECTION_WRITES
     )
 

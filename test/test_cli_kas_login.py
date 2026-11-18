@@ -292,6 +292,27 @@ class TestLogin:
         assert fake_service.begun[0]["region"] == "eu-west-1"
 
     @pytest.mark.parametrize(
+        "argv, stored, line",
+        [
+            ((), "BuilderId", "Signed in to Kiro Crew with AWS Builder ID."),
+            (
+                ("--provider", "idc", "--start-url", "acme.awsapps.com"),
+                "Enterprise",
+                "Signed in to Kiro Crew with IAM Identity Center (https://acme.awsapps.com/start).",
+            ),
+            (("--provider", "google"), "Google", "Signed in to Kiro Crew with Google."),
+            (("--provider", "github"), "Github", "Signed in to Kiro Crew with GitHub."),
+        ],
+    )
+    def test_the_confirmation_names_the_sign_in_method_in_plain_words(
+        self, home_store, fake_service, capsys, argv, stored, line
+    ):
+        fake_service.polls = [{"status": "authorized", "provider": stored}]
+        assert cli_kas.kas_cmd(_parse("login", *argv)) == 0
+        out = capsys.readouterr().out
+        assert line in out.splitlines()
+
+    @pytest.mark.parametrize(
         "start_url, reason",
         [
             # Refused by Crew before AWS is called.
@@ -396,7 +417,7 @@ class TestLogin:
         monkeypatch.setattr(fake_service, "begin_device", _refused)
         assert cli_kas.kas_cmd(_parse("login")) == 1
         assert capsys.readouterr().err == (
-            "❌ could not reach the sign-in service (oidc.us-east-1.amazonaws.com): "
+            "Error: could not reach the sign-in service (oidc.us-east-1.amazonaws.com): "
             "connection refused.\n"
             "   Nothing was stored. Check your network connection, then run the command again.\n"
         )
@@ -416,7 +437,7 @@ class TestLogin:
         monkeypatch.setattr(fake_service, "begin_device", _slow)
         assert cli_kas.kas_cmd(_parse("login")) == 1
         assert capsys.readouterr().err.startswith(
-            f"❌ could not reach the sign-in service: Connection timeout to host {url}.\n"
+            f"Error: could not reach the sign-in service: Connection timeout to host {url}.\n"
         )
 
     def test_a_sign_out_during_the_login_is_a_line_not_a_traceback(

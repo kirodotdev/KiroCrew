@@ -243,20 +243,32 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
     return pending;
   }
 
+  // `pane` is `{ parent, dashboard, bounds }`, resolved by main, or absent
+  // for a window of its own. A Crew already open stays where it is.
+  function openOrFocus(endpointId, pane) {
+    const existing = windows.get(endpointId);
+    if (existing && !existing.win.isClosed()) {
+      if (existing.renewal.isStopped()) return once(endpointId, () => restart(endpointId, existing));
+      // A window left on the relay's error page loads the Crew again, so
+      // choosing it in the switcher recovers it instead of only raising it.
+      const stale = typeof existing.win.showsError === "function" && existing.win.showsError();
+      if (stale) existing.win.reload();
+      existing.win.focus();
+      say(endpointId, stale ? "reloaded" : "focused");
+      return Promise.resolve({ ok: true });
+    }
+    return once(endpointId, () => openNew(endpointId, pane || null));
+  }
+
   return {
     closeAll,
-    // `pane` is `{ parent, dashboard, bounds }`, resolved by main, or absent
-    // for a window of its own. A Crew already open stays where it is.
     async open(endpointId, pane) {
       if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
-      const existing = windows.get(endpointId);
-      if (existing && !existing.win.isClosed()) {
-        if (existing.renewal.isStopped()) return once(endpointId, () => restart(endpointId, existing));
-        existing.win.focus();
-        say(endpointId, "focused");
-        return { ok: true };
-      }
-      return once(endpointId, () => openNew(endpointId, pane || null));
+      const res = await openOrFocus(endpointId, pane);
+      // A pane asked for, but what answered is a window of its own (focused,
+      // restarted, or an open already in flight): no pane exists, so the
+      // dashboard must not show a tab for it.
+      return pane && res.ok && !windows.get(endpointId)?.dashboard ? { ...res, window: true } : res;
     },
     // An open pane's handle and the dashboard view it was opened from, or null
     // for a window, a closed pane or no Crew.

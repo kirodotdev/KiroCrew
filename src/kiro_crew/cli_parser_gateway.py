@@ -311,7 +311,7 @@ def register_kas_parser(sub: _Commands) -> None:
         epilog="""
 Examples:
   kirocrew kas install                   # latest pinned engine + Node, from agent.kas_bundle_url
-  kirocrew kas install --version 0.66.33
+  kirocrew kas install --version 0.66.117
   kirocrew kas install --from ./bundle   # offline: manifest.json + artifacts in a directory
   kirocrew kas status
   kirocrew kas remove

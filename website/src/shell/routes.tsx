@@ -4,9 +4,13 @@
  * what those entries mount: the lazy-page wrapper every route-only page rides,
  * and the redirects that keep an old bookmark's query string.
  */
-import type { ComponentType } from 'react'
+import { useEffect, type ComponentType } from 'react'
 import { Navigate, useLocation, useParams } from 'react-router-dom'
+import { SquareTerminal } from 'lucide-react'
 import { lazyRetry } from '../components/lazyRetry'
+import { EmptyState } from '../components/ui'
+import { useViewerIsNotOwner } from '../hooks/sharedCrew/useSharedCrew'
+import { isBottomTerminalOpen, openBottomTerminal } from '../hooks/useBottomTerminal'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -52,3 +56,29 @@ export function McpRedirect() {
 export function TasksRedirect() { const { search } = useLocation(); return <Navigate to={'/projects' + search} replace /> }
 export function ChatRedirect() { const { search } = useLocation(); return <Navigate to={'/chat' + search} replace /> }
 export function OrchestratedRedirect() { const { slug } = useParams(); const { search } = useLocation(); return <Navigate to={`/chat${slug ? '/' + slug : ''}${search}`} replace /> }
+
+/** `/terminal`: the Terminal is the docked panel, not a page. The owner lands on
+ *  chat with the panel open; a teammate, whom the Terminal is never offered to,
+ *  gets a short page saying so instead of being dropped on a chat with no word.
+ *  Nothing happens until the owner check answers, so neither case flashes. */
+export function TerminalRoute() {
+  const { search } = useLocation()
+  const { notOwner, owner, failed } = useViewerIsNotOwner()
+  const opens = !notOwner && (owner || failed)
+  useEffect(() => {
+    if (opens && !isBottomTerminalOpen()) openBottomTerminal()
+  }, [opens])
+  if (notOwner) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-6" data-testid="terminal-owner-only">
+        <EmptyState
+          icon={<SquareTerminal size={20} />}
+          title={i18nT('app.terminal')}
+          subtitle={i18nT('app.terminal_owner_only')}
+        />
+      </div>
+    )
+  }
+  if (!opens) return null
+  return <Navigate to={'/chat' + search} replace />
+}

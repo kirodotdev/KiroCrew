@@ -134,7 +134,7 @@ def _incumbent_from_lock_holder(port: int, *, shutdown_acknowledged: bool) -> li
             source="cli",
             resources=f"port={port} reason=lock_probe_indeterminate",
         )
-        print(f"❌ {exc}. Not signalling anything and not starting a replacement.")
+        print(f"Error: {exc}. Not signalling anything and not starting a replacement.")
         sys.exit(1)
     if holder.pid is None or not holder.alive:
         return []
@@ -454,7 +454,7 @@ def _resolve_restart_ready_timeout() -> int:
 
 def _warn_restart_ready_override(raw: str, used: int, problem: str) -> None:
     print(
-        f"⚠️  KIROCREW_RESTART_READY_TIMEOUT={raw!r} {problem}; using {used}s.",
+        f"Warning: KIROCREW_RESTART_READY_TIMEOUT={raw!r} {problem}; using {used}s.",
         file=sys.stderr,
         flush=True,
     )
@@ -462,14 +462,14 @@ def _warn_restart_ready_override(raw: str, used: int, problem: str) -> None:
 
 def _print_applying_update(wait_secs: float) -> None:
     print(
-        "⏳ The new gateway is applying an update before it serves; "
+        "The new gateway is applying an update before it serves; "
         f"waiting up to {int(wait_secs // 60)} minutes.",
         flush=True,
     )
 
 
 def _print_still_starting(elapsed: float) -> None:
-    print(f"⏳ Still starting ({int(elapsed)}s elapsed), continuing to wait...", flush=True)
+    print(f"Still starting ({int(elapsed)}s elapsed), continuing to wait...", flush=True)
 
 
 # Gap between readiness probes while waiting for the replacement gateway. Short
@@ -667,7 +667,7 @@ def _died_replacement_message(pid: int, exit_status: int | None, port: int) -> s
     logs = "   To see why it exited, run: kirocrew logs -f"
     if _probe_gateway_ready(port) == 0:
         return (
-            f"❌ Replacement gateway (pid {pid}) died immediately "
+            f"Error: Replacement gateway (pid {pid}) died immediately "
             f"(exit status {exit_status}). Nothing is serving port {port}.\n"
             f"   A replacement that exits at once is usually refused startup — "
             f"another process still owning {config_dir()}, or a broken config.\n"
@@ -688,7 +688,7 @@ def _died_replacement_message(pid: int, exit_status: int | None, port: int) -> s
                 f"so the replacement was refused.\n"
             )
     return (
-        f"❌ Replacement gateway (pid {pid}) exited at once "
+        f"Error: Replacement gateway (pid {pid}) exited at once "
         f"(exit status {exit_status}). Port {port} still answers HTTP.\n"
         f"{owner}{logs}"
     )
@@ -745,7 +745,7 @@ def _print_token_url(port: int) -> None:
     from kiro_crew.dashboard.urls import login_link_may_print
 
     if not login_link_may_print():
-        print("\n🔑 Sign in: run kirocrew token for a sign-in link")
+        print("\nSign in: run kirocrew token for a sign-in link")
         return
     deadline = time.monotonic() + _RESTART_TOKEN_WAIT
     while time.monotonic() < deadline:
@@ -783,7 +783,7 @@ def _print_token_url(port: int) -> None:
                 # (The /api/token/local call above stays localhost: it's a loopback
                 # API request, not a browser URL.)
                 host = resolve_dashboard_host(local_only=True)
-                print(f"\n🔑 http://{host}:{port}?token={token}")
+                print(f"\nhttp://{host}:{port}?token={token}")
                 origin = dashboard_origin(KiroCrewConfig.load().dashboard.url)
                 if origin and "localhost" not in origin:
                     print(f"   {origin}/?token={token}")
@@ -798,7 +798,7 @@ def _print_token_url(port: int) -> None:
             pass
         time.sleep(1)
     # Non-fatal — gateway might just be slow to start
-    print("\n⚠️  Could not generate token (gateway still starting?). Run: kirocrew token")
+    print("\nWarning: Could not generate token (gateway still starting?). Run: kirocrew token")
 
 
 def _print_running_cron_runs() -> None:
@@ -871,7 +871,7 @@ def _print_running_cron_runs() -> None:
             after[m.job_id] = f"   - {label} {outlook}"
     except Exception:  # noqa: BLE001 - a notice ahead of the restart must not stop it
         return
-    lines = [f"⚠️  A restart interrupts the cron job(s) running now: {', '.join(runs)}."]
+    lines = [f"Warning: A restart interrupts the cron job(s) running now: {', '.join(runs)}."]
     if after:
         lines.append("   An interrupted run is recorded as cancelled, and after the restart:")
         lines.extend(after.values())
@@ -946,7 +946,7 @@ def _restart(cli_port: int | None = None) -> None:
                 source="cli",
                 resources=f"port={port} via=service",
             )
-            print("✅ Restarted kirocrew service.")
+            print("Done: Restarted kirocrew service.")
             _print_token_url(port)
             return
         if report.attempted or service_controller.is_service_active():
@@ -1001,7 +1001,7 @@ def _restart(cli_port: int | None = None) -> None:
             )
             if restarted:
                 lines = [
-                    "⚠️ Restarted kirocrew service in the "
+                    "Warning: Restarted kirocrew service in the "
                     f"{' and '.join(o.scope for o in restarted)} scope; the restart did "
                     f"not take in the {' and '.join(f.scope for f in failures)} scope:"
                 ]
@@ -1009,11 +1009,11 @@ def _restart(cli_port: int | None = None) -> None:
                     lines.append(f"   {outcome.scope} scope: restarted.")
             else:
                 lines = [
-                    "❌ A kirocrew service is installed and running, but the restart did "
+                    "Error: A kirocrew service is installed and running, but the restart did "
                     "not take — the gateway was NOT restarted."
                 ]
             for failure in failures:
-                lines.append(f"   ⚠️ {failure.scope} scope: {failure.reason}")
+                lines.append(f"   Warning: {failure.scope} scope: {failure.reason}")
                 lines.append(
                     f"       {_RESTART_REMEDY_LABEL.get(failure.kind, 'Then')}:  {failure.hint}"
                 )
@@ -1059,7 +1059,7 @@ def _restart(cli_port: int | None = None) -> None:
                 resources=f"port={port} reason=service_installed_not_running",
             )
             print(
-                f"❌ The kirocrew {service_controller.service_scope(unit)} service is "
+                f"Error: The kirocrew {service_controller.service_scope(unit)} service is "
                 f"installed ({unit}) but stopped; start it with your service manager. "
                 "No gateway was started outside it."
             )
@@ -1151,7 +1151,7 @@ def _restart(cli_port: int | None = None) -> None:
             resources=f"port={port} reason=shutdown_ack_listener_lookup_blind",
         )
         print(
-            f"❌ Gateway accepted graceful shutdown on port {port}, but listener PID "
+            f"Error: Gateway accepted graceful shutdown on port {port}, but listener PID "
             "lookup is unavailable. Not starting a replacement because safe lock "
             "release cannot be proven.\n   Wait for shutdown to finish, then run: "
             "kirocrew restart"
@@ -1179,7 +1179,7 @@ def _restart(cli_port: int | None = None) -> None:
                 source="cli",
                 resources=f"port={port} reason=lock_probe_indeterminate",
             )
-            print(f"❌ {exc}. Not signalling anything and not starting a replacement.")
+            print(f"Error: {exc}. Not signalling anything and not starting a replacement.")
             sys.exit(1)
         if holder.pid is not None and holder.alive:
             _refuse_lock_holder("gateway_restart", port, holder.pid)
@@ -1199,7 +1199,7 @@ def _restart(cli_port: int | None = None) -> None:
                 resources=f"port={port} reason=incumbent_still_running pids={alive}",
             )
             print(
-                f"❌ Gateway (pid {pids}) did not exit within "
+                f"Error: Gateway (pid {pids}) did not exit within "
                 f"{int(_RESTART_STOP_TIMEOUT)}s. Not starting a replacement.\n"
                 f"   The old gateway still owns {config_dir()}, so a new one "
                 f"would be refused and exit immediately.\n"
@@ -1254,7 +1254,7 @@ def _restart(cli_port: int | None = None) -> None:
                     print("\n".join(refusal))
         elif verdict == _READY_UNCONFIRMED:
             print(
-                f"❌ Port {port} answers /api/ready, but within {ready_timeout}s "
+                f"Error: Port {port} answers /api/ready, but within {ready_timeout}s "
                 f"restart could not confirm that replacement gateway (pid {pid}) "
                 f"is the one serving it.\n"
                 f"   It may already be serving; re-running restart would stop it.\n"
@@ -1264,7 +1264,7 @@ def _restart(cli_port: int | None = None) -> None:
             )
         else:
             print(
-                f"❌ Replacement gateway (pid {pid}) did not become ready within "
+                f"Error: Replacement gateway (pid {pid}) did not become ready within "
                 f"{ready_timeout}s. It is still running but not "
                 f"serving port {port}.\n"
                 f"   It may be slow to start or wedged during startup; nothing is "
@@ -1280,5 +1280,5 @@ def _restart(cli_port: int | None = None) -> None:
         source="cli",
         resources=f"port={port} via=fork pid={pid}",
     )
-    print(f"✅ Started detached gateway (pid {pid}). Logs: kirocrew logs -f")
+    print(f"Done: Started detached gateway (pid {pid}). Logs: kirocrew logs -f")
     _print_token_url(port)

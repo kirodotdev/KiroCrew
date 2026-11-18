@@ -252,6 +252,9 @@ describe('AppDetailPage — auto-action deep links', () => {
       expect(screen.queryByText(/trusted for its local source only/)).not.toBeInTheDocument()
       // Refused before the clone: no empty install log beside the banner.
       expect(screen.queryByText('Install failed')).not.toBeInTheDocument()
+      // The plain Update would rerun the refused update, so it is not shown while
+      // the notice is up: the notice's button is the only Update on screen.
+      expect(screen.queryByRole('button', { name: 'Update' })).not.toBeInTheDocument()
       fireEvent.click(await screen.findByRole('button', { name: /Trust the repository and update/ }))
 
       // The dialog names the repository the refusal carried and says the folder

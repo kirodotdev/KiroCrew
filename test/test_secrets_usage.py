@@ -57,11 +57,6 @@ def _config(deepseek: dict[str, str] | None = None) -> SimpleNamespace:
     )
 
 
-@pytest.fixture(autouse=True)
-def _preview_on(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
-    _floor_monkeypatch.setattr(secrets_usage, "_secrets_vault_preview_on", lambda: True)
-
-
 @pytest.fixture()
 def home(tmp_path: Path) -> Path:
     vault = SecretVault(tmp_path)
@@ -160,22 +155,6 @@ async def test_non_owner_is_refused(home: Path) -> None:
     )
     assert status == 403
     assert data["code"] == "owner_only"
-
-
-@pytest.mark.asyncio
-async def test_preview_off_answers_as_before_the_route_and_scans_nothing(
-    home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(secrets_usage, "_secrets_vault_preview_on", lambda: False)
-    with (
-        patch.object(secrets_usage, "_scan_files", side_effect=AssertionError("scanned")),
-        patch.object(secrets_usage, "_scan_cron_jobs", side_effect=AssertionError("scanned")),
-    ):
-        app = _app(_FakeCrons(_JOBS, broken=True))
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.get("/api/secrets/usage")
-            assert resp.status == 405
-            assert resp.headers["Allow"] == "DELETE"
 
 
 def _crew_oauth_usage(stored: set[str], raw_config: object) -> dict:

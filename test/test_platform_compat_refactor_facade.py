@@ -214,7 +214,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         tcc_protected_dirs_for_walk tcc_prune_walk_dirs fchmod_safe dup_fd_at_or_above
         chmod_safe
         claude_code_managed_settings_dir
-        _clear_readonly_and_retry rmtree_force _WIN_FILE_SHARE_READ_WRITE_DELETE
+        _clear_readonly_and_retry _retry_within_root _open_root rmtree_force
+        _WIN_FILE_SHARE_READ_WRITE_DELETE
         _SHARING_VIOLATION_WINERRORS _RMTREE_MAX_ATTEMPTS _RMTREE_BACKOFF_SECONDS
         remove_with_retry
         open_file_for_shared_read open_lock_file_for_sweep path_volume_is_remote
@@ -227,7 +228,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _windows_system_dirs _FOLDERID_DOCUMENTS _POWERSHELL_USER_PROFILES windows_documents_dir
         windows_powershell_profile_paths _UNPINNED_TOOL_PROBED _log_tool_outside_trusted_dirs
         _WINDOWS_GIT_DIRS trusted_git_bin trusted_system_bin _trusted_bin_search
-        trusted_system_bin_quiet _LOCAL_SYSTEM_BIN_DIR _UNTRUSTED_AWS_BIN_LOGGED
+        trusted_system_bin_quiet _LOCAL_SYSTEM_BIN_DIR POSIX_DEFAULT_BIN_DIRS _UNTRUSTED_AWS_BIN_LOGGED
         _MAX_SYMLINK_HOPS _root_owned_entry traversed_components traversed_components_and_links
         _group_shared_with_another_account _ACL_XATTR_VERSION _ACL_USER _ACL_GROUP _ACL_MASK
         _ACL_WRITE _NO_ACL_ERRNOS _acl_admits_another_account group_write_admits_another_account

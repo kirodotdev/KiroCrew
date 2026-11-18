@@ -340,8 +340,14 @@ async def decompose(
         else:
             full_prompt = prompt
 
+        # Not a person's turn: a person-only directive is refused and audited;
+        # the JSON text is left as it is, so the refusal lives in its SEL row.
+        from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+
+        _refuse_person_only = person_only_directive_refuser(session_key, [])
         text = ""
         async for event in client.stream(full_prompt):
+            await _refuse_person_only(event)
             if event.kind == EVENT_TEXT_CHUNK:
                 text += event.text
             elif event.kind == EVENT_PERMISSION_REQUEST:
@@ -706,8 +712,10 @@ def decompose_yaml(yaml_content: str) -> list[Task]:
 # Matches the "Agent: ...\nTimeout: ...\n\n<prompt>" preamble that decompose_yaml
 # packs into Task.description on import, so export can round-trip it back out into
 # the dedicated `agent`/`timeout`/`prompt` YAML keys instead of double-wrapping.
+# The prompt part is optional: an agent with no prompt or shell is stripped down
+# to the bare "Agent: ...\nTimeout: ..." pair on import.
 _YAML_PREAMBLE_RE = re.compile(
-    r"^Agent:\s*(?P<agent>[^\n]*)\nTimeout:\s*(?P<timeout>[^\n]*)\n\n(?P<prompt>.*)$",
+    r"^Agent:[ \t]*(?P<agent>[^\n]*)\nTimeout:[ \t]*(?P<timeout>[^\n]*)(?:\n\n(?P<prompt>.*))?$",
     re.DOTALL,
 )
 
@@ -761,7 +769,7 @@ def plan_to_yaml(tasks: list[Task]) -> str:
                 spec["agent"] = agent_val
             if timeout_val:
                 spec["timeout"] = timeout_val
-            prompt = m.group("prompt")
+            prompt = m.group("prompt") or ""
         else:
             prompt = t.description or ""
         spec["prompt"] = prompt

@@ -639,6 +639,8 @@ def _shape_fork_child(
     # context (agent resolution, steering files, CWD) instead of falling back to
     # the config/workspace default on first message.
     new_slot.project = slot.project
+    # And whether a person picked it, so a forked Bot worker keeps that folder.
+    new_slot._project_picked = getattr(slot, "_project_picked", False) is True
     # Keep the app-owned agent binding with the agent it binds: the fork runs as
     # the same app agent, so the per-turn shadow check must still apply to it.
     new_slot.app_agent_owner = slot.app_agent_owner

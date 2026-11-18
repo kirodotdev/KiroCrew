@@ -40,7 +40,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
-from source_corpus import repo_files_named, repo_root
+from source_corpus import repo_files_named, repo_root, untraced
 
 import kiro_crew.dashboard.handlers as handlers_pkg
 import kiro_crew.dashboard.handlers.agents as agents
@@ -218,12 +218,13 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         _rollback_promoted_avatar _live_avatar_file _sniff_image_ext _image_body_complete
         api_kirocrew_agent_avatar_upload
         """.split()),
+    "catalog_bounds": ("_bounded_catalog",),
 }
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
 #: name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "1d2f5b6b10210205011f445d98f0eee05d1d88a2a0cf74a0afbc53e5cb3555b8"
+_BASE_SHAPE_DIGEST = "8104e8403486603e47543845b8ae9231eee4e64ac1cc19722204ea1ec07190b0"
 
 #: Definitions that stay in the facade file. The seams every owner reads; the
 #: config schema route; the model and picker reads with the crew model-pin checks,
@@ -246,7 +247,6 @@ _FACADE_DEFS = (
     "_wrap_list_models_argv",
     "_scoped_default",
     "_CatalogUnavailable",
-    "_bounded_catalog",
     "_CatalogCache",
     "_fetch_kiro_catalog",
     "_shared_catalog_fetch",
@@ -1148,18 +1148,22 @@ def _facade_patched_names() -> set[str]:
     here = Path(__file__).resolve()
     found: set[str] = set()
     unresolved = []
-    for path in repo_files_named(".py"):
-        parts = path.relative_to(root).parts
-        in_tests = parts[0] == "test" or (parts[0] == "src" and "tests" in parts)
-        if in_tests and path.resolve() != here:
-            names, dynamic = _patched_names_in(path.read_text(encoding="utf-8", errors="replace"))
-            found |= names
-            for label in dynamic:
-                key = (path.name, label)
-                if key in _RESOLVED_DYNAMIC_PATCHES:
-                    found |= _RESOLVED_DYNAMIC_PATCHES[key]
-                else:
-                    unresolved.append(key)
+    # The scan only parses test source, so it runs with the coverage tracer paused.
+    with untraced():
+        for path in repo_files_named(".py"):
+            parts = path.relative_to(root).parts
+            in_tests = parts[0] == "test" or (parts[0] == "src" and "tests" in parts)
+            if in_tests and path.resolve() != here:
+                names, dynamic = _patched_names_in(
+                    path.read_text(encoding="utf-8", errors="replace")
+                )
+                found |= names
+                for label in dynamic:
+                    key = (path.name, label)
+                    if key in _RESOLVED_DYNAMIC_PATCHES:
+                        found |= _RESOLVED_DYNAMIC_PATCHES[key]
+                    else:
+                        unresolved.append(key)
     assert unresolved == [], "a test patches a facade name the scan cannot resolve"
     return found
 

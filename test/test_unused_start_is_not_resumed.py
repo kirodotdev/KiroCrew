@@ -121,6 +121,7 @@ async def test_the_drain_holds_for_a_report_only_where_one_can_come(
     runtime._mcp_switched_off = switched_off
     handle = MagicMock()
     handle.drain_init = AsyncMock()
+    handle.settle_kas_model_select = AsyncMock()
 
     await runtime._wait_managed_mcp(handle, _NO_SERVERS, "lite", 1.0, 0, StartPriority.FOREGROUND)
 

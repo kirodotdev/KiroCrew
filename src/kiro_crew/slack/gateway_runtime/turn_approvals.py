@@ -507,7 +507,7 @@ def _interactive_approval(
                     )
                 title_safe, _ = redact_exfiltration_urls(event.title)
                 title_safe, _ = redact_credentials(title_safe)
-                fallback = f"🔐 [{source}] Approve: {title_safe}?"
+                fallback = f"[{source}] Approve: {title_safe}?"
                 if requester_safe:
                     fallback += f" ({requester_safe})"
                 approval_ts = await self.slack.post_blocks(
@@ -593,10 +593,10 @@ def _interactive_approval(
 
                 # Clean up Slack message
                 try:
-                    status = "✅ Approved" if outcome == "approved" else "🚫 Rejected"
+                    status = "Approved" if outcome == "approved" else "Rejected"
                     # The answered card keeps who asked: it is the record the
                     # user scrolls back to.
-                    resolved = f"🔐 *{title_safe}* — {status}"
+                    resolved = f"*{title_safe}* — {status}"
                     if requester_md:
                         resolved += f"\n{requester_md}"
                     await self.slack.update_message(channel, approval_ts, text=resolved)

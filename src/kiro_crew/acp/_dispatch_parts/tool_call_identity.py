@@ -21,7 +21,7 @@ from kiro_crew.acp.harness_tool_names import (
     CODEX_TOOL_IDS_BY_KIRO_TOOL,
     MAX_HARNESS_TOOL_NAME_LEN,
 )
-from kiro_crew.acp_backends import ACP_BACKEND_ANTIGRAVITY, ACP_BACKEND_CODEX
+from kiro_crew.acp_backends import ACP_BACKEND_ANTIGRAVITY, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX
 from kiro_crew.mcp_gateway.tool_surface import mcp_identity_name, mcp_identity_unreadable
 from kiro_crew.platform.tool_paths import _TARGET_PATH_MAX_NODES
 
@@ -261,6 +261,22 @@ def harness_tool_name(update: dict[str, Any], *, backend: str = "") -> str:
     ):
         return ""
     return name
+
+
+def claude_mcp_stamp(update: dict[str, Any], stated_name: str, *, backend: str) -> str:
+    """*stated_name* when it is claude-agent-acp's own stamp for an MCP tool, or "".
+
+    *stated_name* is :func:`harness_tool_name`'s read of this frame. It is
+    ``_meta.claudeCode.toolName`` only when the frame carries a ``claudeCode``
+    block; without one it falls back to the title, which claude builds from the
+    call's arguments, so that name is never kept here. Empty for a built-in and on
+    every other *backend*.
+    """
+    meta = update.get("_meta")
+    stamped = isinstance(meta, dict) and isinstance(meta.get("claudeCode"), dict)
+    if backend == ACP_BACKEND_CLAUDE and stamped and stated_name.startswith("mcp__"):
+        return stated_name
+    return ""
 
 
 #: codex-acp's ``rawInput.type`` on a hosted web search (``WebSearchReporter``).

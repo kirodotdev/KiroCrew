@@ -290,7 +290,7 @@ class TestHandleMessage:
 
     @pytest.mark.asyncio
     async def test_reasoning_placeholder_posted_above_answer(self, monkeypatch):
-        """Reasoning chunk before text → 💭 placeholder posts above the answer
+        """Reasoning chunk before text → Thinking placeholder posts above the answer
         and is updated in place at the end (ordering fix)."""
         self._force_show_thinking(monkeypatch)
         slack = MockSlackClient()
@@ -303,7 +303,7 @@ class TestHandleMessage:
         sessions = FakeSessionManager(provider)
         await handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1")
 
-        # The 💭 placeholder is posted (claims the slot above the answer).
+        # The Thinking placeholder is posted (claims the slot above the answer).
         reasoning_posts = [
             a for a in slack.actions if a[0] == "post" and a[1]["text"] == _THINKING_PLACEHOLDER
         ]
@@ -324,7 +324,7 @@ class TestHandleMessage:
             for a in slack.actions
             if a[0] == "update"
             and a[1]["ts"] == thinking_ts
-            and a[1]["text"].startswith("💭 *Thinking*")
+            and a[1]["text"].startswith("*Thinking*")
         ]
         assert len(reasoning_updates) == 1
         assert "Let me reason" in reasoning_updates[0][1]["text"]
@@ -332,7 +332,7 @@ class TestHandleMessage:
     @pytest.mark.asyncio
     async def test_reasoning_reserved_above_answer_when_text_first(self, monkeypatch):
         """Even when a text event arrives BEFORE the first reasoning chunk,
-        _ensure_stream_started reserves the 💭 slot above the answer so reasoning
+        _ensure_stream_started reserves the Thinking slot above the answer so reasoning
         still reads before the answer (hardening — no order dependence)."""
         self._force_show_thinking(monkeypatch)
         slack = MockSlackClient()
@@ -345,7 +345,7 @@ class TestHandleMessage:
         sessions = FakeSessionManager(provider)
         await handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1")
 
-        # The 💭 placeholder is reserved (by _ensure_stream_started) above the answer.
+        # The Thinking placeholder is reserved (by _ensure_stream_started) above the answer.
         reasoning_posts = [
             a for a in slack.actions if a[0] == "post" and a[1]["text"] == _THINKING_PLACEHOLDER
         ]
@@ -363,7 +363,7 @@ class TestHandleMessage:
             for a in slack.actions
             if a[0] == "update"
             and a[1]["ts"] == thinking_ts
-            and a[1]["text"].startswith("💭 *Thinking*")
+            and a[1]["text"].startswith("*Thinking*")
         ]
         assert len(reasoning_updates) == 1
         assert "arrived late" in reasoning_updates[0][1]["text"]
@@ -413,7 +413,7 @@ class TestHandleMessage:
 
     @pytest.mark.asyncio
     async def test_cancelled_turn_deletes_thinking_placeholder(self, monkeypatch):
-        """If the message is cancelled (deleted) mid-flight, the reserved 💭
+        """If the message is cancelled (deleted) mid-flight, the reserved Thinking
         placeholder is cleaned up alongside the suppressed response
         (cancel-path cleanup branch)."""
         self._force_show_thinking(monkeypatch)
@@ -447,7 +447,7 @@ class TestHandleMessage:
 
     @pytest.mark.asyncio
     async def test_thinking_update_failure_is_logged(self, monkeypatch):
-        """A failure updating the 💭 placeholder in place is swallowed (logged),
+        """A failure updating the Thinking placeholder in place is swallowed (logged),
         not propagated (update-failure guard)."""
         self._force_show_thinking(monkeypatch)
         slack = MockSlackClient()
@@ -575,7 +575,7 @@ class TestHandleMessage:
         all_text = " ".join(
             a[1].get("text", "") for a in slack.actions if a[0] in ("post", "stop_stream", "update")
         )
-        assert "went wrong" in all_text.lower() or "🔧" in all_text
+        assert "went wrong" in all_text.lower()
 
 
 class TestHookIntegration:
@@ -1129,7 +1129,7 @@ class TestAgentCommand:
         await handle_message(slack, sessions, "C1", f"!agent {name}", None, "m1", "U_OWNER")
         posts = [a for a in slack.actions if a[0] == "post"]
         assert any(name in p[1]["text"] for p in posts)
-        assert not any("❌" in p[1]["text"] for p in posts)
+        assert not any("Error:" in p[1]["text"] for p in posts)
 
     @pytest.mark.asyncio
     async def test_agent_full_filename_resolves(self):
@@ -1159,7 +1159,7 @@ class TestAgentCommand:
         sessions = FakeSessionManager()
         await handle_message(slack, sessions, "C1", "!agent nonexistent", None, "m1", "U_OWNER")
         posts = [a for a in slack.actions if a[0] == "post"]
-        assert any("❌" in p[1]["text"] for p in posts)
+        assert any(p[1]["text"].startswith("Error:") for p in posts)
 
 
 class TestPerThreadAgent:
@@ -1234,7 +1234,7 @@ class TestPerThreadAgent:
         sessions = FakeSessionManager()
         await handle_message(slack, sessions, "C1", "!ta nonexistent", "thread1", "msg1", "U_OWNER")
         posts = [a for a in slack.actions if a[0] == "post"]
-        assert any("❌" in p[1]["text"] for p in posts)
+        assert any(p[1]["text"].startswith("Error:") for p in posts)
         assert "thread1" not in _thread_agents
 
     @pytest.mark.asyncio

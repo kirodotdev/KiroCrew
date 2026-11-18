@@ -145,7 +145,7 @@ class CliSessionContext:
             # A failed build costs the context, never the turn: the typed text goes.
             logger.debug("The kirocrew chat session context was not built", exc_info=True)
             print(
-                f"⚠️  Session context not built ({safe_terminal_line(str(exc))}); "
+                f"Warning: Session context not built ({safe_terminal_line(str(exc))}); "
                 "sending your message without it.",
                 file=sys.stderr,
             )

@@ -112,6 +112,8 @@ from kiro_crew.slack.blocks import (
 from kiro_crew.slack.channel_policy import SlackChannelRefused
 from kiro_crew.slack.code_channels import install as install_code_channels
 from kiro_crew.slack.code_channels import lifecycle as code_channel_lifecycle
+from kiro_crew.slack.code_channels.actions import EVENT as CODE_CHANNEL_ACTION_EVENT
+from kiro_crew.slack.code_channels.actions import dispatch as dispatch_code_channel_action
 from kiro_crew.slack.code_channels.binding import no_reactions as code_channel_no_reactions
 from kiro_crew.slack.code_channels.creation import PERSON_SUBTYPES
 from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
@@ -385,6 +387,11 @@ async def init_socket_mode(
         # ── Code channels: archive, unarchive, rename ──
         if event_type in code_channel_lifecycle.LIFECYCLE_EVENTS:
             code_channel_lifecycle.dispatch(req.payload or {}, event)
+            return
+
+        # ── Code channels: a context-bar action item was clicked ──
+        if event_type == CODE_CHANNEL_ACTION_EVENT:
+            dispatch_code_channel_action(orch, req.payload or {}, event)
             return
 
         # ── Messages and mentions ──
@@ -1025,7 +1032,7 @@ async def _route_message(
                 await orch.slack.post_ephemeral(
                     channel,
                     sender_id,
-                    "⛔ You are not authorized to use this bot. "
+                    "Blocked: You are not authorized to use this bot. "
                     "Ask the owner to add you to the allowlist.",
                 )
             except Exception:
@@ -1178,7 +1185,9 @@ async def _route_message(
                 error="unauthorized sender",
             )
             if orch.slack:
-                await orch.slack.post_message(channel, "⛔ Not authorized.", thread_ts or msg_ts)
+                await orch.slack.post_message(
+                    channel, "Blocked: Not authorized.", thread_ts or msg_ts
+                )
             return
         if not orch.sessions:
             sel().log_tool_invocation(
@@ -1333,13 +1342,13 @@ async def _route_message(
                     async def _on_soft() -> None:
                         if orch.slack:
                             await orch.slack.post_message(
-                                channel, "⏹ Execution stopped.", stop_post_ts
+                                channel, "Execution stopped.", stop_post_ts
                             )
 
                     async def _on_hard() -> None:
                         if orch.slack:
                             await orch.slack.post_message(
-                                channel, "⛔ Execution stopped — session reset.", stop_post_ts
+                                channel, "Execution stopped — session reset.", stop_post_ts
                             )
 
                     # ``force`` only when set: the default call shape is what every
@@ -1700,7 +1709,7 @@ async def _route_message(
                 # is captured at startup and would make toggle saves inert
                 # until restart).
                 reactions_enabled=KiroCrewConfig.load().slack.reactions_enabled,
-                # Respect slack.show_thinking (surface reasoning as a 💭 reply).
+                # Respect slack.show_thinking (surface reasoning as a Thinking reply).
                 show_thinking=KiroCrewConfig.load().slack.show_thinking,
                 # History consolidation + display-name context, same as native
                 # handle_message (parity: don't drop these on the transport path).

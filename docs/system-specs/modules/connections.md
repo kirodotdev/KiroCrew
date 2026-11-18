@@ -1194,7 +1194,11 @@ Tier is provider *categorization* (see the tiers note above), never mint
 latency: tier 3 means the vendor gates clients by allowlist or waitlist, so
 `vendor_approval_pending` is true and the loader refuses `launch_gate_passed`
 for it; the entry exists so the nightly L0 probe watches the metadata and the
-banner allowlist stays registry-derived while the admission is pursued.
+banner allowlist stays registry-derived while the admission is pursued. The
+MCP Servers row reads it too: on the Kiro Agent harness, a server at a tier-3
+`mcp_url` with no `clientId` of its own reads **Sign-in unavailable** and names
+the vendor (`vendorPendingProviderForServer`, see
+[mcp.md](../../architecture/mcp.md)).
 
 ### How an entry gets in, and what each rung buys
 

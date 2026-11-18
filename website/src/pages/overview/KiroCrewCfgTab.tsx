@@ -488,7 +488,7 @@ export default function KiroCrewCfgTab() {
       <Card>
         <CardTitle><Settings className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.config_summary')}</CardTitle>
         {saveErr && <p className="text-danger text-[13px] mb-2">{saveErr}</p>}
-        <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
+        <div className="grid grid-cols-1 gap-y-2 [&>*:last-child]:border-b-0">
           <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.provider')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.provider}</span></div>
           <CfgSelect key={`approval-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.approval_mode')} path="agent.approval_mode" value={cfg.agent.approval_mode} options={['auto', 'interactive']} hint={i18nT('pages.overview.kiroCrewCfgTab.immediate_auto_approves_all_tools_interactive_as')} onSave={save} />
           <CfgNumber key={`timeout-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.session_timeout')} path="session.timeout_secs" value={cfg.session.timeout_secs} suffix="s" min={60} max={86400} hint={i18nT('pages.overview.kiroCrewCfgTab.takes_effect_on_next_session_range_60_86400s')} onSave={save} />
@@ -546,7 +546,7 @@ export function AgentRunSettings() {
         {/* No hand-off: the Subagent Settings card above may hold an unsaved
             draft, and a hand-off to the chat would navigate away from it. */}
         <ErrorNotice message={saveErr} variant="inline" />
-        <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
+        <div className="grid grid-cols-1 gap-y-2 [&>*:last-child]:border-b-0">
           <CfgNumber key={`poolsize-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_size')} path="session.pool_size" value={cfg.session.pool_size ?? 0} min={0} max={10} hint={i18nT('pages.overview.kiroCrewCfgTab.number_of_pre_spawned_processes_0_disables')} onSave={save} />
           <CfgSelect key={`poolagent-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_agent')} path="session.pool_agent" value={cfg.session.pool_agent ?? ''} options={['', ...Object.keys(cfg.agents)]} labels={{'': cfg.default_agent ? i18nT('pages.overview.kiroCrewCfgTab.pool_agent_default_option', { name: cfg.default_agent }) : `(${i18nT('pages.overview.kiroCrewCfgTab.default_agent')})`}} hint={i18nT('pages.overview.kiroCrewCfgTab.agent_for_pool_processes_empty_uses_default_agent')} onSave={save} />
           <CfgNumber key={`poolttl-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_ttl')} path="session.pool_ttl_secs" value={cfg.session.pool_ttl_secs} suffix="s" min={0} max={7200} hint={i18nT('pages.overview.kiroCrewCfgTab.max_age_for_pooled_processes_0_disables_expiry')} onSave={save} />
@@ -597,7 +597,7 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
     <Card>
       <CardTitle><Bot className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.subagent_settings')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.controls_how_many_subagents_can_run_concurrently')} /></CardTitle>
       <p className="text-muted text-[12px] mb-2">{i18nT('pages.overview.kiroCrewCfgTab.subagent_save_note')}</p>
-      <div className="grid grid-cols-2 gap-x-6 gap-y-3 max-[600px]:grid-cols-1">
+      <div className="grid grid-cols-1 gap-y-2 [&>*:last-child]:border-b-0">
         <label htmlFor="subagent-max-turns" className="flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm">
           <span className="text-muted inline-flex items-center gap-1">{i18nT('pages.overview.kiroCrewCfgTab.max_turns_per_subagent')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.tool_call_budget_per_subagent_1_1000_default_100')} /></span>
           <input id="subagent-max-turns" aria-label={i18nT('pages.overview.kiroCrewCfgTab.max_turns_per_subagent')} type="number" min={1} max={1000} value={maxTurns} onChange={e => setMaxTurns(parseInt(e.target.value) || 1)}
@@ -619,7 +619,7 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
           </label>
         )}
       </div>
-      <div className="flex items-center gap-3 mt-3">
+      <div className="flex flex-row-reverse items-center gap-3 mt-3">
         <button onClick={save} disabled={!dirty || saving}
           className="px-3 py-1.5 rounded text-sm font-medium bg-accent text-accent-fg hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed">
           {saving ? i18nT('pages.overview.kiroCrewCfgTab.saving') : i18nT('pages.overview.kiroCrewCfgTab.save')}

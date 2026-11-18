@@ -620,7 +620,7 @@ class TestTransientCompactionRetry:
         self, monkeypatch
     ):
         """Reasoning is not output that a replay could duplicate, so a
-        thinking-only abandoned attempt IS replayed -- but the 💭 placeholder it
+        thinking-only abandoned attempt IS replayed -- but the Thinking placeholder it
         posted above where its answer would have gone must not stay behind, and
         its reaction ladder / stall watchdog must be finalized before the nested
         call takes over the Slack message."""
@@ -653,7 +653,7 @@ class TestTransientCompactionRetry:
 
         assert provider.turns == 2, "a thinking-only attempt is still replayable"
         posted_thinking = [
-            a[1]["ts"] for a in slack.actions if a[0] == "post" and "💭" in a[1]["text"]
+            a[1]["ts"] for a in slack.actions if a[0] == "post" and "*Thinking" in a[1]["text"]
         ]
         deleted = [a[1]["ts"] for a in slack.actions if a[0] == "delete"]
         assert posted_thinking, "the abandoned attempt reserved a reasoning slot"
@@ -910,7 +910,7 @@ class TestLiveTurnPresentationFailure:
     """A raising presentation-side Slack call mid-run must not fail a live turn.
 
     These calls run on the first ``tool_call`` event, where a non-ACP raise would
-    reach the generic ``except Exception`` and render "🔧 Something went wrong".
+    reach the generic ``except Exception`` and render "Error: Something went wrong".
     """
 
     @pytest.fixture(autouse=True)

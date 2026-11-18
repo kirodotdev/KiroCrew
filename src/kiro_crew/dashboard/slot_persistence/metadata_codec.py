@@ -47,6 +47,7 @@ binders still read a few fields of the line by hand.
 from __future__ import annotations
 
 import logging
+import operator
 import re
 import uuid
 from collections.abc import Callable, Mapping
@@ -260,6 +261,9 @@ class Field:
     merge: Writer | None = None
     read: Callable[[_Read], None] | None = None
     why: str = ""
+
+
+_PICKED = operator.attrgetter("_project_picked")
 
 
 def _titled(slot: Any) -> bool:
@@ -539,9 +543,9 @@ def _read_app_agent_owner(r: _Read) -> None:
 
 
 def _read_project(r: _Read) -> None:
-    from kiro_crew.dashboard.transcript_binding import seed_project_from_disk
+    from kiro_crew.dashboard.transcript_binding import seed_project_line
 
-    seed_project_from_disk(r.state, r.slot, r.meta.get("project") or "")
+    seed_project_line(r.state, r.slot, r.meta)
 
 
 def _read_executor(r: _Read) -> None:
@@ -1110,6 +1114,8 @@ FIELDS: tuple[Field, ...] = (
         merge=_always(lambda s: s.project),
         read=_read_project,
     ),
+    # Restored by ``_read_project``: a pick only ever comes back beside its directory.
+    Field("project_picked", _ALL, "_project_picked", _flag(_PICKED), _always(_PICKED)),
     # Written while a local turn is between admission and teardown and omitted
     # otherwise -- slot ownership makes the omission the durable clear; the merge,
     # which cannot delete a key, writes the cleared ``0`` / ``None``.
@@ -1567,6 +1573,7 @@ LINE_ORDER: tuple[str, ...] = (
     "crew_mode_agent",
     "app_agent_owner",
     "project",
+    "project_picked",
     "executor",
     "instance_id",
     "remote_slot",
@@ -1634,6 +1641,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "crew_mode_agent",
     "app_agent_owner",
     "project",
+    "project_picked",
     "app",
     "origin",
     "created_by",

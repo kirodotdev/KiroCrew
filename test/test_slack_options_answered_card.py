@@ -1,4 +1,4 @@
-"""An answered OPTIONS card keeps its "✅ <who> chose <X>" line when the next turn starts.
+"""An answered OPTIONS card keeps its "<who> chose <X>" line when the next turn starts.
 
 A card posted top-level -- not in its conversation's thread, as a code channel's own
 session posts its replies -- carries no ``thread_ts``. The click handler then falls

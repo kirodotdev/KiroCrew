@@ -23,6 +23,7 @@ mirroring test_pr_readiness_sweep.py.
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import json
 import os
@@ -189,9 +190,16 @@ exit 0
 """
 
 
+@functools.lru_cache(maxsize=1)
+def _readiness_job() -> dict:
+    """The parsed `readiness` job, read once per process: every Runner reads
+    it four times and nothing writes the workflow file mid-run. Callers only
+    read the result, so the shared dict is never mutated."""
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["readiness"]
+
+
 def _steps() -> list[dict]:
-    spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    return spec["jobs"]["readiness"]["steps"]
+    return _readiness_job()["steps"]
 
 
 def _helper_script() -> str:
@@ -209,8 +217,7 @@ def _evaluate_script() -> str:
 
 
 def _monitored_lanes() -> str:
-    spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    return spec["jobs"]["readiness"]["env"]["MONITORED_LANES"]
+    return _readiness_job()["env"]["MONITORED_LANES"]
 
 
 # The consolidated runs read (`actions/runs?event=pull_request&head_sha=`) is

@@ -277,7 +277,12 @@ export function useComposerSend({
   // (`indeterminate`: the turn may be running, so a retry could run it twice).
   // A refusal also carries the server's framed reason (a Shared Crew limit, or
   // the receipt's reason), since the suppressed page notice was where it showed.
-  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean | 'auto', isolated = false, sendNow = false, onUndelivered?: (kind: 'refused' | 'indeterminate', reason?: string) => void): Promise<boolean> => {
+  // `reportConfirmed` is the stricter verdict: it is called with true only when
+  // the server provably holds the message (a `dispatched` or `queued` receipt,
+  // or a correlated echo), never for a `response-late` or `unknown` receipt the
+  // boolean above counts as delivered. The composer's prompt stash deletes a
+  // restored draft's only durable copy on it, so a guess must not reach it.
+  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean | 'auto', isolated = false, sendNow = false, onUndelivered?: (kind: 'refused' | 'indeterminate', reason?: string) => void, reportConfirmed?: (confirmed: boolean) => void): Promise<boolean> => {
     const ownsFailureReport = !!onUndelivered
     // Defense-in-depth: ChatInput already gates Send/Optimize buttons and
     // the keyboard Enter shortcut on `connected`, but a future caller (a
@@ -549,6 +554,23 @@ export function useComposerSend({
         const draft = fileDrafts.current[uiSlot]
         if (draft) { setFileDraft(fileDrafts.current, uiSlot, draft.filter(p => !sent.has(p))); saveDrafts() }
       }
+    }
+    if (!isolated && challengeOrigin) {
+      // A channel challenge link seeds its prompt into the composer (and the
+      // prefill hand-off) for the window before connect, then auto-sends it as
+      // optionText, which skips the full clear above. Take back only the seed:
+      // text the person changed meanwhile is not the seed and stays. The
+      // slot-restore effect may have queued the seed's fill in this same commit,
+      // so the live check runs as an updater, after that fill. A failed send
+      // hands the text back through `restoreSentTurn`, like a typed send. This
+      // runs beside the staged-file prune above, not instead of it: a link that
+      // reopens a session sends that session's staged files too.
+      if (composerMountedRef.current && composerSlotRef.current === uiSlot) setInput(prev => (prev.trim() === raw ? '' : prev))
+      if (uiSlot && (drafts.current[uiSlot] ?? '').trim() === raw) { delete drafts.current[uiSlot]; saveDrafts() }
+      try {
+        const seed = JSON.parse(sessionStorage.getItem(PREFILL_STORAGE_KEY) ?? 'null') as { slotKey?: unknown; prompt?: unknown } | null
+        if (seed && seed.slotKey === uiSlot && typeof seed.prompt === 'string' && seed.prompt.trim() === raw) sessionStorage.removeItem(PREFILL_STORAGE_KEY)
+      } catch { /* sessionStorage unavailable or the seed unreadable */ }
     }
     // Target the slot the user is actually looking at (uiSlot, from the ref),
     // not the stale closure `activeSlot`. See the uiSlot note above.
@@ -866,7 +888,7 @@ export function useComposerSend({
       }
     }
     if (receipt.status === 'transport-error') {
-      if (slot && selectSendConfirmed(store.getState(), slot, sendId)) return true
+      if (slot && selectSendConfirmed(store.getState(), slot, sendId)) { reportConfirmed?.(true); return true }
       // Cause-stating and naming the restore ("...and try again"), the shared
       // core copy the other surfaces use, instead of a bare "Connection error".
       failLocalTurn({ role: 'error', content: i18nT('pages.chatPage.send_failed_connection'), cls: '' })
@@ -883,7 +905,7 @@ export function useComposerSend({
       // `optimistic` flag. A correlated echo is stronger evidence than the
       // missing response -- a channel-linked slot can deliver one -- and then
       // there is nothing to warn about.
-      if (slot && selectSendConfirmed(store.getState(), slot, sendId)) return true
+      if (slot && selectSendConfirmed(store.getState(), slot, sendId)) { reportConfirmed?.(true); return true }
       // A caller that owns the failure report gets the same maybe-delivered
       // verdict as a lost receipt, and no "resend manually" notice, which would
       // invite running its prompt a second time.
@@ -1026,6 +1048,8 @@ export function useComposerSend({
     // not parse) may have started a turn, so it counts as delivered for the
     // same reason the composer above does not restore on it — a retry it
     // invited could duplicate a delivered turn.
+    reportConfirmed?.(receipt.status === 'dispatched' || receipt.status === 'queued'
+      || (!!slot && selectSendConfirmed(store.getState(), slot, sendId)))
     return receipt.status !== 'refused'
     // `send` is deliberately kept stable: it reads volatile values (agent,
     // model, project, mode, colorTheme, activeSlot) through refs so it does not
@@ -1041,7 +1065,16 @@ export function useComposerSend({
     // array for no behavior change (the ref is always current regardless).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSlot, dispatch, connected, forkUnavailable, messageQuote.consume, messageQuote.restage, setPendingAgent, setPendingModel])
+
+  // The composer's send verdict for the prompt stash: true only when the
+  // server confirmed it holds the message. A `response-late` or `unknown`
+  // receipt resolves false, so a restored draft keeps its stash entry.
+  const composerSend = useCallback(async (): Promise<boolean> => {
+    let confirmed = false
+    const delivered = await send(undefined, undefined, undefined, false, false, undefined, (ok) => { confirmed = ok })
+    return delivered && confirmed
+  }, [send])
   return {
-    send, restoreSentTurn,
+    send, restoreSentTurn, composerSend,
   }
 }

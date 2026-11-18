@@ -31,7 +31,7 @@
  * by its generated id. The generator rejects an unknown id or locale, a blank or
  * duplicate term, and a term that only repeats the label.
  */
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { LOCATIONS as apps } from './areas/apps'
 import { LOCATIONS as artifacts } from './areas/artifacts'
 import { LOCATIONS as capabilities } from './areas/capabilities'
@@ -90,8 +90,8 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
   },
   // What users call the behaviour, whatever their platform names the tray.
   'setting:display.keep-running-in-the-background-after-closing-the-window': {
-    en: ['close to tray', 'minimize to tray', 'quit on close', 'exit on close', 'run in background', 'system tray', 'close button'],
-    'zh-CN': ['关闭到托盘', '最小化到托盘', '关闭时退出', '后台运行', '系统托盘'],
+    en: ['close to tray', 'quit on close', 'exit on close', 'run in background', 'system tray', 'close button'],
+    'zh-CN': ['关闭到托盘', '关闭时退出', '后台运行', '系统托盘'],
   },
   'settings.tab.channels': {
     en: ['messaging', 'messaging apps', 'chat apps', 'channels'],
@@ -158,6 +158,7 @@ export const PREVIEW_FLAG_ENABLERS: Record<string, string> = {
   [PREVIEW_ARTIFACT_DEPLOY]: 'developer.artifact-deploy',
   [PREVIEW_WEBHOOKS]: 'developer.webhooks',
   [PREVIEW_SESSION_ENVIRONMENTS]: 'developer.session-environments',
+  [PREVIEW_CONNECTED_COMPUTERS]: 'developer.connected-computers',
   [PREVIEW_EXPLORE]: 'developer.explore',
   [PREVIEW_DASHBOARD_STALE_FIELDS]: 'developer.mark-out-of-date-dashboard-fields',
 }

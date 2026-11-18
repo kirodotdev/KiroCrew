@@ -3,7 +3,7 @@ import { SortableAppNavRow, NavToggle } from './appRail'
 import { AppRailMenu } from './appRailMenu'
 import { railWidthFor } from '../../hooks/useRailWidth'
 import { FOCUS_INSET } from '../../hooks/useFocusMode'
-import { Coins, Compass, LayoutGrid, SquareTerminal, Smartphone, Search as SearchIcon } from 'lucide-react'
+import { Coins, Compass, KeyRound, LayoutGrid, SquareTerminal, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { DndContext, closestCenter, DragOverlay } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
@@ -39,7 +39,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup,
     activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
     appsExpanded, toggleAppsExpanded, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates,
-    commandPalette, kiroUsageOpen, setKiroUsageOpen, kiroAccountEntry,
+    commandPalette, kiroUsageOpen, setKiroUsageOpen, kiroAccountEntry, kiroSignInPrompt, openKiroSignIn,
     setReportProblemOpen, toggleNav, effectiveCollapsed, closeMobileNav, activePath, libraryNavActive,
     discoverNavActive, isChat, navRowActive,
   } = shell
@@ -396,6 +396,19 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                   onClickOverride={() => setKiroUsageOpen(true)}
                   navId="account"
                   {...uiLocation('shell.kiro-account')}
+                />
+              )}
+              {/* Phone only: the capsule's quiet "Sign in to Kiro" segment. */}
+              {isMobile && kiroSignInPrompt && (
+                <NavItem
+                  path="#"
+                  label={i18nT('components.kasLogin.sign_in_to_kiro')}
+                  icon={<KeyRound size={20} />}
+                  active={false}
+                  collapsed={effectiveCollapsed}
+                  onClick={closeMobileNav}
+                  onClickOverride={openKiroSignIn}
+                  navId="kiro-sign-in"
                 />
               )}
               <NavItem

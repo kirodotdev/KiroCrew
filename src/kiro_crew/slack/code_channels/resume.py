@@ -114,9 +114,9 @@ STOP_LOST_TEXT = (
     "again. Stop it from the session in the dashboard."
 )
 STOP_FAILED_TEXT = "I couldn't stop the resumed work ({reason}). Press Stop again in a moment."
-STOP_NOT_OWNER_TEXT = ":no_entry: Only {owner} can stop this channel's resumed work."
+STOP_NOT_OWNER_TEXT = "Blocked: Only {owner} can stop this channel's resumed work."
 STOP_STALE_TEXT = "That Stop button is out of date."
-STOP_NOT_ALLOWED_TEXT = ":no_entry: You can't stop work from this channel."
+STOP_NOT_ALLOWED_TEXT = "Blocked: You can't stop work from this channel."
 
 #: What a Resume press tells the owner for each refusal code (the audit keeps the code).
 _REFUSAL_WORDS = {
@@ -180,16 +180,16 @@ PARTIAL_TEXT = (
     "Resumed {done}; {rest} could not be resumed right now ({reason}). "
     "The Resume button now resumes only {rest}: press it again in a minute."
 )
-NOT_OWNER_TEXT = ":no_entry: Only {owner} can resume this channel's work."
+NOT_OWNER_TEXT = "Blocked: Only {owner} can resume this channel's work."
 #: The notice's line once its buttons could not be registered (and were removed).
 UNREGISTERED_TEXT = (
     "I couldn't save this notice, so its buttons were removed. Resume or stop this "
     "work from its session in the dashboard."
 )
 STALE_TEXT = "That Resume button is out of date."
-NOT_ALLOWED_TEXT = ":no_entry: You can't resume work from this channel."
+NOT_ALLOWED_TEXT = "Blocked: You can't resume work from this channel."
 UNCONFIRMED_TEXT = (
-    ":hourglass: Slack couldn't confirm this channel is still open, so nothing was "
+    "Note: Slack couldn't confirm this channel is still open, so nothing was "
     "resumed. Press Resume again in a moment."
 )
 #: The refusal :func:`_archive_refusal` gives when Slack's answer can't be had.

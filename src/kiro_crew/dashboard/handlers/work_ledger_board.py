@@ -777,11 +777,13 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
             if dirty is not None:
                 return _answer_of(dirty)
             items = await asyncio.to_thread(work_ledger.list_work_items, key)
-            event_tails: dict[str, list[work_ledger.WorkEvent]] = {}
-            for item in items:
-                event_tails[item.item_id] = await asyncio.to_thread(
-                    _tail_events, key, item.item_id, _MAX_EVENT_TAIL
-                )
+            # Every item's tail in one executor hop: each hop queues behind the
+            # shared pool, so the hop count must not grow with the board.
+            event_tails = await asyncio.to_thread(
+                lambda: {
+                    item.item_id: _tail_events(key, item.item_id, _MAX_EVENT_TAIL) for item in items
+                }
+            )
     except work_ledger.WorkLedgerError as exc:
         if exc.code != work_ledger.CODE_INVALID_VALUE:
             raise

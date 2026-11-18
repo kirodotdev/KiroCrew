@@ -17,12 +17,13 @@
  * reconnection when pasting a token is the fix (issue #9692).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import type { QueryClient } from '@tanstack/react-query'
 import { renderWithProviders } from './helpers'
 import { namedCeiling } from './namedCeiling'
 import type { RootState } from '../store'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
+import { relayPaneOpened, setActiveId } from '../store/instancesSlice'
 import App from '../App'
 import en from '../i18n/locales/en.manual.json'
 import { QUIET_RECONNECT_GRACE_MS } from '../utils/reconnectBackoff'
@@ -33,7 +34,7 @@ import { QUIET_RECONNECT_GRACE_MS } from '../utils/reconnectBackoff'
 vi.mock('../pages/ChatPage', async () => {
   const { OverlayPortal } = await import('../components/overlayRoot')
   return {
-    default: () => <div data-testid="chat-page">ChatPage<OverlayPortal><div data-testid="chat-page-layer" /></OverlayPortal></div>,
+    default: () => <div data-testid="chat-page">ChatPage<OverlayPortal><div data-testid="chat-page-layer"><input aria-label="layer draft" /></div></OverlayPortal></div>,
   }
 })
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
@@ -483,4 +484,26 @@ describe('App in a relay Crew pane — the desktop app draws the only top bar', 
       expect(screen.queryByTestId('relay-pane-gateway-status')).toBeNull()
       await shellSettled(queryClient)
     })
+})
+
+describe('App with a relay Crew tab in front — the local page and what it portals go off screen', () => {
+  beforeEach(() => {
+    isAuthBannerShownMock.mockReset()
+    isAuthBannerShownMock.mockReturnValue(false)
+  })
+
+  it('takes the layer the page portalled out of <main> off screen, and brings the same one back with its typed text', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseConnected()) })
+    const layer = screen.getByTestId('chat-page-layer')
+    const draft = within(layer).getByLabelText('layer draft') as HTMLInputElement
+    fireEvent.change(draft, { target: { value: 'half a thought' } })
+    act(() => { store.dispatch(relayPaneOpened({ id: 'r1', name: 'R1' })) })
+    expect(document.getElementById('main-content')).toHaveAttribute('inert')
+    expect(screen.queryByTestId('chat-page-layer')).toBeNull()
+    act(() => { store.dispatch(setActiveId(null)) })
+    expect(screen.getByTestId('chat-page-layer')).toBe(layer)
+    expect(draft.value).toBe('half a thought')
+    await shellSettled(queryClient)
+  })
 })

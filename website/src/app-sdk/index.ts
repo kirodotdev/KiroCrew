@@ -648,6 +648,10 @@ export type { AppProjectPickerProps } from './ProjectPicker'
 // from it, behind the app's declared chat paths (see ./hostSessions).
 export { useHostSessions } from './hostSessions'
 export type { HostSession, HostSessionApproval, HostSessions, HostSessionDecision, HostSessionSendResult } from './hostSessions'
+// Play, pause, seek and volume on the tab the app's own agent browses, behind the
+// app's declared `/api/browser/media` (level 10, see ./browserMedia).
+export { useBrowserMedia, BROWSER_MEDIA_PATH } from './browserMedia'
+export type { BrowserMedia, BrowserMediaState } from './browserMedia'
 // The transcript's row registry, so an app can add a row type or replace one
 // instead of forking the message list.
 export {

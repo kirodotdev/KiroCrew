@@ -436,7 +436,7 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     // Managed credential slots are server-provided, so the shared SecretField
     // label is dynamic at extraction time. These entries index the two fixed
     // integration labels and highlight the matching runtime SecretField.
-    // With the Secrets vault redesign preview on, SecretsPanel opens the slot's
+    // SecretsPanel opens the slot's
     // pane for these ids itself (SEARCH_PANE_KINDS): the vault's names are not
     // a fixed sub-page list the UI index could carry.
     id: 'secrets.wakatime-api-key',
@@ -474,16 +474,15 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     params: { channel: 'feishu' },
   },
-  // The Kiro sign-in card on Agent Harness, where Sign out and Switch account
-  // live. It is built from raw markup inside the KAS row's detail, so the
-  // extractor never sees it. `settingId` is the card's `data-setting-id`: the
-  // highlight waits for it while AgentBackendTab opens the KAS row for this id
-  // (`KIRO_SIGN_IN_SETTING_ID` in pages/developer/kiroSignInLink.ts).
+  // The Kiro sign-in card on Kiro account, where Sign out and Switch account
+  // live. It is built from raw markup the extractor never sees. `settingId` is
+  // the card's `data-setting-id`: the highlight waits for it while the card's
+  // lazy chunk loads (`KIRO_SIGN_IN_SETTING_ID` in pages/developer/kiroSignInLink.ts).
   {
-    id: 'agent.kiro-sign-in',
+    id: 'kiro-account.kiro-sign-in',
     labelKey: 'pages.developer.kiroSignInCard.search_label',
     descriptionKey: 'pages.developer.kiroSignInCard.search_description',
-    tab: 'agent',
+    tab: 'kiro-account',
     type: 'buttonGroup',
     occurrence: 1,
     settingId: 'kiro-sign-in',

@@ -147,7 +147,9 @@ def _is_startup_stalled(
     return self._monitor._is_startup_stalled_impl(info, now, mono_now)
 
 
-def _note_tool_dispatch(info: SubagentInfo, event: Any, backend: str | None = None) -> None:
+def _note_tool_dispatch(
+    info: SubagentInfo, event: Any, backend: str | None = None, servers: tuple[str, ...] = ()
+) -> None:
     """Record the in-flight tool for liveness attribution.
 
     Mirrors ``AcpSessionHandle``'s ``_inflight_tool`` snapshot: title, the
@@ -175,12 +177,13 @@ def _note_tool_dispatch(info: SubagentInfo, event: Any, backend: str | None = No
     finishes first hands the slot back to one still running instead of
     emptying it.
 
-    *backend* is the harness the run is on; opencode's identity is read from its
-    fused title only there (:meth:`ToolCallState.identity_of`). A later frame for a
+    *backend* is the harness the run is on; opencode's, pi's and claude's identity is
+    read from its fused name only there, and *servers* are the MCP servers the
+    session handed that harness (:meth:`ToolCallState.identity_of`). A later frame for a
     call already held as a trusted wait (opencode's permission request, which
     carries no wire title) keeps that identity and the seconds already read.
     """
-    server, tool_name = ToolCallState.identity_of(event, backend=backend)
+    server, tool_name = ToolCallState.identity_of(event, backend=backend, servers=servers)
     call_id = getattr(event, "tool_call_id", "") or ""
     prior = info._tool_tracker.active_calls.get(call_id) if call_id and not server else None
     if prior is not None and prior[0].is_trusted_wait():
@@ -197,8 +200,9 @@ def _note_tool_dispatch(info: SubagentInfo, event: Any, backend: str | None = No
         dispatch_parked_secs=0.0,
         is_shell=bool(getattr(event, "is_shell", False)),
         # Only a provenance-verified identity, KAS's half-identity for a
-        # kirocrew-core call, or opencode's fused title for one, names the
-        # server, so a frame without one cannot select the trusted wait contract.
+        # kirocrew-core call, or opencode's, pi's or claude's fused name for one,
+        # names the server, so a frame without one cannot select the trusted wait
+        # contract.
         mcp_server_name=server,
         tool_name=tool_name,
     )

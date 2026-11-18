@@ -182,7 +182,7 @@ function UploadProgressNote({ slot }: { slot: string }) {
   )
 }
 
-export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, uploadSlot, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null, appActionRows = null }: {
+export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, uploadSlot, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null, appActionRows = null, stashMenuRows }: {
   /** App composer actions (`composerActions.tsx`), a group of their own after
    *  the host's shortcuts so an app's row never sits among the host's. */
   appActionRows?: ReactNode
@@ -208,6 +208,8 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
   collapseMenuRow: ReactNode
   typedCommandMenus: boolean
   onFileSelect: ChatInputProps['onFileSelect']
+  /** The prompt-stash rows the "+" menu hosts (null when the stash is off). */
+  stashMenuRows?: ReactNode
 }) {
   const { plusOpen, setPlusOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger } = plus
   // The "+" trigger opens its menu on the mouse press (usePressActivation);
@@ -399,6 +401,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
                   </div>
                 </button>}
               </div>
+              {stashMenuRows}
               {appActionRows}
             </div>
           </OverlayPortal>}

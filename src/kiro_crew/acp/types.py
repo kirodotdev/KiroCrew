@@ -342,6 +342,13 @@ METHOD_MCP_SERVER_INIT_FAILURE = "_kiro.dev/mcp/server_init_failure"
 MCP_ROSTER_COMPLETE_NOTE = "the stall is later in session startup, not in those servers"
 METHOD_KAS_MCP_STATUS = "_kiro/mcp/status"
 METHOD_KAS_TOOLS_CHANGED = "_kiro/tools/didChange"
+#: Engine -> client notification: the host fail-closed this session's MCP on its
+#: governance verdict. ``params`` carries ``sessionId`` and ``reason``;
+#: ``api_failure`` means the governance READ itself failed (transient -- an
+#: undeclared readiness wait ends the start early if the host then names none
+#: of the managed servers), ``admin_disabled`` is a real policy verdict and
+#: keeps the ordinary path.
+METHOD_KAS_MCP_GOVERNANCE_DISABLED = "_kiro/mcp/governance_disabled"
 #: The client-side reset KAS runs an explicit MCP sign-in through. With
 #: ``startOAuth`` true the engine keeps its OAuth callback listener open for the
 #: whole connect attempt; the ``authorizationUrl`` on a failed ``_kiro/mcp/status``
@@ -1302,6 +1309,11 @@ class AcpEvent:
     #: second ``tool_call`` frame named the same id differently in the turn; empty
     #: on every other backend.
     deepseek_tool_name: str = ""
+    #: claude-agent-acp's own ``_meta.claudeCode.toolName`` on a claude ``tool_call``
+    #: frame, when it names an MCP tool (``mcp__<server>__<tool>``); empty for a
+    #: built-in and on every other backend. Adapter-authored, never the title.
+    #: Read by ``ToolCallState.identity_of`` alone, for Crew's own server.
+    claude_mcp_tool_name: str = ""
     #: Why a DeepSeek Harness READ_ONLY turn refuses this request outright: its
     #: launch did not prove stock dsh registers the read tools. Set only on a
     #: deepseek permission event; empty once proved and on every other backend.

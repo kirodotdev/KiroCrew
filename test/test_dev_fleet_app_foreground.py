@@ -19,7 +19,12 @@ from dev_fleet_app_helpers import _reset_make_live_committed_latch  # noqa: F401
 from dev_fleet_app_helpers import _reset_shutdown_admission_state  # noqa: F401 - fixture
 from dev_fleet_app_helpers import _sweep_staged_sync_tempdirs  # noqa: F401 - fixture
 from dev_fleet_app_helpers import _venv_maps_to_the_synced_checkout  # noqa: F401 - fixture
-from dev_fleet_app_helpers import _POSIX_ONLY, _mk_make_live_wt, _stub_make_live
+from dev_fleet_app_helpers import (
+    _POSIX_ONLY,
+    _mk_make_live_wt,
+    _stub_make_live,
+    simulate_live_platform,
+)
 
 import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew.apps.builtins.dev_fleet import live as live_mod
@@ -567,9 +572,9 @@ async def test_gateway_pointer_flows_call_no_filesystem_primitive_on_the_loop_th
     while the gateway-side flows run — the live-target read (``pointer_state``), the
     service-manager resolution behind it and the cutover itself."""
     # Fixture work first: it resolves paths on this very thread, which the traps
-    # below must not count.
-    expected_live = str(tmp_path.resolve())
+    # below must not count. The unit names a checkout, as a cutover's drop-in does.
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    expected_live = str(wt.resolve())
 
     which_threads: list[int] = []
 
@@ -578,9 +583,9 @@ async def test_gateway_pointer_flows_call_no_filesystem_primitive_on_the_loop_th
         return "/usr/bin/systemctl"
 
     async def fake_run_cmd(cmd, **kw):
-        return (0, f"{tmp_path}\n", "")
+        return (0, f"{wt}\n", "")
 
-    monkeypatch.setattr(live_mod, "sys", MagicMock(platform="linux"))
+    simulate_live_platform(monkeypatch, "linux")
     monkeypatch.setattr(live_mod, "shutil", MagicMock(which=_which))
     monkeypatch.setattr(runtime_mod, "_run_cmd", fake_run_cmd)
     monkeypatch.setattr(live_mod, "_POINTER_PROVIDER", None, raising=False)

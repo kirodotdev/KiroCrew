@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from kiro_crew.apps.builtins.dev_fleet import gateway_service, repository
-from kiro_crew.apps.builtins.dev_fleet.live_service import _LIVE_GATEWAY_LABEL, _LIVE_GATEWAY_UNIT
+from kiro_crew.apps.builtins.dev_fleet.live_service import _LIVE_GATEWAY_LABEL, _live_gateway_unit
 from kiro_crew.service import live_target
 
 
@@ -49,8 +49,10 @@ def _make_live_status_error(code: str) -> str:
     Every message names the concrete remedy: an unmanageable service is the one
     make-live failure a user cannot diagnose from the UI alone, and the macOS
     variants are only reachable on a host where the previous behaviour was to
-    hide the control entirely.
+    hide the control entirely. The systemd messages name the unit
+    :func:`_live_gateway_unit` resolves, the one Dev Fleet asked about.
     """
+    unit = _live_gateway_unit()
     return {
         "no_systemd": (
             "the gateway does not run as a systemd --user service, so Dev Fleet "
@@ -58,11 +60,11 @@ def _make_live_status_error(code: str) -> str:
         ),
         "no_user_unit": (
             f"the live gateway is not running as the user service "
-            f"{_LIVE_GATEWAY_UNIT} — Dev Fleet cannot restart it for you (a "
+            f"{unit} — Dev Fleet cannot restart it for you (a "
             "`kirocrew service install` unit is its own manager's to restart)"
         ),
         "user_unit_inactive": (
-            f"the user service {_LIVE_GATEWAY_UNIT} exists but is not running, so "
+            f"the user service {unit} exists but is not running, so "
             "this gateway is not it — restarting that unit would leave the "
             "gateway you are talking to untouched"
         ),

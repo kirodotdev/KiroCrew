@@ -1483,6 +1483,8 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             section.get("default_session_folder")
         ),
         theme_mode=section.get("theme_mode"),
+        theme_schedule_light=section.get("theme_schedule_light"),
+        theme_schedule_dark=section.get("theme_schedule_dark"),
         sso_login_flags=str(section.get("sso_login_flags")),
         theme_color=section.get("theme_color"),
         instance_label=_sanitize_bot_name(section.get("instance_label")),
@@ -1542,6 +1544,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         ),
         milestones_enabled=section.read("milestones_enabled", _safe_bool),
         folder_suggestions_enabled=bool(section.get("folder_suggestions_enabled")),
+        folder_suggestions_auto_apply=section.read("folder_suggestions_auto_apply", _safe_bool),
         project_tags_enabled=section.read("project_tags_enabled", _safe_bool),
         topic_tags_enabled=section.read("topic_tags_enabled", _safe_bool),
         tips_cadence_hours=section.read("tips_cadence_hours", _safe_float, lo=0.0),

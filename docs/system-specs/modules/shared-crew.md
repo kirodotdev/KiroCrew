@@ -380,7 +380,9 @@ cached 15 s (`CACHE_TTL_SECS`); a failure yields no such rows and never fails th
 route. `directory.state` is `unavailable` because this build has no
 authoritative assigned-user directory. Per-person `usage` is `null`, and
 `usage_available` false, until the admission layer registers a reader
-(`people.register_usage_source`). A row reports the usage charged to its principal
+(`people.register_usage_source`). `usage_off` is true when no reader is registered
+or the reader raises `people.UsageOff` (fair admission off), and false when a reader
+failed, so the panel tells an unavailable count from one the Crew does not keep. A row reports the usage charged to its principal
 id; an owner local-token row reports the sum over every id in
 `owner.local_owner_principal_ids`, counted once after the fold.
 
@@ -420,7 +422,8 @@ never falls back to personal mode, and the browser treats an unreadable mode rou
 as an error, not as personal.
 
 The mode body: `mode`, `crew_id` (the gateway id; it keys the browser's remembered
-list filter), `viewer`, `team_config` (`state` `not_configured` | `invalid`, with
+list filter), `viewer`, `viewer_ids` (every principal id that names the viewer:
+the owner's are `owner.owner_principal_ids`, anyone else's is their own), `team_config` (`state` `not_configured` | `invalid`, with
 `reason`, `capability`, `cause`), `console` (always `not_offered`), `adapters` (the
 setup paths) and `workload_identity_ref` (always `unavailable`). The Tailscale link
 is a fixed public documentation page.
@@ -570,11 +573,20 @@ Crew: `routes_invites._owner_refusal` admits only the local operator or this
 machine's own tailnet user, so a teammate cannot list, create or revoke invites, read
 the access card or switch the preview; the mobile setup (`tailnet_mobile`, whose QR
 hands back a credential in the owner's own name) asks
-`is_host_owner_dashboard_request`; and `PATCH /api/config/kirocrew` refuses a teammate
-403 `owner_only` on an admission key (`is_admission_config_key`: the
-`dashboard.shared_crew`, `dashboard.tailscale` and `tunnel` subtrees, and any key
-segment starting `allow` or equal to `dm_policy`, so a new allow-list is covered by
-its name).
+`is_host_owner_dashboard_request`; turning Remote Control off (`PUT
+/api/remote-control`, `REMOTE_ACCESS_WRITES`) refuses a teammate, since only the host
+machine can turn it back on and a teammate would shut every person out; and `PATCH
+/api/config/kirocrew` refuses a teammate 403 `owner_only` on an admission key
+(`is_admission_config_key`: the `dashboard.shared_crew`, `dashboard.tailscale`,
+`instances` and `tunnel` subtrees, and any key segment starting `allow` or equal to
+`dm_policy`, so a new allow-list is covered by its name). Reading the Remote Control
+state stays open. The teammate's screens follow the same line: an owner-only control
+is hidden or replaced by an "Only the Crew's owner can …" notice
+(`useViewerIsNotOwner`), never offered and then refused: Secrets, Remote Control's
+Turn off, remote crew management, Channels' connection forms and `/terminal` show
+the notice; Connect your phone is not offered; Voice drops the host install command;
+Privacy says the data stays on the Crew's computer; People reads "Shared with your
+team" and names an owner known only by machine name "Crew owner".
 
 A teammate is not the owner for redaction. The owner's credential-redaction OFF
 covers only what the owner alone sees
@@ -1886,7 +1898,7 @@ In network mode the People page (`PeopleCrew.tsx`) reads, top to bottom:
    link" for a teammate.
 2. "People · N", N being the rows listed (each person once). Under the heading, one plain line
    each when Tailscale was not running at start (`daemon_not_found`) and when this Crew cannot
-   report work per person (`usage_available` false); no tip icon. Each row:
+   report work per person (`usage_available` false and `usage_off` false); no tip icon. Each row:
    picture, name (with You), the login and one activity (typing in a session from
    presence, else the running count, else here now or last seen), a green dot while
    connected (always on the viewer's own row), and ✎ when the row has a

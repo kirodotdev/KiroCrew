@@ -115,8 +115,8 @@ MODE_INCOGNITO = "incognito"
 #: Confirmation text, one copy per mode. A channel renders it with its own
 #: markup dialect; the words are shared so the two channels cannot promise
 #: different guarantees for the same mode.
-NOTICE_TEMPORARY = "🔒 Temporary mode ON — this thread won't read or save memory."
-NOTICE_INCOGNITO = "🕶️ Incognito mode ON — this thread can read memory but won't save anything."
+NOTICE_TEMPORARY = "Temporary mode ON — this thread won't read or save memory."
+NOTICE_INCOGNITO = "Incognito mode ON — this thread can read memory but won't save anything."
 
 #: The refusal text, one per reason, for a modifier the gateway could not honour.
 #: Both say the same three things in the same order: the mode was NOT applied,
@@ -124,19 +124,19 @@ NOTICE_INCOGNITO = "🕶️ Incognito mode ON — this thread can read memory bu
 #: user can do. Refusing is the fail-closed answer: running the message with the
 #: mode silently dropped would be the leak the modifier exists to prevent.
 NOTICE_REFUSED_LIMIT = (
-    "🔒 Private-conversation limit reached ({cap} conversations are already kept "
+    "Private-conversation limit reached ({cap} conversations are already kept "
     "private on this gateway): this one could not be made {mode}, so your message "
     "was NOT processed — nothing ran and nothing was saved. Send it again without "
     "the modifier to continue with memory on."
 )
 NOTICE_REFUSED_KEY = (
-    "🔒 This conversation's identifier is too long for a private-conversation "
+    "This conversation's identifier is too long for a private-conversation "
     "record, so it could not be made {mode} and your message was NOT processed — "
     "nothing ran and nothing was saved. Send it again without the modifier to "
     "continue with memory on."
 )
 NOTICE_REFUSED_PERSIST = (
-    "🔒 The private-conversation record for this conversation could not be written, "
+    "The private-conversation record for this conversation could not be written, "
     "so it could not be made {mode} and your message was NOT processed — nothing "
     "ran and nothing was saved. Try again in a moment, or send it without the "
     "modifier to continue with memory on."
@@ -146,7 +146,7 @@ NOTICE_REFUSED_PERSIST = (
 #: metadata record, and the writer skips such a file by design), so a retry will
 #: fail the same way. The remedy is named, not "try again": start a new thread.
 NOTICE_REFUSED_HEADER_LEGACY = (
-    "🔒 This conversation's transcript predates private-conversation records, so "
+    "This conversation's transcript predates private-conversation records, so "
     "it cannot be made {mode} and your message was NOT processed — nothing ran and "
     "nothing was saved. Start a new thread and send it there with the modifier."
 )

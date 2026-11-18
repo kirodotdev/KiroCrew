@@ -209,3 +209,23 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 html[data-browser-live-takeover] [data-pinned-prompt-band] {
   visibility: hidden !important;
 }
+
+/* Settings groups are one box each. A box drawn inside another box (a card a
+   panel nests in a row, a SettingsCard inside a Card) loses its own frame and
+   side inset, so a group never shows a card inside a card. Unlayered on
+   purpose: it must win over the utilities that drew the inner frame. */
+[data-settings-box] [data-settings-box] {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+[data-settings-box] [data-settings-box] > * {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* A table in a Settings box starts and ends at the row inset, so its first
+   column lines up with the group heading and the other rows' labels. */
+[data-settings-box] table :is(th, td):first-child { padding-left: 0; }
+[data-settings-box] table :is(th, td):last-child { padding-right: 0; }

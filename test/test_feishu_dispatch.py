@@ -762,7 +762,7 @@ class TestCommands:
 
         await d.handle_message(_inbound("/new"))
 
-        assert client.replies == [("msg1", "✅ 已开始新对话")]
+        assert client.replies == [("msg1", "已开始新对话")]
         route = d._route(_inbound("/new"))
         assert d._conv.current_gen(route) == 1
         assert sessions.reserved_generations == [d._session_key(route)]
@@ -916,7 +916,7 @@ class TestCommands:
 
         await d.handle_message(_inbound("/reset"))
 
-        assert client.replies == [("msg1", "✅ 已开始新对话")]
+        assert client.replies == [("msg1", "已开始新对话")]
         route = d._route(_inbound("/reset"))
         assert d._conv.current_gen(route) == 1
         assert sessions.successes == []
@@ -934,12 +934,12 @@ class TestCommands:
         assert provider.compacted is True
         assert sessions.acquired == [key]
         assert sessions.released == [key]
-        assert client.replies == [("msg1", "🗜️ 已压缩上下文。")]
+        assert client.replies == [("msg1", "已压缩上下文。")]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("kind", "reply"),
-        [("failed", "⚠️ 压缩失败，请重试。"), ("timeout", "⚠️ 压缩超时。")],
+        [("failed", "警告：压缩失败，请重试。"), ("timeout", "警告：压缩超时。")],
     )
     async def test_compact_command_reports_an_unsuccessful_result(self, kind, reply) -> None:
         provider = FakeProvider([])
@@ -965,7 +965,7 @@ class TestCommands:
 
         assert provider.compacted is False
         assert sessions.released == []
-        assert client.replies == [("msg1", "⏳ 正在处理上一条消息，请稍后再试 /compact。")]
+        assert client.replies == [("msg1", "正在处理上一条消息，请稍后再试 /compact。")]
 
     @pytest.mark.asyncio
     async def test_compact_on_a_flagged_session_says_the_account_changed(self) -> None:
@@ -992,7 +992,7 @@ class TestCommands:
         await d.handle_message(_inbound("/compact"))
 
         assert sessions.released == []
-        assert client.replies == [("msg1", "ℹ️ 当前没有可压缩的对话。")]
+        assert client.replies == [("msg1", "提示：当前没有可压缩的对话。")]
 
 
 # Tests: /stop and /help
@@ -1025,7 +1025,7 @@ class TestStopCommand:
 
         assert provider.cancels == [0]
         assert provider.steered == []
-        assert client.replies == [("msg1", "⏹ 正在停止当前回复…")]
+        assert client.replies == [("msg1", "正在停止当前回复…")]
         assert sessions.successes == []
 
     @pytest.mark.asyncio
@@ -1041,7 +1041,7 @@ class TestStopCommand:
 
         assert provider.cancels == [0]
         assert provider.steered == []
-        assert client.replies == [("msg1", "⏹ 正在停止当前回复…")]
+        assert client.replies == [("msg1", "正在停止当前回复…")]
 
     @pytest.mark.asyncio
     async def test_group_stop_intercepts_despite_the_bot_mention(self) -> None:
@@ -1074,13 +1074,13 @@ class TestStopCommand:
         await d.handle_message(_inbound("/stop"))
 
         assert provider.cancels == []
-        assert client.replies == [("msg1", "ℹ 当前没有正在生成的回复。")]
+        assert client.replies == [("msg1", "提示：当前没有正在生成的回复。")]
         assert sessions.successes == []
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("outcome", "reply"),
-        [("error", "⚠ 停止失败，请重试。"), ("no_turn", "ℹ 当前没有正在生成的回复。")],
+        [("error", "警告：停止失败，请重试。"), ("no_turn", "提示：当前没有正在生成的回复。")],
     )
     async def test_stop_reports_the_returned_cancel_outcome(self, outcome, reply) -> None:
         provider = CancellableProvider(outcome)

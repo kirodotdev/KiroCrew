@@ -20,6 +20,7 @@ zizmor never reported.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -39,9 +40,32 @@ IMPLICIT_SECRETS = frozenset({"GITHUB_TOKEN"})
 LOCAL_USES_RE = re.compile(r"\./\.github/workflows/([A-Za-z0-9._-]+\.ya?ml)$")
 SECRET_REF_RE = re.compile(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)")
 
+#: One worker for the module, so each workflow is parsed once per run.
+pytestmark = pytest.mark.xdist_group(name="workflow_secret_and_cache_scope")
+
+
+#: Parsed workflows by file name while this module's tests run, else ``None``: a
+#: collection-time read (the publish-lane params) parses and keeps nothing, so a worker
+#: that never runs this module holds no copy.
+_parsed: dict[str, dict[str, Any]] | None = None
+
 
 def _load(name: str) -> dict[str, Any]:
-    return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+    """The parsed workflow; callers only read it, so the tests share one parse."""
+    if _parsed is not None and name in _parsed:
+        return _parsed[name]
+    workflow = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+    if _parsed is not None:
+        _parsed[name] = workflow
+    return workflow
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _share_parsed_workflows() -> Iterator[None]:
+    global _parsed
+    _parsed = {}
+    yield
+    _parsed = None
 
 
 def _triggers(workflow: dict[str, Any]) -> dict[str, Any]:

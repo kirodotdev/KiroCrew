@@ -88,6 +88,9 @@ export interface PeopleResponse {
   directory: { state: CapabilityState; people?: PeopleRow[] }
   observed_since?: number | null
   usage_available?: boolean
+  /** True when work per person is not counted at all (fair admission off): a
+   *  setting, so the page says nothing, unlike a reader that failed. */
+  usage_off?: boolean
   people: PeopleRow[]
 }
 

@@ -26,6 +26,10 @@ kirocrew config set instances.enabled true
 kirocrew restart
 ```
 
+When the desktop app runs the gateway, `kirocrew restart` declines, because the
+app starts the gateway again when it goes away. Restart it from the app
+instead: **Settings → About → Restart gateway**.
+
 **Settings → Remote Crew** has the same toggle and then tells you a restart
 is still pending. With the flag off, that page shows an opt-in card and the
 instances API answers `403`. If the page says the feature is enabled but not

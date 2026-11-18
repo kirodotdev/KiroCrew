@@ -189,6 +189,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Capture-side as well: redacts thread replies as they are READ from
         # Slack, for the model's fenced thread-replies block. No output of its own.
         "slack/thread_replies.py",
+        # Capture-side as well: redacts plan-canvas comments as they are READ from
+        # Slack (getCanvas), before they reach the session. No output of its own.
+        "slack/code_channels/comments.py",
         # Seam grading only: `_redact_all` is the grader `render_chunks` hands the
         # shared splitter, so a cut cannot leave a key's halves in two adjacent
         # messages. The Weixin answer's display redaction happens before it, at
@@ -241,6 +244,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # (``_redacted_detail``) into its failure, which reaches the operator
         # through the same registered sink and the git routes' own progress feed.
         "platform/release_apply.py",
+        # Pure helper: the CapabilityManager seam redacts a governance refusal's
+        # reason (a caller's package id, an edition's skill names) into the
+        # CapabilityResult it returns. It emits nothing itself; the dashboard
+        # capability handlers that serve the result are the egress.
+        "platform/capability_bound.py",
         # Same shape for a source install: redacts the tail of the npm build log
         # (an install can echo a registry URL carrying credentials) before it
         # becomes the failure message that the update paths show on their

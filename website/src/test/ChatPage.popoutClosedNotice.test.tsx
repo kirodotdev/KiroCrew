@@ -79,6 +79,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 
 import ChatPage from '../pages/ChatPage'
 import { i18nT } from '../i18n/t'
+import { sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
 import { api } from '../api/client'
 import { __setNavigateForTests, __resetForTests as __resetPopoutForTests } from '../utils/chatPopout'
 
@@ -101,8 +102,10 @@ function renderChatPage(opts: {
   slots?: ChatSlot[]
   slotsLoaded?: boolean
   slotHistory?: string[]
+  /** The cached Crew mode: `network` is a Crew other people use. */
+  crewMode?: 'personal' | 'network'
 }) {
-  const { route = '/chat', activeSlot = null, slots = [], slotsLoaded = slots.length > 0, slotHistory = [] } = opts
+  const { route = '/chat', activeSlot = null, slots = [], slotsLoaded = slots.length > 0, slotHistory = [], crewMode } = opts
   const preload: PreloadState = {
     dashboard: {
       status: { platform: 'darwin' }, connected: true, slots, slotsLoaded, approvalMode: 'normal',
@@ -121,6 +124,7 @@ function renderChatPage(opts: {
   }
   const store = createTestStore(preload as Partial<RootState>)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  if (crewMode) qc.setQueryData(sharedCrewKeys.mode, { mode: crewMode })
   const result = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -308,12 +312,14 @@ describe("a popout's closed-session notice", () => {
     expect(notice()).toBeNull()
   })
 
-  it('is not shown in a tab, which moves to another chat instead', async () => {
+  it('with no Crew mode known, a tab moves to another chat and shows no notice', async () => {
     const { store } = renderChatPage({ route: '/chat?sid=chat-2-200', activeSlot: 'chat-2-200', slots: four, slotHistory: ['chat-1-100'] })
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
     await act(async () => { store.dispatch(sseSlotPatch({ slots: [], removed: ['chat-2-200'] })) })
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
     expect(notice()).toBeNull()
+    expect(screen.queryByTestId('popout-session-closed-close')).toBeNull()
+    expect(screen.queryByTestId('tab-session-closed')).toBeNull()
   })
 
   it('a popout reloaded while its chat is gone keeps the plain empty state', async () => {
@@ -322,5 +328,88 @@ describe("a popout's closed-session notice", () => {
     await act(async () => {})
     expect(notice()).toBeNull()
     expect(screen.getByText(i18nT('pages.chatPage.what_can_i_do_for_you'))).toBeTruthy()
+  })
+})
+
+describe("a tab whose chat was closed outside it", () => {
+  const four = [...slots, slot('chat-4-400', 'Other window')]
+  const without = (key: string) => four.filter(s => s.key !== key)
+  const tabNotice = () => screen.queryByTestId('tab-session-closed')
+
+  async function tabOnChat() {
+    const view = renderChatPage({ route: '/chat?sid=chat-2-200', activeSlot: 'chat-2-200', slots: four, slotHistory: ['chat-1-100'], crewMode: 'network' })
+    await waitFor(() => expect(view.store.getState().chat.activeSlot).toBe('chat-2-200'))
+    return view
+  }
+
+  it('stays put and says so instead of opening another chat', async () => {
+    const { store } = await tabOnChat()
+    await act(async () => { store.dispatch(sseSlotPatch({ slots: [], removed: ['chat-2-200'] })) })
+    await waitFor(() => expect(tabNotice()).toBeTruthy())
+    expect(store.getState().chat.activeSlot).toBeNull()
+    expect(tabNotice()!.getAttribute('role')).toBe('status')
+    expect(screen.getByText(i18nT('pages.chatPage.session_closed_elsewhere'))).toBeTruthy()
+    // A tab has no window to close: it offers a new chat, which names the notice.
+    expect(screen.queryByTestId('popout-session-closed-close')).toBeNull()
+    const start = screen.getByTestId('tab-session-closed-new')
+    expect(start.getAttribute('aria-describedby')).toBe(tabNotice()!.id)
+    expect(api.createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('opens the chat the person picks next', async () => {
+    const { store } = await tabOnChat()
+    await act(async () => { store.dispatch(sseSlotPatch({ slots: [], removed: ['chat-2-200'] })) })
+    await waitFor(() => expect(tabNotice()).toBeTruthy())
+    await act(async () => { store.dispatch({ type: 'chat/switchSlot/pending', meta: { arg: { key: 'chat-1-100' }, requestId: 'r1' } }) })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
+    expect(tabNotice()).toBeNull()
+  })
+
+  it('is shown when the removed chat was the only one, and creates nothing behind it', async () => {
+    const only = [slot('chat-2-200', 'Fix login bug')]
+    const { store } = renderChatPage({ route: '/chat?sid=chat-2-200', activeSlot: 'chat-2-200', slots: only, crewMode: 'network' })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+    await act(async () => { store.dispatch(sseSlotPatch({ slots: [], removed: ['chat-2-200'] })) })
+    await waitFor(() => expect(tabNotice()).toBeTruthy())
+    expect(api.createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it("keeps today's landing for the tab's own close", async () => {
+    const { store } = await tabOnChat()
+    await act(async () => { await store.dispatch(deleteSlot('chat-2-200')) })
+    await act(async () => { store.dispatch(sseSlotPatch({ slots: [], removed: ['chat-2-200'] })) })
+    await act(async () => {})
+    expect(store.getState().chat.activeSlot).not.toBeNull()
+    expect(store.getState().chat.activeSlot).not.toBe('chat-2-200')
+    expect(tabNotice()).toBeNull()
+  })
+
+  it('in a personal Crew a server-side close keeps the usual landing, with no notice', async () => {
+    // An idle sweep or a Bot closing a worker is not another person.
+    const { store } = renderChatPage({ route: '/chat?sid=chat-2-200', activeSlot: 'chat-2-200', slots: four, slotHistory: ['chat-1-100'], crewMode: 'personal' })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+    await act(async () => { store.dispatch(sseSlotPatch({ slots: [], removed: ['chat-2-200'] })) })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
+    expect(tabNotice()).toBeNull()
+  })
+
+  it("closing a conductor here counts its worker's close as this tab's own", async () => {
+    const conductor = slot('chat-1-100', 'Conductor')
+    const worker = { ...slot('chat-2-200', 'Worker'), created_by: 'chat-1-100' }
+    const others = [slot('chat-3-300', 'Other'), slot('chat-4-400', 'Another')]
+    const { store } = renderChatPage({ route: '/chat?sid=chat-2-200', activeSlot: 'chat-2-200', slots: [conductor, worker, ...others], slotHistory: ['chat-3-300'], crewMode: 'network' })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+    await act(async () => { void store.dispatch(deleteSlot('chat-1-100')) })
+    await act(async () => { store.dispatch(sseSlotPatch({ slots: [], removed: ['chat-1-100', 'chat-2-200'] })) })
+    await act(async () => {})
+    expect(tabNotice()).toBeNull()
+    expect(store.getState().chat.activeSlot).not.toBe('chat-2-200')
+  })
+
+  it('a frame that only omits the chat still moves the tab, with no notice', async () => {
+    const { store } = await tabOnChat()
+    await act(async () => { store.dispatch(sseSlots(without('chat-2-200'))) })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
+    expect(tabNotice()).toBeNull()
   })
 })

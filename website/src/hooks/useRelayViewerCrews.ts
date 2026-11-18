@@ -12,6 +12,8 @@ import { api, ApiError, type RelayCrewEntry, type RelayViewerAccount } from '../
 import { parseErrorCode, parseErrorField } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 import { timeAgo } from '../utils/timeAgo'
+import type { AppDispatch } from '../store'
+import { openRelayPane, relayPaneBridge } from '../lib/relayCrewPanes'
 
 export type RelayCrewOpenResult = { ok: boolean; error?: string }
 type RelayCrewBridge = { open: (endpointId: string) => Promise<RelayCrewOpenResult> }
@@ -32,6 +34,13 @@ export async function openRelayCrew(endpointId: string): Promise<RelayCrewOpenRe
   } catch {
     return { ok: false, error: 'UNAVAILABLE' }
   }
+}
+
+/** Open a relay Crew as a tab in this window while the hidden pane key is on,
+ *  else in its own window through `openRelayCrew`, as before. */
+export function openRelayCrewTab(endpointId: string, name: string, dispatch: AppDispatch): Promise<RelayCrewOpenResult> {
+  const bridge = relayPaneBridge()
+  return bridge ? openRelayPane(bridge, { id: endpointId, name }, dispatch) : openRelayCrew(endpointId)
 }
 
 /** Ask the desktop shell to close every relay Crew window now, after this
@@ -100,11 +109,18 @@ export function isRelayCrewOnline(entry: RelayCrewEntry): boolean {
 /** Presence that means the host still renews its lease, so its tunnel is probably coming back. */
 const RECONNECTING_PRESENCE = new Set(['CONNECTED', 'HEARTBEAT_LATE'])
 
+/** How long after its last lease renewal a Crew with no tunnel still reads as
+ *  reconnecting. A host renews about once a minute, so two missed renewals mean it
+ *  stopped (it was shut down, or its owner turned Remote Control off) even while
+ *  presence has not caught up. */
+export const RELAY_CREW_RECONNECTING_FOR_MS = 2 * 60_000
+
 /** A row's status words. A row that can't be opened takes its words from presence, and
  *  adds when the Crew was last seen when the control plane gave a time (as Kiro Mobile does). */
-export function relayCrewStatusText(entry: RelayCrewEntry): string {
+export function relayCrewStatusText(entry: RelayCrewEntry, now: number = Date.now()): string {
   if (isRelayCrewOnline(entry)) return i18nT('components.relayCrews.online')
-  const words = RECONNECTING_PRESENCE.has((entry.presence || '').toUpperCase())
+  const stale = !!entry.lastSeenAt && now - entry.lastSeenAt * 1000 > RELAY_CREW_RECONNECTING_FOR_MS
+  const words = RECONNECTING_PRESENCE.has((entry.presence || '').toUpperCase()) && !stale
     ? i18nT('components.relayCrews.reconnecting')
     : i18nT('components.relayCrews.offline')
   if (!entry.lastSeenAt) return words

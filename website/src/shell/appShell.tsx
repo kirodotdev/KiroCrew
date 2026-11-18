@@ -6,7 +6,7 @@ import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
 import { isRelayCrewPane, isRelayCrewWindow, offlineCover, offlineReason } from '../utils/offlineReason'
 import { useHostOfflineCover } from './useHostOfflineCover'
-import { prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
+import { localCovered, prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from '../utils/artifactPopout'
@@ -897,7 +897,7 @@ export function useAppShell() {
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
   })
 
-  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroAccountEntry } = useKiroUsageReadout()
+  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroAccountEntry, kiroSignInPrompt, openKiroSignIn } = useKiroUsageReadout()
   // Feature previews live on the gateway; this keeps the browser cache of them in
   // step. Called beside the credit readout, which already reads ['kirocrewConfig'].
   usePreviewFlagServerSync()
@@ -953,7 +953,7 @@ export function useAppShell() {
         // The session lives in the local Crew. Over a Remote Crew pane, bring
         // the local Crew forward first (as the notification banner does), so
         // the leave prompt and the switched session are both on screen.
-        if (appStore.getState().instances?.activeId != null) dispatch(setActiveId(null))
+        if (localCovered(appStore.getState())) dispatch(setActiveId(null))
         applyNavIntentInMain(
           // `path` is deliberately dropped in favour of the bare route: a
           // NavIntent carries no query string, and ChatPage writes `?sid=` back
@@ -973,7 +973,7 @@ export function useAppShell() {
       // the route is the bare page, so the dashboard's own URL never carries them.
       const addCrew = remoteCrewAddFromPath(path)
       if (addCrew) {
-        if (appStore.getState().instances?.activeId != null) dispatch(setActiveId(null))
+        if (localCovered(appStore.getState())) dispatch(setActiveId(null))
         if (!mayLeaveForNavigation()) return
         dispatch(prefillCrewAddForm(addCrew))
         navigate(REMOTE_CREW_SETTINGS_PATH)
@@ -983,7 +983,7 @@ export function useAppShell() {
       // Remote Crew pane a bare navigate would route the hidden local pane, so
       // bring the local Crew forward first, as a session link does: the leave
       // prompt then sits over the draft it is asking about.
-      if (isAppDetailPath(path) && appStore.getState().instances?.activeId != null) {
+      if (isAppDetailPath(path) && localCovered(appStore.getState())) {
         dispatch(setActiveId(null))
       }
       // Same leave check as every other in-app exit: a native menu entry
@@ -1156,7 +1156,7 @@ export function useAppShell() {
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
     toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, usageSegmentHidden, kiroAccountEntry, metrics, capsuleCollapsed, setCapsuleCollapsed,
+    kiroUsageState, usageSegmentHidden, kiroAccountEntry, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,
     subscribeLogs, subscribeSubagents, forceReconnect, updateFlow, updating, setUpdating, showUpdateModal,
     setShowUpdateModal, showChangelog, updateError, setUpdateError, reportProblemOpen,

@@ -279,6 +279,12 @@ _GIT_TREE_SITES = [
     ("snapshot_restore.py", "_clear_store_directories", "entry"),
     ("snapshot_restore.py", "_do_replace_mutations", "d"),
     ("snapshot_restore.py", "_restore_everything_from_rollback", "target"),
+    # `workspace create --copy-from` stages a copy that keeps the source's `.git`.
+    ("cli_commands_workspace.py", "_handle_workspace", "staging"),
+    ("cli_commands_workspace.py", "_handle_workspace._drop_staging", "staged_path"),
+    ("cli_commands_workspace.py", "_handle_workspace._rollback_install", "staged_path"),
+    ("dashboard/file_api/workspaces.py", "api_workspaces_create._drop_staging", "staging"),
+    ("dashboard/file_api/workspaces.py", "api_workspaces_create", "staged_path"),
 ]
 
 _HELPERS = frozenset({"rmtree_force", "_rmtree_force_settled", "_rmtree_or_raise"})

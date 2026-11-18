@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from source_corpus import repo_files_named, repo_root
+from source_corpus import repo_files_named, repo_root, untraced
 
 import kiro_crew.dashboard.chat_runner as cr
 from kiro_crew.dashboard import chat_turn
@@ -1085,12 +1085,14 @@ def _facade_patched_names() -> set[str]:
     root = repo_root()
     here = Path(__file__).resolve()
     found: set[str] = set()
-    for path in repo_files_named(".py"):
-        parts = path.relative_to(root).parts
-        in_tests = parts[0] == "test" or (parts[0] == "src" and "tests" in parts)
-        if not in_tests or path.resolve() == here:
-            continue
-        found |= _patched_names_in(path.read_text(encoding="utf-8", errors="replace"))
+    # The scan only parses test source, so it runs with the coverage tracer paused.
+    with untraced():
+        for path in repo_files_named(".py"):
+            parts = path.relative_to(root).parts
+            in_tests = parts[0] == "test" or (parts[0] == "src" and "tests" in parts)
+            if not in_tests or path.resolve() == here:
+                continue
+            found |= _patched_names_in(path.read_text(encoding="utf-8", errors="replace"))
     return found
 
 

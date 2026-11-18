@@ -5567,7 +5567,9 @@ line, `limit` the most lines, and the answer holds as many whole lines as fit th
 capacity with the next offset in its header, ahead of the body, where tail
 truncation cannot reach it. The tool sizes the page for the WRAPPED response: it
 renders its own framing (header, page line, reference-data markers, the key
-repeated) with an empty body and the widest numbers a page can carry, takes
+repeated, the widest description it prints: 300 characters plus an ellipsis,
+the same clamp a search row uses) with an empty body and the widest numbers a
+page can carry, takes
 that length off the ceiling, and passes the remainder as the read's `capacity`;
 the gateway accepts a smaller capacity and never a larger one. Without that, a
 page sized to the bare ceiling would lose its last lines to the response cut
@@ -5713,7 +5715,11 @@ Installed exact reads also accept POST `/api/skills/-/discover` JSON with
 gave them, and an optional `capacity` the gateway clamps to the ceiling (a
 caller shrinks the page to its own framing; it cannot widen it). A page answer
 carries a `page` block (`line_offset`, `line_count`,
-`total_lines`, `total_bytes`, `next_offset`) beside the content; a
+`total_lines`, `total_bytes`, `next_offset`) beside the content; every read
+match, whole or paged, carries the skill's frontmatter `description` (else the
+key), parsed from the whole body so a page past the frontmatter still has it --
+the value a search row shows for the same key, and the unsigned local read fills
+it the same way; a
 refused read answers HTTP 200 with an empty match list and a `refusal` block
 naming the reason and the bound. MCP uses this transport so URL
 escaping and HTTP request-line limits do not truncate nested keys. GET remains
@@ -7208,10 +7214,11 @@ deny blocked:
 | `spec-denies` | deny_policy | a KAS agent spec's `deniedCommands` / write `deniedPaths` that Crew reads itself: its own shell call a deny matches (whole or any leading piece; a chain `allowed_commands.chain_commands` splits, one command at a time, unless it holds `#` or `[[`), or write whose target, as written or symlink-resolved, a deny covers (`ToolCall.spec_denied_grant`) |
 | `spec-unjudged-denies` | deny_policy | a Bot worker's structured deny entries (`ToolCall.spec_unjudged_denies`, recorded for `kirocrew-mate-worker` only): non-read-only calls are refused for an unconditional entry, or a conditional entry without a definite no-match from the shared `spec_denied_gate.shell_denies_match` judge; raw rule text carries no flags. The Add-abilities pane names unconditional entries as `unenforced_denies` and conditional ones as `conditional_denies`, and the worker's session-start notice says it refuses such commands unless read-only |
 | `app-own-server` | grant | a first-party app agent (a builtin, or a former builtin adopted from its pin, `apps/builtin_adoption_gate.py`) calling its own declared MCP server |
+| `app-browser-sites` | grant | an app's OWN dashboard slot (`facts.app` on a `dashboard:` session key; a subagent or channel session keeps its card) calling `@kirocrew-core/browser` by verified identity while the app is enabled, trusted and holds owner-approved `permissions.browserSites`, and, for a call that names a URL (`navigate`, `tabs` `new`), only one of those pages; a `confirm_tools` pattern still asks (`hooks._tier_app_browser_sites`, `apps/browser_sites.gate_grants`). The op route holds the session to the pages ([browser](browser.md#security)) |
 | `operator-grants` | grant | the operator's `auto_approve_tools` patterns, then the `auto_approve_tool_identities` grants against a verified identity only, unless a `confirm_tools` pattern names the call or the list is unknown |
 | `read-only` | classify | the read-only classifier, except for an MCP call `confirm_tools` names (or any MCP call while the list is unknown) and a shell command that runs `git` at any command position (`readonly_bash.command_invokes_git`), which falls through to the surface's own approval; the only auto-approve under `classifier_only` |
 
-`classifier_only` skips both grant rows (each grant body steps aside, after resolving the owner app as before). `gate_tier_problems` checks the table when
+`classifier_only` skips every grant row (each grant body steps aside, after resolving the owner app as before). `gate_tier_problems` checks the table when
 the module loads; an unsound table is not raised at import (that would fail every
 test at collection, the one naming the problem included) — `judge` refuses every call
 with `GATE_TABLE_UNSOUND_REASON` instead. `SHELL_DENY_TIERS` is the table's shell

@@ -137,6 +137,7 @@ class TestAcpClientCapture:
                 "failures": {},
                 "restart_to_load": [],
                 "reload_pending": [],
+                "sign_in_suspected": [],
             }
         )
 

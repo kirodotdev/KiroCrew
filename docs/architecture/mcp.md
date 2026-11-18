@@ -554,6 +554,47 @@ is confirmed no longer enabled; absence from the on-disk map is not by itself
 proof (a clean rebuild starts from an empty map, and dropping on that basis made
 an enabled app's tools vanish).
 
+### Servers a connected computer exposes (`connected-computer-<name>`)
+
+A chat bound to a connected computer (feature preview; providers.md § Connected computers
+behaviors) can also use local MCP servers the user ticked in that computer's native
+consent. None of the merge above runs for them, and the gateway never starts them:
+
+- **What can be exposed** (`connected_computers/local_mcp.py`): a stdio server configured on
+  that computer, snapshotted (command, arguments, environment) at consent, so a later edit
+  of the local config cannot widen it. Refused, with the reason the consent shows: a remote
+  (HTTP) server, a server whose env reads a `secret://` value, Kiro Crew's own servers, a
+  disabled server, and a server whose `disabledTools` is unreadable or longer than 512.
+  Nothing ticked means nothing exposed; a plain stdio server the user ticks IS exposed, so
+  the feature is never met by refusing them all.
+- **Tools turned off locally** (`connected_computers/mcp_filter.py`): a server with
+  `disabledTools` is exposed with that list snapshotted, and the connector on the computer
+  keeps those tools off whatever the gateway sends. Each entry is read as kiro-cli reads
+  it (`mcp_filter.tool_is_turned_off`, the rule of `cron_script_mcp._tool_is_switched_off`):
+  exactly, and an entry with `*` or `?` also as an `fnmatchcase` glob, so `delete_*` keeps
+  `delete_repo` off; a glob holding `{`, `}` or `\` covers every tool. It forwards each request line
+  re-encoded (so a duplicate `name` key cannot smuggle a turned-off tool), answers a
+  `tools/call` for a turned-off tool with a tool error instead of forwarding it, drops a
+  line that is not JSON or is over 8 MiB, and trims the reply to each `tools/list` it
+  forwarded (at most 64 awaited at once; one past is refused). A server with no tool turned
+  off is relayed byte for byte.
+- **How it is mounted**: one loopback relay and bridge per exposed server
+  (`ConnectedComputerLaunch.local_mcp_servers`), named `connected-computer-<name>`
+  (`session_environment.CONNECTED_MCP_SERVER_PREFIX`) and appended to the session's
+  `mcpServers` after `workspace` (`acp/runtime_remote_workspace._remote_session_servers`,
+  which also drops any same-named entry the gateway had). The computer starts it, confined to
+  the shared folder like the workspace tools, only when the bridge dials.
+- **Who may call it**: the agent's own grants decide, as for any server. An agent granted
+  every server (`"*"`) gets it, an agent that names `@connected-computer-<name>` keeps it, and an agent
+  that grants neither does not gain it.
+- **Approval**: `platform.governance.may_skip_gate` never keeps a `@connected-computer-*` grant, so
+  every call reaches the PreToolUse gate (governance.md). In the chat's trust mode it runs
+  without asking, like every other tool in that mode.
+- **Compatibility**: while the preview is on, a server a person configured with a name
+  starting `connected-computer-` is also never auto-approved, on any session (a
+  `computer-use` server is not caught). With it off that
+  server keeps the answer it had before the preview (`governance._connected_computers_may_run`).
+
 ## Discovery and probing
 
 Source: `mcp_discovery.py`, a mirror facade (`kiro_crew._facade_mirror`) over sibling
@@ -773,15 +814,20 @@ the sharing rows and the gateway rewriter use; otherwise it is stdio.
   `clientSecret`, or keeps nothing Crew sends) and that is neither a Connections
   provider nor Crew-held offers no sign-in at all (`kasCannotSignIn` in
   `McpTab.tsx`). Neither the chat guidance nor Sign in could ever finish for it. A
-  block Crew does send (a public `clientId`) keeps the normal row. Its badge reads **Sign-in unavailable** whether or not a
+  block Crew does send (a public `clientId`) keeps the normal row. A row with no
+  `clientId` of its own at the url of a registry provider whose vendor has not
+  admitted Kiro yet (`vendor_approval_pending`, matched by url whatever the entry
+  is named: `vendorPendingProviderForServer`) is the same case, because the vendor
+  refuses the engine's client, so no chat sign-in can finish (#36337); its sentence
+  names the vendor instead of the server's own settings. Its badge reads **Sign-in unavailable** whether or not a
   Kiro CLI grant is held (a KAS chat does not use one), with no hover tip,
   and the row says in plain words that the server cannot sign in with this
   engine. The row cannot see the engine version, so an engine older than 0.66.104,
   which drops every block, is left to the chat notice. It offers no harness switch: a Kiro CLI pick runs on KAS wherever
   kiro-cli offers its v3 engine (`kiro_cli_pick_backend`, and the row also reads
   the `kiro_selection_runs_on_kas` probe), so the switch would
-  not reach the sign-in either. The chat says the same at session start in a
-  notice tagged
+  not reach the sign-in either. For an `oauthWithheld` server the chat says the
+  same at session start in a notice tagged
   `meta.kind: "mcp_sign_in_unsupported"`, which `TurnBlock.isAlwaysVisible` keeps
   out of the turn's folded steps.
 
@@ -1699,7 +1745,10 @@ connection-private, mid-call respawn and prewarm -- through `_acquire_backend`:
   setter, and never below the 30 s cold-start floor), settles the permit `success` (ready), `failure` (handshake failed;
   the permit is then held until the process is reaped) or `neutral` (no
   handshake ever arrived -- an unused prewarm or a client that never
-  initialised is not congestion). `settle` is exactly-once and separate from
+  initialised is not congestion). The watcher also ends, `neutral`, the moment
+  the backend process exits with no handshake in flight: a private backend dies
+  with its stub, so a stub that left before `initialize` must not hold a slot
+  (and the starts queued behind it) for the whole window. `settle` is exactly-once and separate from
   `release`, which is idempotent and settles `neutral` on its own; cancellation
   at any boundary is neutral. Prewarm settles neutral the moment the fork
   returns; it also re-reads the queue depth BEFORE EACH KEY and stands that key
@@ -2107,7 +2156,12 @@ carries an identity that app-callback governance reads as a Bot's, and that
 session declares its servers itself. An `~/.kiro/agents`
 spec whose name is that identity is a collision, and so is one for the file id
 `<id>` itself (the binding `mate_worker.mate_file_for_member` refuses): either
-way the Bot gets no overlay and no credential sidecar. Two file ids that
+way the Bot gets no overlay and no credential sidecar. When the only spec
+declaring `<id>` is an enabled installed app's own `<app>--<id>.json` export, the
+Bot's chats run that app's agent and the skip is logged at INFO; any other
+same-name spec (a user's own file, a second claimant, an export of a disabled app
+or of one no installed app declares, a linked or unreadable one) is logged as a
+warning. Two file ids that
 differ only by case are skipped only when their overlays are one file in
 `<overlay_dir>/mates` (the agents loop's `_overlay_names_collide`). Every doubt
 (unreadable listing, owner record or file, an `~/.kiro/agents` folder that cannot
@@ -4347,7 +4401,8 @@ may overlap, and `sessions` excludes `composer`. `settings` is split: its listin
 names one `settings.<tab>` sub-area per Settings tab (`sub_areas`, with the
 localized tab label and a count) and lists only what no sub-area holds. An area
 may name `related` areas (Settings and Customize; Connections and Settings,
-whose Agent Harness tab holds the model sign-in; Shell and Sessions, whose chat
+whose Agent Harness tab holds the model provider sign-in and whose Kiro account
+tab holds the Kiro sign-in; Shell and Sessions, whose chat
 side panel holds the built-in browser).
 
 Each entry is compact: `id`, `label` (or `description` for a live-data label),

@@ -68,6 +68,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
+    STOP_REASON_CANCEL_UNACKED,
     STOP_REASON_END_TURN,
 )
 from kiro_crew.agent_sdk import host_auth
@@ -499,6 +500,11 @@ class AcpSessionProvider(LLMProvider):
     _rewatch_agent_turns = _sp_agent_turns._rewatch_agent_turns
     agent_turn_pending = _sp_agent_turns.agent_turn_pending
     stream_unsolicited = _sp_agent_turns.stream_unsolicited
+
+    @property
+    def sandbox_mode(self) -> str | None:
+        """Spawn tier of this session's runtime (H14); a task step's tenant reports its run's."""
+        return self._runtime.sandbox_mode
 
     @property
     def child_fidelity_aware(self) -> bool:
@@ -1142,7 +1148,10 @@ class AcpSessionProvider(LLMProvider):
             await self._handle.cancel(grace_secs=wait_ack_timeout)
             if wait_ack_timeout > 0:
                 done = await self._handle.wait_turn_done(timeout=wait_ack_timeout)
-                return "acked" if done else "timeout"
+                # A turn the handle ended itself because the agent never
+                # answered the cancel is no ack: the agent may still run it.
+                acked = done and not self._handle.cancel_went_unacked
+                return "acked" if acked else "timeout"
             return "acked"
         except AcpRuntimeDead:
             return "error"
@@ -1483,12 +1492,16 @@ class AcpSessionProvider(LLMProvider):
         done = await self._handle.wait_turn_done(timeout=timeout)
         if not done:
             raise asyncio.TimeoutError()
-        # Synthetic-terminal paths (tool-interrupted / unresponsive-cancel /
-        # stale) set _turn_done WITHOUT a stopReason, leaving _last_stop_reason
-        # "". Returning "" makes AcpProvider.cancel()'s `reason in (CANCELLED,
-        # END_TURN)` check False → it reports a timeout → spurious HARD KILL of
-        # the SHARED runtime (killing co-tenant sessions). Treat a done-but-empty
-        # turn as a benign END_TURN so cancel() completes cleanly.
+        # The unresponsive-cancel terminal is reported as itself, which
+        # AcpProvider.cancel() reads as a timeout: the agent never answered the
+        # cancel and may still be running the turn, so the Stop must escalate.
+        if self._handle.cancel_went_unacked:
+            return STOP_REASON_CANCEL_UNACKED
+        # The other synthetic terminals (tool-interrupted / stale) set _turn_done
+        # WITHOUT a stopReason, leaving _last_stop_reason "". Returning "" makes
+        # AcpProvider.cancel()'s `reason in (CANCELLED, END_TURN)` check False → it
+        # reports a timeout → spurious HARD KILL of the SHARED runtime (killing
+        # co-tenant sessions). Treat a done-but-empty turn as a benign END_TURN.
         return self._handle._last_stop_reason or STOP_REASON_END_TURN
 
     def is_responsive(self, stale_threshold: float = 600.0) -> bool:

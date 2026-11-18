@@ -109,6 +109,16 @@ def _nests_a_head_after_an_opener(tail: str) -> bool:
     return any(opener + NESTED_HEAD in _body_of(tail) for opener in MARKER_OPENERS)
 
 
+def _is_sibling_chain(tail: str) -> bool:
+    """Whether the first head CLOSED before the next one, so that head is a sibling.
+
+    A sibling is not nested: ``[OPTIONS:][OPTIONS: x]`` is two markers on one
+    line, read as one run, so its second head is the one still in flight.
+    """
+    second = tail.find("[" + NESTED_HEAD, 1)
+    return second > 0 and accepted(tail[:second].rstrip(" \t"))
+
+
 class TestTheCorpusMeasuresSomething:
     """A vacuous corpus would pass everything below while proving nothing."""
 
@@ -136,7 +146,12 @@ class TestNoTailThatCanStillFinishIsRefused:
 
     def test_no_refused_tail_has_a_continuation_that_completes_it(self):
         refused = [
-            t for t in CORPUS if not accepted(t) and not held(t) and completion(t) is not None
+            t
+            for t in CORPUS
+            if not accepted(t)
+            and not held(t)
+            and not _is_sibling_chain(t)
+            and completion(t) is not None
         ]
         assert refused == []
 
@@ -153,10 +168,20 @@ class TestTheNestedHeadGuardAgreesWithTheBody:
         unreachable, not because the property holds. The length assertion is the
         working-set control that keeps this measuring something.
         """
-        nesting = [t for t in CORPUS if _nests_a_head_after_an_opener(t)]
+        nesting = [
+            t for t in CORPUS if _nests_a_head_after_an_opener(t) and not _is_sibling_chain(t)
+        ]
         assert len(nesting) > 100
         assert [t for t in nesting if held(t)] == []
         assert [t for t in nesting if completion(t) is not None] == []
+
+    def test_a_sibling_chain_is_held_from_its_first_head(self):
+        """A chain may still finish as one run, so none of it is published yet."""
+        chains = [t for t in CORPUS if _is_sibling_chain(t)]
+        assert len(chains) >= len(MARKER_CLOSERS)
+        for tail in chains:
+            assert completion(tail) is not None
+            assert split_trailing_protocol_suffix(tail) == ("", tail)
 
     @pytest.mark.parametrize("opener", tuple(MARKER_OPENERS))
     def test_a_nested_head_after_any_opener_strands_no_text(self, opener):

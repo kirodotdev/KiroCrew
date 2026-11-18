@@ -269,8 +269,8 @@ or a persisted row of the wrong shape. The detail panel's button for the note's
 names a label for the id, as it does for `mcp_share_paused` ("Review shared
 servers"). Notes that name a copy today: the turn-ceiling
 pause (`turn_limit`) and the default-model applied and failed notes
-(`default_model_applied`, `default_model_failed`), the folder Default agent note
-(`folder_agent_label`), the weekly repeated-failures note (`repeated_failures`), and the dead-turn note on
+(`default_model_applied`, `default_model_failed`), the folder Default agent notes
+(`folder_agent_label`, `folder_agent_key`), the weekly repeated-failures note (`repeated_failures`), and the dead-turn note on
 `system.turn`, one `chat_stopped_*` id per way the turn died under one shared title;
 and the notice that open tabs left the sidebar for History, one id for the startup
 restore budget (`moved_to_history_startup`) and one for the idle sweep
@@ -282,7 +282,7 @@ every other producer still writes English only. `test_notification_dashboard_cop
 producer, its English against the catalog and the meta refusal;
 `test_config_live_server_appliers.py` pins the default-model ids;
 `test_turn_died_notify.py` pins each `chat_stopped_*` id and its English;
-`test_folder_agent_member_key.py` pins the folder Default agent note (`folder_agent_label`) and its English;
+`test_folder_agent_member_key.py` pins the folder Default agent notes (`folder_agent_label`, `folder_agent_key`) and their English;
 `test_slot_retention.py` pins both History ids, their params and their English;
 `NotificationCard.systemNote.test.tsx` pins the zh-CN render of every id and the
 fallback.

@@ -44,6 +44,7 @@ from kiro_crew.acp.mcp_ref_guard import (
     warn_unset_env_placeholders,
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
+from kiro_crew.acp.mcp_sign_in_probe import schedule_sign_in_probe
 from kiro_crew.acp.pi_mcp_registration import discard_registration
 from kiro_crew.acp.session_mcp import SessionMcpProjection, ToolsAllowlist, agent_spec_snapshot
 from kiro_crew.acp.spec_tools_allowlists import (
@@ -54,6 +55,7 @@ from kiro_crew.acp.spec_tools_allowlists import (
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
@@ -1382,10 +1384,20 @@ def _start_mount_check(self: AcpClient) -> None:
     Only for ``ACP_BACKENDS_SESSION_MCP_ARRAY``, after the session exists, as a
     background task (:mod:`kiro_crew.acp.mcp_mount_check`): it never blocks or
     fails the start, and the kiro path gains no call (harness-parity H13).
+
+    On opencode it also starts the credential-free sign-in probe of the same array's
+    remote servers (:mod:`kiro_crew.acp.mcp_sign_in_probe`): opencode sends no frame
+    when one asks for a sign-in, so the probe is what lists it as awaiting one.
     """
     if self.backend not in ACP_BACKENDS_SESSION_MCP_ARRAY or not self._session_id:
         return
     session_id = self._session_id
+    if self.backend == ACP_BACKEND_OPENCODE:
+        schedule_sign_in_probe(
+            self._mcp_report,
+            getattr(self, "_mcp_mount_servers", None) or [],
+            alive=lambda: self._session_id == session_id,
+        )
     schedule_mount_check(
         self._mcp_report,
         getattr(self, "_mcp_mount_servers", None) or [],

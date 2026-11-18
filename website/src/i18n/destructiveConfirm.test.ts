@@ -238,6 +238,10 @@ export const EXEMPT_CONFIRM_PLACEHOLDER_NAMES = new Set([
  * kind-word form and record that decision.
  */
 export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
+  'hooks.useSessionActions.close_confirm.reason_other_starter':
+    'the {{name}} operand is the display name of the person who started the chat, the '
+    + 'subject at the head of its own sentence ("{{name}} started this chat."), in a '
+    + 'reason line whose confirm names no object: the chat being closed is never interpolated',
   'settings.advanced.reset_confirm':
     'the {{value}} operand is the setting\'s current value, printed after its own '
     + '"Current:" label at the end of the line, so the label already marks where it starts '

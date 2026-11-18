@@ -5,6 +5,7 @@ import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
 import { api } from '../../api/client'
 import NewCrewmateDialog from './NewCrewmateDialog'
+import { i18nT } from '../../i18n/t'
 import { POSE_IDS, seedIconPose } from '../../lib/avatarPoses'
 
 vi.mock('../../api/client', async importOriginal => {
@@ -74,6 +75,24 @@ describe('NewCrewmateDialog', () => {
     expect(body).toMatchObject({ name: 'Scout', kiro_agent: 'kirocrew' })
     expect(body).not.toHaveProperty('first_greeting')
     await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith({ name: 'Scout', job: '' }), { timeout: 4000 })
+  })
+
+  it('holds Create while the name is empty, and pressing it says why instead of closing', async () => {
+    renderWithProviders(<NewCrewmateDialog open {...props} />)
+    await screen.findByTestId('crewmate-create-form')
+    const create = screen.getByTestId('crewmate-create-submit')
+    expect(create.getAttribute('aria-disabled')).toBe('true')
+    // Held, not native-disabled: it stays focusable and still answers a press.
+    expect(create).not.toBeDisabled()
+    fireEvent.click(create)
+    expect(await screen.findByText(i18nT('pages.membersPage.create_name_required'))).toBeInTheDocument()
+    expect(api.createKirocrewAgent).not.toHaveBeenCalled()
+    expect(props.onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    typeName('   ')
+    expect(create.getAttribute('aria-disabled')).toBe('true')
+    typeName('Scout')
+    expect(create.getAttribute('aria-disabled')).not.toBe('true')
   })
 
   it('Advanced settings offers no template to build from: every mate starts as the built-in worker', async () => {

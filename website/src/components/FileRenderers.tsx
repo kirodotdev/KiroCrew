@@ -14,6 +14,7 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { useIsDark } from '../hooks/useIsDark'
 import { usePinchZoom, wheelZoomFactor } from '../hooks/usePinchZoom'
 import { usePagerFocus } from '../hooks/usePagerFocus'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { pathBasename } from '../utils/pathBasename'
 import { AUDIO_EXTS, VIDEO_EXTS } from '../utils/mediaExts'
@@ -758,9 +759,21 @@ function OfficeHeading({ level, text }: { level: number; text: string }) {
  * Cell text keeps its newlines — a cell can hold several paragraphs. */
 function OfficeTable({ rows, truncatedCols }: { rows: string[][]; truncatedCols?: boolean }) {
   const [head, ...body] = rows
+  // Cells are plain text, so nothing inside ever takes focus: while the table
+  // hides columns the scroller itself is the named Tab stop the arrow keys
+  // scroll. A table that fits gets no stop.
+  const [attachScroller, edges, , attachTable] = useScrollEdges<HTMLDivElement>()
+  const clipped = edges.left || edges.right
   return (
-    <div className="my-2 overflow-x-auto">
-      <table className="min-w-full border-collapse">
+    <div
+      ref={attachScroller}
+      className="my-2 overflow-x-auto"
+      // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the tab stop IS the fix: a scroller that hides columns and holds nothing focusable is skipped by an engine that does not focus scrollers itself and unnamed in one that does, and axe's scrollable-region-focusable asks for the explicit stop.
+      tabIndex={clipped ? 0 : undefined}
+      role={clipped ? 'region' : undefined}
+      aria-label={clipped ? i18nT('components.markdownRenderer.table_region') : undefined}
+    >
+      <table ref={attachTable} className="min-w-full border-collapse">
         {head && (
           <thead>
             <tr>

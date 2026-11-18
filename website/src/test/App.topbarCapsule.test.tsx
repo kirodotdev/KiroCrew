@@ -175,7 +175,7 @@ describe('App shell — Kiro sign-in notice', () => {
 
   it('shows a lapsed KAS sign-in above the page, outside the top bar, away from the sign-in card', async () => {
     // The persistent surface #11596 asked for: the sign-in card that already
-    // says "Sign-in expired" sits on Settings > Agent Harness, so an app-level
+    // says "Sign-in expired" sits on Settings > Kiro account, so an app-level
     // notice is the only place a user who never opens that page can learn it.
     // It is not a top-bar control: the bar's action groups are at their cap.
     vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'kas' } } as Awaited<ReturnType<typeof api.kirocrewConfig>>)

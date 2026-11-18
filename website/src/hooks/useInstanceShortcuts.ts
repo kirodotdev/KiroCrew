@@ -43,6 +43,7 @@ import { isElectron } from '../lib/electron'
 import { visibleInstanceTabs } from '../components/InstanceTabBar'
 import { useSelectInstance } from './useSelectInstance'
 import { postToHost } from '../lib/hostRelay'
+import { relayPaneBridge, useRelayTabs } from '../lib/relayCrewPanes'
 import { IS_MAC, SHORTCUTS_ENABLED_KEY, INSTANCE_SHORTCUTS } from './useKeyboardShortcuts'
 
 /** Highest digit the chord claims — exactly the advertised registry entries. */
@@ -79,6 +80,8 @@ export function useInstanceShortcuts() {
   // Top-level select: the SAME shared unit the tab bar's click path uses
   // (useSelectInstance), so keyboard and click semantics cannot drift apart.
   const { selectInstance } = useSelectInstance(instances)
+  // Relay Crew tabs come after the SSH tabs, in the bar and on the digits.
+  const { tabs: relayTabs, select: selectRelay } = useRelayTabs()
 
   const selectByIndex = useCallback(
     (idx: number) => {
@@ -87,10 +90,20 @@ export function useInstanceShortcuts() {
         return
       }
       const inst = tabInstances[idx - 1]
+      const relay = relayTabs[idx - 1 - tabInstances.length]
       if (inst) selectInstance(inst.id)
+      else if (relay) selectRelay(relay.id)
     },
-    [tabInstances, selectInstance],
+    [tabInstances, selectInstance, relayTabs, selectRelay],
   )
+
+  // A relay pane holds the keyboard while in use, so main reads the chord there and sends its index.
+  useEffect(() => {
+    if (embedded) return
+    return relayPaneBridge()?.onPaneEvent(e => {
+      if (e.type === 'chord' && shortcutsEnabled()) selectByIndex(e.index)
+    })
+  }, [embedded, selectByIndex])
 
   // Embedded select: relay up through the SAME channel as the embedded tab
   // bar's click path (EmbeddedInstanceTabBar). The parent validates the target.
@@ -120,13 +133,13 @@ export function useInstanceShortcuts() {
         if (relayByIndex(idx)) e.preventDefault()
         return
       }
-      if (!isElectron || forbidden) return
+      if (!isElectron || (forbidden && relayTabs.length === 0)) return
       // Only claim the keystroke when a matching pane exists.
-      if (idx > tabInstances.length) return
+      if (idx > tabInstances.length + relayTabs.length) return
       e.preventDefault()
       selectByIndex(idx)
     },
-    [embedded, host, relayByIndex, forbidden, tabInstances.length, selectByIndex],
+    [embedded, host, relayByIndex, forbidden, tabInstances.length, relayTabs.length, selectByIndex],
   )
 
   useEffect(() => {

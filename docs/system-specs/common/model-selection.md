@@ -128,7 +128,19 @@ not yet read is looked for again at the following turn; a `set_model` that lands
 first ends the wait, since the session runs that model.
 
 KAS sends no `models` object; its list is only the `configOptions` `model`
-select, and it defaults a new session to `auto`. The pooled check asks that select
+select, and it defaults a new session to `auto`. From engine 0.66.117 the
+`session/new` answer carries no `model` select: the engine sends it in a
+`config_option_update` about 0.3 s later. A config option update is read by one
+reader, `absorb_config_options`, on the live stream and in the start path's
+notification drain; on KAS it runs `store_config_options` (served ids, served
+model, engine catalog). After its drain, KAS's managed-MCP start step
+(`_wait_managed_mcp`, a step the Kiro path does not take) calls
+`settle_kas_model_select`: on an engine known to send the select late
+(`kas_engine_features.engine_sends_model_select_late`: the bundle route at 0.66.117
+or later; the relay route's engine version is unknown), while the select is still
+missing, it keeps draining (at most `_KAS_SELECT_WAIT_SECS`, 2 s) until the select
+is in, then runs the pooled check below on it, whether the drain or this wait read
+it, before any prompt. The pooled check asks that select
 one question: is the session on an `auto` the select does not list? If so it moves
 to a listed id. The select never becomes the session's advertised list, so the
 picker's entitlement narrowing and the explicit-pick guard are unchanged for KAS,
@@ -145,6 +157,17 @@ the cold start, the warm-pool re-apply and a live switch already use. A
 (`resolve_pin_spelling`). A select listing only `auto` is not judged. A live capture
 on kiro-cli 3.1.0 listed the same 34 ids as the v2 engine's `models` block, and
 the one `--list-models` row it left out failed the turn with `InvalidModelError`.
+
+A reopened chat's select is not the account's list. From kiro-cli 3.4 (measured on
+3.4.1) `session/load` answers with a select naming one model, the one the session
+runs, while `session/new` on the same account lists every served model, and KAS
+accepts a `session/set_config_option` for a model outside that one entry. Such a
+select (`select_lists_only_its_current_model`: one entry, not `auto`, equal to its
+`currentValue`) still sets the served model, but it keeps the `_kas_served_ids` an
+earlier response gave and `record_catalog` does not record it, as for a response
+with no select. A reopened chat therefore judges no pin before the turn: a pin the
+engine does not serve fails that turn with `InvalidModelError`, and every other pick
+switches the live session.
 
 Saving a pin is judged against the same select before any session sends it:
 with no `models` list on the newest live KAS session, the agent and role-pin
@@ -165,7 +188,8 @@ rows in the `chat --list-models` shape — `model_id` / `model_name` / `display_
 (`test/fixtures/acp_frames/kas/bundle-session-live.jsonl`: no `models` object, the
 select alone, no structured context-window field on any option). The recording is
 process-wide and in memory, like the catalog's prices; a response with no select
-clears nothing. A select is what ONE account is served, so the next account must
+clears nothing, and neither does a reopened chat's one-entry select (above). A
+select is what ONE account is served, so the next account must
 see `auto` alone until its own first session (a cold read starts one in the
 background; see the cold-read bullet below): every `session/new` and
 `session/load` notes the vault identity fingerprint it WENT OUT under
@@ -805,6 +829,19 @@ its own once the cache refreshes with a list that carries it.
   the account later stops serving is withheld at session start like any inherited
   default. It never re-purposes `decisions.model_route`, whose tiers are the Auto
   router's.
+- **Pick a model for one agent template** through `templates.<name>.model`, keyed
+  by the template's name. Empty or `auto` inherits the template's own pin, so a
+  template nobody picked for resolves exactly as it would without the setting. It
+  is the template tier of `config.loader.resolve_effective_model`
+  (`_template_model`): above the template file's pin, below a crew's own pin and
+  the session's own pick, and above `apps.<name>.model` and the global default. It
+  reaches every session that launches the template, a template session and a
+  crew bound to it that pins nothing alike, and the provider factory's fallback
+  (`acp_effective_model`) reads it before the template pin. It is a model setting
+  only: a template session still takes no field, model included, from a crew row
+  that shares the template's name or from the `default` row. A pick the active
+  harness cannot claim defers to the template pin, as every tier does. No
+  dashboard control writes it yet; it is set in `config.json`.
 - **Entitlement checks** always use the shared predicate
   `acp.client.model_is_unusable(id, advertised)` together with
   `advertised_model_ids(...)`. It is one predicate on purpose: two spellings of "can

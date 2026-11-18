@@ -663,16 +663,33 @@ class TestInstallRows:
         assert not _installs(ceiling, "mcp", "jira")
         assert not _installs(ceiling, "plugin", "x")
 
-    @pytest.mark.parametrize("term, kind", [("skill", "skill"), ("subagent", "agent")])
-    def test_a_named_skill_or_agent_deny_turns_that_kinds_install_off(self, term, kind):
-        """The install id is a package, so a denied name cannot be matched yet."""
+    def test_a_named_agent_deny_turns_agent_install_off(self):
+        """The install id is a package, so a denied agent name cannot be matched yet."""
         ceiling = _ceiling(
             "{capability: all, effect: allow}",
-            f"{{capability: {term}, effect: deny, match: [evil]}}",
+            "{capability: subagent, effect: deny, match: [evil]}",
         )
-        assert not _installs(ceiling, kind, "owner/evil")
-        assert not _installs(ceiling, kind, "owner/good")
+        assert not _installs(ceiling, "agent", "owner/evil")
+        assert not _installs(ceiling, "agent", "owner/good")
         assert _installs(ceiling, "mcp", "github")
+
+    def test_a_named_skill_deny_lands_as_the_skill_name(self):
+        """The install seam checks each skill a package holds, so the name is kept."""
+        doc = t.translate(
+            "rules:\n"
+            "  - {capability: all, effect: allow}\n"
+            "  - {capability: skill, effect: deny, match: [evil]}\n"
+        )
+        extensions = doc["capabilities"]["extension_install"]["scopes"]["extensions"]
+        assert extensions["mode"] == "deny" and "skill:evil" in extensions["deny"]
+        ceiling = _ceiling(
+            "{capability: all, effect: allow}",
+            "{capability: skill, effect: deny, match: [evil]}",
+        )
+        assert not _installs(ceiling, "skill", "evil")
+        assert _installs(ceiling, "skill", "good")
+        assert _installs(ceiling, "mcp", "github")
+        assert not _installs(ceiling, "plugin", "x")
 
     def test_a_named_skill_deny_inside_an_allowed_glob_does_not_refuse_the_policy(self):
         ceiling = _ceiling(

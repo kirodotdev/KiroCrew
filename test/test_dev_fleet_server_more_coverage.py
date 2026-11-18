@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from dev_fleet_app_helpers import _checkout
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.dev_fleet import (
@@ -759,12 +760,9 @@ async def test_live_worktree_path_none_without_systemd(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_live_worktree_path_falls_back_to_execstart(monkeypatch):
+async def test_live_worktree_path_falls_back_to_execstart(monkeypatch, tmp_path):
     """An older unit with no WorkingDirectory is read off ExecStart's path=."""
-    # A fabricated, space-free path: the regex the product uses truncates at the
-    # first space, so a tmp_path containing one would make this assert the wrong
-    # thing on some runners.
-    checkout = Path("/opt/kirocrew-checkouts/co")
+    checkout = _checkout(tmp_path / "co")
     exe = checkout / ".venv" / "bin" / "kirocrew"
     monkeypatch.setattr(live.live_target, "read_target", lambda: None)
     monkeypatch.setattr(live.sys, "platform", "linux")
@@ -782,12 +780,13 @@ async def test_live_worktree_path_falls_back_to_execstart(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_live_worktree_path_prefers_working_directory(monkeypatch, tmp_path):
+    checkout = _checkout(tmp_path / "co")
     monkeypatch.setattr(live.live_target, "read_target", lambda: None)
     monkeypatch.setattr(live.sys, "platform", "linux")
     monkeypatch.setattr(live.shutil, "which", lambda name: "/bin/systemctl")
-    seen = _run_cmd_queue(monkeypatch, [(0, f"{tmp_path}\n", "")])
+    seen = _run_cmd_queue(monkeypatch, [(0, f"{checkout}\n", "")])
 
-    assert await live._live_worktree_path(fresh=True) == str(tmp_path.resolve())
+    assert await live._live_worktree_path(fresh=True) == str(checkout.resolve())
     # The ExecStart fallback is not consulted when WorkingDirectory answers.
     assert len(seen) == 1
 
@@ -845,7 +844,7 @@ def test_dropin_path_honours_xdg_config_home(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     got = live._dropin_path()
     assert got.name == "make-live.conf"
-    assert got.parent.name == f"{live._LIVE_GATEWAY_UNIT}.d"
+    assert got.parent.name == f"{live._live_gateway_unit()}.d"
     assert got.is_relative_to(tmp_path / "xdg")
 
 
@@ -855,7 +854,7 @@ def test_dropin_path_falls_back_to_home_config(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     assert live._dropin_path() == (
-        home / ".config" / "systemd" / "user" / f"{live._LIVE_GATEWAY_UNIT}.d" / "make-live.conf"
+        home / ".config" / "systemd" / "user" / f"{live._live_gateway_unit()}.d" / "make-live.conf"
     )
 
 

@@ -52,6 +52,7 @@ const hostModel = (over: Partial<HostModel> = {}): HostModel => ({
   self: null,
   macInset: false,
   winInset: false,
+  linuxInset: false,
   electron: true,
   expanded: false,
   ...over,
@@ -314,5 +315,55 @@ describe('useInstanceShortcuts — embedded pane (relay)', () => {
     expect(post).not.toHaveBeenCalled()
     expect(ev.defaultPrevented).toBe(false)
     post.mockRestore()
+  })
+})
+
+describe('useInstanceShortcuts — relay Crew tabs', () => {
+  let chord: ((e: { type: string; endpointId: string; index: number }) => void) | null = null
+  beforeEach(() => {
+    localStorage.setItem('mc-relay-crew-pane', '1')
+    chord = null
+    ;(window as unknown as { relayCrewAPI?: unknown }).relayCrewAPI = {
+      openPane: vi.fn(async () => ({ ok: true })),
+      onPaneEvent: vi.fn((cb: typeof chord) => { chord = cb; return () => { chord = null } }),
+    }
+  })
+  afterEach(() => {
+    delete (window as unknown as { relayCrewAPI?: unknown }).relayCrewAPI
+  })
+  const relayStore = () => createTestStore({
+    instances: {
+      warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {}, host: null,
+      relayTabs: [{ id: 'r1', name: 'Team One' }], relayLive: ['r1'], relayActive: null,
+    },
+  })
+
+  it('the digit after the last SSH tab picks the relay tab, and leaves no instance active', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = relayStore()
+    renderHookWithProviders(() => useInstanceShortcuts(), { store })
+    await loaded()
+    expect(pressDigit(3).defaultPrevented).toBe(true)
+    expect(store.getState().instances.relayActive).toBe('r1')
+    expect(store.getState().instances.activeId).toBeNull()
+    expect(pressDigit(4).defaultPrevented).toBe(false)
+    pressDigit(2)
+    expect(store.getState().instances.activeId).toBe('cd-1')
+    expect(store.getState().instances.relayActive).toBeNull()
+  })
+
+  it("a chord main read inside the pane switches the same way, unless shortcuts are off", async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = relayStore()
+    renderHookWithProviders(() => useInstanceShortcuts(), { store })
+    await loaded()
+    act(() => chord?.({ type: 'chord', endpointId: 'r1', index: 2 }))
+    expect(store.getState().instances.relayActive).toBe('r1')
+    localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    act(() => chord?.({ type: 'chord', endpointId: 'r1', index: 0 }))
+    expect(store.getState().instances.relayActive).toBe('r1')
+    localStorage.removeItem(SHORTCUTS_ENABLED_KEY)
+    act(() => chord?.({ type: 'chord', endpointId: 'r1', index: 0 }))
+    expect(store.getState().instances.relayActive).toBeNull()
   })
 })

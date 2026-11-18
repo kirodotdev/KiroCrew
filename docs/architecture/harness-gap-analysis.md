@@ -45,7 +45,7 @@ The largest ❓ clusters, where one install per harness clears many cells at onc
 | kiro-cli | 60 | 0 | 6 | 7 | 60/66 (91%) |
 | KAS | 72 | 0 | 1 | 0 | 72/73 (99%) |
 | claude | 45 | 7 | 13 | 8 | 45/65 (69%) |
-| codex | 43 | 8 | 13 | 9 | 43/64 (67%) |
+| codex | 44 | 8 | 12 | 9 | 44/64 (69%) |
 | opencode | 32 | 9 | 21 | 11 | 32/62 (52%) |
 | goose | 36 | 8 | 18 | 11 | 36/62 (58%) |
 | pi | 31 | 8 | 21 | 13 | 31/60 (52%) |
@@ -75,7 +75,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-LAU-12 | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | rerun gates fixed `dashboard/kiro_readiness.py` |
 | R-AUTH-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `agent_sdk/host_auth.py` one declaration each |
 | R-AUTH-2 | ✅ | ✅ | ❓ | ❓ | ✅ | ✅ | ✅ | ✅ | ✅ | `signed_out_signature` `agent_sdk/host_auth.py` for opencode, goose, pi, deepseek and copilot; kiro/KAS `_KIRO_SIGNED_OUT`/`_KAS_SIGNED_OUT`; opencode's hosted fall-back refused at start (`is_opencode_hosted_fallback`, `acp/no_model_provider.py`, raised by `_refuse_opencode_hosted_fallback` in `acp/client_opencode_session.py`); claude, codex declare no phrase |
-| R-AUTH-3 | ✅ | ✅ | ✅ | ✅ | ❓ | ✅ | ✅ | ✅ | ✅ | `ACP_BACKENDS_CREW_OAUTH_BRIDGE` `agent_sdk/backends_mcp.py` (kas, claude, codex, goose, pi, copilot, deepseek); kiro native `REMOTE_MCP_OAUTH`; opencode in neither |
+| R-AUTH-3 | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | `ACP_BACKENDS_CREW_OAUTH_BRIDGE` `agent_sdk/backends_mcp.py` (kas, claude, codex, goose, pi, copilot, deepseek); kiro native `REMOTE_MCP_OAUTH`; opencode in neither: its remote servers stay loaded, and one with no headers of its own that answers Crew's credential-free probe with `401` + `Bearer` is noted in the report's advisory `sign_in_suspected` (never `awaiting_auth` or `not_ready()`) with one "may need a sign-in" chat notice (`acp/mcp_sign_in_probe.py`, `test/test_opencode_mcp_sign_in_probe.py`) |
 | R-AUTH-4 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | only kiro-cli login (cloud `cloud/login.py`) and KAS login are Crew-run |
 | R-AUTH-5 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | Kiro account check only gates kiro-family turns (`dashboard/kiro_readiness.py`) |
 | R-SBX-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `scripts/check_harness_parity.py` sandbox-delegation rule; `ACP_BACKENDS_INTERNAL_SANDBOX` = {kiro} `agent_sdk/backends_launch.py`, `RELAY_INTERNAL_SANDBOX` = {kas} |
@@ -109,7 +109,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-MCP-6 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | card `mcp.per_tool_deny` / `costs_whole_server` declared for every harness |
 | R-MCP-7 | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | `acp/client_mcp_array.py` declares wait servers only on kiro-cli; KAS #30898 |
 | R-MCP-8 | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❓ | ❌ | ❌ | notice KAS-only |
-| R-MCP-9 | ❓ | ✅ | ❓ | ❓ | ➖ | ➖ | ➖ | ➖ | ➖ | KAS #30969; claude/codex read user config layers |
+| R-MCP-9 | ❓ | ✅ | ❓ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | KAS #30969; codex #30601 (probe `toolless_ambient`); claude reads user config layers |
 | R-MCP-10 | ❓ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | KAS order and budget (#26148, #35278, #32602); `acp/client_mcp_array.py` passes the array with no Crew-first order |
 | R-MCP-11 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | admin MCP registry applies to kiro-cli's own registry filter only |
 | R-MCP-12 | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | ➖ | `ACP_BACKENDS_TOOL_SEARCH_OVERLAY` = {kiro} `backends_mcp.py`; KAS via spec; no deferral elsewhere |
@@ -190,7 +190,7 @@ Unknown (❓, not measured): R-LAU-8, R-LAU-11, R-AUTH-2, R-SPEC-13, R-MCP-4, R-
 | R-USE-1 | M | not in `REPORT_USAGE` (`backends_turns.py`) | new: capture the harness's usage frame | yes | Usage page empty for this harness | no open PR |
 | R-ERR-3 | S | `undelivered_call_watch.py` matches only `KAS_TOOL_UNAVAILABLE_RE` (`agent_sdk/kas_tool_names.py`) | reuse the watcher with a per-harness pattern row | yes (capture each harness's 'tool not available' text) | a non-KAS worker's lost `work_report` is never flagged to its conductor | no open PR |
 
-Unknown (❓, not measured): R-LAU-8, R-LAU-11, R-AUTH-2, R-SPEC-13, R-MCP-4, R-MCP-5, R-MCP-7, R-MCP-9, R-MCP-10, R-MCP-14, R-ROW-1, R-ERR-2, R-ERR-5.
+Unknown (❓, not measured): R-LAU-8, R-LAU-11, R-AUTH-2, R-SPEC-13, R-MCP-4, R-MCP-5, R-MCP-7, R-MCP-10, R-MCP-14, R-ROW-1, R-ERR-2, R-ERR-5.
 
 ### opencode
 

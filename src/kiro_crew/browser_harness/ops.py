@@ -147,6 +147,9 @@ CHANGE_READ_S = 3.0
 _CHANGES_LEFT_OUT = "`changes` left out: the page could not be read around the action"
 SCROLL_DEFAULT_PX = 300
 TEXT_CAP = 20_000
+#: Most steps one ``type {steps}`` call runs: the whole list stays one op inside
+#: the short op budget (``budgets.OP_TIMEOUT_S``).
+STEPS_CAP = 50
 _URL_MAX = 4096
 
 _SleepFn = Callable[[float], Awaitable[None]]
@@ -690,7 +693,8 @@ async def _refuse_committed_url(ctx: OpContext, url: str) -> dict[str, Any] | No
     return refusal(
         "redirect_refused",
         f"the page redirected to {url[:120]}, which is not a public http(s) URL or a "
-        "loopback origin the user listed; the tab was moved to about:blank",
+        "loopback origin the user listed (or, for an app's own session, not one of the "
+        "pages the app may browse); the tab was moved to about:blank",
     )
 
 
@@ -863,7 +867,40 @@ async def _scroll(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "x": x, "y": y, "dx": dx, "dy": dy}
 
 
+async def _focus_ref(ctx: OpContext, ref: Any) -> dict[str, Any] | None:
+    """Focus *ref* before typing; the refusal, or ``None`` once it holds focus."""
+    if not _is_ref(ref):
+        return refusal("bad_ref", f"not a valid ref: {ref!r}; call snapshot first")
+    focused = await _page(ctx, "focus", ref)
+    if not isinstance(focused, dict) or not focused.get("ok"):
+        code = focused.get("code") if isinstance(focused, dict) else None
+        if code == "password_field":
+            return _password_refusal(ref)
+        if code == "asked_field":
+            return _asked_refusal(ref)
+        return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
+    if not focused.get("focused"):
+        why = " (disabled)" if focused.get("disabled") else ""
+        why += " (readonly)" if focused.get("readOnly") else ""
+        if focused.get("activeTag"):
+            why += f"; focus stayed on <{focused['activeTag']}>"
+        return refusal(
+            "not_focusable",
+            f"ref {ref} did not take focus{why} -- refusing to type into another field",
+        )
+    return None
+
+
+def _known_key(key: Any) -> bool:
+    """*key* is one ``press_key`` presses: ``Space``, a named key, or one character."""
+    return isinstance(key, str) and (key == "Space" or key in _NAMED_KEYS or len(key) == 1)
+
+
 async def _type(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    if args.get("steps") is not None:
+        # ``browser_harness.type_steps``, resolved at call time: it imports this module.
+        module = importlib.import_module("kiro_crew.browser_harness.type_steps")
+        return await module.run(ctx, args)  # type: ignore[no-any-return]
     text = args.get("text")
     if not isinstance(text, str):
         return refusal("bad_text", "type needs a `text` string")
@@ -871,25 +908,9 @@ async def _type(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
         return refusal("bad_text", f"text longer than {TEXT_CAP} characters")
     ref = args.get("ref")
     if ref is not None:
-        if not _is_ref(ref):
-            return refusal("bad_ref", f"not a valid ref: {ref!r}; call snapshot first")
-        focused = await _page(ctx, "focus", ref)
-        if not isinstance(focused, dict) or not focused.get("ok"):
-            code = focused.get("code") if isinstance(focused, dict) else None
-            if code == "password_field":
-                return _password_refusal(ref)
-            if code == "asked_field":
-                return _asked_refusal(ref)
-            return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
-        if not focused.get("focused"):
-            why = " (disabled)" if focused.get("disabled") else ""
-            why += " (readonly)" if focused.get("readOnly") else ""
-            if focused.get("activeTag"):
-                why += f"; focus stayed on <{focused['activeTag']}>"
-            return refusal(
-                "not_focusable",
-                f"ref {ref} did not take focus{why} -- refusing to type into another field",
-            )
+        refused = await _focus_ref(ctx, ref)
+        if refused is not None:
+            return refused
     # Whatever holds focus now is where the text lands: never a password box.
     active = await _page(ctx, "activeField")
     if not isinstance(active, dict) or not active.get("focused"):
@@ -941,10 +962,10 @@ async def _press_key(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     key = args.get("key")
     if not isinstance(key, str) or not key:
         return refusal("bad_key", "press_key needs a `key`")
+    if not _known_key(key):
+        return refusal("bad_key", f"unknown key: {key!r} (named keys or a single character)")
     if key == "Space":
         key = " "
-    if key not in _NAMED_KEYS and len(key) != 1:
-        return refusal("bad_key", f"unknown key: {key!r} (named keys or a single character)")
     modifiers = _modifier_mask(args.get("modifiers"))
     if len(key) == 1 or modifiers:
         # A printable key is a character typed into whatever holds focus: the same

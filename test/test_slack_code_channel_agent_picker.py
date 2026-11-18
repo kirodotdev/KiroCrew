@@ -209,13 +209,14 @@ async def _open(env: Env) -> list[dict[str, Any]]:
 # ── The kickoff picker ────────────────────────────────────────────────────
 
 
-def test_the_kickoff_carries_a_picker_preselected_with_the_conductor(env: Env) -> None:
+def test_the_kickoff_carries_a_picker_preselected_with_the_default_agent(env: Env) -> None:
+    env.default_agent = "kirocrew"
     blocks = asyncio.run(_open(env))
     select = _select(blocks)
     assert select is not None and select["type"] == "static_select"
     assert [o["value"] for o in select["options"]] == env.agents
-    # Zero config: the auto "Code channels" folder's agent.
-    assert _initial(blocks) == "kirocrew-conductor"
+    # Zero config: the owner's default agent, not the conductor.
+    assert _initial(blocks) == "kirocrew"
     # The kickoff's own text is still its first block and its fallback text.
     kickoff_text = env.slack.posts[0][1]
     assert blocks[0]["text"]["text"] == kickoff_text
@@ -521,6 +522,7 @@ def test_the_kickoff_options_say_what_each_agent_does(env: Env) -> None:
         "builder",
     ]
     env.agents.append("my-helper")
+    env.default_agent = "kirocrew"
     env.agent_descriptions = {
         "builder": "Builds and tests changes in your repo",
         "kirocrew-conductor": "Splits a goal into work items <!channel> " + "word " * 40,

@@ -18,9 +18,6 @@ vi.mock('../../hooks/useContainerWidth', () => ({
   useContainerWidth: () => [{ current: null }, 1200],
 }))
 vi.mock('../../hooks/useIsMobile', () => ({ useIsMobile: () => false, useIsNarrowViewport: () => false }))
-// The switch's gateway write the list waits for: settled unless a case holds it.
-let previewSaved: Promise<void> = Promise.resolve()
-vi.mock('../../hooks/usePreviewFlagServerSync', () => ({ whenPreviewFlagSaved: () => previewSaved }))
 
 /**
  * The panel talks to `/api/secrets` through the shared `api` client, which issues
@@ -62,6 +59,8 @@ let listManagedError = false
 let listUsage: Record<string, Array<{ kind: string; name: string; key: string }>> = {}
 /** When set, the next `/api/secrets` GET rejects — drives the error path. */
 let listShouldFail = false
+/** What `/api/auth/me` says about the viewer: undefined reads as "unknown". */
+let ownerOk: boolean | undefined
 
 /**
  * Fill a partial `Response` literal out to the shape the transport reads.
@@ -144,6 +143,7 @@ function recordCall(input: RequestInfo | URL, init?: RequestInit): FetchCall {
 function installFetch() {
   return stubFetch((input, init) => {
     const { url, method } = recordCall(input, init)
+    if (method === 'GET' && url === '/api/auth/me') return Promise.resolve(okJson({ owner_ok: ownerOk }))
     if (method === 'GET' && url === '/api/secrets') {
       if (listShouldFail) return Promise.reject(new Error('boom'))
       return Promise.resolve(okJson(listBody()))
@@ -196,7 +196,7 @@ async function openAdd(user: ReturnType<typeof userEvent.setup>) {
 }
 
 beforeEach(() => {
-  previewSaved = Promise.resolve()
+  ownerOk = undefined
   calls = []
   listNames = []
   listManaged = []
@@ -224,22 +224,6 @@ describe('SecretsPanel rail', () => {
   it('opens on the Add pane when the vault is empty', async () => {
     mount()
     expect(await screen.findByLabelText('Secret name')).toBeInTheDocument()
-  })
-
-  it('reads the list only after the preview switch has reached the gateway', async () => {
-    // Read before the write lands, the gateway still lists names only, which
-    // would show every login as a plain secret.
-    let release: () => void = () => {}
-    previewSaved = new Promise<void>(resolve => { release = resolve })
-    listNames = ['GITHUB']
-    listItems = [{ name: 'GITHUB', type: 'login', revision: 'r1', fields: { username: 'octo', urls: [] } }]
-    mount()
-    await act(async () => {})
-    expect(calls.some(c => c.method === 'GET' && c.url === '/api/secrets')).toBe(false)
-    expect(screen.getByText(S.loading)).toBeInTheDocument()
-    await act(async () => release())
-    expect(await screen.findByRole('option', { name: /GITHUB/ })).toHaveTextContent('octo')
-    expect(calls.some(c => c.method === 'GET' && c.url === '/api/secrets')).toBe(true)
   })
 
   it('groups managed credentials apart from custom items and shows a status per row', async () => {
@@ -931,5 +915,16 @@ describe('SecretsPanel on an expired session', () => {
     expect(await screen.findByText(/owner authorization required/)).toBeInTheDocument()
     expect(banner()).toBeNull()
     expect(isAuthBannerShown()).toBe(false)
+  })
+})
+
+describe('SecretsPanel — a teammate', () => {
+  it('shows one owner-only notice instead of the vault and its Add row', async () => {
+    ownerOk = false
+    listNames = ['GITHUB_TOKEN']
+    mount()
+    expect(await screen.findByTestId('secrets-owner-only')).toHaveTextContent("Only the Crew's owner can see or change secrets.")
+    expect(screen.queryByText('GITHUB_TOKEN')).toBeNull()
+    expect(screen.queryByText(/Add secret/)).toBeNull()
   })
 })

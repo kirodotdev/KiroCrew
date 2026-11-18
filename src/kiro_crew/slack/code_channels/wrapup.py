@@ -184,7 +184,7 @@ def _fact_lines(facts: Facts) -> list[str]:
     if facts.changes:
         lines.append(f"Changed since the branch was cut: {facts.changes}")
     if facts.uncommitted:
-        lines.append("⚠️ The worktree has uncommitted changes. Archiving keeps them on disk.")
+        lines.append("Warning: The worktree has uncommitted changes. Archiving keeps them on disk.")
     if facts.workers:
         lines.append("*Helper agents*\n" + _bounded_lines(facts.workers, _MAX_WORKER_CHARS))
     return lines
@@ -576,6 +576,12 @@ async def _point_summary(channel: str, ts: str) -> None:
         await client.set_summary_message(channel, ts)
     except CodeChannelApiError as exc:
         logger.info("code channel %s: summary_message not recorded: %s", channel, exc.code)
+        return
+    try:
+        # The work board reads it: a current wrap-up is never displaced as the summary.
+        await update_async(channel, summary_message_ts=ts)
+    except Exception:
+        logger.debug("code channel %s: summary pointer not stored", channel)
 
 
 async def on_turn_start(binding: Binding, event: Any) -> None:
@@ -618,7 +624,7 @@ async def on_turn_end(binding: Binding, event: Any) -> None:
 
 ALREADY_ARCHIVED_TEXT = "This channel is already archived."
 STALE_TEXT = "That wrap-up is out of date. Run `/wrap-up` for a fresh one."
-NOT_ALLOWED_TEXT = "⛔ You can't archive this channel."
+NOT_ALLOWED_TEXT = "Blocked: You can't archive this channel."
 ARCHIVE_FAILED_TEXT = "I couldn't archive this channel ({code}). Try again in a moment."
 
 

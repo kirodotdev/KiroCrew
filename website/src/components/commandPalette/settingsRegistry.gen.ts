@@ -53,25 +53,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Version, update channel, check for updates, and license"
   },
   {
-    "id": "agent.orchestrator-memory",
-    "label": "Orchestrator memory",
+    "id": "agent.kiro-memory",
+    "label": "Kiro Memory",
     "labelKey": "pages.developer.agentBackendTab.orchestrator_memory_label",
     "description": "Use existing Kiro memories in personal chats. Changes apply when an agent session starts; start a new chat to use the updated setting.",
-    "hint": "Uses memories saved in other Kiro clients alongside Kiro Crew's existing memory. Kiro memories are read-only here. Kiro Crew's learning behavior and each Bot's separate memory are unchanged. Kiro memories are available in Incognito chats, but excluded from Temporary chats.",
+    "hint": "Uses Kiro Memory alongside Kiro Crew’s existing memory to access memories saved by other Kiro clients. These memories are read-only here. Kiro Crew’s learning behavior and each Bot’s separate memory are unchanged.",
     "tab": "agent",
     "type": "toggle",
     "occurrence": 1,
     "configKey": "agent.orchestrator_memory"
-  },
-  {
-    "id": "agent.kiro-sign-in",
-    "labelKey": "pages.developer.kiroSignInCard.search_label",
-    "tab": "agent",
-    "type": "buttonGroup",
-    "occurrence": 1,
-    "settingId": "kiro-sign-in",
-    "label": "Sign out or switch Kiro account",
-    "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
   },
   {
     "id": "browser.max-frame-rate",
@@ -279,6 +269,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "channel": "teams"
     }
+  },
+  {
+    "id": "channels.always-use-conductor-mode-slack",
+    "label": "Always use conductor mode (Slack)",
+    "labelKey": "pages.settings.slackPanel.slackCode.conductor_mode",
+    "labelSuffix": "Slack",
+    "hint": "Channels already running keep their agent. A conductor hands work to helper agents, so turn on “Let code channels start helper agents” too.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.code_channel_defaults.conductor_mode"
   },
   {
     "id": "channels.answer-in-group-spaces-webex",
@@ -1067,6 +1071,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "channel": "whatsapp"
     }
+  },
+  {
+    "id": "chat.apply-folder-suggestions-automatically",
+    "label": "Apply folder suggestions automatically",
+    "labelKey": "pages.settings.chatPanel.folder_suggestions_auto_apply",
+    "description": "File a new session into the matching folder without asking. A card says where it went, with an undo.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.folder_suggestions_auto_apply"
   },
   {
     "id": "chat.auto-compact-threshold",
@@ -2338,6 +2355,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.connected-computers",
+    "label": "Connected computers",
+    "labelKey": "connectedComputers.preview.label",
+    "description": "Chats on this server can work in a folder on your own computer. Nothing is shared until you approve it on that computer.",
+    "hint": "Your computer connects to this server and shares only the folder you approve. Turning this off stops sharing and never deletes files. Remote Crew is the reverse: it lets you use this server from another device.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.decisions",
     "label": "Decisions",
     "labelKey": "pages.developer.featurePreviewsTab.decisions",
@@ -2509,19 +2539,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.run-kas-on-kiro-crew-s-own-engine",
     "label": "Run KAS on Kiro Crew's own engine",
     "labelKey": "pages.developer.kasBundleCard.toggle_label",
-    "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
-    "id": "developer.secrets-vault-redesign",
-    "label": "Secrets vault redesign",
-    "labelKey": "pages.developer.featurePreviewsTab.secrets_vault",
-    "description": "Shows Secrets as a list beside the open item, and lets you save logins and notes.",
+    "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Kiro account. Takes effect when Kiro Crew restarts.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2651,6 +2669,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "zoom"
     }
+  },
+  {
+    "id": "display.dark-from",
+    "label": "Dark from",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_dark_from",
+    "hint": "Scheduled mode switches to dark at this time, in this device's time zone.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    },
+    "configKey": "dashboard.theme_schedule_dark"
   },
   {
     "id": "display.default-for-new-sessions",
@@ -2836,6 +2867,32 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "view"
     }
+  },
+  {
+    "id": "display.light-from",
+    "label": "Light from",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_light_from",
+    "hint": "Scheduled mode switches to light at this time, in this device's time zone.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    },
+    "configKey": "dashboard.theme_schedule_light"
+  },
+  {
+    "id": "display.minimize-to-tray",
+    "label": "Minimize to tray",
+    "labelKey": "pages.settings.displayPanel.minimize_to_tray",
+    "hint": "Minimizing the window hides it in the system tray instead of the taskbar. Click the tray icon to open it again.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "settingId": "display.minimize-to-tray"
   },
   {
     "id": "display.mode",
@@ -3049,6 +3106,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "configKey": "instances.enabled",
     "label": "Enable remote crew management"
+  },
+  {
+    "id": "kiro-account.kiro-sign-in",
+    "labelKey": "pages.developer.kiroSignInCard.search_label",
+    "tab": "kiro-account",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "settingId": "kiro-sign-in",
+    "label": "Sign out or switch Kiro account",
+    "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
   },
   {
     "id": "notifications.sound-category-approval",

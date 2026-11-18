@@ -691,6 +691,13 @@ class Permissions:
     #: ``apps/desktop_capabilities.py``). Empty = none, which is the default. Shown at
     #: the trust prompt and held back on a widening update like a new API path.
     desktopCapabilities: list[str] = field(default_factory=list)  # noqa: N815
+    #: Pages the app's OWN agent sessions may drive the ``browser`` tool on without a
+    #: per-step approval: ``https://<host>`` plus a path pattern each
+    #: (``apps/browser_sites.py``). Never approved by an install: the owner approves
+    #: them on the app's page. Validated by ``AppManifest.validate``.
+    browserSites: list[str] = field(default_factory=list)  # noqa: N815
+    #: ``browserSites`` present but not a list of strings. Not serialized.
+    bad_browser_sites: bool = False
     #: Takes inbound webhook deliveries on its own routes, governed as the
     #: ``webhooks`` source named by the app's name (``webhook_sources``) and asked
     #: through ``ctx.webhook_source``. Reaches nothing new: it lets the policy
@@ -746,6 +753,8 @@ class Permissions:
             d["reachableByUserSessions"] = self.reachableByUserSessions
         if self.desktopCapabilities:
             d["desktopCapabilities"] = self.desktopCapabilities
+        if self.browserSites:
+            d["browserSites"] = list(self.browserSites)
         if self.webhookSource:
             d["webhookSource"] = True
         if self.bots:
@@ -773,6 +782,8 @@ class Permissions:
         # and `test_mcp_listing_import_budget.py` caps the modules that listing loads.
         from kiro_crew.apps.chat_launch import parse_chat_launch
 
+        raw_sites = data.get("browserSites", [])
+        sites_ok = isinstance(raw_sites, list) and all(isinstance(e, str) for e in raw_sites)
         return cls(
             api=_granted_list(data.get("api")),
             events=_granted_list(data.get("events")),
@@ -793,6 +804,8 @@ class Permissions:
             workerAutoApprove=data.get("workerAutoApprove") is True,  # noqa: N815
             reachableByUserSessions=declared_verbs(data.get("reachableByUserSessions")),
             desktopCapabilities=declared_capabilities(data.get("desktopCapabilities")),
+            browserSites=list(raw_sites) if sites_ok else [],  # noqa: N815
+            bad_browser_sites=not sites_ok,
             webhookSource=data.get("webhookSource") is True,  # noqa: N815
             bots=_bot_scopes(data.get("bots")),
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815

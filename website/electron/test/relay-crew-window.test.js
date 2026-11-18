@@ -508,6 +508,72 @@ test("window: a main-frame load the relay answers 5xx or that fails is reported 
   w.handle.close();
 });
 
+test("window: a reload the page's service worker answers with the relay's 503 is reported once", () => {
+  // The worker's own fetch never reaches the network hook as a main frame, so
+  // only did-navigate sees the status the document was served with.
+  const w = openWithClock();
+  const wc = w.crewView.webContents;
+  wc.emit("did-start-navigation", {}, `${ORIGIN}/chat`, false, true);
+  wc.emit("did-navigate", {}, `${ORIGIN}/chat`, 503);
+  assert.strictEqual(w.unreachable.length, 1);
+  assert.strictEqual(w.handle.showsError(), true, "opening it again reloads");
+  w.handle.close();
+
+  // Seen by both: one notice.
+  const both = openWithClock();
+  both.crewView.webContents.emit("did-start-navigation", {}, `${ORIGIN}/`, false, true);
+  both.completed("/", 503, "mainFrame", CREW_NOT_CONNECTED);
+  both.crewView.webContents.emit("did-navigate", {}, `${ORIGIN}/`, 503);
+  assert.strictEqual(both.unreachable.length, 1, "a load the hook already reported is not reported again");
+  both.handle.close();
+
+  // The other order: did-navigate commits before the hook sees the body end.
+  const navFirst = openWithClock();
+  navFirst.crewView.webContents.emit("did-start-navigation", {}, `${ORIGIN}/`, false, true);
+  navFirst.crewView.webContents.emit("did-navigate", {}, `${ORIGIN}/`, 503);
+  navFirst.completed("/", 503, "mainFrame", CREW_NOT_CONNECTED);
+  assert.strictEqual(navFirst.unreachable.length, 1, "did-navigate first, then the hook: one notice");
+  navFirst.handle.close();
+
+  // The notice's own about:blank load does not start a new report, so the
+  // 503 document's did-navigate after it is the same load.
+  const viaNotice = openWithClock();
+  const wcn = viaNotice.crewView.webContents;
+  viaNotice.handle.onUnreachable(() => {
+    viaNotice.handle.showNotice({ title: "t", body: "", check: "Check again", close: "Close window" });
+    wcn.emit("did-start-navigation", {}, "about:blank", false, true);
+  });
+  wcn.emit("did-start-navigation", {}, `${ORIGIN}/`, false, true);
+  viaNotice.completed("/", 503, "mainFrame", CREW_NOT_CONNECTED);
+  wcn.emit("did-navigate", {}, `${ORIGIN}/`, 503);
+  assert.strictEqual(viaNotice.unreachable.length, 1, "a notice raised by the first report is not raised again");
+  // A same-document navigation does not start a new load either.
+  wcn.emit("did-start-navigation", {}, `${ORIGIN}/#x`, true, true);
+  wcn.emit("did-navigate", {}, `${ORIGIN}/`, 503);
+  assert.strictEqual(viaNotice.unreachable.length, 1);
+  viaNotice.handle.close();
+
+  // Another origin, or a healthy page, reports nothing.
+  const ok = openWithClock();
+  ok.crewView.webContents.emit("did-navigate", {}, "https://elsewhere.example.test/", 503);
+  ok.crewView.webContents.emit("did-navigate", {}, `${ORIGIN}/`, 200);
+  assert.deepStrictEqual(ok.unreachable, []);
+  assert.strictEqual(ok.handle.showsError(), false);
+  ok.handle.close();
+});
+
+test("window: a page the relay answered 4xx reads as an error until the Crew loads again", () => {
+  const w = openWithClock();
+  w.completed("/", 403, "mainFrame");
+  assert.deepStrictEqual(w.unreachable, [], "a 4xx is not an outage");
+  assert.strictEqual(w.handle.showsError(), true);
+  w.handle.reload();
+  assert.strictEqual(w.handle.showsError(), false, "a reload starts the page over");
+  w.completed("/", 200, "mainFrame");
+  assert.strictEqual(w.handle.showsError(), false);
+  w.handle.close();
+});
+
 test("window: a notice unloads the Crew's page and shows a local, locked-down view", () => {
   const w = openWithClock();
   const text = { title: "Example Crew is currently unavailable", body: "", check: "Check again", close: "Close window" };
@@ -570,7 +636,7 @@ const PANE_NOTICE = { title: "t", body: "", check: "Check again", close: "Close"
 function openPane(f, extra = {}) {
   const parent = extra.parent || new f.deps.BaseWindow({});
   const dashboard = extra.dashboard || {
-    webContents: { focused: 0, focus() { this.focused += 1; }, isDestroyed: () => false },
+    webContents: Object.assign(new EventEmitter(), { focused: 0, focus() { this.focused += 1; }, isDestroyed: () => false }),
   };
   const handle = openRelayCrewPane({
     endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN,
@@ -703,6 +769,21 @@ test("pane: leaving the screen while it holds the keyboard hands focus back to t
   assert.strictEqual(p.dashboard.webContents.focused, 3, "closing a focused pane hands focus back");
 });
 
+test("pane: a dashboard reload or a gone renderer closes it, and a closed pane leaves no listener behind", () => {
+  for (const event of ["did-navigate", "render-process-gone"]) {
+    const f = fakeDeps();
+    const p = openPane(f);
+    p.dashboard.webContents.emit(event);
+    const closed = p.handle.isClosed();
+    const onWindow = p.parent.children.includes(p.view);
+    const left = p.dashboard.webContents.listenerCount(event);
+    p.handle.close();
+    assert.strictEqual(closed, true, event);
+    assert.strictEqual(onWindow, false, event);
+    assert.strictEqual(left, 0, event);
+  }
+});
+
 test("pane: an overlay and an inactive tab each hide it; it shows once both are off, and focus keeps the overlay", () => {
   const f = fakeDeps();
   const p = openPane(f);
@@ -775,7 +856,7 @@ test("pane: close takes its views off the window, clears the partition, runs onc
   assert.strictEqual(again.handle.isClosed(), true);
 });
 
-test("pane: only main's IPC opens it, and no dashboard code calls it yet, so the window stays the only way a Crew opens", () => {
+test("pane: only main's IPC opens it, and from the dashboard only the key-gated pane helper calls it", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const callers = [];
@@ -796,11 +877,15 @@ test("pane: only main's IPC opens it, and no dashboard code calls it yet, so the
   callers.length = 0;
   const dashboard = path.join(shell, "..", "src");
   walk(dashboard, [".ts", ".tsx"], "relayCrewAPI", dashboard);
-  const paneCalls = /\b(openPane|setPaneBounds|setPaneOverlay|closePane)\b/;
+  const paneCalls = /\b(openPane|setPaneBounds|setPaneOverlay|setPaneInactive|closePane)\b/;
   const users = callers.filter((f) => !/\.test\.tsx?$/.test(f)
     && paneCalls.test(fs.readFileSync(path.join(dashboard, f), "utf8")));
   assert.ok(callers.length > 0, "the scan finds the dashboard's relayCrewAPI users");
-  assert.deepStrictEqual(users, []);
+  assert.deepStrictEqual(users, [path.join("lib", "relayCrewPanes.ts")]);
+  // That helper hands out the bridge only while the hidden key reads "1".
+  const helper = fs.readFileSync(path.join(dashboard, "lib", "relayCrewPanes.ts"), "utf8");
+  assert.ok(helper.includes("RELAY_CREW_PANE_KEY = 'mc-relay-crew-pane'"));
+  assert.ok(helper.includes("if (safeGetItem(RELAY_CREW_PANE_KEY) !== '1') return null"));
 });
 
 test("window and pane: the handle and the attached Crew's log lines name the Crew", () => {

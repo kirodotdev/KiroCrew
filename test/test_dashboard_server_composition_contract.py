@@ -400,6 +400,10 @@ _LAZY_IMPORTS = {
     "kiro_crew.config.live": "ConfigChange",
     "kiro_crew.config.loader": "KiroCrewAgentConfig",
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
+    # The connected-computers preview: its switch-off and shutdown (``disable``,
+    # bound as ``connected_computers`` in the config-change hook).
+    "kiro_crew.connected_computers": "connected_computers",
+    "kiro_crew.connected_computers.disable": "connected_shutdown",
     "kiro_crew.connections.endpoint_migration": "migrate_retired_endpoints",
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
     "kiro_crew.crew_log": "crew_log_emit _read_budget",

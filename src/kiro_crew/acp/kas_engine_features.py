@@ -67,6 +67,26 @@ def engine_discards_oauth(version: str | None) -> bool:
     return parsed is not None and parsed < OAUTH_MIN_ENGINE_VERSION
 
 
+#: First engine release whose ``session/new`` answer carries no ``model`` select
+#: (it sends the select in a ``config_option_update`` right after; measured on
+#: 0.66.117 and 0.66.119, while 0.66.104 put it in the answer).
+LATE_MODEL_SELECT_MIN_ENGINE_VERSION: tuple[int, int, int] = (0, 66, 117)
+
+
+def engine_sends_model_select_late(version: str | None) -> bool:
+    """Whether an engine at *version* is KNOWN to send its ``model`` select after
+    ``session/new``. An unknown version (the relay route) is False.
+
+    shortcut: the relay route's engine version is unknown, so a relay engine that
+    sends the select late gets its served-default check only from a later
+    ``config_option_update``; revisit when kiro-cli ships such an engine.
+    """
+    from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
+
+    parsed = parse_kiro_cli_version(version) if version else None
+    return parsed is not None and parsed >= LATE_MODEL_SELECT_MIN_ENGINE_VERSION
+
+
 def advertised(agent_capabilities: Any) -> frozenset[str]:
     """The flags of this module that *agent_capabilities* sets to literal ``True``."""
     meta = agent_capabilities.get("_meta") if isinstance(agent_capabilities, Mapping) else None

@@ -102,10 +102,11 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         shown = [item for item in items if _passes_filters(item, options)]
         event_tails: dict[str, list[work_ledger.WorkEvent]] = {}
         if not compact:
-            for item in shown:
-                event_tails[item.item_id] = await asyncio.to_thread(
-                    _tail_events, key, item.item_id, tail
-                )
+            # Every shown item's tail in one executor hop: this hold is the one the
+            # Crew board's build waits on, so it must not grow with the board.
+            event_tails = await asyncio.to_thread(
+                lambda: {item.item_id: _tail_events(key, item.item_id, tail) for item in shown}
+            )
     assert record is not None
 
     state: DashboardState = request.app["state"]

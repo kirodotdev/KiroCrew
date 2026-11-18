@@ -347,7 +347,7 @@ enabled** in the panel, and Slack keeps working as before.
 | Switch | Manifest additions |
 |---|---|
 | Agent sessions (`slack.agent_sessions`) | `features.agent_view`; bot scope `assistant:write`; events `agent_session_stopped`, `agent_session_title_changed` |
-| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` (the work board pins itself); event `agent_session_stopped` |
+| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` (the work board pins itself); events `agent_session_stopped`, `code_channel_action` |
 
 > **Agent view is one-way.** Slack cannot switch an app from `agent_view` back to
 > `assistant_view` once the manifest is saved in Slack.
@@ -373,7 +373,11 @@ turned code channels on for your workspace; a workspace admin has to enable it.
 For code channels you can also set a default folder, agent, model, reasoning effort and
 approval mode for new code channels; see [Slack integration](../../src/kiro_crew/docs/slack-integration.md#slack-code-agent-sessions-and-code-channels).
 With nothing set, code channels go into a **Code channels** sidebar folder, created the first
-time one is needed and set to run `kirocrew-conductor`. To use another folder, pick it, or
+time one is needed with no agent of its own, so a new code channel runs your default agent.
+A **Code channels** folder an earlier release created with `kirocrew-conductor`, and left as
+it was, is read the same way by code channels. A dashboard **New chat** started in that
+folder still gets `kirocrew-conductor`; clear the folder's agent in the sidebar to change
+that too. To use another folder, pick it, or
 choose **New folder…** in the folder list to create one there.
 
 A conductor only plans and hands off work, so in a code channel it needs **Let code channels
@@ -410,7 +414,18 @@ again, the channel instead gets a **Resume** button that only you can press.
 ### Choosing each code channel's agent
 
 A new code channel starts on the default agent: the **Agent** set here, else the default
-folder's own default agent, else `kirocrew-conductor`. To run a channel on a different
+folder's own default agent, else your default agent (`agent.default_agent`, or `kirocrew`).
+
+**Always use conductor mode** (`slack.code_channel_defaults.conductor_mode`, under the default
+folder, off by default) runs every new code channel in conductor mode on the conductor mode agent
+(`agent.crew_mode_agent`, `kirocrew-conductor` unless you set another). While it is on it
+overrides the **Agent** set here and the folder's agent, and the **Agent** menu is disabled; the
+agent you picked there is kept for when you turn it off. Channels already running keep their
+agent. A conductor hands work to helper agents, so it also needs **Let code channels start
+helper agents**; the card warns while that is off. The LTS edition has no conductor mode, so
+there the switch is hidden and a saved on has no effect.
+
+To run a channel on a different
 agent, use either of these in the channel:
 
 - **The picker in the first message.** The message Kiro Crew posts when a channel opens has

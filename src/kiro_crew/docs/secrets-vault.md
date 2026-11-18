@@ -35,12 +35,7 @@ seconds, so a change reaches it within that time. See
 
 ## Adding a secret
 
-Use **Settings → Secrets** in the dashboard. The panel lists the names it holds,
-adds a new entry, and deletes one. It never shows a stored value back to you —
-listing returns names only, so a screenshot of the panel leaks nothing.
-
-With **Secrets vault redesign** turned on in **Settings → Developer → Feature
-Previews**, the tab changes shape. The left list holds every entry the vault
+Use **Settings → Secrets** in the dashboard. The left list holds every entry the vault
 knows, grouped into the credentials Kiro Crew uses by name and your
 own; picking one opens it on the right. **Add secret** asks what you are
 storing first: a **Secret** (one value, an API key or token), a **Login** (a
@@ -63,7 +58,7 @@ so you do not have to fetch the credential again.
 
 ## Signing in to a website from the vault
 
-With the same preview on, when the agent's browser asks you to sign in, the
+When the agent's browser asks you to sign in, the
 sign-in card lists your saved logins for that site, one button each, labelled
 by the account's username. The first three show; **More** shows the rest. Click
 one and Kiro Crew types its username and password into the page for you;

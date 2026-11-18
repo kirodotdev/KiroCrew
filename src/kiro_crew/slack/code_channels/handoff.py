@@ -58,8 +58,8 @@ CONFIRM_TEXT = (
     'Code channels → "Let code channels start helper agents".'
 )
 DONE_TEXT = "Helper agents are on. Send your request again."
-NOT_OWNER_TEXT = ":no_entry: Only {owner} can turn on helper agents."
-NOT_ALLOWED_TEXT = ":no_entry: You can't turn on helper agents from this channel."
+NOT_OWNER_TEXT = "Blocked: Only {owner} can turn on helper agents."
+NOT_ALLOWED_TEXT = "Blocked: You can't turn on helper agents from this channel."
 FAILED_TEXT = "I couldn't turn on helper agents: {reason}"
 PINNED_TEXT = (
     "Helper agents for code channels are set in `{path}`, so they can't be turned on "
@@ -116,9 +116,7 @@ def notice_blocks(channel_id: str) -> list[dict[str, Any]]:
 
 
 def done_blocks() -> list[dict[str, Any]]:
-    return [
-        {"type": "section", "text": {"type": "mrkdwn", "text": f":white_check_mark: {DONE_TEXT}"}}
-    ]
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": f"{DONE_TEXT}"}}]
 
 
 def pinned_blocks(text: str) -> list[dict[str, Any]]:

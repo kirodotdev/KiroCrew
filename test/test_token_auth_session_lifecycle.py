@@ -289,7 +289,7 @@ async def test_api_logout_success_revokes_sessions() -> None:
 
     The reject paths above are covered; this locks in the success path, which is
     what makes the /api/logout entry in _BYPASS_EXACT meaningful -- the endpoint
-    has to be reachable AND still do its job. revoke_all_sessions is patched so
+    has to be reachable AND still do its job. revoke_all_sessions_async is patched so
     the test never touches the real nonce store / persisted generation.
     """
     from aiohttp import web
@@ -301,7 +301,7 @@ async def test_api_logout_success_revokes_sessions() -> None:
     app["local_secret"] = "correct-secret"
     app.router.add_post("/api/logout", api_logout)
 
-    with patch("kiro_crew.dashboard.token_auth.revoke_all_sessions") as mock_revoke:
+    with patch("kiro_crew.dashboard.token_auth.revoke_all_sessions_async") as mock_revoke:
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/logout",
@@ -311,7 +311,7 @@ async def test_api_logout_success_revokes_sessions() -> None:
             assert resp.status == 200
             data = await resp.json()
             assert data["ok"] is True
-            mock_revoke.assert_called_once()
+            mock_revoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio

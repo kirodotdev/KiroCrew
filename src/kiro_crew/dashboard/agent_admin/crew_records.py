@@ -891,13 +891,24 @@ def _created_response(cfg: KiroCrewConfig, name: str) -> web.Response:
     memory; ``member_config_for_id`` resolves it and never a name or slug), so a
     client that must bind something to the crew it just made -- the Meet
     CrewMates flow's schedule -- can do so without going back through the
-    mutable display name.
+    mutable display name. A stored workspace that is not configured adds the
+    ``warnings`` line the update route answers.
     """
-    return web.json_response(
-        {
-            "ok": True,
-            "name": name,
-            "memory_store": cfg.agents[name].memory_store,
-            "member_id": cfg.agents[name].member_id,
-        }
-    )
+    from kiro_crew.member_workspace import DEFAULT_WORKSPACE
+
+    agent = cfg.agents[name]
+    result: dict[str, object] = {
+        "ok": True,
+        "name": name,
+        "memory_store": agent.memory_store,
+        "member_id": agent.member_id,
+    }
+    # Read from the stored record, not the request, so a repeat of the same
+    # request_id is answered with the same warning as the create.
+    ws = agent.workspace
+    if ws and ws not in cfg.workspaces and ws not in (DEFAULT_WORKSPACE, cfg.default_workspace):
+        logger.warning("crew %r bound to unconfigured workspace %r", name, ws)
+        result["warnings"] = [
+            f"workspace '{ws}' is not configured; the crew shares a fallback workspace directory"
+        ]
+    return web.json_response(result)

@@ -41,9 +41,7 @@ logger = logging.getLogger("kiro_crew.webex.transport_dispatch")
 # is the common case, because Webex refuses to edit a message carrying an
 # attachment, so a resolved card's buttons stay clickable forever. Telling a user
 # their approved tool was denied is worse than telling them nothing changed.
-_APPROVAL_NOT_PENDING = (
-    "⌛ That prompt is already answered or timed out — no new decision was sent."
-)
+_APPROVAL_NOT_PENDING = "That prompt is already answered or timed out — no new decision was sent."
 
 # The typed answers an approval prompt accepts: EXACTLY what the prompt asks for,
 # and nothing else.
@@ -100,7 +98,7 @@ async def _maybe_answer_approval(
     if not resolved:
         await self._reply(inbound, _APPROVAL_NOT_PENDING)
         return True
-    await self._reply(inbound, "✅ Approved." if approved else "🚫 Denied.")
+    await self._reply(inbound, "Approved." if approved else "Denied.")
     return True
 
 
@@ -160,7 +158,7 @@ async def _handle_card_press(
             return
         text = self._choices.take(self._approval_key(_route_of(inbound)), choice, nonce)
         if not text:
-            await self._reply(inbound, "⌛ Those options are no longer current — just reply.")
+            await self._reply(inbound, "Those options are no longer current — just reply.")
             return
         # Echo the choice first: a press leaves no trace in the room, so
         # without this the next answer arrives with nothing above it saying
@@ -210,7 +208,7 @@ async def _resolve_card_approval(
         resources=f"session={session_key} via=card resolved={resolved}",
     )
     if resolved:
-        await self._reply(inbound, "✅ Approved." if approved else "🚫 Denied.")
+        await self._reply(inbound, "Approved." if approved else "Denied.")
         return
     # A prompt still waiting means the CARD went stale, not the decision — so
     # point at the affordance that still works instead of claiming the request
@@ -218,7 +216,7 @@ async def _resolve_card_approval(
     if _APPROVALS.has_pending(approval_scope):
         await self._reply(
             inbound,
-            "⌛ That card is no longer current — reply **1** to approve or **2** to deny.",
+            "That card is no longer current — reply **1** to approve or **2** to deny.",
         )
         return
     await self._reply(inbound, _APPROVAL_NOT_PENDING)

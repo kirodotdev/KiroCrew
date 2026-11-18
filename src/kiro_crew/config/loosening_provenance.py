@@ -87,7 +87,7 @@ from typing import Any
 from kiro_crew import sandbox_launch_mark
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir, peek_data_home
-from kiro_crew.user_json import strict_json_equal
+from kiro_crew.user_json import strict_json_equal, strip_utf8_bom
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -488,7 +488,9 @@ def reconcile(leaf: str, disk_bytes: bytes) -> bytes:
     Where the sandbox seals these files (:func:`enforcement_active`): when the on-disk
     bytes differ from the gateway-endorsed copy, the endorsed copy is returned and the
     substitution is logged once -- so a direct in-sandbox rewrite of ANY key is ignored.
-    Elsewhere, or when there is no endorsed copy (the gateway's start endorses each file
+    The config loaders pass their normalized read (:func:`_as_config_text`), so a copy
+    that equals the file once normalized the same way is the same file. Elsewhere, or
+    when there is no endorsed copy (the gateway's start endorses each file
     that has none and can be taken as written, :func:`adopt_unendorsed`), the on-disk
     bytes are returned unchanged. Every gateway publish of these files endorses first
     (:func:`endorsing`), so the gateway's own rename never unseals a file with no copy. An existing but unreadable copy raises
@@ -500,10 +502,23 @@ def reconcile(leaf: str, disk_bytes: bytes) -> bytes:
     if not enforcement_active():
         return disk_bytes
     endorsed = endorsed_bytes(leaf)
-    if endorsed is None or endorsed == disk_bytes:
+    if endorsed is None or endorsed == disk_bytes or _as_config_text(endorsed) == disk_bytes:
         return disk_bytes
     _report_once(leaf, "is not the gateway's own write")
     return endorsed
+
+
+def _as_config_text(content: bytes) -> bytes | None:
+    """*content* as ``read_config_text`` reads it: one leading BOM dropped, universal newlines.
+
+    A restore endorses the archive's own bytes (:func:`endorse_installed`), which can carry
+    a byte-order mark or CRLF; neither means anything to JSON. ``None`` when not UTF-8.
+    """
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return strip_utf8_bom(text.replace("\r\n", "\n").replace("\r", "\n")).encode("utf-8")
 
 
 def reconciled_bytes(
@@ -574,8 +589,8 @@ def adopt_unendorsed() -> None:
     differs from its copy stays pending. Read with the pending scan's own reader (:func:`_read_regular`), so a link
     to a FIFO or ``/dev/zero`` cannot hang the start. Only a JSON object stored as Kiro
     Crew writes one is adopted: a malformed file would become a baseline that blocks
-    Apply and Discard, and one with a byte-order mark or a carriage return never equals
-    the normalized text the config loaders compare with the copy. Never asks
+    Apply and Discard, and one with a byte-order mark or a carriage return is left as
+    written until the gateway's first save of it. Never asks
     :func:`enforcement_active`, which off-loop with nothing cached runs the userns probe.
     """
     for leaf in PROTECTED_LEAVES:

@@ -45,6 +45,8 @@ const {
   windowsTaskkill,
 } = require("./windows-port");
 const {
+  describeSpawnedGatewayTimeout,
+  isLiveSpawnedTimeout,
   gatewayWaitTimeoutMs,
   waitForGateway,
   readLogTail,
@@ -551,6 +553,8 @@ function createGatewaySupervisor({
         getListenPids: winListenPids,
         getCommand: (p) => windowsProcessCommand(p, { execFileFn: execFile }),
         isKirocrew: isTrustedWindowsGatewayCommand,
+        isOwnChild: (pid) => Boolean(gatewayProcess) && gatewayProcess.exitCode === null
+          && gatewayProcess.pid === pid,
         log: glog,
         holders,
       });
@@ -1263,12 +1267,15 @@ function createGatewaySupervisor({
 
   // The splash whose default line reads "Starting gateway…". Recovery paints it
   // while it waits for a port to free, then showLoadingThenConnect paints it
-  // again for the connect itself.
-  function paintLoadingScreen(window, { reconnect = false } = {}) {
+  // again for the connect itself. Settles once the page has loaded, or once a
+  // later navigation, a closed window or a dead page ended the load.
+  async function paintLoadingScreen(window, { reconnect = false } = {}) {
     if (!window || window.isDestroyed()) return;
-    window.webContents.loadFile(path.join(dirname, "loading.html"), {
-      query: splashQuery(window, { reconnect, accent: currentThemeAccent() }),
-    });
+    try {
+      await window.webContents.loadFile(path.join(dirname, "loading.html"), {
+        query: splashQuery(window, { reconnect, accent: currentThemeAccent() }),
+      });
+    } catch { /* replaced by a later navigation, or the window or its page is gone */ }
   }
 
   async function showLoadingThenConnect(
@@ -1278,10 +1285,12 @@ function createGatewaySupervisor({
   ) {
     const healthUrl = `${targetBackendUrl}/api/status`;
     const webContents = window.webContents;
-    paintLoadingScreen(window, { reconnect });
+    const painted = paintLoadingScreen(window, { reconnect });
     // Cold boot and user-clicked retries raise. Autonomous liveness recovery
     // loads into the existing hidden/minimized window without touching focus.
     revealWindowForConnect(window, { reconnect });
+    // A message sent before the splash loads reaches the page it replaces.
+    await painted;
 
     try {
       await waitForBackend(window, healthUrl, {
@@ -1455,6 +1464,17 @@ function createGatewaySupervisor({
       } else if (failedToStart) {
         title = "Kiro Crew — gateway failed to start";
         message = error.message;
+      } else if (isLiveSpawnedTimeout({
+        error,
+        ownTarget: targetBackendUrl === BACKEND_URL,
+        ownership: gatewayOwnership,
+        child: gatewayProcess,
+      })) {
+        // Our own child, still running: naming `kirocrew gateway` would send
+        // the user to start a process that is already up. Retry keeps that
+        // child and waits again (it respawns only when none is running).
+        title = "Kiro Crew — gateway is not answering";
+        message = describeSpawnedGatewayTimeout(error.waitedMs);
       } else {
         title = "Kiro Crew — can't reach the gateway";
         message = "Could not connect to the Kiro Crew backend. Make sure "

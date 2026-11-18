@@ -38,6 +38,7 @@ The person sees the chat; the crew it dispatched is the chat's to show.
 | **The person's session list leaves crew members out.** `GET /api/chat/slots` drops `crew_root` rows for a person; `?crew=all` keeps them (the dashboard reads this and filters on the client); a read with `internal_auth` (an agent's folder, status and lineage tools) keeps every row | `crew_mode.list_view`, `chat_api/slot_detail.py` |
 | A conductor mode chat and its crew are filed in no folder: `session_create` and `session_fork` from inside the tree leave the child unfiled and say so | [session-control](session-control.md) § `session_create`'s folder |
 | `dashboard.new_chat_crew_mode` (default off; Settings → Chat → Sessions → **Start New Chats in conductor mode**, shown wherever conductor mode is, so in every build but LTS) turns conductor mode on for the person's New chat the way a press of the chip does: the create is unchanged, then the ordinary agent switch moves the new chat to the conductor before it opens, so the chip starts pressed and can still be turned off before the first message. Only the entry points that pass `crewModeDefault` (New chat in the sidebar and a folder's `+`, the new-chat shortcut, the palette and command bar, the Sessions page, an embed tab, a Split View pane, the phone session menu's New chat, the empty chat page) ask for it, and only a created chat the chip would be offered on switches: still on the default agent after the server applied any folder or default-folder pin, no chat mode, Persistent, a default agent that is no conductor. A catalog not read yet is read first. A failed read or a refused switch leaves the plain chat. A first send from a chat page with no session open keeps the default agent | `store/chat/lifecycle.ts` (`createSlot`, `startNewChatInCrewMode`), `lib/crewMode.ts` (`newChatCrewModeAgent`) |
+| A Slack code channel's session born on a conductor (with `slack.code_channel_defaults.conductor_mode` on, where conductor mode is offered, it is born on `agent.crew_mode_agent`, over the code-channel default agent and the folder's agent) is a conductor mode root by its agent but carries no `crew_mode_agent` stamp, so the helper agents it dispatches stay filed in the channel's folder (the stamp is what moves a root's workers out of folders). A missing or malformed value, or the LTS edition, reads as off | `slack/code_channels/binding.py` (`resolve_session_spec`), `slack/features.py` (`code_channel_conductor_agent`) |
 | A new chat born on a conductor counts once in `kirocrew.crew_mode.turned_on`; every new chat counts once in `kirocrew.crew_mode.new_chats` with `crew_mode` true or false; no attribute carries a key, a title or an agent name | `metrics/crew_mode.py`, [metrics](metrics.md) |
 
 The design and its parts are recorded in
@@ -976,12 +977,27 @@ their refusal codes below are unchanged.
 The section shows a spinner until its two reads, `GET .../capabilities` and
 `GET .../worker-kit`, settle, and both read files that can block in the kernel
 as long as a hung mount does. Each GET gives up on its read after 20 s
-(`_GET_TIMEOUT_SECS`) and answers `503 capabilities_unavailable`, leaving the
-blocked read to its thread because a GET mutates nothing. The dashboard bounds
+(`GET_TIMEOUT_SECS`, `dashboard/handlers/_bounded_read.py`) and answers
+`503 capabilities_unavailable` with `reason: "timed_out"`, leaving the blocked
+read to its thread because a GET mutates nothing. The gateway log records both
+ends with the Bot's name: a warning when the GET gives up, and one with the real
+duration when the read finishes past the limit; any other unreadable-read 503
+logs the error's type only, never its text. The dashboard bounds
 both reads at 30 s (`ABILITIES_READ_TIMEOUT_MS`, `api/crewCapabilities.ts`, on
 the transport's `getWithSignal`), so a gateway that never answers ends the wait
-too. Either failure reads as the pane's load error (`crewEditorNext.load_error`),
-never as the code or as `deadline exceeded`.
+too. Either failure shows the pane's load error (`crewEditorNext.load_error`)
+as a block notice, never as the code or as `deadline exceeded`. A read past
+either deadline says it ran out of time and names the likely causes, many added
+abilities or a slow or unreachable drive (`load_error_timed_out`); any other
+`capabilities_unavailable` points at the gateway log (`load_error_details`). The
+notice carries **Try again**, which reads the capabilities again, and **Ask the
+agent**, which runs through the editor's leave guard (`leaveGate`): over unsaved
+panes it raises the editor's discard confirm and hands off only once the user
+discards, and with nothing unsaved it goes through the host's `useGuardedLeave`.
+The guide tool `get_member_capabilities` reads the same
+view through `GET /api/cards/agent/capabilities` under the same 20 s deadline and
+waits 30 s for it, so a timed-out read reaches the model as an explanation it can
+relay (`timed_out_for_model`), not as a transport timeout.
 Where a paragraph below says "the pane", it records the copy that pane showed,
 kept as the contract the refusal codes were designed against; it is not a
 rendered surface.
@@ -1350,7 +1366,12 @@ the crew to a fresh `member-<slug>` workspace whose directory is
 `<data home>/workspace-member-<slug>`; a same-slug collision takes a numeric suffix.
 Naming a workspace is the explicit opt-in to share one, stored as given the way
 every create path always stored it (an undeclared name resolves to the base
-directory at use, per the fall-through above). `provision_member_workspace` records
+directory at use, per the fall-through above). An undeclared name other than
+`default` or the configured `default_workspace` is still stored, and the caller is
+told: `POST /api/agents` answers it, and a repeat of the same request, with
+`warnings: ["workspace '<name>' is not configured; the crew shares a fallback
+workspace directory"]`, the line `PUT /api/agents/{name}` answers and
+`kirocrew agent create` prints. `provision_member_workspace` records
 the allocation on the caller's config snapshot only; `persist_member_config(create=True,
 new_workspace=<name>)` publishes it in the SAME locked mutation as the record,
 re-checking the name and directory against the document under the lock
@@ -2773,9 +2794,8 @@ with the Bot's `GET .../crew-workers` answer, which adds closed sessions, the
 ledger line and the server's group (`MateSessionsList`, `liveMateWorkers`). While
 the Bot's thread is live, the same sessions leave the person's own lists (sidebar,
 Recents, grid, unread counts and a person's `GET /api/chat/slots`; `crewModeView`,
-`crew_mode.list_view`) unless the Bot's Settings switch **Show in my Sessions list**
-(`show_sessions_in_list`, off by default, stamped on the thread's slot row) is on.
-The Sessions tab lists them either way. The tab keeps its name (a recorded decision), but its empty
+`crew_mode.list_view`). There is no switch to keep them listed; a stored
+`show_sessions_in_list` value is ignored. The tab keeps its name (a recorded decision), but its empty
 box speaks the reader's words, not the mechanism's: a first-time user has no
 model for why a Bot would "drive sessions", so the box says session, chat or
 driving nowhere. The
@@ -2788,8 +2808,8 @@ Bot, an accent `ArrowRight`, pose-4 and pose-6 at 30% opacity as the
 workers not here yet). The poses are fixed-palette `<img>` assets, so the fade
 is an opacity, never a recolour, and reads on both palettes (#23003). Rows are grouped as the Crew panel groups them (approval, working,
 "Waiting on <mate>" for `with_conductor`, waiting, done), with Done folded. A click
-expands the row IN PLACE (the row says **Details**, and its chevron points down)
-and shows its recap: no navigation, no side panel, no drawer. The list counts only
+opens that session in the side panel's **Sessions** tab (below), revealing the
+panel; a docked Profile column closes behind the schedule-draft question. The list counts only
 rows stamped `mate_root`: a session adopted or released away keeps its birth
 `created_by` but is no longer the Bot's. A list 404 naming `not_crew_mode_root`
 (the Bot thread still restoring) keeps polling; any other 404 is a gateway that
@@ -2802,8 +2822,23 @@ else a reported artifact that `urlsplit` parses as a GitHub pull-request page), 
 `last_report_at` (else the session's newest `turn/completed`), plus the pending
 requests of its `approvals` fold and the count of open `ask_question` calls in
 its `tools` fold. With none of the report lines it says "No report yet"; open
-approvals and questions still show. The full transcript is not reached from
-this click.
+approvals and questions still show.
+
+The side panel's **Sessions** tab (`BotSessionsPanelTab`, `CREW_SESSIONS_TAB_ID`)
+is the second host-owned leading tab, after Dashboard and before Workspace.
+Dashboard stays first, the load and preview focus target, and is unchanged. The
+Sessions chip counts the Bot's open sessions waiting on the person (a tool
+approval or an open question). The tab renders the same list as Profile >
+Sessions; a row click opens the session inside the tab: a header (back to
+Sessions, status dot, title, a Recap toggle that shows the recap above, and
+Open in chat, which leaves for `/chat` on that slot) over a `ChatPane` bound to
+the worker's slot, so the person reads and types to it while the Bot's thread
+stays on the left. Back or Escape returns to the list. Which session is open is
+kept per Bot (`openSessionBy` in `useMembersPageSidePanel`), so it survives a
+switch to Dashboard and back. A session that is not open offers **Reopen
+session**, through the resume route (`POST .../resume`) without making it the
+chat page's active session; a session
+on another crew says where it runs.
 Child subagent runs remain presence for the roster but are not dashboard
 sessions. Every page-level request to open Profile — including a second use of
 the quiet-chat Sessions link after the reader changed card tabs or pushed a
@@ -3540,7 +3575,7 @@ transcript-fed views (Changes / Issues / Links / Pins, plus the session
 Summary), Subagents, Workflows and Git (a Bot hands its work to workers), the
 diagnostics group (Logs / Context / Crew log), the chat page's Command Center,
 and Artifacts — a pinned standing
-tab on the chat page that has no place in this page's Dashboard + Files set
+tab on the chat page that has no place in this page's Dashboard, Sessions + Files set
 (`MEMBERS_WITHHELD_VIEWS`). Withholding that LIST does not withhold an
 artifact DOCUMENT: `SidePanel.isWithheld` ties every document tab (file, diff,
 folder, artifact) to `'files'`, which this page withholds only while the
@@ -4451,7 +4486,9 @@ parts:
   session reports to the Bot's thread as one of its workers
   (`mate_thread_wakes.note_cron_result`), recognised only on attested state:
   the job's own `cron:` key, a capture naming `job.member_id`, a turn on that
-  Bot's worker (`test_cron_crewmate_report.py`).
+  Bot's worker (`test_cron_crewmate_report.py`). Its report carries the
+  worker report's unusable-server line, read from the cron session's own MCP
+  report at delivery (`mate_thread_wakes.provider_mcp_payload`).
   Its built-in tools are the default template's (the shell, the file writer and
   `code` included): it may run a quick command or make a small edit itself, and
   hands longer work to the worker. Its own notes go through `save_notes`. The spawn admission gate
@@ -4812,7 +4849,21 @@ things here and leaves every other git step to the worker's prompt
    repository (the same subfolder when the path named one, unless that folder
    is a link out of the worktree or holds a control character or bracket). A
    path in the worktree the worker already runs in, or in that repository's own
-   checkout, moves nothing. The binding is re-captured under the dispatch lock,
+   checkout, moves nothing. A project a person picked for the session
+   (`POST /api/chat/slots/{slot}/project`, the folder the slot already has
+   included) is kept on every later turn and no worktree is applied over it,
+   re-checked after the lookup so a pick made meanwhile stands. The pick is held
+   on the `TranscriptBinding` beside `project` (`_ChatSlot._project_picked`), so
+   every live alias on the transcript keeps and saves it, and a fork carries it;
+   it is saved on the metadata line as `project_picked` and restored together
+   with the project, only when that non-empty project is restored. An app's
+   write to the route is not a pick and leaves the flag as it is. Clearing the
+   project hands the choice back, and any other write that moves the project (a
+   workspace or agent switch, an app, the `set_project` tool) drops the pick.
+   The metadata line sits in the agent-writable data home, so an agent that
+   forges `project_picked` beside its own `project` keeps that folder after a
+   restart; this is an accepted exception, since the worktree keeps two Bots off
+   one working tree and is not a security boundary. The binding is re-captured under the dispatch lock,
    and a session already running takes the deferred reset `set_project` uses.
    Git failing (or no sandbox) leaves the turn on its project. The
    repository's `aws.project_profiles` binding still applies in the worktree:
@@ -4852,7 +4903,8 @@ stamped by `session_send`), the thread is woken with ONE hidden turn
 its reply scrubbed (`member_goals.scrub_text`), capped at 4,000 characters (held
 cut, with its cut flag) and fenced between `<<<worker reply` / `>>>end of worker
 reply` as data. Under it, when the worker slot's stored MCP report
-(`mcp_report_payload`, read at the worker's turn end) names servers of the
+(`mcp_report_payload`, read at the worker's turn end; for a scheduled turn,
+the cron session's own report, read at delivery) names servers of the
 worker's that its session cannot use (only servers the worker spec mounts, read
 off the loop before the wake; one it declares without selecting its tools is one
 it lacks), one line names each with how: sign-in missing or expired (a failed

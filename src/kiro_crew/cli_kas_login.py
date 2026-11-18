@@ -69,6 +69,16 @@ POLL_INTERVAL_SECS = 5.0
 
 _PROVIDERS = ("builder_id", "idc", "google", "github")
 
+#: The plain name of each sign-in method, keyed by the provider class a finished
+#: login reports, so the confirmation never shows a stored code like ``Enterprise``.
+#: A class missing here is printed as is.
+_PROVIDER_LABELS = {
+    "BuilderId": "AWS Builder ID",
+    "Enterprise": "IAM Identity Center",
+    "Google": "Google",
+    "Github": "GitHub",
+}
+
 #: Plain text for the coded poll failures a person can act on; the dashboard's
 #: sign-in card says the same thing. Any other code is printed as is.
 _FAILURE_TEXT = {
@@ -129,7 +139,7 @@ def _route(_args: argparse.Namespace) -> int:
         cfg = load_sign_in_owner_config()
     except ConfigUnreadable as exc:
         print(
-            f"❌ could not read the Kiro Crew config under {data_home()}: {exc}. Which program "
+            f"Error: could not read the Kiro Crew config under {data_home()}: {exc}. Which program "
             "owns the Kiro sign-in here is unknown; fix the config, then run this again.",
             file=sys.stderr,
         )
@@ -172,7 +182,7 @@ def _logout(_args: argparse.Namespace) -> int:
     try:
         asyncio.run(KasLoginService(store).logout(identity))
     except TokenStoreError as exc:
-        print(f"❌ sign-out did not complete: {exc}", file=sys.stderr)
+        print(f"Error: sign-out did not complete: {exc}", file=sys.stderr)
         return 1
     if token is None:
         print("Not signed in to Kiro Crew; nothing to sign out.")
@@ -196,7 +206,7 @@ def _login(args: argparse.Namespace) -> int:
         )
         return 0
     if args.provider == "idc" and not (args.start_url or "").strip():
-        print("❌ --provider idc requires --start-url", file=sys.stderr)
+        print("Error: --provider idc requires --start-url", file=sys.stderr)
         return 2
     # Only IdC consumes a start URL, and only the AWS providers (builder_id, idc)
     # consume a region: begin_device hardcodes the Builder ID URL for builder_id
@@ -205,13 +215,13 @@ def _login(args: argparse.Namespace) -> int:
     # silently dropping it or refusing a line that works today.
     if (args.start_url or "").strip() and args.provider != "idc":
         print(
-            f"⚠️  ignoring --start-url: it is only used with --provider idc; "
+            f"Warning: ignoring --start-url: it is only used with --provider idc; "
             f"signing in with {args.provider}",
             file=sys.stderr,
         )
     if (args.region or "").strip() and args.provider not in ("builder_id", "idc"):
         print(
-            f"⚠️  ignoring --region: it is only used with --provider builder_id "
+            f"Warning: ignoring --region: it is only used with --provider builder_id "
             f"or idc; signing in with {args.provider}",
             file=sys.stderr,
         )
@@ -252,7 +262,7 @@ def _unreachable(lead: str, exc: BaseException) -> str:
     else:
         why = f": {str(exc) or network_failure_cause(exc)}"
     return (
-        f"❌ {lead}{why}.\n"
+        f"Error: {lead}{why}.\n"
         "   Nothing was stored. Check your network connection, then run the command again."
     )
 
@@ -275,6 +285,7 @@ async def _run_device_login(
         MissingStartUrlError,
         SignedOutDuringLoginError,
         UnknownLoginError,
+        _canonical_start_url,
     )
 
     service = KasLoginService(store)
@@ -287,13 +298,13 @@ async def _run_device_login(
                 replaces=replaces,
             )
         except MissingStartUrlError:
-            print("❌ --provider idc requires --start-url", file=sys.stderr)
+            print("Error: --provider idc requires --start-url", file=sys.stderr)
             return 2
         except (InvalidRegionError, InvalidStartUrlError, StartUrlRejectedError) as exc:
-            print(f"❌ {exc}", file=sys.stderr)
+            print(f"Error: {exc}", file=sys.stderr)
             return 2
         except (BuilderIdAuthError, DeviceAuthError) as exc:
-            print(f"❌ the sign-in service refused to start a sign-in: {exc}", file=sys.stderr)
+            print(f"Error: the sign-in service refused to start a sign-in: {exc}", file=sys.stderr)
             return 1
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             print(_unreachable("could not reach the sign-in service", exc), file=sys.stderr)
@@ -321,7 +332,7 @@ async def _run_device_login(
                 return 1
             except (UnknownLoginError, SignedOutDuringLoginError):
                 print(
-                    "❌ this sign-in was cancelled by a sign-out before it was approved; "
+                    "Error: this sign-in was cancelled by a sign-out before it was approved; "
                     "nothing was stored.",
                     file=sys.stderr,
                 )
@@ -330,28 +341,31 @@ async def _run_device_login(
             if status == "pending":
                 continue
             if status == "authorized":
-                print(
-                    f"Signed in to Kiro Crew as {result.get('provider') or provider}.", flush=True
-                )
+                stored = result.get("provider") or provider
+                method = _PROVIDER_LABELS.get(stored, stored)
+                if provider == "idc":
+                    # The portal in the form the vault records, as `kas whoami` prints it.
+                    method += f" ({_canonical_start_url(start_url)})"
+                print(f"Signed in to Kiro Crew with {method}.", flush=True)
                 if result.get("code") == "previous_identity_not_removed":
                     print(
-                        "⚠ an earlier identity could not be removed from the vault; "
+                        "Warning: an earlier identity could not be removed from the vault; "
                         "run `kirocrew kas logout` and sign in again if the wrong account answers",
                         file=sys.stderr,
                     )
                 return 0
             if status == "expired":
                 print(
-                    "❌ the code expired before it was approved; run the command again.",
+                    "Error: the code expired before it was approved; run the command again.",
                     file=sys.stderr,
                 )
                 return 1
             code = result.get("code") or "error"
             plain = _FAILURE_TEXT.get(code)
             if plain:
-                print(f"❌ sign-in failed. {plain} Nothing was stored.", file=sys.stderr)
+                print(f"Error: sign-in failed. {plain} Nothing was stored.", file=sys.stderr)
             else:
-                print(f"❌ sign-in failed ({code}); nothing was stored.", file=sys.stderr)
+                print(f"Error: sign-in failed ({code}); nothing was stored.", file=sys.stderr)
             return 1
     finally:
         await service.close()

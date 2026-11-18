@@ -233,7 +233,7 @@ class TestInteractions:
 
         d, cli, _ = _dispatcher({"u1"})
         card_id = await cli.send_message(
-            "c1", "🔐 Approve `shell`?", components=[{"approve": 1, "deny": 0}]
+            "c1", "Approve `shell`?", components=[{"approve": 1, "deny": 0}]
         )
         posted = (list(cli.sent), list(cli.send_channels))
         self._set_channels(tmp_path / "profiles", monkeypatch, allow=["slack"])
@@ -719,7 +719,7 @@ class TestInteractions:
 def test_receipt_text_caps_displayed_items() -> None:
     texts = [f"message {i}" for i in range(8)]
     out = _receipt_text(texts)
-    assert out.startswith("⏳ Queued (8):")
+    assert out.startswith("Queued (8):")
     assert "…and 3 more" in out
 
 
@@ -880,7 +880,7 @@ class TestModelPicker:
         sess.try_acquire = _retire_then_refuse  # type: ignore[method-assign]
         outcome = await d._apply_model(d._scope_id("u1", ""), "discord:dm:u1", "m-fast")
 
-        assert outcome == "✅ Model set to m-fast — it applies to your next message."
+        assert outcome == "Model set to m-fast — it applies to your next message."
         assert sess._gp.set_models == []
 
     @pytest.mark.asyncio
@@ -891,7 +891,7 @@ class TestModelPicker:
         sess.retiring = True
         outcome = await d._apply_model(d._scope_id("u1", ""), "discord:dm:u1", "m-fast")
 
-        assert outcome == "✅ Model set to m-fast — it applies to your next message."
+        assert outcome == "Model set to m-fast — it applies to your next message."
         assert sess._gp.set_models == [] and sess.acquired == []
 
     @pytest.mark.asyncio

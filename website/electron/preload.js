@@ -83,7 +83,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Report the user's dark/light mode PREFERENCE ("system" | "dark" | "light")
   // so main.js can set `nativeTheme.themeSource` to match. Must be the
   // preference, not the resolved mode: pinning themeSource to dark/light also
-  // pins `prefers-color-scheme`, which is what Auto resolves through.
+  // pins `prefers-color-scheme`, which is what Auto resolves through. Scheduled
+  // has no themeSource, so it sends the resolved mode (themes.md, *Mode preference*).
   setThemeMode: (pref) => ipcRenderer.send("theme-mode-changed", String(pref || "")),
   // Report the RESOLVED dark/light mode ("dark" | "light") so main.js can sync
   // the Windows titleBarOverlay colors. Separate from setThemeMode because that
@@ -332,6 +333,14 @@ contextBridge.exposeInMainWorld("closeActionAPI", {
 contextBridge.exposeInMainWorld("trayIconAPI", {
   get: () => ipcRenderer.invoke("tray-icon:get"),
   set: (show) => ipcRenderer.invoke("tray-icon:set", !!show),
+});
+
+// Whether minimizing the main window hides it to the tray, as
+// {on, offered, canEnable}. Answered only to the main window's own dashboard,
+// like closeActionAPI.
+contextBridge.exposeInMainWorld("minimizeToTrayAPI", {
+  get: () => ipcRenderer.invoke("minimize-to-tray:get"),
+  set: (on) => ipcRenderer.invoke("minimize-to-tray:set", on === true),
 });
 
 // File-open bridge for the chat path chip's "Open in editor" affordance. Hands

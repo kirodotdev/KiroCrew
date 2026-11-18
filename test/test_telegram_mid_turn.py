@@ -975,7 +975,7 @@ class TestMidTurnPrivacyTransaction:
         self._send_busy(d, "/incognito stop now")
 
         assert [entry[0] for entry in log] == ["reserve", "release", "send"]
-        assert log[-1] == ("send", "⏳ Queued (1): “stop now”")
+        assert log[-1] == ("send", "Queued (1): “stop now”")
         assert sess.queued[-1][2]["privacy_request"] == "incognito"
 
     def test_a_declined_steer_releases_then_queues(self, monkeypatch: Any) -> None:
@@ -994,7 +994,7 @@ class TestMidTurnPrivacyTransaction:
                 self._KEY,
                 {"sessions": sess, "source": "telegram", "caller": "7"},
             ),
-            ("send", "⏳ Queued (1): “stop now”"),
+            ("send", "Queued (1): “stop now”"),
         ]
         assert sess.queued[-1][2]["privacy_request"] == "incognito"
 
@@ -1196,8 +1196,8 @@ class TestMidTurnPrivacyTransaction:
         from kiro_crew.messaging import privacy_mode
 
         literal = {
-            "temporary": "🔒 Temporary mode ON — this thread won't read or save memory.",
-            "incognito": "🕶️ Incognito mode ON — this thread can read memory but won't save anything.",
+            "temporary": "Temporary mode ON — this thread won't read or save memory.",
+            "incognito": "Incognito mode ON — this thread can read memory but won't save anything.",
         }[mode]
         assert privacy_mode.notice(mode) == literal
         d, cli, _sess = _dispatcher({7})

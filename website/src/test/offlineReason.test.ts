@@ -14,6 +14,9 @@ describe('offlineReason', () => {
     expect(en.app.relay_crew_reconnecting).toBe('Reconnecting…')
     expect(offlineReason('session_ended', true)).toBe(en.app.relay_session_ended)
     expect(offlineReason('refused', true)).toBe(en.app.relay_access_refused)
+    // The owner turned Remote Control off: said as that, not as a refusal.
+    expect(offlineReason('remote_off', true)).toBe(en.app.relay_remote_control_off)
+    expect(offlineReason('remote_off', false)).toBe(en.app.relay_remote_control_off)
   })
 
   it('reads the relay Crew window from its user-agent marker only', () => {
@@ -35,10 +38,12 @@ describe('offlineReason', () => {
     expect(isRelayCrewPane()).toBe(false)
   })
 
-  it('treats only a plain drop in a relay Crew window as retrying', () => {
+  it('treats a plain drop and Remote Control off in a relay Crew window as retrying', () => {
     expect(isRelayRetrying(null, true)).toBe(true)
     expect(isRelayRetrying('refused', true)).toBe(false)
     expect(isRelayRetrying('session_ended', true)).toBe(false)
+    // Remote Control off is waited out: the page reconnects once it is back on.
+    expect(isRelayRetrying('remote_off', true)).toBe(true)
     expect(isRelayRetrying(null, false)).toBe(false)
     expect(isRelayRetrying(null)).toBe(false)
   })
@@ -53,6 +58,7 @@ describe('offlineReason', () => {
       expect(offlineCover({ ...down, relayCrewWindow: true })).toBe('relay')
       expect(offlineCover({ ...down, relayCrewWindow: true, cause: 'refused' })).toBeNull()
       expect(offlineCover({ ...down, relayCrewWindow: true, cause: 'session_ended' })).toBeNull()
+      expect(offlineCover({ ...down, relayCrewWindow: true, cause: 'remote_off' })).toBe('relay')
     })
 
     it('covers the owner\'s own dashboard on this machine while its gateway is gone', () => {

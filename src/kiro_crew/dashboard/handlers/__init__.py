@@ -1062,6 +1062,9 @@ from kiro_crew.dashboard.handlers.browser_live import (  # noqa: E402, F401
     bind_live_hub,
 )
 
+# The owner's media buttons on an app page (play, pause, seek, volume), owner-only.
+from kiro_crew.dashboard.handlers.browser_media import api_browser_media  # noqa: E402, F401
+
 # ── Browser ops: the ``browser`` MCP tool's forwarding leg (handlers/browser_ops.py) ──
 from kiro_crew.dashboard.handlers.browser_ops import (  # noqa: E402, F401
     api_browser_handback,

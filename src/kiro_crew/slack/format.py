@@ -826,7 +826,7 @@ def build_options_selected_blocks(
 def build_options_answered_blocks(user_id: str, chosen: list[str], when: float) -> list[dict]:
     """The context line an answered OPTIONS card shows in place of its buttons.
 
-    ``✅ <who> chose <choice>[, <choice>…] · <time>``. *chosen* is already
+    ``<who> chose <choice>[, <choice>…] · <time>``. *chosen* is already
     redacted by the caller; it is escaped here, at the mrkdwn sink, because it
     is LLM-authored text and Slack would otherwise interpret entity markup in it.
     The time is a Slack date token, so every reader sees it in their own zone.
@@ -847,7 +847,7 @@ def build_options_answered_blocks(user_id: str, chosen: list[str], when: float) 
             names += f", …{len(chosen) - i} more"
             break
         names = joined
-    text = f"✅ {who} chose {names}{stamp}"
+    text = f"{who} chose {names}{stamp}"
     return [{"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}]
 
 
@@ -928,7 +928,7 @@ def build_cron_ack_block(job_id: str) -> list[dict]:
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "✅ Acknowledge"},
+                    "text": {"type": "plain_text", "text": "Acknowledge"},
                     "action_id": f"{CRON_ACK_ACTION_PREFIX}{job_id}",
                     "value": job_id,
                     "style": "primary",
@@ -1240,7 +1240,7 @@ def _convert_mermaid(text: str) -> str:
 
 # Slack message character limit (API rejects above ~4000)
 SLACK_MSG_LIMIT = 3900
-TRUNCATION_NOTICE = "\n\n⚠️ _Response truncated (Slack message limit)_"
+TRUNCATION_NOTICE = "\n\nWarning: _Response truncated (Slack message limit)_"
 CONTINUATION = "\n\n_(continued…)_"
 
 # Inline thinking tags that some models embed in text
@@ -1607,7 +1607,7 @@ def render_for_slack(
         prefix: Prepended to every returned part and charged against ``limit``,
             so a decorated part cannot overflow. Splitting first and decorating
             afterwards is what made the backfill's icon overflow the limit.
-        header: A caption for the FIRST part only -- ``"⏰ *Cron: name*"`` and
+        header: A caption for the FIRST part only -- ``"*Cron: name*"`` and
             friends. Redacted but NOT converted, because these captions are
             already Slack mrkdwn and ``to_slack_mrkdwn`` would re-interpret their
             ``*bold*``. Skipping conversion is exactly why a caption needs its own

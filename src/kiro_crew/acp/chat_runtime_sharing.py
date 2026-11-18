@@ -498,8 +498,16 @@ class ChatRuntimeKey:
         holding only the founder's row, and the joiner runs at its own model's
         default. Keying effort alone does not close that.
     ``sandbox_mode``
-        Chooses the wrap, the credential mask and whether the host's internal
-        sandbox is delegated to.
+        The EFFECTIVE tier (``effective_sandbox_mode``, the governed
+        ``sandbox.min_level`` floor applied), which chooses the wrap, the
+        credential mask and whether the host's internal sandbox is delegated to.
+        A floor raised after a spawn makes two keys of one configured value.
+    ``spawn_sandbox_mode``
+        The raw ``agent.sandbox`` value the spawn starts with, which the runtime
+        reports as its ``sandbox_mode``. A stricter configured value recycles a
+        session whose runtime reports a looser raw one, even where a floor makes
+        both effective tiers equal, so the successor must not rejoin that runtime:
+        two raw values are two keys.
     ``extra_env``
         The child's environment, which one process has exactly one of.
     ``acp_backend``
@@ -619,6 +627,7 @@ class ChatRuntimeKey:
     agent: str
     model: str
     sandbox_mode: str
+    spawn_sandbox_mode: str
     extra_env: tuple[tuple[str, str], ...]
     acp_backend: str
     tool_search: tuple[object, ...]
@@ -664,6 +673,7 @@ class ChatRuntimeKey:
         member_id: str | None = None,
         memory_store: str | None = None,
         tool_surface_pinned: bool = False,
+        spawn_sandbox_mode: str | None = None,
     ) -> "ChatRuntimeKey":
         """Build the key from the values a caller is about to spawn with.
 
@@ -688,6 +698,7 @@ class ChatRuntimeKey:
             agent="" if "agent" in per_session else agent or "",
             model="" if "model" in per_session else model or "",
             sandbox_mode=sandbox_mode or "",
+            spawn_sandbox_mode=spawn_sandbox_mode or "",
             extra_env=_freeze_env(extra_env),
             acp_backend=acp_backend or "",
             tool_search=_freeze_tool_search(tool_search),

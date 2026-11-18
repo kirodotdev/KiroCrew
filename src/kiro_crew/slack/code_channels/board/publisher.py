@@ -12,9 +12,10 @@ reports costs one ``chat.update``.
 
 * **First publish** posts the board and pins it (``pins.add``; ``already_pinned``
   counts as pinned). The message ts, a digest of what it shows, and the pin
-  are kept on the channel's surface record. The pin needs :data:`PIN_SCOPE`,
-  which the manifest's code-channels group asks for; a pin Slack refuses (an
-  install that has not re-approved it yet) is tried again every
+  are kept on the channel's surface record, with the message's permalink (read
+  once per message) that the context bar's Workers item links to. The pin needs
+  :data:`PIN_SCOPE`, which the manifest's code-channels group asks for; a pin
+  Slack refuses (an install that has not re-approved it yet) is tried again every
   :data:`REPIN_SECS`, not on each publish, and at once once the scope is granted.
 * **Later publishes** edit that message with ``chat.update`` only when the digest
   moved. A message Slack does not have any more (``message_not_found``,
@@ -255,6 +256,8 @@ async def publish(
             except Exception:
                 logger.debug("code channel %s: pin flag not stored", channel, exc_info=True)
     if ts:
+        await _record_link(slack, channel, ts)
+        await _record_summary(binding, ts, admits)
         await _alert(slack, channel, ts, snapshot, _link, owner_id, admits, now=now)
     if ts and active:
         # The stamp's own deadline, from the last EDIT: the caller re-arms the
@@ -277,9 +280,9 @@ MIN_EDIT_GAP_SECS = 20.0
 STALE_SECS = 60.0
 #: How often a live board's pin is put back (someone may have unpinned it).
 REPIN_SECS = 600.0
-#: Backoff for a failed edit or post: first, then x3 per failure, capped.
 #: Shortest gap between two pages for one item, whatever its worker reports.
 PAGE_GAP_SECS = 60.0
+#: Backoff for a failed edit or post: first, then x3 per failure, capped.
 _RETRY_FIRST_SECS = 5.0
 _RETRY_CAP_SECS = 300.0
 #: 5 s x 3**4 = 405 s, already past the cap: no larger power is ever needed.
@@ -445,6 +448,95 @@ def _pin_newly_granted(channel: str) -> bool:
     return channel in _pin_refused_unscoped and _pin_scope_granted()
 
 
+async def _record_link(slack: Any, channel: str, board_ts: str) -> None:
+    """Cache the board message's permalink: the context bar's Workers item links to it.
+
+    Read with ``chat.getPermalink`` once per board message (an edit keeps the
+    ts, so the link holds); a failed or unusable read is retried on the next publish.
+    """
+    record = await get_async(channel)
+    if record is not None and record.board_link_ts == board_ts:
+        return
+    try:
+        link = str(await slack.get_permalink(channel, board_ts) or "")
+    except Exception as exc:
+        logger.info("code channel %s: board permalink not read: %s", channel, _code(exc) or exc)
+        return
+    if not link.startswith("https://"):
+        return  # nothing usable: asked again on the next publish
+    try:
+        await update_async(channel, board_link=link, board_link_ts=board_ts)
+    except Exception:
+        logger.debug("code channel %s: board permalink not stored", channel, exc_info=True)
+
+
+async def _record_summary(
+    binding: Binding, board_ts: str, admits: Callable[[], bool] | None = None
+) -> None:
+    """Make the board the channel's ``summary_message`` while the session runs.
+
+    The board IS the conductor's running summary, so Slack can show it live
+    (`code channel properties`_), not only after the archive. A current wrap-up
+    (posted for this same session) is the summary instead and is never
+    displaced; it is recorded by :func:`..wrapup.post_wrap_up`, and stays the
+    summary for the rest of that session even as the board keeps changing. Sent
+    once per board message: an edit keeps the ts, so it stays the summary.
+
+    .. _code channel properties: https://docs.slack.dev/ai/slack-code/code-channel-properties#summary-message
+    """
+    from kiro_crew.slack.code_channels import wrapup
+
+    # The wrap-up's own per-channel lock, held across the read, the choice, the
+    # write and the pointer: a wrap-up recorded meanwhile is seen here and never
+    # displaced (its own summary write follows its lock, so it lands last).
+    async with wrapup._lock(binding.channel_id):
+        await _record_summary_locked(binding, board_ts, admits)
+
+
+async def _record_summary_locked(
+    binding: Binding, board_ts: str, admits: Callable[[], bool] | None
+) -> None:
+    channel = binding.channel_id
+    record = await get_async(channel)
+    if record is not None and record.summary_message_ts == board_ts:
+        return
+    if (
+        record is not None
+        and record.summary_ts
+        and record.summary_session_key == binding.session_key
+    ):
+        return
+    client = surface.client()
+    if client is None:
+        return
+    from kiro_crew.slack.code_channels.models import CodeChannelApiError
+
+    # A setProperties write: the package's write gate (policy, archive, Slack's
+    # Stop) and the board's scope are asked right before it, no await between,
+    # and again at the client's commit point.
+    def refusal() -> str:
+        return surface.write_refusal_now(channel, scope=lambda: _still(admits))
+
+    if await surface.write_refusal(channel, scope=lambda: _still(admits)):
+        return
+    try:
+        with surface.send_fence(refusal):
+            await client.set_summary_message(channel, board_ts)
+    except CodeChannelApiError as exc:
+        logger.info("code channel %s: live summary not recorded: %s", channel, exc.code)
+        from kiro_crew.slack.code_channels.notices import NOTIFIED, notify_refusal
+
+        if exc.code in NOTIFIED:
+            # Slack will refuse it again: not asked once more for this message.
+            await notify_refusal(channel, exc.code, session_key=binding.session_key)
+            await update_async(channel, summary_message_ts=board_ts)
+        return
+    try:
+        await update_async(channel, summary_message_ts=board_ts)
+    except Exception:
+        logger.debug("code channel %s: summary pointer not stored", channel, exc_info=True)
+
+
 def _writable(
     channel: str,
     admits: Callable[[], bool] | None,
@@ -520,7 +612,12 @@ async def _alert(
     waiting = [row for row in snapshot.rows if row.needs_owner]
     record = await get_async(channel)
     unsaved = _unsaved_alerts.get(channel)
-    sent = list(unsaved) if unsaved is not None else list(record.board_alerts) if record else []
+    if unsaved is not None:
+        sent = list(unsaved)
+    elif record:
+        sent = list(record.board_alerts)
+    else:
+        sent = []
     # A spell ends when its item stops waiting (an approval when it is answered):
     # its token is forgotten, so the item's NEXT wait pages again.
     live = {alert_token(row) for row in waiting}

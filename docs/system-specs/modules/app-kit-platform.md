@@ -2941,7 +2941,8 @@ whose new version widens user-session control
 `permissions.memberThreads` when the grant was already held) and
 returns `notice: "session_approval_reconsent"`; the detail page shows that notice
 and the user re-enables the app after seeing the grant and, when declared, its
-Bot-thread scope. `register_external_app`
+Bot-thread scope. Update All names each such app with a button that opens its
+detail page without updating it again. `register_external_app`
 does the same for self-managed apps (a registration that newly declares the flag
 or the scope is written disabled, SEL caller `app_register`). App updates retain the prior
 tree until the replacement and its metadata are durable, so a failed update
@@ -3706,9 +3707,13 @@ local grant. When the install fails or raises, the local marker is put back
 restored, so its backend starts admitted. A failure before the take-down puts
 the grant back and then starts the old backend again, because the health watch
 can stop it while the repository grant does not cover its local code. The detail page's banner for this
-refusal opens the consent dialog on that repository and sends this request; the
-App Store's Update on a path install that a registry row offers a newer version
-of runs the registry update (the detail page's Update), never a folder re-copy.
+refusal opens the consent dialog on that repository and sends this request,
+and the page hides its plain Update while that banner is up, since pressing it
+would rerun the refused update. The App Store's Update on a path install that a
+registry row offers a newer version of runs the registry update (the detail
+page's Update), never a folder re-copy. Update All names each such refused app
+with a button to its detail page, and an Updates row or a trust retry that meets
+the refusal opens that page.
 A still-installed app with
 positively local provenance retains migration compatibility; an unknown/fresh
 same-name local source does not inherit that old grant. The commit is deliberately
@@ -7355,7 +7360,8 @@ transport), `ctx.chat_slots` (§41), the SDK's project picker (§18i) and `ctx.w
 (§37), the SDK's `useHostSessions` (§18j) and the desktop block's `platformAccelerators`
 (§35); level 9 adds `permissions.bots` (§32c); level 10 adds the agent tool gate's fence
 on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
-`useChatLauncher().createChat` (§44). Several seams share level 7, three share level 8,
+`useChatLauncher().createChat` (§44), `permissions.browserSites` and the SDK's
+`useBrowserMedia` (§45). Several seams share level 7, three share level 8,
 and the open batch that level 10 starts shares level 10, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
@@ -9061,8 +9067,8 @@ store moves under `apps/ops-mission-control/data/` (#32681; see `ops-mission-con
 **Seam level.** The masks are level 3 (level 4 adds §30.1's tool keys, level 5
 `ctx.app_token` and `ctx.gateway_origin`, level 6 §18h's issue list, level 7 §39's
 `agentReadOnlyDirs` and §35's `permissions.desktopCapabilities`, level 8 directory
-entries, level 9 §32c's `permissions.bots`, and level 10 the tool gate's fence on an
-installed app's masks):
+entries, level 9 §32c's `permissions.bots`, level 10 the tool gate's fence on an
+installed app's masks and §45's `permissions.browserSites`):
 an app that stores a credential reads `ctx.sdk_level` and, below 3, knows nothing masks
 the file; below 10, that only the OS sandbox does.
 
@@ -9758,6 +9764,88 @@ Writers: `apps/chat_launch.py`, `apps/manifest_sections.py`,
 `apps/builtins/code_review_sage/tests/test_manifest_chat_launch.py`,
 `website/src/test/appChatLaunch.test.tsx`,
 `website/src/apps/code-review-sage/CodeReviewSageReviewChat.test.tsx`.
+
+## 45. An app's own agent browses the pages the owner approved (seam level 10)
+
+An app whose agent works a website for the owner (search it, open a result, play it)
+met an approval card on every `browser` call, and the card's "Always allow" is refused
+for Kiro Crew's own tools (`dashboard/always_allow_tool.py`). `permissions.browserSites`
+names the pages instead: at most 16 entries, each an exact `https://<hostname>` origin
+(the `ui.frameSources` host rules, `app_hosts.frame_origin_refusal`) followed by a path
+pattern of RFC 3986 path characters and `*`, with no `%`, `?`, `#`, empty, `.` or `..`
+segment (`apps/browser_sites.entry_refusal`, reported by `AppManifest.validate`). `*`
+matches any run of characters, `/` included, by a linear left-to-right search with no
+backtracking (a landing path is page-chosen); the query and fragment are not compared. A
+URL matches only over https, with no user info or port, the exact host, and a raw path
+with no dot segment and no `%2e`/`%2f`/`%5c` escape (`url_matches`), so the path compared
+is the one the browser loads.
+
+**The grant.** Each entry is an entry of the `browserSites` family of the app's approved
+set, registered explicit-only in `point_grants` and listed in
+`manager_records._OWNER_APPROVED_FAMILIES`: an install or first registration approves none,
+an update that adds one waits, and the owner approves them on the app's page, which lists
+them with what they allow (`browserSitesGrant` on the app row, `staged-browser-sites`).
+`browser_sites.app_browser_sites(app)` is the one reader. It is read fresh on every call
+and is empty unless the live manifest's declaration validates, the owner approved the
+entries it returns, the app is enabled and `third_party_ceiling_closed` admits it, so a
+disable, an uninstall, a withdrawn trust grant or an update that drops a site ends the
+grant at the next call.
+
+**Two enforcement points.** The tool gate's `app-browser-sites` row
+(`hooks._tier_app_browser_sites`, its conditions in `browser_sites.gate_grants` imported at call time, after every deny row and governance) auto-approves a
+call only when the caller is the app's own dashboard slot (`facts.app`, the slot's
+`_app`, on a `dashboard:` session key, the kind the op route resolves; a subagent or
+channel session the app started keeps its card), the call is
+`@kirocrew-core/browser` by verified identity, the app holds sites, and a call that names
+a URL (`navigate`, `tabs` `new`) names one of them; an operator `confirm_tools` pattern
+still asks and `classifier_only` skips it. The op route
+(`dashboard/handlers/browser_ops.session_sites`) holds every op of a session whose slot an
+app with sites owns to those pages, whoever approved the call: a requested URL off the list
+is `site_not_allowed` before the browser is touched, and the op context's `url_allowed` is
+narrowed to the list, so a redirect, a link or a history landing off it is moved to
+`about:blank` and refused (`redirect_refused`) at the same checks the local-address gate
+uses. A slot the gate approved a call for stays held in this process once its sites
+are gone (`browser_sites.note_granted_session`, `NO_PAGES`): a call approved before a
+revoke or a manifest edit reached the route then opens and reads no page at all. A
+session no app owns browses exactly as before.
+
+**Accepted trade-off.** The app's agent types and clicks, unasked, in a browser that may
+hold the owner's logins, on the approved pages. The owner accepted this for now; a stronger
+sandbox for agent browsing is a follow-up. Residual: the route finds the session from the
+key the `browser` tool's shim resolves (`mcp_core._resolve_session_key`); a call whose shim
+cannot name the app's slot is not confined there, while the gate row approved it for that
+slot.
+
+**Media buttons.** `POST /api/browser/media` (`dashboard/handlers/browser_media.py`; its
+`state` read is `GET /api/browser/media?session_key=`, so a player's poll writes no row
+through the mutating-call audit middleware) is the
+owner's play, pause, seek and volume on a session's tab: the internal secret, a non-owner
+and an app token are refused, `capabilities.browse` is asked (an action's refusal is
+audited, a state poll's is not), and the slot must be owned by an app holding sites
+(`not_app_browser`). The route cannot tell which app's page calls it: a page module
+runs in the dashboard document with the owner's cookie, so telling one app's page from
+another's needs an app-scoped credential, which this route does not have. A slot held to
+`NO_PAGES` answers with `browser_ops.SITES_REVOKED_TEXT`, which says the sites were
+withdrawn and that approving them again on the app's page ends the hold. It never starts the browser (`no_tab`), touches
+nothing while the person has taken the tab over (`user_in_control`), takes the op lock and
+the takeover fence (`LiveHub.op_fence`), points the daemon at the session's own tab without raising it, and runs the
+walker's `media` method in the isolated world (`browser_harness/media.py`), after the same
+page check. A play the browser refuses gets one click on the element, after the page is judged again, and a `state` read writes no audit row (a player polls it). The SDK's
+`useBrowserMedia` (`website/src/app-sdk/browserMedia.ts`) is the page's handle; it sends
+through the scoped client, so the app declares `/api/browser/media`. Its `onEnded` option
+is the continuous-play cue: called once per ending, derived in the page from the `ended`
+field of the state it already polls, so it adds no route, no event and nothing the agent
+can reach. With the page closed nothing reads the tab, so no ending is seen; an app
+backend has no way to read the state (the route refuses app tokens) and no gateway
+watcher reports an ending.
+
+Writers: `apps/browser_sites.py`, `apps/manifest_sections.py` (`Permissions.browserSites`),
+`apps/manifest.py`, `apps/point_grants.py`, `apps/manager_records.py`,
+`apps/manager_lookup.py`, `apps/app_sdk_level.py`,
+`hooks.py` (`GATE_TIERS`), `dashboard/handlers/browser_ops.py`,
+`dashboard/handlers/browser_media.py`, `browser_harness/media.py`,
+`browser_harness/snapshot_walker.js` (`media`), `website/src/app-sdk/browserMedia.ts`,
+`website/src/pages/AppDetailPage.tsx`.
 
 ## Windows stale-backend cleanup capacity
 

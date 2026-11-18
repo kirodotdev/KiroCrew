@@ -15,7 +15,7 @@ import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registe
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
-import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
+import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Coins, Compass, KeyRound, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
 import { MobileConnectDialog } from './components/mobileConnect'
@@ -80,6 +80,9 @@ import { mainStackingClass } from './utils/terminalFullscreen'
 import { REGISTERED_OVERLAYS_PACK, readExperience, subscribeExperience } from './utils/themeConsent'
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
+import { relayPaneBridge } from './lib/relayCrewPanes'
+// Only while the hidden relay pane key is on, so its code stays out of the first load.
+const RelayCrewPaneHost = lazy(() => import('./components/RelayCrewPaneHost'))
 import RemoteUpdateOffer from './components/RemoteUpdateOffer'
 import KiroSignInNoticeFallback from './components/KiroSignInNoticeFallback'
 import { ImportSessionOutcomeNotice } from './components/ImportSessionItem'
@@ -92,9 +95,10 @@ import ReportProblemModal from './components/ReportProblemModal'
 import KiroAccountModal from './components/KiroAccountModal'
 
 import { i18nT } from './i18n/t'
+import { KIRO_SIGN_IN_PATH } from './pages/developer/kiroSignInLink'
 import { useLanguageGeneration } from './i18n/useLanguageGeneration'
 import { isAppNavId } from './appNotificationBadges'
-import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
+import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect, TerminalRoute } from './shell/routes'
 import { NAV_ITEMS } from './shell/nav/navItems'
 import { RailHeaderGlyph } from './shell/nav/railChrome'
 import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
@@ -251,7 +255,8 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   }, [dispatch, onCancel])
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe">
+    // A relay Crew pane hides under it (lib/relayCrewPanes.ts).
+    <div data-relay-pane-overlay="" className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe">
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
         {/* A terminal step is not in progress, so it does not pulse. */}
         <div className={`text-4xl mb-4 ${isFailed ? 'text-danger' : 'animate-pulse'}`} data-testid="update-overlay-step-icon">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
@@ -394,6 +399,7 @@ const MainRoutes = memo(function MainRoutes() {
           so this one arm serves /aws-control and /aws-control/usage alike —
           an app carries sub-segments for its own path navigation, same
           shape as /settings/<tab>. */}
+      <Route path="/terminal" element={<TerminalRoute />} />
       <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
       <Route path="*" element={<ChatRedirect />} />
     </Routes>
@@ -412,7 +418,7 @@ export default function App() {
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
     sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, kiroAccountEntry, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
+    kiroUsageState, kiroAccountEntry, kiroSignInPrompt, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
     updateFlow, updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, updateError,
     setUpdateError, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
@@ -428,6 +434,10 @@ export default function App() {
   // no stacking context, so a page-level inline modal (fixed inset-0 z-[100])
   // still paints over the dock as it does elsewhere.
   const terminalFullscreen = useTerminalFullscreen()
+  // A relay Crew tab covers <main> with its pane; <main> stays laid out, so the
+  // pane can take its rect, but hidden and inert under it.
+  const relayActive = useAppSelector(s => s.instances.relayActive ?? null)
+  const [relayPanesOn] = useState(() => relayPaneBridge() !== null)
   // Read during render, so turning the part off never mounts an overlay for one frame.
   const overlaysOn = useSyncExternalStore(
     useCallback((onChange: () => void) => subscribeExperience(colorTheme, onChange), [colorTheme]),
@@ -590,6 +600,21 @@ export default function App() {
                 collapsed
                 touch
                 onClickOverride={() => { onActivate(); setKiroUsageOpen(true) }}
+              />
+            )}
+            {/* The capsule's quiet "Sign in to Kiro" segment, for the phone. A
+                plain guarded route with `replace`, like Settings below: closing
+                the drawer first would pop history after this push lands. */}
+            {kiroSignInPrompt && (
+              <NavItem
+                navId="kiro-sign-in"
+                path={KIRO_SIGN_IN_PATH}
+                label={i18nT('components.kasLogin.sign_in_to_kiro')}
+                icon={<KeyRound size={16} />}
+                active={false}
+                collapsed
+                touch
+                replace
               />
             )}
           </>}
@@ -928,6 +953,7 @@ export default function App() {
           }
           : { gridArea: 'content' }}
       >
+        {relayPanesOn && <Suspense fallback={null}><RelayCrewPaneHost /></Suspense>}
         <div className={`relative flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
         {/* Mounted for the page's life in a relay Crew window, so its live
             region exists before the drop; the host view joins it on a drop. */}
@@ -938,10 +964,10 @@ export default function App() {
             the tabIndex={-1} page headings do. Inert while the reconnecting
             view covers it, so focus and keystrokes cannot reach a composer
             the user cannot see. */}
-        <main id="main-content" tabIndex={-1} {...hiddenChromeProps(contentCovered)} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying: contentCovered })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
+        <main id="main-content" tabIndex={-1} {...hiddenChromeProps(contentCovered || relayActive !== null)} style={relayActive !== null ? { visibility: 'hidden' } : undefined} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying: contentCovered })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
           {/* Inert does not reach what main portals out (the guide pill, a
               link preview, a page's Modal): take those off screen with it. */}
-          <OffScreenOverlayScope offScreen={contentCovered}>
+          <OffScreenOverlayScope offScreen={contentCovered || relayActive !== null}>
           <MigrationCheck />
           {/* Route-independent, unlike MigrationCheck: "you crashed" is true of
               the app, not of the page, and the launch after a crash rarely lands

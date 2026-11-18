@@ -51,7 +51,7 @@ logger = logging.getLogger("kiro_crew.discord.transport_dispatch")
 #: components indefinitely, so an untagged press can never prove which session
 #: it belongs to — fail closed rather than route it by current binding.
 _UNTAGGED_OPTIONS_REFUSAL = (
-    "🔘 These buttons predate a session-safety update, so which conversation "
+    "These buttons predate a session-safety update, so which conversation "
     "they belong to can no longer be verified and your choice was NOT applied. "
     "Type it as a message instead."
 )
@@ -98,7 +98,7 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
             await self.client.respond_interaction(
                 itx.interaction_id,
                 itx.interaction_token,
-                "🔒 Commands run in a direct message or an approved thread. "
+                "Commands run in a direct message or an approved thread. "
                 "Post here and I will open a thread, or DM me.",
                 ephemeral=True,
             )
@@ -130,7 +130,7 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
             await self.client.respond_interaction(
                 itx.interaction_id,
                 itx.interaction_token,
-                "🔒 The Discord channel is currently disabled by policy.",
+                "The Discord channel is currently disabled by policy.",
                 ephemeral=True,
             )
             return
@@ -213,11 +213,11 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
         )
         resolved = DiscordApprovalDecider.resolve_global(key, approved, nonce=nonce)
         if resolved:
-            verdict = "✅ Approved" if approved else "🚫 Denied"
+            verdict = "Approved" if approved else "Denied"
         else:
             # No pending decision — already timed out (deny-by-default) or
             # answered. Don't imply the press took effect.
-            verdict = "⌛ This approval already expired."
+            verdict = "This approval already expired."
         # The confirmation is an outbound write, and a reject press reaches here
         # without the re-read above: resolving a denial is what a withdrawal
         # wants, but writing into the channel afterwards is not. The edit may
@@ -284,7 +284,7 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
             await self.client.edit_message(
                 itx.channel_id,
                 itx.message_id,
-                "⌛ This model list is no longer active — send `!model` again.",
+                "This model list is no longer active — send `!model` again.",
                 components=[],
             )
             return
@@ -328,7 +328,7 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
         if not choice_text:
             await self.client.send_message(
                 itx.channel_id,
-                "⚠️ Couldn't read that choice — please type it instead.",
+                "Warning: Couldn't read that choice — please type it instead.",
             )
             return
         # Echo the picked option as a quoted line (a button tap can't
@@ -465,7 +465,7 @@ async def _on_command_interaction(self: DiscordDispatcher, itx: "DiscordInteract
         await self.client.respond_interaction(
             itx.interaction_id,
             itx.interaction_token,
-            "🔒 `/model` needs a message it can edit, so its reply cannot be "
+            "`/model` needs a message it can edit, so its reply cannot be "
             "private here. DM me `/model`, or send `!model` if you are happy "
             "for the list to be visible in this thread.",
             ephemeral=True,

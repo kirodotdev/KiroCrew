@@ -13,7 +13,7 @@ export const KIRO_MODEL_SETTINGS_URL = 'https://app.kiro.dev/settings/model'
 export function KiroHarnessFallbackNote({ cfg }: { cfg: AcpBackendConfig | undefined }) {
   if (!isKiroHarness(cfg)) return null
   return (
-    <div className="mb-4 rounded-md border border-border bg-bg-elevated px-3 py-2 flex flex-col gap-1" data-testid="kiro-harness-fallback-note">
+    <div className="mb-4 max-w-[720px] rounded-md border border-border bg-bg-elevated px-3 py-2 flex flex-col gap-1" data-testid="kiro-harness-fallback-note">
       <span className="text-[12px] font-medium text-text">{i18nT('pages.settings.chatPanel.kiro_harness_fallback_title')}</span>
       <span className="text-[12px] text-muted leading-relaxed">{i18nT('pages.settings.chatPanel.kiro_harness_fallback_body')}</span>
       <a

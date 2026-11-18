@@ -54,13 +54,16 @@ def _by_id() -> dict[str, dict[str, Any]]:
     return {loc["id"]: loc for loc in _index()["locations"]}
 
 
+@pytest.fixture(scope="module")
+def _no_auto_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """One missing auto tier for the whole module: the caches key on each source's path
+    and stat, so they hit from case to case and miss for a case with its own index."""
+    return tmp_path_factory.mktemp("guide-ui-show") / "no-auto-tier.json"
+
+
 @pytest.fixture(autouse=True)
-def _fresh_caches(_floor_monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    guide_catalog.ui_show_plans.cache_clear()
-    ui_index._cache.update(key=None, index=None)
-    _floor_monkeypatch.setattr(ui_index, "AUTO_INDEX_PATH", tmp_path / "no-auto-tier.json")
-    yield
-    guide_catalog.ui_show_plans.cache_clear()
+def _no_auto_tier(_floor_monkeypatch: pytest.MonkeyPatch, _no_auto_path: Path) -> None:
+    _floor_monkeypatch.setattr(ui_index, "AUTO_INDEX_PATH", _no_auto_path)
 
 
 # ── catalog ──

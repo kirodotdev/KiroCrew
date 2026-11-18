@@ -20,13 +20,17 @@ size its pre-lock uninstall phase budget from the same source of truth.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Any, Dict, List
 
+from kiro_crew import edition
 from kiro_crew import extension_governance as _gov
 from kiro_crew.mcp_utils import registry_accepts_query
 
 if TYPE_CHECKING:
     from kiro_crew.platform.interfaces import CapabilityManager, CapabilityResult
+
+logger = logging.getLogger(__name__)
 
 #: Max seconds the core waits on a CapabilityManager UNINSTALL op. Tight,
 #: because uninstall is quick and (in the apply path) the core wants a bounded
@@ -50,7 +54,7 @@ CAPABILITY_INSTALL_TIMEOUT = 600
 CAPABILITY_READ_TIMEOUT = 30
 
 
-async def _off_loop(fn: Any, *args: str) -> "str | None":
+async def _off_loop(fn: Any, *args: Any) -> "str | None":
     """Run a governance check on the governance executor, off the event loop.
 
     A check reads the profile store, which stats the profiles directory.
@@ -70,9 +74,19 @@ def _refused(reason: str) -> "CapabilityResult":
     with it (RFC LTS edition, Red "Signed extensions only" and "Extension
     versions").
     """
+    from kiro_crew.external_text import redact_external_text  # circular: imports platform.context
+    from kiro_crew.platform.context import PlatformCompositionError
     from kiro_crew.platform.interfaces import CapabilityResult
 
-    return CapabilityResult(ok=False, message=f"Blocked by governance policy: {reason}")
+    # The reason can carry the package id the caller sent and the names the
+    # edition listed, so it is redacted like other external text. With no
+    # redactor to ask, the reason is left out rather than shown unredacted.
+    message = "Blocked by governance policy"
+    try:
+        message = redact_external_text(f"{message}: {reason}")
+    except PlatformCompositionError:
+        pass
+    return CapabilityResult(ok=False, message=message)
 
 
 class BoundedCapabilityManager:
@@ -147,12 +161,37 @@ class BoundedCapabilityManager:
         )
 
     async def install_skill(self, package: str) -> "CapabilityResult":
-        denied = await _off_loop(_gov.extension_install_denied, "skill", package)
+        if edition.is_lts():
+            denied = await self._lts_skill_package_denied(package)
+        else:
+            denied = await _off_loop(_gov.extension_install_denied, "skill", package)
         if denied:
             return _refused(denied)
         return await asyncio.wait_for(
             self._inner.install_skill(package), timeout=CAPABILITY_INSTALL_TIMEOUT
         )
+
+    async def _lts_skill_package_denied(self, package: str) -> "str | None":
+        """LTS: refuse *package* unless every skill it holds is allowed (RFC D13).
+
+        Off denies before the package is listed, so a pinned-off host makes no call.
+        The skill names come from the edition's optional ``skill_names(package)``
+        op, asked before anything is installed. A manager without it, or a listing
+        that fails, times out or names nothing, refuses (fail-closed).
+        """
+        denied = await _off_loop(_gov.extensions_off, "install_skill")
+        if denied:
+            return denied
+        names = None
+        lister = getattr(self._inner, "skill_names", None)
+        if lister is not None:
+            try:
+                listed = await asyncio.wait_for(lister(package), timeout=CAPABILITY_READ_TIMEOUT)
+                names = list(listed) if isinstance(listed, (list, tuple)) else None
+            except Exception as exc:  # noqa: BLE001 - an unlisted package is refused
+                logger.warning("Could not list the skills in a package (%s)", type(exc).__name__)
+                names = None
+        return await _off_loop(_gov.skill_package_denied, package, names)
 
     async def uninstall_skill(self, package: str) -> "CapabilityResult":
         denied = await _off_loop(_gov.extensions_off, "uninstall_skill")

@@ -45,7 +45,10 @@ def bound(tmp_path: Any, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         binding_mod,
         "live_config",
-        lambda _orch=None: SimpleNamespace(slack=SimpleNamespace(code_channels=toggle["on"])),
+        lambda _orch=None: SimpleNamespace(
+            slack=SimpleNamespace(code_channels=toggle["on"]),
+            channel_config=lambda _channel: SimpleNamespace(activation="mention"),
+        ),
     )
     yield toggle
     set_store(None)
@@ -968,7 +971,9 @@ async def test_a_failed_bind_releases_its_anchor_hold(tmp_path: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_fresh_home_resolves_to_the_conductor_in_code_channels(tmp_path: Any) -> None:
+async def test_a_fresh_home_resolves_to_the_default_agent_in_code_channels(
+    tmp_path: Any,
+) -> None:
     from chat_test_helpers import _make_state
 
     state = _make_state(tmp_path)
@@ -978,10 +983,167 @@ async def test_a_fresh_home_resolves_to_the_conductor_in_code_channels(tmp_path:
     )
     spec = await binding_mod.resolve_session_spec(state, cfg)
     [folder] = [f for f in state._folders if f.get("name") == "Code channels"]
-    assert spec.folder_id == folder["id"] and spec.agent == "kirocrew-conductor"
+    # Created with no agent, so the owner's default agent runs, not the conductor.
+    assert not folder.get("default_agent")
+    assert spec.folder_id == folder["id"] and spec.agent == "slack-default"
+    # The default template, never a Bot of the same name: bound as a template.
+    assert spec.agent_kind == "template"
     # The next channel files into the same folder.
     assert (await binding_mod.resolve_session_spec(state, cfg)).folder_id == folder["id"]
     assert len([f for f in state._folders if f.get("name") == "Code channels"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_existing_legacy_auto_folder_runs_the_default_agent(tmp_path: Any) -> None:
+    """An auto folder an earlier release made (agent still kirocrew-conductor) is
+    read as never edited: the owner's default runs, and the folder is not rewritten."""
+    from chat_test_helpers import _make_state
+
+    state = _make_state(tmp_path)
+    legacy = await binding_mod.ensure_folder_path(
+        state, binding_mod.AUTO_FOLDER_PATH, default_agent="kirocrew-conductor"
+    )
+    cfg = SimpleNamespace(
+        slack=SimpleNamespace(code_channels=True, code_channel_defaults=None),
+        agent=SimpleNamespace(default_agent="slack-default"),
+    )
+    spec = await binding_mod.resolve_session_spec(state, cfg)
+    assert (spec.folder_id, spec.agent) == (legacy, "slack-default")
+    [folder] = [f for f in state._folders if f["id"] == legacy]
+    assert folder["default_agent"] == "kirocrew-conductor"
+
+
+def _conductor_cfg(**defaults: Any) -> SimpleNamespace:
+    return SimpleNamespace(
+        slack=SimpleNamespace(
+            code_channels=True,
+            code_channel_defaults=SimpleNamespace(conductor_mode=True, **defaults),
+        ),
+        agent=SimpleNamespace(default_agent="slack-default", crew_mode_agent=""),
+    )
+
+
+@pytest.mark.asyncio
+async def test_always_use_conductor_mode_wins_over_the_default_and_the_folder_agent(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chat_test_helpers import _make_state
+
+    from kiro_crew import crew_mode
+
+    monkeypatch.setattr(crew_mode, "_configured", crew_mode._configured)
+    state = _make_state(tmp_path)
+    folder_id = await binding_mod.ensure_folder_path(state, "Mine", default_agent="my-agent")
+    spec = await binding_mod.resolve_session_spec(
+        state, _conductor_cfg(folder=folder_id, agent="explicit-agent")
+    )
+    assert (spec.agent, spec.agent_kind, spec.folder_id) == (
+        "kirocrew-conductor",
+        "template",
+        folder_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_choices_come_from_the_live_config_not_the_gateways_copy(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gateway's config object takes only Slack fields on a reload: a changed
+    ``agent.crew_mode_agent`` or ``agent.default_agent`` is read from the watcher."""
+    from chat_test_helpers import _make_state
+
+    from kiro_crew import crew_mode
+    from kiro_crew.config import live
+
+    monkeypatch.setattr(crew_mode, "_configured", crew_mode._configured)
+    stale = _conductor_cfg()
+    stale.agent = SimpleNamespace(default_agent="old-default", crew_mode_agent="kirocrew-conductor")
+    fresh = SimpleNamespace(
+        agent=SimpleNamespace(default_agent="new-default", crew_mode_agent="kirocrew-team-lead")
+    )
+    monkeypatch.setattr(live, "snapshot", lambda: fresh)
+    state = _make_state(tmp_path)
+    assert (await binding_mod.resolve_session_spec(state, stale)).agent == "kirocrew-team-lead"
+    stale.slack.code_channel_defaults.conductor_mode = False
+    assert (await binding_mod.resolve_session_spec(state, stale)).agent == "new-default"
+    # Before the watcher has a snapshot, the supplied config stands in.
+    monkeypatch.setattr(live, "snapshot", lambda: None)
+    assert (await binding_mod.resolve_session_spec(state, stale)).agent == "old-default"
+
+
+@pytest.mark.asyncio
+async def test_a_removed_default_agent_falls_back_as_a_new_chat_does(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``agent.default_agent`` names a spec a complete refresh recorded as removed:
+    the channel takes the managed default, as ``default_template`` gives a new chat,
+    and the settings preview names the same agent."""
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.config import live
+    from kiro_crew.config import loader_snapshots as snaps
+
+    monkeypatch.setattr(live, "snapshot", lambda: None)
+    monkeypatch.setattr(snaps, "_removal_evidence", lambda: (set(), {"atlas"}, True))
+    monkeypatch.setattr(snaps, "_edition_agent_names", lambda: frozenset())
+    cfg = SimpleNamespace(
+        slack=SimpleNamespace(code_channels=True, code_channel_defaults=None),
+        agent=SimpleNamespace(default_agent="atlas"),
+    )
+    state = _make_state(tmp_path)
+    spec = await binding_mod.resolve_session_spec(state, cfg)
+    assert (spec.agent, spec.agent_kind) == (snaps.DEFAULT_KIRO_TEMPLATE, "template")
+    assert binding_mod.resolved_default_agent(cfg) == snaps.DEFAULT_KIRO_TEMPLATE
+    assert binding_mod.resolved_default_agent(SimpleNamespace(agent=None)) == ""
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_overlay_turns_conductor_mode_off_at_bind(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live config may still carry the switch from an older, readable overlay;
+    while config.local.json cannot be read the bind reads the switch as off."""
+    from chat_test_helpers import _make_state
+
+    from kiro_crew import crew_mode
+    from kiro_crew.config import live
+    from kiro_crew.config import loader as cfg_loader
+
+    monkeypatch.setattr(crew_mode, "_configured", crew_mode._configured)
+    monkeypatch.setattr(live, "snapshot", lambda: None)
+    overlay = cfg_loader.config_local_path()
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text("{ torn", encoding="utf-8")
+    try:
+        state = _make_state(tmp_path)
+        spec = await binding_mod.resolve_session_spec(state, _conductor_cfg())
+        assert spec.agent == "slack-default"
+    finally:
+        overlay.unlink(missing_ok=True)
+    spec = await binding_mod.resolve_session_spec(_make_state(tmp_path / "b"), _conductor_cfg())
+    assert spec.agent == "kirocrew-conductor"
+
+
+@pytest.mark.asyncio
+async def test_always_use_conductor_mode_is_inert_where_it_is_not_offered(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chat_test_helpers import _make_state
+
+    from kiro_crew import crew_mode
+
+    monkeypatch.setattr(crew_mode, "_configured", crew_mode._configured)
+    state = _make_state(tmp_path)
+    cfg = _conductor_cfg()
+    from kiro_crew import edition
+
+    monkeypatch.setattr(edition, "is_lts", lambda: True)
+    # The lock logs its first use process-wide; restore that record.
+    from kiro_crew import edition_locks
+
+    monkeypatch.setattr(edition_locks, "_logged", set())
+    spec = await binding_mod.resolve_session_spec(state, cfg)
+    assert spec.agent == "slack-default"
 
 
 @pytest.mark.asyncio
@@ -1019,18 +1181,16 @@ async def test_code_channels_folder_is_created_once_reused_and_recreated(tmp_pat
 
     state = _make_state(tmp_path)
     assert not [f for f in state._folders if f.get("name") == "Code channels"]
-    first = await binding_mod.ensure_folder_path(
-        state, binding_mod.AUTO_FOLDER_PATH, default_agent=binding_mod.AUTO_FOLDER_AGENT
-    )
+    first = await binding_mod.ensure_folder_path(state, binding_mod.AUTO_FOLDER_PATH)
     [folder] = [f for f in state._folders if f["id"] == first]
-    assert folder["name"] == "Code channels" and folder["default_agent"] == "kirocrew-conductor"
+    assert folder["name"] == "Code channels" and not folder.get("default_agent")
     # A second channel reuses it: no duplicate.
     assert await binding_mod.ensure_folder_path(state, "Code channels") == first
     assert len([f for f in state._folders if f.get("name") == "Code channels"]) == 1
     # The user deleted it: the next channel recreates it.
     state._folders[:] = [f for f in state._folders if f["id"] != first]
     again = await binding_mod.ensure_folder_path(
-        state, binding_mod.AUTO_FOLDER_PATH, default_agent=binding_mod.AUTO_FOLDER_AGENT
+        state, binding_mod.AUTO_FOLDER_PATH, default_agent="kirocrew-conductor"
     )
     assert again != first and [f["name"] for f in state._folders if f["id"] == again] == [
         "Code channels"
@@ -1058,7 +1218,7 @@ async def test_folder_auto_create_is_sel_audited_and_keeps_a_person_set_agent(
     )
     state = _make_state(tmp_path)
     created = await binding_mod.ensure_folder_path(
-        state, binding_mod.AUTO_FOLDER_PATH, default_agent=binding_mod.AUTO_FOLDER_AGENT
+        state, binding_mod.AUTO_FOLDER_PATH, default_agent="kirocrew-conductor"
     )
     assert events == [
         {
@@ -1071,7 +1231,7 @@ async def test_folder_auto_create_is_sel_audited_and_keeps_a_person_set_agent(
     ]
     # Reuse writes nothing and audits nothing.
     await binding_mod.ensure_folder_path(
-        state, binding_mod.AUTO_FOLDER_PATH, default_agent=binding_mod.AUTO_FOLDER_AGENT
+        state, binding_mod.AUTO_FOLDER_PATH, default_agent="kirocrew-conductor"
     )
     assert len(events) == 1
     # A folder whose default agent a person set keeps it.
@@ -1079,7 +1239,7 @@ async def test_folder_auto_create_is_sel_audited_and_keeps_a_person_set_agent(
     folder["default_agent"] = "my-agent"
     assert (
         await binding_mod.ensure_folder_path(
-            state, binding_mod.AUTO_FOLDER_PATH, default_agent=binding_mod.AUTO_FOLDER_AGENT
+            state, binding_mod.AUTO_FOLDER_PATH, default_agent="kirocrew-conductor"
         )
         == created
     )
@@ -1111,6 +1271,24 @@ async def test_a_conductor_default_agent_binds_the_session_explicitly(
     assert meta.get("folder_id") == folder_id and meta.get("agent") == agent
     assert meta.get("model") == "claude-sonnet-4.5"
     assert state.get_linked_slot("400.000001") is slot
+    # No conductor mode stamp: the stamp is what moves a root's workers out of
+    # folders (``crew_mode.slot_in_turned_on_tree``), and a code channel files its
+    # helpers in the channel's own folder. Still a conductor mode root by agent.
+    assert not slot.crew_mode_agent and not meta.get("crew_mode_agent")
+    from kiro_crew import crew_mode
+
+    assert crew_mode.slot_in_turned_on_tree(state._slots, slot.key) is False
+
+
+@pytest.mark.asyncio
+async def test_a_plain_default_agent_binds_without_the_conductor_mode_stamp(tmp_path: Any) -> None:
+    from chat_test_helpers import _make_state
+
+    state = _make_state(tmp_path)
+    slot = await create_bound_session(
+        state, SessionSpec(agent="kirocrew"), title="t", channel_id="C1", anchor_ts="2.0"
+    )
+    assert slot.agent == "kirocrew" and not slot.crew_mode_agent
 
 
 @pytest.mark.asyncio

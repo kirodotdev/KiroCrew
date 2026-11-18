@@ -12,7 +12,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api, type InstanceView } from '../api/client'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
-import { setActiveId, setPendingPaneSlot, type WarmConn } from '../store/instancesSlice'
+import { localCovered, setActiveId, setPendingPaneSlot, type WarmConn } from '../store/instancesSlice'
 import { setAgentSwitchNotice, switchSlot } from '../store/chatSlice'
 import { i18nT } from '../i18n/t'
 import { useSelectInstance } from '../hooks/useSelectInstance'
@@ -88,7 +88,7 @@ export function useCrewDeepLink(): (path: string) => boolean {
     // nothing but the local crew forward (where the banner is drawn).
     const refuse = (message: string) => {
       if (superseded()) return
-      if (store.getState().instances?.activeId != null) dispatch(setActiveId(null))
+      if (localCovered(store.getState())) dispatch(setActiveId(null))
       dispatch(setAgentSwitchNotice({ message, error: true }))
     }
     // A reload restores its remembered pane on the first crew list; a link that

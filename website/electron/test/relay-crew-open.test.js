@@ -277,6 +277,25 @@ test("opening a Crew whose renewal stopped mints again and reloads, and a refusa
   assertNoSecrets([...s.logs]);
 });
 
+test("opening a Crew whose window shows the relay's error page reloads it, and a healthy one is only focused", async () => {
+  const s = setup();
+  assert.deepEqual(await s.opener.open(ID), { ok: true });
+  const w = s.win.opened[0];
+  let reloads = 0;
+  let error = true;
+  w.reload = () => { reloads += 1; };
+  w.showsError = () => error;
+  assert.deepEqual(await s.opener.open(ID), { ok: true });
+  assert.equal(reloads, 1, "a window left on the relay's answer loads the Crew again");
+  assert.equal(w.focused, 1);
+  assert.equal(s.requests.length, 1, "renewal still runs, so no second mint");
+  error = false;
+  assert.deepEqual(await s.opener.open(ID), { ok: true });
+  assert.equal(reloads, 1, "a window on the Crew is only raised");
+  assert.equal(w.focused, 2);
+  assert.ok(s.logs.some((l) => l.includes("reloaded")));
+});
+
 test("a restart whose window closes mid-mint stops the new renewal, and a second click mints once", async () => {
   const made = [];
   const createRenewal = ({ mint, holder }) => {
@@ -796,6 +815,55 @@ test("with no pane, open still opens a window of its own", async () => {
   assert.equal(s.win.opened.length, 1);
   assert.equal(s.panes.opened.length, 0);
   assert.equal(s.opener.paneFor(ID), null, "a window is not a pane");
+});
+
+test("a pane asked for a Crew already in a window focuses the window and answers window: true, opening no pane", async () => {
+  const s = setup();
+  await s.opener.open(ID);
+  const pane = { parent: {}, dashboard: {}, bounds: { x: 0, y: 0, width: 10, height: 10 } };
+  assert.deepEqual(await s.opener.open(ID, pane), { ok: true, window: true });
+  assert.equal(s.win.opened[0].focused, 1);
+  assert.equal(s.panes.opened.length, 0);
+  assert.deepEqual(await s.opener.open(ID), { ok: true }, "a window asked for answers as before");
+});
+
+const PANE = { parent: {}, dashboard: {}, bounds: { x: 0, y: 0, width: 10, height: 10 } };
+
+test("a pane asked for a window whose renewal stopped restarts the window and answers window: true", async () => {
+  const made = [];
+  const createRenewal = ({ mint, holder }) => {
+    const r = {
+      stopped: false,
+      async start() { const g = await mint(); holder.set(g.accessToken); return { ok: true }; },
+      attach() {},
+      setHidden() {},
+      stop() { r.stopped = true; holder.clear(); },
+      isStopped: () => r.stopped,
+    };
+    made.push(r);
+    return r;
+  };
+  const s = setup({ createRenewal });
+  await s.opener.open(ID);
+  made[0].stop();
+  assert.deepEqual(await s.opener.open(ID, PANE), { ok: true, window: true });
+  assert.equal(made.length, 2, "restarted");
+  assert.equal(s.panes.opened.length, 0);
+});
+
+test("a pane asked while a window open is in flight joins it and answers window: true", async () => {
+  const s = setup();
+  const windowOpen = s.opener.open(ID);
+  assert.deepEqual(await s.opener.open(ID, PANE), { ok: true, window: true });
+  assert.deepEqual(await windowOpen, { ok: true });
+  assert.equal(s.panes.opened.length, 0);
+});
+
+test("a real pane never answers window: true, new or focused", async () => {
+  const s = setup();
+  assert.deepEqual(await s.opener.open(ID, PANE), { ok: true });
+  assert.deepEqual(await s.opener.open(ID, PANE), { ok: true });
+  assert.equal(s.panes.opened.length, 1);
 });
 
 test("paneFor answers an open pane and the dashboard it was opened from, and null once it closes", async () => {

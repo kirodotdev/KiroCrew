@@ -21,16 +21,19 @@ import { useTranslation } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
 import { useSearchParams } from 'react-router-dom'
-import { ExternalLink } from 'lucide-react'
+import { ExternalLink, LogIn } from 'lucide-react'
 import type { RelayCrewEntry, RelayViewerAccount } from '../api/client'
 import {
-  clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrew, recordRelayCrewsSeen, relayCrewStatusText,
+  clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrew, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText,
   relayRefusalText, relayRetryable, useRelayViewerCrews, type RelayListRefusal,
 } from '../hooks/useRelayViewerCrews'
+import { useAppDispatch } from '../store'
+import { relayPaneBridge } from '../lib/relayCrewPanes'
 import InstanceTabBar from './InstanceTabBar'
 import { DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from './ui/dropdown-menu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 import { i18nT } from '../i18n/t'
+import { useOpenKiroSignIn } from '../pages/developer/useOpenKiroSignIn'
 import { joinSentences } from '../i18n/format'
 import { accountProviderLabel } from './kasProviderLabel'
 
@@ -78,9 +81,12 @@ function TeamCrewItem({ crew, refusal, onOpen }: {
           </span>
           <span className="truncate text-[12px] text-muted">{type} · {relayCrewStatusText(crew)}</span>
         </span>
-        <span className="shrink-0 text-muted" title={t('components.relayCrews.opens_own_window')}>
-          <ExternalLink className="lucide-inline" aria-hidden />
-        </span>
+        {/* With panes on the Crew opens in this window, so no own-window mark. */}
+        {!relayPaneBridge() && (
+          <span className="shrink-0 text-muted" title={t('components.relayCrews.opens_own_window')}>
+            <ExternalLink className="lucide-inline" aria-hidden />
+          </span>
+        )}
       </DropdownMenuItem>
       {refusal && (
         <>
@@ -98,13 +104,16 @@ function TeamCrewItem({ crew, refusal, onOpen }: {
  *  until a throttle's Retry-After passes), and CPS's request ID when CPS sent one,
  *  so a server failure can be reported. Try again is a menu item so the keyboard
  *  reaches it, and the request ID is shown open, not under a collapsed Details. */
-function RelayListRefusalNotice({ refusal, onRetry, retrying }: {
+function RelayListRefusalNotice({ refusal, onRetry, retrying, close }: {
   refusal: RelayListRefusal
   onRetry: () => void
   /** A read is in flight: Try again stays off until it answers. */
   retrying: boolean
+  /** Closes the switcher's menu, before the way to the Kiro account tab leaves the page. */
+  close: () => void
 }) {
   const { t } = useTranslation()
+  const openKiroSignIn = useOpenKiroSignIn()
   const { retryAt } = refusal
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -121,6 +130,23 @@ function RelayListRefusalNotice({ refusal, onRetry, retrying }: {
       <div className="px-3 pb-1">
         <ErrorNotice id="relay-crews-list-refusal" variant="inline" message={refusal.text} testId="relay-crews-list-refusal" />
       </div>
+      {/* Signed out of Kiro: Sign in first, on Settings > Kiro account. It brings
+          the local Crew forward and asks its leave guard (useOpenKiroSignIn).
+          The agent hand-off stays too, since a backend that does not run on
+          the Kiro sign-in can still take it. */}
+      {refusal.code === 'SIGNED_OUT' && (
+        <DropdownMenuItem
+          data-testid="relay-crews-list-sign-in"
+          aria-describedby="relay-crews-list-refusal"
+          onSelect={() => {
+            close()
+            openKiroSignIn()
+          }}
+        >
+          <LogIn size={14} aria-hidden="true" />
+          {t('components.relayCrews.sign_in')}
+        </DropdownMenuItem>
+      )}
       <ErrorNoticeMenuItem Item={DropdownMenuItem} message={refusal.text} describedBy="relay-crews-list-refusal" />
       {refusal.requestId && (
         <div className="px-3 pb-1 text-[11px] text-muted font-mono select-all" data-testid="relay-crews-list-details">
@@ -161,6 +187,7 @@ export function TeamCrewsGroup({ crews, account, refusal, retry, retrying, refre
   const queryClient = useQueryClient()
   // Left out on a refusal and for an account with no label. No e-mail: the gateway sends none.
   const provider = !refusal && account ? accountProviderLabel(account.accountType, account.startUrl) : ''
+  const dispatch = useAppDispatch()
   const [refusals, setRefusals] = useState<Record<string, string>>({})
   // The group renders only while the menu is open, so showing it is seeing its
   // new Crews: the gateway is told now, and the marks stay until the menu closes
@@ -198,11 +225,12 @@ export function TeamCrewsGroup({ crews, account, refusal, retry, retrying, refre
       const { [endpointId]: _dropped, ...rest } = prev
       return rest
     })
-    void openRelayCrew(endpointId).then(res => {
+    const name = crews.find(c => c.endpointId === endpointId)?.name ?? ''
+    void openRelayCrewTab(endpointId, name, dispatch).then(res => {
       if (res.ok) close()
       else setRefusals(prev => ({ ...prev, [endpointId]: relayRefusalText(res.error) }))
     })
-  }, [close])
+  }, [close, crews, dispatch])
   return (
     <div role="group" aria-label={t('components.relayCrews.list_label')} data-testid="team-crews-group">
       <DropdownMenuSeparator />
@@ -223,7 +251,7 @@ export function TeamCrewsGroup({ crews, account, refusal, retry, retrying, refre
         </>
       )}
       {refusal
-        ? <RelayListRefusalNotice refusal={refusal} onRetry={retry} retrying={retrying} />
+        ? <RelayListRefusalNotice refusal={refusal} onRetry={retry} retrying={retrying} close={close} />
         : crews.length === 0
           ? <div className="px-3 py-1.5 text-[12px] text-muted">{t('components.relayCrews.empty')}</div>
           : crews.map(c => (

@@ -271,7 +271,7 @@ _CONVERTED: list[tuple[str, str]] = [
     ("session_image_repair.py", "apply_repair"),
     ("dashboard/part_stream.py", "commit"),
     ("dashboard/session_pulse_counter.py", "increment_user_session_count"),
-    ("dashboard/revocation_gen.py", "bump_revocation_gen"),
+    ("dashboard/revocation_gen.py", "persist_next_revocation_gen"),
     ("ledger_wake.py", "_write_rate"),
     ("hook_runtime/pinned_writes.py", "_pinned_replace"),
     ("mcp_gateway/rewriter.py", "_store_fingerprint"),

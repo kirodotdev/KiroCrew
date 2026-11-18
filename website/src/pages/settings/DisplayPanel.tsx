@@ -1,10 +1,10 @@
-import { Loader2, Eye, Type, SquareTerminal, FileCode, Palette, PanelLeft, Monitor, Sun, Moon, FolderOpen } from 'lucide-react'
+import { Loader2, Eye, Type, SquareTerminal, FileCode, Palette, PanelLeft, Monitor, Sun, Moon, FolderOpen, Clock } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
 import type { FontFamily } from '../../hooks/useZoom'
 import { useTheme } from '../../hooks/useTheme'
-import type { ColorTheme } from '../../hooks/useTheme'
+import type { ColorTheme, ModePreference } from '../../hooks/useTheme'
 import { useUIMode } from '../../hooks/useUIMode'
 import { SettingsSection, SettingsCard, SettingsSelect, SettingsStepper, SettingsButtonGroup, SettingsInput, SettingsCombobox, SettingsToggle } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
@@ -46,11 +46,13 @@ import { ChannelsSetting } from './ChannelsSetting'
 import ErrorNotice from '../../components/ErrorNotice'
 import { REMOTE_EDITORS } from '../../utils/remoteEditorUrl'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import type { ThemeSchedule } from '../../utils/themeSchedule'
 import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
 import { useCloseAction } from '../../hooks/useCloseAction'
 import { useTrayIcon } from '../../hooks/useTrayIcon'
+import { useMinimizeToTray } from '../../hooks/useMinimizeToTray'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
@@ -100,6 +102,8 @@ const INTENSITY_LABEL_KEYS = {
 
 /** Why the tray icon switch is locked on, which the switch's description points at. */
 const TRAY_ICON_LOCKED_NOTE_ID = 'tray-icon-locked-note'
+/** Why the minimize-to-tray switch is locked off. */
+const MINIMIZE_TO_TRAY_LOCKED_NOTE_ID = 'minimize-to-tray-locked-note'
 
 export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const ime = useImeGuard()
@@ -110,6 +114,9 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const {
     preference,
     setTheme,
+    schedule,
+    setSchedule,
+    scheduleSaveFailed,
     colorTheme,
     setColorTheme,
     allThemes,
@@ -122,6 +129,17 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     customThemesLoaded,
     customThemeDataMap,
   } = useTheme()
+  // Scheduled's times are saved on blur: a time field reports every segment it
+  // edits, and '' while one is cleared, so saving each edit would re-theme the
+  // dashboard and write the workspace once per keystroke. After a refused save
+  // the unchanged pair is saved again, so leaving a field is the retry.
+  const [scheduleDraft, setScheduleDraft] = useState<Partial<ThemeSchedule>>({})
+  const commitSchedule = () => {
+    const next = { ...schedule, ...scheduleDraft }
+    setScheduleDraft({})
+    const changed = next.light !== schedule.light || next.dark !== schedule.dark
+    if (next.light && next.dark && (changed || scheduleSaveFailed)) setSchedule(next)
+  }
   // The load-error notice is shown only for a pack that is actually unstyled.
   // `installedThemeLoadFailed` is derived in the provider from the selection,
   // the catalog and the detail map, so a failed reload whose last good detail
@@ -136,6 +154,11 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const { liquidGlass, setLiquidGlass } = useLiquidGlass()
   const { closeAction, closeActionSupported, closeActionPending, closeActionFailed, setCloseAction } = useCloseAction()
   const { trayIcon, trayIconSupported, trayIconPending, trayIconFailed, setTrayIcon } = useTrayIcon(closeAction)
+  const {
+    minimizeToTray, minimizeToTraySupported, minimizeToTrayPending, minimizeToTrayFailed, setMinimizeToTray,
+  } = useMinimizeToTray(trayIcon.show)
+  // Offered only where a tray can bring the window back (never on macOS).
+  const minimizeToTrayOffered = minimizeToTraySupported && minimizeToTray.offered
   // "Show search in the top bar", on by default. useAppShell reads the same key
   // to draw the header, and usePersistedBool keeps the two readers in step.
   const [topbarSearch, setTopbarSearch] = usePersistedBool('mc-topbar-search', true)
@@ -774,13 +797,17 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               primitive over a skeleton transcript, so it follows the switch
               live and shows what the setting changes before the user leaves
               Settings. */}
-          <SettingsToggle
-            label={i18nT('pages.settings.displayPanel.translucent_panels')}
-            hint={i18nT('pages.settings.displayPanel.translucent_panels_desc')}
-            checked={liquidGlass}
-            onChange={setLiquidGlass}
-          />
-          <TranslucentPanelsPreview placeholder={i18nT('components.chatInput.message_placeholder', { bot: botName })} />
+          {/* The switch and its preview are one row, so the preview sits inside
+              the row's inset instead of running to the box edges. */}
+          <div>
+            <SettingsToggle
+              label={i18nT('pages.settings.displayPanel.translucent_panels')}
+              hint={i18nT('pages.settings.displayPanel.translucent_panels_desc')}
+              checked={liquidGlass}
+              onChange={setLiquidGlass}
+            />
+            <TranslucentPanelsPreview placeholder={i18nT('components.chatInput.message_placeholder', { bot: botName })} />
+          </div>
           {/* The top bar's search box, on by default. Browser-local like the
               switch above, because it is about how much room this window gives
               the top bar: off, the box's centre track goes to the controls on
@@ -823,8 +850,8 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
         </SettingsCard>
       </SettingsSection>
       {/* Desktop app only: shown once the main process answers for the main
-          window's dashboard (useCloseAction, useTrayIcon), local or remote
-          gateway. */}
+          window's dashboard (useCloseAction, useTrayIcon, useMinimizeToTray),
+          local or remote gateway. */}
       {closeActionSupported && (
         <SettingsSection title={i18nT('pages.settings.displayPanel.desktop_app')}>
           <SettingsCard>
@@ -864,6 +891,29 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             )}
             {/* No hand-off, for the same drafts as the close row above. */}
             {trayIconFailed && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
+              />
+            )}
+            {minimizeToTrayOffered && (
+              <SettingsToggle
+                settingId="display.minimize-to-tray"
+                label={i18nT('pages.settings.displayPanel.minimize_to_tray')}
+                hint={i18nT('pages.settings.displayPanel.minimize_to_tray_desc')}
+                checked={minimizeToTray.on}
+                disabled={minimizeToTrayPending || !minimizeToTray.canEnable}
+                describedBy={minimizeToTray.canEnable ? undefined : MINIMIZE_TO_TRAY_LOCKED_NOTE_ID}
+                onChange={setMinimizeToTray}
+              />
+            )}
+            {minimizeToTrayOffered && !minimizeToTray.canEnable && (
+              <p id={MINIMIZE_TO_TRAY_LOCKED_NOTE_ID} className="text-[12px] text-muted">
+                {i18nT('pages.settings.displayPanel.minimize_to_tray_locked')}
+              </p>
+            )}
+            {/* No hand-off, for the same drafts as the close row above. */}
+            {minimizeToTrayFailed && (
               <ErrorNotice
                 variant="inline"
                 message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
@@ -1251,8 +1301,26 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               { value: 'system', label: i18nT('pages.settings.displayPanel.theme_mode_auto'), icon: <Monitor className="w-3.5 h-3.5" /> },
               { value: 'light', label: i18nT('pages.settings.displayPanel.theme_mode_light'), icon: <Sun className="w-3.5 h-3.5" /> },
               { value: 'dark', label: i18nT('pages.settings.displayPanel.theme_mode_dark'), icon: <Moon className="w-3.5 h-3.5" /> },
+              { value: 'schedule', label: i18nT('pages.settings.displayPanel.theme_mode_scheduled'), icon: <Clock className="w-3.5 h-3.5" /> },
             ]}
-            onChange={v => setTheme(v as 'system' | 'light' | 'dark')} />
+            onChange={v => setTheme(v as ModePreference)} />
+          {preference === 'schedule' && (
+            <>
+              <SettingsInput type="time" label={i18nT('pages.settings.displayPanel.theme_schedule_light_from')} hint={i18nT('pages.settings.displayPanel.theme_schedule_light_from_hint')} value={scheduleDraft.light ?? schedule.light}
+                onChange={light => setScheduleDraft(d => ({ ...d, light }))} onBlur={commitSchedule} configKey="dashboard.theme_schedule_light" />
+              <SettingsInput type="time" label={i18nT('pages.settings.displayPanel.theme_schedule_dark_from')} hint={i18nT('pages.settings.displayPanel.theme_schedule_dark_from_hint')} value={scheduleDraft.dark ?? schedule.dark}
+                onChange={dark => setScheduleDraft(d => ({ ...d, dark }))} onBlur={commitSchedule} configKey="dashboard.theme_schedule_dark" />
+              {/* No hand-off: navigating away would discard `scheduleDraft`,
+                  `shellDraft` or `installValue` on this panel. Leaving a time
+                  field is the retry. */}
+              {scheduleSaveFailed && (
+                <ErrorNotice
+                  variant="inline"
+                  message={i18nT('pages.settings.displayPanel.theme_schedule_save_failed')}
+                />
+              )}
+            </>
+          )}
 
           {allThemes.filter(t => t.custom).length > 0 && (
             <div className="flex flex-col gap-1.5 pt-2">

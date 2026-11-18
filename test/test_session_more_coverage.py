@@ -48,6 +48,7 @@ from kiro_crew.session import (
     SessionManager,
     _Session,
 )
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import async_wait_until
 
 
@@ -80,6 +81,8 @@ def _provider(**attrs):
         "is_process_alive": lambda: True,
         # The registry calls this on a race loser before its shutdown.
         "disown_work_dir": lambda: None,
+        # ``LLMProvider``'s default: no spawn tier to compare.
+        "sandbox_mode": None,
     }
     base.update(attrs)
     return SimpleNamespace(**base)
@@ -663,7 +666,8 @@ class TestGetBgSessionRespawn:
             is_alive=lambda: True,
             has_active_sessions=lambda: True,
             _is_stale=AsyncMock(return_value=None),  # healthy, so never displaced
-            pid=11,
+            sandbox_mode=mgr._cfg.agent.sandbox,
+            pid=UNALLOCATABLE_PID,
             create_session=create,
             kill=AsyncMock(),
         )
@@ -689,7 +693,8 @@ class TestGetBgSessionRespawn:
             is_alive=lambda: alive[0],
             has_active_sessions=lambda: True,
             _is_stale=AsyncMock(return_value=None),  # healthy, so never displaced
-            pid=11,
+            sandbox_mode=mgr._cfg.agent.sandbox,
+            pid=UNALLOCATABLE_PID,
             create_session=create_session,
             kill=AsyncMock(side_effect=RuntimeError("kill failed")),
         )

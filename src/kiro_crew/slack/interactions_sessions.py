@@ -99,17 +99,17 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
         async def _on_soft() -> None:
             from kiro_crew.slack.blocks import build_stopped_blocks
 
-            await _update_ephemeral(build_stopped_blocks(), "⏹ [Stopped]")
+            await _update_ephemeral(build_stopped_blocks(), "[Stopped]")
             if _orch and _orch.slack:
-                await _orch.slack.post_message(channel, "⏹ Execution stopped.", thread_ts)
+                await _orch.slack.post_message(channel, "Execution stopped.", thread_ts)
 
         async def _on_hard() -> None:
             from kiro_crew.slack.blocks import build_stop_failed_blocks
 
-            await _update_ephemeral(build_stop_failed_blocks(), "⛔ [Stop Failed, Session Reset]")
+            await _update_ephemeral(build_stop_failed_blocks(), "[Stop Failed, Session Reset]")
             if _orch and _orch.slack:
                 await _orch.slack.post_message(
-                    channel, "⛔ Execution stopped — session reset.", thread_ts
+                    channel, "Execution stopped — session reset.", thread_ts
                 )
 
         # A repeat press within the window by the same presser, while the
@@ -265,7 +265,7 @@ async def _handle_stop_kill_now(
                         proxy=resolve_proxy(response_url),
                         json={
                             "replace_original": True,
-                            "text": "⛔ [Stop Failed, Session Reset]",
+                            "text": "[Stop Failed, Session Reset]",
                             "blocks": build_stop_failed_blocks(),
                         },
                     )
@@ -276,9 +276,7 @@ async def _handle_stop_kill_now(
             # rather than session_key: for linked dashboard sessions these
             # differ, and session_key would not be a valid Slack thread.
             thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
-            await _orch.slack.post_message(
-                channel, "⛔ Execution stopped — session reset.", thread_ts
-            )
+            await _orch.slack.post_message(channel, "Execution stopped — session reset.", thread_ts)
 
     outcome = await _orch.sessions.stop_turn(session_key, force=True, on_hard=_on_hard)
     sel().log_tool_invocation(
@@ -339,7 +337,7 @@ async def _handle_session_resume(
 
     if existing_thread and existing_channel:
         link = f"https://slack.com/archives/{existing_channel}/p{existing_thread.replace('.', '')}"
-        label = f"\U0001f9f5 This session is already active: <{link}|Go to conversation>"
+        label = f"This session is already active: <{link}|Go to conversation>"
         response_url = payload.get("response_url", "")
         if response_url:
             try:
@@ -368,7 +366,7 @@ async def _handle_session_resume(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"\U0001f504 Resume *{title}*\nWhere would you like to continue?",
+                "text": f"Resume *{title}*\nWhere would you like to continue?",
             },
         },
         {
@@ -376,13 +374,13 @@ async def _handle_session_resume(
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "\U0001f4ce Thread"},
+                    "text": {"type": "plain_text", "text": "Thread"},
                     "action_id": f"mc_resume_thread_{short_id}",
                     "value": choice_value,
                 },
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "\U0001f4ac DM"},
+                    "text": {"type": "plain_text", "text": "DM"},
                     "action_id": f"mc_resume_dm_{short_id}",
                     "value": choice_value,
                 },
@@ -535,7 +533,7 @@ async def _handle_session_end(
     await _record_session_dismissed(key_to_remove or session_id)
 
     response_url = payload.get("response_url", "")
-    label = f"🛑 Session `{session_id[:12]}…` ended."
+    label = f"Session `{session_id[:12]}…` ended."
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:
@@ -591,7 +589,7 @@ async def _handle_inline_stop(
     # Immediate feedback — update the working message to show stopping
     if _orch.slack and channel and msg_ts:
         try:
-            await _orch.slack.update_message(channel, msg_ts, text="⏹ _Stopping…_")
+            await _orch.slack.update_message(channel, msg_ts, text="_Stopping…_")
         except Exception:
             # The "Stopping" text is cosmetic; the stop runs either way.
             pass
@@ -599,7 +597,7 @@ async def _handle_inline_stop(
     async def _on_soft() -> None:
         if _orch.slack and channel and msg_ts:
             try:
-                await _orch.slack.update_message(channel, msg_ts, text="⏹ Execution stopped.")
+                await _orch.slack.update_message(channel, msg_ts, text="Execution stopped.")
             except Exception:
                 # The status text is cosmetic.
                 pass
@@ -608,7 +606,7 @@ async def _handle_inline_stop(
         if _orch.slack and channel and msg_ts:
             try:
                 await _orch.slack.update_message(
-                    channel, msg_ts, text="⛔ Execution stopped — session reset."
+                    channel, msg_ts, text="Execution stopped — session reset."
                 )
             except Exception:
                 # The status text is cosmetic.
@@ -653,7 +651,7 @@ async def _handle_inline_stop(
         await decline_stop(session_key, user_id, _say_declined)
     elif outcome == "idle" and _orch.slack and channel and msg_ts:
         try:
-            await _orch.slack.update_message(channel, msg_ts, text="⏹ Nothing running.")
+            await _orch.slack.update_message(channel, msg_ts, text="Nothing running.")
         except Exception:
             # The status text is cosmetic.
             pass
@@ -687,7 +685,7 @@ async def _handle_session_new(
     # Post a new message that starts a fresh thread
     try:
         await _orch.slack.post_message(
-            channel, "✨ New session started. Send your first message here."
+            channel, "New session started. Send your first message here."
         )
     except Exception:
         logger.debug("Failed to create new session message", exc_info=True)
@@ -695,7 +693,7 @@ async def _handle_session_new(
 
     # Ack the button
     response_url = payload.get("response_url", "")
-    label = "✨ New session created."
+    label = "New session created."
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:

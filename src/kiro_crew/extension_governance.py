@@ -12,7 +12,9 @@ nothing changes until a policy names one.
 * :data:`EXTENSIONS_SCOPE` turns installing on or off. Its ``extensions`` list
   names what may be installed, as ``<kind>:<id>`` (``mcp:github``,
   ``skill:pdf-tools``, ``agent:reviewer``, ``plugin:reviewer``). Uninstall needs
-  the scope on; the list does not bind it, because removing only narrows.
+  the scope on; the list does not bind it, because removing only narrows. In an
+  LTS build a skill package is judged by the skill names it holds
+  (:func:`skill_package_denied`), not by its package id.
 * :data:`APP_VERSIONS_SCOPE` lists the app versions that may be installed and
   loaded, as ``<app>@<version>`` (``file-explorer@1.*``).
 * :data:`DEV_MODE_SCOPE` turns app developer mode on or off.
@@ -35,7 +37,7 @@ which stats the profiles directory, so an async caller runs it off the event loo
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Sequence
 
 from kiro_crew import edition
 
@@ -148,6 +150,26 @@ def extension_install_denied(kind: str, ident: str) -> Optional[str]:
     if kind not in EXTENSION_KINDS:
         raise ValueError(f"unknown extension kind {kind!r}")
     return _denied(EXTENSIONS_SCOPE, f"{EXTENSIONS_LIST}:{kind}:{ident}", action=f"install_{kind}")
+
+
+def skill_package_denied(package: str, names: Optional[Sequence[str]]) -> Optional[str]:
+    """LTS: why installing skill *package* is refused, judged by the skill *names* it
+    holds, or ``None``.
+
+    A skill install id is a package (``owner/repo``), while the policy's ``skill``
+    term names skills (RFC D13), so each name is asked as ``skill:<name>`` and one
+    denied name refuses the whole package. *names* is ``None`` or empty when the
+    package could not be listed: then the install is refused (fail-closed), since a
+    list cannot judge what it is not shown.
+    """
+    readable = [n.strip() for n in names or () if isinstance(n, str) and n.strip()]
+    if not readable or len(readable) != len(names or ()):
+        return f"cannot list the skills in package {package!r}, so it is not installed"
+    for name in dict.fromkeys(readable):
+        denied = extension_install_denied("skill", name)
+        if denied:
+            return f"skill {name!r} in package {package!r}: {denied}"
+    return None
 
 
 def extensions_off(action: str) -> Optional[str]:

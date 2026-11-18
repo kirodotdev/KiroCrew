@@ -58,6 +58,8 @@ import {
 import { Card, Btn } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
+import { useViewerIsNotOwner } from '../../hooks/sharedCrew/useSharedCrew'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import {
@@ -97,7 +99,7 @@ import {
 import {
   isInProgress, CLOUD_PROFILE_KEY, CLOUD_REGION_KEY, CLOUD_SIZE_KEY, CLOUD_PROVISIONER_KEY,
   DEFAULT_REGION, launchGuardKey, isTerminal, isRegistered, needsSignin, type SizeTier, SIZE_TIERS, X86_TIERS,
-  PRICING_CALCULATOR_URL, type SigninNotice,
+  PRICING_CALCULATOR_URL, PRICE_REGION, type SigninNotice,
 } from './remoteCrewPanelModel'
 import {
   SizeCard, ProvisionerCard, SettingUpRow, PrereqRow, LaunchProgressCard,
@@ -343,6 +345,8 @@ export function RemoteCrewPanel() {
   // Keyed on the gateway's `instances_disabled` code, not the message text, so
   // an owner-only or Slack-origin 403 shows as a load error, not as "turned off".
   const disabled = isInstancesDisabledError(instancesQuery.error)
+  // The relay answers every remote caller `instances_disabled`, and the switch is the host's own config.
+  const { notOwner } = useViewerIsNotOwner()
   // Any OTHER failure is a load error, not "you have no crews": rendering the
   // empty state over it would tell the user their crews are gone.
   // Both queries gate the crew list: a row's cloud-vs-manual identity comes from the
@@ -1015,6 +1019,14 @@ export function RemoteCrewPanel() {
   // ── Disabled feature gate (mirrors InstancesPanel) ──
   // Shared Crews open over the relay, not an SSH/SSM tunnel, so their card does
   // not wait on this switch; it keeps its own hidden rule.
+  if (disabled && notOwner) {
+    return (
+      <div className="space-y-4">
+        <StatusNotice tone="info" testId="remote-crews-owner-only" message={i18nT('pages.settings.instancesPanel.owner_only')} />
+        <SharedCrewsCards />
+      </div>
+    )
+  }
   if (disabled) {
     return (
       <div className="space-y-4">
@@ -1517,6 +1529,9 @@ export function RemoteCrewPanel() {
 
             <div>
               <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.size')}</div>
+              {region.trim() !== PRICE_REGION && (
+                <p className="text-[12px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.price_region_note', { priceRegion: PRICE_REGION })}</p>
+              )}
               <div className="space-y-2.5">
                 {SIZE_TIERS.map(tier => (
                   <SizeCard key={tier.key} tier={tier} on={sizeKey === tier.key} onPick={setSizeKey} />

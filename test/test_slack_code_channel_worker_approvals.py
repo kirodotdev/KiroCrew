@@ -159,7 +159,7 @@ def test_a_worker_approval_posts_top_level_in_the_channel(relay: Any) -> None:
     assert channel == CH and thread_ts is None
     assert (
         blocks[0]["text"]["text"]
-        == "🔐 *A helper session this channel started (Fix #21964)* wants to run:"
+        == "*A helper session this channel started (Fix #21964)* wants to run:"
     )
     assert "npm test" in blocks[1]["text"]["text"]
     buttons = [e for b in blocks if b["type"] == "actions" for e in b["elements"]]
@@ -420,7 +420,7 @@ def test_a_real_worker_turn_relays_its_prompt_and_settles_the_card(
     assert (channel, thread_ts) == (CH, None)
     assert (
         blocks[0]["text"]["text"]
-        == "🔐 *A helper session this channel started (Fix #21964)* wants to run:"
+        == "*A helper session this channel started (Fix #21964)* wants to run:"
     )
     ts = f"300.{relay.slack._n:06d}"
     lines = [u[2] for u in relay.slack.updates if u[1] == ts]

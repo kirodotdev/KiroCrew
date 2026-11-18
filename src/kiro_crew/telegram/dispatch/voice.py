@@ -86,12 +86,12 @@ async def _handle_voice(
     if want in ("on", "off"):
         self._voice_pref[route] = want == "on"
         state = "on" if want == "on" else "off"
-        await self._reply(chat_id, f"🔊 Voice replies {state}.", thread=thread)
+        await self._reply(chat_id, f"Voice replies {state}.", thread=thread)
         return
     now = "on" if self._voice_enabled(route) else "off"
     await self._reply(
         chat_id,
-        f"🔊 Voice replies are *{now}*. Use `/voice on` or `/voice off`.",
+        f"Voice replies are *{now}*. Use `/voice on` or `/voice off`.",
         thread=thread,
     )
 

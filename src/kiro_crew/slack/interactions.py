@@ -181,7 +181,7 @@ async def dispatch(payload: dict) -> None:
         )
         from kiro_crew.slack.code_channels import agent_picker, approval_picker
 
-        refusal = "⛔ You are not authorized to use these buttons."
+        refusal = "Blocked: You are not authorized to use these buttons."
         if action_id == agent_picker.AGENT_SELECT_ACTION_ID:
             # Slack Code's agent picker records each change decision as its own.
             agent_picker.audit_refused_pick(payload, "unauthorized user")
@@ -405,7 +405,7 @@ async def dispatch(payload: dict) -> None:
                     json={
                         "replace_original": False,
                         "response_type": "ephemeral",
-                        "text": f"📋 Copy this link:\n```{url}```",
+                        "text": f"Copy this link:\n```{url}```",
                     },
                 )
         return
@@ -507,7 +507,7 @@ async def dispatch(payload: dict) -> None:
                         json={
                             "replace_original": False,
                             "response_type": "ephemeral",
-                            "text": "⚠️ Could not import thread history.",
+                            "text": "Warning: Could not import thread history.",
                         },
                     )
             return
@@ -700,16 +700,16 @@ async def dispatch(payload: dict) -> None:
                 is_trust = is_session_trusted(sess_key)
         resolved = SlackApprovalDecider.resolve_global(approval_key, approved, nonce=press_nonce)
         if not resolved:
-            label = "⏱ This approval already expired."
+            label = "This approval already expired."
             outcome = "expired"
         elif is_trust:
-            label = "🔓 Trusted this session — tools auto-approved"
+            label = "Trusted this session — tools auto-approved"
             outcome = "trusted"
         elif approved:
-            label = "✅ Approved"
+            label = "Approved"
             outcome = "approved"
         else:
-            label = "🚫 Denied"
+            label = "Denied"
             outcome = "denied"
         sel().log_api_access(
             caller=user_id,
@@ -796,7 +796,7 @@ async def _handle_resume_choice(
             link = (
                 f"https://slack.com/archives/{existing_channel}/p{existing_thread.replace('.', '')}"
             )
-            label = f"\U0001f9f5 Already active: <{link}|Go to conversation>"
+            label = f"Already active: <{link}|Go to conversation>"
             response_url = payload.get("response_url", "")
             if response_url:
                 try:
@@ -876,7 +876,7 @@ async def _handle_resume_choice(
                     " resumed in a thread here. Resume it in a DM instead.",
                 )
                 return
-            thread_msg = f"\U0001f9f5 *{title}*\n" + (
+            thread_msg = f"*{title}*\n" + (
                 _RESUME_TAB_CLOSED_MSG
                 if tab_closed
                 else "Session resumed. Continue the conversation in this thread."
@@ -889,7 +889,7 @@ async def _handle_resume_choice(
             if not thread_ts:
                 return
             link_ts, link_channel = thread_ts, target_channel
-            label = f"\u25b6\ufe0f Resumed *{title}* in thread."
+            label = f"Resumed *{title}* in thread."
         elif mode == "dm":
             try:
                 dm_channel = await _orch.slack.open_dm(user_id)
@@ -898,7 +898,7 @@ async def _handle_resume_choice(
                 return
             if not dm_channel:
                 return
-            header = "\u2500" * 15 + "\n" f"\U0001f504 Resumed: *{title}*\n" + "\u2500" * 15
+            header = "\u2500" * 15 + "\n" f"Resumed: *{title}*\n" + "\u2500" * 15
             try:
                 header_ts = await _orch.slack.post_message(dm_channel, header)
             except Exception:
@@ -909,11 +909,11 @@ async def _handle_resume_choice(
             link_ts, link_channel = header_ts, dm_channel
             thread_ts = header_ts
             target_channel = dm_channel
-            label = f"\u25b6\ufe0f Resumed *{title}* in DM."
+            label = f"Resumed *{title}* in DM."
         else:
             return
         if tab_closed:
-            label = f"\u25b6\ufe0f *{title}*: {_RESUME_TAB_CLOSED_MSG}"
+            label = f"*{title}*: {_RESUME_TAB_CLOSED_MSG}"
 
         # Read the live slot again with no await before publishing the link:
         # its agent may have changed while the thread post awaited.
@@ -996,7 +996,7 @@ async def _handle_resume_choice(
                 for role, txt in msgs[-5:]:
                     txt, _ = redact_exfiltration_urls(txt)
                     txt, _ = redact_credentials(txt)
-                    icon = "\U0001f9d1" if role == "user" else "\U0001f916"
+                    icon = "*You:*" if role == "user" else "*Agent:*"
                     try:
                         await _orch.slack.post_message(
                             target_channel,

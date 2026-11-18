@@ -705,11 +705,13 @@ async def stream_and_collect_json(
     on_chunk: Callable[[str], None] | None = None,
     model_fallback: bool = False,
     allow_image: bool = True,
+    on_event: Callable[[LLMEvent], Awaitable[None]] | None = None,
 ) -> dict | None:
     """Stream a message and parse the response as JSON.
 
     Combines ``stream_and_collect`` with ``parse_llm_json``.
-    Returns parsed dict or None on failure.
+    Returns parsed dict or None on failure. *on_event* is handed to
+    ``stream_and_collect`` unchanged.
     """
     text = await stream_and_collect(
         provider,
@@ -719,5 +721,6 @@ async def stream_and_collect_json(
         on_chunk=on_chunk,
         model_fallback=model_fallback,
         allow_image=allow_image,
+        on_event=on_event,
     )
     return parse_llm_json(text)

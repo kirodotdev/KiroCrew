@@ -94,7 +94,6 @@ from kiro_crew.messaging.queue_drain import (
 from kiro_crew.messaging.queue_receipt import (
     ATTACHMENT_PLACEHOLDER,
     MAX_COLLAPSE,
-    STEER_ACK_EMOJI,
     ReceiptQueue,
     ReceiptSurface,
     receipt_address_key,
@@ -163,7 +162,7 @@ _RESUME_EXEMPT_COMMANDS = frozenset({"new", "unlink", "sessions", "help"})
 #: instead (``_handle_resumed_busy``). An incognito or temporary session is taken
 #: like any other: those modes keep their transcript and queue.
 _RESUMED_BUSY_REFUSAL = (
-    "⏳ That session is busy with a turn started elsewhere. Send your "
+    "That session is busy with a turn started elsewhere. Send your "
     "message again once it finishes, or /unlink to return to your "
     "Teams conversation."
 )
@@ -174,7 +173,7 @@ _RESUMED_BUSY_REFUSAL = (
 #: gate -- a chip runs only in the session that posted it -- with the posting
 #: session read from the renderer that holds the label instead of from a wire tag.
 _STALE_OPTIONS_REFUSAL = (
-    "🔘 These choices belong to a conversation this chat has since moved away "
+    "These choices belong to a conversation this chat has since moved away "
     "from, so your choice was NOT applied. Type it as a message instead, or "
     "run /sessions to reattach the session that asked."
 )
@@ -182,13 +181,13 @@ _STALE_OPTIONS_REFUSAL = (
 #: Refusal for a valid chip whose session is mid-turn. A chip is never steered or
 #: queued, for the reason given where this is used.
 _BUSY_OPTIONS_REFUSAL = (
-    "🔘 That conversation is busy with another turn, so your choice was NOT "
+    "That conversation is busy with another turn, so your choice was NOT "
     "applied. Type it as a message once the turn finishes."
 )
 
 #: A release that could not be made durable changes nothing and says so.
 _RELEASE_FAILURE = (
-    "⚠️ Couldn't save the session release, so the command was NOT completed. Fix the "
+    "Warning: Couldn't save the session release, so the command was NOT completed. Fix the "
     "gateway's storage problem, then retry."
 )
 
@@ -1033,7 +1032,7 @@ class TeamsDispatcher:
             if steered:
                 # Teams has no reaction API for a bot, so unlike Telegram/Discord
                 # the acknowledgement has to be a message.
-                await self._reply(inbound, f"{STEER_ACK_EMOJI} Folded into the reply in progress.")
+                await self._reply(inbound, "Folded into the reply in progress.")
                 return
         # queue mode, a /queue override, or steer unavailable.
         if not await self._enqueue_with_receipt(session_key, inbound, text):
@@ -1120,7 +1119,7 @@ class TeamsDispatcher:
             if not resolved:
                 await self._reply(
                     inbound,
-                    "⌛ That prompt is no longer waiting — it was already answered "
+                    "That prompt is no longer waiting — it was already answered "
                     "or it timed out. Send the request again if you still want it.",
                 )
                 return
@@ -1174,7 +1173,7 @@ class TeamsDispatcher:
         if not label or renderer is None:
             await self._reply(
                 inbound,
-                "⌛ Those choices are from an earlier reply — type your answer instead.",
+                "Those choices are from an earlier reply — type your answer instead.",
             )
             return
         messaging = self._live_cfg().messaging
@@ -1587,7 +1586,7 @@ class TeamsDispatcher:
             )
             await self._reply(
                 inbound,
-                f"🔗 Dashboard link (valid {format_ttl(ttl_secs)}):\n{origin}/?token={token}",
+                f"Dashboard link (valid {format_ttl(ttl_secs)}):\n{origin}/?token={token}",
             )
         except Exception as exc:
             logger.warning("Teams /dashboard: token generation failed", exc_info=True)
@@ -1603,7 +1602,7 @@ class TeamsDispatcher:
                 # The audit trail must never turn a user-facing failure reply into
                 # a crash; the warning above already captured the cause.
                 pass
-            await self._reply(inbound, f"⚠️ Could not generate a dashboard link: {exc}")
+            await self._reply(inbound, f"Warning: Could not generate a dashboard link: {exc}")
 
     # ── /link, /unlink (dashboard mirror) ──────────────────────────────────
 
@@ -1705,11 +1704,11 @@ class TeamsDispatcher:
         # session key, so nothing else pops it and it would hold its answer buffer for
         # the process lifetime. Its chips are unreachable once `/new` cleared the session.
         self._active_renderers.pop(session_key, None)
-        message = "✅ Started a fresh conversation."
+        message = "Started a fresh conversation."
         if left_resumed is not None:
-            message = "✅ Started a fresh conversation — left the resumed dashboard session."
+            message = "Started a fresh conversation — left the resumed dashboard session."
         if not saved:
-            message += "\n⚠️ The new conversation could not be saved for restart."
+            message += "\nWarning: The new conversation could not be saved for restart."
         await self._reply(inbound, message)
 
     # ── Helpers ────────────────────────────────────────────────────────────
@@ -1736,7 +1735,7 @@ class TeamsDispatcher:
         if resumed_key is not None:
             await self._reply(
                 inbound,
-                "ℹ️ This conversation continues a dashboard session, so its agent "
+                "Note: This conversation continues a dashboard session, so its agent "
                 "is changed from the dashboard. Send `/new` to start one here.",
             )
             return
@@ -1874,7 +1873,7 @@ class TeamsDispatcher:
                 if cr["type"] == "completed":
                     await self._reply(
                         inbound,
-                        "🗜️ Context was near its limit, so it was compacted automatically.",
+                        "Context was near its limit, so it was compacted automatically.",
                     )
                 else:
                     logger.warning("Teams hard-threshold compaction reported %s", cr["type"])
@@ -1884,7 +1883,7 @@ class TeamsDispatcher:
             self._conv.set_awaiting(email)
             await self._reply(
                 inbound,
-                "⚠️ This conversation's context is getting long — reply `/compact` "
+                "Warning: This conversation's context is getting long — reply `/compact` "
                 "to compress it, or `/new` to start fresh.",
             )
 
@@ -1901,19 +1900,19 @@ class TeamsDispatcher:
         session_key = resumed_key or self._session_key(self._identity(inbound))
         if not await self.sessions.try_acquire(session_key):
             if self.sessions.is_retiring(session_key):
-                await self._reply(inbound, f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}")
+                await self._reply(inbound, f"Note: {COMPACT_ACCOUNT_CHANGED_TEXT}")
             elif self.sessions.has_session(session_key):
                 await self._reply(
                     inbound,
-                    "⏳ Still working on the previous message — try `/compact` again shortly.",
+                    "Still working on the previous message — try `/compact` again shortly.",
                 )
             else:
-                await self._reply(inbound, "ℹ️ There's no conversation to compact yet.")
+                await self._reply(inbound, "Note: There's no conversation to compact yet.")
             return
         try:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
-                await self._reply(inbound, "ℹ️ There's no conversation to compact yet.")
+                await self._reply(inbound, "Note: There's no conversation to compact yet.")
                 return
             # Capability gate, mirroring the dashboard's compact gate: a
             # backend that cannot serve a manual /compact treats the prompt as
@@ -1930,13 +1929,13 @@ class TeamsDispatcher:
                 timeout=self.sessions.compact_wait_budget_secs()
             )
             if cr["type"] == "completed":
-                await self._reply(inbound, "🗜️ Context compacted.")
+                await self._reply(inbound, "Context compacted.")
             elif cr["type"] == "failed":
-                await self._reply(inbound, "⚠️ Compaction failed — please try again.")
+                await self._reply(inbound, "Warning: Compaction failed — please try again.")
             else:
-                await self._reply(inbound, "⚠️ Compaction timed out.")
+                await self._reply(inbound, "Warning: Compaction timed out.")
         except Exception:
             logger.exception("Teams /compact failed for %s", session_key)
-            await self._reply(inbound, "⚠️ Compaction failed — please try again.")
+            await self._reply(inbound, "Warning: Compaction failed — please try again.")
         finally:
             self.sessions.release(session_key)
