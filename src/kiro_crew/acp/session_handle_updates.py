@@ -25,7 +25,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import batch_guard
+from kiro_crew.acp import batch_guard, kas_approve_for_me
 from kiro_crew.acp._dispatch import (
     MAX_ACTIVE_TOOL_CALLS,
     liveness_key,
@@ -46,6 +46,7 @@ from kiro_crew.acp.liveness import (
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
+    ACP_BACKENDS_APPROVE_FOR_ME,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     EVENT_STRUCTURED_STATUS,
@@ -265,6 +266,12 @@ def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[Ac
     update = params.get("update") or {}
     if not isinstance(update, dict):
         return []
+    if self._runtime.acp_backend in ACP_BACKENDS_APPROVE_FOR_ME and update.get("sessionUpdate") in (
+        "tool_call",
+        "tool_call_update",
+    ):
+        # A call KAS approved on its own reached no Crew gate: record it.
+        kas_approve_for_me.audit_classifier_approved(self, update)
 
     # A frame the runtime routed here for a backend-internal subagent
     # carries the CHILD's sessionId. Its tool_call/refinement updates are

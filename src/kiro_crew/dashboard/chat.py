@@ -63,6 +63,7 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_chat_mode,
     api_chat_slot_agent,
     api_chat_slot_approve,
+    api_chat_slot_approve_for_me,
     api_chat_slot_autocompact,
     api_chat_slot_color,
     api_chat_slot_context,

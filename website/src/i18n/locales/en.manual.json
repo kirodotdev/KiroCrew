@@ -2022,6 +2022,18 @@
       "trusted_channel_still_asks": "Approved this run — this host's shell setup means @{{role}} will still ask each time"
     },
     "approvalModePicker": {
+      "approve_for_me_failed": "Approve for me could not be turned on. Try again.",
+      "approve_for_me_busy": "Wait for the current reply to finish, then pick Approve for me again.",
+      "approve_for_me_not_owners": "Approve for me is offered only in a chat you drive from here, not one linked to a channel, a schedule or an app.",
+      "approve_for_me_label": "Approve for me",
+      "approve_for_me_desc": "KAS approves routine actions for you in this chat, shell commands and file edits included, and asks you when it isn't sure",
+      "approve_for_me_details": "How Approve for me works",
+      "approve_for_me_detail_skip": "{{productName}} first checks each action KAS wants to approve for you: risky commands, sensitive files, your approval rules and hooks",
+      "approve_for_me_detail_direct": "Actions your own always-allow rules or a preset allow still run without {{productName}} asking",
+      "approve_for_me_detail_kept": "If a check says no, you get the usual approval card",
+      "approve_for_me_detail_blocked": "KAS can also block an action itself; its row then says “Blocked by KAS”",
+      "approve_for_me_detail_off": "It stays off for messages from a channel, a schedule or anyone but you, and while an admin profile applies",
+      "approve_for_me_detail_logged": "Each action KAS approves or blocks this way is recorded in the security log",
       "approval_mode_aria": "Approval mode: {{mode}}",
       "normal_label": "Normal",
       "normal_desc": "{{productName}} looks things up on its own, like reading files, searching the web or running read-only shell commands, but checks with you before anything else",

@@ -6466,6 +6466,18 @@
       "title_wants_to_run": "<title/> möchte ausgeführt werden"
     },
     "approvalModePicker": {
+      "approve_for_me_failed": "„Für mich genehmigen“ konnte nicht eingeschaltet werden. Versuche es noch einmal.",
+      "approve_for_me_busy": "Warte, bis die aktuelle Antwort fertig ist, und wähle dann Approve for me erneut.",
+      "approve_for_me_not_owners": "Approve for me gibt es nur in einem Chat, den du hier führst, nicht in einem, der mit einem Kanal, einem Zeitplan oder einer App verbunden ist.",
+      "approve_for_me_label": "Für mich genehmigen",
+      "approve_for_me_desc": "KAS genehmigt in diesem Chat Routineaktionen für dich, auch Shell-Befehle und Dateiänderungen, und fragt dich, wenn es unsicher ist",
+      "approve_for_me_details": "So funktioniert Approve for me",
+      "approve_for_me_detail_skip": "{{productName}} prüft zuerst jede Aktion, die KAS für dich genehmigen will: riskante Befehle, sensible Dateien, deine Genehmigungsregeln und Hooks",
+      "approve_for_me_detail_direct": "Aktionen, die deine eigenen Immer-erlauben-Regeln oder ein Preset erlauben, laufen weiter, ohne dass {{productName}} fragt",
+      "approve_for_me_detail_kept": "Sagt eine Prüfung nein, bekommst du die übliche Genehmigungskarte",
+      "approve_for_me_detail_blocked": "KAS kann eine Aktion auch selbst blockieren; ihre Zeile zeigt dann „Blocked by KAS“",
+      "approve_for_me_detail_off": "Es bleibt aus für Nachrichten aus einem Kanal, einem Zeitplan oder von anderen als dir, und solange ein Admin-Profil gilt",
+      "approve_for_me_detail_logged": "Jede Aktion, die KAS so genehmigt oder blockiert, wird im Sicherheitsprotokoll festgehalten",
       "nudge_body": "Hier stellst du ein, wie {{productName}} um Genehmigung bittet. Wählst du hier „Vertrauen“, arbeitet es in diesem Chat, ohne vorher zu fragen – du kannst jederzeit zurückwechseln.",
       "nudge_dismiss": "Verstanden",
       "nudge_title": "Weniger Genehmigungsanfragen?",
