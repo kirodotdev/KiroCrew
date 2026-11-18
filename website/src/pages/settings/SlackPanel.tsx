@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, type ComponentProps } from 'react'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Check, AlertTriangle, Plus, X, Lock, RefreshCw } from 'lucide-react'
@@ -34,6 +34,7 @@ const SlackOwnerClaim = lazyRetry<SlackOwnerClaimProps>(
     askAgent: false,
   },
 )
+import type { SlackSetupWizard as SlackSetupWizardType } from './SlackSetupWizard'
 // Its own chunk: only the Slack panel draws this section, and inside the Settings
 // page chunk it put that chunk over its size budget. A failed load shows a notice
 // with Try again in its place and leaves the rest of the form mounted. `inline`:
@@ -48,9 +49,22 @@ const SlackSharedAccess = lazyRetry<object>(
     askAgent: false,
   },
 )
+// Its own chunk too: a one-time setup flow. A failed load shows a notice with
+// Try again in the wizard's place; the panel's own form stays below it.
+// No hand-off: the Slack settings form below holds unsaved fields.
+const SlackSetupWizard = lazyRetry<ComponentProps<typeof SlackSetupWizardType>>(
+  () => import('./SlackSetupWizard').then(m => ({ default: m.SlackSetupWizard })),
+  {
+    layout: 'block',
+    title: () => i18nT('pages.settings.slackWizard.load_failed'),
+    scope: 'slack-setup-wizard',
+    askAgent: false,
+  },
+)
+
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Slack"
-const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/slack-integration.md'
+const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/slack-setup.md'
 
 type Draft = {
   owner_id: string
@@ -298,7 +312,7 @@ export function SlackPanel() {
   // Public manifest template + one-click Slack create URL (no secrets).
   const manifestQ = useQuery({
     queryKey: ['slack-manifest'],
-    queryFn: api.getSlackManifest,
+    queryFn: () => api.getSlackManifest(),
     staleTime: Infinity,
     retry: false,
   })
@@ -335,6 +349,10 @@ export function SlackPanel() {
     setTimeout(() => setManifestCopied(false), 1500)
   }, [currentManifest])
   const [error, setError] = useState('')
+  // Opt-in: only the "Setup wizard" button opens it, so with it closed the
+  // panel is exactly the default setup path it was. Once open it stays open
+  // through the last step (which comes after the connection) until Close.
+  const [wizardOpen, setWizardOpen] = useState(false)
 
   // Sync the local draft when server config arrives. Guarded so only the
   // initial load and post-save invalidation reseed it — a background refetch
@@ -474,6 +492,7 @@ export function SlackPanel() {
   if (isError || !data || !draft) return <ErrorNotice className="m-4" message={i18nT('pages.settings.slackPanel.cannot_load_slack_config_is_the_gateway_running')} askAgent />
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
+  const showWizard = wizardOpen
   const ro = data.read_only
   // A click's own outcome (or one in flight) replaces the recorded reading:
   // both describe the same connection, and two notices read as two problems.
@@ -506,6 +525,12 @@ export function SlackPanel() {
             <StatusBadge config={data} />
             {/* Hidden on read-only remote sessions, like Save: the route is local-only. */}
             {!ro && reconnectBtn('slack-reconnect')}
+            {/* Local only too: every step of the wizard saves or reconnects. */}
+            {!ro && !showWizard && (
+              <Btn data-testid="slack-wizard-open" className="shrink-0" onClick={() => setWizardOpen(true)}>
+                {i18nT('pages.settings.slackWizard.title')}
+              </Btn>
+            )}
           </div>
           <p className="text-[12px] text-muted mt-1">
             {i18nT('pages.settings.slackPanel.talk_to_your_agents_from_slack_over_socket_mode')}
@@ -558,22 +583,54 @@ export function SlackPanel() {
         </div>
       )}
 
-      {/* ── Credentials guide ── */}
+      {/* ── Setup wizard: the same writes as the form below, one step per screen ── */}
+      {showWizard && (
+        <SlackSetupWizard
+          data={data}
+          describeConnectError={describeConnectError}
+          orgGuideUrl={manifestQ.data?.org_guide_url}
+          // The wizard stores tokens itself and reports the plain fields it
+          // saved: the form takes only those, so a later form save cannot send
+          // a stale owner or command back, and unsaved edits elsewhere stay.
+          onSaved={saved => {
+            if (saved.owner_id !== undefined) ownerBaseline.current = saved.owner_id
+            setDraft(d => (d ? { ...d, ...saved } : d))
+          }}
+          renderOwnerClaim={onClaimed => (
+            <SlackOwnerClaim config={data} onOwnerChange={id => {
+              ownerBaseline.current = id
+              upd({ owner_id: id })
+              onClaimed(id)
+            }} />
+          )}
+          onClose={() => setWizardOpen(false)}
+        />
+      )}
+
+      {/* ── Credentials guide ── always shown (Copy manifest YAML and the setup
+          guide stay reachable); only its Create link steps aside while the
+          wizard is open, since two Create buttons would make a second app. */}
       <SettingsSection title={i18nT('pages.settings.slackPanel.get_your_credentials')}>
         <SettingsCard>
           <p className="text-[13px] text-text m-0">
-            {i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_manifest', { alias: manifestQ.data?.alias ?? 'you' })}
+            {/* While the wizard is open it is the one Create step, named after the
+                user's alias; this card must not name a different app. */}
+            {showWizard
+              ? i18nT('pages.settings.slackWizard.card_while_open')
+              : i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_manifest', { alias: manifestQ.data?.alias ?? 'you' })}
           </p>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
-            <a
-              href={currentManifest?.create_url ?? '#'}
-              tabIndex={currentManifest ? undefined : -1}
-              target="_blank" rel="noopener noreferrer"
-              aria-disabled={!currentManifest}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border transition-all ${currentManifest ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover' : 'border-border text-muted pointer-events-none'}`}
-            >
-              {i18nT('pages.settings.slackPanel.create_slack_app')} <ExternalLink size={13} />
-            </a>
+            {!showWizard && (
+              <a
+                href={currentManifest?.create_url ?? '#'}
+                tabIndex={currentManifest ? undefined : -1}
+                target="_blank" rel="noopener noreferrer"
+                aria-disabled={!currentManifest}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border transition-all ${currentManifest ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover' : 'border-border text-muted pointer-events-none'}`}
+              >
+                {i18nT('pages.settings.slackPanel.create_slack_app')} <ExternalLink size={13} />
+              </a>
+            )}
             <Btn onClick={() => { void copyManifest() }} disabled={!currentManifest}>
               {manifestCopied ? <><Check size={13} /> {i18nT('pages.settings.slackPanel.copied')}</> : i18nT('pages.settings.slackPanel.copy_manifest_yaml')}
             </Btn>

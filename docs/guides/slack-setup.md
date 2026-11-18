@@ -14,7 +14,8 @@ There are **two independent paths** to create a Slack app. Pick one, and do not 
 
 | Path | Steps | Best for |
 |------|-------|----------|
-| **[Path A: Manifest](#path-a-create-via-manifest-recommended)** (recommended) | 6 steps | Most users; auto-configures all scopes, events, and permissions in one shot |
+| **[Setup wizard](#the-setup-wizard-in-settings)** in the dashboard | 6 screens | Most users; the same manifest as Path A, one screen per step, no restart |
+| **[Path A: Manifest](#path-a-create-via-manifest-recommended)** (recommended for the CLI) | 6 steps | CLI users; auto-configures all scopes, events, and permissions in one shot |
 | **[Path B: Manual](#path-b-manual-setup)** | 11 steps | If you need to customize scopes or understand each setting individually |
 
 Both paths require a Slack workspace where you can install apps (see [Prerequisites](#prerequisites)).
@@ -27,6 +28,29 @@ Both paths require a Slack workspace where you can install apps (see [Prerequisi
 - Python and Kiro Crew installed through a [supported install path](install.md#install-paths), so you can run the `kirocrew` CLI.
 
 > **Tip**: Use a personal or test workspace for your first run. You can always export the app manifest and recreate the app in another workspace later (see [Reusing the App in Another Workspace](#reusing-the-app-in-another-workspace)).
+
+---
+
+## The Setup Wizard in Settings
+
+Open the dashboard → **Settings → Messaging Channels → Slack**. Click **Setup wizard** at the top of the panel to open the setup wizard; it never opens by itself, and **Close** hides it on any step. The panel's own **Copy manifest YAML** and setup-guide link stay available below it. It runs Path A one screen at a time, each with a picture of where to click in Slack:
+
+1. **Workspace**: confirm you have a workspace you may install apps in.
+2. **Create**: type a short name (usually your username), click **Create Slack app**, pick the workspace in Slack and click **Create**, then **I created the app**. The app is named `KiroCrew-<name>` and its slash command `/kirocrew-<name>`, so it does not clash with anyone else's; the wizard saves that command as `slack.command`.
+3. **Bot token**: install the app (**OAuth & Permissions → Install to Workspace**) and paste the `xoxb-` token. In a company workspace the button may read **Request to Install**: an admin approves the app first.
+4. **App-level token**: the wizard links the app's **Basic Information** page; generate a token with `connections:write` and paste the `xapp-` token.
+5. **Owner**: paste your Slack member ID. The wizard saves it and runs **Reconnect**; no gateway restart.
+6. **Test**: open the bot's DM from the wizard, send any message, and confirm you got a reply.
+
+The settings are written only from the machine running the gateway; a remote dashboard sees the steps as text.
+
+**Organization guide link.** An organization can link its own setup guide (for example, how to get a workspace you may install apps in) on the wizard's first step:
+
+```bash
+kirocrew config set slack.setup_guide_url https://wiki.example.com/slack-setup
+```
+
+Only an `https://` URL is shown; any other value is ignored.
 
 ---
 
@@ -77,11 +101,11 @@ Then:
 
 ### Step 3. Generate App Token
 
-1. **Settings → Socket Mode** → Toggle **OFF** then back **ON**, which triggers the token generation dialog
+1. **Basic Information** → **App-Level Tokens** → **Generate Token and Scopes**
 2. Add scope `connections:write` → **Generate**
 3. Copy the `xapp-...` token. This is your **App Token**
 
-> **Why toggle off/on?** Slack manifests can declare `socket_mode_enabled: true`, but the App Token (`xapp-...`) must still be generated manually through the UI. There is no API or manifest field for token generation. Toggling forces the generation dialog to appear.
+> **Why by hand?** Slack manifests can declare `socket_mode_enabled: true`, but the App Token (`xapp-...`) must still be generated in Slack's UI. There is no API or manifest field for token generation.
 
 ### Step 4. Install to Workspace
 

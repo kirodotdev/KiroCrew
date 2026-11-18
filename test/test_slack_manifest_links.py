@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+
 import pytest
+from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import slack_manifest
 
@@ -35,3 +39,25 @@ def test_dm_url_without_a_workspace_id_carries_only_the_app(team_id: str) -> Non
     assert slack_manifest.app_dm_url("A0123ABCD", team_id) == (
         "https://slack.com/app_redirect?app=A0123ABCD"
     )
+
+
+@pytest.mark.parametrize(
+    "raw,served",
+    [
+        ("https://wiki.example.com/slack", "https://wiki.example.com/slack"),
+        ("http://wiki.example.com/slack", None),
+        ("javascript:alert(1)", None),
+        ("", None),
+    ],
+)
+def test_the_org_guide_link_is_served_only_as_https(
+    raw: str, served: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.config import loader
+    from kiro_crew.dashboard.messaging_api.slack_workspace import api_slack_manifest
+
+    cfg = loader.KiroCrewConfig()
+    cfg.slack.setup_guide_url = raw
+    monkeypatch.setattr(loader.KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: cfg))
+    resp = asyncio.run(api_slack_manifest(make_mocked_request("GET", "/api/slack/manifest")))
+    assert json.loads(resp.text)["org_guide_url"] == served

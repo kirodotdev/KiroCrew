@@ -201,7 +201,7 @@ export function useInstallRecheckFailed(dataUpdatedAt: number): [boolean, (faile
 
 /** A Slack call that failed outright (network, Slack error) rather than one
  *  that answered without the scope header: a failure, so it is an error. */
-function checkFailed(status: SlackManifestStatus | undefined): boolean {
+export function checkFailed(status: SlackManifestStatus | undefined): boolean {
   const install = status?.install
   return !!install && install.status === 'unknown' && !!install.reason && install.reason !== 'scopes_unreadable'
 }

@@ -2,10 +2,11 @@
 # Import via https://api.slack.com/apps → Create New App → From a manifest
 #
 # After import you still need to:
-#   1. Socket Mode: toggle OFF then back ON to trigger token generation dialog
+#   1. Install the app to your workspace and copy the Bot Token (xoxb-...)
+#   2. Basic Information → App-Level Tokens → Generate Token and Scopes
 #      → add scope connections:write → Generate → copy the xapp-... token
-#   2. Install the app to your workspace and copy the Bot Token (xoxb-...)
-#   3. Run `kirocrew setup` and paste both tokens
+#   3. Paste both tokens in Settings → Messaging channels → Slack (its setup
+#      wizard walks every step), or run `kirocrew setup --slack`
 #
 ## Template notes (never rendered): a line ending in "#@<feature>" is rendered
 ## only when that Slack Code switch (slack.<feature>, registered in
