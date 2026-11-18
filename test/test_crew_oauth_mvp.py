@@ -303,8 +303,9 @@ def test_vendor_error_text_is_sanitized_in_audit_and_code(caplog):
         crew_oauth.tokens_from_response({"error": "bad\nforged line\x1b[31m"}, 0.0)
     assert re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", err.value.code)
     with caplog.at_level(logging.INFO):
-        crew_oauth._audit("connections_crew_oauth_refresh", "error", "github", "bad\nforged\x1b[31m")
-    assert all("\n" not in r.getMessage() and "\x1b" not in r.getMessage() for r in caplog.records)
+        crew_oauth._audit("op", "error", "github", "bad\nforged\x1b[31m")
+    lines = [r.getMessage() for r in caplog.records]
+    assert lines and all("\n" not in m and "\x1b" not in m for m in lines)
 
 
 def test_a_vendor_error_with_nothing_allowed_reads_as_exchange_failed():
