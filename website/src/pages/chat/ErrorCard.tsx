@@ -22,6 +22,7 @@ import { withOriginLink } from '../../components/withOriginLink'
 import { SessionTurnLimitButton } from '../../components/SessionTurnLimitMenu'
 import { AgentSpecChoiceCard, agentSpecAmbiguity } from './AgentSpecChoiceCard'
 import { injectOpensTurn } from './RecoveryCard'
+import { HostSandboxUnavailableCard, isHostSandboxUnavailable } from './HostSandboxUnavailableCard'
 import { resumeProseFor } from './gatewayNotice'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import { useRestartRefusal } from '../../hooks/useRestartRefusal'
@@ -432,6 +433,9 @@ export interface ErrorCardProps {
   /** Where that press stands: `pending` while the repair + re-issue runs, `done`
    *  once the turn was re-issued against the repaired conversation. */
   repairImages?: RepairImagesState
+  /** Internal: render a `host_sandbox_unavailable` row as every other row, the
+   *  machine owner's view (`HostSandboxUnavailableCard`). */
+  hostSandboxOwnerView?: boolean
 }
 
 // No `shrink-0` and no `truncate`: every action sits in a flex row, and a
@@ -651,33 +655,47 @@ function RestartGatewayCard({ displayText, onRestartGateway }: {
  * its row swaps Resume for the two actions that actually end it: pick a model
  * the account is served, and change the default the next session would start on.
  */
-export const ErrorCard = memo(function ErrorCard({
-  content: wireContent,
-  resumeContent,
-  meta,
-  onContinue,
-  continuing,
-  onPickModel,
-  onOpenDefaultModel,
-  onOpenSignIn,
-  kiroCliSignIn,
-  kiroCliCrewSignIn,
-  rawContent,
-  unentitledElsewhere,
-  featureRequestFormUrl,
-  limitContinueSlot,
-  kiroCliMissing,
-  sessionStartRepeat,
-  onRestartGateway,
-  onOpenCapabilities,
-  onOpenTurnLimit,
-  turnLimitSlot,
-  onFreshSession,
-  freshSession = 'idle',
-  onRepairImages,
-  repairImages = 'idle',
-}: ErrorCardProps) {
+export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
+  const {
+    content: wireContent,
+    resumeContent,
+    meta,
+    onContinue,
+    continuing,
+    onPickModel,
+    onOpenDefaultModel,
+    onOpenSignIn,
+    kiroCliSignIn,
+    kiroCliCrewSignIn,
+    rawContent,
+    unentitledElsewhere,
+    featureRequestFormUrl,
+    limitContinueSlot,
+    kiroCliMissing,
+    sessionStartRepeat,
+    onRestartGateway,
+    onOpenCapabilities,
+    onOpenTurnLimit,
+    turnLimitSlot,
+    onFreshSession,
+    freshSession = 'idle',
+    onRepairImages,
+    repairImages = 'idle',
+    hostSandboxOwnerView,
+  } = props
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  if (isHostSandboxUnavailable(meta) && !hostSandboxOwnerView) {
+    // The host cannot build an OS sandbox: the owner keeps this card as it is,
+    // anyone else gets one line naming whom to ask.
+    return (
+      <HostSandboxUnavailableCard
+        meta={meta}
+        onContinue={onContinue}
+        continuing={continuing}
+        ownerView={<ErrorCard {...props} hostSandboxOwnerView />}
+      />
+    )
+  }
   // Swap the gateway's "please retry" wording ONLY on a row that renders the
   // Resume button. A row with no control keeps the wire text: telling the
   // reader to resume beside nothing is worse than the mismatch it would fix.

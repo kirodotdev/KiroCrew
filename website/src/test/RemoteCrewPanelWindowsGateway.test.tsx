@@ -73,7 +73,7 @@ const AWS_EC2_ROW = {
 async function openSetup() {
   const u = userEvent.setup()
   renderWithProviders(<RemoteCrewPanel />)
-  await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+  await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
   return screen.findByRole('heading', { name: /Cloud crews can’t launch from this Windows dashboard/i })
 }
 
@@ -138,7 +138,7 @@ describe('RemoteCrewPanel Set-up tab on a Windows gateway', () => {
     })
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     expect(await screen.findByRole('button', { name: /^Launch$/i })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /Windows dashboard/i })).not.toBeInTheDocument()
   })

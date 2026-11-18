@@ -90,6 +90,9 @@ export interface SidebarRowFilters {
    *  vocabulary owns (`useSidebarModels`), already answering true for every row
    *  while nothing is selected; `active` is whether a selection narrows. */
   models: { passes: (slot: Slot) => boolean; active: boolean }
+  /** The Shared Crew "Started by" filter, the same shape as `models`: `passes`
+   *  comes from the creator vocabulary (`useSidebarCreators`). */
+  creators: { passes: (slot: Slot) => boolean; active: boolean }
 }
 
 /** How a reveal drops each dimension. Carried, never called, by this module. */
@@ -97,6 +100,8 @@ export interface SidebarRowClears {
   tags: () => void
   /** Drop the model selection and its direction. */
   models: () => void
+  /** Drop the "Started by" selection. */
+  creators: () => void
   search: () => void
   status: () => void
   /** Un-hide this folder and its ancestor chain; a no-op for `undefined`. */
@@ -366,6 +371,10 @@ export interface SidebarRows {
   revealBlockingFilters: RevealBlockingFilter[]
   /** Status-chip badges, counted over every row (the collection the filter renders). */
   statusCounts: Record<SessionFilterKey, number>
+  /** While the "Started by" filter narrows: of the rows every OTHER dimension keeps,
+   *  how many it shows (`matching`) and how many it leaves out (`hidden`). Both 0
+   *  while it is off. */
+  creatorCounts: CreatorCounts
   /** The one order every lane uses: the search relevance while a content search is
    *  active, otherwise the local pinned section first, then the sort key. */
   laneOrder: (a: Slot, b: Slot) => number
@@ -462,6 +471,7 @@ interface BuildMemos {
   isRowStatusHidden: Memo<SidebarRows['isRowStatusHidden']>
   dimensions: Memo<FilterDimension[]>
   statusCounts: Memo<Record<SessionFilterKey, number>>
+  creatorCounts: Memo<CreatorCounts>
   filteredSlots: Memo<Slot[]>
   revealBlockingFilters: Memo<RevealBlockingFilter[]>
   isRowFolderHidden: Memo<SidebarRows['isRowFolderHidden']>
@@ -478,6 +488,9 @@ interface BuildMemos {
 
 const memosOf = new WeakMap<SidebarRows, BuildMemos>()
 const NO_ROWS: Slot[] = []
+
+export interface CreatorCounts { matching: number; hidden: number }
+const NO_CREATOR_COUNTS: CreatorCounts = { matching: 0, hidden: 0 }
 
 // Every closure the model hands out is made by a module-level factory below, from only
 // the values it is declared to read. A closure created inside `buildSidebarRows` would
@@ -601,7 +614,7 @@ function makeDimensions(
   folderOf: SidebarRows['folderOf'],
   clears: SidebarRowClears,
 ): FilterDimension[] {
-  const { tags, models, search, status, folders: folderFilter } = filters
+  const { tags, models, creators, search, status, folders: folderFilter } = filters
   // A paused filter keeps its chip but narrows nothing, so only the unpaused ones count.
   const activeStatus = (Object.keys(matches) as SessionFilterKey[]).filter(key => status.active.has(key) && !status.paused.has(key))
   // A pinned session is one the person chose to keep in sight, and the pinned band is
@@ -727,7 +740,31 @@ function makeDimensions(
       hides: slot => !models.passes(slot),
       clear: () => clears.models(),
     },
+    {
+      // "Started by". A session property like the model, with no pinned exemption
+      // for the same reason: it is asked to find whose sessions these are.
+      filtersRow: creators.passes,
+      narrows: () => creators.active,
+      exemptsPinned: false,
+      isSearch: false,
+      hides: slot => !creators.passes(slot),
+      clear: () => clears.creators(),
+    },
   ]
+}
+
+/** The "Started by" line's two numbers: the rows every other dimension keeps,
+ *  split by whether this filter shows them. */
+function countCreators(rows: Slot[], dimensions: FilterDimension[], creators: SidebarRowFilters['creators']): CreatorCounts {
+  if (!creators.active) return NO_CREATOR_COUNTS
+  let matching = 0
+  let hidden = 0
+  for (const slot of rows) {
+    if (!dimensions.every(d => d.filtersRow === null || d.filtersRow === creators.passes || d.filtersRow(slot))) continue
+    if (creators.passes(slot)) matching += 1
+    else hidden += 1
+  }
+  return { matching, hidden }
 }
 
 /** Over every row -- the collection the filter RENDERS -- not over the local ones. The
@@ -891,9 +928,10 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     makeIsRowStatusHidden(status.hidden, statusMatches.value))
   const dimensions = reuse(prev?.dimensions, [
     status.active, status.paused, status.hidden, tags.resolved, tags.raw, filters.models.passes, filters.models.active,
+    filters.creators.passes, filters.creators.active,
     search.text, search.folderMatches, searchRanks,
     statusMatches.value, isRowStatusHidden.value, folderFilter.hiddenSubtree, folderFilter.pinnedSubtree, slotFolders,
-    clears.tags, clears.models, clears.search, clears.status, clears.folder, clears.hides,
+    clears.tags, clears.models, clears.creators, clears.search, clears.status, clears.folder, clears.hides,
   ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears))
 
   // Before the filter pass, as the chip counts always were: both read the clock for a
@@ -901,6 +939,8 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const statusCounts = reuse(prev?.statusCounts, [rows, statusMatches.value], () => countStatus(rows, statusMatches.value))
   const filteredSlots = reuse(prev?.filteredSlots, [rows, dimensions.value, laneOrder.value, frozen], () =>
     frozenList ?? filterRows(rows, dimensions.value, laneOrder.value))
+  const creatorCounts = reuse(prev?.creatorCounts, [rows, dimensions.value, filters.creators.passes, filters.creators.active], () =>
+    countCreators(rows, dimensions.value, filters.creators))
   const listNarrowed = dimensions.value.some(d => d.narrows !== null && d.narrows())
   const pinnedExemptNarrowing = dimensions.value.some(d => d.exemptsPinned && d.narrows !== null && d.narrows())
   const filtersNarrowing = dimensions.value.some(d => !d.isSearch && d.narrows !== null && d.narrows())
@@ -939,6 +979,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     filtersNarrowing,
     revealBlockingFilters: revealBlockingFilters.value,
     statusCounts: statusCounts.value,
+    creatorCounts: creatorCounts.value,
     laneOrder: laneOrder.value,
     isRowFolderHidden: hidden,
     isRowStatusHidden: isRowStatusHidden.value,
@@ -960,7 +1001,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   }
   memosOf.set(result, {
     folderOf: folderOfMemo, isPinned: isPinnedMemo, isRunning: isRunningMemo,
-    laneOrder, statusMatches, isRowStatusHidden, dimensions, statusCounts, filteredSlots, revealBlockingFilters,
+    laneOrder, statusMatches, isRowStatusHidden, dimensions, statusCounts, creatorCounts, filteredSlots, revealBlockingFilters,
     isRowFolderHidden, crewRows, main, crew, crewRowCount, flat, ungrouped, board, boardPeerCount, folderTree,
   })
   return result

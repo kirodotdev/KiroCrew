@@ -8,7 +8,6 @@ import { useSettingHighlight } from '../hooks/useSettingHighlight'
 import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
 import { RemoteControlCard } from './settings/RemoteControlCard'
 import { RemoteCrewPanel } from './settings/RemoteCrewPanel'
-import { PeoplePanel } from './settings/PeoplePanel'
 import { useSharedCrewCapabilities } from '../hooks/sharedCrew/useSharedCrew'
 import { sharedCrewPreviewOn } from '../api/sharedCrewUi'
 import { isEmbeddedPane } from '../lib/embedded'
@@ -68,6 +67,10 @@ const BrowserPanel = lazy(() =>
  */
 const SessionEnvironmentsCard = lazy(() =>
   import('./settings/SessionEnvironmentsCard').then(m => ({ default: m.SessionEnvironmentsCard })),
+)
+/** Lazy: the People tab (connection sources, invites, the people list) is only needed when that tab opens. */
+const PeoplePanel = lazy(() =>
+  import('./settings/PeoplePanel').then(m => ({ default: m.PeoplePanel })),
 )
 /** Lazy: the About tab (version, update flow, release notes) is only needed when that tab opens. */
 const AboutPanel = lazy(() =>
@@ -396,11 +399,16 @@ export default function SettingsPage() {
         {tab === 'webhooks' && <WebhooksPanel />}
         {tab === 'instances' && (
           <>
-            <RemoteControlCard />
             <RemoteCrewPanel key={crewAddLinkSeq} />
+            {/* Below the panel's Settings section: Settings -> Advanced is not routed. */}
+            <RemoteControlCard />
           </>
         )}
-        {tab === 'people' && sharedCrewPreview && <PeoplePanel />}
+        {tab === 'people' && sharedCrewPreview && (
+          <Suspense fallback={<ContentSkeleton rows={6} />}>
+            <PeoplePanel />
+          </Suspense>
+        )}
         {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <GuideTrustRootRegion><SecurityPanel basePath={SETTINGS_BASE_PATH} /></GuideTrustRootRegion>}
         {tab === 'connections' && (

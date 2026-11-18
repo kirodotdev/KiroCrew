@@ -8,6 +8,7 @@ import {
   type KasLoginStatus,
 } from '../api/client'
 import { ApiError, apiErrorCode } from '../api/apiError'
+import { parseKiroUsagePayload } from '../api/kiroUsage'
 import { clearCachedModels } from '../providers/adapters/acp'
 import { RELAY_VIEWER_CREWS_KEY, closeRelayCrews } from './useRelayViewerCrews'
 import type { KasLoginProvider } from '../components/kasProviderLabel'
@@ -227,8 +228,28 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
     clearCachedModels()
     void queryClient.resetQueries({ queryKey: ['available-models'] })
     // The usage reading names the previous account too (the Kiro sign-in card
-    // shows its e-mail): drop it rather than show that name until the next poll.
-    void queryClient.resetQueries({ queryKey: ['kiro-usage'] })
+    // shows its e-mail): drop it rather than show that name, then ask the gateway
+    // for a fresh one. A plain re-read is not enough: the GET serves its cached
+    // "sign in" marker while it refreshes in the background, and the top bar's
+    // next poll is 30 s away, so the bar kept saying "no active Kiro sign-in".
+    // A refresh already running (409) or refused falls back to the re-read.
+    // The top bar polls this key: a GET in flight when the sign-in lands read
+    // the previous account, and one sent during the refresh read the gateway
+    // before it settled. Cancel any such GET before each write, or its answer
+    // arrives after ours and puts the old reading back until the next poll.
+    void (async () => {
+      await queryClient.cancelQueries({ queryKey: ['kiro-usage'] })
+      queryClient.setQueryData(['kiro-usage'], null)
+      let res: Awaited<ReturnType<typeof api.sessionsUsageRefresh>>
+      try {
+        res = await api.sessionsUsageRefresh()
+      } catch {
+        void queryClient.invalidateQueries({ queryKey: ['kiro-usage'] })
+        return
+      }
+      await queryClient.cancelQueries({ queryKey: ['kiro-usage'] })
+      queryClient.setQueryData(['kiro-usage'], parseKiroUsagePayload(res))
+    })()
     // A switch can keep every status field unchanged while replacing the account.
     void queryClient.invalidateQueries({ queryKey: ['kas-login-sources'] })
     // Team Crews are listed for the account: the new one's list, not the old one's.
@@ -301,9 +322,11 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
     // An independent request, not fetchQuery: fetchQuery joins a status refetch
     // already in flight, and one that left before the token landed answers
     // "signed out" for a login that just succeeded. The fresh answer is pushed
-    // into the cache so the gate re-renders on it.
+    // into the cache so the gate re-renders on it. That in-flight refetch is
+    // cancelled before the write, or its stale answer lands after the fresh one.
     try {
       const fresh = await api.kasLoginStatus()
+      await queryClient.cancelQueries({ queryKey: KAS_LOGIN_STATUS_KEY })
       queryClient.setQueryData(KAS_LOGIN_STATUS_KEY, fresh)
       const landed =
         fresh.authenticated &&

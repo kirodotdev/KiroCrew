@@ -1494,7 +1494,8 @@ class SessionCatalogProjection:
         One definition of "what counts as searchable text in a session file",
         shared by the fold and the snippet so their skip rules cannot drift apart
         as the on-disk format evolves. Yields in file order; skips blank lines,
-        unparseable lines, non-object lines, and the metadata header.
+        unparseable lines, non-object lines, the metadata header and a host-sandbox
+        refusal row.
 
         A generator rather than a list so a caller can stop early — closing it
         closes the file — which is what lets :meth:`_content_snippet` read only as
@@ -1502,6 +1503,10 @@ class SessionCatalogProjection:
         not read" from "no text", and that distinction is load-bearing (a read
         failure must not be cached).
         """
+        # A host-sandbox refusal row is the host owner's runbook, which a search
+        # excerpt would hand any reader without the row's type to redact by.
+        from kiro_crew.dashboard.host_sandbox_refusal import is_refusal_row
+
         path = self._log._path(key)
         with open(path, "rb") as handle:
             for line in bounded_records(handle, path, label="history_search"):
@@ -1513,6 +1518,8 @@ class SessionCatalogProjection:
                 except (ValueError, RecursionError):  # past the nesting limit
                     continue
                 if not isinstance(data, dict) or data.get("_type") == "metadata":
+                    continue
+                if is_refusal_row(data):
                     continue
                 content = data.get("content")
                 if isinstance(content, str) and content:

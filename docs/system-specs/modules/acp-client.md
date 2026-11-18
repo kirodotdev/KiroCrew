@@ -5481,6 +5481,10 @@ minus kiro-cli. There is no `--auth-method` on this route, so the plan carries
 `host_auth=True` unconditionally: Crew's vault is the only credential
 ([kas-auth.md](kas-auth.md)), and an empty vault surfaces as the engine's own
 "not signed in" prompt failure, which maps to a sign-in prompt as on the relay.
+From engine 3.4 that failure is `-32000` "Sign in to Kiro to send a prompt." with
+`data.errorType` `SignInRequiredError` and no expiry wording; `_RE_SESSION_EXPIRED`
+matches that type name, so the row is tagged `auth_required` and its card offers
+Sign in rather than Resume.
 The spawn is labelled `kas-bundle` (a Node program names no engine). Every seam
 after the spawn is unchanged — measured: `initialize`, the
 `_kiro/auth/getAccessToken` callback answered from the vault, and the

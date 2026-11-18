@@ -365,6 +365,21 @@ function capabilityRefusalIsNewest(messages: readonly ChatMessage[]): boolean {
   return capabilityRefusal(messages[idx]) !== undefined
 }
 
+/** True when the newest error row is a host that cannot build an OS sandbox
+ *  (`host_sandbox_unavailable`) that is not a momentary refusal, and nothing
+ *  after it opens a new turn: the next start meets the same host and fails the
+ *  same way, so the composer's Resume yields until the host changes. */
+function hostSandboxIsNewest(messages: readonly ChatMessage[]): boolean {
+  const idx = lastErrorIndex(messages)
+  if (idx < 0) return false
+  for (let j = idx + 1; j < messages.length; j++) {
+    const row = messages[j]
+    if (row.role === 'assistant' || opensTurn(row)) return false
+  }
+  const meta = messages[idx].meta as { code?: unknown; retryable?: unknown } | undefined
+  return meta?.code === 'host_sandbox_unavailable' && meta.retryable !== true
+}
+
 /** True when the newest error row is one of the ones above: its card has
  *  withheld Resume (a retry replays the rejection) and names a remedy of its
  *  own, so the composer must not urge the press beneath it either. The one
@@ -375,7 +390,7 @@ function capabilityRefusalIsNewest(messages: readonly ChatMessage[]): boolean {
 export function newestErrorOwnsRecovery(messages: readonly ChatMessage[]): boolean {
   return featureRequestRefusalIsNewest(messages) || sessionStartRepeatIsNewest(messages)
     || contextOverflowIsNewest(messages) || imageRepairIsNewest(messages) || appAgentRefusalIsNewest(messages)
-    || capabilityRefusalIsNewest(messages)
+    || capabilityRefusalIsNewest(messages) || hostSandboxIsNewest(messages)
 }
 
 /** True when the newest error row is a sign-in error (`auth_required`, or

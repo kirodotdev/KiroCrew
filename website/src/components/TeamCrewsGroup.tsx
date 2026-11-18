@@ -1,13 +1,15 @@
 /**
  * TeamCrewsGroup: the desktop app's remote Crews reachable through the Kiro
- * relay, as the Team Crews group at the end of the Crew switcher's menu.
+ * relay, as the "Remote Crews" group at the end of the Crew switcher's menu. Each
+ * row reads "<type> · <status>", the type Shared (group icon) or Private (lock
+ * icon), and its action reads Connect.
  *
  * Renders nothing unless the desktop bridge exists AND the gateway's crews route
  * answers (it 404s while `tunnel.relay_viewer_enabled` is off), so the default
- * switcher is unchanged. Open hands only the endpoint ID to the desktop shell,
- * which opens that Crew in its own window. A Team Crew is not a destination in
- * this dashboard: its rows are plain menu items, never pinned, never in the
- * stable order and never in the unread count.
+ * switcher is unchanged. Connect hands only the endpoint ID to the desktop shell,
+ * which opens that Crew in its own window. Only a click opens one. A Team Crew
+ * is not a destination in this dashboard: its rows are plain menu items, never
+ * pinned, never in the stable order and never in the unread count.
  *
  * Loaded lazily from the top bar, so the relay hook stays out of the app core.
  * Only the top-level bar gets the group: an SSH pane's own switcher never
@@ -21,7 +23,7 @@ import { useTranslation } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
 import { useSearchParams } from 'react-router-dom'
-import { ExternalLink, LogIn } from 'lucide-react'
+import { ExternalLink, Lock, LogIn, Users } from 'lucide-react'
 import type { RelayCrewEntry, RelayViewerAccount } from '../api/client'
 import {
   clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrew, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText,
@@ -46,9 +48,12 @@ function TeamCrewItem({ crew, refusal, onOpen }: {
 }) {
   const { t } = useTranslation()
   const online = isRelayCrewOnline(crew)
-  const type = crew.crewType.toUpperCase() === 'TEAM'
+  const kind = crew.crewType.toUpperCase()
+  const type = kind === 'TEAM'
     ? t('components.relayCrews.type_team')
-    : crew.crewType.toUpperCase() === 'PERSONAL' ? t('components.relayCrews.type_personal') : crew.crewType
+    : kind === 'PERSONAL' ? t('components.relayCrews.type_personal') : crew.crewType
+  // Shared (a group) or Private (a lock); a type this build does not know gets no icon.
+  const TypeIcon = kind === 'TEAM' ? Users : kind === 'PERSONAL' ? Lock : null
   return (
     <>
       <DropdownMenuItem
@@ -58,10 +63,12 @@ function TeamCrewItem({ crew, refusal, onOpen }: {
         // tooltip with it: an offline row stays focusable and says why it won't open.
         offline={!online}
         aria-disabled={online ? undefined : true}
-        aria-label={t('components.relayCrews.open_crew', { name: crew.name })}
+        aria-label={t('components.relayCrews.connect_crew', { name: crew.name })}
         title={online ? undefined : t('components.relayCrews.refusal_offline')}
         onSelect={(e: Event) => {
-          // The menu closes only once the window opened; a refusal stays on screen.
+          // The menu closes only once the Crew's window opened; a refusal stays on screen.
+          // Selecting the row is the only thing that connects it: nothing here
+          // connects a listed Crew on its own.
           e.preventDefault()
           if (online) onOpen(crew.endpointId)
         }}
@@ -79,8 +86,16 @@ function TeamCrewItem({ crew, refusal, onOpen }: {
               </span>
             ) : null}
           </span>
-          <span className="truncate text-[12px] text-muted">{type} · {relayCrewStatusText(crew)}</span>
+          <span className="truncate text-[12px] text-muted">
+            {TypeIcon && <TypeIcon className="lucide-inline mr-1" aria-hidden data-testid="relay-crew-type-icon" data-type={kind} />}
+            {type} · {relayCrewStatusText(crew)}
+          </span>
         </span>
+        {online && (
+          <span className="shrink-0 text-[12px] font-medium text-accent" aria-hidden data-testid="relay-crew-connect">
+            {t('components.relayCrews.connect')}
+          </span>
+        )}
         {/* With panes on the Crew opens in this window, so no own-window mark. */}
         {!relayPaneBridge() && (
           <span className="shrink-0 text-muted" title={t('components.relayCrews.opens_own_window')}>

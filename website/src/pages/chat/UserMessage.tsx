@@ -1,7 +1,7 @@
 import { memo, useState, useRef, useEffect, useCallback, useContext, useSyncExternalStore, type ReactNode } from 'react'
 import { ReactReduxContext } from 'react-redux'
 import { parseSessionSeed, seedSender, type SeedRow, type SeedSender } from '../../lib/crewSeed'
-import { AppSenderByline, MessageByline, OtherSenderBubble } from './shared-crew/MessageByline'
+import { MessageByline, OtherSenderBubble } from './shared-crew/MessageByline'
 import { QueuedSendLabel } from './shared-crew/QueuedSendLabel'
 import { readRelay } from './sessionRelay'
 import { pasteBlocksOf, unseededUserText } from './userMessageText'
@@ -543,6 +543,12 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
 
   // Read before any early return: a hook.
   const userRoleActions = useMessageActionsFor('user')
+  // Every branch's row sits under the same `OtherSenderBubble`, so a steer
+  // settling into its note or a bubble opening its editor keeps the one row
+  // element. `other` decides the row's side (see the last return).
+  const sideOf = (draw: (other: boolean) => ReactNode) => (
+    <OtherSenderBubble meta={meta} slotKey={slotKey}>{draw}</OtherSenderBubble>
+  )
   if (retractedAction) {
     const settleAnimated = !mountedRetracted && !reducedMotion
     // The meta field is free text from the transcript; anything unknown reads as
@@ -575,7 +581,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
           {retractedLabel}
         </Btn>
       )
-    return (
+    return sideOf(() => (
       <div data-role="user" data-steer-settle={settleAnimated ? 'animated' : 'static'} className="flex flex-col items-end max-w-full">
         {settleAnimated && !collapseDone && (
           <motion.div
@@ -601,7 +607,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
           {note}
         </motion.div>
       </div>
-    )
+    ))
   }
 
   if (editing) {
@@ -630,7 +636,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
         }}
       />
     )
-    return (
+    return sideOf(() => (
       // `data-message-editing`: usePinnedPrompt reads this off the row it is about
       // to hide and refuses to pin it. The stand-in state hides the whole row and
       // the card copies only a bubble, so an edit opened before the row reached
@@ -665,7 +671,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
           </button>
         </div>
       </div>
-    )
+    ))
   }
 
   // Collapsed pastes expanded: the text this bubble stands for, which is what
@@ -820,16 +826,20 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
   // The right-click menu wraps the bubble only when Quote is offered (the
   // menu's reason to exist) on a pointer device; otherwise `MessageContextMenu`
   // renders the bubble bare.
-  const bubbleWithMenu = (
-    <OtherSenderBubble meta={meta} slotKey={slotKey}>
-      {other => <MessageContextMenu items={menuItems} onOpenChange={readStandIn} onCopyFailed={() => setCopyFailed(true)}>{bubble(other)}</MessageContextMenu>}
-    </OtherSenderBubble>
+  const bubbleWithMenu = (other: boolean) => (
+    <MessageContextMenu items={menuItems} onOpenChange={readStandIn} onCopyFailed={() => setCopyFailed(true)}>{bubble(other)}</MessageContextMenu>
   )
 
-  return (
+  // The row's side follows its sender (`OtherSenderBubble`, the byline's own
+  // rule): the viewer's own message on the end side, someone else's on the
+  // start side with the agent's replies, its byline, actions and timestamp
+  // with it. `data-user-side` lets the transcript's row wrappers, which align
+  // every user row to the end, follow (`has-[[data-user-side=start]]`). A chat
+  // only one person writes to never sets it.
+  return sideOf(other => (
     // Every box between the content column and the bubble is a fit-content flex
     // item, so a percentage cap only bites once ALL of them carry one.
-    <div data-role="user" className="group/msg flex flex-col items-end max-w-full">
+    <div data-role="user" data-user-side={other ? 'start' : undefined} className={`group/msg flex flex-col ${other ? 'items-start' : 'items-end'} max-w-full`}>
       {/* User-typed line breaks (Shift+Enter) are preserved at the markdown
           level, NOT via container `white-space: pre-wrap`. renderUserContentCb
           renders user content through MarkdownRenderer with `softBreaks`, which
@@ -846,8 +856,9 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
           <div className="inline-flex items-center gap-1 text-[12px] leading-5 font-semibold text-accent mb-1 pr-1">
             <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steered_into_the_running_turn')}
           </div>
-          {/* WHICH app sent it, when one did: a steered answer is still not the owner's typing. */}
-          <AppSenderByline meta={meta} />
+          {/* WHICH app sent it, or WHO on a Shared Crew: a steered answer is still
+              not the owner's typing, and a teammate's steer is their message too. */}
+          <MessageByline meta={meta} slotKey={slotKey} continuesRun={continuesRun} />
           {/* WHO chose this, when the sender did not. Below the badge that says
               what happened, because the badge is the outcome and this is the
               decision behind it. */}
@@ -866,7 +877,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.32, ease: 'easeOut' }}
           >
-            {bubbleWithMenu}
+            {bubbleWithMenu(other)}
             {playSteer && (
               <motion.div
                 aria-hidden="true"
@@ -994,7 +1005,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
               arm wraps its bubble in an animated box, and a line inside that box
               would slide in with it as though it were part of the message. */}
           {steerDecision && <SteerDecisionLine record={steerDecision} ownMessage={steerOwnMessage} />}
-          {bubbleWithMenu}
+          {bubbleWithMenu(other)}
         </>
       )}
       {/* Where the pointer cannot hover the footer is always visible and its
@@ -1155,7 +1166,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
         className="mt-1 [@media(hover:none)]:[&_button]:min-h-10 [@media(hover:none)]:[&_button]:min-w-10"
       />
     </div>
-  )
+  ))
 })
 
 export default UserMessage

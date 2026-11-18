@@ -643,7 +643,7 @@ unoffered method draws nothing.
 
 **Remote-instance provisioner forms.**
 `registerRemoteProvisionerRenderer({ kind, component })` supplies the launch form
-that Settings → Remote Crew → "Set up a new one" draws for one provisioner
+that Settings → Remote Crew → Add Crew → "Set up a new Crew" draws for one provisioner
 the backend offers. It keys on `kind`, not `id`, for the same reason as the seam
 above: `id` is what `POST /api/cloud/launch` names in `provider_id` (an id the
 server does not offer is refused with `unknown_provisioner`), while `kind` exists

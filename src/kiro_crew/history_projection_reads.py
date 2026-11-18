@@ -1418,6 +1418,7 @@ class TranscriptReadProjection:
         # Function-local: dashboard.state imports kiro_crew.history at module
         # scope, which lands back here, so a top-level import would be a
         # cycle. By preview time the dashboard module is long since loaded.
+        from kiro_crew.dashboard.host_sandbox_refusal import is_refusal_row
         from kiro_crew.dashboard.state import is_stop_event_row
         from kiro_crew.dashboard.system_notices import is_speech_row
 
@@ -1500,6 +1501,10 @@ class TranscriptReadProjection:
                     # Machinery: skipped for the TEXT, kept for the recency.
                     if not newest_epoch:
                         newest_epoch = _row_epoch(data)
+                    continue
+                # The host owner's runbook: a preview string has no row type for the
+                # non-owner edge to redact by, so it never quotes one (as search).
+                if is_refusal_row(data):
                     continue
                 if not text:
                     continue

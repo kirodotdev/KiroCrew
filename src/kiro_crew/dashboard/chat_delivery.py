@@ -40,6 +40,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
 from kiro_crew.dashboard.steer_supersedes_approval import reject_approvals_superseded_by_steer
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.shared_crew.contracts import MESSAGE_AUTHOR_META_KEY
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -434,6 +435,7 @@ async def steer_into_running_turn(
     nudge_meta: dict | None = None,
     banner: str = "",
     relay_meta: dict | None = None,
+    author: dict | None = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -724,7 +726,16 @@ async def steer_into_running_turn(
         slot._turn_owner_sent = False
     if admission is not None:
         slot._steer_admissions[message] = admission
-    if attachments or quote or knowledge or app_label or app_actor or banner or relay_meta:
+    if (
+        attachments
+        or quote
+        or knowledge
+        or app_label
+        or app_actor
+        or banner
+        or relay_meta
+        or author
+    ):
         # Retained for the REQUEUE with the attachment lists: a steer the turn
         # ended before consuming is drained as a queued row, and that row is
         # rebuilt from this map -- without the quote here it would render its
@@ -744,6 +755,9 @@ async def steer_into_running_turn(
             **quote,
             **knowledge,
             **({"relay": dict(relay_meta)} if relay_meta else {}),
+            # The server-named Shared Crew author, so a requeued steer's drained row
+            # names its person as the delivered row below does.
+            **({MESSAGE_AUTHOR_META_KEY: dict(author)} if author else {}),
             **({"appLabel": app_label} if app_label else {}),
             **({TURN_ACTOR_META_KEY: "app"} if app_actor else {}),
             **({CHAT_BANNER_META_KEY: banner} if banner else {}),
@@ -1095,6 +1109,10 @@ async def steer_into_running_turn(
         # THIS delivery by identity rather than by text. Inert for the client,
         # which reads ``steer``, ``steerState``, ``mid`` and ``sendId``.
         "steer_delivery_id": delivery_id,
+        # The server-named Shared Crew author (``shared_crew.attribution``): a
+        # teammate's steer is their message like any other send, so its row and
+        # its live push name them.
+        **({MESSAGE_AUTHOR_META_KEY: dict(author)} if author else {}),
     }
     if user_origin:
         # A PERSON typed this into the session's own surface, same as an ordinary
@@ -1213,6 +1231,8 @@ async def steer_into_running_turn(
         # A peer's steer: an open tab draws the row from this frame, so without
         # the sender it would show the raw provenance prefix until a reload.
         push_payload.setdefault("meta", {})["relay"] = dict(relay_meta)
+    if author:
+        push_payload.setdefault("meta", {})[MESSAGE_AUTHOR_META_KEY] = dict(author)
     state.broadcast_ws("steer_push", push_payload)
     if _state == STEER_STATE_WRITTEN and _shown_as_typed and owner_origin:
         # Still held, so a card open now is the one it was typed over. Without
