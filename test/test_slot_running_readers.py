@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import source_corpus
+
 # Busy-check helpers, and the slot state each one reads on its caller's behalf.
 #
 # A handler that delegates its refusal to a helper still consumes that state, so the
@@ -30,6 +32,7 @@ _BUSY_HELPERS: dict[str, frozenset[str]] = {
 }
 
 
+@source_corpus.untraced()
 def test_running_guarded_task_loads_null_check_task() -> None:
     """Every ``x.task`` read under an ``x.running`` guard also checks it is set."""
     dashboard = Path(__file__).parents[1] / "src" / "kiro_crew" / "dashboard"
@@ -66,6 +69,7 @@ def test_running_guarded_task_loads_null_check_task() -> None:
     assert {path for path, _line in guarded_task_loads} == {"slot_lifecycle.py"}
 
 
+@source_corpus.untraced()
 def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
     """Every slot reader declares whether it needs reservation or execution state."""
     dashboard = Path(__file__).parents[1] / "src" / "kiro_crew" / "dashboard"
