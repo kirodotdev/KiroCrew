@@ -427,8 +427,8 @@ _KIRO_SIGNED_OUT = (
 # sends the user to kiro-cli. :func:`sign_in_remedy` and :func:`signed_out_message`
 # name the route of the running engine in front of it once a spawn has chosen one.
 # Plain prose (no backticks, no "--") in the remedy: the panel renders it as text.
-# The path names the Kiro Agent row, because the card lives inside that row's detail.
-_KAS_CARD = "Settings → Agent Harness → Kiro Agent → Kiro sign-in"
+# The path names the Kiro account tab, which holds the card on every harness.
+_KAS_CARD = "Settings → Kiro account"
 _KAS_REMEDY = f"Sign in from {_KAS_CARD}, then send your message again."
 _KAS_SIGNED_OUT = f"Not signed in to Kiro. Sign in from {_KAS_CARD}, then send your message again."
 #: The same sign-in as a terminal names it: the command first, because a host

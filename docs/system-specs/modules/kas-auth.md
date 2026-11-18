@@ -703,12 +703,13 @@ engine instead ([aws-control.md](aws-control.md)).
   also drives the one oss log warning, so a Builder ID
   in the vault beside another kiro-cli account is warned about too; the LTS refusal
   still needs two profile ARNs that differ.
-- The product entry point for the flow is the **Kiro sign-in** section on Settings >
-  Agent Harness (`website/src/pages/developer/KiroSignInCard.tsx`, `compact`
-  form), rendered by `AgentBackendTab` INSIDE the KAS row's detail and only while
-  KAS is a backend that switch offers -- the stored identity is consumed by the
-  KAS relay alone, so a build or policy that cannot select KAS has nothing to
-  sign in for, and a row that is not KAS has no use for it. The section embeds
+- The product entry point for the flow is the **Kiro sign-in** card, the whole
+  Settings > Kiro account tab (settings tab key `kiro-account`,
+  `website/src/pages/developer/KiroSignInCard.tsx`). The tab shows on every
+  harness while the build offers Kiro sign-in, and is hidden when the build's
+  `agent.acp_backend` choices do not list KAS (`useKiroSignInOffered`, the tab
+  filter in `website/src/pages/SettingsPage.tsx`). The Kiro Agent row of the
+  Agent Harness tab keeps one status line and a link to the tab. The card embeds
   the same views `KasLoginGate` renders (`KasLoginEmbedded`, card chrome instead
   of the scrim + aside door; in that chrome the four provider choices are
   outlined and sit in a two-column grid, none accent-filled, because the detail's
@@ -717,21 +718,18 @@ engine instead ([aws-control.md](aws-control.md)).
   expiry, renewability -- never a token) with sign-out and sign-in-again. It is
   reachable from the chat error row an `AcpAuthRequired` turn produces
   (`chat_utils.AUTH_REQUIRED_KIND` → "Sign in to Kiro", navigating to
-  `KIRO_SIGN_IN_PATH` = `/settings/agent?highlight=key:kiro-sign-in`
+  `KIRO_SIGN_IN_PATH` = `/settings/kiro-account?highlight=key:kiro-sign-in`
   with the colon percent-encoded, from `pages/developer/kiroSignInLink.ts`,
   whose `highlight` rings the card through the `useSettingHighlight` hook
   SettingsPage mounts; the card's older home, `/developer?tab=agent-backend`,
-  is forwarded there by the `/developer` redirect with the `highlight` kept) and from the KAS remedy
-  strings in `agent_sdk/host_auth.py`. Its intro sentence names the backend
-  ("Used only by the Kiro Agent backend") and says Kiro CLI keeps its own
-  kiro-cli login, because the card sits under a switch that also lists Kiro
-  CLI. It is deliberately NOT on Settings > Overview and not indexed into
-  Settings search: a provider chooser on the landing page read as a required
-  step to every user, first-run installs included, and Overview carries no
-  signpost to it. The
-  switch and card are a Settings tab of their own because first-run setup
-  offers agents other than Kiro CLI, so a user who set up with one of those can
-  switch agents later. `KasLoginGate` itself is still not mounted at the app
+  is forwarded there by the `/developer` redirect, and old Agent Harness sign-in
+  links by SettingsPage, with the `highlight` kept) and from the KAS remedy
+  strings in `agent_sdk/host_auth.py`. Its intro sentence says Kiro Agent and
+  other Kiro features run as this account whichever harness is picked, and that
+  Kiro CLI keeps its own kiro-cli login. It is deliberately NOT on Settings >
+  Overview: a provider chooser on the landing page read as a required step to
+  every user, first-run installs included. Settings search finds it by "sign
+  out" and "switch account". `KasLoginGate` itself is still not mounted at the app
   root; the full-screen form stays available for that.
 - An unfinished sign-in is said in plain words. The loopback wait screen opens the
   portal tab with `noopener`, so the page cannot tell a closed or blocked tab from
@@ -761,10 +759,11 @@ engine instead ([aws-control.md](aws-control.md)).
   above every route beside `CrashReportNotice`), because the card above lives on
   a page nobody keeps open. It is a banner, not a top-bar control: the top bar's
   action groups are at the two-control cap. It renders only while
-  `agent.acp_backend` is `kas`, a sign-in is stored, and the card's own verdict
+  something runs on KAS (`kasInUse`) or the build offers Kiro sign-in
+  (`useKiroSignInOffered`), a sign-in is stored, and the card's own verdict
   (`signInLapsed` in `pages/developer/kiroSignInState.ts`, shared by both:
   `!usable || refresh_rejected`) calls it lapsed; it is hidden on Settings >
-  Agent Harness itself, where the card shows the same state. Every lapsed shape
+  Kiro account itself, where the card shows the same state. Every lapsed shape
   it draws is an `ErrorNotice` with the agent hand-off, an "Open sign-in settings"
   button and dismiss, so an expiry with nothing to renew it and a renewal Kiro
   refused read at the same weight (in both the agents' credential requests are
@@ -776,7 +775,8 @@ engine instead ([aws-control.md](aws-control.md)).
   stop. The button asks the page's leave guard and then deep-links to
   `KIRO_SIGN_IN_PATH`; dismissing hides the notice for the current cause until
   the page reloads (a refusal that has since expired is a new cause). A
-  failed status read on a KAS gateway renders the same way under "We could not
+  failed status read, on a gateway that runs KAS or offers Kiro sign-in,
+  renders the same way under "We could not
   check sign-in status", with a plain-language line saying what to do (the
   server's error goes to the hand-off, not the visible text), since the
   sign-in then goes unchecked. A config read that fails before any good read
@@ -784,7 +784,10 @@ engine instead ([aws-control.md](aws-control.md)).
   sign-in button or sign-in claim: it cannot say whether KAS runs the agents,
   and kiro-cli and Claude have no Kiro sign-in. It stays hidden while the
   gateway is offline or asks for a token, since the offline capsule and the
-  token banner already name that cause and its fix. A failure after a good read
+  token banner already name that cause and its fix. Off KAS, a config-schema
+  read that fails with no answer (so nothing says whether the build offers the
+  sign-in) shows the same notice under the same guards, rather than leaving the
+  sign-in unchecked in silence. A failure after a good read
   shows nothing, since the query keeps that read's backend, so a KAS gateway
   goes on reading the status. If the notice itself fails to load or render,
   its error boundary shows "Part of the dashboard could not load" with the

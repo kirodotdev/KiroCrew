@@ -6445,7 +6445,8 @@
       "sign_out_or_switch": "Sair ou trocar de conta nas Configurações",
       "sign_out_link_config_unreadable": "Não foi possível carregar as configurações, então o link para sair não pode ser mostrado.",
       "switch_in_settings": "Trocar de conta nas Configurações",
-      "bots_sign_in_in_settings": "Login do Kiro dos Bots nas Configurações"
+      "bots_sign_in_in_settings": "Login do Kiro dos Bots nas Configurações",
+      "kiro_account_in_settings": "Conta Kiro nas Configurações"
     },
     "agentDropdownList": {
       "active_in_this_session": "Ativo nesta sessão",
@@ -8200,7 +8201,7 @@
       "loopback_fell_back": "O login não conseguiu voltar direto para este computador, então aqui está um código.",
       "cancel_unsettled": "Não foi possível cancelar o login. Ele ainda está ativo: pressione a mesma opção novamente para tentar de novo.",
       "pending_cancel_unsettled": "Conectado, mas não foi possível cancelar o login que você iniciou aqui. Ele continua aberto até expirar.",
-      "card_intro": "Usado apenas pelo backend Kiro Agent: seus agentes são executados com esta conta Kiro. O Kiro CLI mantém o próprio login do kiro-cli, então entrar aqui não o altera.",
+      "card_intro": "O Kiro Agent e outros recursos do Kiro funcionam com esta conta Kiro, qualquer que seja o harness do agente que você use. O Kiro CLI mantém o próprio login do kiro-cli, então entrar aqui não o altera.",
       "previous_sign_in_not_removed": "Conectado, mas não foi possível remover o login anterior",
       "previous_sign_in_not_removed_body": "A nova conta foi salva, mas a conta da qual você estava saindo ainda está lá e tem prioridade. Saia dela e depois confira o login mostrado aqui."
     },
@@ -11546,6 +11547,9 @@
       "expired_detail_bots": "Os Bots não podem ser executados até você entrar novamente. O login salvo expirou e não pode ser renovado.",
       "refused_detail_bots": "Os Bots param de ser executados quando este login expirar. Entre novamente para mantê-los em execução.",
       "refused_expired_detail_bots": "Os Bots não podem ser executados até você entrar novamente. Este login já expirou.",
+      "expired_detail_account": "Os recursos que usam sua conta Kiro não funcionam até você entrar novamente. O login salvo expirou e não pode ser renovado.",
+      "refused_detail_account": "Os recursos que usam sua conta Kiro param de funcionar quando este login expirar. Entre novamente para mantê-los funcionando.",
+      "refused_expired_detail_account": "Os recursos que usam sua conta Kiro não funcionam até você entrar novamente. Este login já expirou.",
       "status_unavailable_detail": "Abra as configurações de login para verificar seu login no Kiro ou peça ao agente para investigar.",
       "config_unavailable": "Não foi possível ler as configurações do painel",
       "config_unavailable_detail": "Recarregue a página para tentar novamente ou peça ao agente para verificar.",
@@ -13914,7 +13918,7 @@
         "code_channel_worktree_not_ready": "O worktree deste canal de código ainda não está pronto, então a mensagem não foi executada. Envie-a de novo em instantes.",
         "remote_crew_read_only": "Este chat rodou em uma crew remota e agora é somente leitura. Abra a sessão da própria crew para continuar.",
         "archive_failed_turn_cancelled": "Não foi possível arquivar esta aba depois que o turno em andamento foi cancelado. A aba foi mantida, mas esse turno não terminou — envie sua mensagem de novo para continuar.",
-        "kas_signed_out": "Você não entrou no Kiro. Entre em Configurações → Harness do agente → Kiro Agent → Login do Kiro e envie sua mensagem de novo.",
+        "kas_signed_out": "Você não entrou no Kiro. Entre em Configurações → Conta Kiro e envie sua mensagem de novo.",
         "kas_signed_out_sign_in_below": "Você não entrou no Kiro. Entre abaixo e envie sua mensagem de novo.",
         "windows_spawn_blocked": "O Windows não conseguiu iniciar o programa do agente ({{binary}}). É provável que o AppLocker, um produto EDR ou uma política de grupo neste computador o tenha bloqueado. Peça ao seu administrador de TI para liberar esse arquivo e depois inicie um novo chat.",
         "tools_not_ready": "O agente não conseguiu iniciar porque suas ferramentas integradas não ficaram prontas a tempo. Sua mensagem continua aqui. Tente de novo em instantes. Se continuar acontecendo, o log do gateway tem os detalhes.",
@@ -16137,6 +16141,9 @@
         "install_check_failed_can_still_switch": "Não foi possível verificar se isto está instalado nesta máquina. Ainda é possível mudar para ele. Se não estiver instalado, a sessão avisa ao iniciar.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_cli_description": "Usa o kiro-cli instalado nesta máquina, com o login do próprio kiro-cli.",
+        "kiro_account_not_signed_in": "Sem login",
+        "kiro_account_signed_in_as": "Conectado como {{name}}",
         "kiro_row_runs_on_kas": "O Kiro CLI agora roda no Kiro Agent. As novas sessões já usam o Kiro Agent, então não há nada para trocar aqui.",
         "kiro_runs_on_kas": "O Kiro CLI agora roda no Kiro Agent, então as novas sessões já o usam. Salvar o Kiro Agent como sua configuração?",
         "kiro_runs_on_kas_save": "Salvar o Kiro Agent como minha configuração",
@@ -16418,7 +16425,7 @@
       },
       "kasBundleCard": {
         "toggle_label": "Executar o KAS no mecanismo próprio do {{productName}}",
-        "toggle_description": "Usa a versão do mecanismo KAS testada com esta versão do {{productName}}, em vez da Kiro CLI. Vale para toda nova sessão deste {{productName}}, não só para este dispositivo. Entra com sua conta Kiro em Configurações → Harness do agente. Passa a valer quando o {{productName}} reinicia.",
+        "toggle_description": "Usa a versão do mecanismo KAS testada com esta versão do {{productName}}, em vez da Kiro CLI. Vale para toda nova sessão deste {{productName}}, não só para este dispositivo. Entra com sua conta Kiro em Configurações → Conta Kiro. Passa a valer quando o {{productName}} reinicia.",
         "installed": "Mecanismo KAS {{version}} (instalado por você)",
         "installed_bundled": "Mecanismo KAS {{version}} (incluído no aplicativo)",
         "off_note": "Desligado: o KAS usa sua instalação da Kiro CLI. Ligado: usa o mecanismo que vem com esta versão.",
@@ -23498,6 +23505,11 @@
       "connections": {
         "label": "Conexões",
         "description": "Conecte serviços oficiais e configure seus apps OAuth"
+      },
+      "kiroAccount": {
+        "description": "Entre no Kiro, troque de conta ou saia",
+        "go_to": "Ir para Conta Kiro",
+        "label": "Conta Kiro"
       }
     },
     "secrets": {

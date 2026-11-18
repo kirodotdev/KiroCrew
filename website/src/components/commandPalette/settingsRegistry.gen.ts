@@ -64,16 +64,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "agent.orchestrator_memory"
   },
   {
-    "id": "agent.kiro-sign-in",
-    "labelKey": "pages.developer.kiroSignInCard.search_label",
-    "tab": "agent",
-    "type": "buttonGroup",
-    "occurrence": 1,
-    "settingId": "kiro-sign-in",
-    "label": "Sign out or switch Kiro account",
-    "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
-  },
-  {
     "id": "browser.max-frame-rate",
     "label": "Max frame rate",
     "labelKey": "pages.settings.browserPanel.max_fps_label",
@@ -2536,7 +2526,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.run-kas-on-kiro-crew-s-own-engine",
     "label": "Run KAS on Kiro Crew's own engine",
     "labelKey": "pages.developer.kasBundleCard.toggle_label",
-    "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts.",
+    "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Kiro account. Takes effect when Kiro Crew restarts.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -3089,6 +3079,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "configKey": "instances.enabled",
     "label": "Enable remote crew management"
+  },
+  {
+    "id": "kiro-account.kiro-sign-in",
+    "labelKey": "pages.developer.kiroSignInCard.search_label",
+    "tab": "kiro-account",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "settingId": "kiro-sign-in",
+    "label": "Sign out or switch Kiro account",
+    "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
   },
   {
     "id": "notifications.sound-category-approval",

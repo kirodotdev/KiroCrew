@@ -6445,7 +6445,8 @@
       "sign_out_or_switch": "Cerrar sesión o cambiar de cuenta en Configuración",
       "sign_out_link_config_unreadable": "No se pudo cargar la configuración, así que no se puede mostrar el enlace para cerrar sesión.",
       "switch_in_settings": "Cambiar de cuenta en Configuración",
-      "bots_sign_in_in_settings": "Inicio de sesión en Kiro para los Bots en Configuración"
+      "bots_sign_in_in_settings": "Inicio de sesión en Kiro para los Bots en Configuración",
+      "kiro_account_in_settings": "Cuenta de Kiro en Configuración"
     },
     "agentDropdownList": {
       "active_in_this_session": "Activo en esta sesión",
@@ -8200,7 +8201,7 @@
       "loopback_fell_back": "El inicio de sesión no pudo volver directamente a este equipo, así que aquí tienes un código.",
       "cancel_unsettled": "No se pudo cancelar el inicio de sesión. Sigue activo: pulsa la misma opción otra vez para reintentar.",
       "pending_cancel_unsettled": "Sesión iniciada, pero no se pudo cancelar el inicio de sesión que empezaste aquí. Seguirá abierto hasta que caduque.",
-      "card_intro": "Solo lo usa el backend Kiro Agent: sus agentes se ejecutan con esta cuenta de Kiro. Kiro CLI conserva su propio inicio de sesión de kiro-cli, así que iniciar sesión aquí no lo cambia.",
+      "card_intro": "Kiro Agent y otras funciones de Kiro se ejecutan con esta cuenta de Kiro, uses el harness del agente que uses. Kiro CLI mantiene su propio inicio de sesión de kiro-cli, así que iniciar sesión aquí no lo cambia.",
       "previous_sign_in_not_removed": "Sesión iniciada, pero no se pudo eliminar el inicio de sesión anterior",
       "previous_sign_in_not_removed_body": "La cuenta nueva está guardada, pero la cuenta de la que cambiaste sigue ahí y tiene prioridad. Cierra esa sesión y luego comprueba el inicio de sesión que se muestra aquí."
     },
@@ -11546,6 +11547,9 @@
       "expired_detail_bots": "Los Bots no pueden ejecutarse hasta que vuelvas a iniciar sesión. El inicio de sesión guardado caducó y no se puede renovar.",
       "refused_detail_bots": "Los Bots dejarán de ejecutarse cuando caduque este inicio de sesión. Vuelve a iniciar sesión para que sigan ejecutándose.",
       "refused_expired_detail_bots": "Los Bots no pueden ejecutarse hasta que vuelvas a iniciar sesión. Este inicio de sesión ya caducó.",
+      "expired_detail_account": "Las funciones que usan tu cuenta de Kiro no pueden funcionar hasta que vuelvas a iniciar sesión. El inicio de sesión guardado caducó y no se puede renovar.",
+      "refused_detail_account": "Las funciones que usan tu cuenta de Kiro dejarán de funcionar cuando caduque este inicio de sesión. Vuelve a iniciar sesión para que sigan funcionando.",
+      "refused_expired_detail_account": "Las funciones que usan tu cuenta de Kiro no pueden funcionar hasta que vuelvas a iniciar sesión. Este inicio de sesión ya caducó.",
       "status_unavailable_detail": "Abre la configuración de inicio de sesión para revisar tu inicio de sesión en Kiro, o pide al agente que lo investigue.",
       "config_unavailable": "No se pudo leer la configuración del panel",
       "config_unavailable_detail": "Recarga la página para volver a intentarlo o pide al agente que lo revise.",
@@ -13914,7 +13918,7 @@
         "code_channel_worktree_not_ready": "El worktree de este canal de código aún no está listo, así que el mensaje no se ejecutó. Vuelve a enviarlo en un momento.",
         "remote_crew_read_only": "Este chat se ejecutó en una crew remota y ahora es de solo lectura. Abre la sesión propia de la crew para continuar.",
         "archive_failed_turn_cancelled": "No se pudo archivar esta pestaña después de cancelar su turno en curso. La pestaña se conservó, pero ese turno no terminó — envía tu mensaje de nuevo para continuar.",
-        "kas_signed_out": "No has iniciado sesión en Kiro. Inicia sesión en Ajustes → Harness del agente → Kiro Agent → Inicio de sesión en Kiro y luego envía tu mensaje de nuevo.",
+        "kas_signed_out": "No has iniciado sesión en Kiro. Inicia sesión en Ajustes → Cuenta de Kiro y luego envía tu mensaje de nuevo.",
         "kas_signed_out_sign_in_below": "No has iniciado sesión en Kiro. Inicia sesión abajo y luego envía tu mensaje de nuevo.",
         "windows_spawn_blocked": "Windows no pudo iniciar el programa del agente ({{binary}}). Probablemente lo bloqueó AppLocker, un producto EDR o una directiva de grupo en este equipo. Pide a tu administrador de TI que permita ese archivo y luego inicia un chat nuevo.",
         "tools_not_ready": "El agente no pudo iniciarse porque sus herramientas integradas no estuvieron listas a tiempo. Tu mensaje sigue aquí. Vuelve a intentarlo en un momento. Si sigue pasando, el registro de la pasarela tiene los detalles.",
@@ -16137,6 +16141,9 @@
         "install_check_failed_can_still_switch": "No se pudo comprobar si esto está instalado en esta máquina. Aún puedes cambiar a este agente. Si no está instalado, la sesión lo indicará al iniciarse.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_cli_description": "Usa el kiro-cli instalado en este equipo, con el inicio de sesión propio de kiro-cli.",
+        "kiro_account_not_signed_in": "No has iniciado sesión",
+        "kiro_account_signed_in_as": "Sesión iniciada como {{name}}",
         "kiro_row_runs_on_kas": "Kiro CLI ahora se ejecuta en Kiro Agent. Las sesiones nuevas ya usan Kiro Agent, así que aquí no hay nada que cambiar.",
         "kiro_runs_on_kas": "Kiro CLI ahora se ejecuta en Kiro Agent, así que las sesiones nuevas ya lo usan. ¿Guardar Kiro Agent como tu ajuste?",
         "kiro_runs_on_kas_save": "Guardar Kiro Agent como mi ajuste",
@@ -16418,7 +16425,7 @@
       },
       "kasBundleCard": {
         "toggle_label": "Ejecutar KAS con el motor propio de {{productName}}",
-        "toggle_description": "Usa la versión del motor KAS probada con esta versión de {{productName}}, en lugar de la Kiro CLI. Se aplica a cada sesión nueva de este {{productName}}, no solo a este dispositivo. Inicia sesión con tu cuenta de Kiro de Configuración → Harness del agente. Se aplica cuando {{productName}} se reinicia.",
+        "toggle_description": "Usa la versión del motor KAS probada con esta versión de {{productName}}, en lugar de la Kiro CLI. Se aplica a cada sesión nueva de este {{productName}}, no solo a este dispositivo. Inicia sesión con tu cuenta de Kiro de Configuración → Cuenta de Kiro. Se aplica cuando {{productName}} se reinicia.",
         "installed": "Motor KAS {{version}} (instalado por ti)",
         "installed_bundled": "Motor KAS {{version}} (incluido en la aplicación)",
         "off_note": "Desactivado: KAS usa tu instalación de la Kiro CLI. Activado: usa el motor que trae esta versión.",
@@ -23498,6 +23505,11 @@
       "connections": {
         "label": "Conexiones",
         "description": "Conecta servicios oficiales y configura sus apps OAuth"
+      },
+      "kiroAccount": {
+        "description": "Inicia sesión en Kiro, cambia de cuenta o cierra sesión",
+        "go_to": "Ir a Cuenta de Kiro",
+        "label": "Cuenta de Kiro"
       }
     },
     "secrets": {

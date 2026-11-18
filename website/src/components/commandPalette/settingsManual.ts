@@ -474,16 +474,15 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     params: { channel: 'feishu' },
   },
-  // The Kiro sign-in card on Agent Harness, where Sign out and Switch account
-  // live. It is built from raw markup inside the KAS row's detail, so the
-  // extractor never sees it. `settingId` is the card's `data-setting-id`: the
-  // highlight waits for it while AgentBackendTab opens the KAS row for this id
-  // (`KIRO_SIGN_IN_SETTING_ID` in pages/developer/kiroSignInLink.ts).
+  // The Kiro sign-in card on Kiro account, where Sign out and Switch account
+  // live. It is built from raw markup the extractor never sees. `settingId` is
+  // the card's `data-setting-id`: the highlight waits for it while the card's
+  // lazy chunk loads (`KIRO_SIGN_IN_SETTING_ID` in pages/developer/kiroSignInLink.ts).
   {
-    id: 'agent.kiro-sign-in',
+    id: 'kiro-account.kiro-sign-in',
     labelKey: 'pages.developer.kiroSignInCard.search_label',
     descriptionKey: 'pages.developer.kiroSignInCard.search_description',
-    tab: 'agent',
+    tab: 'kiro-account',
     type: 'buttonGroup',
     occurrence: 1,
     settingId: 'kiro-sign-in',

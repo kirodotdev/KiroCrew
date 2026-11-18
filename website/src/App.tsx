@@ -15,7 +15,7 @@ import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registe
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
-import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
+import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Coins, Compass, KeyRound, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
 import { MobileConnectDialog } from './components/mobileConnect'
@@ -95,6 +95,7 @@ import ReportProblemModal from './components/ReportProblemModal'
 import KiroAccountModal from './components/KiroAccountModal'
 
 import { i18nT } from './i18n/t'
+import { KIRO_SIGN_IN_PATH } from './pages/developer/kiroSignInLink'
 import { useLanguageGeneration } from './i18n/useLanguageGeneration'
 import { isAppNavId } from './appNotificationBadges'
 import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect, TerminalRoute } from './shell/routes'
@@ -417,7 +418,7 @@ export default function App() {
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
     sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, kiroAccountEntry, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
+    kiroUsageState, kiroAccountEntry, kiroSignInPrompt, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
     updateFlow, updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, updateError,
     setUpdateError, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
@@ -599,6 +600,21 @@ export default function App() {
                 collapsed
                 touch
                 onClickOverride={() => { onActivate(); setKiroUsageOpen(true) }}
+              />
+            )}
+            {/* The capsule's quiet "Sign in to Kiro" segment, for the phone. A
+                plain guarded route with `replace`, like Settings below: closing
+                the drawer first would pop history after this push lands. */}
+            {kiroSignInPrompt && (
+              <NavItem
+                navId="kiro-sign-in"
+                path={KIRO_SIGN_IN_PATH}
+                label={i18nT('components.kasLogin.sign_in_to_kiro')}
+                icon={<KeyRound size={16} />}
+                active={false}
+                collapsed
+                touch
+                replace
               />
             )}
           </>}

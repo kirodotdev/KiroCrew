@@ -22,7 +22,7 @@ interface RawSchemaEntry {
   allSettings?: AllSettingsRecord
 }
 
-async function fetchConfigSchema(): Promise<Map<string, SchemaEntry>> {
+export async function fetchConfigSchema(): Promise<Map<string, SchemaEntry>> {
   const res = await fetch('/api/config/schema')
   if (!res.ok) throw new Error(`Config schema fetch failed: ${res.status}`)
   const json = (await res.json()) as { entries: RawSchemaEntry[] }

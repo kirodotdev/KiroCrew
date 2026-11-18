@@ -372,7 +372,10 @@ describe('App — update progress overlay', () => {
 
     const card = screen.getByTestId('update-overlay-error')
     expect(card.textContent).toContain('Fast-forward to 9f8202496fcf failed')
-    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+    // Scoped to the overlay: app-level notices (the Kiro sign-in notice on a
+    // failed settings read in this env) carry their own Dismiss.
+    const overlay = screen.getByTestId('update-overlay-step-icon').parentElement!
+    expect(within(overlay).getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
     // No step is "active", and the header glyph is the terminal one, not the
     // in-progress spinner.
     expect(screen.queryByText('Page will reconnect when ready…')).toBeNull()

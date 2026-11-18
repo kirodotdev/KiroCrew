@@ -38,7 +38,7 @@ _MODEL_REGISTRY_UNAVAILABLE = "ModelRegistryUnavailableError"
 MODEL_REGISTRY_UNAVAILABLE_TEXT = (
     "Kiro could not load the list of models for this account, so the turn did "
     "not start. Retry in a moment. If it keeps failing, sign out and sign in "
-    "again under Settings → Agent Harness → Kiro Agent."
+    "again under Settings → Kiro account."
 )
 
 

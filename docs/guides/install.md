@@ -706,7 +706,7 @@ install` yourself. The desktop app ships that engine inside the app
 (`BUNDLE_KAS=1` at build time), so there is nothing to download. To try the
 route, turn on **Run KAS on Kiro Crew's own engine** under Settings → Developer →
 Feature Previews (or `kirocrew config set agent.kas_bundle true`) and restart; you
-then sign in from the **Kiro sign-in** card on Settings → Agent Harness → KAS, and
+then sign in from the **Kiro sign-in** card on Settings → Kiro account, and
 `kiro-cli login` is not used.
 
 Then start Kiro Crew:
