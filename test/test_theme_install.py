@@ -1091,6 +1091,25 @@ class TestValidateThemeDirL2:
         assert summary is None
         assert err is not None and "forbidden pattern" in err
 
+    @pytest.mark.parametrize("rel", ["overlays/scanner.html", "topbar/dark.html"])
+    @pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
+    def test_a_utf16_file_is_checked_as_the_browser_reads_it(
+        self, tmp_path: Path, rel: str, codec: str
+    ) -> None:
+        """The served charset says utf-8, but the browser follows a UTF-16 BOM."""
+        assets = dict(_L2_ASSETS)
+        assets[rel] = "\ufeff<div>ok</div>".encode(codec)
+        _, err = _validate_theme_dir(
+            _make_tiered(tmp_path / "ok", level=2, extra=assets), installing=True
+        )
+        assert err is None, err
+        assets[rel] = "\ufeff<script src='https://evil.example.com/x.js'></script>".encode(codec)
+        summary, err = _validate_theme_dir(
+            _make_tiered(tmp_path / "bad", level=2, extra=assets), installing=True
+        )
+        assert summary is None
+        assert err is not None and "forbidden pattern" in err
+
     def test_too_many_overlays_rejected(self, tmp_path: Path) -> None:
         assets = {f"overlays/o{i}.html": "<div>x</div>" for i in range(6)}
         summary, err = _validate_theme_dir(_make_tiered(tmp_path, level=2, extra=assets))

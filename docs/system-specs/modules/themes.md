@@ -304,7 +304,10 @@ dashboard load into header-only round trips.
   `overrides.css` would be scoped away.
 - **HTML containment** — overlay/topbar HTML is rejected at install if it
   references external scripts, `fetch`/`XMLHttpRequest`, `document.cookie`, or
-  `localStorage`/`sessionStorage`.
+  `localStorage`/`sessionStorage`. The check (on install, and on each theme
+  detail read of an installed pack) sees the file as the browser will: it is
+  served as `utf-8`, but a UTF-16 byte-order mark outranks that label, so a file
+  that starts with one is decoded as UTF-16.
 - **Persona** — `persona.md` capped at 2000 chars (`_THEME_PERSONA_MAX_CHARS`,
   the enforced control). `_validate_persona` additionally runs an **advisory
   keyword check** for boundary phrases (e.g. a "drop persona" / security-override

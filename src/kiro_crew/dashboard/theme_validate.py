@@ -10,6 +10,7 @@ never import the handler layer (one-way dependency, no import cycles).
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import os
@@ -1419,9 +1420,11 @@ def _validate_theme_dir(
             if c_err:
                 return None, c_err
         elif category in ("overlay", "topbar"):
-            c_err = _validate_overlay_html(
-                entry.read_text(encoding="utf-8", errors="replace"), rel
-            )
+            # Served as utf-8, but a browser follows a UTF-16 byte-order mark over
+            # that label, so the denylist reads the file the way the frame will.
+            raw = entry.read_bytes()
+            codec = "utf-16" if raw[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE) else "utf-8"
+            c_err = _validate_overlay_html(raw.decode(codec, errors="replace"), rel)
             if c_err:
                 return None, c_err
         elif category == "persona":
