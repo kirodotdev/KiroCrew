@@ -6799,6 +6799,139 @@ progress and completed shard timings; measurements from item-split runs do not
 establish the balance of file shards. Fix measured test outliers rather than
 assuming a duration file changes this partition.
 
+## Real-machine verification
+
+A pull request has passed only when a real machine shows three things: the bug is
+real, the fix fixes it, and the machine is gone afterwards. Unit tests and a green
+CI run are necessary, not sufficient: they run the code the author thought to test,
+in the environment CI happens to have. Every PR that changes what runs (product code,
+tests, test tooling, scripts) carries a `## Real-machine verification` section in its
+body. A change that runs nothing (docs, comments, the PR template) writes
+`N/A -- <what in the diff runs nothing>` there. A body without the section has not
+passed review.
+
+### The loop
+
+1. **Get a machine** (below). Note its OS, version, architecture, instance type or
+   model, CPU count and memory.
+2. **Reproduce on the base first.** Check out `origin/main` (the PR's base sha) on the
+   machine and trigger the bug with one command. Record the command and its output.
+   A flaky test is reproduced the way *Proving a determinism fix* says: the forced
+   condition red on the base, plus the repeats; give the command and the counts.
+   **A bug you cannot reproduce is not a confirmed bug.** Keep diagnosing (CI history,
+   logs, the forced condition) before you write a fix, and say in the PR what you could
+   and could not reproduce. For a feature, the base run shows the missing behaviour.
+3. **Open the PR.**
+4. **While CI runs, verify the PR head** on the same machine with the same command. A
+   flaky fix shows the forced condition green on the head and the same repeats.
+   Re-verify when a later push changes what runs.
+5. **Clean up** (below) and record the result.
+6. **Write the section**:
+
+   ```markdown
+   ## Real-machine verification
+
+   Machine: EC2 m7i.xlarge, Ubuntu 24.04 x86_64, 4 vCPU / 16 GiB (or: author's MacBook, macOS 15.1 arm64)
+   Before (main <sha12>): `<command>` -> <the failing output, excerpted>
+   After (head <sha12>): `<command>` -> <the passing output>
+   Cleanup: instance terminated, security group deleted, no key pair, no volumes left (describe output empty)
+   ```
+
+### Which machine
+
+| PR | Machine |
+|---|---|
+| A maintainer's PR | An EC2 instance in the maintainer's own AWS account, set up as below |
+| An outside contributor's PR | A maintainer asks, on the PR, for a role in the contributor's AWS account to launch the verification machine; best is Linux, macOS and Windows, at least Linux |
+| No machine available | The author reproduces on their own computer and pastes the commands and outputs, before and after, into the section |
+
+Match the machine to the change: a Linux test fix runs on Linux, a Windows path fix
+on Windows. Linux x86_64 is the floor for any change that runs on every OS. EC2 macOS
+needs a Dedicated Host with a 24-hour minimum allocation, so a macOS-only change is
+usually verified on the author's own Mac. Windows uses the
+`/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base` image, and its
+self-terminating user data is PowerShell, not `/bin/sh`:
+`--user-data '<powershell>shutdown /s /t 14400</powershell>'`.
+
+### Setting up an EC2 verification machine
+
+The machine is private, short-lived, tagged and capped. Every one of these holds:
+
+- **No inbound access.** A security group of its own with **no ingress rules**; you
+  connect through SSM Session Manager (`aws ssm start-session --target <id>`). If SSH is
+  unavoidable, one ingress rule for port 22 from your own `/32`, never `0.0.0.0/0`,
+  and a key pair made for this machine. Nothing the tests start is published: a
+  server under test binds `127.0.0.1`, and you reach it through the SSM session or an
+  SSH local port-forward.
+- **Least privilege.** The instance profile allows SSM only
+  (`AmazonSSMManagedInstanceCore`). The machine holds no other credentials.
+- **Self-terminating.** `--instance-initiated-shutdown-behavior terminate`, and user
+  data that shuts the machine down after 4 hours (`shutdown -h +240` on Linux, the
+  PowerShell line above on Windows), so a forgotten machine dies within 4 hours.
+- **Tagged**: `Purpose=kc-pr-verify`, `Pr=<n>`, `Owner=<you>`, `ExpiresAt=<ISO time>`,
+  on the instance and its volumes, so cleanup finds everything by tag.
+- **Capped spend.** Pick the smallest type that matches CI (4 vCPU / 16 GiB for a
+  test run), use a larger one only for a full-suite run, and stop at the 4-hour cap.
+  Record the hours and the on-demand cost in the section.
+- **IMDSv2 only** (`HttpTokens=required`).
+
+```bash
+TAG=kc-pr-verify; PR=<n>; OWNER=<you>
+END=$(python3 -c "import datetime as d; print((d.datetime.now(d.timezone.utc) + d.timedelta(hours=4)).strftime('%Y-%m-%dT%H:%MZ'))")
+SG=$(aws ec2 create-security-group --group-name "$TAG-$PR" \
+  --description "Kiro Crew PR $PR verification, no ingress" --vpc-id "$VPC" \
+  --query GroupId --output text)
+ID=$(aws ec2 run-instances --instance-type m7i.xlarge \
+  --image-id resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
+  --subnet-id "$SUBNET" --security-group-ids "$SG" \
+  --iam-instance-profile Name="$SSM_ONLY_PROFILE" \
+  --metadata-options HttpTokens=required \
+  --instance-initiated-shutdown-behavior terminate \
+  --user-data $'#!/bin/sh\nshutdown -h +240' \
+  --tag-specifications \
+    "ResourceType=instance,Tags=[{Key=Purpose,Value=$TAG},{Key=Pr,Value=$PR},{Key=Owner,Value=$OWNER},{Key=ExpiresAt,Value=$END}]" \
+    "ResourceType=volume,Tags=[{Key=Purpose,Value=$TAG},{Key=Pr,Value=$PR},{Key=Owner,Value=$OWNER},{Key=ExpiresAt,Value=$END}]" \
+  --query 'Instances[0].InstanceId' --output text)
+```
+
+Prefer a private subnet with a NAT gateway or SSM endpoints. A public IP is acceptable
+only for outbound traffic, with the security group still admitting nothing.
+
+### Cleaning up
+
+```bash
+aws ec2 terminate-instances --instance-ids "$ID"
+aws ec2 wait instance-terminated --instance-ids "$ID"
+aws ec2 delete-security-group --group-id "$SG"
+# Both must print []:
+aws ec2 describe-instances --filters Name=tag:Pr,Values="$PR" Name=tag:Purpose,Values="$TAG" \
+  Name=instance-state-name,Values=pending,running,stopping,stopped \
+  --query 'Reservations[].Instances[].InstanceId'
+aws ec2 describe-volumes --filters Name=tag:Pr,Values="$PR" Name=tag:Purpose,Values="$TAG" \
+  --query 'Volumes[].VolumeId'
+```
+
+Delete any key pair you made (`aws ec2 delete-key-pair`) and its local file. Paste the
+two empty results into the section. Delete only resources you created for this PR.
+
+### An outside contributor's account
+
+- Ask for a **role**, never for access keys: an IAM role in the contributor's account
+  whose trust policy names the maintainer's account and an `ExternalId`, limited to
+  launching, tagging, describing and terminating EC2 instances, creating and deleting
+  security groups, starting SSM sessions, and `iam:PassRole` on one SSM-only instance
+  profile role the contributor creates, in one region, with a maximum session of 1 hour.
+  The role ARN can be posted on the PR; it is not a secret.
+- The account is used **only to verify this PR**, and the contributor pays for the
+  machine, so keep it to the 4-hour cap and the smallest type. Every machine and
+  security group made in it is deleted when verification ends, the PR says so, and the
+  contributor then deletes the role.
+- **Credentials never enter a file, commit, PR, comment, log or chat.** Role sessions
+  stay in the shell's environment and expire. If a contributor posts a key anywhere,
+  do not use it: tell them to deactivate and rotate it.
+- When a contributor cannot provide an account, they verify on their own machine and
+  paste the commands and outputs, before and after, into the section.
+
 ## Exploratory Testing via Manual Command Execution
 
 For integration issues involving external processes (kiro-cli, MCP servers, build

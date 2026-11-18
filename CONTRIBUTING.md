@@ -374,20 +374,28 @@ git push --force-with-lease origin <feature-branch>
    triage scan is running (it is paused until then). No issue yet? Open one
    and let it be tiered first -- see
    [Reporting Bugs and Requesting Features](#reporting-bugs-and-requesting-features).
-4. **Make your change** and add tests (new functions/components should be tested).
-5. **Run the [gate before you commit](AGENTS.md#the-gate-before-you-commit)**
+4. **Reproduce it on a real machine first.** Show the bug on `main`, on a real
+   machine, with one command, before you write the fix; a bug nobody can reproduce
+   is not confirmed yet. After the PR opens, run the same command on your branch on
+   the same machine. Use your own computer, or an AWS account: a maintainer may ask
+   you on the PR for a role in your account to launch a short-lived verification
+   machine (never access keys). Paste the commands and outputs, before and after,
+   into the PR's `## Real-machine verification` section; see
+   [Real-machine verification](docs/system-specs/common/testing-conventions.md#real-machine-verification).
+5. **Make your change** and add tests (new functions/components should be tested).
+6. **Run the [gate before you commit](AGENTS.md#the-gate-before-you-commit)**
    before opening a PR; its test step is:
    ```bash
    python3 scripts/local-gate.py
    ```
-6. **Commit** using [Conventional Commits](https://www.conventionalcommits.org/)
+7. **Commit** using [Conventional Commits](https://www.conventionalcommits.org/)
    (see below), push your branch, and open a **Pull Request against `main`**.
-7. **Fill the PR template.** Keep every heading of
+8. **Fill the PR template.** Keep every heading of
    [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) and fill the
    **Goal:** line under Problem / Motivation. The `pr-hygiene` check fails a body
    that is missing them, and a PR with more than two commits; see the
    [pre-gate rules](docs/ci/ci-and-reviews.md#code-reviewyml-the-deterministic-pre-gate).
-8. A maintainer will review. Address feedback by amending or squashing so the
+9. A maintainer will review. Address feedback by amending or squashing so the
    branch stays within two commits, then force-push with `--force-with-lease`.
 
 Two things are worth knowing before you start something large.
