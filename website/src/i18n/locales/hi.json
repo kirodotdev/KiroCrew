@@ -10765,7 +10765,6 @@
     "crewMode": {
       "chip_off": "Conductor mode",
       "chip_hint_off": "Conductor mode चालू करो: हर काम अपनी अलग चैट में चलता है और यहीं नतीजा बताता है।",
-      "chip_hint_on": "Conductor mode बंद करो। पहला मैसेज भेजने तक ऐसा कर सकते हो।",
       "chip_hint_busy": "जवाब के बाद उपलब्ध।",
       "switching_on": "Conductor mode चालू किया जा रहा है…",
       "switching_off": "Conductor mode बंद किया जा रहा है…",
@@ -10779,7 +10778,7 @@
       "flow_board": "बोर्ड",
       "flow_needs_you": "तुम्हारी ज़रूरत",
       "eyebrow": "Conductor mode",
-      "composer_chip_label": "इस चैट के लिए Conductor mode चालू है",
+      "composer_chip_label": "यह चैट Conductor mode में चल रहा है",
       "back_to_main_chat": "मुख्य चैट पर लौटो",
       "parent_row_hint": "इसके एक क्रू सदस्य को दिखाया जा रहा है",
       "steer_too_long": "{{name}} को संदेश अधिकतम {{max}} अक्षरों का हो सकता है। भेजने के लिए इसे छोटा करो।",

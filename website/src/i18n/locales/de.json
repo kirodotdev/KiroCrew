@@ -10765,7 +10765,6 @@
     "crewMode": {
       "chip_off": "Conductor mode",
       "chip_hint_off": "Conductor mode einschalten: Jede Aufgabe läuft in einem eigenen Chat und meldet sich hier zurück.",
-      "chip_hint_on": "Conductor mode ausschalten. Das geht, bis du deine erste Nachricht sendest.",
       "chip_hint_busy": "Verfügbar nach der Antwort.",
       "switching_on": "Conductor mode wird eingeschaltet…",
       "switching_off": "Conductor mode wird ausgeschaltet…",
@@ -10779,7 +10778,7 @@
       "flow_board": "Board",
       "flow_needs_you": "Braucht dich",
       "eyebrow": "Conductor mode",
-      "composer_chip_label": "Conductor mode ist für diesen Chat an",
+      "composer_chip_label": "Dieser Chat läuft im Conductor mode",
       "back_to_main_chat": "Zurück zum Hauptchat",
       "parent_row_hint": "Zeigt eines seiner Crew-Mitglieder",
       "steer_too_long": "Eine Nachricht an {{name}} darf höchstens {{max}} Zeichen lang sein. Kürze sie zum Senden.",
