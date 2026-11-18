@@ -27,6 +27,7 @@ def _turn(approval_mode: str, context_builder=None) -> handler._SlackTurn:
         "approval_mode": approval_mode,
         "context_builder": context_builder,
         "session_key": "slack:1.2",
+        "user_id": "U1",
         "_agent": "zxc",
         "answer": MagicMock(
             accumulated="",
@@ -77,6 +78,7 @@ async def test_every_auto_rung_asks_for_a_held_call_and_approves_the_rest(monkey
     if held:
         client.approve_tool.assert_not_awaited()
         prompt.assert_awaited_once()
+        assert prompt.await_args.kwargs["requester"] == "U1"  # the prompt names its asker
     else:
         client.approve_tool.assert_awaited_once_with("r1")
         prompt.assert_not_awaited()

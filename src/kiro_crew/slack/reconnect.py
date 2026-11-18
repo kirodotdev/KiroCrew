@@ -384,6 +384,11 @@ def _hoist(orch: GatewayOrchestrator, creds: dict[str, str]) -> None:
     # previous owner authorized.
     slack_handler.set_owner_id(orch._owner_id)
     slack_handler.set_allowed_users(set(orch._allowed_users))
+    # Shared users (slack.shared_access) were confirmed by the previous bot, maybe
+    # in another workspace: none stands until the new client confirms them again.
+    from kiro_crew.slack import shared_access
+
+    shared_access.install(None)
     if orch.dashboard_state is not None:
         # Owner notices and dashboard-sent DMs address this owner.
         orch.dashboard_state.owner_id = orch._owner_id
