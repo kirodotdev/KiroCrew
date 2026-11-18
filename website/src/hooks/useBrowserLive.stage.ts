@@ -4,8 +4,8 @@
  * The chat card is small on purpose. Expand (and a finished card's Replay)
  * moves the picture to one big view: the side panel's Preview tab, in its
  * "Agent browser" mode, on a page whose host can open the side panel (the chat
- * page registers itself with `registerBrowserStageHost`). With no host (the
- * app-sdk embed, the Members page) or on a phone, the same view opens as a
+ * page and a Bot's page register themselves with `registerBrowserStageHost`).
+ * With no host (the app-sdk embed) or on a phone, the same view opens as a
  * full-screen sheet instead (`BrowserLiveSheet`).
  *
  * One stage per session, held here as a module store for the same reason the
@@ -70,6 +70,16 @@ class BrowserStageStore {
     return sessionKey ? this.stages.get(sessionKey) ?? null : null
   }
 
+  /** The side-panel stage opened last among `keys`, or null. */
+  newestPanel(keys: readonly string[]): BrowserStage | null {
+    let best: BrowserStage | null = null
+    for (const k of keys) {
+      const s = this.stages.get(k)
+      if (s?.surface === 'panel' && (!best || s.nonce > best.nonce)) best = s
+    }
+    return best
+  }
+
   hasHost(): boolean { return this.hosts.length > 0 }
 
   /** The chat page registers here while mounted; the newest host wins. */
@@ -132,6 +142,15 @@ export function useBrowserStage(sessionKey: string | null): BrowserStage | null 
   return useSyncExternalStore(
     browserStageStore.subscribe,
     () => browserStageStore.get(sessionKey),
+    () => null,
+  )
+}
+
+/** The side-panel stage the Preview tab shows when it serves several sessions. */
+export function usePanelBrowserStage(keys: readonly string[]): BrowserStage | null {
+  return useSyncExternalStore(
+    browserStageStore.subscribe,
+    () => browserStageStore.newestPanel(keys),
     () => null,
   )
 }
