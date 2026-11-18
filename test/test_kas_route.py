@@ -516,6 +516,34 @@ class TestHarnessRoute:
         )
 
     @pytest.mark.asyncio
+    async def test_a_runtime_keeps_its_own_route_after_another_chat_spawns(
+        self, tmp_path, switch_open
+    ):
+        """The route a runtime's sign-in message names is the one ITS spawn
+        took, not the process-wide last spawn, which a second chat moves."""
+        from kiro_crew.acp.runtime_class import AcpRuntime
+
+        installed = _installed(tmp_path)
+        harness = KasHarness()
+        runtime = object.__new__(AcpRuntime)
+        # Before any spawn, and before the runtime resolved a harness: no route.
+        assert runtime.kas_spawn_route is None
+        runtime._harness_resolved = harness
+        assert runtime.kas_spawn_route is None
+        with (
+            patch("kiro_crew.acp.harness.kas._bundle_route_selected", return_value=False),
+            patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", _no_bin),
+            patch.object(kas_bundle, "installed_bundle", return_value=installed),
+        ):
+            await harness.resolve_spawn(_ctx(tmp_path))
+        own = kas_route.KasRoute(bundle=True, reason=kas_route.REASON_NO_KIRO_CLI)
+        # Another chat's engine spawns on the relay after this one.
+        kas_route.note_spawn_route(kas_route.RELAY)
+        assert kas_route.last_spawn_route() == kas_route.RELAY
+        assert harness.spawn_route == own
+        assert runtime.kas_spawn_route == own
+
+    @pytest.mark.asyncio
     async def test_a_signed_out_launcher_with_a_vault_sign_in_spawns_crews_own_engine(
         self, tmp_path, switch_open, monkeypatch
     ):
@@ -628,9 +656,12 @@ class TestHarnessRoute:
             patch("kiro_crew.acp.harness.kas.vault_holds_identity_off_loop", return_value=False),
             patch("kiro_crew.acp.harness.kas.installed_kiro_cli_version", return_value=None),
         ):
-            plan = await KasHarness().resolve_spawn(_ctx(tmp_path, environ))
+            harness = KasHarness()
+            plan = await harness.resolve_spawn(_ctx(tmp_path, environ))
         assert plan.argv[0] == "/opt/kiro/kiro-cli"
         assert kas_route.last_spawn_route().reason == kas_route.REASON_KIRO_CLI_LAUNCHER
+        # The relay arm records the same route on the harness that spawned it.
+        assert harness.spawn_route == kas_route.last_spawn_route()
         text = host_auth.signed_out_message("kas", {"PATH": "/usr/bin"}, "linux")
         assert "`kiro-cli login`" in text
         assert "Kiro sign-in" not in text

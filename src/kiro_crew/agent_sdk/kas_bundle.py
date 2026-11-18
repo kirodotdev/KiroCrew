@@ -115,6 +115,7 @@ __all__ = [
     "last_kas_route",
     "last_relay_takes_crew_sign_in",
     "pinned_version",
+    "relay_takes_crew_sign_in",
     "require_loadable_host",
     "sha256_bytes",
     "sha256_file",
@@ -341,9 +342,16 @@ def last_relay_takes_crew_sign_in() -> bool | None:
     pinned to kiro-cli's launcher runs on kiro-cli's sign-in alone unless Crew's
     vault answers it too (``crew_auth``); any other relay takes either sign-in.
     """
-    from kiro_crew.acp.kas_route import REASON_KIRO_CLI_LAUNCHER, last_spawn_route
+    from kiro_crew.acp.kas_route import last_spawn_route
 
-    route = last_spawn_route()
+    return relay_takes_crew_sign_in(last_spawn_route())
+
+
+def relay_takes_crew_sign_in(route: Any) -> bool | None:
+    """:func:`last_relay_takes_crew_sign_in` for one *route*, such as the one a
+    failing runtime's own sign-in sentence names (``host_auth.kas_sentence_route``)."""
+    from kiro_crew.acp.kas_route import REASON_KIRO_CLI_LAUNCHER
+
     if route is None or route.bundle:
         return None
     return route.reason != REASON_KIRO_CLI_LAUNCHER or route.crew_auth
