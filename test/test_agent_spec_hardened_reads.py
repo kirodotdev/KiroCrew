@@ -1144,6 +1144,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("steering_resources", "unknown"),
     ],
     "kiro_crew/cron_script_mcp.py": [("cron_resolve_mcp_server", "cron")],
+    "kiro_crew/knowledge/llm_pool.py": [("knowledge_spec_refusal", "unknown")],
     "kiro_crew/dashboard/agent_admin/agent_detail.py": [
         ("api_agent_detail", "dashboard"),
         ("api_agent_detail", "dashboard"),

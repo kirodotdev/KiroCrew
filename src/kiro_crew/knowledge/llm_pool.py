@@ -223,6 +223,136 @@ class LLMPoolClosed(RuntimeError):
         super().__init__("the LLM pool is shut down")
 
 
+class KnowledgeSpecUnconfirmed(RuntimeError):
+    """The worker's spec could not be confirmed to mount nothing, even after its repair.
+
+    Not a failed item: every chunk would spawn a worker, repair the spec and be
+    refused again, so the ingest fails with this message instead, and the pool
+    refuses further starts for :data:`SPEC_REFUSAL_COOLDOWN_SECS`.
+    """
+
+    code = "knowledge_spec_unconfirmed"
+
+
+#: How long a pool refuses to start a worker after :class:`KnowledgeSpecUnconfirmed`.
+#: A spec that is still wrong after the repair is being rewritten by something
+#: else, so retrying sooner only spawns a process to be refused again.
+SPEC_REFUSAL_COOLDOWN_SECS = 600.0
+
+#: The top-level keys the zero-tool guard (``acp.client_mcp_array.spec_is_toolless``)
+#: judges, in the order a refusal names them.
+_ZERO_TOOL_KEYS = (
+    "tools",
+    "allowedTools",
+    "mcpServers",
+    "hooks",
+    "permissions",
+    "toolsSettings",
+    "includePowers",
+)
+
+
+def _mounting_keys(spec: object) -> list[str]:
+    """The top-level keys that make *spec* mount something; names only, never values.
+
+    For the refusal message only: the guard already refused the spec, and this
+    names what it saw. A key counts when it is set to anything but an empty list
+    or object (``False`` for ``includePowers``); ``tools`` and ``includeMcpJson``
+    also count when they are not the exact values a zero-tool spec carries.
+    """
+    if not isinstance(spec, dict):
+        return ["(not a JSON object)"]
+    found = []
+    for key in _ZERO_TOOL_KEYS:
+        if key not in spec:
+            if key == "tools":
+                found.append("tools (missing)")
+            continue
+        value = spec[key]
+        if key == "includePowers":
+            if value is not False:
+                found.append(key)
+        elif not (isinstance(value, (list, dict)) and not value):
+            found.append(key)
+    if spec.get("includeMcpJson") is not False:
+        found.append("includeMcpJson")
+    return found
+
+
+def _unconfirmed_spec_detail(client: Any) -> str:
+    """Which file kiro-cli loaded for the worker, and what it mounts; names and keys only.
+
+    Read after the refusal, for the message only, from the branch the confirmation
+    took. With a prepared projection kiro-cli loaded the published skill-view alias,
+    so the view and that alias file are named and the authored spec is not: it was
+    not loaded, and rewriting it cannot change the answer. Without one kiro-cli
+    loaded the spec the declared-name resolver returns (``session_agent_spec_path``,
+    pins applied), which is named, or its ambiguity or pin error; a project spec of
+    the same name is refused before the spawn (``acp.managed_agent_shadow``).
+    Never raises.
+    """
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.agent_discovery import _read_agent_spec
+    from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME
+
+    parts: list[str] = []
+
+    def judge(spec: object, label: str) -> bool:
+        if spec is None:
+            parts.append(f"{label} is missing or unreadable")
+            return False
+        keys = _mounting_keys(spec)
+        if keys:
+            parts.append(f"{label} sets {', '.join(keys)}")
+            return False
+        return True
+
+    def read(path: Any) -> object:
+        return _read_agent_spec(path, operation="knowledge_spec_refusal", source="unknown")
+
+    try:
+        agents_dir = agent_mod.kiro_agents_dir_path()
+        installed = agents_dir / KNOWLEDGE_AGENT_FILENAME
+        projection = getattr(client, "_native_skill_projection", None)
+        if projection is not None:
+            view_ok = judge(
+                projection.specs.get(AGENT_NAME),
+                f"the skill view Kiro Crew prepared from {installed}",
+            )
+            alias = projection.aliases.get(AGENT_NAME)
+            if not alias:
+                parts.append("the projection published no skill-view alias for it")
+            else:
+                path = agents_dir / f"{alias}.json"
+                if not judge(read(path), f"the published skill-view alias {path}") and view_ok:
+                    parts.append(
+                        "the view Kiro Crew prepared mounts nothing, so that file was "
+                        "rewritten after Kiro Crew published it, most likely by a tool that "
+                        "rewrites the spec files in that directory when kiro-cli starts"
+                    )
+        else:
+            # The file the confirmation judged: the declared-name resolver, with
+            # ``agent.spec_pins`` applied, which may not be the installed file.
+            try:
+                resolved = agent_mod.session_agent_spec_path(AGENT_NAME)
+            except ValueError as exc:
+                parts.append(str(exc))
+            else:
+                if resolved is None:
+                    parts.append(f"no readable spec resolves to {AGENT_NAME!r}")
+                else:
+                    label = "the installed spec" if resolved == installed else "the spec"
+                    judge(read(resolved), f"{label} {resolved}")
+    except Exception:
+        logger.debug("AcpWorker: could not describe the unconfirmed spec", exc_info=True)
+    if not parts:
+        return (
+            "no file mounts anything when read again, so another tool rewrote it while "
+            "kiro-cli started"
+        )
+    return "; ".join(parts)
+
+
 def _kiro_fallback(reason: str) -> str:
     """``ACP_BACKEND_KIRO`` as the pool's FALLBACK harness: ``oss`` only.
 
@@ -645,12 +775,14 @@ class AcpWorker(Worker):
                 await self._client.shutdown()
             except Exception:
                 logger.debug("AcpWorker: unconfirmed-spec client shutdown failed", exc_info=True)
-            self._client = None
-            raise RuntimeError(
-                f"knowledge agent {AGENT_NAME!r} could not be confirmed to declare a "
-                "zero-tool spec (a project-level spec may shadow the installed one, "
-                "or the installed one could not be read or restored); refusing to run "
-                "the knowledge pool without a confirmed tool ban"
+            client, self._client = self._client, None
+            detail = await asyncio.to_thread(_unconfirmed_spec_detail, client)
+            raise KnowledgeSpecUnconfirmed(
+                f"{KnowledgeSpecUnconfirmed.code}: knowledge agent {AGENT_NAME!r} could not "
+                "be confirmed to declare a zero-tool spec after Kiro Crew's repair "
+                f"({detail}); refusing to run the knowledge pool without a confirmed tool "
+                "ban. Remove or rename the file named here, or stop the tool that rewrites "
+                f"it; the pool tries again after {int(SPEC_REFUSAL_COOLDOWN_SECS)} seconds"
             )
         await self._apply_effort()
         # Shield the live worker PID from the periodic orphan sweep for as long
@@ -1167,6 +1299,11 @@ class LLMPool:
     Dead workers are replaced transparently on acquire.
     """
 
+    # When and why a worker last failed its zero-tool confirmation; while it is
+    # fresh, ``_create_worker`` refuses without spawning (SPEC_REFUSAL_COOLDOWN_SECS).
+    # Class-level so a pool built without ``__init__`` still has it.
+    _spec_refusal: Optional[tuple[float, KnowledgeSpecUnconfirmed]] = None
+
     def __init__(
         self,
         pool_size: int = DEFAULT_POOL_SIZE,
@@ -1359,6 +1496,11 @@ class LLMPool:
         Off the loop because the read stats and may re-parse ``config.json``,
         the same reason ``start`` offloads its own read.
         """
+        refused = self._spec_refusal
+        if refused is not None:
+            if time.monotonic() - refused[0] < SPEC_REFUSAL_COOLDOWN_SECS:
+                raise KnowledgeSpecUnconfirmed(str(refused[1]))
+            self._spec_refusal = None
         sandbox_mode = await asyncio.to_thread(_get_sandbox_mode)
         if is_claude_code(self._provider_type):
             worker: Worker = CCWorker(sandbox_mode=sandbox_mode)
@@ -1368,7 +1510,13 @@ class LLMPool:
                 effort=self._effort,
                 acp_backend=await asyncio.to_thread(_get_acp_backend),
             )
-        await worker.start()
+        try:
+            await worker.start()
+        except KnowledgeSpecUnconfirmed as exc:
+            # Logged once per refusal window; the starts it then refuses are silent.
+            logger.warning("LLMPool: %s", exc)
+            self._spec_refusal = (time.monotonic(), exc)
+            raise
         return worker
 
     async def acquire(self) -> tuple[int, Worker]:
@@ -1579,7 +1727,7 @@ class LLMPool:
         async def _do_one(idx: int, prompt: str) -> None:
             try:
                 results[idx] = await self.send(prompt, timeout=timeout)
-            except (KnowledgeHarnessUnavailable, LLMPoolClosed):
+            except (KnowledgeHarnessUnavailable, KnowledgeSpecUnconfirmed, LLMPoolClosed):
                 # Not a failed item: no prompt in the batch can run, and an empty
                 # reply would let the ingest commit a document with no extraction.
                 raise
