@@ -140,6 +140,15 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "the shared order.",
     ),
     (
+        "A crew's work-item copies read by a hub in one batch",
+        "dashboard/handlers/remote_work_items_pull.py",
+        "The same worker-owned fields and event tails as the per-slot read, for every "
+        "item one hub conductor holds on this crew, on their way to the hub over its "
+        "proxy (remote dispatch, a Feature Preview). It runs the Crew page's "
+        "`_redact_deep`, which runs `redact_via_context`, so both scanners run in the "
+        "shared order.",
+    ),
+    (
         "Conductor work items shown on the Crew page",
         "dashboard/handlers/work_ledger_board.py",
         "Every string in one conductor's work-item board on its way to a browser: "

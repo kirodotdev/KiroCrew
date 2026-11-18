@@ -265,6 +265,14 @@ How (a) works:
   gate read a remote report as they read a local one (open question 1). A board
   with only local items makes no peer call. Each pull is cut off at 10 s and
   delays only its own conductor's tick.
+- **One call per crew per tick.** The pull reads each crew once, with
+  `POST api/chat/work-items/pull` (owner token, read only): per item the hub
+  sends its cursor, the peer event ids the crew log holds as filed on that
+  binding, the newest filed peer stamp and a digest of its worker fields, so the
+  peer stores nothing. The reply gives each item's slot `live` / `running` /
+  `pending_approval` / `trust_active`, and the copy with its events from the
+  cursor on only when something changed. A crew that does not serve the route
+  is read per item, with the slot list and `GET .../work-item`, as before.
 - **`decide` forwards.** `work_ledger_record action=decide` on a remote item
   writes locally, then PATCHes the peer copy. A failed PATCH is reported in the
   tool reply; the local write stands and the next `decide` carries it again.
