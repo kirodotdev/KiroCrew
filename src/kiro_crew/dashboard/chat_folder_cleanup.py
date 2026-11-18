@@ -21,10 +21,12 @@ A folder is removable when nothing that still runs would notice it going:
   are filed by looking that name up, and only a settings save creates the
   folder again, so deleting it would leave every later channel session
   unfiled.
-* it is not a mate's home folder or a folder inside one. Those belong to the
-  mate, and only deleting the mate releases them (``mate_folders``).
+* it is not a Bot's home folder (``mate_folders``). A folder INSIDE a Bot's
+  home goes once it holds no live and no archived session, and a setting on
+  it does not keep it: only the Bot writes there, so the person never chose
+  that setting.
 
-Archived sessions do not keep a folder. Deleting the folder leaves them in
+Archived sessions do not keep a folder, except one inside a Bot's home. Deleting the folder leaves them in
 Older Sessions, unfiled, the same as the single-folder delete does: a
 ``folder_id`` that names no folder is ignored when the history is read.
 
@@ -38,7 +40,8 @@ Picking the folder stands in for the top-level opt-in and for the setting rule,
 so a configured folder in that tree goes too; every other rule above still
 keeps a folder. Its dry run previews the tree as it will be once the sessions
 in it are closed, so it does not count them; the delete counts every session
-still live.
+still live. A root inside a Bot's home removes nothing: closing that tree's
+sessions would end the Bot's work, so every folder there stays.
 """
 
 from __future__ import annotations
@@ -63,7 +66,8 @@ from kiro_crew.dashboard.chat_folders import (
     _refuse_unattributable_caller,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
-from kiro_crew.dashboard.mate_folders import mate_home_subtree_ids
+from kiro_crew.dashboard.mate_folders import is_mate_home, mate_home_subtree_ids
+from kiro_crew.dashboard.mate_subfolder_delete import is_person_browser
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 from kiro_crew.executors import discovery_executor
@@ -203,13 +207,17 @@ def removable_folder_ids(
     include_top_level: bool,
     kept_names: Iterable[str] = (),
     root: str = "",
+    archived: Iterable[str] = (),
 ) -> list[str]:
     """Ids of folders with no occupied folder or kept folder at or below them.
 
     *occupied* is the set of folder ids a live session is filed in.
+    *archived* is the set of folder ids an archived session is filed in. It
+    keeps only a folder inside a Bot's home, so the cleanup answers as the
+    person's single delete of such a folder does; any other folder still goes.
     *kept_names* are folder names a channel files into (see
     :func:`channel_folder_names`); a folder with one of them keeps itself, and
-    so does a mate's home folder and every folder inside one. A folder is
+    so does a Bot's home folder. A folder is
     removable when it is not occupied, does not keep itself, and every child is
     removable too, so a whole empty branch goes at once and a branch with one
     live session somewhere inside keeps every ancestor of that session.
@@ -236,9 +244,14 @@ def removable_folder_ids(
         if str(folder.get("id") or "") in duplicated:
             occupied_ids.add(str(folder.get("id")))
             occupied_ids.add(str(folder.get("parent_id") or ""))
+    # A Bot's home keeps itself, empty or not. A folder inside one goes when
+    # empty, and the setting rule skips it, because a setting there was the
+    # Bot's choice, not the person's. A ``project_dir`` still keeps it: the
+    # next worker filed there runs in that repository, so a bulk cleanup must
+    # not move the Bot's work out of it. An archived session keeps it too.
+    in_bot_home = mate_home_subtree_ids(folders)
+    occupied_ids.update(str(fid) for fid in archived if str(fid) in in_bot_home)
     occupied_ids.discard("")
-    # A mate's home and its subtree keep themselves, empty or not.
-    mate_owned = mate_home_subtree_ids(folders)
     by_id = {str(f.get("id") or ""): f for f in folders if f.get("id")}
     children: dict[str, list[str]] = {}
     for fid, folder in by_id.items():
@@ -258,8 +271,9 @@ def removable_folder_ids(
         folder = by_id[fid]
         ok = (
             fid not in occupied_ids
-            and fid not in mate_owned
-            and not _keeps_itself(folder, kept, settings=not root)
+            and not is_mate_home(folder)
+            and not _keeps_itself(folder, kept, settings=not root and fid not in in_bot_home)
+            and not (fid in in_bot_home and folder.get("project_dir"))
         )
         for child in children.get(fid, []):
             # Evaluate every child even after one fails, so each child gets its
@@ -321,6 +335,15 @@ def confirmed_subset(
                 keep.discard(fid)
                 changed = True
     return [fid for fid in picked if fid in keep]
+
+
+def _closed_bot_homes(folders: list[dict[str, Any]], open_: bool, root: str = "") -> set[str]:
+    """Every folder in a Bot's home, as occupied, unless *open_* (the person's
+    browser). A *root* inside a Bot's home closes them too: that scope closes
+    the tree's sessions and drops the setting rule, which would end the Bot's
+    live work and remove a sub-folder that carries a ``project_dir``."""
+    in_homes = mate_home_subtree_ids(folders)
+    return in_homes if not open_ or (root and root in in_homes) else set()
 
 
 def _live_folder_ids(state: DashboardState) -> set[str]:
@@ -420,6 +443,8 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
             {"error": "root must be a folder id", "code": "invalid_root"}, status=400
         )
     source, caller = _audit_origin(request)
+    # Any caller but the person's browser keeps every folder in a Bot's home.
+    bot_subfolders_open = is_person_browser("", request)
     previewed = body.get("ids")
     if not dry_run and (
         not isinstance(previewed, list) or not all(isinstance(fid, str) for fid in previewed)
@@ -466,10 +491,14 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
             # The default folder is kept the way a job's folder is: as occupied.
             ids = removable_folder_ids(
                 folders,
-                live | job_folders | default_ids,
+                live
+                | job_folders
+                | default_ids
+                | _closed_bot_homes(folders, bot_subfolders_open, root),
                 include_top_level=include_top_level,
                 kept_names=kept_names,
                 root=root,
+                archived=[fid for fid, n in history.items() if n],
             )
             if not root or root in ids:
                 return ids, ""
@@ -504,6 +533,9 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
         # the lock (``_persist_holding_folder``), so each either finished first --
         # and is seen here -- or runs after and finds the folder gone.
         jobs, default_ids, referents["names"] = await _referents()
+        loop = asyncio.get_running_loop()
+        history = await loop.run_in_executor(discovery_executor(), _folder_history_counts, state)
+        referents["archived"] = {fid for fid, n in history.items() if n}
         # The default folder is kept the way a job's folder is: as occupied.
         referents["jobs"] = jobs | default_ids
 
@@ -513,10 +545,13 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
         # only previewed folders go, so one emptied after the preview stays.
         removable = removable_folder_ids(
             folders,
-            _live_folder_ids(state) | referents["jobs"],
+            _live_folder_ids(state)
+            | referents["jobs"]
+            | _closed_bot_homes(folders, bot_subfolders_open, root),
             include_top_level=include_top_level,
             kept_names=referents["names"],
             root=root,
+            archived=referents["archived"],
         )
         ids = confirmed_subset(folders, removable, previewed or [])
         if not ids:

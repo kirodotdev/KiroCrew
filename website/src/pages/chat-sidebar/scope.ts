@@ -447,6 +447,10 @@ export interface SidebarScope {
   // From `useColumnMatches`
   columnMatches: ReturnType<typeof useColumnMatches>['columnMatches']
 
+  /** Every folder that a live session of the full slot store is filed in,
+   *  including the sessions this list leaves out (`selectFoldersHoldingSessions`). */
+  foldersHoldingSessions: ReadonlySet<string>
+
   // From `useFolderVisibility`
   slotFolders: ReturnType<typeof useFolderVisibility>['slotFolders']
   foldersWithActiveSubtree: ReturnType<typeof useFolderVisibility>['foldersWithActiveSubtree']

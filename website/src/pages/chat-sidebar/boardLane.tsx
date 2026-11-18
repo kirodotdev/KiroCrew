@@ -17,7 +17,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import TagManagerList from '../../components/TagManagerList'
 import { DndActiveProbe, DndDroppable } from '../../components/dnd'
 import { collectFolderSubtreeIds, countWithSubfolders } from '../../utils/folderTree'
-import { isMateManaged } from '../../utils/mateFolders'
+import { isEmptyBotSubfolder, isMateManaged } from '../../utils/mateFolders'
 import type { ChatFolder, ChatTag } from '../../types'
 import { SESSION_LANES } from '../chat/sessionLane'
 import { SessionRowWindowScroller } from '../chat/sessionRowWindow'
@@ -46,7 +46,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     nativeSessionDrag, onMenuCloseAutoFocus, onOpenSlotInNewTab, orderedColumns, popoverPos,
     renameCommit, renderFolderCreateError, renderFolderMenuItems, renderSessionRow, reorderColumnsMutation, reportDndActive,
     revealFlash, rootFolders, setBoardError, setColumnEditId, setDerivedHintCol, setEditName, setEditScope,
-    setEditingId, setFilterSortOpen, setFolderModal, setFolderOfflineNotice, setFoldersShelved, sidebarRows, slotFolders,
+    setEditingId, setFilterSortOpen, setFolderModal, setFolderOfflineNotice, setFoldersShelved, sidebarRows, slotFolders, foldersHoldingSessions,
     startsAutomaticSection, stripEdges, tagById, toggleColumnCollapse, unfiledAboveFolders,
     updateColumnMutation } = shell
   // Does any descendant (direct or nested) of `folderId` contain a slot from `slots`?
@@ -80,6 +80,8 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
     // A mate's folder is managed for the person: open and collapse only. No
     // menu, rename, new chat, drag, or drop -- the list view's rule.
     const mateManaged = isMateManaged(folder, folders)
+    // An empty Bot sub-folder opens a Delete-only menu; the list view's rule.
+    const botDeletable = mateManaged && isEmptyBotSubfolder(folder, folders, foldersHoldingSessions.has(folder.id))
     // Valid "Move folder to" destinations: everything outside this folder's
     // own subtree (cycle guard). One O(1) lookup, computed once per row.
     const subtreeIds = folderSubtrees.get(folder.id) ?? collectFolderSubtreeIds(folders, folder.id)
@@ -160,7 +162,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
         {/* Only the header opens the folder menu; body rows keep their own
          * menus and the rename input keeps its native editing menu. */}
         <ContextMenu>
-          <ContextMenuTrigger asChild disabled={!!forceCollapsed || mateManaged || (editingId === folder.id && editScope === columnId)}>
+          <ContextMenuTrigger asChild disabled={!!forceCollapsed || (mateManaged && !botDeletable) || (editingId === folder.id && editScope === columnId)}>
         {/* Same rule as the tree row: a column copy with no body has nothing to
          *  toggle, so it is not a control - no button role, no tab stop, no
          *  pointer cursor, no expanded state and no handler. It stays draggable,
@@ -235,7 +237,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
           <span className="text-[10px] text-muted shrink-0">{count}</span>
           {/* List-view parity: an empty folder's row keeps its action cluster
             *  visible (see the note in renderFolderHeader). */}
-          {!mateManaged && !(editingId === folder.id && editScope === columnId) && (
+          {(!mateManaged || botDeletable) && !(editingId === folder.id && editScope === columnId) && (
           <span className={`${emptyBody ? '' : 'opacity-0 '}group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible]:opacity-100 has-[[data-state=open]]:opacity-100 transition-opacity flex items-center gap-0.5`}>
             {/* ⋯ menu + a primary "new chat in folder" action, mirroring the
              *  list-view folder header (renderFolderHeader) so board view has
@@ -253,6 +255,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
             {/* Same three-gesture contract as the header New button; the
              *  existing stopPropagation stays so the header click/drag
              *  handlers never see the press. */}
+            {!mateManaged && (
             <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-chat`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px]" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name }))}
               onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, { columnId, inNewTab: onOpenSlotInNewTab ? createTabModeForClick(e) : false }) }}
               onMouseDown={e => { e.stopPropagation(); if (e.button === 1 && onOpenSlotInNewTab) e.preventDefault() }}
@@ -264,7 +267,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
               }) : undefined}
               onKeyDown={e => { e.stopPropagation() }}>
               <MessageSquarePlus size={11} />
-            </button>
+            </button>)}
           </span>
           )}
         </div>

@@ -749,10 +749,22 @@ The home is also closed to everyone else, the person included, refused
 (no rename, move, recolor, project or delete, from anyone), and nothing outside
 the Bot may create a folder or chat in its subtree, file a chat into it or out of it, move a
 folder into it, or edit or delete a folder inside it (`home_owner_of`,
-`refuses_write_into`). Every writer of the folder tree applies this: the shared
+`refuses_write_into`). The one exception is the person's delete of an EMPTY
+folder inside the home, never the home itself (`delete_empty_bot_subfolder`,
+#37434), from the person's browser only: no child folder, no live session and
+no saved cron job filing into it, checked inside the folder-store callback that
+removes the row, and no archived session, counted first; anything else is
+`folder_not_empty` (409). An app or member caller, and any internal request (an
+agent tool call, even in the person's own session), is still `mate_home_locked`.
+The sidebar offers Delete folder on such a folder only while it shows it empty. Every writer of the folder tree applies this: the shared
 create (`create_folder_record`, so the folder scaffold too) refuses it under the
 folder-store lock (`FolderMateHomeLockedError`), the empty-folder cleanup never
-lists a home or a folder inside one (`mate_home_subtree_ids`), `session_fork`
+lists a home, and lists a folder inside one only when it holds no live and no
+archived session and carries no `project_dir` (the next worker filed there
+runs in that repository), without the rest of the setting rule, since only the
+Bot writes settings there, and only to the person's browser and never for a
+`root` scope inside a home; any other caller keeps every folder in
+a home (`removable_folder_ids`, `is_person_browser`), `session_fork`
 and `session_revive` refuse a named folder in another Bot's home
 (`refuse_foreign_home_filing`), a fork that would inherit its parent's folder
 in a Bot's home the forker does not own (the person's Fork, or `session_fork`
