@@ -17,7 +17,7 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-15
+            runner: macos-latest
           - arch: x64
             runner: macos-15-intel
     steps:
