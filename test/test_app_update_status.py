@@ -630,3 +630,20 @@ class TestBothRoutesAnswerTheSame:
         request = make_mocked_request("GET", "/api/apps/nope", match_info={"name": "nope"})
         response = await routes.handle_get_app(request)
         assert response.status == 404
+
+
+class TestKiroSpaceInstall:
+    """A ``market:`` install shares only its name with a catalog row: no claim."""
+
+    def test_the_catalog_does_not_answer_for_a_market_install(self, monkeypatch):
+        _catalog(monkeypatch, [{"name": "demo", "version": "9.0.0"}])
+        record = {"name": "demo", "version": "1.0.0", "source": "market:acme/demo@2"}
+        assert update_status.attach_update("demo", dict(record)).get("update") is None
+        rows = update_status.attach_updates([dict(record), {"name": "other", "version": "1"}])
+        assert "update" not in rows[0]
+        # The same name from the catalog's own source still gets its answer.
+        assert _update("demo", "1.0.0") == {
+            "available": True,
+            "latestVersion": "9.0.0",
+            "checkedAt": FIXED_ISO,
+        }
