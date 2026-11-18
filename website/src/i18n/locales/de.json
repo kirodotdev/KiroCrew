@@ -21674,6 +21674,8 @@
         "plugin": "Session-Manager-Plug-in",
         "plugin_install_page": "Installationsseite für das Session Manager plugin bei AWS öffnen",
         "plugin_missing": "Nicht installiert — wird benötigt, um die Crew ohne offenen SSH-Port zu erreichen.",
+        "plugin_missing_needs_admin": "Für die Installation brauchst du Administratorrechte (sudo) auf dem Computer, auf dem {{productName}} läuft. Wenn du sie nicht hast, bitte einen Administrator, dort das Session Manager plugin von AWS zu installieren, und prüfe dann erneut.",
+        "plugin_missing_no_command": "Installiere es auf dem Computer, auf dem {{productName}} läuft, mit den Schritten von AWS, und prüfe dann erneut.",
         "plugin_ok": "Installiert.",
         "plugin_ownership_command_note": "Führe ihn in einem Terminal auf dem Computer aus, auf dem {{productName}} läuft, mit einem Administratorkonto: sudo fragt nach dem Passwort dieses Kontos. Er ändert nur, wem der Installationsordner des Plugins und die Dateien darin gehören.",
         "plugin_refused_fix_steps": "Wenn du es nicht selbst von AWS installiert hast oder dir nicht sicher bist, installiere es zuerst neu von AWS. Führe dann den Befehl unten aus, damit der Installationsordner root gehört, und prüfe erneut.",

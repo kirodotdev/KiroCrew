@@ -22217,6 +22217,8 @@
         "plugin": "Plugin di Session Manager",
         "plugin_install_page": "Apri la pagina di installazione del Session Manager plugin su AWS",
         "plugin_missing": "Non installato — serve per raggiungere la crew senza aprire alcuna porta SSH.",
+        "plugin_missing_needs_admin": "Per installarlo servono i diritti di amministratore (sudo) sul computer su cui gira {{productName}}. Se non li hai, chiedi a un amministratore di installarvi il Session Manager plugin di AWS, poi verifica di nuovo.",
+        "plugin_missing_no_command": "Installalo sul computer su cui gira {{productName}} seguendo i passaggi di AWS, poi verifica di nuovo.",
         "plugin_ok": "Installato.",
         "plugin_ownership_command_note": "Eseguilo in un terminale sul computer su cui gira {{productName}}, da un account amministratore: sudo chiede la password di quell'account. Cambia solo il proprietario della cartella di installazione del plugin e dei file che contiene.",
         "plugin_refused_fix_steps": "Se non l'hai installato tu da AWS, o non ne sei sicuro, reinstallalo prima da AWS. Poi esegui il comando qui sotto per rendere la cartella di installazione di proprietà di root, e ricontrolla.",

@@ -11592,6 +11592,8 @@
         "plugin": "Session Manager plugin",
         "plugin_install_page": "Open AWS’s Session Manager plugin install page",
         "plugin_missing": "Not installed — needed to reach the crew without opening any SSH port.",
+        "plugin_missing_needs_admin": "Installing it needs admin rights (sudo) on the computer that runs {{productName}}. If you don’t have them, ask an administrator to install AWS’s Session Manager plugin there, then re-check.",
+        "plugin_missing_no_command": "Install it on the computer that runs {{productName}} by following AWS’s steps, then re-check.",
         "plugin_ok": "Installed.",
         "plugin_ownership_command_note": "Run it in a terminal on the computer that runs {{productName}}, from an administrator account: sudo asks for that account’s password. It changes only who owns the plugin’s install folder and the files in it.",
         "plugin_refused_fix_steps": "If you did not install it from AWS yourself, or are not sure, reinstall it from AWS first. Then run the command below to make its install folder root-owned, and re-check.",

@@ -21131,6 +21131,8 @@
         "plugin": "Session Manager 플러그인",
         "plugin_install_page": "AWS의 Session Manager plugin 설치 페이지 열기",
         "plugin_missing": "설치되지 않음 — SSH 포트를 열지 않고 크루에 연결하는 데 필요합니다.",
+        "plugin_missing_needs_admin": "설치하려면 {{productName}}이(가) 실행 중인 컴퓨터의 관리자 권한(sudo)이 필요합니다. 권한이 없으면 관리자에게 그 컴퓨터에 AWS의 Session Manager plugin을 설치해 달라고 요청한 뒤 다시 확인하세요.",
+        "plugin_missing_no_command": "AWS의 안내에 따라 {{productName}}이(가) 실행 중인 컴퓨터에 설치한 뒤 다시 확인하세요.",
         "plugin_ok": "설치되었습니다.",
         "plugin_ownership_command_note": "{{productName}}이(가) 실행 중인 컴퓨터의 터미널에서 관리자 계정으로 실행하세요. sudo가 그 계정의 비밀번호를 묻습니다. 이 명령은 플러그인 설치 폴더와 그 안의 파일의 소유자만 바꿉니다.",
         "plugin_refused_fix_steps": "직접 AWS에서 설치한 것이 아니거나 확실하지 않다면 먼저 AWS에서 다시 설치하세요. 그런 다음 아래 명령을 실행해 설치 폴더의 소유자를 root로 바꾸고 다시 확인하세요.",

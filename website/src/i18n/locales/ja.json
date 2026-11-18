@@ -21131,6 +21131,8 @@
         "plugin": "Session Manager プラグイン",
         "plugin_install_page": "AWS の Session Manager plugin インストールページを開く",
         "plugin_missing": "未インストールです。SSH ポートを開かずにクルーに接続するために必要です。",
+        "plugin_missing_needs_admin": "インストールには、{{productName}} が動いているコンピューターの管理者権限 (sudo) が必要です。権限がない場合は、そこに AWS の Session Manager plugin をインストールするよう管理者に依頼してから、再確認してください。",
+        "plugin_missing_no_command": "AWS の手順に従って、{{productName}} が動いているコンピューターにインストールしてから、再確認してください。",
         "plugin_ok": "インストール済みです。",
         "plugin_ownership_command_note": "{{productName}} が動いているコンピューターのターミナルで、管理者アカウントから実行してください。sudo はそのアカウントのパスワードを求めます。変更されるのは、プラグインのインストールフォルダーとその中のファイルの所有者だけです。",
         "plugin_refused_fix_steps": "ご自身で AWS からインストールしたものでない場合や確信がない場合は、先に AWS から再インストールしてください。そのうえで下のコマンドを実行してインストールフォルダーの所有者を root にし、もう一度確認してください。",

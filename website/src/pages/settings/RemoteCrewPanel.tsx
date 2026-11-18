@@ -92,7 +92,7 @@ import { Trans } from 'react-i18next'
 import { AddInstanceForm } from './InstancesPanel'
 import { RemoteCrewRestartBanner } from './RemoteCrewPanelRestartBanner'
 import { CrewVersionsReadError } from './CrewVersionStatus'
-import { awsCliRefusalCopy, awsCliRefusalReport, credentialHelperMissingSentence, envCredentialsSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
+import { awsCliRefusalCopy, awsCliRefusalReport, credentialHelperMissingSentence, envCredentialsSentence, pluginMissingSteps, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
 import {
   instanceFormFromView,
 } from './InstanceFormFields'
@@ -952,6 +952,7 @@ export function RemoteCrewPanel() {
   // Found but refused is not "not installed": the install command would put the
   // same refused file back, so the plugin row says why it was refused instead.
   const pluginRefusal = preflight ? pluginRefusalCopy(preflight) : null
+  const pluginMissing = preflight ? pluginMissingSteps(preflight) : null
   // The same for an `aws` CLI the gateway found and refused: the credentials row
   // says why, instead of the CLI's "not found" error and its install link.
   const cliRefusal = preflight ? awsCliRefusalCopy(preflight) : null
@@ -1543,7 +1544,7 @@ export function RemoteCrewPanel() {
                   failure={pluginRefusal?.failure}
                   failureDetail={pluginRefusal?.failureDetail}
                   failureReport={pluginRefusal ? pluginRefusalReport(preflight, pluginRefusal) : undefined}
-                  steps={pluginRefusal?.steps}
+                  steps={pluginRefusal?.steps ?? pluginMissing ?? undefined}
                   commandNote={pluginRefusal?.commandNote}
                   command={preflight.session_manager_plugin ? undefined : (preflight.session_manager_plugin_command || undefined)}
                   onCopyCommand={

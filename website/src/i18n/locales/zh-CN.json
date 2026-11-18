@@ -21131,6 +21131,8 @@
         "plugin": "Session Manager plugin",
         "plugin_install_page": "打开 AWS 的 Session Manager plugin 安装页面",
         "plugin_missing": "未安装 — 要在不开放任何 SSH 端口的情况下连接该 Crew，需要它。",
+        "plugin_missing_needs_admin": "安装它需要运行 {{productName}} 的电脑上的管理员权限（sudo）。如果你没有，请让管理员在那台电脑上安装 AWS 的 Session Manager plugin，然后重新检查。",
+        "plugin_missing_no_command": "请按照 AWS 的步骤在运行 {{productName}} 的电脑上安装它，然后重新检查。",
         "plugin_ok": "Installed.",
         "plugin_ownership_command_note": "请在运行 {{productName}} 的电脑上，用管理员账户在终端中运行它：sudo 会要求输入该账户的密码。它只会更改插件安装文件夹及其中文件的所有者。",
         "plugin_refused_fix_steps": "如果它不是你亲自从 AWS 安装的，或你不确定，请先从 AWS 重新安装。然后运行下方的命令，让安装文件夹归 root 所有，再重新检查。",
