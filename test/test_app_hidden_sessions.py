@@ -356,6 +356,69 @@ async def test_a_built_in_worker_mode_needs_no_declaration(tmp_path, monkeypatch
     assert asked == []
 
 
+# ── a hidden chat an app's backend opens (``ctx.chat_slots``) ────────────────
+
+
+@pytest.mark.asyncio
+async def test_chat_slots_opens_a_hidden_chat_stamped_with_its_app(tmp_path, monkeypatch) -> None:
+    """Hidden from the lists, and stamped ``_app`` so app-scoped rules know whose it is.
+
+    While the app may not hide it (disabled, untrusted), the open chat lists again.
+    """
+    from kiro_crew.apps.chat_slot_sdk import ChatSlotSDK
+
+    state = _state(tmp_path, monkeypatch)
+    allowed = {APP}
+    asked: list[str] = []
+
+    def may_hide(app_id):
+        asked.append(app_id)
+        return app_id in allowed
+
+    monkeypatch.setattr(hidden_sessions, "may_hide_sessions", may_hide)
+    monkeypatch.setattr(hidden_sessions, "_installed_app_names", lambda: [APP])
+    key = f"{APP}-dj"
+    slot, created = await ChatSlotSDK(APP).open(state, key, hidden=True)
+    assert created is True
+    assert (slot._app, slot.mode) == (APP, APP)
+    assert asked == [APP]
+    async with _client(state) as client:
+        hidden_sessions.bind_listing(hidden_sessions.refresh_hiding_apps, lambda: None)
+        hidden_sessions.request_hiding_refresh()
+        assert await _listed_surface(client, key) == APP
+        allowed.clear()
+        hidden_sessions.request_hiding_refresh()
+        assert await _listed_surface(client, key) == ""
+    assert slot.mode == APP
+
+
+@pytest.mark.asyncio
+async def test_chat_slots_refuses_a_hidden_chat_to_an_app_that_may_not_hide(
+    tmp_path, monkeypatch
+) -> None:
+    from kiro_crew.apps.chat_slot_sdk import ChatSlotRefused, ChatSlotSDK
+
+    state = _state(tmp_path, monkeypatch)
+    _may_hide(monkeypatch, allowed=())
+    with pytest.raises(ChatSlotRefused):
+        await ChatSlotSDK(APP).open(state, f"{APP}-dj", hidden=True)
+    assert state.get_slot(f"{APP}-dj") is None
+
+
+@pytest.mark.asyncio
+async def test_chat_slots_opens_a_listed_chat_by_default(tmp_path, monkeypatch) -> None:
+    from kiro_crew.apps.chat_slot_sdk import ChatSlotSDK
+
+    state = _state(tmp_path, monkeypatch)
+    asked = _may_hide(monkeypatch)
+    plain, _ = await ChatSlotSDK(APP).open(state, f"{APP}-plain")
+    assert (plain._app, plain.mode) == (APP, "")
+    # An existing chat keeps its mode, whatever a later open asks.
+    again, created = await ChatSlotSDK(APP).open(state, f"{APP}-plain", hidden=True)
+    assert again is plain and created is False and plain.mode == ""
+    assert asked == []
+
+
 # ── the Older-sessions listing ────────────────────────────────────────────────
 
 
