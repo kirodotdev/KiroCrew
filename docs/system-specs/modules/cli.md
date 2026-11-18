@@ -2024,7 +2024,15 @@ to wait and run it again, unless the holder is this home's running gateway.
 record on Linux, and elsewhere from the pid an engine holder writes into the lock
 file while it holds it and clears on release (`cli.sh` writes none). When that pid
 is the gateway lock's holder, `kirocrew update` says the gateway is already
-installing an update and restarts onto it once the install succeeds, and exits 0.
+installing an update and that, since the gateway never restarts itself, a
+`kirocrew restart` once it finishes switches to the new version, and exits 0.
+
+On any wheel install, when the feed's version is not newer than the installed
+one, `kirocrew update` reads the running gateway's version the way `kirocrew
+doctor`'s `running:` row does (`GET /api/health`). A gateway older than the
+installed version gets "installed, but the running gateway is still <version>"
+and the `kirocrew restart` step instead of "Already on the latest version!";
+exit 0 either way.
 
 ### The release is the unit of install
 
