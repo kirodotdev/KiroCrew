@@ -353,6 +353,21 @@ async def _record_grant_presence(server: McpServerInfo) -> None:
         server.auth_crew_held = True
         server.auth_grant_present = await asyncio.to_thread(crew_oauth.holds_grant, server.name)
         return
+    entry = {"url": server.url, "headers": server.headers, "type": server.declared_type}
+    key = (
+        await asyncio.to_thread(crew_oauth.custom_sign_in_key, server.name, entry)
+        if server.headers
+        else ""
+    )
+    if key:
+        # An owner server whose extra headers (a backend token such as
+        # ``x-backend-token``) ride beside Crew's OAuth bearer: the grant lives in
+        # Crew's vault under the custom key, so that vault is the one to ask.
+        # Without this the KAS lookup answers None for any row with headers and
+        # the row reads "Not verified" with no Sign in to offer.
+        server.auth_crew_held = True
+        server.auth_grant_present = await asyncio.to_thread(crew_oauth.holds_grant, key)
+        return
     server.auth_grant_present = await _runtime_grant_present(
         server.url, server.name, has_headers=bool(server.headers)
     )

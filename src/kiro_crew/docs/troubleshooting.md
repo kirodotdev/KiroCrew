@@ -398,6 +398,28 @@ To find out which one you have:
 A server that is genuinely broken reads **Error** with the reason next to it, not
 **Not verified**.
 
+### A remote MCP server with OAuth and a token header never starts
+
+Some MCP gateways need two things on every call: an OAuth sign-in, and a
+per-user token in an extra header for one backend behind them (for example
+`"x-backend-token": "Token ${BACKEND_TOKEN}"`). On the KAS backend such an
+entry fails with `answered HTTP 401 (check its headers)` in the session's
+`mcp.log`, no tools load, and no sign-in link appears: KAS never receives a
+remote server's headers, and the local bridge that sends them cannot sign in.
+
+To use it on KAS:
+
+1. Put `BACKEND_TOKEN=<token>` in `~/.kiro/crew/.env` and restart the gateway.
+2. Turn on **MCP sign-in by Kiro Crew** under **Settings → Developer → Feature
+   previews**.
+3. Add the server from **Customize → MCP Servers → Add Custom**, with the header
+   in its JSON. A server added by hand to a config file is not offered the
+   dashboard sign-in.
+4. Click **Sign in** on its row, then start a new chat.
+
+Only an `Authorization` header replaces the sign-in; any other header is sent
+beside it.
+
 ### Atlassian says "Access denied: Your organization admin"
 
 These messages come from Atlassian, not Kiro Crew: the organization's admin has

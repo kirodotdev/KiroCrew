@@ -381,12 +381,20 @@ async def _discover(
     return doc, committed, " ".join(scopes)
 
 
-def _auth_method(doc: dict[str, Any]) -> str:
-    """``none`` when listed, else the first secret method Crew can send."""
+def _auth_method(doc: dict[str, Any], prefer_post: bool = False) -> str:
+    """``none`` when listed, else the first secret method Crew can send.
+
+    *prefer_post* (an owner-added server) takes ``client_secret_post`` over
+    ``client_secret_basic`` when both are listed: a server that lists the form
+    reads it, while a Basic listing is often only RFC 8414's default copied into
+    the document (a hosted MCP gateway lists it and answers Basic with
+    ``invalid_client: Missing client_id``).
+    """
     listed = doc.get("token_endpoint_auth_methods_supported")
     # RFC 8414 §2: absent means client_secret_basic.
     listed = listed if isinstance(listed, list) else ["client_secret_basic"]
-    for method in _AUTH_METHODS:
+    order = ("none", "client_secret_post", "client_secret_basic") if prefer_post else _AUTH_METHODS
+    for method in order:
         if method in listed:
             return method
     raise CrewOAuthError("auth_method_unsupported")
@@ -411,7 +419,7 @@ async def _register(
     provider: dict[str, Any], doc: dict[str, Any], scope: str, redirect: str
 ) -> dict[str, Any]:
     """RFC 7591 registration; the fields :class:`Client` keeps. Raises a coded error."""
-    method = _auth_method(doc)
+    method = _auth_method(doc, prefer_post=bool(provider.get("owner_added")))
     request: dict[str, Any] = {
         "client_name": provider.get("dcr_client_name") or CLIENT_NAME,
         "redirect_uris": [redirect],
@@ -572,6 +580,7 @@ async def prepare_custom(
         "recommended_scopes": (
             [s for s in scopes if isinstance(s, str)] if isinstance(scopes, list) else []
         ),
+        "owner_added": True,
     }
     store = store or ClientStore()
     try:
@@ -627,8 +636,9 @@ def keep_client(key: str, client: Client, tokens: Any, vault: Any | None = None)
 
 
 def _secret_method(doc: dict[str, Any]) -> str:
-    """How an owner's confidential client authenticates: as the AS lists, else form post.
+    """How an owner's confidential client authenticates: form post when listed, else Basic.
 
+    The form wins when both are listed (see :func:`_auth_method`'s *prefer_post*).
     shortcut: an AS that lists no method gets ``client_secret_post`` (GitHub
     publishes none and reads the form), not RFC 8414's Basic default; follow
     the default if a server is found that refuses the form.
@@ -636,7 +646,7 @@ def _secret_method(doc: dict[str, Any]) -> str:
     listed = doc.get("token_endpoint_auth_methods_supported")
     if not isinstance(listed, list):
         return "client_secret_post"
-    for method in _AUTH_METHODS[1:]:
+    for method in ("client_secret_post", "client_secret_basic"):
         if method in listed:
             return method
     raise CrewOAuthError("auth_method_unsupported")
