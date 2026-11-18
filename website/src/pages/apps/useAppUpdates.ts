@@ -24,7 +24,7 @@ import { useState } from 'react'
 import { api } from '../../api/client'
 import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-import { isRegistrySourced } from '../../components/appstore/types'
+import { isMarketSourced, isRegistrySourced } from '../../components/appstore/types'
 import { isTrustDeniedError, localOnlyTrustRepository } from '../../components/appstore/TrustAppModal'
 import { backendRefusedNotice } from '../../components/appstore/backendRefused'
 import type { AppsData } from './useAppsData'
@@ -87,7 +87,7 @@ export function useAppUpdates({
   const registrySourceFor = (name: string) => {
     const target = apps.find(a => a.name === name)
     const pending = updatables.some(a => a.name === name)
-    return target && pending && !isRegistrySourced(target) ? `registry:${name}` : undefined
+    return target && pending && !isRegistrySourced(target) && !isMarketSourced(target) ? `registry:${name}` : undefined
   }
   /** One update call, with the registry override when `registrySourceFor` gives one. */
   const callUpdate = (name: string) => {
@@ -146,6 +146,8 @@ export function useAppUpdates({
   const runUpdate = async (name: string) => {
     if (updatingAll || updatePending) return
     const target = apps.find(a => a.name === name)
+    // A Kiro Space install has no Sync or Update yet; the gateway refuses both.
+    if (target && isMarketSourced(target)) return
     const fromRegistry = !!target && (isRegistrySourced(target) || !!registrySourceFor(name))
     if (!target || (fromRegistry && !rowUpdatesInPlace)) {
       updateApp(name)
@@ -191,7 +193,9 @@ export function useAppUpdates({
 
   const updateAll = async () => {
     if (updatingAll) return
-    const targets = updatables.map(a => a.name)
+    const targets = updatables
+      .filter(a => { const target = apps.find(x => x.name === a.name); return !(target && isMarketSourced(target)) })
+      .map(a => a.name)
     setUpdatingAll({ done: 0, total: targets.length })
     setError('')
     setTrustHandoff(null)

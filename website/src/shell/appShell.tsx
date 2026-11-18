@@ -837,6 +837,10 @@ export function useAppShell() {
       // otherwise a just-installed registry app keeps rendering a "Get"
       // button until the cache expires.
       queryClient.invalidateQueries({ queryKey: ['registry'] })
+      // Kiro Space rows carry the same server-computed `installed` and
+      // `nameTaken` flags, so an install or uninstall anywhere re-reads them.
+      queryClient.invalidateQueries({ queryKey: ['market-listings'] })
+      queryClient.invalidateQueries({ queryKey: ['market-listing'] })
     }
     window.addEventListener('mc:apps-changed', handler)
     return () => window.removeEventListener('mc:apps-changed', handler)
