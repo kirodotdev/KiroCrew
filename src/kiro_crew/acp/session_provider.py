@@ -22,6 +22,7 @@ from contextlib import aclosing
 from pathlib import Path
 from typing import Any, cast
 
+from kiro_crew.acp import session_handle_lifecycle as _handle_lifecycle
 from kiro_crew.acp import session_provider_agent_turns as _sp_agent_turns
 from kiro_crew.acp import session_provider_claim as _sp_claim
 from kiro_crew.acp import session_provider_context as _sp_context
@@ -668,19 +669,17 @@ class AcpSessionProvider(LLMProvider):
             # needed. cleanup_session() below remains for the LLMProvider API.
 
     async def cleanup_session(self, session_id: str = "") -> None:
-        """Delete this session's kiro-cli transcript files (.json + .jsonl).
+        """Delete this session's native record from the host it ran on.
 
-        Overrides the no-op LLMProvider.cleanup_session so shared-subagent
-        sessions don't leak transcripts on the shared runtime. Deletes through
-        the same helper ``destroy()`` uses, so the traversal guard is shared.
+        Overrides the no-op LLMProvider.cleanup_session. kiro-cli's record is its
+        ``.json`` + ``.jsonl`` pair, KAS's is in the engine's store and codex's is
+        the rollout under its ``CODEX_HOME``; ``delete_native_record`` routes by
+        the runtime's backend and does blocking disk work in a worker thread.
         """
         sid = session_id or getattr(self._handle, "session_id", "") or ""
         if not sid:
             return
-        # The handle's helper resolves, guards and unlinks: blocking disk work
-        # that would stall every session on a slow home mount, so it runs in a
-        # worker thread.
-        await asyncio.to_thread(AcpSessionHandle.cleanup_transcript_files, sid)
+        await _handle_lifecycle.delete_native_record(self._runtime, sid)
 
     @property
     def context_incarnation(self) -> object:

@@ -20,6 +20,7 @@ Instance fields read: ``_pending_elicitations``, ``_prompt_or_tool_seen``, ``_qu
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 from collections.abc import Callable, Mapping
@@ -38,7 +39,12 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.command_refused import AcpCommandRefused
 from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
-from kiro_crew.acp.types import METHOD_CANCEL, METHOD_COMMANDS_EXECUTE, JsonRpcMessage
+from kiro_crew.acp.types import (
+    METHOD_CANCEL,
+    METHOD_COMMANDS_EXECUTE,
+    METHOD_KAS_SESSION_DELETE,
+    JsonRpcMessage,
+)
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.dashboard.chat_utils_awaits import drained_to_thread
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -420,6 +426,67 @@ def _disposable_record_delete(
         return harness_for(backend).teardown.delete_disposable_record
     except ValueError:
         return None
+
+
+def _teardown_deletes_record(backend: object) -> bool:
+    """Whether *backend*'s teardown verb is the one that deletes the stored record.
+
+    True on KAS, whose ``_kiro/session/delete`` removes the record from the
+    engine's own store; nothing on disk that Crew could unlink holds it.
+    """
+    from kiro_crew.acp.harness import harness_for
+
+    if not isinstance(backend, str):
+        return False
+    try:
+        return harness_for(backend).teardown.method == METHOD_KAS_SESSION_DELETE
+    except ValueError:
+        return False
+
+
+async def delete_native_record(runtime: Any, session_id: str) -> None:
+    """Delete *session_id*'s native record from the store of the host it ran on.
+
+    The body of ``AcpSessionProvider.cleanup_session``: a caller asks for it
+    after the session is done, so the record goes whatever the memory mode.
+
+    - A host whose verb keeps the record and that names Crew's own delete
+      (``TeardownPolicy.delete_disposable_record``; codex's rollout) gets that
+      delete, with the ``extra_env`` the runtime's child ran with.
+    - KAS gets ``_kiro/session/delete`` on this runtime. When the runtime cannot
+      send it (it is dead, as after an owning provider's shutdown), the delete is
+      scheduled due now in ``released_sessions``, whose sweep sends it on the
+      background runtime. An engine answers success for an id it does not hold,
+      so a record the teardown already deleted costs one round trip.
+    - Every other host keeps the kiro-cli transcript unlink.
+    """
+    if not session_id:
+        return
+    backend = getattr(runtime, "acp_backend", None)
+    delete_record = _disposable_record_delete(backend)
+    if delete_record is not None:
+        await drained_to_thread(delete_record, session_id, getattr(runtime, "_extra_env", None))
+        return
+    if _teardown_deletes_record(backend):
+        if await runtime.delete_session_record(session_id):
+            return
+        if sandbox_launch_mark.launched_in_sandbox():
+            # ``released-sessions/`` is masked in a sandboxed process: an entry
+            # written there is lost with the sandbox (``_release_ending``).
+            logger.warning("cleanup: could not delete the record of %s", session_id)
+            return
+        try:
+            await drained_to_thread(
+                functools.partial(
+                    released_sessions.schedule, session_id, backend=str(backend), delay_secs=0.0
+                )
+            )
+        except (OSError, ValueError):
+            logger.warning(
+                "cleanup: could not schedule the delete of %s", session_id, exc_info=True
+            )
+        return
+    await drained_to_thread(cleanup_transcript_files, session_id)
 
 
 def cleanup_transcript_files(sid: str) -> None:
