@@ -208,8 +208,12 @@ async def add_agent_document_route(request: web.Request) -> web.Response:
         source_uri=str(body.get("source_uri") or ""),
     )
     if result.get("status") == "error":
+        # A coded error is extraction that cannot run on this host (a harness
+        # that is signed out or unavailable): the document was fine, so 503.
+        code = result.get("code")
         return web.json_response(
-            {"error": result["error"], "code": "document_rejected"}, status=400
+            {"error": result["error"], "code": code or "document_rejected"},
+            status=503 if code else 400,
         )
     _sel_log(
         "agent_document.add",
