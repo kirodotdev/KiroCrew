@@ -1453,7 +1453,10 @@ describe("window chrome controls", () => {
     const stored = {};
     const nativeTheme = { themeSource: "system", shouldUseDarkColors: false };
     const lifecycle = createWindowLifecycle(validOptions({
-      electron: { nativeTheme },
+      electron: {
+        nativeTheme,
+        BaseWindow: { getFocusedWindow: () => null, getAllWindows: () => [] },
+      },
       store: { get: () => null, set: (key, value) => { stored[key] = value; } },
     }));
     lifecycle.chrome.setThemeAccent("#abc");
