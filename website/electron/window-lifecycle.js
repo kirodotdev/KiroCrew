@@ -3,7 +3,12 @@
 const fs = require("fs");
 const path = require("path");
 
-const { createTokenRetryHandler, dashboardRetryPath, loadDashboardWithToken } = require("./token-retry");
+const {
+  createTokenRetryHandler,
+  dashboardRetryPath,
+  dashboardUrlFor,
+  loadDashboardWithToken,
+} = require("./token-retry");
 const { createRendererRecovery, withSafeReload, hasSafeReload } = require("./renderer-recovery");
 const { createRendererExhaustedNotice } = require("./renderer-exhausted-notice");
 const { createHangRecovery, endHungRenderer } = require("./hang-recovery");
@@ -1403,8 +1408,8 @@ function createWindowLifecycle(options) {
         ({ token: tokenValue } = await fetchRemoteToken(connectionPort));
       }
       if (tokenValue && !connWin.isDestroyed()) {
-        const target = new URL(retryTarget || "", connectionBackendUrl);
-        await loadDashboardWithToken(connWin.webContents, target.toString(), tokenValue);
+        const target = dashboardUrlFor(connectionBackendUrl, retryTarget);
+        await loadDashboardWithToken(connWin.webContents, target, tokenValue);
       }
     });
     connWin.webContents.on("did-navigate", (_event, url, httpCode) => {

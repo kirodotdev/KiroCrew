@@ -105,6 +105,14 @@ test("macOS New Window opens the blank-session route on the existing gateway", (
   );
 });
 
+test("connection-window 403 retry resolves its path through dashboardUrlFor", () => {
+  assert.match(
+    WINDOW_SOURCE,
+    /const target = dashboardUrlFor\(connectionBackendUrl, retryTarget\);\s*await loadDashboardWithToken\(connWin\.webContents, target, tokenValue\);/,
+  );
+  assert.doesNotMatch(WINDOW_SOURCE, /new URL\(retryTarget/);
+});
+
 test("only the primary local window owns the gateway liveness monitor", () => {
   const guardedStarts = GATEWAY_SOURCE.match(
     /if \(targetBackendUrl === BACKEND_URL && window === mainWindow\(\)\) \{\s*startLivenessMonitor\(window\);\s*\}/g,
