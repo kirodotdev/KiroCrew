@@ -97,8 +97,10 @@ name: CI Runner Watchdog
 # and a watchdog that cancelled and re-ran itself would never finish a tick. For
 # each run older than 15 minutes it reads its jobs. A run is ORPHANED when a job
 # is still `queued`, carries a `codebuild-` label, and has waited more than 15
-# minutes (CodeBuild's measured queue-to-start here is under a minute). Oldest
-# first across every watched workflow, at most 5 per tick as one global cap, the
+# minutes (CodeBuild's measured queue-to-start here is under a minute). Push runs
+# first (their group is not cancelled by a later push) with one slot kept for
+# the oldest other run, oldest first within each event, across every watched
+# workflow, at most 5 per tick as one global cap, the
 # script cancels the run, waits for the cancellation to land, and re-runs it. The
 # re-run is a new attempt: every routed job asks for a label with the new attempt
 # suffix and GitHub emits fresh `workflow_job.queued` webhooks, so CodeBuild
