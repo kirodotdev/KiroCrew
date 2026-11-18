@@ -652,7 +652,9 @@ engine instead ([aws-control.md](aws-control.md)).
 - The card says which account sessions run as when kiro-cli is signed in too. It reads
   `GET /api/kas-login/sources` (`dashboard/handlers/kas_login_sources.py`), which sits
   on the dashboard listener behind the same token check as `GET /api/kas-login` and
-  changes nothing: it reports both stores by presence
+  the same owner gate as the sign-in routes (`is_owner_dashboard_request`: the owner
+  and Shared Crew teammates with owner rights; anyone else gets an audited 403 `owner_only`
+  before any store read or `whoami`), and changes nothing: it reports both stores by presence
   (`lts_sign_in.stored_sign_ins`), which of the two a new session uses, and whether
   they are one account (`lts_sign_in.same_account`, the one function that decides it:
   different kinds, named account types or portal hosts mean different accounts,

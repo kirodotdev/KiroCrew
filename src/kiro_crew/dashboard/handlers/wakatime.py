@@ -116,6 +116,40 @@ _OAUTH_CALLBACK_PATH = "/api/wakatime/oauth/callback"
 _WAKATIME_PANEL_PATH = "/settings/overview"
 
 
+def _forwarded_host(request: web.Request) -> str:
+    """The ``host[:port]`` the browser used: ``X-Forwarded-Host`` when allowed.
+
+    ``check_host`` validates ``Host`` only, so a forwarded host is honored only
+    when its host is on the same allowlist (tailnet, tunnel, managed proxy,
+    ``dashboard.url``, ``KIROCREW_CORS_ORIGINS``). The port is kept as written.
+    Anything else -- absent, malformed, or not allowed -- falls back to
+    ``request.host``, which the barrier already checked.
+    """
+    from kiro_crew.dashboard.origin import _canonical_host, _split_authority
+    from kiro_crew.dashboard.urls import build_allowed_hosts
+
+    forwarded = (request.headers.get("X-Forwarded-Host") or "").split(",")[0].strip()
+    if not forwarded:
+        return request.host
+    # Deny-by-default like check_host: no allowlist means no forwarded host.
+    allowed_origins = request.app.get("allowed_origins")
+    if not allowed_origins:
+        return request.host
+    parts = _split_authority(forwarded)
+    host = _canonical_host(parts[0]) if parts is not None else ""
+    # This runs in a worker thread while the tunnel and tailnet add to or
+    # discard from the live set on the loop: iterate a snapshot (set() copies
+    # in one step under the GIL), never the live set.
+    allowed = build_allowed_hosts(set(allowed_origins))
+    if host and host in {_canonical_host(h) for h in allowed}:
+        return forwarded
+    logger.warning(
+        "WakaTime: ignoring an X-Forwarded-Host that is not an allowed dashboard host;"
+        " set dashboard.url to the public address if a proxy serves the dashboard"
+    )
+    return request.host
+
+
 def _oauth_redirect_uri(request: web.Request) -> str:
     """Build the absolute callback URL WakaTime redirects back to.
 
@@ -127,11 +161,11 @@ def _oauth_redirect_uri(request: web.Request) -> str:
     a callback inside that sub-path; the proxy strips it before forwarding.
 
     When ``dashboard.url`` is unset (the common local case), fall back to the
-    request's own origin. The ``Host`` header is already validated against the
-    dashboard allowlist by the DNS-rebinding barrier middleware before any
-    handler runs, so it is not attacker-controlled here; the origin is assembled
-    through ``urlunparse`` rather than string interpolation so the shape is
-    explicit and the parts cannot smuggle extra URL structure.
+    request's own origin: the host from :func:`_forwarded_host` (an allowed
+    host only) and ``https`` only when :func:`is_https_request` says so (it
+    trusts ``X-Forwarded-Proto`` from a loopback peer only). The origin is
+    assembled through ``urlunparse`` rather than string interpolation so the
+    shape is explicit and the parts cannot smuggle extra URL structure.
     """
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.dashboard.urls import _ensure_scheme, dashboard_origin
@@ -143,8 +177,10 @@ def _oauth_redirect_uri(request: web.Request) -> str:
         base_path = urllib.parse.urlsplit(_ensure_scheme(dashboard_url)).path.rstrip("/")
         return configured.rstrip("/") + base_path + _OAUTH_CALLBACK_PATH
 
-    proto = (request.headers.get("X-Forwarded-Proto") or request.scheme).split(",")[0].strip()
-    host = request.headers.get("X-Forwarded-Host") or request.host
+    from kiro_crew.dashboard.origin import is_https_request
+
+    proto = "https" if is_https_request(request) else request.scheme
+    host = _forwarded_host(request)
     return urllib.parse.urlunparse((proto, host, _OAUTH_CALLBACK_PATH, "", "", ""))
 
 
@@ -230,8 +266,7 @@ async def api_wakatime_oauth_authorize(request: web.Request) -> web.Response:
     # the session cookie is named per browser port (``mc_token_<port>``), so the
     # callback on the other port would be refused after the owner consents.
     callback = urllib.parse.urlparse(redirect_uri)
-    request_host = request.headers.get("X-Forwarded-Host") or request.host
-    requested = urllib.parse.urlsplit("//" + request_host.split(",")[0].strip())
+    requested = urllib.parse.urlsplit("//" + _forwarded_host(request))
     try:
         ports = {requested.port, callback.port} - {None}
     except ValueError:  # a port that is not a number: compare hostnames only
