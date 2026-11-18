@@ -94,6 +94,7 @@
     "browser": "Drive browser",
     "code_channel_set_view": "Publish code channel view",
     "code_channel_publish_plan_canvas": "Publish plan canvas",
+    "code_channel_read_plan_canvas": "Read plan canvas",
     "code_channel_set_context_bar": "Set code channel context bar",
     "code_channel_rename": "Rename code channel",
     "code_channel_set_status": "Set code channel status",

@@ -3327,7 +3327,8 @@ answers `tools/list` from):
   call (below).
 - **Browser:** `browser`
 - **Slack code channels:** `code_channel_set_view`,
-  `code_channel_publish_plan_canvas`, `code_channel_set_context_bar`,
+  `code_channel_publish_plan_canvas`, `code_channel_read_plan_canvas`,
+  `code_channel_set_context_bar`,
   `code_channel_rename`, `code_channel_set_status`, `code_channel_wrap_up`
   (`mcp_tools/catalog/code_channels.py` declares them, `mcp_tools/code_channels.py`
   serves them). They are listed only while `slack.code_channels` is on, and each

@@ -168,13 +168,21 @@ class SurfaceClient(CodeChannelsClient):
             raise CodeChannelApiError("conversations.canvases.create", "missing_canvas_id")
         return canvas_id
 
-    async def set_canvas_content(self, channel_id: str, canvas_id: str, markdown: str) -> None:
-        """``agents.conversations.setCanvasContent`` (replaces the canvas markdown)."""
+    async def set_canvas_content(
+        self, channel_id: str, canvas_id: str, markdown: str
+    ) -> int | None:
+        """``agents.conversations.setCanvasContent`` (replaces the canvas markdown).
+
+        Returns Slack's ``sections_changed_count`` (0: the markdown was already
+        current and nothing was written), or None when the answer has none.
+        """
         _check_id(channel_id, "channel_id")
         _check_id(canvas_id, "canvas_id")
         _check_size(markdown, "markdown")
         body = {"channel": channel_id, "canvas_id": canvas_id, "content": markdown}
-        await self._call("agents.conversations.setCanvasContent", body)
+        data = await self._call("agents.conversations.setCanvasContent", body)
+        count = data.get("sections_changed_count")
+        return count if isinstance(count, int) and not isinstance(count, bool) else None
 
     async def get_canvas(self, channel_id: str, canvas_id: str) -> dict[str, Any]:
         """``agents.conversations.getCanvas``: the canvas and its OPEN comment threads.
