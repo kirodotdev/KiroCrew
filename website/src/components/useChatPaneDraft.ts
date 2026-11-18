@@ -1,5 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
-import { takePaneDraft, takePaneDraftSwap, takePaneDraftReply, writePaneDraft, mergePaneDraft, subscribePaneDraft } from '../utils/chatPaneDrafts'
+import { hasPaneListener, readPaneDraft, takePaneDraft, takePaneDraftSwap, takePaneDraftReply, writePaneDraft, mergePaneDraft, subscribePaneDraft } from '../utils/chatPaneDrafts'
+import { createDraftOwner, draftSaved, dropDraftOwner, type DraftOwner } from '../utils/deliveryWarning'
+import type { RecoveredSends } from './useDeliveryWarningStrip'
 import { mergeReplyIntoDraft } from '../utils/chatDrafts'
 import { type PasteBlock, mergeCarriedDraft } from '../utils/pasteTokens'
 import { useComposerPastes } from '../chat-core/composer/composerPastes'
@@ -49,6 +51,13 @@ export function useChatPaneDraft(slotKey: string) {
   // unmount has no composer to write to (a setState on an unmounted component
   // is a silent no-op), so it goes to the store instead.
   const mountedRef = useRef(false)
+  // The recovered sends this instance's composer holds, and only this instance's parks can retire.
+  const ownerRef = useRef<DraftOwner>(null!)
+  if (ownerRef.current === null) ownerRef.current = createDraftOwner()
+  // Recovered sends in the live composer, parked with the text so a reload does not append it again.
+  const appliedRef = useRef(new Set<string>())
+  const liveApplied = useCallback((): string[] => (inputRef.current ? [...appliedRef.current] : []), [])
+  const parkLive = useCallback((slot: string) => { if (writePaneDraft(slot, { text: inputRef.current, files: pendingFilesRef.current, pastes: readPastes(), applied: liveApplied() })) draftSaved('pane', ownerRef.current, s => s === slot) }, [readPastes, liveApplied])
   inputRef.current = input
   pendingFilesRef.current = pendingFiles
   // A LAYOUT effect, not a passive one: `slotKeyRef` and the park/take below
@@ -66,9 +75,10 @@ export function useChatPaneDraft(slotKey: string) {
     // the one copy — the store entry is cleared so a later park cannot
     // overwrite an arrival that came in between.
     if (prev !== slotKey) {
-      writePaneDraft(prev, { text: inputRef.current, files: pendingFilesRef.current, pastes: readPastes() })
+      parkLive(prev)
       slotKeyRef.current = slotKey
       const incoming = takePaneDraft(slotKey)
+      appliedRef.current = new Set(incoming.applied)
       setInput(incoming.text)
       setPendingFiles(incoming.files)
       // Installed, not merely set (see `composerPastes` above): a recovery for the
@@ -82,6 +92,7 @@ export function useChatPaneDraft(slotKey: string) {
       // composer already holds so no two tokens share a number.
       const parked = takePaneDraft(slotKey)
       if (parked.text) {
+        for (const id of parked.applied ?? []) appliedRef.current.add(id)
         const carried = carryIntoComposer(parked.text, parked.pastes)
         setInput(cur => mergeCarriedDraft(cur, carried))
       }
@@ -99,6 +110,7 @@ export function useChatPaneDraft(slotKey: string) {
       // A dashboard page's reply, not added again when already a paragraph here.
       const reply = takePaneDraftReply(slotKey)
       if (arrived.text) {
+        for (const id of arrived.applied ?? []) appliedRef.current.add(id)
         const carried = carryIntoComposer(arrived.text, arrived.pastes)
         setInput(cur => (swap !== undefined && cur.trim() === swap ? carried.text
           : reply !== undefined ? mergeReplyIntoDraft(cur, carried.text)
@@ -111,9 +123,11 @@ export function useChatPaneDraft(slotKey: string) {
     return () => {
       unsubscribe()
       mountedRef.current = false
-      writePaneDraft(slotKeyRef.current, { text: inputRef.current, files: pendingFilesRef.current, pastes: readPastes() })
+      parkLive(slotKeyRef.current)
+      // The parked text leaves this composer: a refused park leaves its records for the next page load.
+      dropDraftOwner(ownerRef.current)
     }
-  }, [slotKey, carryIntoComposer, readPastes, installPastes])
+  }, [slotKey, carryIntoComposer, installPastes, parkLive])
   // A page reload never unmounts the pane, so the park in the cleanup above
   // never runs and the unsent text would be gone (an update's gateway restart
   // reloads every open tab). Park it on `pagehide` too: sessionStorage outlives
@@ -121,7 +135,7 @@ export function useChatPaneDraft(slotKey: string) {
   // page restored from the back/forward cache still shows that text, so the
   // parked copy is taken back to keep the live composer the single copy.
   useEffect(() => {
-    const park = () => { writePaneDraft(slotKeyRef.current, { text: inputRef.current, files: pendingFilesRef.current, pastes: readPastes() }) }
+    const park = () => parkLive(slotKeyRef.current)
     const unpark = (e: PageTransitionEvent) => { if (e.persisted) takePaneDraft(slotKeyRef.current) }
     window.addEventListener('pagehide', park)
     window.addEventListener('pageshow', unpark)
@@ -129,7 +143,7 @@ export function useChatPaneDraft(slotKey: string) {
       window.removeEventListener('pagehide', park)
       window.removeEventListener('pageshow', unpark)
     }
-  }, [readPastes])
+  }, [parkLive])
   useComposerArrivals(slotKey, (paths, arrivalSlot) => {
     if (arrivalSlot !== slotKeyRef.current) return false
     setPendingFiles(previous => [
@@ -153,19 +167,33 @@ export function useChatPaneDraft(slotKey: string) {
    *  been rebound to another slot — or unmounted altogether — the text goes
    *  into THAT slot's parked draft (shown again when the user returns to it)
    *  instead of into the composer the user is now looking at, which belongs to
-   *  someone else's conversation, or into a component that no longer exists. */
-  const restoreIntoComposer = useCallback((text: string, files: string[] = [], pastes: PasteBlock[] = [], forSlot: string = slotKeyRef.current) => {
-    if (!mountedRef.current || forSlot !== slotKeyRef.current) { mergePaneDraft(forSlot, text, files, pastes); return }
+   *  someone else's conversation, or into a component that no longer exists. `true` once in storage;
+   *  in this live composer, this instance's owner token; merged into another pane's composer, `false`. */
+  const restoreIntoComposer = useCallback((text: string, files: string[] = [], pastes: PasteBlock[] = [], forSlot: string = slotKeyRef.current, recovered?: RecoveredSends): boolean | DraftOwner => {
+    const live = mountedRef.current && forSlot === slotKeyRef.current
+    // The text is already here or parked, with its blocks and files in the same entry: nothing to put back.
+    if (recovered?.applied) return live ? ownerRef.current : true
+    if (!live) {
+      const shown = hasPaneListener(forSlot)
+      return mergePaneDraft(forSlot, text, files, pastes, recovered?.ids) && !shown
+    }
+    for (const id of recovered?.ids ?? []) appliedRef.current.add(id)
     // The paste blocks behind the payload's tokens come back with it, numbered
     // past whatever the composer holds now, or the restored token would be a
     // chip with nothing behind it.
     const carried = carryIntoComposer(text, pastes)
     setInput(prev => mergeCarriedDraft(prev, carried))
     if (files.length) setPendingFiles(prev => [...prev, ...files.filter(f => !prev.includes(f))])
+    return ownerRef.current
   }, [carryIntoComposer])
 
+  const isApplied = useCallback((slot: string, sendId: string): boolean => (slot === slotKeyRef.current && mountedRef.current
+    ? !!inputRef.current && appliedRef.current.has(sendId) : !!readPaneDraft(slot).applied?.includes(sendId)), [])
+  /** For a send taking the composer: the recovered sends leaving with it, handed back again if the send comes back. */
+  const takeRecovered = useCallback((): RecoveredSends => { const ids = [...appliedRef.current]; appliedRef.current.clear(); return { ids, applied: false } }, [])
+
   return {
-    input, setInput, pendingFiles, setPendingFiles, pendingDirs, composerPastes, pasteBlocks, setPasteBlocks,
+    isApplied, takeRecovered, input, setInput, pendingFiles, setPendingFiles, pendingDirs, composerPastes, pasteBlocks, setPasteBlocks,
     readPastes, carryIntoComposer, slotKeyRef, inputRef, pendingFilesRef, mountedRef, restoreIntoComposer,
   }
 }

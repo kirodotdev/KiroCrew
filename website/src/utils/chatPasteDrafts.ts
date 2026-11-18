@@ -71,5 +71,6 @@ const store = createSlotDraftStore<PasteBlock[]>({
 
 export const loadPasteDrafts = store.load
 export const savePasteDrafts = store.save
+export const pasteDraftsSaveFailed = store.lastSaveFailed
 export const setPasteDraft = store.set
 export const __resetForTests = store.__resetForTests

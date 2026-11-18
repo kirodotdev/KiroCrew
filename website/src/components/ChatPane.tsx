@@ -15,8 +15,8 @@ import { createTranscriptVersioner } from '../chat-core/transcript/transcriptVer
 import { DOCK_CLEARANCE_PX, useComposerDockMetrics } from '../pages/chat/composerDockMetrics'
 import ChatInput from './ChatInput'
 import { DeliveryWarningStrip } from './DeliveryWarningStrip'
-import { useDeliveryWarningStrip } from './useDeliveryWarningStrip'
-import { mergePaneSends, type PaneSentRestore } from './useChatPaneSend'
+import { useDeliveryWarningStrip, type RecoveredSends } from './useDeliveryWarningStrip'
+import { mergePaneSends, parsePaneSent, type PaneSentRestore } from './useChatPaneSend'
 import { busySteerFlag } from './chat-input/busySend'
 import { stagedProjectTurnKey } from './chat-input/stagedProject'
 import { withQueuedAsBubbles } from './chat/crewmateBubbles'
@@ -154,7 +154,7 @@ export default function ChatPane({
   const draft = useChatPaneDraft(slotKey)
   const {
     input, setInput, pendingFiles, setPendingFiles, pendingDirs, composerPastes, carryIntoComposer,
-    slotKeyRef, inputRef, pendingFilesRef, mountedRef, restoreIntoComposer,
+    slotKeyRef, inputRef, pendingFilesRef, mountedRef, restoreIntoComposer, isApplied,
   } = draft
   // In-pane report of a title rename / regenerate that did not land (#9727):
   // the main header routes the same failure into its action banner.
@@ -799,12 +799,13 @@ export default function ChatPane({
   const { onQuote, onAsk, quoteFlight, endQuoteFlight } = useSelectionQuoteAsk({ slot: slotKey, setInput, revealComposer, openSideChat })
 
   const currentPaneSlot = useCallback(() => slotKeyRef.current, [slotKeyRef])
-  const restorePaneSend = useCallback((forSlot: string, sent: PaneSentRestore) => {
+  const restorePaneSend = useCallback((forSlot: string, sent: PaneSentRestore, recovered?: RecoveredSends) => {
     if (sent.dictated) markDictated(forSlot, PANE_DICTATION_SCOPE)
-    restoreIntoComposer(recoverQuoteInto(sent.text, sent.quote, mountedRef.current && forSlot === slotKeyRef.current), sent.files, sent.pastes, forSlot)
+    return restoreIntoComposer(recoverQuoteInto(sent.text, sent.quote, mountedRef.current && forSlot === slotKeyRef.current), sent.files, sent.pastes, forSlot, recovered)
   }, [restoreIntoComposer, recoverQuoteInto, mountedRef, slotKeyRef])
   const deliveryStrip = useDeliveryWarningStrip<PaneSentRestore>({
-    slot: slotKey, surface: 'pane', currentSlot: currentPaneSlot, restore: restorePaneSend, merge: mergePaneSends, disabled: !!crewmate,
+    slot: slotKey, surface: 'pane', currentSlot: currentPaneSlot, restore: restorePaneSend, applied: isApplied, merge: mergePaneSends, disabled: !!crewmate,
+    ready: hydratedSlot === slotKey, parse: parsePaneSent,
   })
 
   return (

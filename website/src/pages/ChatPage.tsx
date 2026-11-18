@@ -7,11 +7,11 @@ import { useAppSelector, store, type AppDispatch } from '../store'
 import {
   switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput,
 } from '../store/chatSlice'
-import { mergeReplyIntoDraft } from '../utils/chatDrafts'
+import { isDraftApplied, mergeReplyIntoDraft } from '../utils/chatDrafts'
 import type { ComposeSendOutcome, ComposeSendResult } from '../components/chat/GrillCard'
 import { DeliveryWarningStrip } from '../components/DeliveryWarningStrip'
 import { useDeliveryWarningStrip } from '../components/useDeliveryWarningStrip'
-import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
+import { mergeSentTurns, parseSentTurn, type SentTurnRestore } from './chat/page/composerSend'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { useScrollManager } from './chat/useScrollManager'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
@@ -670,7 +670,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const {
     send, restoreSentTurn, composerSend,
   } = useComposerSend({
-    mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef, forkUnavailable,
+    mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, draftOwner: draftStores.draftOwner, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef, forkUnavailable,
     setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
     messageQuote, setPrefillHint, autoSendRef, setAutoSendTick, newSessionRef, widgetPrefillRef, mergeSlotTokens, pasteBlocksRef, pendingFilesRef, pendingSessionsRef, pickedFileTokens, setPasteBlocks, readPasteBlocks, installPasteBlocks,
     setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason,
@@ -1141,7 +1141,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   const currentChatSlot = useCallback(() => activeSlotRef.current, [activeSlotRef])
   const deliveryStrip = useDeliveryWarningStrip<SentTurnRestore>({
-    slot: activeSlot, surface: 'page', currentSlot: currentChatSlot, restore: restoreSentTurn, merge: mergeSentTurns,
+    slot: activeSlot, surface: 'page', currentSlot: currentChatSlot, restore: restoreSentTurn, applied: isDraftApplied, merge: mergeSentTurns,
+    ready: !slotLoading && slotSwitchTarget !== activeSlot, parse: parseSentTurn,
   })
   const composerBand = useMemo(() => (
     <>

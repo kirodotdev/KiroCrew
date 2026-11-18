@@ -41,7 +41,9 @@ export interface SlotDraftStoreOpts<T> {
    *  a cleaned deep copy to store, or `null` to drop the slot (corrupt, or
    *  semantically empty like `''` / `[]`). Run on both load and set, so a value
    *  it accepts is always isolated from the caller's reference. */
-  sanitize: (v: unknown) => T | null
+  sanitize: (v: unknown, slot: string) => T | null
+  /** Per-slot wire shape, written by the same write as the value; `sanitize` must accept it back. */
+  encode?: (slot: string, value: T) => unknown
   /** Eviction ordering on `save`. Default (false) caps the caller's object in
    *  place BEFORE the write, so the in-memory copy always matches storage. True
    *  caps a COPY and only syncs evictions back to the caller AFTER a successful
@@ -68,7 +70,7 @@ export interface SlotDraftStore<T> {
 }
 
 export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftStore<T> {
-  const { key, storage, ttlMs, maxEntries, maxStoreBytes, sanitize, evictAfterWrite } = opts
+  const { key, storage, ttlMs, maxEntries, maxStoreBytes, sanitize, evictAfterWrite, encode } = opts
   const tsKey = `${key}-ts`
   const hasTtl = ttlMs !== undefined
 
@@ -82,6 +84,14 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
 
   const timestamps: Record<string, number> = {}
   let saveFailed = false
+
+  const wireOf = (k: string, v: T): unknown => (encode ? encode(k, v) : v)
+  const serialize = (drafts: Record<string, T>): string => {
+    if (!encode) return JSON.stringify(drafts)
+    const wire: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(drafts)) wire[k] = wireOf(k, v)
+    return JSON.stringify(wire)
+  }
 
   const store = (): Storage => (storage === 'local' ? localStorage : sessionStorage)
   const safeWrite = (k: string, v: string): boolean =>
@@ -146,7 +156,7 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
    */
   function capBytes(drafts: Record<string, T>): void {
     if (maxStoreBytes === undefined) return
-    let total = JSON.stringify(drafts).length
+    let total = serialize(drafts).length
     if (total <= maxStoreBytes) return
     const keys = Object.keys(drafts)
     // Stop before the last (newest) key so it is never the eviction target.
@@ -155,7 +165,7 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
       // Code units this slot adds to the blob: `"key"` + `:` + value + `,` (the
       // final entry's comma is replaced by `}`, also 1 unit). Subtracting the
       // exact contribution keeps `total` accurate without re-serializing.
-      total -= JSON.stringify(k).length + JSON.stringify(drafts[k]).length + 2
+      total -= JSON.stringify(k).length + JSON.stringify(wireOf(k, drafts[k])).length + 2
       delete drafts[k]
       delete timestamps[k]
     }
@@ -177,7 +187,7 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
       // that a later load would mistake for legacy and re-stamp, resetting TTL.
       // safeWrite reclaims disposable cache + retries on quota (never throws).
       if (hasTtl) safeWrite(tsKey, JSON.stringify(timestamps))
-      return safeWrite(key, JSON.stringify(drafts))
+      return safeWrite(key, serialize(drafts))
     } catch (e) {
       // eslint-disable-next-line no-console -- intentional dev-only diagnostic
       if (import.meta.env.DEV) console.warn(`slotDraftStore[${key}]: save failed`, e)
@@ -196,7 +206,7 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
       let pruned = false
       let stamped = false
       for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-        const clean = sanitize(v)
+        const clean = sanitize(v, k)
         if (clean === null) { if (k in timestamps) { delete timestamps[k]; pruned = true } continue }
         if (!hasTtl) { fresh[k] = clean; continue }
         // No timestamp = legacy / pre-TTL entry; stamp now and treat as fresh.
@@ -232,7 +242,7 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
       const cutoff = Date.now() - (ttlMs ?? 0)
       const fresh: Record<string, T> = {}
       for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-        const clean = sanitize(v)
+        const clean = sanitize(v, k)
         if (clean === null) continue
         if (!hasTtl || !(k in knownTimestamps) || knownTimestamps[k] >= cutoff) fresh[k] = clean
       }
@@ -266,7 +276,7 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
    *  corrupt). Stamps touch time for TTL eviction when the store has a TTL. */
   function set(drafts: Record<string, T>, slot: string, value: T): void {
     delete drafts[slot]
-    const clean = sanitize(value)
+    const clean = sanitize(value, slot)
     if (clean !== null) {
       drafts[slot] = clean
       if (hasTtl) timestamps[slot] = Date.now()
