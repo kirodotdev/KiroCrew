@@ -110,6 +110,8 @@ describe('PrivacyPanel', () => {
     renderWithProviders(<PrivacyPanel />)
 
     const disclosure = screen.getByText(HEARTBEAT_DISCLOSURE)
+    // Contract: the heartbeat's fixed payload is a privacy disclosure, so a field
+    // added to or dropped from it must change this number in review.
     expect(HEARTBEAT_FIELDS).toHaveLength(5)
     for (const field of HEARTBEAT_FIELDS) {
       expect(disclosure).toHaveTextContent(field)

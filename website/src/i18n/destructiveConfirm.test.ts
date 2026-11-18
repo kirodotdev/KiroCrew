@@ -110,52 +110,25 @@ describe('destructive confirmations are translated', () => {
 })
 
 /**
- * Confirm keys whose interpolated operand MUST be quoted in every authored
- * catalog, in that locale's own convention (#4653, #4657/#4677, #4676, #4821).
+ * Confirm prompts whose interpolated operand MUST be quoted in every authored
+ * catalog, in that locale's own convention.
  *
  * A destructive confirm that interpolates a user-supplied name bare lets an
  * ordinary-word name blend into the sentence: a pet named "Everything"
  * produced "Reset Everything?", indistinguishable from a sentence about
  * resetting everything.
  *
- * The pattern sweep below is the convention detector: every `confirm` key
- * whose English value interpolates a placeholder must land here, or in
- * `CONFIRM_OPERAND_KEY_EXEMPTIONS`, or have only placeholder-name-exempt
- * interpolations. This list is then the per-locale glyph pin. When adding a
- * destructive confirm that interpolates a user-supplied name, add it here.
- * NOTE: the sweep only sees keys matching `/confirm/i` — a confirm prompt
- * named `…_title` / `delete_x` / `make_x_live` is invisible to it and must
- * be pinned here by hand (#5725; several entries below are exactly that).
+ * Every key matching `/confirm/i` whose English value interpolates a
+ * placeholder is swept in automatically (`quotedOperandKeys` below) unless it
+ * interpolates only `EXEMPT_CONFIRM_PLACEHOLDER_NAMES` or carries a reason in
+ * `CONFIRM_OPERAND_KEY_EXEMPTIONS`. This list holds only the confirm prompts the
+ * sweep cannot see, named `…_title` / `delete_x` / `make_x_live`; a key the
+ * sweep already reads does not belong here.
  */
 export const QUOTED_OPERAND_CONFIRM_KEYS = [
-  'apps.awsControl.console.delete_confirm', // filename operand, quoted per locale
-  'apps.awsControl.console.folder_delete_confirm', // folder-name operand, quoted per locale #4821
-  'apps.awsControl.console.library_remove_confirm', // artifact-name operand, quoted per locale #6987
-  'apps.awsControl.page.remove_account_confirm', // account-name operand, quoted per locale
-  'apps.awsControl.page.forget_key_confirm', // key-name operand, quoted per locale
-  'apps.codeReviewSage.components.learningRail.confirm_delete', // quoted since #4653
-  'apps.crewCompanion.gallery.deleteConfirm', // ASCII quotes → locale pair #4821
-  'apps.issueRadar.views.crews.page.retire_confirm_title', // crew-name operand of the Retire crew confirmation, quoted per locale
   'apps.mdNotebook.row.deleteTitle', // already quoted; pin + fr NNBSP fix #5725
-  'apps.meetings.list.deleteConfirm', // already quoted; pin + fr/it glyph fix #4821
-  'apps.mochi.gallery.delete_confirm', // ASCII quotes → locale pair #4821
   'apps.mochi.reset.title', // quoted by #4677
   'apps.mochi.reset.desc', // #4676
-  'apps.papyrus.page.delete_paper_confirm', // #4676
-  'apps.papyrus.workspace.co_author_conflict_discard_confirm', // #4676
-  'apps.papyrus.workspace.delete_file_confirm', // quoted by #4677
-  'autoImprovement.commitConfirm', // bare {{branch}} #4821
-  // Template-pane confirms interpolate template names AND the changed-field
-  // list; both are user-facing prose, so all operands carry the glyph pair.
-  'components.agentTemplateDetail.reset_confirm_body',
-  'components.agentTemplateDetail.reset_confirm_title',
-  'components.agentTemplateDetail.switch_confirm_body',
-  'components.agentTemplateDetail.switch_confirm_title',
-  'crewEditorNext.band_remove_confirm_title', // ability-name operand of the Added-band remove confirmation
-  'components.remoteUpdate.confirm', // crew-name operand of the Update remote confirmation, quoted per locale
-  'components.remoteUpdate.confirm_hint', // same operand on the confirmation's explanation line
-  'components.remoteUpdate.restart_now_confirm', // crew-name operand of the Restart now confirmation, quoted per locale
-  'components.tagManagerList.delete_tag_confirm', // tag-name operand, quoted per locale
   // The code-execution grant's title AND body. #5725 quoted only the title, which left
   // the scope sentence one line under it reading as prose about every app (#6016).
   'components.appstore.trustAppModal.failed', // bare {{app}} #6016
@@ -164,42 +137,14 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'components.appstore.trustAppModal.on_cancel', // bare {{app}} #6016
   'components.appstore.trustAppModal.scope', // bare {{app}} #6016
   'components.appstore.trustAppModal.title', // bare {{app}} on the code-execution grant #5725
-  'pages.appDetailPage.session_approval_confirm_title', // bare {{name}} on the chat-control grant #11192
   'pages.appsPage.uninstall_app_title', // app-name operand of the Library and App detail uninstall confirmations, quoted per locale
   'components.artifactFolderDeleteDialog.delete_folder', // already quoted; pin #5725
-  'pages.artifactDeployPage.destroy_confirm',
-  'pages.artifactDeployPage.recall_confirm',
-  'pages.artifactDeployPage.remove_profile_confirm',
-  'pages.artifactsPage.remove_artifact_confirm',
-  'pages.chatSidebar.delete_folder_confirm',
-  'components.themeEditor.delete_theme_confirm', // theme-name operand, quoted per locale
-  'hooks.useSessionActions.close_confirm.reason_setting', // {{setting}} = the settings toggle's label, quoted per locale
-  'pages.chatSidebar.unlink_source_link_confirm', // {{label}} = PR/Issue chip label, glyph-quoted per locale (UX #8072)
   'pages.devFleetPage.keeps_name_the_live_target_and_discards_the_stag', // cancel-branch body, bare {{name}}/{{staged}} #5725
   'pages.devFleetPage.keeps_this_checkout_the_live_target_and_discards', // cancel-branch body, bare {{staged}} #5725
   'pages.devFleetPage.make_name_live', // ASCII quotes → locale pair #5725
   'pages.devFleetPage.rebase_name', // ASCII quotes → locale pair #5725
   'pages.devFleetPage.remove_name', // ASCII quotes → locale pair #5725
-  'pages.chat.quickAsk.confirm_then', // {{button}} is page-authored DOM text, quoted in all catalogs at introduction
-  'pages.overview.agentTemplatesTab.delete_confirm', // quoted in all catalogs at introduction (#12481)
-  'pages.overview.agentTemplatesTab.unlisted_delete_confirm', // file-name operand, quoted in all catalogs at introduction
-  'pages.overview.agentTemplatesTab.unlisted_delete_confirm_body_duplicate', // file, agent and stem operands, quoted in all catalogs at introduction
-  'pages.overview.promptsTab.delete_confirm', // quoted in all catalogs at introduction (#4634)
-  'pages.overview.skillsTab.delete_confirm',
-  'pages.overview.skillsTab.dismiss_confirm',
-  'pages.overview.steeringTab.delete_confirm',
-  'pages.overview.workflowLibrary.remove_confirm_title', // quoted in all catalogs at introduction (#18998)
-  'pages.schedulePage.cronFolders.confirm_delete_folder',
   'pages.schedulePage.delete_named_job', // ASCII quotes → locale pair #5725
-  'pages.settings.remoteCrewPanel.confirm_delete_of', // was fully bare #4821
-  'pages.settings.remoteCrewPanel.confirm_cancel_remove', // instance operand on the armed cancel, quoted per locale
-  'settings.secrets.delete_confirm',
-  'settings.secrets.delete_managed_confirm',
-  'pages.overview.kiroCrewCfgTab.type_workspace_name_to_confirm', // quoted in all catalogs at introduction
-  'pages.settings.securityPanel.trustedApps.revoke_confirm_title',
-  'pages.settings.securityPanel.trustedApps.revoke_confirm_body',
-  'pages.settings.securityPanel.trustedRegistries.grant_confirm_title',
-  'pages.settings.securityPanel.trustedRegistries.grant_confirm_body',
 ]
 
 /**
@@ -306,6 +251,23 @@ function placeholdersIn(value: string): string[] {
   return [...value.matchAll(/\{\{(\w+)\}\}/g)].map(match => match[1])
 }
 
+/** Keys matching `/confirm/i` whose English value interpolates a placeholder. */
+function sweptConfirmKeys(): string[] {
+  return Object.entries(FLAT[DEFAULT_LANGUAGE])
+    .filter(([key, value]) => /confirm/i.test(key) && /\{\{\w+\}\}/.test(value))
+    .map(([key]) => key)
+}
+
+/** Every confirm whose operand must be quoted: the sweep's non-exempt keys plus the hand pin. */
+function quotedOperandKeys(): string[] {
+  const english = FLAT[DEFAULT_LANGUAGE]
+  const swept = sweptConfirmKeys().filter(key => {
+    if (key in CONFIRM_OPERAND_KEY_EXEMPTIONS) return false
+    return !placeholdersIn(english[key]).every(n => EXEMPT_CONFIRM_PLACEHOLDER_NAMES.has(n))
+  })
+  return [...new Set([...swept, ...QUOTED_OPERAND_CONFIRM_KEYS])]
+}
+
 describe('destructive-confirm operands are quoted', () => {
   const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -319,7 +281,7 @@ describe('destructive-confirm operands are quoted', () => {
       const [open, close] = (OPERAND_QUOTE_PAIRS as Record<string, [string, string]>)[code]
         ?? DEFAULT_QUOTE_PAIR
       const offenders: string[] = []
-      for (const key of QUOTED_OPERAND_CONFIRM_KEYS) {
+      for (const key of quotedOperandKeys()) {
         const value = FLAT[code][key]
         if (value === undefined) {
           offenders.push(key)
@@ -342,10 +304,13 @@ describe('destructive-confirm operands are quoted', () => {
   }
 })
 
-describe('confirm-key interpolations are quoted or explicitly exempt (#4821)', () => {
+describe('confirm-key interpolations are quoted or explicitly exempt', () => {
   const english = FLAT[DEFAULT_LANGUAGE]
-  const confirmKeys = Object.entries(english)
-    .filter(([key, value]) => /confirm/i.test(key) && /\{\{\w+\}\}/.test(value))
+
+  it('sweeps the English catalog for confirm keys', () => {
+    expect(sweptConfirmKeys().length, 'no /confirm/i key with a placeholder in English').toBeGreaterThan(0)
+    expect(quotedOperandKeys().length).toBeGreaterThan(QUOTED_OPERAND_CONFIRM_KEYS.length)
+  })
 
   it('every listed pin and exemption still exists in English', () => {
     const missingQuoted = QUOTED_OPERAND_CONFIRM_KEYS.filter(k => english[k] === undefined)
@@ -363,28 +328,9 @@ describe('confirm-key interpolations are quoted or explicitly exempt (#4821)', (
     expect(overlap, `quoted and exempt at once: ${overlap.join(', ')}`).toEqual([])
   })
 
-  it('every confirm key that interpolates is pinned, name-exempt, or key-exempt', () => {
-    // Taxonomy (both axes, because each covers a class the other cannot):
-    //   - placeholder NAME `count`/`lines`/`verb` → cannot parse as prose
-    //   - key exemption → kind-word forms whose operand is `{{name}}` but
-    //     already disambiguated (#4657)
-    //   - quoted-operand pin → user-supplied names that must be glyph-quoted
-    // A new confirm key with `{{name}}` and no kind word fails this test
-    // until it is quoted in every catalog and added to the pin. That is the
-    // failure #4653/#4657/#4676 kept hitting by hand.
-    const uncovered = confirmKeys.filter(([key, value]) => {
-      const names = placeholdersIn(value)
-      if (names.length > 0 && names.every(n => EXEMPT_CONFIRM_PLACEHOLDER_NAMES.has(n))) {
-        return false
-      }
-      if (key in CONFIRM_OPERAND_KEY_EXEMPTIONS) return false
-      if (QUOTED_OPERAND_CONFIRM_KEYS.includes(key)) return false
-      return true
-    }).map(([key]) => key)
-    expect(uncovered,
-      `confirm key interpolates a user-facing operand with no quote pin and no `
-      + `exemption (add it to QUOTED_OPERAND_CONFIRM_KEYS and quote every catalog, `
-      + `or record a reason in CONFIRM_OPERAND_KEY_EXEMPTIONS): ${uncovered.join(', ')}`)
+  it('the hand pin holds only confirm prompts the sweep cannot see', () => {
+    const redundant = QUOTED_OPERAND_CONFIRM_KEYS.filter(k => /confirm/i.test(k))
+    expect(redundant, `the /confirm/i sweep already quotes-checks these: ${redundant.join(', ')}`)
       .toEqual([])
   })
 })
