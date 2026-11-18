@@ -15,21 +15,21 @@ from kiro_crew._sqlite_compat import sqlite3
 
 
 def test_unc_uri_gets_the_empty_authority_spelling():
-    from kiro_crew.sqlite_uri import with_empty_authority
+    from kiro_crew.sqlite_uri import _with_empty_authority
 
     # Path.as_uri() gives file://fileserver/share/..., which SQLite rejects with
     # "invalid uri authority". The share must sit behind an empty authority.
     uri = PureWindowsPath(r"\\fileserver\share\crew\k.db").as_uri()
     assert uri == "file://fileserver/share/crew/k.db"
-    assert with_empty_authority(uri) == "file:////fileserver/share/crew/k.db"
+    assert _with_empty_authority(uri) == "file:////fileserver/share/crew/k.db"
 
 
 def test_drive_letter_and_posix_uris_are_unchanged():
-    from kiro_crew.sqlite_uri import with_empty_authority
+    from kiro_crew.sqlite_uri import _with_empty_authority
 
     drive = PureWindowsPath(r"C:\Users\a#b\k.db").as_uri()
-    assert with_empty_authority(drive) == "file:///C:/Users/a%23b/k.db"
-    assert with_empty_authority("file:///tmp/k.db") == "file:///tmp/k.db"
+    assert _with_empty_authority(drive) == "file:///C:/Users/a%23b/k.db"
+    assert _with_empty_authority("file:///tmp/k.db") == "file:///tmp/k.db"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="probes the POSIX collapse of a leading //")

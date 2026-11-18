@@ -253,6 +253,24 @@ class TestABackupIsConsistentUnderALiveWriter:
         mb.backup_store(src)
         assert src.stat().st_mtime_ns == before
 
+    def test_its_read_only_uri_comes_from_the_one_shared_builder(
+        self, live_store: VectorMemoryStore
+    ) -> None:
+        """The source and the staged probe both get the UNC-aware ``sqlite_uri`` spelling.
+
+        A second builder here is how a Windows UNC data home kept failing with
+        ``invalid uri authority`` while the dashboard readers opened it.
+        """
+        from kiro_crew import sqlite_uri
+
+        src = resolve_store_path(DEFAULT_MEMORY_STORE)
+        real = sqlite_uri._with_empty_authority
+        with mock.patch.object(sqlite_uri, "_with_empty_authority", wraps=real) as spy:
+            assert mb.backup_store(src) is not None
+        seen = [call.args[0] for call in spy.call_args_list]
+        assert src.absolute().as_uri() in seen
+        assert len(seen) >= 2
+
     def test_it_is_owner_only(self, live_store: VectorMemoryStore) -> None:
         """A backup holds the same memory the store does, so it needs the same posture."""
         out = mb.backup_store(resolve_store_path(DEFAULT_MEMORY_STORE))

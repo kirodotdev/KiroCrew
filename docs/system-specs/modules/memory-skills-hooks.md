@@ -3894,7 +3894,7 @@ the unconditional gate is the stronger check layered in front of it.
   not re-sorted here: two passes over one install that disagree on order are how the
   picker and a report stop describing the same list.
 - **The probe opens each store READ-ONLY, and resolves-then-confirms its path.** A
-  read-only URI (built by `memory_backup`'s own builder, so a `?` or `#` in a data-home
+  read-only URI (built by the shared `sqlite_uri.read_only_uri`, so a `?` or `#` in a data-home
   path cannot truncate it into a different database) because opening a silo read-write
   to count it would CREATE and migrate the very file whose absence the row is
   reporting; and `owned_store_path` rather than a bare `resolve_store_path`, which

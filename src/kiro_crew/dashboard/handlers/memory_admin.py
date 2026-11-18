@@ -49,6 +49,7 @@ from kiro_crew.memory_stores import (
     declared_store_names,
     owned_store_path,
 )
+from kiro_crew.sqlite_uri import read_only_uri
 from kiro_crew.validation import clamp_query_offset
 
 from ._shared import (
@@ -163,7 +164,7 @@ def _probe_store_blocking(name: str) -> dict[str, Any]:
     table cannot be counted, so both report ``false`` with null counts instead of
     three zeros.
 
-    The connection is READ-ONLY, and through ``memory_backup``'s own URI builder
+    The connection is READ-ONLY, and through the shared ``sqlite_uri`` builder
     so the two readers escape a data-home path identically: interpolating one into
     ``file:...`` lets a ``?`` or ``#`` in it be parsed as the URI's query or
     fragment, truncating the path so a DIFFERENT database is opened. A probe of
@@ -198,7 +199,7 @@ def _probe_store_blocking(name: str) -> dict[str, Any]:
         return row
     if not path.is_file():
         return row
-    with closing(sqlite3.connect(memory_backup._read_only_uri(path), uri=True)) as db:
+    with closing(sqlite3.connect(read_only_uri(path), uri=True)) as db:
         lineage = memory_schema.detect_lineage(db)
         if lineage is None:
             return row

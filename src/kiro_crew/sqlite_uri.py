@@ -1,11 +1,14 @@
-"""Build a read-only SQLite URI from a filesystem path."""
+"""Build a read-only SQLite URI from a filesystem path.
+
+The one builder for this URI: two spellings of one URI is how they diverge.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 
-def with_empty_authority(uri: str) -> str:
+def _with_empty_authority(uri: str) -> str:
     """Rewrite a ``file://host/share/...`` URI to SQLite's empty-authority form.
 
     ``Path.as_uri()`` turns a Windows UNC path into ``file://host/share/...``, and
@@ -22,7 +25,8 @@ def read_only_uri(path: Path) -> str:
     """A ``mode=ro`` SQLite URI for *path* that opens exactly that file.
 
     ``as_uri()`` percent-encodes ``#``, ``%`` and ``?``, which a raw ``file:{path}``
-    would hand to SQLite as a fragment, an escape and a query. Pass the result to
+    would hand to SQLite as a fragment, an escape and a query, so the connection
+    would open a DIFFERENT database. Pass the result to
     ``sqlite3.connect(..., uri=True)``.
     """
-    return f"{with_empty_authority(path.absolute().as_uri())}?mode=ro"
+    return f"{_with_empty_authority(path.absolute().as_uri())}?mode=ro"
