@@ -401,6 +401,16 @@ async def session_sites(request: web.Request, key: str, *aliases: str) -> tuple[
     return sites
 
 
+#: The refusal a held slot (:data:`browser_sites.NO_PAGES`) answers with: what happened
+#: and how it ends. The hold lasts only while the app has no approved site.
+SITES_REVOKED_TEXT = (
+    "this app's approved browsing sites were withdrawn (the app was disabled or "
+    "uninstalled, its trust was removed, or its site approval was dropped), so this "
+    "chat opens no page; enable the app and approve its sites again on the app's page, "
+    "and this chat browses those pages again"
+)
+
+
 def _off_site_url(op: str, args: dict[str, Any], sites: tuple[str, ...]) -> str | None:
     """The URL *op* would open that *sites* do not name, or None (the tool gate's reading)."""
     _readable, url = browser_call_url({"op": op, "args": args})
@@ -631,8 +641,12 @@ async def api_browser_op(request: web.Request) -> web.Response:
         return web.json_response(
             harness_ops.refusal(
                 "site_not_allowed",
-                f"{off_site} is not one of the pages this app may browse; "
-                "open one of its approved sites instead",
+                (
+                    SITES_REVOKED_TEXT
+                    if sites == browser_sites.NO_PAGES
+                    else f"{off_site} is not one of the pages this app may browse; "
+                    "open one of its approved sites instead"
+                ),
             )
         )
     _open_turn(hub, key)
@@ -728,6 +742,9 @@ async def api_browser_op(request: web.Request) -> web.Response:
         return web.json_response(answer)
     if said is not None:
         result = {**result, "handed_back": said}
+    if sites == browser_sites.NO_PAGES and result.get("code") == "redirect_refused":
+        # A held slot's page was blanked: say why it is held and how it ends.
+        result = {**result, "error": SITES_REVOKED_TEXT}
     return web.json_response(result)
 
 

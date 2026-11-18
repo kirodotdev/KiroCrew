@@ -89,7 +89,8 @@ async def api_browser_media(request: web.Request) -> web.Response:
     refusal = await browser_live._owner_gate(request, "browser_media")
     if refusal is not None:
         return refusal
-    refusal = await browse_refusal(audit=False)
+    # Audited for an action, as the sibling routes audit theirs; a state poll is not.
+    refusal = await browse_refusal(audit=request.method != "GET")
     if refusal is not None:
         return refusal
     if request.method == "GET":
@@ -112,7 +113,9 @@ async def api_browser_media(request: web.Request) -> web.Response:
     if not ok:
         return _error("bad_value", "value must be seconds for seek, or 0 to 1 for volume", 400)
     sites = await browser_ops.session_sites(request, key)
-    if not sites or sites == browser_sites.NO_PAGES:
+    if sites == browser_sites.NO_PAGES:
+        return _error("not_app_browser", browser_ops.SITES_REVOKED_TEXT, 403)
+    if not sites:
         return _error("not_app_browser", "this session is not an app's own browsing session", 403)
     hub = get_live_hub()
     supervisor = _running_supervisor()
