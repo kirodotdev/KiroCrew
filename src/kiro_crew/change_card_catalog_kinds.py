@@ -170,6 +170,9 @@ _TEMPLATE_LIST_FIELDS = ("tools", "allowedTools", "skills")
 #: after the first also takes a capital and ``-``, so one may name a Bot
 #: (``validation._AGENT_NAME_RE``) or an app (``apps.<name>.model``).
 _TEMPLATE_NAME_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,61}[A-Za-z0-9]|[A-Za-z0-9])$")
+_TEMPLATE_SERVER_RE = re.compile(
+    r"^(?!.*::)(?:[A-Za-z0-9][A-Za-z0-9_.:-]{0,61}[A-Za-z0-9]|[A-Za-z0-9])$"
+)
 _APP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -1602,9 +1605,15 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
         _only(p, {"template", "server", "entry", "origin", "mount_only"})
         out_srv: dict[str, Any] = {
             "template": _clean_str(p, "template", pattern=_TEMPLATE_NAME_RE),
-            # One path segment of plain characters: the Undo names it in its path.
-            "server": _clean_str(p, "server", pattern=_TEMPLATE_NAME_RE),
+            # One path segment, so no "/": the Undo names it in its path.
+            "server": _clean_str(p, "server") or "",
         }
+        if not _TEMPLATE_SERVER_RE.fullmatch(out_srv["server"]):
+            raise _fail(
+                "invalid_param",
+                "'server' can't be added to an agent template: use up to 63 letters, digits,"
+                " '.', '_', '-' or ':', starting and ending with a letter or digit, with no '::'",
+            )
         if "mount_only" in p:
             if not isinstance(p["mount_only"], bool):
                 raise _fail("invalid_param", "'mount_only' must be a boolean")
