@@ -445,6 +445,23 @@ def test_configured_url_query_is_never_audited(configured):
 
 
 class TestRecordDiscoveredEndpoint:
+    def test_discovered_endpoint_approval_is_bound_to_server_url(self):
+        assert security.record_discovered_oauth_endpoint(
+            "auth.unlisted-idp.example", "/oauth/authorize", mcp_url=MCP_URL, server_name="a"
+        )
+        approved = exfil._approved_oauth_authorization_endpoint
+        assert approved("auth.unlisted-idp.example", "/oauth/authorize", server_name="a")
+        assert not approved("auth.unlisted-idp.example", "/oauth/authorize", server_name="b")
+
+    def test_a_second_server_does_not_inherit_the_first_ones_approval(self):
+        for name in ("a", "b"):
+            assert security.record_discovered_oauth_endpoint(
+                "auth.unlisted-idp.example", "/oauth/authorize", mcp_url=MCP_URL, server_name=name
+            )
+        approved = exfil._approved_oauth_authorization_endpoint
+        assert approved("auth.unlisted-idp.example", "/oauth/authorize", server_name="b")
+        assert not approved("auth.unlisted-idp.example", "/oauth/authorize", server_name="c")
+
     @pytest.mark.parametrize(
         "host,path",
         [

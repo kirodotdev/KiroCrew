@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import urllib.parse
 
 import pytest
@@ -277,6 +278,24 @@ def test_disconnect_revokes_with_rfc7009_and_keeps_the_client(vendor):
     form = vendor.calls[-1][2]
     assert form["token"] == "r" and form["token_type_hint"] == "refresh_token"
     assert ClientStore().read("stripe")[0] is not None
+
+
+def test_dcr_revoke_also_revokes_access_token_when_refresh_present(vendor):
+    _signed_in(vendor)
+    vendor.posts["https://access.stripe.com/mcp/oauth2/revoke"] = [(200, {}, ""), (200, {}, "")]
+    assert asyncio.run(crew_oauth.disconnect("stripe")) == {"removed": True, "revoked": True}
+    posted = {call[2]["token"] for call in vendor.calls if call[1].endswith("/revoke")}
+    assert {"r", "a"} <= posted
+
+
+def test_dcr_error_text_from_the_vendor_is_sanitized(vendor):
+    _signed_in(vendor)
+    vendor.posts["https://access.stripe.com/mcp/oauth2/token"] = [
+        (400, {"error": "bad\nforged line\x1b[31m", "error_description": "free text"}, "")
+    ]
+    with pytest.raises(CrewOAuthError) as err:
+        asyncio.run(crew_oauth.access_token("stripe", force=True))
+    assert re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", err.value.code)
 
 
 def test_without_a_revocation_endpoint_disconnect_deletes_locally(vendor):
