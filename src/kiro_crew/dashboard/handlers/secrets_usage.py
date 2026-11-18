@@ -42,7 +42,7 @@ from typing import Any, Optional
 from aiohttp import web
 
 from kiro_crew.config.loader import config_dir
-from kiro_crew.dashboard.handlers.secrets import _owner_only, _secrets_vault_preview_on
+from kiro_crew.dashboard.handlers.secrets import _owner_only
 from kiro_crew.secrets import SecretVault
 from kiro_crew.secrets.items import parse_reference
 
@@ -377,13 +377,7 @@ async def api_secrets_usage(request: web.Request) -> web.Response:
     ``{"usage": {item: [{"kind", "name", "key"}]}, "incomplete": [kind]}``. An
     item missing from ``usage`` is used nowhere that was scanned; a kind in
     ``incomplete`` could not be scanned, so "used nowhere" is not known.
-
-    With the ``secrets_vault`` preview off, nothing is read and the answer is
-    the one this path gave before the route existed: ``DELETE
-    /api/secrets/{name}`` matches it, so aiohttp answers 405 allowing DELETE.
     """
-    if not await asyncio.to_thread(_secrets_vault_preview_on):
-        raise web.HTTPMethodNotAllowed(request.method, ["DELETE"])
     denied = await _owner_only(request, "secrets_usage")
     if denied is not None:
         return denied

@@ -9,14 +9,13 @@ import { askUi } from '../pages/chat/quickAsk/askUi'
 import { SHEET_PIN_MIN_PX } from '../pages/chat/quickAsk/QuickAskSheet'
 import { recall, remember } from '../pages/chat/quickAsk/remember'
 import { readQuickAsk } from '../pages/chat/quickAsk/types'
-import { PREVIEW_SECRETS_VAULT, setPreviewFlag } from '../utils/previewFlags'
 
 /**
- * The sign-in sheet's Secrets vault part (preview `PREVIEW_SECRETS_VAULT`):
- * matching logins offered by name and filled only on a click, which sends the
- * NAME (the gateway fills the values); with no match an off-by-default "Save
- * to vault" box; a save that did not land said by the card after the sheet is
- * gone; and with the preview off, the sheet exactly as before.
+ * The sign-in sheet's Secrets vault part: matching logins offered by name and
+ * filled only on a click, which sends the NAME (the gateway fills the values);
+ * with no match an off-by-default "Save to vault" box; a save that did not land
+ * said by the card after the sheet is gone; and with no vault part from the
+ * gateway, the plain sheet.
  */
 
 const S = 'slot:qav'
@@ -62,11 +61,9 @@ beforeEach(() => {
     matches: false, media: q, onchange: null,
     addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent: () => false,
   }))
-  setPreviewFlag(PREVIEW_SECRETS_VAULT, true)
 })
 afterEach(() => {
   cleanup()
-  setPreviewFlag(PREVIEW_SECRETS_VAULT, false)
   browserLiveStore.__setWritesForTests(restore)
   browserLiveStore.__resetForTests()
   vi.unstubAllGlobals()
@@ -286,21 +283,18 @@ describe('quick ask: logins from the vault', () => {
     expect(recall(ORIGIN, 'username')).toBe('kept-user')
   })
 
-  it('4: Remember is untouched with the preview off and on a text ask', () => {
-    setPreviewFlag(PREVIEW_SECRETS_VAULT, false)
-    const { unmount } = show(creds({ items: [] }))
+  it('4: Remember is untouched with no vault part and on a text ask', () => {
+    const { unmount } = show(creds(undefined))
     expect(screen.getByTestId('quick-ask-remember')).toBeInTheDocument()
     unmount()
     act(() => browserLiveStore.applyEvent(ev(null)))
-    setPreviewFlag(PREVIEW_SECRETS_VAULT, true)
     show({ ...creds(undefined), id: 'v2', kind: 'text', fields: [{ role: 'text', input: 'email', label: 'email', rect }] })
     expect(screen.getByTestId('quick-ask-remember')).toBeInTheDocument()
     expect(screen.queryByTestId('quick-ask-save-to-vault')).toBeNull()
   })
 
-  it('with the preview off the sheet is as before', () => {
-    setPreviewFlag(PREVIEW_SECRETS_VAULT, false)
-    show(creds({ items: [lg('GitHub', 'alice')] }))
+  it('with no vault part from the gateway the sheet is the plain one', () => {
+    show(creds(undefined))
     expect(screen.queryByTestId('quick-ask-vault-login')).toBeNull()
     expect(screen.queryByTestId('quick-ask-other-account')).toBeNull()
     expect(screen.queryByTestId('quick-ask-save-to-vault')).toBeNull()

@@ -91,7 +91,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'PeopleModes.tsx': 'the per-mode pieces PeoplePanel mounts (invalid state, read-only Team Access, adapter notes); no setting and no control writes a config path',
   'PeopleAdvanced.tsx': 'the owner-only Advanced section of the People tab, which shows only under the Shared Crew preview; its controls write dashboard.shared_crew.* paths, but a search hit would deep-link to a tab that is hidden unless the preview is on, so they stay out of settings search',
   'SecretUsage.tsx': "the Secrets item pane's read-only Used by card and the delete confirmation's in-use line; it lists where an item is used and holds no setting",
-  'secretsOwnerOnly.tsx': "the hook and the one notice both Secrets panels show in place of the vault when it is held (a teammate, or a relay caller); one StatusNotice, no setting and no control writes a config path",
+  'secretsOwnerOnly.tsx': "the hook and the one notice the Secrets panel shows in place of the vault when it is held (a teammate, or a relay caller); one StatusNotice, no setting and no control writes a config path",
   'SharedAccessSetup.tsx': 'the People empty state shown while no shared-access path is configured; guidance and links to existing guides, no setting and no control writes a config path',
   'SsmInvite.tsx': 'the SSM tab of the People invite dialog and its row under Invites: a one-time link form with its own create and remove routes; no setting and no control writes a config path',
   'TailscaleInvites.tsx': 'the People invite dialog: a one-time invite form and the Tailscale credential connect field, both actions with their own Connect and Disconnect routes; no setting and no control writes a config path',
@@ -321,10 +321,6 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'add/edit form for one vault item (name, value, login fields, a website to add, note text) ' +
       '— transient CRUD, not persistent knobs',
   },
-  'SecretsPanelLegacy.tsx': {
-    counts: { Input: 2 },
-    reason: 'add-secret name/value form — transient CRUD, not persistent knobs',
-  },
   'SecurityPanelDeniedCommands.tsx': {
     counts: { Toggle: 4, Checkbox: 1, Input: 5 },
     reason:
@@ -492,12 +488,6 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
     reason:
       'the managed pane labels its SecretField with the slot copy (managedLabel), the anchor ' +
       'the settingsManual secrets.* entries highlight; one pane per transient credential slot',
-  },
-  'SecretsPanelLegacy.tsx': {
-    count: 1,
-    reason:
-      'managed SecretField labels are selected from a closed kind-to-copy map and the ' +
-      'rows are transient server-provided credential slots, not persistent settings',
   },
 }
 

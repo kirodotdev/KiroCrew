@@ -1,8 +1,7 @@
 """Sign-in from the Secrets vault: a ``credentials`` quick ask answered with a saved login.
 
-Behind the feature preview ``dashboard.feature_previews.secrets_vault``; with it
-off nothing here runs and the card is as before. The agent's side does not
-change: the same ``ask`` op, the same outcome words. Only the card changes:
+The agent's side is the plain sign-in ask: the same ``ask`` op, the same
+outcome words. Only the card adds:
 
 * The vault holds login items whose URLs match the origin the ask is bound to:
   the card shows each one by its username, and the person's click on one fills its username
@@ -61,13 +60,6 @@ NAME_MAX = 120
 #: SEL operations.
 OP_FILL = "browser_ask_vault_fill"
 OP_SAVE = "browser_ask_vault_save"
-
-
-def enabled() -> bool:
-    """Whether the preview is on: the Secrets routes' own reader. Blocking."""
-    from kiro_crew.dashboard.handlers.secrets import _secrets_vault_preview_on
-
-    return _secrets_vault_preview_on()
 
 
 def _vault() -> SecretVault:
@@ -162,12 +154,12 @@ def offer(origin: str) -> tuple[list[tuple[str, str]], int] | None:
     ``None`` = no vault part. The username is shown to the person on the card so
     two accounts on one site differ; the password never leaves the vault here.
 
-    ``None`` when the preview is off or the vault cannot be read, so the card is
-    exactly as before (no list, no save choice). ``([], 0)``: nothing matches, the
+    ``None`` when the vault cannot be read, so the card is the plain one (no
+    list, no save choice). ``([], 0)``: nothing matches, the
     card offers to save what the person types. The cut is counted, never silent:
     the card says how many it does not show. Blocking.
     """
-    if not origin or not enabled():
+    if not origin:
         return None
     try:
         vault = _vault()
@@ -267,7 +259,6 @@ async def save_login(origin: str, values: dict[str, str], reserved: Callable[[st
 __all__ = [
     "OP_FILL",
     "OP_SAVE",
-    "enabled",
     "item_name_for",
     "login_values",
     "offer",

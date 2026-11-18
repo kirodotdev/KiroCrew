@@ -12100,9 +12100,6 @@
       }
     },
     "secrets": {
-      "title": "Secrets Vault",
-      "description": "Store API keys and credentials securely. Secrets are encrypted at rest and refused to the agent's file reads and shell commands; only the code that needs a secret can read it.",
-      "no_secrets": "No secrets stored yet.",
       "add_secret": "Add secret",
       "name_label": "Name",
       "value_label": "Value",
