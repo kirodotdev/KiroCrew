@@ -46,6 +46,7 @@ from named_cases_helpers import named_cases
 
 from conftest import assert_rejected_without_backtracking
 from kiro_crew.constants import (
+    _RAW_OPTIONS_RE_TRAILER,
     MARKER_CLOSERS,
     OPTIONS_RE_LINE,
     OPTIONS_RE_TRAILER,
@@ -387,9 +388,12 @@ class TestTheWideningIsNotOverlyNarrow:
     def test_a_marker_spanning_newlines_still_closes_the_trailer(self):
         # TRAILER's body omits ``\n`` from its negated class on purpose (DOTALL),
         # so the temper must not have re-introduced a line boundary.
-        match = OPTIONS_RE_TRAILER.search("Done.\n\n[OPTIONS: Alpha |\nBravo]")
+        match = _RAW_OPTIONS_RE_TRAILER.search("Done.\n\n[OPTIONS: Alpha |\nBravo]")
         assert match is not None
         assert match.group("labels") == " Alpha |\nBravo"
+        # The matcher, not the pattern, refuses labels that cross a line, as the
+        # web parser and the line readers do (#39125).
+        assert OPTIONS_RE_TRAILER.search("Done.\n\n[OPTIONS: Alpha |\nBravo]") is None
 
     def test_the_markdown_link_close_tic_still_composes(self):
         match = OPTIONS_RE_LINE.search("[OPTIONS: A | B](OPTIONS)")

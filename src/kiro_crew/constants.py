@@ -824,6 +824,13 @@ class _MarkerMatcher:
         for match in candidates:
             if _marker_labels_have_unmatched_opener(match.group("labels")):
                 continue
+            # The trailer's body admits line breaks (DOTALL) so it can reach the
+            # end-of-buffer anchor, but a LABEL that crosses one is not a marker
+            # to the web's ``findOptionMarkers`` or the line readers, which show
+            # it as text. ``text`` is already ``as_newlines``, so ``\n`` stands
+            # for every break in ``LINE_BREAKS`` (#39125).
+            if self._pattern is _RAW_OPTIONS_RE_TRAILER and "\n" in match.group("labels"):
+                continue
             before = markers_before(
                 text,
                 match.start(),

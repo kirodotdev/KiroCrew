@@ -51,13 +51,15 @@ def test_a_marker_line_followed_by_prose_parses_on_the_line_readers(br):
         assert got == ("Then restart.", ["A", "B"]), name
 
 
-@pytest.mark.parametrize("br", BREAKS)
-def test_a_marker_whose_labels_cross_a_break_stays_text(br):
-    raw = f"[OPTIONS: A{br}B | C]"
-    for name, got in _line_readers(raw).items():
+@pytest.mark.parametrize("br", ["\n", *BREAKS])
+@pytest.mark.parametrize("raw", ["[OPTIONS: A{br}B | C]", "Pick one:\n[OPTIONS: A |{br}B]"])
+def test_a_marker_whose_labels_cross_a_break_stays_text(br, raw):
+    """#39125: the trailer reader (Discord, Telegram, WeCom) agrees with the web
+    and the line readers: a label list that crosses a break is text."""
+    raw = raw.format(br=br)
+    for name, got in _every_reader(raw).items():
         assert got == (raw, []), name
-    text, options = split_options_trailer("[OPTIONS: A\nB | C]")
-    assert split_options_trailer(raw) == (text, [o.replace("\n", br) for o in options])
+    assert split_options_trailer(raw, hide_partial=True) == (raw, [])
 
 
 @pytest.mark.parametrize("br", BREAKS)
