@@ -5,7 +5,8 @@ changes it would hand the change to the next test; the rootdir conftest puts it 
 Covers the dynamic ``JIRA_TOKEN_<HEX>`` credential keys, the inherited shell preloads
 ``name_grant`` refuses, the logging record factory, logger levels, the CLI log queue
 listener, the environment CLI startup mutates, the hooks dispatcher globals and the
-globals a gateway wires once at boot (relay ingress, the dashboard state's hooks). The
+globals a gateway wires once at boot (relay ingress, the dashboard state's hooks), and
+the skills loaders a test opened. The
 other floor guards are in ``test_host_isolation_floor.py`` and the worker budget in
 ``test_host_isolation_floor_worker_budget.py``; the conftest loader comes from
 ``host_isolation_floor_helpers.py``.
@@ -665,3 +666,54 @@ class TestBootWiredGlobalsGoBack:
         with pytest.raises(StopIteration):
             next(cycle)
         assert provider._gateway_ingress is None
+
+
+# ── the skills loaders a test opens are closed at its teardown ────────────
+
+
+def _skills_loader(tmp_path, name: str):
+    from kiro_crew.skills import SkillsLoader
+
+    return SkillsLoader(skills_path=tmp_path / name, install_builtins=False)
+
+
+class TestSkillsLoadersATestOpensAreClosed:
+    """``conftest._close_skills_loaders_the_test_opened``, driven for one real cycle.
+
+    Every loader holds an open SQLite connection (three descriptors). Left to the cyclic
+    collector they pile up per xdist worker until a host with ``ulimit -n 256`` (the
+    macOS default) fails every later test with ``EMFILE``.
+    """
+
+    def test_a_loader_built_during_the_test_is_closed_with_its_index(self, tmp_path) -> None:
+        cycle = _autouse_floor_generator("_close_skills_loaders_the_test_opened")(None, None)
+        next(cycle)
+        loader = _skills_loader(tmp_path, "skills")
+        index = loader._search_index
+        assert not loader._closed
+
+        with pytest.raises(StopIteration):
+            next(cycle)
+        assert loader._closed
+        assert index is None or index._conn is None
+
+    def test_a_loader_alive_before_the_test_stays_open(self, tmp_path, opened) -> None:
+        shared = opened(_skills_loader(tmp_path, "shared"))
+        cycle = _autouse_floor_generator("_close_skills_loaders_the_test_opened")(None, None)
+        next(cycle)
+
+        with pytest.raises(StopIteration):
+            next(cycle)
+        assert not shared._closed
+
+    def test_the_index_of_a_loader_dropped_before_teardown_is_closed(self, tmp_path) -> None:
+        cycle = _autouse_floor_generator("_close_skills_loaders_the_test_opened")(None, None)
+        next(cycle)
+        loader = _skills_loader(tmp_path, "skills")
+        index = loader._search_index
+        assert index is not None and index._db() is not None
+        del loader
+
+        with pytest.raises(StopIteration):
+            next(cycle)
+        assert index._conn is None

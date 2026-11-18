@@ -1220,6 +1220,49 @@ inside a single-user trust boundary, so it sets no expectation that test utiliti
 carry attacker-grade path containment. Spend that review effort on the governance and
 keystone paths instead.
 
+### Close the SQLite handles and skills loaders a test opens
+
+Every object that opens SQLite in its constructor holds three descriptors (`db`,
+`-wal`, `-shm`) until it is closed. On CPython 3.11+ an unclosed `sqlite3.Connection`
+is a reference cycle, so dropping the object does not free them: they stay open until
+the cyclic collector happens to run. Across one xdist worker's share of a shard they
+add up.
+
+The limit they hit depends on the host:
+
+| Host | Default soft `ulimit -n` |
+|---|---|
+| macOS (a laptop, a CodeBuild Mac) | 256 |
+| GitHub `macos-15-arm64` and `macos-26-arm64` runners | 10240 |
+| GitHub Linux runners | 65536 |
+
+So CI does not show these leaks. Measured on a 256 host: one worker ended a backend
+shard with up to 335 leaked descriptors, and from the 256th on every test on that
+worker failed with `EMFILE` or `sqlite3.OperationalError: unable to open database
+file`, in files that had nothing to do with the leak. Raising the limit hides the
+leak and is not the fix.
+
+The fix depends on the owner:
+
+| Owner | What opens SQLite | How it is closed |
+|---|---|---|
+| `SkillsLoader` (also built inside `ContextBuilder` and the dashboard's standalone loader) | `skill_search_index.sqlite3` | The rootdir conftest's autouse `_close_skills_loaders_the_test_opened`, for every test: it closes each loader built after it sets up, joins the catalog worker, and closes every search index built during the test, including one whose loader was already dropped. Nothing to request. |
+| `SubagentManager` | `tasks.db` | Request `close_subagent_managers` (a module-level `pytestmark` usefixtures entry). |
+| `VectorMemoryStore`, `KnowledgeStore`, a `SkillsLoader` from an earlier-ordered autouse fixture | their own databases | Wrap the object in `opened(...)`. |
+| A new class that opens SQLite in `__init__` | its database | Give it a `close()`. Its tests close it through `opened(...)` or an opt-in fixture shaped like `close_subagent_managers`. |
+
+A loader that a module- or session-scoped fixture shares across tests is set up before
+the floor takes its snapshot, so it stays open. A loader the test body builds and
+stores in a module global is closed at that test's teardown. A closed loader serves
+only what it had already cached, and an empty list for any scope it had not built, so
+a later test must not reuse it: such a cache already points at a deleted `tmp_path`,
+and the test that reads it sets its own loader.
+
+To find a leak, record `os.listdir("/dev/fd")` (`/proc/self/fd` on Linux) before and
+after each test from a throwaway `-p` plugin. Charge every new descriptor to the test
+that opened it, and list the ones still open when the worker ends. A run with
+`ulimit -n 256` on macOS confirms that the leak is gone.
+
 ## Which conftest you are standing on
 
 There are **two** testpaths (`setup.cfg`'s `testpaths = test
@@ -1324,6 +1367,13 @@ one scope down:
   pytest's own `catching_logs` adds one per test phase and removes it at the phase
   boundary, so writing back a setup-phase snapshot during teardown would drop the handler
   the teardown phase is capturing through.
+* `_close_skills_loaders_the_test_opened` closes every `SkillsLoader` the test built,
+  through production's weak registry of live loaders, and joins each one's catalog
+  worker. It then closes every `SkillSearchIndex` built during the test (the
+  session-scoped `_record_skill_search_indexes` records them), which reaches the index
+  of a loader the test dropped before teardown. A dropped loader keeps its SQLite descriptors until the cyclic collector runs,
+  and on a macOS host with the default `ulimit -n 256` that runs a worker out of
+  descriptors (§ Close the SQLite handles and skills loaders a test opens).
 * `_restore_autonudge_singleton` puts `autonudge._INSTANCE` back to whatever the test
   inherited. It lives in `test/conftest_resets.py`, bound by `test/conftest.py`, rather
   than the rootdir floor, because only the `test/` suites drive the service; it is
@@ -3970,9 +4020,10 @@ went red, or the fix lands in the wrong file and the leak stays.
   `_learn` re-inits the store it is handed, so every learn test paid this). Tests route
   every inline construction through `test/conftest.py`'s `opened` register-and-close
   fixture (one definition, not one per module: a `KnowledgeStore` is closed through its
-  test-only every-thread seam, everything else through `close()`), modules that build
-  `ContextBuilder`s request the conftest's opt-in `close_skills_loaders` from a one-line
-  module autouse fixture, and managers get `manager.close()` before `sessions.close_all()`.
+  test-only every-thread seam, everything else through `close()`), every `SkillsLoader` a
+  test builds is closed by the rootdir conftest's autouse
+  `_close_skills_loaders_the_test_opened` (§ Close the SQLite handles and skills loaders a
+  test opens), and managers get `manager.close()` before `sessions.close_all()`.
   The one descriptor the probe still sees
   is pytest-asyncio 0.21.2's replacement loop: +3, one at a time, reclaimed at the next
   test's setup -- a float, not a leak, and never the thing to chase.
