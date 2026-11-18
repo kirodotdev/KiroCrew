@@ -217,7 +217,8 @@ def test_shard_selection_and_checks_stay_intact(jobs):
         "-p scripts.ci_pytest_progress -p scripts.ci_file_shards "
         '--ci-progress-dir "$RUNNER_TEMP/pytest-progress" '
         '-q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" '
-        '--file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}'
+        '--file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} '
+        "--file-shard-pins scripts/ci_file_shard_pins_windows.txt"
     )
     assert step["shell"] == "bash"
     upload = next(s for s in job["steps"] if s.get("name") == "Upload Windows pytest progress")
