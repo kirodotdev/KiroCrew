@@ -955,9 +955,11 @@ class InstancesConfig:
     """Multi-instance management (the *Instances* feature).
 
     Gates and tunes the gateway's ability to manage/switch between several
-    remote Kiro Crew instances over SSH tunnels. Off by default — opt-in only,
-    since enabling it allows the gateway to open SSH ``-L`` forwards and relaxes
-    the dashboard CSP ``frame-src`` for the active loopback tunnel ports.
+    remote Kiro Crew instances over SSH tunnels. On by default, so a user can
+    connect a crew with no extra setting; ``enabled: false`` turns it off. On
+    opens no listener and no connection by itself: a tunnel (an SSH ``-L``
+    forward on loopback) opens only when the owner adds a crew and connects it.
+    On also widens the dashboard CSP ``frame-src`` to ``*.localhost`` tunnel ports.
 
     Numeric transport defaults and bounds live in
     ``kiro_crew.instances.constants`` so their canonical values cannot drift
@@ -965,12 +967,13 @@ class InstancesConfig:
     """
 
     enabled: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Enabled",
             "Enable multi-instance management — lets this gateway open SSH tunnels "
-            "to remote Kiro Crews and embed their dashboards. Default off (opt-in). "
-            "Enabling also scopes a CSP frame-src relaxation to active tunnel ports.",
+            "to remote Kiro Crews and embed their dashboards. Default on; a tunnel "
+            "opens only when you add a crew and connect it. Enabling also scopes a "
+            "CSP frame-src relaxation to active tunnel ports.",
             restart=True,
         ),
     )

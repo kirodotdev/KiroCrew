@@ -18,8 +18,9 @@ sorts them out.
 
 ## Turning it on
 
-Remote Crew is off by default and is read only at gateway startup, so it
-takes a restart:
+Remote Crew is on by default. It opens no tunnel until you add a crew and
+connect it. The setting is read only at gateway startup, so turning it off
+(`false`) or back on takes a restart:
 
 ```bash
 kirocrew config set instances.enabled true
@@ -468,7 +469,7 @@ over a normal link.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `instances.enabled` | `false` | The opt-in. Read at startup, so changing it needs a restart. |
+| `instances.enabled` | `true` | The main switch; `false` turns Remote Crew off. Read at startup, so changing it needs a restart. |
 | `instances.warm_set_cap` | `0` | How many panes stay warm at once. `0` tracks how many machines you have registered, so up to an internal ceiling nothing is evicted. A number you set is honoured exactly. |
 | `instances.default_destination` | `""` | The crew **Send a copy to** lists first, marked as the default. Empty means no default. A folder's own **Default destination crew** (Folder settings) overrides it for sessions in that folder. Nothing is sent until you click. |
 | `instances.tunnel_base_port` | `7778` | The first local loopback port handed out for a tunnel. |
