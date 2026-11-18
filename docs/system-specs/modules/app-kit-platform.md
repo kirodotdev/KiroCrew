@@ -8796,6 +8796,33 @@ The wheel's window pages are what the older shells draw, so they stay until no s
 shell lacks a host that accepts the block. A fix to the app lands in that repository
 first; a change to the wheel copy needs its `App repo:` line.
 
+**Mochi is adopted onto its own repository, with no `desktop` block.** The wheel pins
+Mochi (`apps/adoption-pins.json`, § 33) at `KiroCrewCaptain/kirocrew-app-mochi` with
+`minAppSdkLevel` 7, the level of the `permissions.desktopCapabilities` its manifest keeps
+from the wheel copy, and the lowest `scripts/adoption_pin.py compute` accepts. A host
+whose record is builtin-owned swaps it in place onto that tree at a restart, enabled or
+not, keeping `data/` (the watch list, the plan, the pins, the stats, the settings with
+their colour maps, the imported packs), the approved grants (the three desktop
+capabilities included) and `enabled`; the rail keeps `/mochi` and the `Cat` glyph, and
+the wheel copy's `version` is the pinned one (D12). The repository declares the same
+`permissions`, agents, skills and `mochi` MCP server name as the wheel copy, the server
+started from the tree (`python3 backend/mcp_launch.py`, the E10 shape), so E9 holds
+nothing back, and it declares no `desktop` block. Mochi's own shell code
+(`website/electron/mochi/`) finds the record by name and `enabled` on every shell before
+this rule, so a declared overlay would be hosted beside the built-in pet on 0.13.0-rc.2,
+rc.3 and the `release/0.13.0` line (and on rc.1 for a block without `displays` or
+`gutter`); on a shell with this rule the built-in would stand down while its plain
+reservation (above) keeps the host from binding the copy's shortcuts. Without the block,
+every shell draws exactly what it drew for the built-in record: the pet, the panel and
+the three shortcuts, from the window pages the wheel ships at `/app-windows/mochi/`, over
+the adopted routes, which are the wheel copy's table; `hostOwnsAppWindows` answers false
+and the host serves nothing for Mochi. Moving the windows onto the host waits for a
+shipped shell that carries this rule, for Mochi's reservation handed over with
+`{ app: true }`, for its five windows on a seam that takes four, and for
+`minAppSdkLevel` 8 (`platformAccelerators`); the repository's `PORTING.md` keeps that
+list. Until then the wheel's window pages and Mochi's shell code stay. A fix to the app
+lands in that repository first; a change to the wheel copy needs its `App repo:` line.
+
 Writers: `apps/desktop_manifest.py`, `apps/desktop_capabilities.py`, `apps/manifest.py`,
 `apps/manifest_sections.py`, `apps/discovery.py`, `apps/point_grants.py`,
 `apps/manager_lookup.py`, `apps/official_catalog.py`, `apps/permissions.py`,
