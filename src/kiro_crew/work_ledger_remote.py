@@ -12,7 +12,8 @@ fetches and calls these.
   the conductor's read. It is a worker-owned write like
   :func:`~kiro_crew.work_ledger_writes.apply_worker_report`, with one difference:
   ``last_report_at`` is the PEER's stamp, which is what keys the ingest so a
-  repeat read adds nothing.
+  repeat read adds nothing, and ``received_at`` is the hub's clock at filing,
+  which the quiet-window rules measure from.
 * The remote state record (``work-ledger/remote/<board>/<item>.json``) holds what
   the hub last learnt about the peer slot: ``running``, ``closed``,
   ``pending_approval``, the crew's connection state and since when it is down. It
@@ -603,8 +604,10 @@ def apply_remote_report(
 
     The same checks as a local report, and the item must be remote. *reported_at*
     is the peer's stamp, kept as ``last_report_at`` so the next ingest compares
-    against it. *peer_event_id*, the peer's own id for the report, is the hub
-    event's id verbatim, so filing the same peer event again adds no line.
+    against it; ``received_at`` is the hub's own clock at filing, which the
+    quiet-window rules measure from. *peer_event_id*, the peer's own id for the
+    report, is the hub event's id verbatim, so filing the same peer event again
+    adds no line.
     """
     checked_status = _require_choice(status, WORKER_STATUSES, "status", CODE_INVALID_STATUS)
     checked_summary = _require_text(summary, MAX_SUMMARY_CHARS, "summary", required=False)
@@ -653,6 +656,9 @@ def apply_remote_report(
         if checked_pr is not None:
             item.pr = checked_pr
         item.last_report_at = stamp
+        # The hub's own clock, for the quiet-window rules: the peer's stamp above
+        # is on another machine's clock and stays only as the ingest key.
+        item.received_at = _now_iso()
         # The peer report's own identity rides into the hub event id, so two peer
         # reports filed in one second with the same text stay two events.
         event = _commit_item_locked(
