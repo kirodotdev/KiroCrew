@@ -743,7 +743,11 @@ async def revoke(slug: str, tokens: Tokens, store: ClientStore | None = None) ->
         for token, hint in pairs:
             form = {"token": token, "token_type_hint": hint}
             auth = _client_auth(client, form)
-            status, _, _ = await _post(client.revoke, form=form, auth=auth)
+            try:
+                status, _, _ = await _post(client.revoke, form=form, auth=auth)
+            except Exception:  # noqa: BLE001 -- one failed call never spares the other token
+                done = False
+                continue
             done = done and status == 200
         return done
     except Exception:  # noqa: BLE001 -- best effort, as the pre-registered revoke

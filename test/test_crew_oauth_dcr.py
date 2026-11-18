@@ -288,6 +288,24 @@ def test_dcr_revoke_also_revokes_access_token_when_refresh_present(vendor):
     assert {"r", "a"} <= posted
 
 
+def test_a_failed_access_revoke_still_revokes_the_refresh_token(vendor, monkeypatch):
+    _signed_in(vendor)
+    vendor.posts["https://access.stripe.com/mcp/oauth2/revoke"] = [(200, {}, "")]
+    real_post = crew_oauth_dcr._post
+    seen: list[str] = []
+
+    async def _flaky(url, **kwargs):
+        if url.endswith("/revoke"):
+            seen.append(kwargs["form"]["token"])
+            if len(seen) == 1:
+                raise CrewOAuthError("token_unreachable")
+        return await real_post(url, **kwargs)
+
+    monkeypatch.setattr(crew_oauth_dcr, "_post", _flaky)
+    assert asyncio.run(crew_oauth.disconnect("stripe")) == {"removed": True, "revoked": False}
+    assert seen == ["a", "r"]
+
+
 def test_dcr_error_text_from_the_vendor_is_sanitized(vendor):
     _signed_in(vendor)
     vendor.posts["https://access.stripe.com/mcp/oauth2/token"] = [
