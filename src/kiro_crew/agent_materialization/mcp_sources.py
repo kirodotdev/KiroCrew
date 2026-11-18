@@ -249,6 +249,25 @@ def _declares_server(spec: dict) -> bool:
     return any(isinstance(spec.get(k), str) and spec.get(k) for k in ("command", "url"))
 
 
+def _drop_superseded_registry_marker(entry: dict, spec: dict) -> None:
+    """Drop *entry*'s registry marker when *spec* declares a launch without one.
+
+    A ``"type": "registry"`` entry defers its launch to an admin's catalog
+    (:func:`mcp_entry_is_registry_governed`), and the gateway refuses to route
+    one. A source that now declares a ``command`` or ``url`` for the name has
+    replaced that pointer with a local launch. The merges overwrite only the
+    keys the source names, so without this a marker an earlier rebuild wrote is
+    read back on every rebuild and the server can never be routed. A source
+    whose own entry carries the marker keeps it.
+    """
+    if (
+        _declares_server(spec)
+        and mcp_entry_is_registry_governed(entry)
+        and not mcp_entry_is_registry_governed(spec)
+    ):
+        entry.pop("type", None)
+
+
 # The keys that belong WITH a stdio ``command``: a server's arguments and its
 # environment are written for one program. The agent entry carries that program as
 # the RESOLVED absolute path the previous pass wrote (``npx`` ->
@@ -331,6 +350,7 @@ def _merge_source_owned(
     if name not in stale:
         return
     stale.discard(name)
+    _drop_superseded_registry_marker(existing, spec)
     owned_keys: tuple[str, ...] = _SOURCE_OWNED_MCP_KEYS
     if _declares_server(spec):
         owned_keys += _DECLARATION_OWNED_MCP_KEYS
@@ -513,6 +533,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
                 # mcps[name] is a private copy (globals were copied in above),
                 # so update() does not mutate any source dict.
                 mcps[name].update(spec)
+                _drop_superseded_registry_marker(mcps[name], spec)
                 # An edition-supplied name keeps the env keys the edition ships:
                 # the store's own env keys win, but a same-named store entry
                 # must not drop the keys the server needs to run as shipped.
