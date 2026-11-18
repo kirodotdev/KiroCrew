@@ -498,7 +498,8 @@ class TestAPersonsPickWins(_Isolated):
 PICK_GEN_WRITERS: dict[tuple[str, str], tuple[str, int]] = {
     # The model route's transaction; the in-turn /model <id> on KAS shares it.
     ("dashboard/chat_api/slot_model.py", "switch_slot_model"): ("pick", 3),
-    ("dashboard/chat_api/slot_model.py", "api_chat_slots_model"): ("pick", 1),
+    # Switch All Sessions: the model-changing commit and the effort-only commit.
+    ("dashboard/chat_api/slot_model.py", "api_chat_slots_model"): ("pick", 2),
     # Settings' "follow the default" press: a person's choice for their own chats.
     # A crew's slot is app-owned, so the press never counts or clears it.
     ("dashboard/chat_follow_default.py", "_clear_loaded"): ("pick", 1),
