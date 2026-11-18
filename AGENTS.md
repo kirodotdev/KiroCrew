@@ -279,8 +279,8 @@ seams: [app-kit-platform](docs/system-specs/modules/app-kit-platform.md).
 
 Types the PR-title gate in `pr-hygiene.yml` accepts: `feat`, `fix`, `docs`,
 `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `build`, `revert`. **One
-logical change per commit**. PRs are squash-merged, so PR Hygiene does not
-count a branch's commits.
+logical change per commit**. PRs are squash-merged by default (auto-merge uses
+`--squash`), and PR Hygiene does not count a branch's commits.
 
 ### PR description
 

@@ -307,7 +307,7 @@ error (exit 2). So an **uncommitted `.prepare-pr.toml` edit is ignored**.
 
 **`single_commit` governs history handling in one place.** When `true`, run the
 squash (Phase 1.4) and the post-squash guard (Phase 3.1); when `false`, skip both
-and keep the branch's history. PRs are squash-merged and CI does not count
+and keep the branch's history. PRs are squash-merged by default; CI does not count
 commits; the squash makes each push one reviewed commit.
 
 Design + `.prepare-pr.toml` schema: `docs/request-for-change/rfc-prepare-pr-portability.md`.

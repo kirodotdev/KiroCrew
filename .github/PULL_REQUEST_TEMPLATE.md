@@ -178,7 +178,7 @@
 
 ## Checklist
 
-- [ ] A Conventional Commits title (`feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert: ...`); the PR is squash-merged, so it may carry any number of commits
+- [ ] A Conventional Commits title (`feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert: ...`); PR Hygiene does not count commits
 - [ ] Existing tests pass and new tests added for new functionality
 - [ ] Self-review completed; code follows project style guidelines
 - [ ] Documentation updated (if applicable)

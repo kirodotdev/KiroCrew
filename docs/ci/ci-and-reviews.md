@@ -3126,7 +3126,7 @@ run came from a `code-review.yml` that still hears `edited`, so it counts.
   becomes the squash-merge message) and a
   `## Pattern harvest` section on `fix`/`revert` PRs containing either
   `Rule candidate:` or `Not generalizable:`. It does not count the PR's commits:
-  the squash merge lands one commit on `main` whatever the branch carries. It also runs
+  a squash merge, the default, lands one commit on `main` whatever the branch carries. It also runs
   `.github/scripts/pr-description-check.sh`, the same rules `fork-pr-description.yml`
   applies to forks: the template's required headings, `## Not a goal` included, and
   a filled `**Goal:**` line under Problem / Motivation. On failure its error

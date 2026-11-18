@@ -343,8 +343,8 @@ upstream before each run (`gh repo sync <your-username>/KiroCrew`, then
 `git fetch origin`); otherwise its diff, review briefs and squash all measure
 against your fork's older `main`.
 
-Every PR is squash-merged, so the number of commits on a branch never reaches
-`main`. If your branch falls behind the base while the PR is open, **Update branch**,
+PRs are squash-merged by default, and PR Hygiene does not count a branch's
+commits. If your branch falls behind the base while the PR is open, **Update branch**,
 a local `git merge main` or a rebase all work.
 
 ## Pull Request Workflow
