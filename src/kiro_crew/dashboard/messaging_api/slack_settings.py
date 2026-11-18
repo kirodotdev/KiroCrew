@@ -403,11 +403,10 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         from kiro_crew.dashboard.slack_code_settings import reset_status_cache
 
         reset_status_cache()
-    # Only ``slack.command`` still needs a restart: it is registered in the Slack
-    # app manifest, so no local reload can make Slack route a new trigger. Every
-    # other slack.* field -- including the enterprise allow-list, which the
-    # gateway re-reads through its validated reader on a config change -- is
-    # applied live. A token write, or a first owner ID, is applied by
+    # Every slack.* field is applied live, including ``slack.command`` (the
+    # gateway answers every manifest-registered /kirocrew name, so this only
+    # renames what help shows) and the enterprise allow-list, which the
+    # gateway re-reads through its validated reader on a config change. A token write, or a first owner ID, is applied by
     # POST /api/slack/reconnect; replacing the owner the gateway authorizes needs a
     # restart (Reconnect refuses it: work was admitted under that owner).
     # Answer only once the watcher has applied the write: a narrowed allow-list

@@ -728,10 +728,9 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
 
         await asyncio.to_thread(slack_enterprise.reload_allowed_team_ids)
     if "slack.command" in slack_paths:
-        logger.warning(
-            "slack.command changed in config; the slash command is registered in "
-            "the Slack app manifest, so this takes effect on the next gateway start"
-        )
+        # The name help text shows and the router answers beside the manifest
+        # names; Slack's routing is the app manifest's, so nothing reconnects.
+        self.slack_command = new.slack.command
 
 
 def _on_default_agent_config_change(self: GatewayOrchestrator, change: ConfigChange) -> None:

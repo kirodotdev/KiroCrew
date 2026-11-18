@@ -142,12 +142,12 @@ class SlackConfig:
         default="kirocrew",
         metadata=_meta(
             "Command",
-            "Slack slash command trigger word.",
-            # Boot-read: the trigger is registered in the Slack app MANIFEST, so
-            # a local reload cannot make Slack route a new word. Applying it
-            # in-process would only change the help text and report success for a
-            # command that still does not exist on Slack's side.
-            restart=True,
+            "Slash command name shown in Slack help. The gateway also answers "
+            "/kirocrew and any /kirocrew-<alias> the app registers.",
+            # Live: Slack routes only commands the app MANIFEST registers, and the
+            # gateway answers every manifest-shaped name (``/kirocrew`` and
+            # ``/kirocrew-<alias>``) whatever this says. This adds a custom name
+            # and is the name help text shows; the Slack applier refreshes it.
         ),
     )
     forward_to_agent_callback: str = field(

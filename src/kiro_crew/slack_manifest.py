@@ -51,6 +51,29 @@ DEFAULT_ALIAS = "kirocrew"
 #: Prefix of every alias-named slash command.
 SLASH_COMMAND_PREFIX = "kirocrew-"
 
+#: A command name the bundled manifest can register, with its ``/``:
+#: ``/kirocrew`` or ``/kirocrew-<alias>`` (:func:`slash_command`). Slack delivers
+#: only commands this app registered, so the gateway answers every name of this
+#: shape whatever ``slack.command`` says. The alias class is what
+#: :func:`slash_command` emits, so a matched name is safe to echo.
+MANIFEST_COMMAND_RE = re.compile(
+    rf"/(?:{re.escape(DEFAULT_ALIAS)}|{re.escape(SLASH_COMMAND_PREFIX)}[a-z0-9_-]+)"
+)
+
+
+def is_app_command(command: str, *names: object) -> bool:
+    """Whether *command* (``/name``, as Slack sends it) is this app's own.
+
+    It is when it matches :data:`MANIFEST_COMMAND_RE`, or equals ``/<name>``
+    for one of *names*: the live ``slack.command`` and the name the gateway
+    shows. Checking the live config keeps a custom command answered after the
+    shown name changed to another registered one.
+    """
+    if MANIFEST_COMMAND_RE.fullmatch(command):
+        return True
+    return any(isinstance(n, str) and n and command == f"/{n}" for n in names)
+
+
 #: Slack's limit on a slash command, leading ``/`` included.
 SLASH_COMMAND_MAX = 32
 

@@ -422,9 +422,9 @@ def test_restart_required_only_on_actual_change(tmp_path, monkeypatch) -> None:
     # Unchanged command + empty owner + live-applied toggle: no restart.
     body = asyncio.run(_run({"command": "kirocrew", "owner_id": "", "reactions_enabled": True}))
     assert body["restart_required"] is False
-    # Changed command (boot-read): restart.
+    # Changed command: applied live, so no restart either.
     body = asyncio.run(_run({"command": "myclaw"}))
-    assert body["restart_required"] is True
+    assert body["restart_required"] is False
     assert body["reconnect_required"] is False
 
 

@@ -251,8 +251,8 @@ def _register_config_appliers(self: GatewayOrchestrator) -> None:
             *self._SLACK_APPLIER_PREFIXES,
             # ``credentials`` too: a Slack token changed in ``.env`` cannot be
             # applied to the host-managed socket in process, so the applier logs
-            # a restart-needed notice for it (the honest fallback, like
-            # ``slack.command``) rather than silently ignoring the edit.
+            # a restart-needed notice for it (the honest fallback) rather than
+            # silently ignoring the edit.
             live.CREDENTIAL_CHANGE_PREFIX,
             callback=self._on_slack_config_change,
             name="GatewayOrchestrator.slack",

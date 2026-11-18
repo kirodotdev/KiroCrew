@@ -114,6 +114,7 @@ def __init__(
     self._hoist_webex(cfg, creds)
     self._hoist_imessage(cfg, creds)
     self._hoist_teams(cfg, creds)
+    # Boot value only: the Slack config applier refreshes it on a change.
     self.slack_command = cfg.slack.command
     # Serializes restart_channel: two config writes landing within one
     # poll interval must close-then-start the same channel in order.

@@ -280,9 +280,9 @@ def audit_refused_pick(payload: dict[str, Any], reason: str) -> None:
 
 
 def _command(orch: Any = None) -> str:
-    """The app's slash command, as the person types it: the one the router
-    matched (``orch.slack_command``) when an orchestrator is in hand, else
-    ``slack.command``."""
+    """The app's slash command, as shown to the person: ``orch.slack_command``
+    (the live ``slack.command``, refreshed on a config change) when an
+    orchestrator is in hand, else ``slack.command`` read from config."""
     routed = str(getattr(orch, "slack_command", "") or "").strip().lstrip("/")
     if not routed:
         try:

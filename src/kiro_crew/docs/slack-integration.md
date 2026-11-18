@@ -278,9 +278,9 @@ your own workspace.
    set `slack.home_tab_builtin` to `false` to keep a Home view you publish
    yourself with the same bot instead.
 5. **Set credentials** in `~/.kiro/crew/.env` (`SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`). Slack has no `enabled` setting: both Slack tokens opt the channel in.
-6. **Slash command** (optional) — the command name is configurable via
-   `slack.command` in config.json (default: `kirocrew`). Each app instance
-   should use a unique name.
+6. **Slash command** (optional) — the gateway answers `/kirocrew` and any
+   `/kirocrew-<alias>` the app registers. Set `slack.command` in config.json
+   (default: `kirocrew`) only for another name; it applies without a restart.
 
 ## Settings page
 

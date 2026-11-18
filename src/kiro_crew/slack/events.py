@@ -1930,7 +1930,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.events_queue import slack_stop_in_flight  # noqa: F401
     from kiro_crew.slack.events_slash import SLASH_REGISTRY  # noqa: F401
     from kiro_crew.slack.events_slash import SlashHandler  # noqa: F401
-    from kiro_crew.slack.events_slash import _MANIFEST_COMMAND_RE  # noqa: F401
     from kiro_crew.slack.events_slash import _RESTART_SESSION_CLOSE_SECS  # noqa: F401
     from kiro_crew.slack.events_slash import _build_help_text  # noqa: F401
     from kiro_crew.slack.events_slash import _get_agent_names  # noqa: F401
