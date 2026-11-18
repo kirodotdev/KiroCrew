@@ -326,7 +326,7 @@ development, and will drop the experimental prefix once this is stable.
 ## 7. Rollout — one element per PR
 
 This repo's accepted changes are small: median about 220 lines per commit, ~920 at
-the 75th percentile, and at most two commits per PR. The whole feature is far
+the 75th percentile. The whole feature is far
 larger than one PR should be, and it is several logical changes, not one. The
 extension shape from §2.3 lets it land as a foundation plus one element at a time,
 each addition touching only the layout package (and, for page-owned elements, one

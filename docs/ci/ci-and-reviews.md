@@ -65,7 +65,7 @@ pull_request
   |-- ci.yml            "CI"           lint, sharded tests, coverage gate, e2e
   |-- build.yml         "Build"        wheel + desktop/installer artifacts build
   |-- code-review.yml   "Code Review"  grep rules, woke, Semgrep
-  |-- pr-hygiene.yml    "PR Hygiene"   title, commit count, description sections
+  |-- pr-hygiene.yml    "PR Hygiene"   title, description sections
   |-- issue-gate.yml    "Issue Gate"   PR names a sized issue, blocking once enabled (paused)
   |-- pr-policy.yml     "PR Policy"    four read-only policies as steps of one job, one check row:
   |                                      PR Size: file count and hours open; owner approval at 80 files (shadow)
@@ -3123,11 +3123,10 @@ run came from a `code-review.yml` that still hears `edited`, so it counts.
   warning: a red run there files a `scheduled-failure` issue (see
   [A new advisory](#a-new-advisory-upgrade-if-a-fix-ships-otherwise-add-a-dated-exception)).
 - **`pr-hygiene`** (`pr-hygiene.yml`) enforces a Conventional-Commits PR title (it
-  becomes the squash-merge message), at most two commits (`git rev-list --count <= 2`), and a
+  becomes the squash-merge message) and a
   `## Pattern harvest` section on `fix`/`revert` PRs containing either
-  `Rule candidate:` or `Not generalizable:`. One commit stays the norm; the second
-  is there so a mechanical follow-up (a regenerated artifact, a formatting sweep)
-  can stay separable from the change it accompanies. It also runs
+  `Rule candidate:` or `Not generalizable:`. It does not count the PR's commits:
+  the squash merge lands one commit on `main` whatever the branch carries. It also runs
   `.github/scripts/pr-description-check.sh`, the same rules `fork-pr-description.yml`
   applies to forks: the template's required headings, `## Not a goal` included, and
   a filled `**Goal:**` line under Problem / Motivation. On failure its error

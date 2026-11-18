@@ -332,8 +332,8 @@ get it merged.
 When your change is ready, the workflow is already codified rather than left to
 taste. See Development Skills above: `kirocrew-worktree-dev` covers building and
 verifying in a worktree, and `kirocrew-prepare-pr` takes it from there, driving the change
-to a review-ready pull request by committing, syncing onto the base, squashing to
-the one or two commits this repo allows, opening or updating the PR, then polling CI
+to a review-ready pull request by committing, syncing onto the base, squashing,
+opening or updating the PR, then polling CI
 and the review bots and fixing what they find. An agent that loads it follows the
 same route a maintainer would, which is why the process holds regardless of who or
 what wrote the code. If you are contributing with an agent, point it at that skill
@@ -343,18 +343,9 @@ upstream before each run (`gh repo sync <your-username>/KiroCrew`, then
 `git fetch origin`); otherwise its diff, review briefs and squash all measure
 against your fork's older `main`.
 
-One thing the GitHub UI will get wrong for you: if your branch falls behind the
-base while the PR is open, **rebase it, do not merge**. Plain-clicking
-**Update branch**, like a local `git merge main`, adds a merge commit, which counts
-toward the one-or-two-commit limit above and fails `PR Hygiene` on a PR that was
-green a moment earlier. That button's dropdown does carry an **Update with rebase**
-option, which is safe; the default click is the trap. Pick that option, or run:
-
-```
-git fetch upstream
-git rebase upstream/<base branch>
-git push --force-with-lease origin <feature-branch>
-```
+Every PR is squash-merged, so the number of commits on a branch never reaches
+`main`. If your branch falls behind the base while the PR is open, **Update branch**,
+a local `git merge main` or a rebase all work.
 
 ## Pull Request Workflow
 
@@ -385,10 +376,10 @@ git push --force-with-lease origin <feature-branch>
 7. **Fill the PR template.** Keep every heading of
    [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) and fill the
    **Goal:** line under Problem / Motivation. The `pr-hygiene` check fails a body
-   that is missing them, and a PR with more than two commits; see the
+   that is missing them; see the
    [pre-gate rules](docs/ci/ci-and-reviews.md#code-reviewyml-the-deterministic-pre-gate).
-8. A maintainer will review. Address feedback by amending or squashing so the
-   branch stays within two commits, then force-push with `--force-with-lease`.
+8. A maintainer will review. Address feedback with new commits or by amending;
+   after a rewrite, force-push with `--force-with-lease`.
 
 Two things are worth knowing before you start something large.
 [GOVERNANCE.md](GOVERNANCE.md) covers who decides what lands and how a
