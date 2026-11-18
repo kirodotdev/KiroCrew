@@ -34,18 +34,18 @@ def _doctor_managed_service_policy(issues: list[str]) -> None:
         return
     print("\nManaged Service")
     if state:
-        print("  watchdog:    OK:      managed-service policy marker installed")
+        print("  watchdog:    ✅ managed-service policy marker installed")
     else:
-        print("  watchdog:    Warning: installed definition predates managed-service defaults")
+        print("  watchdog:    ⚠️  installed definition predates managed-service defaults")
         print("               Fix: run `kirocrew service install` once, then restart the service")
         issues.append("managed service definition is outdated")
     notes = cli_doctor.service_controller.stale_unit_notes()
     for note in notes:
-        print(f"  unit:        Warning: {note}")
+        print(f"  unit:        ⚠️  {note}")
     if notes:
         issues.append("managed service unit lags this build")
     for note in cli_doctor.service_controller.restart_policy_notes():
-        print(f"  restart:     Warning: {note}")
+        print(f"  restart:     ⚠️  {note}")
 
 
 def _doctor_pod_session_bus(issues: list[str]) -> None:
@@ -68,12 +68,12 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
     print("\nPods")
     if not sys.platform.startswith("linux"):
         print(
-            f"  session bus: Note:    not applicable ({sys.platform} — pods are "
+            f"  session bus: ⏹ not applicable ({sys.platform} — pods are "
             "Linux `systemd --user` only)"
         )
         return
     if shutil.which("systemctl") is None:
-        print("  session bus: Note:    not applicable (no `systemctl` on PATH)")
+        print("  session bus: ⏹ not applicable (no `systemctl` on PATH)")
         return
 
     # Local import keeps the pod package out of every other CLI command's import
@@ -94,7 +94,7 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
         # require_systemd() stays permissive when a bus exists so an incomplete
         # unit-path probe cannot prevent execution on a working host.
         print(
-            "  session bus: Note:    not applicable (no systemd per-user manager on this "
+            "  session bus: ⏹ not applicable (no systemd per-user manager on this "
             "host — pods are unavailable)"
         )
         print("               Enterprise Linux 7 derivatives (RHEL 7, CentOS 7,")
@@ -109,16 +109,16 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
             USER_BUS_NO_SESSION: "no user session bus",
             USER_BUS_SANDBOXED_AWAY: "sandboxed away",
         }.get(result.status, "unreachable")
-        print(f"  session bus: Error:   {label} ({result.socket})")
+        print(f"  session bus: ❌ {label} ({result.socket})")
         for line in user_bus_failure_message(result).splitlines():
             print(f"               {line}")
         print("               Everything else works.")
         return
 
-    print(f"  session bus: OK:      {result.socket}")
+    print(f"  session bus: ✅ {result.socket}")
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
     if cli_doctor._linger_enabled(user) is False:
-        print("  linger:      Warning: disabled — the per-user systemd instance exits on logout,")
+        print("  linger:      ⚠️  disabled — the per-user systemd instance exits on logout,")
         print(f"               taking running pods with it. Fix: loginctl enable-linger {user}")
 
 
@@ -141,7 +141,7 @@ def _doctor_headless_auth(issues: list[str]) -> None:
 
     Advisory only (never appended to ``issues``, like the pod-session-bus and
     memory-pressure probes): ``issues`` is doctor's exit-code channel, so an
-    entry here makes the verdict Error: and exits non-zero — a claim this shell
+    entry here makes the verdict ❌ and exits non-zero — a claim this shell
     cannot establish. ``service_environment()`` bakes ``HOME``, so a service on
     a host that ran ``kiro-cli login`` before the key was exported resolves that
     credential store and is healthy while the check still fires; and a unit path
@@ -165,7 +165,7 @@ def _doctor_headless_auth(issues: list[str]) -> None:
             return
     except Exception:
         return
-    print("  kiro key:    Warning: set here, but the installed service cannot see it")
+    print("  kiro key:    ⚠️  set here, but the installed service cannot see it")
     for line in warning.splitlines():
         print(f"{render._INDENT}{line.strip()}" if line.strip() else "")
 
@@ -192,7 +192,7 @@ def _doctor_dropped_host_env(issues: list[str]) -> None:
             return
     except Exception:  # noqa: BLE001 - a diagnostic probe must not fail doctor
         return
-    print("  host env:    Warning: set here, but the installed service does not inherit it")
+    print("  host env:    ⚠️  set here, but the installed service does not inherit it")
     for line in warning.splitlines():
         print(f"{render._INDENT}{line.strip()}" if line.strip() else "")
 
@@ -380,28 +380,28 @@ def _doctor_kiro_chat_delegate(
     delegate_needed = required and (relay is None or kiro_role)
     fatal = [r for r in (delegate_reason if delegate_needed else None, relay_reason) if r]
     if fatal:
-        print(f"  kiro-cli-chat: Error:   Kiro CLI is broken: {'; '.join(fatal)}")
+        print(f"  kiro-cli-chat: ❌ Kiro CLI is broken: {'; '.join(fatal)}")
         print(f"{render._INDENT}Fix: {CHAT_DELEGATE_BROKEN_FIX}")
         issues.append("Kiro CLI is broken (kiro-cli-chat will not launch): reinstall Kiro CLI")
         return
     reason = delegate_reason
     if reason is None:
-        print(f"  kiro-cli-chat: OK:      {version or target}")
+        print(f"  kiro-cli-chat: ✅ {version or target}")
         return
     if relay:
         print(
-            f"  kiro-cli-chat: Warning: Kiro CLI is broken: {reason} (sessions signed in "
+            f"  kiro-cli-chat: ⚠️  Kiro CLI is broken: {reason} (sessions signed in "
             f"through Kiro Crew launch {relay}, which works)"
         )
         print(f"{render._INDENT}Fix: {CHAT_DELEGATE_BROKEN_FIX}")
         return
     if not required:
         print(
-            f"  kiro-cli-chat: Warning: Kiro CLI is broken: {reason} (not used by the selected backends)"
+            f"  kiro-cli-chat: ⚠️  Kiro CLI is broken: {reason} (not used by the selected backends)"
         )
         print(f"{render._INDENT}Fix: {CHAT_DELEGATE_BROKEN_FIX}")
         return
-    print(f"  kiro-cli-chat: Error:   Kiro CLI is broken: {reason}")
+    print(f"  kiro-cli-chat: ❌ Kiro CLI is broken: {reason}")
     print(f"{render._INDENT}Fix: {CHAT_DELEGATE_BROKEN_FIX}")
     issues.append("Kiro CLI is broken (kiro-cli-chat will not launch): reinstall Kiro CLI")
 
@@ -430,9 +430,9 @@ def _doctor_configuration(cfg: KiroCrewConfig, issues: list[str]) -> DashboardBi
     print("\nConfiguration")
     cfg_dir = cli_doctor.config_dir()
     if cfg_dir.exists():
-        print(f"  config dir:  OK:      {cfg_dir}")
+        print(f"  config dir:  ✅ {cfg_dir}")
     else:
-        print(f"  config dir:  Note:    {cfg_dir} (will be created)")
+        print(f"  config dir:  📁 {cfg_dir} (will be created)")
     print(f"  provider:    {cfg.agent.provider}")
     print(f"  model:       {cfg.agent.model}")
     print(f"  approval:    {cfg.agent.approval_mode}")
@@ -441,7 +441,7 @@ def _doctor_configuration(cfg: KiroCrewConfig, issues: list[str]) -> DashboardBi
     try:
         _host, _port = cli_doctor.parse_dashboard_url(cfg.dashboard.url)
     except Exception:
-        print("  dashboard:   Warning: cannot parse dashboard URL from config")
+        print("  dashboard:   ⚠️  cannot parse dashboard URL from config")
         issues.append("dashboard URL misconfigured")
     _display_host = _host or "localhost"
     if _port:
@@ -476,15 +476,13 @@ def _doctor_configuration(cfg: KiroCrewConfig, issues: list[str]) -> DashboardBi
         )
     else:
         print("  bind:        0.0.0.0 (all interfaces)")
-        print("  auth:        OK:      token auth required (via !dashboard)")
+        print("  auth:        ✅ token auth required (via !dashboard)")
         if not _has_slack and creds_unreadable:
             # The Slack tokens may be in the file this shell could not read, so
             # whether Slack is configured is unknown, not a fault to count.
-            print(
-                "  auth:        Skipped: Slack unknown — credentials not readable from this shell"
-            )
+            print("  auth:        ⏭  Slack unknown — credentials not readable from this shell")
         elif not _has_slack:
-            print("  auth:        Warning: Slack not configured — token generation unavailable")
+            print("  auth:        ⚠️  Slack not configured — token generation unavailable")
             issues.append("dashboard auth: remote bind without Slack")
     return DashboardBinding(_host, _port, creds, _has_slack, _local, creds_unreadable)
 
@@ -529,11 +527,11 @@ def _doctor_running_version(port: int, issues: list[str]) -> None:
     on_disk = live_target.selected_version()[0] or "unknown"
     running = _running_gateway_version(port)
     if running is None or on_disk == "unknown":
-        print(f"  running:     Warning: {running or 'gateway version unknown'} (on disk {on_disk})")
+        print(f"  running:     ⚠️  {running or 'gateway version unknown'} (on disk {on_disk})")
     elif running == on_disk:
-        print(f"  running:     OK:      {running} (same as on disk)")
+        print(f"  running:     ✅ {running} (same as on disk)")
     else:
-        print(f"  running:     Warning: {running}, on disk {on_disk} (restart needed)")
+        print(f"  running:     ⚠️  {running}, on disk {on_disk} (restart needed)")
         print(f"{render._INDENT}Fix: `kirocrew restart` (the gateway still runs the old code)")
         issues.append("gateway restart needed (running version differs from on-disk)")
 
@@ -554,15 +552,15 @@ def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str])
             # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- loopback host literal plus a fixed internal path; the only interpolated value is the gateway port from config/env, so no scheme or host is reachable from input  # noqa: E501
             with urllib.request.urlopen(req, timeout=2) as resp:
                 data = json.loads(resp.read())
-            print(f"  gateway:     OK:      running (uptime {data.get('uptime', '?')})")
+            print(f"  gateway:     ✅ running (uptime {data.get('uptime', '?')})")
             gateway_up = True
         except urllib.error.HTTPError as he:
             # 401/403 means gateway is running but requires token auth
             gateway_up = True
             if he.code in (401, 403):
-                print("  gateway:     OK:      running (token auth enabled)")
+                print("  gateway:     ✅ running (token auth enabled)")
             else:
-                print(f"  gateway:     Warning: HTTP {he.code}")
+                print(f"  gateway:     ⚠️  HTTP {he.code}")
         except (urllib.error.URLError, OSError) as e:
             # Only a bare read timeout (the connection was accepted and the
             # gateway then stalled -- a loop thread starved of the GIL) means it
@@ -572,11 +570,11 @@ def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str])
             # so a connect timeout here must not read busy. The non-doctor sites,
             # whose deadlines sit past that window, use loopback_http.deadline_expired.
             if isinstance(e, TimeoutError):
-                print("  gateway:     Pending: busy (up but did not answer)")
+                print("  gateway:     ⏳ busy (up but did not answer)")
             else:
-                print("  gateway:     Note:    not running")
+                print("  gateway:     ⏹  not running")
         except Exception:
-            print("  gateway:     Warning: running but returned unexpected response")
+            print("  gateway:     ⚠️  running but returned unexpected response")
             gateway_up = True
 
         if gateway_up:
@@ -585,7 +583,7 @@ def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str])
         # SSH tunnel hint for remote hosts
         if is_remote:
             mh = cli_doctor.machine_hostname() or "this-host"
-            print("\n  Remote access: Run on your LOCAL machine:")
+            print("\n  💡 Remote access: Run on your LOCAL machine:")
             print(f"     ssh -NL {_port}:localhost:{_port} {mh}")
             print("     Then run: kirocrew token")
 
@@ -600,12 +598,12 @@ def _doctor_gateway_reachability(dashboard: DashboardBinding, issues: list[str])
                     # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- reaching the operator's OWN configured dashboard host is the test: this asserts token auth is enforced off loopback. The scheme is a literal and the host comes from dashboard.url, not from input  # noqa: E501
                     with urllib.request.urlopen(ext_req, timeout=2) as resp:
                         # 200 without token = auth is NOT enforced
-                        print("  auth check:  Error:   external access allowed without token!")
+                        print("  auth check:  ❌ external access allowed without token!")
                         issues.append("dashboard auth: no token required on external interface")
                 except urllib.error.HTTPError as he:
                     if he.code in (401, 403):
-                        print("  auth check:  OK:      token required on external interface")
+                        print("  auth check:  ✅ token required on external interface")
                     else:
-                        print(f"  auth check:  Warning: HTTP {he.code}")
+                        print(f"  auth check:  ⚠️  HTTP {he.code}")
             except Exception:
-                print("  auth check:  Skipped: could not reach external interface")
+                print("  auth check:  ⏭  could not reach external interface")

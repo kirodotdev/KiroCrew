@@ -455,14 +455,14 @@ def _doctor_model_url_reachable(issues: list[str]) -> None:
         req = urllib.request.Request(url, method="HEAD")
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- _resolve_model_url enforces https://; HEAD-only reachability probe
         with urllib.request.urlopen(req, timeout=5) as resp:
-            print(f"  model url:   OK:      reachable ({resp.status}) {safe}")
+            print(f"  model url:   ✅ reachable ({resp.status}) {safe}")
     except urllib.error.HTTPError as exc:
-        print(f"  model url:   Error:   HTTP {exc.code} from {safe}")
+        print(f"  model url:   ❌ HTTP {exc.code} from {safe}")
         print("               Fix: set KIROCREW_EMBED_MODEL_URL (or memory.embed_model_url)")
         print("               to a mirror hosting the GGUF; the sha256 pin still verifies it.")
     except Exception as exc:
         why = _model_url_failure_text(exc, url)
-        print(f"  model url:   Error:   unreachable ({why}) {safe}")
+        print(f"  model url:   ❌ unreachable ({why}) {safe}")
         print("               Check network connectivity; the background download will")
         print("               keep retrying with backoff on every gateway boot.")
 
@@ -495,8 +495,8 @@ def _doctor_lts_sign_in(issues: list[str]) -> None:
 
     line = lts_sign_in.describe()
     print(f"  sign-in:     {line}")
-    if line.startswith("Error:"):
-        issues.append(f"LTS sign-in: {line.removeprefix('Error:').strip()}")
+    if line.startswith("❌"):
+        issues.append(f"LTS sign-in: {line[2:].strip()}")
 
 
 def _selected_roles_run_kiro_cli(cfg: KiroCrewConfig) -> tuple[bool, bool]:
@@ -568,13 +568,13 @@ def _kiro_cli_version_row(kiro: str, issues: list[str], *, required: bool) -> st
         failure = f"cannot be launched ({exc.strerror or type(exc).__name__})"
     if failure and required:
         issues.append(f"kiro-cli {failure}")
-        return f"  kiro-cli:    Error:   {failure} (a selected backend runs it)"
+        return f"  kiro-cli:    ❌ {failure} (a selected backend runs it)"
     if failure:
-        return f"  kiro-cli:    Warning: {failure} (optional backend)"
+        return f"  kiro-cli:    ⚠  {failure} (optional backend)"
     if result.returncode == 0:
         ver = result.stdout.strip() or result.stderr.strip()
-        return f"  kiro-cli:    OK:      {ver}"
-    return "  kiro-cli:    Warning: exits with error (optional backend)"
+        return f"  kiro-cli:    ✅ {ver}"
+    return "  kiro-cli:    ⚠  exits with error (optional backend)"
 
 
 def _reconcile_memory() -> None:
@@ -587,7 +587,7 @@ def _reconcile_memory() -> None:
 
     path = memory_stores.resolve_store_path(memory_stores.DEFAULT_MEMORY_STORE)
     if not path.is_file():
-        print(f"  Skipped: no memory database at {path}")
+        print(f"  ⏭ no memory database at {path}")
         return
     try:
         db = sqlite3.connect(str(path), timeout=30)
@@ -607,9 +607,9 @@ def _reconcile_memory() -> None:
             else:
                 sqlite_wal.close_keeping_wal(db)
     except sqlite3.Error as exc:
-        print(f"  Error:   memory reconcile failed: {exc}")
+        print(f"  ❌ memory reconcile failed: {exc}")
         sys.exit(1)
-    print(f"  OK:      memory reconcile: every row checked, {changed} journaled")
+    print(f"  ✅ memory reconcile: every row checked, {changed} journaled")
 
 
 def _doctor(
@@ -631,7 +631,7 @@ def _doctor(
     ``--bundle`` mode has had its turn, so the ``kiro_crew.cli`` import every command
     pays never loads them.
     """
-    print("Kiro Crew Doctor\n")
+    print("Kiro Crew Doctor 👻\n")
     issues: list[str] = []
 
     if reconcile_memory:
@@ -655,10 +655,10 @@ def _doctor(
         try:
             result = diagnostics.collect_bundle()
         except OSError as exc:
-            print(f"  Error:   could not write the diagnostics bundle: {exc}")
+            print(f"  ❌ could not write the diagnostics bundle: {exc}")
             print("     Check that ~/.kiro/crew is writable and has free space.")
             sys.exit(1)
-        print(f"  OK:      bundle: {result.zip_path}")
+        print(f"  ✅ bundle: {result.zip_path}")
         print(
             f"     {len(result.included)} file(s) · "
             f"{result.total_redactions} secret(s) redacted"
@@ -694,7 +694,7 @@ def _doctor(
     print("Platform")
     _doctor_lts_sign_in(issues)
     if platform_boot_error is not None:
-        print(f"  edition:     Error:   composition failed: {platform_boot_error}")
+        print(f"  edition:     ❌ composition failed: {platform_boot_error}")
         issues.append(f"platform composition failed: {platform_boot_error}")
     else:
         # Bind the context ONCE for the whole block so the edition line and the
@@ -708,14 +708,14 @@ def _doctor(
         try:
             ctx = current_context()
         except PlatformCompositionError as exc:
-            print(f"  edition:     Error:   composition failed: {exc}")
+            print(f"  edition:     ❌ composition failed: {exc}")
             issues.append(f"platform composition failed: {exc}")
             ctx = None
         except Exception:
             # Never let edition reporting itself break the doctor.
             ctx = None
         if ctx is not None:
-            print(f"  edition:     OK:      {ctx.profile}")
+            print(f"  edition:     ✅ {ctx.profile}")
             # Process-isolation jail (CPP JailProvider seam).  The public Default
             # has no backend; a companion reports its real status.  Each probe
             # fails OPEN to a safe placeholder so a transient adapter error keeps
@@ -729,9 +729,9 @@ def _doctor(
                     lambda: _jail.status_detail(), fallback="status unavailable"
                 )
                 _jail_on = safe_context_call(lambda: _jail.available(), fallback=False)
-                print(f"  jail:        {'OK:' if _jail_on else 'Skipped:':<9}{_jail_status}")
+                print(f"  jail:        {'✅' if _jail_on else '⏭ '} {_jail_status}")
             except PlatformCompositionError as exc:
-                print(f"  jail:        Error:   composition failed: {exc}")
+                print(f"  jail:        ❌ composition failed: {exc}")
                 issues.append(f"jail provider composition failed: {exc}")
 
     # Loaded once, before the first row that reads it, so every row of one report
@@ -755,12 +755,12 @@ def _doctor(
     bundle_route = kas_bundle.kas_bundle_route()
     kiro_role, relay_kas_role = _selected_roles_run_kiro_cli(cfg)
     if kiro:
-        print(f"  kiro-cli:    OK:      {kiro}")
+        print(f"  kiro-cli:    ✅ {kiro}")
         services._doctor_headless_auth(issues)
     elif kiro_role:
         # Every session on a selected Kiro CLI role fails to spawn. Relay KAS is not
         # counted: with no kiro-cli its spawn takes Crew's own engine (``kas_route``).
-        print("  kiro-cli:    Error:   not found (a selected backend runs it)")
+        print("  kiro-cli:    ❌ not found (a selected backend runs it)")
         print("               Install kiro-cli per its docs, then: kiro-cli login")
         issues.append("kiro-cli not found")
     elif bundle_route:
@@ -768,10 +768,10 @@ def _doctor(
         # KAS backend section reports it), so an install hint here would send the
         # operator to fetch a binary nothing on this host would spawn.
         print(
-            "  kiro-cli:    Skipped: not installed; not needed (KAS runs Kiro Crew's own engine bundle)"
+            "  kiro-cli:    ⏭  not installed; not needed (KAS runs Kiro Crew's own engine bundle)"
         )
     else:
-        print("  kiro-cli:    Skipped: not found (the default agent backend)")
+        print("  kiro-cli:    ⏭  not found (the default agent backend)")
         print("               Install kiro-cli per its docs, then: kiro-cli login")
 
     agents._doctor_claude_backend(issues, required=_selected_roles_run_claude(cfg))
@@ -783,13 +783,13 @@ def _doctor(
 
     git = shutil.which("git")
     if git:
-        print(f"  git:         OK:      {git}")
+        print(f"  git:         ✅ {git}")
     elif derive_capability().managed_by == MANAGED_BY_GIT:
         # Only a git checkout updates through git; a wheel re-runs its installer.
-        print("  git:         Error:   not found (needed for kirocrew update)")
+        print("  git:         ❌ not found (needed for kirocrew update)")
         issues.append("git")
     else:
-        print("  git:         Skipped: not found (not needed: this install updates without git)")
+        print("  git:         ⏭  not found (not needed: this install updates without git)")
 
     # On the bundle route the engine runs the Node its bundle ships, so the row
     # names that one; an unreadable install record only drops the version.
@@ -830,13 +830,13 @@ def _doctor(
     print("\nAgent")
     agent_path = _agents_dir() / AGENT_FILENAME
     if agent_path.exists():
-        print(f"  config:      OK:      {agent_path}")
+        print(f"  config:      ✅ {agent_path}")
     elif _no_gateway_running():
-        print("  config:      Skipped: not created yet (kirocrew gateway creates it on start)")
+        print("  config:      ⏭  not created yet (kirocrew gateway creates it on start)")
     else:
         # A running gateway writes this spec at start, so missing here is a fault;
         # a lock probe that cannot answer is treated the same way.
-        print("  config:      Error:   not found (run kirocrew setup)")
+        print("  config:      ❌ not found (run kirocrew setup)")
         issues.append("agent config")
 
     # Model pins across ALL specs, not just the default one. A pin kiro-cli
@@ -851,7 +851,7 @@ def _doctor(
     # clean bill of health for it.
     _bad_pins = _agent_spec_model_problems(project_dir=proj or None, provider=cfg.agent.provider)
     if _bad_pins is None:
-        print("  model pins:  Warning: could not check (agent specs unreadable)")
+        print("  model pins:  ⚠️  could not check (agent specs unreadable)")
         issues.append("agent model pins unchecked")
     elif _bad_pins:
         for _agent_name, _pin, _correction in _bad_pins:
@@ -859,7 +859,7 @@ def _doctor(
                 print(_line)
         issues.append("agent model pin")
     else:
-        print("  model pins:  OK:      no unusable spellings in agent specs")
+        print("  model pins:  ✅ no unusable spellings in agent specs")
     # The same specs' allowedCommands entries Kiro Crew's own gate cannot read.
     agents._doctor_unreadable_allowed_commands(cfg, proj or None, issues)
 
@@ -1007,28 +1007,28 @@ def _doctor(
             )
             py_result.check_returncode()
             ver = py_result.stdout.strip()
-            print(f"  python:      OK:      {venv_py} ({ver})")
-            print(f"  kiro_crew:   OK:      {_mc_version}")
+            print(f"  python:      ✅ {venv_py} ({ver})")
+            print(f"  kiro_crew:   ✅ {_mc_version}")
         except Exception as exc:
-            print(f"  python:      Error:   venv python broken: {exc}")
+            print(f"  python:      ❌ venv python broken: {exc}")
             issues.append("venv python")
         else:
             if _venv_deps_ok(venv_py):
-                print("  deps:        OK:      websockets, slack_sdk, aiohttp available")
+                print("  deps:        ✅ websockets, slack_sdk, aiohttp available")
             else:
-                print("  deps:        Error:   missing modules (websockets/slack_sdk/aiohttp)")
+                print("  deps:        ❌ missing modules (websockets/slack_sdk/aiohttp)")
                 issues.append("python deps")
     else:
-        print(f"  python:      OK:      {sys.executable} ({sys.version.split()[0]})")
-        print(f"  kiro_crew:   OK:      {_mc_version}")
+        print(f"  python:      ✅ {sys.executable} ({sys.version.split()[0]})")
+        print(f"  kiro_crew:   ✅ {_mc_version}")
         try:
             import aiohttp  # noqa: F401
             import slack_sdk  # noqa: F401
             import websockets  # noqa: F401
 
-            print("  deps:        OK:      websockets, slack_sdk, aiohttp available")
+            print("  deps:        ✅ websockets, slack_sdk, aiohttp available")
         except ImportError:
-            print("  deps:        Error:   missing modules (websockets/slack_sdk/aiohttp)")
+            print("  deps:        ❌ missing modules (websockets/slack_sdk/aiohttp)")
             if pip_install_channel_available():
                 print(f"               Fix: {pip_install_command_for('-e', '.')}")
             issues.append("python deps")
@@ -1099,16 +1099,16 @@ def _doctor(
         # a gap. The install verdict itself is the KAS backend section's.
         engine = kas_bundle.installed_engine_label()
         if engine:
-            print(f"  engine:      OK:      {engine} (Kiro Crew's own bundle; kiro-cli not used)")
+            print(f"  engine:      ✅ {engine} (Kiro Crew's own bundle; kiro-cli not used)")
         else:
-            print("  engine:      Skipped: no KAS bundle installed (see the KAS backend section)")
+            print("  engine:      ⏭  no KAS bundle installed (see the KAS backend section)")
     elif kiro:
         # Relay KAS enters through the launcher unless Crew's vault names a
         # sibling chat binary for it (``relay_entry``).
         launcher_role = kiro_role or (relay_kas_role and relay_entry is None)
         print(_kiro_cli_version_row(kiro, issues, required=launcher_role))
     else:
-        print("  kiro-cli:    Skipped: not installed")
+        print("  kiro-cli:    ⏭  skipped (not installed)")
     # The launcher answers ``--version`` itself; this row asks the chat binary
     # every session actually execs, which is what a stale install breaks. It is
     # fatal only when a harness that spawns kiro-cli is selected for either role:
@@ -1133,10 +1133,10 @@ def _doctor(
     # ── Summary ──
     print()
     if issues:
-        print(f"Fix these issues: {', '.join(issues)}")
+        print(f"❌ Fix these issues: {', '.join(issues)}")
         sys.exit(1)
     else:
-        print("Kiro Crew is ready!")
+        print("✅ Kiro Crew is ready!")
 
 
 # ── The facade ────────────────────────────────────────────────────────────────

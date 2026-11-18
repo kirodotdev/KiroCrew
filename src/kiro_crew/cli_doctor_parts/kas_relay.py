@@ -145,11 +145,11 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
         try:
             kas_bundle.require_loadable_host()
         except kas_bundle.KasHostUnsupported as exc:
-            print(f"  bundle:      Error:   {exc}")
+            print(f"  bundle:      ❌ {exc}")
             issues.append(f"Kiro Crew's KAS engine cannot run on this host: {exc}")
             return
         # Not a failure on its own: the gateway installs the pinned engine at the
-        # first chat. Still a Warning:, because an offline host fails then.
+        # first chat. Still a ⚠, because an offline host fails then.
         # Another version on disk is not "nothing installed": name what is there
         # and what this release needs, which is what a release whose pin moved
         # leaves behind when its engine refresh did not finish.
@@ -160,7 +160,7 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
             # An engines directory the doctor cannot list is its own finding: the
             # first chat's install cannot write there either. The rest of the
             # report still runs.
-            print(f"  bundle:      Error:   cannot read {kas_bundle.kas_engines_root()}: {exc}")  # type: ignore[misc]
+            print(f"  bundle:      ❌ cannot read {kas_bundle.kas_engines_root()}: {exc}")  # type: ignore[misc]
             print("               Fix: restore read access to it, then: kirocrew kas install")
             issues.append(f"the KAS engine directory cannot be read: {exc}")
             _report_kas_bundle_spec_permissions(None, issues)
@@ -171,12 +171,12 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
         if needed in on_disk:
             # A directory at the pin's name that does not read back as an engine:
             # an install refuses to overwrite it, so only --force replaces it.
-            print(f"  bundle:      Error:   KAS {needed} is on disk but incomplete")
+            print(f"  bundle:      ❌ KAS {needed} is on disk but incomplete")
             print("               Fix: kirocrew kas install --force")
             issues.append(f"the KAS engine directory for {needed} is incomplete")
         elif on_disk:
             print(
-                f"  bundle:      Warning: KAS {', '.join(on_disk)} installed, but this release "
+                f"  bundle:      ⚠  KAS {', '.join(on_disk)} installed, but this release "
                 f"needs KAS {needed}"
             )
             if not downloads:
@@ -188,7 +188,7 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
                     f"({needed}) is not installed; on disk: {', '.join(on_disk)}"
                 )
         else:
-            print(f"  bundle:      Warning: not installed yet under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
+            print(f"  bundle:      ⚠  not installed yet under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
             if not downloads:
                 issues.append(
                     "Kiro Crew's KAS engine is not installed and the gateway will not "
@@ -205,9 +205,7 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
         _report_kas_bundle_spec_permissions(None, issues)
         return
     where = " (built into the app)" if installed.bundled else ""
-    print(
-        f"  bundle:      OK:      KAS {installed.version}, Node {installed.node_version or '?'}{where}"
-    )
+    print(f"  bundle:      ✅ KAS {installed.version}, Node {installed.node_version or '?'}{where}")
     _report_kas_bundle_pin(installed.version)
     # The two entry points ``install.json`` records, each on its own row: the
     # spawn row below joins them into one argv, which is the right thing to copy
@@ -231,15 +229,15 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
     # the token; the describe verdict is the only read that sees issuer rejection.
     healthy = identity_line is not None and identity_line.endswith("-> usable")
     if signed_in and healthy:
-        print("  crew vault:  OK:      signed in through Kiro Crew")
+        print("  crew vault:  ✅ signed in through Kiro Crew")
     elif signed_in:
         print(
-            "  crew vault:  Warning: signed in through Kiro Crew, but the sign-in may not be usable;"
+            "  crew vault:  ⚠️  signed in through Kiro Crew, but the sign-in may not be usable;"
             " see the line above"
         )
         print(f"               {kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY}")
     else:
-        print("  crew vault:  Warning: not signed in; the first prompt will ask for a sign-in")
+        print("  crew vault:  ⚠️  not signed in; the first prompt will ask for a sign-in")
         print(f"               {kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY}")
     _report_kas_bundle_spec_permissions(installed.version, issues)
 
@@ -263,18 +261,16 @@ def _report_kas_bundle_spec_permissions(version: str | None, issues: list[str]) 
         if _report_bundle_kiro_cli_refusal(issues):
             return
         print(
-            "  auto-approve: OK:      spec `permissions` block written"
+            "  auto-approve: ✅ spec `permissions` block written"
             f" (the bundled engine KAS {version} reads it)"
         )
         return
     floor = ".".join(str(part) for part in kas_bundle.KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION)
     if version is None:
-        print(
-            "  auto-approve: Warning: spec `permissions` block withheld: no engine bundle installed"
-        )
+        print("  auto-approve: ⚠  spec `permissions` block withheld: no engine bundle installed")
         print("               It is written once `kirocrew kas install` lays the engine down.")
         return
-    print(f"  auto-approve: Error:   withheld: the bundled engine KAS {version} is below {floor},")
+    print(f"  auto-approve: ❌ withheld: the bundled engine KAS {version} is below {floor},")
     print("               the lowest engine verified to accept the field. Fix: run the")
     print(f"               pinned engine ({kas_bundle.KAS_PIN_VERSION}; unset")
     print(f"               {kas_bundle.KAS_VERSION_OVERRIDE_ENV} or install it).")
@@ -295,7 +291,7 @@ def _report_bundle_kiro_cli_refusal(issues: list[str]) -> bool:
         return False
     floor = ".".join(str(part) for part in SPEC_PERMISSIONS_MIN_VERSION)
     shown = "unknown" if cli_version is None else ".".join(str(p) for p in cli_version)
-    print(f"  auto-approve: Error:   withheld: kiro-cli ({shown}) is installed and reads the")
+    print(f"  auto-approve: ❌ withheld: kiro-cli ({shown}) is installed and reads the")
     print("               same specs, and it may refuse the field. Fix: update kiro-cli")
     print(f"               to {floor} or newer, or uninstall it.")
     if cli_version is None:
@@ -309,7 +305,7 @@ def _report_kas_bundle_pin(installed_version: str) -> None:
 
     ``installed_bundle()`` looks up exactly the version ``pinned_version()`` names,
     so the installed version can differ from ``KAS_PIN_VERSION`` only through the
-    ``KIROCREW_KAS_VERSION`` override; that is the one case worth a Warning:, because it
+    ``KIROCREW_KAS_VERSION`` override; that is the one case worth a ⚠️, because it
     is the gateway's environment choosing an engine this release was not tested
     with, and the row names the variable so the operator can find it. Every other
     installed version (an older release's engine, kept so a rollback finds its
@@ -319,9 +315,9 @@ def _report_kas_bundle_pin(installed_version: str) -> None:
 
     pin = kas_bundle.KAS_PIN_VERSION
     if installed_version == pin:
-        print(f"  pin:         OK:      KAS {pin} is this release's pin")
+        print(f"  pin:         ✅ KAS {pin} is this release's pin")
     else:
-        print(f"  pin:         Warning: running KAS {installed_version}; this release pins {pin}")
+        print(f"  pin:         ⚠️  running KAS {installed_version}; this release pins {pin}")
         print(
             f"               ({kas_bundle.KAS_VERSION_OVERRIDE_ENV} is set in the gateway's"
             " environment; unset it to run the pin)"
@@ -353,7 +349,7 @@ def _report_kas_backend(issues: list[str]) -> None:
         return
     binary = resolve_kiro_cli()
     if not binary:
-        print(f"  relay:       Error:   {KIRO_CLI_BIN} not found")
+        print(f"  relay:       ❌ {KIRO_CLI_BIN} not found")
         print("               Fix: install kiro-cli; it serves KAS over its acp relay.")
         issues.append("KAS backend selected but kiro-cli is not installed")
         return
@@ -377,7 +373,7 @@ def _report_kas_backend(issues: list[str]) -> None:
     # The release gate the runtime applies to a Crew-owned spawn's flag.
     client_flag = host_auth and kas_auth_client_flag_supported(installed_kiro_cli_version())
     relay_argv = build_kas_argv(binary, host_auth=host_auth, client_flag=client_flag)
-    print(f"  relay:       OK:      {' '.join(relay_argv)}")
+    print(f"  relay:       ✅ {' '.join(relay_argv)}")
     print(
         "  auth owner:  "
         + (
@@ -424,10 +420,10 @@ def _report_kas_backend(issues: list[str]) -> None:
         # verdict is also unknown when its help ran and the v3 start did not finish.
         print(
             (
-                "  engine:      Warning: could not check kiro-cli's v3 engine; engine support"
+                "  engine:      ⚠️  could not check kiro-cli's v3 engine; engine support"
                 " unknown; your Kiro CLI selection stays on kiro-cli's v2 engine"
                 if pick
-                else "  engine:      Warning: could not read `acp --help`; engine support unknown"
+                else "  engine:      ⚠️  could not read `acp --help`; engine support unknown"
             )
         )
         return
@@ -444,21 +440,19 @@ def _report_kas_backend(issues: list[str]) -> None:
     if gap is None and pick and not _kas_selectable():
         # The floor moves a pick onto KAS only while KAS is selectable here.
         print(
-            f"  engine:      Warning: {KAS_RELAY_ENGINE} supported, but KAS is not available here;"
+            f"  engine:      ⚠️  {KAS_RELAY_ENGINE} supported, but KAS is not available here;"
             " your Kiro CLI selection stays on kiro-cli's v2 engine"
         )
     elif gap is None and pick:
         print(
-            f"  engine:      OK:      {KAS_RELAY_ENGINE} supported; your Kiro CLI selection runs on KAS"
+            f"  engine:      ✅ {KAS_RELAY_ENGINE} supported; your Kiro CLI selection runs on KAS"
         )
     elif gap is None:
-        print(f"  engine:      OK:      {KAS_RELAY_ENGINE} supported")
+        print(f"  engine:      ✅ {KAS_RELAY_ENGINE} supported")
     elif pick:
         # A Kiro CLI pick runs on KAS only where kiro-cli offers v3; here the gateway
         # keeps it on kiro-cli's v2 engine, which kiro-cli is retiring.
-        print(
-            f"  engine:      Error:   {gap}; your Kiro CLI selection stays on kiro-cli's v2 engine"
-        )
+        print(f"  engine:      ❌ {gap}; your Kiro CLI selection stays on kiro-cli's v2 engine")
         print("               Fix: run `kiro-cli update`, then restart Kiro Crew.")
         issues.append(
             f"kiro-cli cannot run its v3 (KAS) engine: {gap}"
@@ -466,7 +460,7 @@ def _report_kas_backend(issues: list[str]) -> None:
             else f"kiro-cli is too old for its v3 (KAS) engine: {gap}"
         )
     else:
-        print(f"  engine:      Error:   {gap}")
+        print(f"  engine:      ❌ {gap}")
         print("               Fix: update kiro-cli, or switch agent.acp_backend to kiro.")
         issues.append(f"kiro-cli cannot serve the KAS engine: {gap}")
     # Reported from the SAME decision as the ``auth owner:`` line above, so the
@@ -475,12 +469,12 @@ def _report_kas_backend(issues: list[str]) -> None:
     # kiro-cli's own store otherwise. The detail for each store lives in the
     # sign-in rows and the ``crew vault:`` line rather than being restated here.
     if host_auth:
-        print("  token:       Note:    Kiro Crew vault sign-in (see the auth owner line above)")
+        print("  token:       ➖ Kiro Crew vault sign-in (see the auth owner line above)")
     else:
         from kiro_crew.agent_sdk import entitlement_label
 
         print(
-            f"  token:       Note:    {entitlement_label(ACP_BACKEND_KAS)} "
+            f"  token:       ➖ {entitlement_label(ACP_BACKEND_KAS)} "
             "(see the sign-in rows above)"
         )
 
@@ -499,7 +493,7 @@ def _report_kas_spec_permissions(issues: list[str]) -> None:
     """
     version = installed_kiro_cli_version()
     if spec_permissions_supported(version):
-        print("  auto-approve: OK:      spec `permissions` block written (KAS reads it)")
+        print("  auto-approve: ✅ spec `permissions` block written (KAS reads it)")
         return
     floor = ".".join(str(part) for part in SPEC_PERMISSIONS_MIN_VERSION)
     if version is None:
@@ -507,14 +501,12 @@ def _report_kas_spec_permissions(issues: list[str]) -> None:
         # kiro-cli resolves only through PATH and the probe spawns pinned paths
         # only. The writer withholds a NEW block here but keeps one already on
         # disk, so the remedy is to make the binary probeable, not to update it.
-        print(
-            "  auto-approve: Warning: spec `permissions` block not seeded: kiro-cli version unknown"
-        )
+        print("  auto-approve: ⚠️  spec `permissions` block not seeded: kiro-cli version unknown")
         print(f"               ({PATH_ONLY_INSTALL_NOTE}). A block already on disk is kept.")
         issues.append("kiro-cli version unknown, so the KAS `permissions` block is not seeded")
         return
     shown = ".".join(str(part) for part in version)
-    print(f"  auto-approve: Error:   withheld: this kiro-cli ({shown}) refuses the field")
+    print(f"  auto-approve: ❌ withheld: this kiro-cli ({shown}) refuses the field")
     print("               It validates specs with deny_unknown_fields, so writing " "`permissions`")
     print("               would make the whole spec unreadable and drop every Kiro " "Crew MCP")
     print(f"               server. Fix: update kiro-cli to {floor} or newer. If the spec")
@@ -543,21 +535,19 @@ def _report_kas_tool_vocabulary(issues: list[str]) -> None:
     drift = kas_vocabulary_drift(version)
     if drift == "unknown" or version is None:
         print(
-            f"  tool names:  Note:    vocabulary verified on kiro-cli {verified}; installed version unknown"
+            f"  tool names:  ➖ vocabulary verified on kiro-cli {verified}; installed version unknown"
         )
         return
     shown = ".".join(str(part) for part in version)
     if not drift:
-        print(
-            f"  tool names:  OK:      vocabulary verified on kiro-cli {verified} (installed {shown})"
-        )
+        print(f"  tool names:  ✅ vocabulary verified on kiro-cli {verified} (installed {shown})")
         return
     if drift == "older":
         # Unverified, not compatible: the tables were read from the verified
         # releases and an older KAS may lack an id or spell it differently. Same
         # standing as a newer one -- only the direction of the drift risk differs.
         print(
-            f"  tool names:  Warning: installed kiro-cli {shown} is older than every release ({verified})"
+            f"  tool names:  ⚠️  installed kiro-cli {shown} is older than every release ({verified})"
         )
         print("               the KAS tool-name tables were verified on; not verified against it.")
         print("               A built-in the tables name may be absent or spelled differently.")
@@ -565,8 +555,6 @@ def _report_kas_tool_vocabulary(issues: list[str]) -> None:
     # A newer kiro-cli is the normal state between re-measurements, so it is
     # informational: there is nothing for the user to do, and the maintainer
     # steps live in the fixture's note, not in user-facing output.
-    print(
-        f"  tool names:  Note:    not yet checked against kiro-cli {shown}; checked on {verified}"
-    )
+    print(f"  tool names:  ➖ not yet checked against kiro-cli {shown}; checked on {verified}")
     print("               Nothing to do. A built-in tool this kiro-cli renamed would be")
     print("               missing from the agent until a Kiro Crew update learns the name.")

@@ -1427,19 +1427,19 @@ def render_doctor_section(issues: list[str]) -> None:
     # must not hide what an earlier load removed from it. This is the surface
     # ``record_adoptions`` promises the record on.
     for dotted, removed in sorted(adopted_superseded().items()):
-        print(f"  adopted:     Note:    {adoption_summary(dotted, removed)}")
+        print(f"  adopted:     ℹ️  {adoption_summary(dotted, removed)}")
     path = config_path()
     try:
         raw = json.loads(read_config_text(path))
     except FileNotFoundError:
-        print("  drift:       OK:      no config file yet (current defaults apply)")
+        print("  drift:       ✅ no config file yet (current defaults apply)")
         return
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
-        print(f"  drift:       Warning: could not read {path}: {e}")
+        print(f"  drift:       ⚠️  could not read {path}: {e}")
         issues.append("stored defaults unreadable")
         return
     if not isinstance(raw, dict):
-        print(f"  drift:       Warning: {path} is not a JSON object")
+        print(f"  drift:       ⚠️  {path} is not a JSON object")
         issues.append("stored defaults unreadable")
         return
 
@@ -1450,18 +1450,18 @@ def render_doctor_section(issues: list[str]) -> None:
     drifted = superseded_default_drift(raw, acked={})
     coerced = coerced_value_drift(raw)
     if not drifted and not coerced:
-        print("  drift:       OK:      no stored value holds a superseded default")
+        print("  drift:       ✅ no stored value holds a superseded default")
         return
     unacked = 0
     for entry in drifted:
         if entry.dotted_key in acked:
-            print(f"  drift:       OK:      acknowledged as intentional: {drift_summary(entry)}")
+            print(f"  drift:       ✅ acknowledged as intentional: {drift_summary(entry)}")
         else:
             unacked += 1
-            print(f"  drift:       Note:    {drift_summary(entry)}")
+            print(f"  drift:       ℹ️  {drift_summary(entry)}")
     for centry, stored in coerced:
         unacked += 1
-        print(f"  coerced:     Note:    {coercion_summary(centry, stored)}")
+        print(f"  coerced:     ℹ️  {coercion_summary(centry, stored)}")
     if unacked:
         print("  fix:         kirocrew config defaults --adopt      (take the current defaults)")
         print("  keep:        kirocrew config defaults --keep       (affirm yours, stop reporting)")

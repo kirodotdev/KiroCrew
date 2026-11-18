@@ -172,7 +172,7 @@ def test_doctor_reads_the_same_selected_version_as_status(tmp_path, monkeypatch,
 
     services._doctor_running_version(7777, issues)
 
-    assert "running:     OK:      0.9.0 (same as on disk)" in capsys.readouterr().out
+    assert "running:     ✅ 0.9.0 (same as on disk)" in capsys.readouterr().out
     assert issues == []
     assert cli_server._format_version_line(
         {"version": "0.9.0"}, *live_target.selected_version()

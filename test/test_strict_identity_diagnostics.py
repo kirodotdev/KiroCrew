@@ -471,7 +471,7 @@ class TestDoctorStrictIdentity:
         cli_doctor._doctor_strict_identity(self._Cfg(list(cli_doctor._STRICT_IDENTITY_SERVERS)))
         out = capsys.readouterr().out
         assert "routing configured" in out and "live session identity not verified" in out
-        assert "per-call caller" in out and "OK:" not in out
+        assert "per-call caller" in out and "✅" not in out
 
     def test_unrouted_names_the_servers_and_the_affected_tools(self, monkeypatch, capsys) -> None:
         self._darwin(monkeypatch)
@@ -516,8 +516,8 @@ class TestDoctorStrictIdentity:
         self._darwin(monkeypatch)
         cli_doctor._doctor_strict_identity(self._Cfg([]))
         out = capsys.readouterr().out
-        # Neutral marker, not a warning glyph: doctor's Warning: lines read as work to do.
-        assert "Warning:" not in out
+        # Neutral marker, not a warning glyph: doctor's ⚠ lines read as work to do.
+        assert "⚠" not in out
 
     def test_it_reports_rather_than_prescribes(self, monkeypatch, capsys) -> None:
         """Routing is an opt-in topology change (a broker plus a stub per

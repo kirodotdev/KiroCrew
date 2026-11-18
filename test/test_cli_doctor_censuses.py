@@ -471,7 +471,7 @@ class TestDoctorSkillViewCensus:
 
     def test_an_empty_directory_reports_zero_aliases(self, tmp_path, monkeypatch, capsys):
         out = self._run(tmp_path, monkeypatch, capsys)
-        assert "skill views: OK:      0 kirocrew-skill-view-*.json alias(es)" in out
+        assert "skill views: ✅ 0 kirocrew-skill-view-*.json alias(es)" in out
 
     def test_live_and_unreferenced_aliases_are_counted_separately(
         self, tmp_path, monkeypatch, capsys
@@ -481,9 +481,9 @@ class TestDoctorSkillViewCensus:
             self._own(tmp_path, i)
         self._lease(tmp_path, live)
         out = self._run(tmp_path, monkeypatch, capsys)
-        assert "skill views: OK:      8 kirocrew-skill-view-*.json alias(es)" in out
+        assert "skill views: ✅ 8 kirocrew-skill-view-*.json alias(es)" in out
         assert "(3 named by a lease record, 5 not)" in out
-        assert "Warning:" not in self._line(out)
+        assert "⚠️" not in self._line(out)
 
     def test_the_threshold_is_the_real_one_and_exclusive(self, tmp_path, monkeypatch, capsys):
         # Exactly the production threshold is still green; one more warns. No
@@ -492,10 +492,10 @@ class TestDoctorSkillViewCensus:
         assert limit == 128
         for i in range(limit):
             self._alias(tmp_path, i, home=None)
-        assert "skill views: OK:" in self._run(tmp_path, monkeypatch, capsys)
+        assert "skill views: ✅" in self._run(tmp_path, monkeypatch, capsys)
         self._alias(tmp_path, limit, home=None)
         out = self._run(tmp_path, monkeypatch, capsys)
-        assert "skill views: Warning:" in out
+        assert "skill views: ⚠️" in out
         assert f"{limit + 1} kirocrew-skill-view-*.json alias(es)" in out
 
     def test_the_threshold_grows_with_the_authored_agents(self, tmp_path, monkeypatch, capsys):
@@ -504,9 +504,9 @@ class TestDoctorSkillViewCensus:
             (tmp_path / f"authored-{i}.json").write_text('{"name":"x"}', encoding="utf-8")
         for i in range(200):
             self._alias(tmp_path, i, home=None)
-        assert "skill views: OK:" in self._run(tmp_path, monkeypatch, capsys)
+        assert "skill views: ✅" in self._run(tmp_path, monkeypatch, capsys)
         self._alias(tmp_path, 200, home=None)
-        assert "skill views: Warning:" in self._run(tmp_path, monkeypatch, capsys)
+        assert "skill views: ⚠" in self._run(tmp_path, monkeypatch, capsys)
 
     def test_a_backlog_this_home_owns_names_its_share_and_the_remedy_is_a_move(
         self, tmp_path, monkeypatch, capsys
@@ -515,7 +515,7 @@ class TestDoctorSkillViewCensus:
         for i in range(6):
             self._own(tmp_path, i)
         line = self._line(self._run(tmp_path, monkeypatch, capsys))
-        assert "Warning:" in line
+        assert "⚠️" in line
         assert "reclaims a bounded number of the 6 this home owns" in line
         assert "gateway stopped" in line
         assert "move" in line
@@ -584,7 +584,7 @@ class TestDoctorSkillViewCensus:
         (lease_dir / "1-bad.json").write_text("{not json")
         (lease_dir / "1-big.json").write_text(json.dumps({"aliases": ["x" * 70000]}))
         line = self._line(self._run(tmp_path, monkeypatch, capsys))
-        assert "Warning: 2 kirocrew-skill-view-*.json alias(es)" in line
+        assert "⚠️  2 kirocrew-skill-view-*.json alias(es)" in line
         assert "(0 named by a lease record, 2 not)" in line
         assert "2 lease record(s)" in line and "cannot be read" in line
         assert "slows every session start" not in line
@@ -644,7 +644,7 @@ class TestDoctorSkillViewCensus:
         (tmp_path / "kirocrew-skill-view-dir.json").mkdir()
         self._own(tmp_path, 1)
         out = self._run(tmp_path, monkeypatch, capsys)
-        assert "skill views: OK:      1 kirocrew-skill-view-*.json alias(es)" in out
+        assert "skill views: ✅ 1 kirocrew-skill-view-*.json alias(es)" in out
 
     def test_the_census_never_deletes_anything(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(cli_doctor, "_SKILL_VIEW_BACKLOG_WARN", 1)
@@ -679,7 +679,7 @@ class TestDoctorSkillViewCensus:
     def test_a_clean_directory_reports_no_residue(self, tmp_path, monkeypatch, capsys):
         self._own(tmp_path, 0)
         line = self._residue(self._run(tmp_path, monkeypatch, capsys))
-        assert line.startswith(" OK:      0 ownership sidecar(s)")
+        assert line.startswith(" ✅ 0 ownership sidecar(s)")
         assert "0 leftover alias .lock file(s), 0 alias(es) rewritten" in line
 
     def test_residue_past_the_threshold_and_any_external_rewrite_warn(
@@ -694,7 +694,7 @@ class TestDoctorSkillViewCensus:
         for i in range(2):
             (metadata_dir / f"{self.PREFIX}{i:024x}.json").write_text("{}")
         out = self._run(tmp_path, monkeypatch, capsys)
-        assert self._residue(out).startswith(" Warning: 2 ownership sidecar(s)")
+        assert self._residue(out).startswith(" ⚠️  2 ownership sidecar(s)")
         assert "restart it once to drain the backlog" in out
 
         stem = self._own(tmp_path, 9)
@@ -805,7 +805,7 @@ class TestRunDirCensus:
         out = self._run(monkeypatch, capsys, root, retained={12345})
         shown = os.path.realpath(root)
         (line,) = [ln for ln in out.splitlines() if "run dirs:" in ln]
-        assert line.startswith("  run dirs:    Warning: ")
+        assert line.startswith("  run dirs:    ⚠️ ")
         assert f"under {shown}: 1 run director(ies) carry no {RUN_DIR_MARKER} marker" in line
         assert "3 marked director(ies) this data home cannot reclaim" in line
         assert "no workspace root yet" not in out
@@ -820,11 +820,11 @@ class TestRunDirCensus:
         for n in range(1, 4):
             (root / f"subagent_{n:08x}" / ".kiro" / "settings").mkdir(parents=True)
         out = self._run(monkeypatch, capsys, root)
-        assert "OK:      under" in out and "3 run director(ies) carry no" in out
+        assert "✅ under" in out and "3 run director(ies) carry no" in out
         assert "With the gateway stopped" not in out
         monkeypatch.setattr(cli_doctor, "_RUN_DIR_BACKLOG_WARN", 2)
         out = self._run(monkeypatch, capsys, root)
-        assert "Warning: " in out and "With the gateway stopped, move directories matching" in out
+        assert "⚠️ " in out and "With the gateway stopped, move directories matching" in out
         assert (
             "hold nothing beyond .kiro/settings/cli.json,"
             " .kiro/settings/.kirocrew-cli-settings.lock and an empty .kiro/agents"
@@ -854,7 +854,7 @@ class TestRunDirCensus:
         monkeypatch.setattr(cli_doctor, "_RUN_DIR_BACKLOG_WARN", 2)
         out = self._run(monkeypatch, capsys, root)
         (line,) = [ln for ln in out.splitlines() if "run dirs:" in ln]
-        assert "Warning: " in line and "3 run director(ies) carry no" in line
+        assert "⚠️ " in line and "3 run director(ies) carry no" in line
         assert "(left by a build that did not mark that kind)" in line
         assert "With the gateway stopped, move directories matching" in out
         assert session_work_dir.DERIVED_NAME_RE.pattern in out
@@ -869,7 +869,7 @@ class TestRunDirCensus:
         root = tmp_path / "ws"
         self._marked(root, "subagent_00000001", f"{data_home_id()}\n12345")
         out = self._run(monkeypatch, capsys, root)
-        assert "OK:      no run directories left behind that the sweep cannot reclaim" in out
+        assert "✅ no run directories left behind that the sweep cannot reclaim" in out
 
     def test_an_unreadable_ledger_skips_the_census(self, tmp_path: Path, monkeypatch, capsys):
         from kiro_crew import session_pid
@@ -884,7 +884,7 @@ class TestRunDirCensus:
         )
         cli_doctor._doctor_run_dirs()
         out = capsys.readouterr().out
-        assert "Warning: the session pid ledger cannot be read; census skipped" in out
+        assert "⚠️  the session pid ledger cannot be read; census skipped" in out
 
     def test_a_content_keep_is_reported_as_the_third_figure(
         self, tmp_path: Path, monkeypatch, capsys
@@ -898,7 +898,7 @@ class TestRunDirCensus:
         before = sorted(p.name for p in root.rglob("*"))
         out = self._run(monkeypatch, capsys, root)
         (line,) = [ln for ln in out.splitlines() if "run dirs:" in ln]
-        assert line.startswith("  run dirs:    Warning: ")
+        assert line.startswith("  run dirs:    ⚠️ ")
         assert "1 marked director(ies) the sweep keeps for what they hold" in line
         assert "no run directories left behind" not in out
         assert sorted(p.name for p in root.rglob("*")) == before

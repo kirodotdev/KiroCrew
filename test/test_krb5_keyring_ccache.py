@@ -263,7 +263,7 @@ class TestDoctorRow:
         )
         monkeypatch.setattr(env_mod, "_reject_reason", lambda cache: None)
         access._doctor_kerberos_ccache()
-        assert "OK:      agents use the file cache '/tmp/krb5cc_4242'" in capsys.readouterr().out
+        assert "✅ agents use the file cache '/tmp/krb5cc_4242'" in capsys.readouterr().out
 
     def test_a_failing_check_does_not_end_the_report(self, linux, monkeypatch, capsys) -> None:
         def _boom(environ):

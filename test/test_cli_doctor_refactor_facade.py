@@ -399,7 +399,7 @@ def test_a_patch_of_a_name_this_module_binds_reaches_a_family_reader(capsys) -> 
         mp.setattr(cli_doctor, "signing_health", lambda: (True, Path("/pinned/key")))
         access._doctor_trust_root()
 
-    assert capsys.readouterr().out == f"  trust root:  OK:      {Path('/pinned/key')}\n"
+    assert capsys.readouterr().out == f"  trust root:  ✅ {Path('/pinned/key')}\n"
 
 
 # A ``create=True`` patch of a re-exported name is refused by the scan in

@@ -33,17 +33,15 @@ def _doctor_trust_root() -> None:
     """
     ok, key_path = cli_doctor.signing_health()
     if ok:
-        print(f"  trust root:  OK:      {key_path}")
+        print(f"  trust root:  ✅ {key_path}")
         return
     if not key_path.parent.is_dir():
         # The trust dir and the key are created together, on the first
         # SecurityEventLog init. Neither present means no instance has ever run
         # against this home — a fresh install, not a broken one.
-        print(
-            f"  trust root:  Note:    {key_path} not created yet (the gateway writes it on first start)"
-        )
+        print(f"  trust root:  ⏹ {key_path} not created yet (the gateway writes it on first start)")
         return
-    print(f"  Warning: trust root: {key_path} is unreadable or shorter than 32 bytes.")
+    print(f"  ⚠ trust root: {key_path} is unreadable or shorter than 32 bytes.")
     print("               Session identities go out unsigned, so sub-agent " "dispatch and memory")
     print("               writes are refused in sandboxed sessions. Restore the " "key file, or")
     print("               restart the gateway if another process relocated it.")
@@ -81,7 +79,7 @@ def _doctor_signing_key(issues: list[str]) -> None:
         # here would say "truncated" about a healthy key and hand back a remedy
         # that deletes the real one by hand. Say it cannot be seen from here instead.
         print(
-            f"  signing key: Note:    {key_path} is masked inside the agent sandbox; run doctor from the host"
+            f"  signing key: ⏹ {key_path} is masked inside the agent sandbox; run doctor from the host"
         )
         return
     if state == "ok" and token_secret.open_is_denied(key_path):
@@ -90,13 +88,13 @@ def _doctor_signing_key(issues: list[str]) -> None:
         # dashboard session out at each restart. Doctor counts it so the operator
         # fixes the mode instead. Never removed.
         issues.append("token signing key cannot be read; the gateway starts on an ephemeral secret")
-        print(f"  Warning: signing key: {key_path} exists but this process cannot open it.")
+        print(f"  ⚠ signing key: {key_path} exists but this process cannot open it.")
         print("               The gateway starts on an ephemeral secret instead, which logs")
         print("               every dashboard session out at each restart. Check its owner")
         print("               and mode (a regular file, mode 0600, owned by the gateway's user).")
         return
     if state == "ok":
-        print(f"  signing key: OK:      {key_path} (regular file, at least 32 bytes)")
+        print(f"  signing key: ✅ {key_path} (regular file, at least 32 bytes)")
         return
     if state == "unstatable":
         # The lstat itself failed (EIO, ESTALE on a network mount). If the boot's
@@ -105,15 +103,13 @@ def _doctor_signing_key(issues: list[str]) -> None:
         issues.append(
             "token signing key cannot be stat'ed; the gateway may start on an ephemeral secret"
         )
-        print(f"  Warning: signing key: {key_path} could not be stat'ed (an I/O or mount error).")
+        print(f"  ⚠ signing key: {key_path} could not be stat'ed (an I/O or mount error).")
         print("               If the gateway cannot read the key either, it starts on an")
         print("               ephemeral secret that logs every dashboard session out.")
         print("               Check that the data home is reachable, then retry.")
         return
     if state == "absent":
-        print(
-            f"  signing key: Note:    {key_path} not created yet (the gateway writes it on first start)"
-        )
+        print(f"  signing key: ⏹ {key_path} not created yet (the gateway writes it on first start)")
         return
     if state == "short" and token_secret.open_is_denied(key_path):
         # Short AND unreadable by this process: inside an agent sandbox whose
@@ -123,7 +119,7 @@ def _doctor_signing_key(issues: list[str]) -> None:
         # here, so nothing is removed and it is not counted as an issue: counting
         # it would fail doctor against a healthy key in the sandbox case. The boot
         # preflight, which runs outside the sandbox, still refuses a real one.
-        print(f"  Warning: signing key: {key_path} is shorter than 32 bytes and this process")
+        print(f"  ⚠ signing key: {key_path} is shorter than 32 bytes and this process")
         print("               cannot open it. Inside an agent sandbox this is the mask over")
         print("               the real key: run doctor from the host. On the host, check the")
         print("               file's owner and mode before changing anything.")
@@ -132,9 +128,7 @@ def _doctor_signing_key(issues: list[str]) -> None:
         # Counted as an issue so `kirocrew doctor && kirocrew gateway` stops here
         # with a non-zero exit: this is the exact state the boot preflight refuses.
         issues.append("token signing key is truncated; the gateway refuses to start on it")
-        print(
-            f"  Warning: signing key: {key_path} is shorter than 32 bytes (a truncated create or copy)."
-        )
+        print(f"  ⚠ signing key: {key_path} is shorter than 32 bytes (a truncated create or copy).")
         print("               The gateway refuses to start on it; every restart would otherwise")
         print("               log every dashboard session out. Repair it by hand:")
         for step in token_secret.signing_key_remedy(
@@ -142,7 +136,7 @@ def _doctor_signing_key(issues: list[str]) -> None:
         ):
             print(f"               {step}")
         return
-    print(f"  Warning: signing key: {key_path} is not a regular file or cannot be read.")
+    print(f"  ⚠ signing key: {key_path} is not a regular file or cannot be read.")
     print("               Restore the key file, or remove the link or directory at that path.")
 
 
@@ -169,7 +163,7 @@ def _doctor_name_grant_platform_scope() -> None:
 
     notice = name_grant.platform_scope_notice()
     if notice is not None:
-        print(f"  hook auto-approve:  Note:    declined on this host ({notice})")
+        print(f"  hook auto-approve:  ⏹ declined on this host ({notice})")
         render._print_wrapped(
             "This is the platform's scope, not your configuration. Windows could "
             "not report where the user's Documents folder is, so this check cannot "
@@ -180,7 +174,7 @@ def _doctor_name_grant_platform_scope() -> None:
         return
     refusal = name_grant.environment_refusal()
     if refusal is not None:
-        print(f"  hook auto-approve:  Warning: declined by this environment ({refusal.code})")
+        print(f"  hook auto-approve:  ⚠ declined by this environment ({refusal.code})")
         # The profile is the one state with a remedy a user can be told in a
         # word. The others -- a relative `PATH` entry, an inherited `BASH_ENV`
         # or exported shell functions -- are named in the detail, which says
@@ -194,7 +188,7 @@ def _doctor_name_grant_platform_scope() -> None:
             "card while this holds; " + remedy
         )
         return
-    print("  hook auto-approve:  OK:      name grants can be satisfied on this platform")
+    print("  hook auto-approve:  ✅ name grants can be satisfied on this platform")
 
 
 #: Where an operator can actually READ the packaged blocked-commands doc.
@@ -233,7 +227,7 @@ def _doctor_credentials(issues: list[str]) -> None:
     has_config = (aws_dir / "config").is_file()
     has_creds = (aws_dir / "credentials").is_file()
     if not has_config and not has_creds:
-        print("  aws:         Note:    no ~/.aws config")
+        print("  aws:         ⏹ no ~/.aws config")
         render._print_wrapped(
             "Once you configure one, the SDK resolves credentials itself, so the agent "
             "never needs to read the files. If you use AWS, run `aws configure sso` or "
@@ -263,7 +257,7 @@ def _doctor_credentials(issues: list[str]) -> None:
         if profiles:
             shown = ", ".join(render._safe_display(name) for name in profiles[:6])
             extra = f" (+{len(profiles) - 6} more)" if len(profiles) > 6 else ""
-            print(f"  profiles:    OK:      {shown}{extra}")
+            print(f"  profiles:    ✅ {shown}{extra}")
         elif profiles is None:
             # No aws CLI to ask, and the config file is not ours to read — so the
             # honest report is that the files exist and the profile set is unknown.
@@ -271,13 +265,13 @@ def _doctor_credentials(issues: list[str]) -> None:
             # where `declined_cli`, `resolved_cli` and `outside_cli` are resolved.
             if declined_cli:
                 print(
-                    f"  profiles:    Note:    ~/.aws present; {render._safe_display(declined_cli)} is not a trusted local copy, so it is not asked"
+                    f"  profiles:    ℹ️  ~/.aws present; {render._safe_display(declined_cli)} is not a trusted local copy, so it is not asked"
                 )
             elif resolved_cli and cli_doctor._aws_cli_is_v1():
                 # AWS CLI v1 has no `configure list-profiles` and refuses it on
                 # every call, so "did not answer" would read like a passing hiccup.
                 print(
-                    f"  profiles:    Warning: ~/.aws present; {render._safe_display(resolved_cli)} is AWS CLI v1, which cannot list profiles"
+                    f"  profiles:    ⚠️  ~/.aws present; {render._safe_display(resolved_cli)} is AWS CLI v1, which cannot list profiles"
                 )
                 render._print_wrapped(
                     "listing profiles needs AWS CLI v2: install it in place of this copy, and "
@@ -285,7 +279,7 @@ def _doctor_credentials(issues: list[str]) -> None:
                 )
             elif resolved_cli:
                 print(
-                    f"  profiles:    Note:    ~/.aws present; {render._safe_display(resolved_cli)} did not answer, so the profile set is unknown"
+                    f"  profiles:    ℹ️  ~/.aws present; {render._safe_display(resolved_cli)} did not answer, so the profile set is unknown"
                 )
             elif outside_cli:
                 # Present on PATH, but outside the trusted system directories
@@ -293,52 +287,50 @@ def _doctor_credentials(issues: list[str]) -> None:
                 # policy -- so the remediation is where to install it, not
                 # whether to.
                 print(
-                    f"  profiles:    Note:    ~/.aws present; {render._safe_display(outside_cli)} is outside the trusted system directories, so it is not run"
+                    f"  profiles:    ℹ️  ~/.aws present; {render._safe_display(outside_cli)} is outside the trusted system directories, so it is not run"
                 )
                 render._print_wrapped(
                     "install the AWS CLI system-wide (an elevated, machine-wide install on "
                     "Windows) if you want doctor to list profiles."
                 )
             else:
-                print(
-                    "  profiles:    Note:    ~/.aws present; install the AWS CLI to list profiles"
-                )
+                print("  profiles:    ℹ️  ~/.aws present; install the AWS CLI to list profiles")
         elif has_creds:
-            print("  profiles:    OK:      default (from ~/.aws/credentials)")
+            print("  profiles:    ✅ default (from ~/.aws/credentials)")
         else:
-            print("  profiles:    Warning: ~/.aws present but `aws configure` lists no profile")
+            print("  profiles:    ⚠️  ~/.aws present but `aws configure` lists no profile")
         # credential_process is the setup worth calling out: it vends short-lived
         # credentials on demand, so the agent's AWS calls keep working across a
         # token expiry without anyone re-running a login.
         refreshes = cli_doctor._aws_auto_refreshes()
         if refreshes:
-            print("  refresh:     OK:      credential_process configured (auto-refreshing)")
+            print("  refresh:     ✅ credential_process configured (auto-refreshing)")
         elif refreshes is None:
-            # Nothing here establishes whether credentials expire. Printing the Note:
+            # Nothing here establishes whether credentials expire. Printing the ⏹
             # line anyway told operators with a working credential_process that
             # theirs was absent; naming the wrong cause is the same defect.
             if declined_cli:
                 print(
-                    f"  refresh:     Note:    {render._safe_display(declined_cli)} is not a trusted local copy — not asked about credential_process"
+                    f"  refresh:     ℹ️  {render._safe_display(declined_cli)} is not a trusted local copy — not asked about credential_process"
                 )
             elif resolved_cli:
                 print(
-                    f"  refresh:     Note:    {render._safe_display(resolved_cli)} did not answer — credential_process not established"
+                    f"  refresh:     ℹ️  {render._safe_display(resolved_cli)} did not answer — credential_process not established"
                 )
             elif outside_cli:
                 print(
-                    f"  refresh:     Note:    {render._safe_display(outside_cli)} is outside the trusted system directories — not asked about credential_process"
+                    f"  refresh:     ℹ️  {render._safe_display(outside_cli)} is outside the trusted system directories — not asked about credential_process"
                 )
             else:
-                print("  refresh:     Note:    install the AWS CLI to check for credential_process")
+                print("  refresh:     ℹ️  install the AWS CLI to check for credential_process")
         else:
-            print("  refresh:     Note:    no credential_process — credentials may expire mid-task")
+            print("  refresh:     ⏹ no credential_process — credentials may expire mid-task")
     vendor = cli_doctor._credential_vendor_line()
     if vendor:
-        print("  vending MCP: OK:      available")
+        print("  vending MCP: ✅ available")
         render._print_wrapped(vendor)
     print(
-        "  note:        Note:    agents cannot READ credential files; that rule does not block AWS CLI calls"
+        "  note:        ℹ️  agents cannot READ credential files; that rule does not block AWS CLI calls"
     )
     if has_config or has_creds:
         # Only true once something IS configured. On a host with nothing set up the
@@ -377,17 +369,15 @@ def _doctor_kerberos_ccache() -> None:
         keyring = crew_env.krb5_keyring_ccache(cli_doctor.os.environ)
         file_cache = None if keyring is None else crew_env.usable_file_ccache()
     except Exception as exc:  # noqa: BLE001 — an advisory row must not end the report
-        print(f"  kerberos:    Warning: could not check the ticket cache ({type(exc).__name__})")
+        print(f"  kerberos:    ⚠️  could not check the ticket cache ({type(exc).__name__})")
         return
     if keyring is None:
         return
     if file_cache is not None:
-        print(
-            f"  kerberos:    OK:      agents use the file cache {render._safe_display(file_cache)}"
-        )
+        print(f"  kerberos:    ✅ agents use the file cache {render._safe_display(file_cache)}")
         render._print_wrapped("`klist -c FILE:<that path>` shows whether its ticket is current.")
         return
-    print(f"  kerberos:    Warning: ticket cache {render._safe_display(keyring)} is not visible")
+    print(f"  kerberos:    ⚠️  ticket cache {render._safe_display(keyring)} is not visible")
     render._print_wrapped(
         "to sandboxed agents, so MCP servers they start that need a Kerberos ticket "
         f"report none. If you use Kerberos, {crew_env.KRB5_KEYRING_REMEDY}."

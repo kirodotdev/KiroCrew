@@ -53,7 +53,7 @@ def test_current_rules_are_a_clean_row(zone_data, capsys) -> None:
     install._doctor_tz_data(issues)
     out = capsys.readouterr().out
     assert out == (
-        "  tz data:     OK:      current (IANA tzdb 2026b or later)\n"
+        "  tz data:     ✅ current (IANA tzdb 2026b or later)\n"
         "               Sample check on America/Vancouver, not your configured zone.\n"
     )
     assert issues == []
@@ -65,7 +65,7 @@ def test_rules_older_than_2026b_are_an_issue(zone_data, capsys) -> None:
     issues: list[str] = []
     install._doctor_tz_data(issues)
     out = capsys.readouterr().out
-    assert "  tz data:     Warning: out of date (older than IANA tzdb 2026b)" in out
+    assert "  tz data:     ⚠️  out of date (older than IANA tzdb 2026b)" in out
     assert "a job in that zone runs an hour late" in out
     assert "Fix: PIP -U tzdata" in out
     assert "then restart the gateway." in out
@@ -101,7 +101,7 @@ def test_missing_data_is_an_issue(zone_data, capsys) -> None:
     issues: list[str] = []
     install._doctor_tz_data(issues)
     out = capsys.readouterr().out
-    assert "  tz data:     Error:   no timezone data resolves America/Vancouver" in out
+    assert "  tz data:     ❌ no timezone data resolves America/Vancouver" in out
     assert "Fix: PIP tzdata" in out
     assert issues == ["timezone data missing"]
 

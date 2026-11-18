@@ -759,10 +759,10 @@ def describe() -> str:
     try:
         sign_in = resolve()
     except SignInError as exc:
-        return f"Error:   {exc}"
+        return f"❌ {exc}"
     except Exception as exc:  # doctor must not crash on a broken store
-        return f"Warning: could not check ({type(exc).__name__})"
-    return f"OK:      {sign_in.label} ({sign_in.profile_arn})"
+        return f"⚠  could not check ({type(exc).__name__})"
+    return f"✅ {sign_in.label} ({sign_in.profile_arn})"
 
 
 def sign_in_command() -> tuple[str, bool]:

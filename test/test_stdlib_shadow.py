@@ -364,7 +364,7 @@ class TestDoctorRow:
         issues: list[str] = []
         cli_doctor._doctor_import_path(issues)
         out = capsys.readouterr().out
-        assert "Error:   concurrent shadowed by '/home/u/concurrent/__init__.py'" in out
+        assert "❌ concurrent shadowed by '/home/u/concurrent/__init__.py'" in out
         assert "'/home/u' (launch directory)" in out
         assert issues == ["stdlib shadowed"]
 
@@ -375,7 +375,7 @@ class TestDoctorRow:
         issues: list[str] = []
         cli_doctor._doctor_import_path(issues)
         out = capsys.readouterr().out
-        assert "import path: OK:      stdlib intact" in out
+        assert "import path: ✅ stdlib intact" in out
         assert issues == []
 
 
