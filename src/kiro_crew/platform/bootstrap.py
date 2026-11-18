@@ -386,9 +386,14 @@ def _refresh_stt_for_edition(cfg: "KiroCrewConfig") -> None:
     Best-effort: a failure leaves the built-in answer, which is a working
     (conservative) setting, rather than aborting boot.
     """
+    from kiro_crew.config.superseded_defaults import take_deferred_rows
     from kiro_crew.speech_providers import edition_changes_stt
 
-    if not edition_changes_stt():
+    # A pre-boot load that left the stt.language_code row unjudged needs this
+    # reload too, even when the edition keeps the built-in providers: the reload
+    # is the load that reports it.
+    deferred = take_deferred_rows()
+    if not edition_changes_stt() and not deferred:
         return
     try:
         from kiro_crew.config.loader import KiroCrewConfig, _invalidate_config_cache
