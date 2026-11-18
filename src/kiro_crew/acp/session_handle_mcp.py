@@ -380,11 +380,13 @@ async def wait_mcp_ready(
     tool_policy: dict[str, Any] | None = None,
     injected: frozenset[str] = frozenset(),
     governed: bool = False,
+    policy_hidden: frozenset[str] = frozenset(),
 ) -> None:
     """Wait for KAS's active managed roster and catalog, or fail before prompting.
 
     ``injected`` is the subset of ``required`` that travelled in the request's
-    own ``mcpServers`` array; see :class:`KasMcpReadiness`.
+    own ``mcpServers`` array, and ``policy_hidden`` the subset that lists no tool
+    for this agent; see :class:`KasMcpReadiness`.
 
     *governed* means the operator declared registry mode. Then at
     :data:`GOVERNED_SETTLE_SECS`, and again at the deadline, if every pending
@@ -416,7 +418,9 @@ async def wait_mcp_ready(
     and mounted them) keeps the ordinary wait, so a start that would have
     succeeded still does. Governed, the registry checkpoint decides as before.
     """
-    readiness = KasMcpReadiness(self._session_id, required, tool_policy, injected)
+    readiness = KasMcpReadiness(
+        self._session_id, required, tool_policy, injected, policy_hidden=policy_hidden
+    )
     self._mcp_report.include_configured(required)
     # Servers re-attempted after a start timeout, each mapped to whether a status
     # snapshot since the reset has shown it in a state other than failed.
