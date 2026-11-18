@@ -835,7 +835,11 @@ export default function ChatPane({
         data-pane-slot={slotKey}
         data-chat-scope=""
         {...dropTargetProps}
-        className={`relative flex flex-col h-full min-h-0 overflow-hidden bg-bg ${
+        /* No background of its own, like the single chat page's pane: each
+           host paints `bg-bg` under it (the split grid, the side panel, the
+           shell under a Bot's chat), and where that host is the shell a
+           `layer: "behind"` theme overlay shows through the chat. */
+        className={`relative flex flex-col h-full min-h-0 overflow-hidden ${
           frameless
             ? ''
             : `rounded-lg border transition-colors ${focused ? 'border-accent' : 'border-border'}`
