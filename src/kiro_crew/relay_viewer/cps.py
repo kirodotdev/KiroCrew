@@ -143,18 +143,27 @@ class _Answer:
 
 
 async def list_crew_endpoints(
-    cps_url: str, bearer: str, *, crew_domain: str = "", token_type: str = ""
+    cps_url: str,
+    bearer: str,
+    *,
+    crew_domain: str = "",
+    token_type: str = "",
+    profile_arn: str = "",
 ) -> tuple[CrewEndpoint, ...]:
     """Every Crew this person can open, in the service's order, checked entry by entry.
 
     *crew_domain* is the relay's domain, lower case. When set, an entry is kept
     only when its host is exactly ``<endpointId>.<crew_domain>`` with no port.
     Empty keeps the host check that has no domain. *token_type* is
-    ``EXTERNAL_IDP`` for an external IdP sign-in, else empty.
+    ``EXTERNAL_IDP`` for an external IdP sign-in, else empty. *profile_arn* is
+    sent as ``profileArn`` on every page when set, which CPS needs to tell which
+    account is asking; with it CPS lists the personal Crews of that profile
+    only. Empty sends no profile.
     """
     crews: dict[str, CrewEndpoint] = {}
     dropped = 0
-    body: dict[str, Any] = {}
+    profile: dict[str, Any] = {"profileArn": profile_arn} if profile_arn else {}
+    body: dict[str, Any] = dict(profile)
     for _ in range(MAX_PAGES):
         answer = await _call(cps_url, bearer, LIST_TARGET, body, token_type)
         payload = answer.payload
@@ -181,7 +190,7 @@ async def list_crew_endpoints(
         token = payload.get("nextToken")
         if not (isinstance(token, str) and 0 < len(token) <= NEXT_TOKEN_MAX_CHARS):
             break
-        body = {"nextToken": token}
+        body = {**profile, "nextToken": token}
     else:
         logger.warning(
             "relay viewer: the Crew list has more than %d pages; showing those", MAX_PAGES
