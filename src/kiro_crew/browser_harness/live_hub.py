@@ -998,6 +998,15 @@ class LiveHub:
         stream, sess.stream = sess.stream, None
         await stream.stop()
 
+    def forget(self, session_key: str) -> None:
+        """Drop the session of a chat that closed, so no tab is sent its card again.
+
+        :meth:`snapshot_events` sends every kept session to each newly connected
+        tab, and the card routes refuse a closed chat's key (404
+        ``unknown_session``). A chat reopened on the key starts a fresh session.
+        """
+        self._sessions.pop(session_key, None)
+
     def _tick_for(self, sess: LiveSession) -> Callable[[TickStats], Awaitable[None]]:
         async def _on_tick(stats: TickStats) -> None:
             changed = stats.rung != sess.rung or round(stats.fps) != round(sess.fps)

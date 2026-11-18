@@ -450,10 +450,12 @@ undo a page already read.
   closes only those. A chat whose session ends -- its tab closed, archived as
   idle, or its open conversation deleted -- closes the ledgered tabs it owned, in
   the background and after any op still in flight (`browser_ops.close_chat_tabs`);
-  every other chat keeps its own. A chat reopened on the same key before that
-  close runs keeps the tabs. Closing the tab of a chat linked to a channel
-  session (`slack:<ts>`) closes none: that session keeps running and shares the
-  tab's hub key.
+  every other chat keeps its own. The same close drops the chat's hub session
+  (`LiveHub.forget`), so no tab is sent its card again. A chat reopened on the
+  same key before that close runs keeps the tabs and the session, and one reopened
+  while it runs keeps its new session. Closing the
+  tab of a chat linked to a channel session (`slack:<ts>`) closes none: that
+  session keeps running and shares the tab's hub key.
 - Late `screencastFrameAck` errors after a stop are swallowed; close is clean.
 
 ### The stream
@@ -546,7 +548,7 @@ tested on a fake clock.
 `browser_live` (`session_key`, `turn_id`, `state`, `url`, `title`, `browser`,
 `headless`, `step`, `steps`, `rung`, `fps`, and `started_at_ms`/`ended_at_ms`,
 the turn's wall-clock start and end in epoch ms, 0 while not yet). A newly
-connected owner socket is sent each chat's last published event
+connected owner socket is sent each open chat's last published event
 (`LiveHub.snapshot_events`, from `dashboard/ws.py`), so a reloaded tab shows the
 card, a waiting quick ask included, without waiting for a change. The card takes
 its turn times from those two fields on first sight, so a restored card still
@@ -749,7 +751,12 @@ cycle (`createImageBitmap`, newest frame wins, mask boxes after the image); the
 first frame is the one React render, later frames none. Visibility is posted only
 on a change of (any card instance showing the CURRENT turn intersecting) AND
 (document visible): a finished turn's card still on screen does not keep a later
-turn's screencast running while that turn's card is scrolled off. A turn no card
+turn's screencast running while that turn's card is scrolled off. A new turn
+reports its visibility again, since the gateway may hold a fresh session for it
+(a chat reopened on its key). A visibility
+write the gateway refused is sent again on the next change, except a 404
+`unknown_session`: that chat is closed, and resending it would fail on every tab
+switch. A turn no card
 shows (another slot's browsing, a card the virtualised transcript has not
 mounted) is reported hidden after 30 of its frames, so its screencast stops
 instead of streaming into memory nobody looks at, and resumes when a card mounts. A claim is optimistic and reverts on a
