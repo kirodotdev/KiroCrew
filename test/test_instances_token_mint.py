@@ -221,6 +221,48 @@ class TestTokenMint:
         assert "stdout tail:" in msg
         assert "<no stderr>" in msg  # stderr genuinely was empty — still reported
 
+    _KNOWN_HOSTS = b"Warning: Permanently added 'cd-1' (RSA) to the list of known hosts.\n"
+
+    def test_nonzero_exit_drops_the_known_hosts_warning(self, monkeypatch):
+        """With ``UserKnownHostsFile /dev/null`` ssh prints this line on every
+        connect; the real reason must lead the mint error, not the warning."""
+        from kiro_crew.instances import token_mint as tm
+
+        self._fake_proc(monkeypatch, 1, b"", self._KNOWN_HOSTS + b"remote kirocrew: boom\n")
+        with pytest.raises(tm.TokenMintError) as excinfo:
+            asyncio.run(tm.mint_remote_token("cd-1", ttl="20h"))  # flake-ok: token TTL, not a wait
+        msg = str(excinfo.value)
+        assert "known hosts" not in msg
+        assert msg.endswith("exited 1: remote kirocrew: boom")
+
+    def test_nonzero_exit_with_only_the_known_hosts_warning_reads_no_stderr(self, monkeypatch):
+        from kiro_crew.instances import token_mint as tm
+
+        self._fake_proc(monkeypatch, 1, b"", self._KNOWN_HOSTS)
+        with pytest.raises(tm.TokenMintError) as excinfo:
+            asyncio.run(tm.mint_remote_token("cd-1", ttl="20h"))  # flake-ok: token TTL, not a wait
+        msg = str(excinfo.value)
+        assert "known hosts" not in msg
+        assert "<no stderr>" in msg
+
+    def test_unparseable_output_drops_the_known_hosts_warning(self, monkeypatch):
+        from kiro_crew.instances import token_mint as tm
+
+        self._fake_proc(monkeypatch, 0, b"Gateway returned empty token\n", self._KNOWN_HOSTS)
+        with pytest.raises(tm.TokenMintError) as excinfo:
+            asyncio.run(tm.mint_remote_token("cd-1", ttl="20h"))  # flake-ok: token TTL, not a wait
+        msg = str(excinfo.value)
+        assert "known hosts" not in msg
+        assert "stderr: <none>" in msg
+
+    def test_run_remote_kirocrew_drops_the_known_hosts_warning(self, monkeypatch):
+        from kiro_crew.instances import token_mint as tm
+
+        self._fake_proc(monkeypatch, 1, b"", self._KNOWN_HOSTS + b"restart failed\n")
+        rc, err = asyncio.run(tm.run_remote_kirocrew("cd-1", "restart"))
+        assert rc == 1
+        assert err == "restart failed"
+
     def test_unparseable_output_surfaces_stdout_tail(self, monkeypatch):
         from kiro_crew.instances import token_mint as tm
 
