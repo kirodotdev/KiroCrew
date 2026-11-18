@@ -301,7 +301,9 @@ def _held_entries() -> dict[str, Any] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: a document nested too deep for the parser reads as
+        # unreadable, the same as a malformed one.
         logger.warning("held Bot rules: %s unreadable; every Bot call asks a person", path)
         return None
     if not isinstance(data, dict):
@@ -641,6 +643,10 @@ def strip_held_approvals(spec: dict[str, Any], member_id: str, name: str = "") -
         return spec
 
 
+class HeldLimitsNotApplied(RuntimeError):
+    """A child spec of a Bot with held limits could not be narrowed, so it is not started."""
+
+
 def held_child_spec(spec: dict[str, Any], session_key: str) -> dict[str, Any]:
     """*spec* for a KAS session or sub-agent target running under a Bot with held limits.
 
@@ -648,14 +654,21 @@ def held_child_spec(spec: dict[str, Any], session_key: str) -> dict[str, Any]:
     target) runs under the Bot's identity but on its own agent's spec, so the
     Bot's held capabilities lose that spec's pre-approvals and gain an ``ask``:
     KAS then sends each such call to the gate, which asks a person. *spec* when
-    the session's identity holds nothing. Never raises.
+    the session's identity holds nothing, or when its record cannot be read
+    (as :func:`held_for` reads it). Raises :class:`HeldLimitsNotApplied` only
+    when the session's Bot holds limits and *spec* could not be narrowed: the
+    child is refused rather than started with its full pre-approvals.
     """
     try:
         rules = _bot_rules(session_key, "") if session_key else []
         caps = {str(r.get("capability") or ANY) for r in rules if isinstance(r, dict)}
         caps.discard(NO_CALL)
-        if not caps:
-            return spec
+    except Exception:  # noqa: BLE001 - the session always starts, as the gate reads it
+        logger.warning("held Bot rules: a child spec's record could not be read", exc_info=True)
+        return spec
+    if not caps:
+        return spec
+    try:
         from kiro_crew.agent_sdk.kas_tool_view import permissions_block_readable
 
         out = _strip_caps(copy_json_document(spec), caps)
@@ -682,9 +695,12 @@ def held_child_spec(spec: dict[str, Any], session_key: str) -> dict[str, Any]:
             perms["rules"] = child_rules
             out["permissions"] = perms
         return out
-    except Exception:  # noqa: BLE001 - the session always starts
+    except Exception as exc:  # noqa: BLE001 - any failure refuses the child
         logger.warning("held Bot rules: a child spec was not narrowed", exc_info=True)
-        return spec
+        raise HeldLimitsNotApplied(
+            "this session's Bot has held limits that could not be applied to the "
+            f"agent's spec ({type(exc).__name__}), so it was not started"
+        ) from exc
 
 
 def _strip_caps(spec: dict[str, Any], caps: set[str]) -> dict[str, Any]:

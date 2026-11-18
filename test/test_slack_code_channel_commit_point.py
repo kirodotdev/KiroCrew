@@ -30,6 +30,8 @@ MODULES = (
     "comments.py",
     "actions.py",
     "notices.py",
+    "tabs.py",
+    "worker_stop.py",
 )
 COMMIT = {"commit_if_not_stopped", "_commit"}  # tools._commit raises on a refusal
 
@@ -132,8 +134,18 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("views.py", "forget_view", "update_async"): (
         "drops the id of a tab Slack already removed, so it is never removed twice"
     ),
-    ("views.py", "_reconcile", "update_async"): (
+    ("views.py", "reconcile", "update_async"): (
         "drops record entries Slack's own list no longer has (a removed tab)"
+    ),
+    ("views.py", "set_origin", "update_async"): (
+        "re-labels whose PR a tab Slack already shows; no Slack call, and the "
+        "label fences that tab's later removal"
+    ),
+    ("tabs.py", "_publish_workers", "_last_write"): (
+        "stamps a Workers-tab write Slack already took (the edit gap counts from it)"
+    ),
+    ("tabs.py", "_publish_workers", "_sent"): (
+        "records the digest of a Workers-tab write Slack already took"
     ),
     ("notices.py", "notify_refusal", "_locks"): (
         "takes the channel's notice lock (an asyncio.Lock), not channel state"
@@ -189,6 +201,8 @@ UNADMITTED: dict[tuple[str, str], str] = {
     ("comments.py", "on_turn_end"): "turn hook",
     ("comments.py", "poll_once"): "the idle-channel poll, a background task",
     ("actions.py", "_respond"): "answers a person's own context-bar click",
+    ("worker_stop.py", "_handle"): "a person's Workers-tab Stop click",
+    ("worker_stop.py", "_respond"): "answers a person's own Workers-tab Stop click",
 }
 
 

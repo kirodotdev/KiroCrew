@@ -55,9 +55,12 @@ from kiro_crew.dashboard.handlers.work_ledger import (
     _slot_loop_held,
     _slot_looping,
     _slot_open,
+    _slot_pending,
     _slot_running,
+    _slot_turn_running,
     _tail_events,
 )
+from kiro_crew.dashboard.session_activity import session_activity, session_execution_active
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.work_vocab import waits_on_person
@@ -435,7 +438,7 @@ def item_ask_is_current(slot_key: str, item: Mapping[str, Any]) -> bool:
 
 
 def item_running(state: DashboardState, item: Mapping[str, Any]) -> bool:
-    """Whether *item*'s local worker has a turn in flight, as the board reads it.
+    """Whether *item*'s local worker has a model turn in flight.
     A remote item answers False here: :func:`item_awaits_person` reads its record
     off the loop. Memory reads."""
     stored = work_ledger.WorkItem.from_dict(dict(item))
@@ -444,7 +447,7 @@ def item_running(state: DashboardState, item: Mapping[str, Any]) -> bool:
     running, _closed, _looping, _held = work_ledger.item_liveness(
         "",
         stored,
-        running=lambda k: _slot_running(state, k),
+        running=lambda k: _slot_turn_running(state, k),
         closed=lambda k: _slot_closed(state, k),
         looping=_slot_looping,
         held=_slot_loop_held,
@@ -668,9 +671,11 @@ def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
             looping=_slot_looping,
             held=_slot_loop_held,
         )
+        worker_key = item.worker_session_key or ""
+        pending = _slot_pending(state, worker_key)
         facts["stale"] = work_ledger.is_stale(
             item,
-            worker_running=running,
+            worker_running=running or pending,
             worker_closed=closed,
             worker_looping=looping,
             worker_loop_held=held,
@@ -678,12 +683,12 @@ def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
         # Idle, and its worker's own loop will wake it (waiting on CI): the page reads
         # it as working, not waiting. A running turn keeps its own live reading.
         facts["looping"] = looping and not running
-        facts["worker"] = _alive_of(state, item.worker_session_key or "")
+        facts["worker"] = _alive_of(state, worker_key)
         events = raw.get("events")
         facts["awaits_person"] = not item.is_terminal and awaits_person(
             item,
             [e for e in events if isinstance(e, dict)] if isinstance(events, list) else [],
-            running=running,
+            running=_slot_turn_running(state, worker_key),
         )
         out.append({**raw, **facts})
     return out
@@ -796,6 +801,10 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
     assert record is not None
 
     conductor_alive = _slot_open(state, key)
+    conductor_slot = _find_slot(state, key)
+    conductor_activity = (
+        session_activity(state, conductor_slot) if conductor_slot is not None else ()
+    )
     # The worker's transport, not the ledger: a report the harness never delivered.
     # Read outside the board hold because it is not part of the ledger snapshot.
     undelivered = await asyncio.to_thread(
@@ -816,9 +825,12 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
             held=_slot_loop_held,
             remote=remote_live.get(item.item_id) or (False, False),
         )
+        worker_key = item.worker_session_key or ""
+        pending = False if item.worker_instance_id else _slot_pending(state, worker_key)
+        turn_running = running if item.worker_instance_id else _slot_turn_running(state, worker_key)
         row["stale"] = work_ledger.is_stale(
             item,
-            worker_running=running,
+            worker_running=running or pending,
             worker_closed=closed,
             worker_looping=looping,
             worker_loop_held=held,
@@ -830,7 +842,9 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
         row["report_undelivered"] = undelivered.get(item.item_id)
         events = [event.to_dict() for event in event_tails[item.item_id]]
         # Waits on the PERSON: the one test the sidebar's crew_work count uses too.
-        row["awaits_person"] = not item.is_terminal and awaits_person(item, events, running=running)
+        row["awaits_person"] = not item.is_terminal and awaits_person(
+            item, events, running=turn_running
+        )
         row["events"] = _mask_events(events)
         rows.append(
             _project_item(
@@ -838,7 +852,7 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
                 alive=(
                     _remote_alive(running, closed)
                     if item.worker_instance_id
-                    else _alive_of(state, item.worker_session_key or "")
+                    else _alive_of(state, worker_key)
                 ),
                 outstanding=_is_outstanding(item, row["events"]),
                 terminal=item.is_terminal,
@@ -876,6 +890,7 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
     payload = {
         "conductor": record.to_dict(),
         "conductor_alive": "idle" if conductor_alive else "closed",
+        "conductor_working": session_execution_active(conductor_activity),
         "items": rows,
         "asks": asks,
         "pr_facts": facts_by_item,

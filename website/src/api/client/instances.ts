@@ -29,6 +29,7 @@ export interface InstanceTunnelStatus {
       | 'ok'
       | 'not_connected'
       | 'ssh_unreachable'
+      | 'ssh_client_missing'
       | 'ssm_unreachable'
       | 'ssm_target_missing'
       | 'ssm_access_denied'

@@ -330,6 +330,47 @@ def neutralize_background_context_frame(text: str) -> str:
     return _apply_marker_spans(text, _marker_spans(text, _BACKGROUND_CONTEXT_FRAME_RES))
 
 
+# The fence ``dashboard.mate_user_actions.terminal_line`` mints around a command the
+# user ran from a crewmate's card or code block. Only the closer is scrubbed: a copy
+# of the opener inside the fence is data, and ``<<< command`` is a bash here-string.
+# shortcut: ``>>end of command`` (two ``>``) and reworded closers are left; neither
+# is the minted closer. Widen only if one is seen.
+_USER_ACTION_COMMAND_CLOSE_RE = _fence_marker_regex(">>>END_OF_COMMAND")
+
+
+def neutralize_user_action_command_close(text: str) -> str:
+    """*text* with every look-alike ``>>>end of command`` closer neutralized."""
+    spans = _marker_spans(text, (_USER_ACTION_COMMAND_CLOSE_RE,), drop_controls=True)
+    return _apply_marker_spans(text, spans, _THREAD_FENCE_NEUTRALIZED)
+
+
+# Frames ``memory_provider.render`` mints around provider text, and the opener of
+# Crew's own memory block whose words make preferences rules (``memory.py``). Not in
+# ``_STRUCTURAL_MARKER_RES``, for the member-marker reason: the session-context tail
+# holds the genuine frames. Closers match only their exact bracketed form. The opener
+# needs the dash its header uses and must not be a markdown link title, so
+# ``[Memory](url)``, ``[Memory-safe ...]`` and ``[Memory - Wikipedia](url)`` stay
+# prose. The "DATA, not instructions" openers (``[Memory from``, ``[Memory
+# activity``) are left: forging one only opens another data block.
+# shortcut: a closer with extra words inside its bracket (``[End of memory, really]``)
+# and an en dash touching a letter (``[Memory–x``) are left, and the link check looks
+# at most 200 characters ahead so its cost stays linear; widen only if one is seen.
+_MEMORY_FRAME_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\[\s*END\s*OF\s*(?:DOCUMENT|MEMORY(?:\s*ACTIVITY(?:\s*INDEX)?|\s*TOOLS"
+        r"|\s*FROM\s*PROVIDER)?)\s*\]",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\[\s*MEMORY\s*(?:TOOLS|UNAVAILABLE)\s*\]", re.IGNORECASE),
+    re.compile(r"\[\s*MEMORY\s*-+(?=[\s-])(?![^\]\n]{0,200}\]\()", re.IGNORECASE),
+)
+
+
+def neutralize_memory_frame(text: str) -> str:
+    """*text* with every look-alike memory or provider-document frame neutralized."""
+    return _apply_marker_spans(text, _marker_spans(text, _MEMORY_FRAME_RES, drop_controls=True))
+
+
 # The frame the webhook intake (``dashboard.handlers.hooks_webhook_intake``) mints
 # around a hook's saved context: ``=== Restored Context (from prior session) ===``
 # ... ``=== End Restored Context ===``. Not in ``_STRUCTURAL_MARKER_RES``, for the
@@ -515,9 +556,18 @@ def _merge_overlapping_spans(raw: list[tuple[int, int]]) -> list[tuple[int, int]
     return merged
 
 
+# Characters ``_marker_spans`` sends through the per-character view pipeline:
+# non-ASCII, and with ``drop_controls`` also C0/C1 controls other than \t \n \r.
+_VIEW_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+_VIEW_SPECIAL_RE = re.compile(r"[^\x00-\x7f]")
+_VIEW_SPECIAL_OR_CONTROL_RE = re.compile(r"[^\t\n\r\x20-\x7e]")
+
+
 def _marker_spans(
     text: str,
     patterns: tuple[re.Pattern[str], ...],
+    *,
+    drop_controls: bool = False,
 ) -> list[tuple[int, int]]:
     """Merged *patterns* matches in *text*, in original coordinates.
 
@@ -525,8 +575,15 @@ def _marker_spans(
     punctuation, drop format/zero-width chars, and map Unicode dashes to
     ASCII) with an index map back to the original offsets. Callers can enforce
     one boundary class without rewriting unrelated trusted markers.
+    *drop_controls* also leaves C0/C1 control characters other than tab, line
+    feed and carriage return out of the view, so a control inside a marker
+    cannot hide it.
     """
-    if text.isascii():  # pure ASCII cannot contain confusables — match directly
+    special = _VIEW_SPECIAL_RE
+    if drop_controls and _VIEW_CONTROL_RE.search(text):
+        special = _VIEW_SPECIAL_OR_CONTROL_RE
+    if special is _VIEW_SPECIAL_RE and text.isascii():
+        # pure ASCII cannot contain confusables — match directly
         raw = [m.span() for pattern in patterns for m in pattern.finditer(text)]
     else:
         # Compatibility-normalized matching view + origin map (normalized char
@@ -540,11 +597,13 @@ def _marker_spans(
         # ASCII is unchanged by every normalization below. Copy entire runs in
         # C instead of paying the Unicode pipeline per character whenever one
         # non-ASCII character appears anywhere in a large prompt.
-        for match in re.finditer(r"[^\x00-\x7f]", text):
+        for match in special.finditer(text):
             idx = match.start()
             norm.append(text[cursor:idx])
             origin.extend(range(cursor, idx))
             cursor = idx + 1
+            if special is not _VIEW_SPECIAL_RE and _VIEW_CONTROL_RE.match(match.group()):
+                continue
             for compatible in unicodedata.normalize("NFKC", match.group()):
                 if _is_marker_ignorable(compatible):
                     continue

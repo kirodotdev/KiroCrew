@@ -1040,6 +1040,13 @@ Fill `{...}` from the spec; keep every clause — each one closes a failure mode
 
 ### Sending an order to a worker
 
+**Every order to an existing worker uses `session_send` with `steer: true`.**
+That includes rulings, corrections, nudges, resume requests and follow-ups. It
+joins a busy worker's running turn instead of queueing behind it, and starts an
+idle worker like a plain send. The initial seed stays plain because the new
+session has no turn to steer. Name any older queued instruction the steer
+supersedes.
+
 Every rule here closes a way an order fails SILENTLY, and silence is the failure
 mode you are least able to detect.
 
@@ -1206,10 +1213,10 @@ digest keying, not a defect, and it does not recur.
 
 | Line | Action |
 | --- | --- |
-| `ERR` | Batch-resume the affected workers (`session_send`: "resume; re-state your protocol prefix"). |
+| `ERR` | Batch-resume the affected workers with `session_send`, `steer: true`: "resume; re-state your protocol prefix". |
 | `PR` | Record PR number + head in the ledger. |
-| `GREEN` | Verify independently (below). Pass → digest + mark item `green_verified`, backfill a queued item. Fail → send the worker the delta. |
-| `BLOCKED` | Adjudicate (below). Record it in `open_rulings` and clear that entry only once the ruling is delivered via `session_send`. |
+| `GREEN` | Verify independently (below). Pass → digest + mark item `green_verified`, backfill a queued item. Fail → send the worker the delta with `session_send` and `steer: true`. |
+| `BLOCKED` | Adjudicate (below). Record it in `open_rulings` and clear that entry only once the ruling is delivered via `session_send` with `steer: true`. |
 | `STANDDOWN` / `PROPOSAL` | Verify the evidence is stated; record the disposition; unclaim with an evidence comment; close or re-queue; backfill. |
 | `TERMINAL` | The last dispositioned protocol report was terminal and the session has gone quiet since. **Close it out** — confirm the disposition landed, release the claim, `session_close`. Do NOT nudge: a finished worker has nothing to re-arm, and a monitor loop is only correct while something EXTERNAL can still change. |
 | `IDLE` | Intervention ladder (below). |
@@ -1270,7 +1277,7 @@ is what keeps a large merge queue reviewable at a glance — never skip it.
 Signals: `IDLE` twice in a row; same tag across ~5 cycles with rising turn
 count; credit burn with no ledger transition; ERR recurring after resume.
 
-1. **Nudge** (`session_send`): restate the next step + protocol requirement.
+1. **Nudge** (`session_send`, `steer: true`): restate the next step + protocol requirement.
 2. **Inspect** — `spawn_run` ONE bounded inspector and bound it in the TASK
    TEXT. `spawn_run` takes no `allowed_tools` parameter, and the underlying
    field is ignored for ACP-backed agents, so read-only cannot be a property of
@@ -1573,12 +1580,12 @@ new work": edit the instruction to `DRAIN MODE: no backfill, no new
 dispatches; patrol until in-flight items resolve; then final tally +
 autonudge_stop.`
 
-When that mode change invalidates what an in-flight worker is doing right now,
-forward it with `session_send` and `steer: true` so it lands in the worker's
-running turn rather than after it; a plain send waits out the whole turn. Keep
-`steer` off for rulings, nudges and anything that can wait for the turn
-boundary. A steer does not withdraw messages already queued (`queue_depth` from
-`session_read_message`), so name the instruction it supersedes.
+Every direct message to an existing worker uses `session_send` with
+`steer: true`, including mode changes, rulings and nudges. It lands in a busy
+worker's running turn rather than queueing behind it, and starts an idle worker
+like a plain send. The initial seed stays plain because the new session has no
+turn to steer. A steer does not withdraw messages already queued (`queue_depth`
+from `session_read_message`), so name the instruction it supersedes.
 
 ## Merge, cleanup, reconcile
 

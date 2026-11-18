@@ -119,7 +119,10 @@ async def _cancel_all(state: Any, slots: list[Any], tally: Tally) -> None:
             tally.subagents += count
 
 
-async def _stop_one(state: Any, helper: Any, tally: Tally) -> None:
+async def _stop_one(
+    state: Any, helper: Any, tally: Tally, *, escalate: bool = True, cancel_key: str = ""
+) -> dict[str, Any]:
+    """Stop *helper*'s turn; its answer (``{}`` when it raised). *cancel_key* pins it."""
     from kiro_crew.dashboard.chat_handlers import stop_slot_turn
 
     key = str(helper.key)
@@ -127,8 +130,10 @@ async def _stop_one(state: Any, helper: Any, tally: Tally) -> None:
     # audited as an error, not counted.
     tally.refused.add(key)
     info = "error"
+    result: dict[str, Any] = {}
+    pin: dict[str, Any] = {"cancel_key": cancel_key} if cancel_key else {}
     try:
-        result = await stop_slot_turn(state, helper, source="slack", escalate=True)
+        result = await stop_slot_turn(state, helper, source="slack", escalate=escalate, **pin)
         if result.get("ok") is not False:
             tally.refused.discard(key)
             info = str(result.get("info") or "stopping")
@@ -136,6 +141,21 @@ async def _stop_one(state: Any, helper: Any, tally: Tally) -> None:
         logger.warning("code channel stop: helper %s not stopped", key, exc_info=True)
     finally:
         tally.helpers.append((key, info))
+    return result
+
+
+async def stop_one_helper(
+    state: Any, helper: Any, *, escalate: bool = True, cancel_key: str = ""
+) -> tuple[Tally, dict[str, Any]]:
+    """Stop one helper as :func:`stop_helpers` stops each: its turn, then its sub-agents.
+
+    The turn's stop starts first, with no await before it, so it stops the turn the
+    caller admitted; the sweep follows (and runs even when the stop raised).
+    """
+    tally = Tally()
+    answer = await _stop_one(state, helper, tally, escalate=escalate, cancel_key=cancel_key)
+    await _cancel_all(state, [helper], tally)
+    return tally, answer
 
 
 async def _stop_own(own: Callable[[], Awaitable[str]], tally: Tally) -> None:
@@ -176,7 +196,7 @@ async def stop_helpers(
         tried = tally.refused | {key for key, info in tally.helpers if info not in _ENDED}
         running = [h for h in helpers if getattr(h, "running", False) and str(h.key) not in tried]
         await _cancel_all(state, [channel_slot, *helpers] if first else running, tally)
-        jobs = [_stop_one(state, helper, tally) for helper in running]
+        jobs: list[Awaitable[Any]] = [_stop_one(state, helper, tally) for helper in running]
         if first and own is not None:
             jobs.insert(0, _stop_own(own, tally))
         # A stop call cancelled from inside leaves its job's answer "not stopped".

@@ -179,6 +179,10 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
         ).acquire()
     except GatewayLockError as lock_err:
         print(f"Error: {lock_err}", file=sys.stderr)
+        # The same refusal as the gateway's own lock below, and the same notice.
+        from kiro_crew.data_home_owner import print_if_data_home_not_owned
+
+        print_if_data_home_not_owned(config_dir())
         sys.exit(LIVE_HOLDER_EXIT_CODE if lock_err.live_holder else 1)
     try:
         _start_gateway_log_after_lock()
@@ -948,6 +952,11 @@ def main() -> None:
             ).acquire()
         except GatewayLockError as exc:
             print(f"Error: {exc}", file=sys.stderr)
+            # Files an earlier root run left are named here: this start ends before
+            # the after-ready notice that would name them.
+            from kiro_crew.data_home_owner import print_if_data_home_not_owned
+
+            print_if_data_home_not_owned(config_dir())
             # A live holder is a sibling gateway already serving this home, so
             # retrying can only meet the same refusal: exit the code the systemd
             # unit's RestartPreventExitStatus= names (service/linux_unit.py) and let

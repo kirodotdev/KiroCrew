@@ -8222,6 +8222,11 @@
       "previous_sign_in_not_removed": "Conectado, mas não foi possível remover o login anterior",
       "previous_sign_in_not_removed_body": "A nova conta foi salva, mas a conta da qual você estava saindo ainda está lá e tem prioridade. Saia dela e depois confira o login mostrado aqui."
     },
+    "kiroCliSignInInTerminal": {
+      "copy_sign_in": "Copiar o comando de entrada",
+      "models_signed_out": "O Kiro CLI não está conectado, então a lista completa de modelos não pode ser carregada.",
+      "sign_in": "Entrar no Kiro CLI"
+    },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "A conclusão da configuração não foi registrada",
       "setup_marker_retry_body": "O {{productName}} abriu o painel, mas não conseguiu registrar que a configuração foi concluída. Outros navegadores e pessoas neste gateway podem continuar vendo a tela de configuração até que isso seja concluído.",
@@ -20043,7 +20048,8 @@
         "expand_the_side_panel_to_the_git_tab_each_time_yo": "Abre o painel lateral na aba Git sempre que você inicia um chat em um projeto git. A aba Git é criada de qualquer forma.",
         "expanded_icon_name_stats": "Expandido (ícone + nome + estatísticas)",
         "failed_to_load_config": "Falha ao carregar a configuração.",
-        "failed_to_load_config_kiro_signed_out": "O Kiro CLI não está conectado ou a sua sessão expirou. Execute 'kiro-cli login' no terminal e clique em \"Tentar novamente\".",
+        "failed_to_load_config_kiro_signed_out": "O Kiro CLI não está conectado ou a sua sessão expirou. Clique em \"Entrar no Kiro CLI\" e depois em \"Tentar novamente\".",
+        "failed_to_load_config_kiro_signed_out_copy": "O Kiro CLI não está conectado ou a sua sessão expirou. Copie o comando de login, execute-o em um terminal e depois clique em \"Tentar novamente\".",
         "failed_to_load_dashboard_config": "Falha ao carregar a configuração do dashboard.",
         "failed_to_save_auto_compact_threshold": "Falha ao salvar o limite de compactação automática",
         "failed_to_save_completion_keep_characters": "Falha ao salvar os caracteres do evento de conclusão",

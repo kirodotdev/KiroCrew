@@ -8013,6 +8013,11 @@
       "previous_sign_in_not_removed": "Angemeldet, aber die vorherige Anmeldung konnte nicht entfernt werden",
       "previous_sign_in_not_removed_body": "Das neue Konto ist gespeichert, aber das Konto, von dem du gewechselt hast, ist noch da und hat Vorrang. Melde dich dort ab und prüfe dann die hier angezeigte Anmeldung."
     },
+    "kiroCliSignInInTerminal": {
+      "copy_sign_in": "Anmeldebefehl kopieren",
+      "models_signed_out": "Kiro CLI ist nicht angemeldet, daher kann die vollständige Modellliste nicht geladen werden.",
+      "sign_in": "Bei Kiro CLI anmelden"
+    },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "Abschluss der Einrichtung wurde nicht gespeichert",
       "setup_marker_retry_body": "{{productName}} hat das Dashboard geöffnet, konnte aber nicht speichern, dass die Einrichtung abgeschlossen ist. Andere Browser und Personen an diesem Gateway sehen möglicherweise weiterhin den Einrichtungsbildschirm, bis dies gelingt.",
@@ -19522,7 +19527,8 @@
         "expand_the_side_panel_to_the_git_tab_each_time_yo": "Öffnet das Seitenpanel auf dem Git-Tab, sobald du einen Chat in einem Git-Projekt startest. Der Git-Tab wird in jedem Fall erstellt.",
         "expanded_icon_name_stats": "Erweitert (Symbol + Name + Statistik)",
         "failed_to_load_config": "Konfiguration konnte nicht geladen werden.",
-        "failed_to_load_config_kiro_signed_out": "Kiro CLI ist nicht angemeldet oder die Anmeldung ist abgelaufen. Führe 'kiro-cli login' im Terminal aus und klicke dann auf „Wiederholen“.",
+        "failed_to_load_config_kiro_signed_out": "Kiro CLI ist nicht angemeldet oder die Anmeldung ist abgelaufen. Klicke auf „Bei Kiro CLI anmelden“ und dann auf „Wiederholen“.",
+        "failed_to_load_config_kiro_signed_out_copy": "Kiro CLI ist nicht angemeldet oder die Anmeldung ist abgelaufen. Kopiere den Anmeldebefehl, führe ihn in einem Terminal aus und klicke dann auf „Wiederholen“.",
         "failed_to_load_dashboard_config": "Dashboard-Konfiguration konnte nicht geladen werden.",
         "failed_to_save_auto_compact_threshold": "Schwellenwert für automatische Verdichtung konnte nicht gespeichert werden",
         "failed_to_save_completion_keep_characters": "Zeichen für Abschluss-Beibehaltung konnten nicht gespeichert werden",

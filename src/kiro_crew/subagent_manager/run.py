@@ -449,11 +449,9 @@ class RunEventCoordinator(ManagerComponent):
     def _has_live_parent_run_task(self, parent_session_key: str, *, exclude_id: str = "") -> bool:
         """Whether a parent-owned run can still register its terminal report.
 
-        ``_run_inner`` publishes ``info.done`` before ``_run_impl`` resumes its
-        ``finally`` and registers the report task. During that scheduling gap the
-        ordinary ``running`` view is empty, but the outer task is still live.
-        Keep the parent pending until that task is removed; by then the report is
-        registered in ``_report_owners`` and the delivery barrier owns the wait.
+        The run-id task index ends at teardown, before the outer task awaits its
+        report. Counting that report-waiting task would stop the last completion
+        from arming synthesis while a sibling's delivery waits on the parent turn.
         """
         for info in self._manager._agents.values():
             if info.parent_session_key != parent_session_key or info.id == exclude_id:
@@ -466,12 +464,11 @@ class RunEventCoordinator(ManagerComponent):
     def has_unfinished_report_for_impl(self, parent_session_key: str) -> bool:
         """Whether a terminal report owned by *parent_session_key* is still running.
 
-        The span after :meth:`_has_live_parent_run_task` goes false: the run's
-        task is gone, and its report sits in ``_report_owners`` until delivery
-        resolves -- for a reaped run, across the reap's reset and kill awaits. A
-        parent teardown in that span marks the child teardown-cancelled and the
-        report skips ``_on_done``, so a caller deciding whether a parent may be
-        torn down must count it. Synchronous, in-memory, loop-safe.
+        Reports retain their own ownership until delivery resolves, independently
+        of the outer run task -- for a reaped run, across the reap's reset and kill
+        awaits. A parent teardown in that span marks the child teardown-cancelled
+        and the report skips ``_on_done``, so a caller deciding whether a parent may
+        be torn down must count it. Synchronous, in-memory, loop-safe.
         """
         if not parent_session_key:
             return False
@@ -489,17 +486,43 @@ class RunEventCoordinator(ManagerComponent):
             for run_id, task in watchers.items()
         )
 
+    def has_current_execution_for_impl(self, parent_session_key: str) -> bool:
+        """Whether this parent owns executing or finalizing subagent work.
+
+        Queue entries and parked spawn approvals are not execution. A live outer
+        run covers the done-to-report gap and cleanup after report settlement;
+        task ownership, reports and follow-up watchers survive run-record eviction.
+        All reads are in memory and synchronous on the gateway loop.
+        """
+        from kiro_crew.subagent import _parked_at_spawn_approval
+
+        return (
+            any(
+                parent == parent_session_key and not task.done()
+                for task, (_run_id, parent) in self._manager._run_task_owners.items()
+            )
+            or self._has_live_parent_followup_watcher(parent_session_key)
+            or self.has_unfinished_report_for_impl(parent_session_key)
+            or any(
+                not info.done
+                and info.parent_session_key == parent_session_key
+                and not _parked_at_spawn_approval(info)
+                for info in self._manager._agents.values()
+            )
+        )
+
     def has_in_memory_pending_work_for_impl(
         self, parent_session_key: str, *, exclude_id: str = ""
     ) -> bool:
         """The terms of :meth:`has_pending_work_for_impl` that need no store read.
 
-        A spawn in the dispatch window, a run whose terminal report is still
-        waiting on its teardown (*exclude_id* leaves out the run asking, whose
-        own task is live while its completion is delivered), and a live
-        follow-up watcher. With ``running_agents_for`` this is everything the
-        synthesis ARM consults: the store half is the fire gate's, so the
-        delivery path never waits on the task store's writer.
+        A spawn in the dispatch window, a sibling still present in the run-id
+        task index (*exclude_id* leaves out the run asking), and a live follow-up
+        watcher. A report-waiting outer task remains current execution but does
+        not block the last completion from arming synthesis. With
+        ``running_agents_for`` this is everything the synthesis ARM consults:
+        the store half is the fire gate's, so the delivery path never waits on
+        the task store's writer.
         """
         return (
             self._in_window_count(parent_session_key) > 0
@@ -514,14 +537,13 @@ class RunEventCoordinator(ManagerComponent):
         return None if overflow is None else in_window + overflow
 
     def has_pending_work_for_impl(self, parent_session_key: str) -> bool:
-        """True while a parent has queued, running, or finalizing sub-agents.
+        """True while a parent has queued, pre-report, or follow-up work.
 
-        The reset-deferral guards must consult this, not ``running`` alone —
-        see :meth:`queued_count_for` for why. A parent session reset while a
-        spawn is still queued strands that agent's completion on a
-        cold-started, context-free replacement session. A completed inner run
-        remains pending until its live outer task registers the terminal report,
-        and a follow-up watcher remains pending until it dispatches or settles.
+        The reset-deferral guards pair this with ``has_unfinished_report_for``;
+        report delivery remains current execution without blocking synthesis.
+        A parent session reset while a spawn is still queued strands that agent's
+        completion on a cold-started, context-free replacement session. A
+        follow-up watcher remains pending until it dispatches or settles.
         """
         if self._manager._queued_depth(parent_session_key) > 0:
             return True

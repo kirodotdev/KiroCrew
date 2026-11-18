@@ -8222,6 +8222,11 @@
       "previous_sign_in_not_removed": "Accesso effettuato, ma non è stato possibile rimuovere l’accesso precedente",
       "previous_sign_in_not_removed_body": "Il nuovo account è salvato, ma quello da cui stavi passando è ancora presente e ha la precedenza. Esci da quell’account, poi controlla l’accesso mostrato qui."
     },
+    "kiroCliSignInInTerminal": {
+      "copy_sign_in": "Copia il comando di accesso",
+      "models_signed_out": "Kiro CLI non ha eseguito l'accesso, quindi non è possibile caricare l'elenco completo dei modelli.",
+      "sign_in": "Accedi a Kiro CLI"
+    },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "Il completamento della configurazione non è stato registrato",
       "setup_marker_retry_body": "{{productName}} ha aperto la dashboard, ma non è riuscito a registrare che la configurazione è completa. Altri browser e persone su questo gateway potrebbero continuare a vedere la schermata di configurazione finché l’operazione non riesce.",
@@ -20043,7 +20048,8 @@
         "expand_the_side_panel_to_the_git_tab_each_time_yo": "Apre il pannello laterale sulla scheda Git ogni volta che avvii una chat in un progetto git. La scheda Git viene creata in ogni caso.",
         "expanded_icon_name_stats": "Esteso (icona + nome + statistiche)",
         "failed_to_load_config": "Impossibile caricare la configurazione.",
-        "failed_to_load_config_kiro_signed_out": "Kiro CLI non ha eseguito l'accesso o la tua sessione è scaduta. Esegui 'kiro-cli login' nel terminale, poi fai clic su «Riprova».",
+        "failed_to_load_config_kiro_signed_out": "Kiro CLI non ha eseguito l'accesso o la tua sessione è scaduta. Fai clic su «Accedi a Kiro CLI», poi su «Riprova».",
+        "failed_to_load_config_kiro_signed_out_copy": "Kiro CLI non ha eseguito l’accesso o la tua sessione è scaduta. Copia il comando di accesso, eseguilo in un terminale, poi fai clic su «Riprova».",
         "failed_to_load_dashboard_config": "Impossibile caricare la configurazione della dashboard.",
         "failed_to_save_auto_compact_threshold": "Impossibile salvare la soglia di compattazione automatica",
         "failed_to_save_completion_keep_characters": "Impossibile salvare i caratteri conservati del completamento",

@@ -49,7 +49,7 @@ from slack_code_channel_surface_helpers import (  # noqa: F401 - fixtures by nam
     env_fixture,
     worktree_fixture,
 )
-from slack_code_channels_helpers import OWNER
+from slack_code_channels_helpers import OWNER, start_new_turn, stop_running_turn
 
 from kiro_crew.config.loader import ACTIVATION_OFF, ACTIVATION_REVIEW
 from kiro_crew.mcp_tools import code_channels as mcp_code_channels
@@ -244,6 +244,32 @@ def test_plan_canvas_is_created_once_then_updated(env: Any) -> None:
     assert _calls(env, "agents.conversations.setCanvasContent")[0]["canvas_id"] == "F1"
     view = _calls(env, "agents.conversations.setView")
     assert len(view) == 1 and view[0]["access_level"] == "comment"
+
+
+@pytest.mark.parametrize("what", ["stop", "set_off"])
+def test_a_stop_while_the_plan_tab_makes_room_is_said_as_stopped(
+    env: Any, monkeypatch: Any, what: str
+) -> None:
+    from kiro_crew.slack.code_channels import views
+
+    _bind(env)
+    env.api.responses["conversations.canvases.create"] = {"ok": True, "canvas_id": "F1"}
+    env.api.responses["agents.conversations.setView"] = {"ok": False, "error": "too_many_views"}
+
+    async def make_room(client: Any, channel_id: str, *, for_key: str, **_kw: Any) -> str:
+        if what == "stop":
+            stop_running_turn(CH)  # Slack's Stop lands while room is made
+        else:  # the channel is set Off or Review while room is made
+            monkeypatch.setattr(surface, "channel_admits", lambda cfg, b: False)
+        return ""
+
+    monkeypatch.setattr(views, "_make_room", make_room)
+    try:
+        out = _run(env, tools.PUBLISH_PLAN_CANVAS, {"markdown": "# Plan"})
+    finally:
+        start_new_turn(CH)
+    assert out.text == (tools.STOPPED_TEXT if what == "stop" else tools.CHANNEL_OFF_TEXT)
+    assert surface_store().get(CH).plan_canvas_id == "F1"  # the canvas itself is kept
 
 
 def test_an_existing_canvas_is_never_retried_or_adopted(env: Any) -> None:

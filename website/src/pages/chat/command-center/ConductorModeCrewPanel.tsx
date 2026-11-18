@@ -58,7 +58,7 @@ function joinNames(names: string[]): string {
 
 /** The recap: ONE plain sentence from the counts and the names that wait. */
 export function conductorModeRecap(c: ConductorModeCounts, waitingNames: string[], hasQuestion: boolean): string {
-  if (c.total === 0) return i18nT('components.crewMode.conductor_mode_recap_empty')
+  if (c.total === 0 && waitingNames.length === 0 && !hasQuestion) return i18nT('components.crewMode.conductor_mode_recap_empty')
   const head = i18nT('components.crewMode.conductor_mode_recap_head', { done: c.done, total: c.total })
   const names = [...waitingNames]
   if (hasQuestion) names.push(i18nT('components.crewMode.conductor_mode_recap_main_chat'))
@@ -69,9 +69,9 @@ export function conductorModeRecap(c: ConductorModeCounts, waitingNames: string[
   return i18nT('components.crewMode.conductor_mode_recap_quiet', { head })
 }
 
-/** The Recap from the session summary (GET /api/chat/slots/{slot}/summary, a free
- *  read that never generates): the first goal's latest status
- *  line, else its title. '' when the summary is off or has no goal yet. */
+/** Context for a Recap with no live milestone state or ask: the first goal's
+ *  latest progress line from the cached session summary (GET only, no generation).
+ *  The caller keeps authoritative state wording ahead of this prose. */
 export function summaryRecap(summary: SessionSummary | undefined, milestoneTitles: readonly string[]): string {
   // A stale summary may name a state the milestones have moved past.
   if (!summary?.enabled || summary.stale || !summary.intents?.length) return ''
@@ -308,9 +308,12 @@ export function milestoneState(item: WorkBoardItem, waiting: boolean): Milestone
   const open = item.status === 'progress' || item.status === 'blocked' || item.status === 'question'
   // Needs you only when the person must act: a pending approval of the item's
   // member (`waiting`), or an unanswered blocked / question report whose reason
-  // names a person. An answer -- the conductor's or the person's own steer, a
-  // dismiss included -- ends it, and so does a turn running again (the worker moved on).
-  if (waiting || ((item.status === 'blocked' || item.status === 'question') && PERSON_REASONS.has(item.reason || '') && !reportAnswered(item) && item.alive !== 'running')) return 'needs_you'
+  // names a person. The board's own `awaits_person` decides the report: it read
+  // the answers and the worker's model turn, while its `alive` also counts
+  // background work, which never answers the person. An older board has no
+  // `awaits_person`, and its `alive` running was the model turn.
+  const asksPerson = item.awaits_person ?? ((item.status === 'blocked' || item.status === 'question') && PERSON_REASONS.has(item.reason || '') && !reportAnswered(item) && item.alive !== 'running')
+  if (waiting || asksPerson) return 'needs_you'
   if (item.alive === 'running') return 'running'
   // Stuck only when nothing is left to move it: its session closed on an open
   // report, or the board is orphaned (no main chat reads its reports). A done
@@ -760,18 +763,33 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   // The run's one state: what is live here first, then the gateway's verdict.
   // The main chat's own tool approval waits on the person too, though its turn still runs.
   const rootSlot = slots.find(s => s.key === root)
+  const working = moving || c.running > 0 || !!board.data?.conductor_working
+    || !!rootSlot?.running || !!rootSlot?.subagents_running || !!rootSlot?.preparing || !!rootSlot?.compacting
   const runState = conductorModeRunState({
     paused: !!pause, needsYou: needCount > 0 || !!rootSlot?.pending_approval, hasGoal: !!goalText, items: items.length, run: board.data?.run,
-    working: moving || c.running > 0 || !!rootSlot?.running,
+    working,
   })
   const openItem = (item: WorkBoardItem) => {
     const w = workers.find(x => x.ledger_item === item.item_id)
     return w && !w.remote_crew ? () => open(w) : undefined
   }
-  const recap = summaryRecap(summary.data, items.map(i => i.title))
-    || (items.length
-      ? milestoneSentence(msDone, items.length, milestones.filter(m => m.state === 'needs_you').map(m => m.item.title), milestones.filter(m => m.state === 'running').map(m => m.item.title), milestones.filter(m => m.state === 'stuck').map(m => m.item.title), milestones.filter(m => m.state === 'quiet').map(m => m.item.title))
-      : conductorModeRecap(c, waitingNames, questionCount > 0))
+  const waitingMs = milestones.filter(m => m.state === 'needs_you')
+  // An approval already named by its milestone is not repeated as a worker.
+  // Unbound approvals and the main chat's own asks still belong in the Recap.
+  const rootApprovalName = rootSlot?.pending_approval ? rootSlot.title || goalFull || i18nT('components.crewMode.conductor_mode_needs_you') : ''
+  const recapWaiting = [...new Set([
+    ...waitingMs.map(m => m.item.title),
+    ...approvals.filter(a => !waitingMs.some(m => m.item.item_id === workers.find(w => w.key === a.worker)?.ledger_item)).map(a => a.title),
+    ...(rootApprovalName ? [rootApprovalName] : []),
+  ])]
+  if (questionCount > 0) recapWaiting.push(i18nT('components.crewMode.conductor_mode_recap_main_chat'))
+  const factsRecap = items.length
+    ? milestoneSentence(msDone, items.length, recapWaiting, milestones.filter(m => m.state === 'running').map(m => m.item.title), milestones.filter(m => m.state === 'stuck').map(m => m.item.title), milestones.filter(m => m.state === 'quiet').map(m => m.item.title))
+    : conductorModeRecap(c, [...waitingNames, ...(rootApprovalName ? [rootApprovalName] : [])], questionCount > 0)
+  // Cached prose supplies context only when there is no live state to contradict.
+  const recap = recapWaiting.length || working || stuck || quiet || runState === 'working'
+    ? factsRecap
+    : summaryRecap(summary.data, items.map(i => i.title)) || factsRecap
 
   return (
     <div className="h-full flex flex-col min-h-0" data-testid="conductor-mode-crew-panel" data-view={view}>
@@ -862,7 +880,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
                 </ol>
               </>}
           </section>
-          {/* (4) Recap: one line from the session summary. */}
+          {/* (4) Recap: live facts, else descriptive session context. */}
           <section data-testid="conductor-mode-recap-section" className="space-y-0.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.conductor_mode_recap_title')}</h3>
             <p className="text-[13px] leading-snug text-text [overflow-wrap:anywhere]" data-testid="conductor-mode-recap">{recap}</p>
