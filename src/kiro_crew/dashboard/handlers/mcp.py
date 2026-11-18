@@ -204,7 +204,7 @@ class _McpFileLock:
     """
 
     async def __aenter__(self) -> None:
-        try:
+        def _open_lock_fd() -> Any:
             _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
             _MCP_LOCK_PATH.touch(exist_ok=True)
             # Open the lock fd WRITABLE and non-truncating. Windows msvcrt.locking()
@@ -217,7 +217,13 @@ class _McpFileLock:
             # (GH-9248). Kept inline rather than routed through that helper: the fd
             # is stored on self._fd and released in __aexit__, so it must OUTLIVE
             # this method -- the with-scoped helper would close it at method return.
-            fd = open(_MCP_LOCK_PATH, "r+")
+            return open(_MCP_LOCK_PATH, "r+")
+
+        try:
+            # The directory create, the touch and the open stat or write the disk, so
+            # they run in a worker thread: a slow or stuck mount stalls this request,
+            # not every session's turn on the event loop.
+            fd = await asyncio.to_thread(_open_lock_fd)
         except OSError as exc:
             # Naming the path AND the errno is the point: "Read-only file
             # system" on this specific path is what tells the operator what to
