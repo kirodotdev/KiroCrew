@@ -26,7 +26,12 @@ from kiro_crew.testing.wait import await_until, default_timeout
 
 async def _cleanup_session(sid: str) -> None:
     await acp_lifecycle.cleanup_session(
-        SimpleNamespace(is_claude_backend=False, is_codex_backend=False, is_opencode_backend=False),
+        SimpleNamespace(
+            is_kas_backend=False,
+            is_claude_backend=False,
+            is_codex_backend=False,
+            is_opencode_backend=False,
+        ),
         sid,
     )
 
@@ -144,6 +149,7 @@ async def test_a_cancel_during_the_delete_still_reclaims_the_work_dir():
         session_id="sid-delete",
         _client=SimpleNamespace(shutdown=AsyncMock()),
         memory_mode="ephemeral",
+        is_kas_backend=False,
         cleanup_session=_cancelled_cleanup,
         _disposable_work_dir=True,
         _reclaim_work_dir=_reclaim,
