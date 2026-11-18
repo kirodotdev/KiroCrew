@@ -2634,8 +2634,8 @@ channels); while it is shut the tools refuse, the slash and button handlers retu
 the hooks never fire, and `kirocrew-core` lists none of the tools.
 
 - **Tools are pinned to the caller's own channel.** `code_channel_set_view`,
-  `code_channel_publish_plan_canvas`, `code_channel_set_context_bar`,
-  `code_channel_rename`, `code_channel_set_status`, `code_channel_wrap_up`
+  `code_channel_publish_plan_canvas`, `code_channel_read_plan_canvas`,
+  `code_channel_set_context_bar`, `code_channel_rename`, `code_channel_set_status`, `code_channel_wrap_up`
   (`mcp_tools/code_channels.py`) resolve the caller through
   `require_strict_session_key` (no `/proc` walk, so a sub-agent never resolves to
   its parent) and POST to the STRICT route `POST /api/slack/code-channel/tool`.
@@ -2657,6 +2657,22 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   blocks, no accessories or `action_id` elements, no remote media); the diff tab stays the workspace's. `conversations.canvases.create`
   answered `channel_canvas_already_exists` is never retried and never adopted (a
   canvas this gateway did not create may be a shared document).
+- **Plan canvas read-back (`code_channel_read_plan_canvas`).** Takes no argument (a
+  channel or canvas id is refused like any other). It reads the channel's OWN recorded
+  `plan_canvas_id` with `getCanvas` (open threads only) and returns the markdown (cut at
+  60,000 characters), the title and up to the newest 100 open comments and replies, so
+  an agent that lost the plan to a restart or compaction can read it before it
+  revises it. Everything passes the channel redaction and is framed as content to read,
+  not instructions. No recorded canvas answers `no_plan_canvas` without calling Slack;
+  `canvas_not_found` is reported as a deleted canvas. It never marks a comment seen:
+  delivery stays `comments.py`'s. `has_more_comments` / `has_more_replies` (Slack drops
+  all but the newest 100 threads and 100 replies each) become a note in this read and in
+  each comment message the poll or turn end delivers. `setCanvasContent`'s
+  `sections_changed_count` of 0 makes `code_channel_publish_plan_canvas` answer
+  "unchanged" (a missing count is never read as unchanged). `agent_content_hash` is
+  not sent: it only lets an agent detect human edits, and the Plan tab is
+  `access_level: "comment"`, so only the agent edits the text. A plan-tab deep link
+  (`tab_id` = `plan_view_id`) belongs with the tab links of the view-tabs change.
 - **Context bar.** The workspace is the one publisher. The agent's items
   (`<config dir>/routing/slack-code-channel-surface.json`, beside the core's
   binding record inside the already-fenced `routing` directory, written before it is adopted

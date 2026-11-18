@@ -27,6 +27,10 @@ Tools
     create the channel canvas, or replace its content; a create Slack refuses
     with ``channel_canvas_already_exists`` is never retried, and a canvas this
     gateway did not create is never written.
+``code_channel_read_plan_canvas``
+    the plan canvas as it is in Slack now (``getCanvas``) with its open comment
+    threads, redacted and framed as data; a read, so it needs no plan to exist
+    beyond the channel's own canvas id.
 ``code_channel_set_context_bar``
     the agent's own items, shown after the workspace's repo / branch / PR / CI
     items (five in all); informational and link items only.
@@ -75,12 +79,13 @@ logger = logging.getLogger(__name__)
 
 SET_VIEW = "code_channel_set_view"
 PUBLISH_PLAN_CANVAS = "code_channel_publish_plan_canvas"
+READ_PLAN_CANVAS = "code_channel_read_plan_canvas"
 SET_CONTEXT_BAR = "code_channel_set_context_bar"
 RENAME = "code_channel_rename"
 SET_STATUS = "code_channel_set_status"
 WRAP_UP = "code_channel_wrap_up"
 TOOL_NAMES = frozenset(
-    {SET_VIEW, PUBLISH_PLAN_CANVAS, SET_CONTEXT_BAR, RENAME, SET_STATUS, WRAP_UP}
+    {SET_VIEW, PUBLISH_PLAN_CANVAS, READ_PLAN_CANVAS, SET_CONTEXT_BAR, RENAME, SET_STATUS, WRAP_UP}
 )
 
 #: The plan canvas's view key; the agent's own views may not take it.
@@ -305,6 +310,11 @@ def _api_error_text(tool: str, exc: CodeChannelApiError) -> str:
         return f"Error: the call to Slack did not complete ({exc.code}); it may have applied."
     if exc.code == "too_many_sections":
         return TOO_MANY_SECTIONS_TEXT
+    if exc.code == "canvas_not_found":
+        return (
+            "Error: Slack cannot find this channel's plan canvas; it may have been deleted "
+            "in Slack."
+        )
     if exc.code == "content_too_large":
         return f"Error: Slack refused {tool}: the content is larger than Slack accepts."
     if exc.code == "channel_off":
@@ -943,8 +953,9 @@ async def _publish_canvas_locked(call: Call, channel: str, markdown: str, title:
         )
         _unsaved_canvas.pop(channel, None)
         _maybe_created.pop(channel, None)
+    unchanged = False
     if not created:
-        await call.client.set_canvas_content(channel, canvas_id, markdown)
+        unchanged = await call.client.set_canvas_content(channel, canvas_id, markdown) == 0
     view_note = ""
     record = await surface_get(channel)
     if record is None or not record.plan_view_id:
@@ -977,8 +988,28 @@ async def _publish_canvas_locked(call: Call, channel: str, markdown: str, title:
             logger.info("code channel %s: plan tab not attached: %s", channel, exc.code)
             if exc.code == views.TOO_MANY_VIEWS:
                 view_note = " " + PLAN_TAB_FULL_TEXT
+    if unchanged:
+        return f"The plan canvas is unchanged: Slack already had this exact markdown.{view_note}"
     verb = "Created" if created else "Updated"
     return f"{verb} this channel's plan canvas.{view_note}"
+
+
+async def _read_plan_canvas(call: Call, args: dict[str, Any]) -> str:
+    _only(args, set(), READ_PLAN_CANVAS)
+    from kiro_crew.slack.code_channels import comments
+
+    channel = call.binding.channel_id
+    record = await surface_get(channel)
+    canvas_id = record.plan_canvas_id if record is not None else ""
+    if not canvas_id:
+        raise ToolRefusal(
+            "Error: this channel has no plan canvas yet. Create it with "
+            "code_channel_publish_plan_canvas.",
+            "no_plan_canvas",
+        )
+    data = await call.client.get_canvas(channel, canvas_id)
+    # Up to 1 MB of markdown through every display pass: off the event loop.
+    return await asyncio.to_thread(comments.plan_canvas_text, data)
 
 
 def _bar_items(args: dict[str, Any]) -> list[dict[str, str]]:
@@ -1197,6 +1228,7 @@ async def _wrap_up(call: Call, args: dict[str, Any]) -> str:
 _HANDLERS: dict[str, Callable[[Call, dict[str, Any]], Awaitable[str]]] = {
     SET_VIEW: _set_view,
     PUBLISH_PLAN_CANVAS: _publish_plan_canvas,
+    READ_PLAN_CANVAS: _read_plan_canvas,
     SET_CONTEXT_BAR: _set_context_bar,
     RENAME: _rename,
     SET_STATUS: _set_status,

@@ -448,7 +448,8 @@ crewmates' private copies.
 * **Agent tools.** Pinned to the session's own channel server-side:
   `set_code_channel_view` (html, block_kit, canvas), `publish_plan_canvas` (the
   comment-only plan loop: `setView canvas/comment` → `getCanvas` →
-  `setCanvasContent`), `set_code_channel_status`, `archive_code_channel`. No tool
+  `setCanvasContent`), `code_channel_read_plan_canvas` (amended 2026-11-18: the
+  plan text and open comments read back after a restart or compaction), `set_code_channel_status`, `archive_code_channel`. No tool
   can target another channel or open a second one.
 * **Commands.** `agents.conversations.setCommands` registers `/summarize`,
   `/run-tests` and `/create-pr`, delivered over Socket Mode and turned into a
@@ -496,7 +497,12 @@ crewmates' private copies.
   channel (so the same authorization applies), redacted like all channel text,
   and framed as feedback to weigh, not instructions. Each comment is delivered
   once (remembered across restarts once delivered), at most 20 per read, each cut
-  to 1,000 characters.
+  to 1,000 characters. Slack keeps only the newest 100 threads and 100 replies
+  each (`has_more_comments`, `has_more_replies`); a message says so when it
+  delivers comments from such a listing (amended 2026-11-18). A
+  `setCanvasContent` that changes nothing (`sections_changed_count` 0) is
+  reported to the agent as unchanged. `agent_content_hash` is not sent: with the
+  Plan tab comment-only no human edits the text for it to detect.
 * **Work board** (built in
   [#21993](https://github.com/kirodotdev/KiroCrew/pull/21993); amended
   2026-11-16). In a conductor-led code channel the gateway posts one work board
