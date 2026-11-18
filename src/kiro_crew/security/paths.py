@@ -987,6 +987,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _run_resolution_bounded,
         _running_event_loop,
         _stall_prefix,
+        _trim_windows_name_ends,
         bounded_judgment,
     )
     from kiro_crew.security.paths_targets import (  # noqa: F401
