@@ -393,7 +393,7 @@ owners as well. The contract test maps each construct those guards enumerate to 
 files that hold it (`_GUARDED_TOKEN_HOMES`) and fails when a holder gains or loses
 one. A guard whose rule spans code by path rather than naming constructs covers the
 owners with the facade: `test_no_config_dir_in_async.py`
-scans each owner that defines a coroutine, and the `AUTOSDE.yaml` rule
+scans every module in the package, and the `AUTOSDE.yaml` rule
 `no-new-work-on-gateway-boot-path` matches `slack/gateway_runtime/` because the
 boot path reaches `_init_mcp_gateway`, `_start_embeddings` and the runner
 admission there.
