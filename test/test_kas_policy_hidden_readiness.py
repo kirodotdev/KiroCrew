@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -117,6 +118,8 @@ def _handle() -> AcpSessionHandle:
     handle._mcp_report.fold_frame(frame)
     handle._queue.put_nowait(frame)
     handle._apply_init_notification = lambda *_a, **_k: None  # type: ignore[method-assign]
+    # The bare handle has no runtime; the late model-select read is not under test.
+    handle.settle_kas_model_select = AsyncMock()  # type: ignore[method-assign]
     return handle
 
 
