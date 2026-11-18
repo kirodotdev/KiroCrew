@@ -7,6 +7,7 @@ import { Btn } from './ui'
 import { i18nT } from '../i18n/t'
 import { earlierConversationRenderer, foldEarlierConversation } from './EarlierConversation'
 import { crewmateBrowserLiveRenderer } from './chat/crewmateBrowserLive'
+import CrewmateStarters from './chat/CrewmateStarters'
 import type { ChatPaneProps } from './ChatPaneProps'
 import { useAppDispatch } from '../store'
 import { speakReply } from '../pages/chat/speakReply'
@@ -113,7 +114,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
   return { listMessages, renderers }
 }
 
-export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages, crewmate, crewmateLive, running, slotDetailFailed, refetchSlotDetail, hideEmptyHint, crewmateQuietUnproven, onOpenCrewWorkLog, warmHasMore, pagesPane, onOpenFull }: {
+export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages, crewmate, crewmateLive, running, slotDetailFailed, refetchSlotDetail, hideEmptyHint, crewmateQuietUnproven, onOpenCrewWorkLog, warmHasMore, pagesPane, onOpenFull, starters, onStarter }: {
   slotKey: string
   activeSlot: string | null
   messages: Messages
@@ -129,6 +130,9 @@ export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages,
   warmHasMore?: boolean
   pagesPane: boolean
   onOpenFull?: ChatPaneProps['onOpenFull']
+  /** The Bot's conversation starters, set only while its chat is empty and settled. */
+  starters?: string[]
+  onStarter?: (text: string) => void
 }) {
   return (
     <>
@@ -177,6 +181,7 @@ export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages,
             </>
         </div>
       )}
+      {starters && starters.length > 0 && onStarter && <CrewmateStarters starters={starters} onPick={onStarter} />}
       {/* Suppressed on the active slot: that pane renders the store's full
           history, so the bound does not apply and the row would be false.
           Also suppressed while the pane can page itself: the bar above

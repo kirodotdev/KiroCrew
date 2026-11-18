@@ -124,6 +124,9 @@ export interface MemberRosterRow {
    *  in one click. Absent on an older gateway, which has no such switch, or when
    *  the crewmate never opted in: read it as off. */
   dashboard_card_send?: boolean
+  /** The prompts the Bot's empty chat offers as buttons: up to four lines of at most
+   *  120 characters, already checked by the gateway. Absent on an older gateway. */
+  starters?: string[]
   /** The person created this crewmate (the Crewmates page's create, or an
    *  approved `crewmate.create` / `crewmate.import` card): `source` is
    *  `kirocrew` AND the record carries a member id. Never true for the reserved

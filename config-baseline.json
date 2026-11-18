@@ -13137,6 +13137,34 @@
       "defaultValue": false
     },
     {
+      "path": "agents.*.starters",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Conversation starters",
+      "help": "Up to four short prompts shown as buttons on this Bot's empty chat; a press sends the prompt as the person's first message. Each is one line of at most 120 characters. A value that is too long, repeated or not text is left out with a warning, and the rest are kept; a credential-shaped one is left out of a save and never shown. Empty by default, which shows nothing.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "agents.*.starters.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "agents.*.watchdog_tool_stall_suspect_secs",
       "kind": "core",
       "type": "number",

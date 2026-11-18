@@ -562,6 +562,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         }
         changed: list[str] = []
         warnings: list[str] = []
+        starters_answer: dict = {}
         if "kiro_agent" in body:
             try:
                 owner = await asyncio.to_thread(
@@ -683,6 +684,24 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "description" in body:
             agent.description = body["description"]
             changed.append("description")
+        if "starters" in body:
+            # The owner's button text, never a refusal: what passes is saved and each
+            # value left out is named in ``warnings``; a non-list keeps the saved ones.
+            # The answer carries what was kept and the place and reason of each value
+            # left out, so the editor shows the saved list and says why each line went.
+            from kiro_crew.member_starters import clean_starters
+
+            if isinstance(body["starters"], list):
+                cleaned = clean_starters(body["starters"])
+                agent.starters = cleaned.kept
+                changed.append("starters")
+                warnings.extend(cleaned.warnings)
+                starters_answer = {
+                    "starters": list(cleaned.kept),
+                    "starters_left_out": [item._asdict() for item in cleaned.left_out],
+                }
+            else:
+                warnings.append("starters must be a list of text; the saved starters were kept")
         if "display_name" in body:
             # Presentation only, but strictly a string: a non-string here would
             # be stored verbatim and then rendered by every roster surface.
@@ -1129,6 +1148,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         resources=f"{name} ({','.join(changed)})",
     )
     result: dict = {"ok": True, "name": name, "memory_store": agent.memory_store}
+    result.update(starters_answer)
     if warnings:
         result["warnings"] = warnings
     return web.json_response(result)

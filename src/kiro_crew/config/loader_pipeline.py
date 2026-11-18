@@ -1052,6 +1052,19 @@ def build_config(
                 # Both stay as written and the resolvers refuse them;
                 # ``agent list`` renders a malformed ``memory_store``.
                 raw_worker_model = crew.get("worker_model")
+                # Imported here, as the other loader owners import a helper: a module-level
+                # import would change the names the loader facade serves.
+                from kiro_crew.member_starters import clean_starters
+
+                # No credential check here: it needs the platform's redactor, and an
+                # enterprise boot loads this config before the platform is composed.
+                # The roster row and the config view each leave a credential-shaped
+                # starter out on their own.
+                starters = clean_starters(crew.get("starters"), check_credentials=False)
+                # Named on a disk read only, as the misspelled-key warnings are, so a
+                # cached load does not repeat them.
+                for warning in starters.warnings if doc.disk_read else ():
+                    logger.warning("config: agents[%r].starters: %s", name, warning)
                 agents[name] = KiroCrewAgentConfig(
                     member_id=crew.get("member_id"),
                     kiro_agent=crew.read("kiro_agent", _safe_str),
@@ -1102,6 +1115,9 @@ def build_config(
                     # Hand-editable, and a safety switch: only a real bool is
                     # honoured; anything else reads as the default (off).
                     dashboard_card_send=crew.read("dashboard_card_send", _safe_bool),
+                    # Hand-editable text a button will send: each value that does not
+                    # pass is left out with a warning, so a bad one never fails the load.
+                    starters=starters.kept,
                     # Same guard family as model/triggers: config.json is
                     # hand-editable, so a junk value must collapse to 0
                     # (inherit the global window), never crash the load.

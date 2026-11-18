@@ -108,6 +108,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         # Same home and same reason: the profile card's Dynamic capabilities
         # preview switch (``kiro_crew.crewmate_dynamic_capabilities``).
         "dynamic_capabilities",
+        # The Bot's empty-chat prompts: shipped on GET /api/members (the chat's own
+        # read), not here, so the crew editor does not round-trip them.
+        "starters",
     }
 )
 

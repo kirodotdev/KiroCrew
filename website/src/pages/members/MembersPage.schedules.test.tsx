@@ -83,6 +83,8 @@ vi.mock('../../api/client', () => ({
       setGoal: vi.fn(), setKeyResults: vi.fn(), setSchedules: vi.fn(),
     },
     sendChat: vi.fn(),
+    // The starters box on the Settings page saves through this one.
+    updateKirocrewAgent: vi.fn(() => Promise.resolve({ ok: true })),
   },
 }))
 
@@ -1137,5 +1139,63 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     const [message, slot] = vi.mocked(api.sendChat).mock.calls[0]
     expect(message).toBe('I want to set a goal for you. Ask me what matters, then write it down for me to approve.')
     expect(slot).toBe('member-oncall')
+  })
+})
+
+describe('MembersPage Profile card — Settings page starters draft', () => {
+  /** The Profile tab's Settings door pushes the page; the box is on it. */
+  async function openStartersBox() {
+    await openCrewmate()
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+    const card = await screen.findByTestId('crew-profile-panel')
+    fireEvent.click(within(card).getByRole('tab', { name: 'Profile' }))
+    // The settings body is a lazy import.
+    fireEvent.click(await screen.findByTestId('crew-profile-settings-row', {}, { timeout: 5000 }))
+    return await screen.findByTestId('crew-profile-starters-input')
+  }
+
+  it('Back with an unsaved starters draft asks first, and keeps the draft on Cancel', async () => {
+    const box = await openStartersBox()
+    fireEvent.change(box, { target: { value: 'Plan my week' } })
+    fireEvent.click(screen.getByTestId('crew-profile-back'))
+    await answer('Cancel')
+    expect(screen.getByTestId('crew-profile-starters-input')).toHaveValue('Plan my week')
+    expect(screen.getByTestId('crew-profile-back')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('crew-profile-back'))
+    await answer('Discard')
+    // The pushed page's Back control is what says the page is open: the page itself
+    // outlives the pop for its exit slide.
+    await waitFor(() => expect(screen.queryByTestId('crew-profile-back')).toBeNull())
+  })
+
+  it('Back while the starters save is in flight waits: no question, the page stays', async () => {
+    vi.mocked(api.updateKirocrewAgent).mockReturnValue(new Promise(() => {}) as never)
+    const box = await openStartersBox()
+    fireEvent.change(box, { target: { value: 'Plan my week' } })
+    fireEvent.click(screen.getByTestId('crew-profile-starters-save'))
+    await waitFor(() => expect(api.updateKirocrewAgent).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByTestId('crew-profile-back'))
+    // The refusal is a promise answer, so give the guard a turn before looking.
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByTestId('crew-profile-back')).toBeInTheDocument()
+  })
+
+  it('Back with nothing unsaved leaves the page at once, as it does on main', async () => {
+    await openStartersBox()
+    fireEvent.click(screen.getByTestId('crew-profile-back'))
+    await waitFor(() => expect(screen.queryByTestId('crew-profile-back')).toBeNull())
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('a starters draft also holds the document and vetoes leaving the route', async () => {
+    const box = await openStartersBox()
+    expect(holdsDocument()).toBe(false)
+    fireEvent.change(box, { target: { value: 'Plan my week' } })
+    expect(holdsDocument()).toBe(true)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    onTestFinished(() => { confirm.mockRestore() })
+    expect(askToLeave()).toBe('false')
+    expect(confirm).toHaveBeenCalledTimes(1)
   })
 })

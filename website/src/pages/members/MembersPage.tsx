@@ -593,6 +593,22 @@ export default function MembersPage() {
     exportDraft.current = dirty
     setExportAtStake(dirty)
   }, [])
+  // The Settings page's starters box: an unsaved draft, and a save in flight, held the
+  // way Goals holds its own (a save in flight refuses the exit, a draft asks).
+  const startersDraft = useRef({ dirty: false, busy: false })
+  const [startersAtStake, setStartersAtStake] = useState(false)
+  const onStartersDraftChange = useCallback((dirty: boolean, busy: boolean) => {
+    startersDraft.current = { dirty, busy }
+    setStartersAtStake(dirty || busy)
+  }, [])
+  const mayLeaveStarters = useCallback(async () => {
+    if (startersDraft.current.busy) return false
+    if (!startersDraft.current.dirty) return true
+    return confirmSched({
+      title: t('components.markdownPanel.discard_unsaved_changes'),
+      confirmLabel: t('components.markdownPanel.discard_changes_button'),
+    })
+  }, [confirmSched, t])
   const mayLeaveExport = useCallback(async () => {
     if (!exportDraft.current) return true
     return confirmSched({
@@ -620,11 +636,11 @@ export default function MembersPage() {
     // same question the Schedules draft asks.
     if (crewModalAtStakeRef.current && !window.confirm(t('pages.membersPage.edit_leave_draft'))) return false
     if (!schedulesMounted) return true
-    if (schedSaving.current || goalsDraft.current.busy) return false
-    return await mayLeaveGoals() && await mayLeaveExport() && await mayLeaveSchedules()
-  }, [schedulesMounted, mayLeaveGoals, mayLeaveExport, mayLeaveSchedules, t, crewModalAtStakeRef, crewModalBusyRef, schedSaving])
+    if (schedSaving.current || goalsDraft.current.busy || startersDraft.current.busy) return false
+    return await mayLeaveGoals() && await mayLeaveExport() && await mayLeaveStarters() && await mayLeaveSchedules()
+  }, [schedulesMounted, mayLeaveGoals, mayLeaveExport, mayLeaveStarters, mayLeaveSchedules, t, crewModalAtStakeRef, crewModalBusyRef, schedSaving])
   schedAtStakeRef.current = useCallback(
-    () => schedulesMounted && (schedSaving.current || schedDraftDirty.current || goalsDraft.current.dirty || goalsDraft.current.busy || exportDraft.current),
+    () => schedulesMounted && (schedSaving.current || schedDraftDirty.current || goalsDraft.current.dirty || goalsDraft.current.busy || exportDraft.current || startersDraft.current.dirty || startersDraft.current.busy),
     [schedulesMounted, schedDraftDirty, schedSaving],
   )
   // Leaving the ROUTE is the last exit, and the registry that owns it is synchronous, so
@@ -640,9 +656,10 @@ export default function MembersPage() {
     // the registry cannot await the app's confirm dialog.
     if (crewModalAtStakeRef.current && !window.confirm(t('pages.membersPage.edit_leave_draft'))) return false
     if (!schedulesMounted) return true
-    if (schedSaving.current || goalsDraft.current.busy) return false
+    if (schedSaving.current || goalsDraft.current.busy || startersDraft.current.busy) return false
     if (goalsDraft.current.dirty && !window.confirm(t('components.markdownPanel.discard_unsaved_changes'))) return false
     if (exportDraft.current && !window.confirm(`${t('pages.membersPage.export_discard_lessons')}\n${t('pages.membersPage.export_discard_lessons_body')}`)) return false
+    if (startersDraft.current.dirty && !window.confirm(t('components.markdownPanel.discard_unsaved_changes'))) return false
     if (!schedDraftDirty.current) return true
     const ok = window.confirm(t('pages.membersPage.schedules_leave_draft'))
     if (ok) releaseSchedRetention()
@@ -653,7 +670,7 @@ export default function MembersPage() {
   // discarded the draft silently while every wired in-app exit asked. The New crewmate
   // dialog on this same page already publishes, which is what made the gap uneven rather
   // than merely absent.
-  const anyDraftAtStake = schedAtStake || goalsAtStake || exportAtStake || crewModalAtStake || crewModalBusy
+  const anyDraftAtStake = schedAtStake || goalsAtStake || exportAtStake || startersAtStake || crewModalAtStake || crewModalBusy
   usePublishNavigationStake(anyDraftAtStake)
   // A reload or a tab close is not a route change, so the guard above never sees it; the
   // browser's own prompt is the only thing that can. Registered while a Schedules draft,
@@ -919,7 +936,7 @@ export default function MembersPage() {
           leave={leave} setEditingCrew={setEditingCrew} profile={profile} threadColumnRef={threadColumnRef}
           slotsLoaded={slotsLoaded} active={active} activeSlug={activeSlug}
           activeMemberName={activeMemberName} onGoalsDraftChange={onGoalsDraftChange}
-          onExportDraftChange={onExportDraftChange}
+          onExportDraftChange={onExportDraftChange} onStartersDraftChange={onStartersDraftChange}
         />
         <MembersPageSidePanel
           layout={layout} profileCard={profileCard} drawers={drawers} rosterView={rosterView} thread={thread}

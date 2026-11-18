@@ -697,6 +697,11 @@ export default function ChatPane({
     window.addEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
     return () => window.removeEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
   }, [crewmate, slotKey, doSend, paneCrewRootClosed])
+  // A Bot's conversation starters stand in an empty chat only: nothing said (the
+  // transcript is loaded and holds no row, the Bot's own filter included), no turn
+  // running or awaited, and no notice owning the pane. A press sends that prompt.
+  const startersShown = !!crewmate?.starters?.length && transcriptLoaded && paneMessages.length === 0
+    && messages.length === 0 && !crewmateTyping && !slotDetailFailed && !hideEmptyHint && !paneCrewRootClosed
 
 
   const { stopError, stopErrorDetail, dismissStopError, paneStopState, onStop } = useChatPaneStop({ slotKey, busy: composerBusy, paneSlot, dispatch })
@@ -1022,7 +1027,7 @@ export default function ChatPane({
                   ? { hasMore: true, loading: paneLoadingOlder, failed: paneOlderFailed, onLoad: loadOlderPane, handOff: false }
                   : undefined,
               aboveRows: (
-                <ChatPaneAboveRows slotKey={slotKey} activeSlot={activeSlot} messages={messages} paneMessages={paneMessages} crewmate={crewmate} crewmateLive={crewmateLive} running={running} slotDetailFailed={slotDetailFailed} refetchSlotDetail={refetchSlotDetail} hideEmptyHint={hideEmptyHint} crewmateQuietUnproven={crewmateQuietUnproven} onOpenCrewWorkLog={onOpenCrewWorkLog} warmHasMore={warmHasMore} pagesPane={pagesPane} onOpenFull={onOpenFull} />
+                <ChatPaneAboveRows slotKey={slotKey} activeSlot={activeSlot} messages={messages} paneMessages={paneMessages} crewmate={crewmate} crewmateLive={crewmateLive} running={running} slotDetailFailed={slotDetailFailed} refetchSlotDetail={refetchSlotDetail} hideEmptyHint={hideEmptyHint} crewmateQuietUnproven={crewmateQuietUnproven} onOpenCrewWorkLog={onOpenCrewWorkLog} warmHasMore={warmHasMore} pagesPane={pagesPane} onOpenFull={onOpenFull} starters={startersShown ? crewmate?.starters : undefined} onStarter={doSend} />
               ),
               belowRows: (
                 /* The working indicator. Inside the scroll container, after the
