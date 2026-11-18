@@ -536,6 +536,7 @@ ACP_BACKEND_MIMOCODE = "mimocode"
 # launcher and its sibling ``localharness_external`` helper, so its probe and spawn
 # resolution live beside the adapter rather than in the one-binary launch table.
 ACP_BACKEND_ANTIGRAVITY = "antigravity"
+ACP_BACKEND_MISTRAL_VIBE = "mistral-vibe"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -585,6 +586,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -610,6 +612,7 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -755,6 +758,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -784,6 +788,7 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_COPILOT: ACP_BACKEND_COPILOT,
     ACP_BACKEND_MIMOCODE: ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_ANTIGRAVITY: ACP_BACKEND_ANTIGRAVITY,
+    ACP_BACKEND_MISTRAL_VIBE: ACP_BACKEND_MISTRAL_VIBE,
 }
 
 #: The backend a deployment policy may never deny.
