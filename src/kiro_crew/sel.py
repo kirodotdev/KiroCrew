@@ -1149,8 +1149,8 @@ def sel() -> SecurityEventLog:
 
     Inside a spawned app backend it is the client for the gateway's ``_sel`` route
     instead: a backend holds no MAC key, and the gateway signs the row. That client
-    has ``log_api_access`` and ``log_tool_invocation`` only (both filed as api_access rows),
-    so the return type is a cast.
+    has ``log_api_access``, ``log_tool_invocation`` and ``log`` only (all filed as
+    api_access rows), so the return type is a cast.
     """
     from kiro_crew.apps.sel_client import from_env
 

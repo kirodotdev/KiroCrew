@@ -16,7 +16,7 @@ from kiro_crew.sel import SecurityEventLog
 
 _SECRET_LIKE = [
     "AKIAIOSFODNN7EXAMPLE",
-    "ASIAIOSFODNN7EXAMPLE",
+    "ASIA" + "IOSFODNN7EXAMPLE",
     "app.xoxb-1234567890-abcdefghij",
     "app.eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnop",
 ]

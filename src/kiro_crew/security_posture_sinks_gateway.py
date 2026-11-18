@@ -1040,4 +1040,15 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "because an operator can paste a token into the list. The login words "
         "beside them are fixed constants.",
     ),
+    (
+        "App backend audit rows",
+        "apps/sel_client.py",
+        "Every audit row a spawned app backend posts to the gateway's `_sel` route, "
+        "where the gateway signs it into the security log. Each text field (outcome, "
+        "resources, error and an event's metadata values) passes `_redact_and_clip` "
+        "before the row is queued or sent, so a credential cannot ride in the row and "
+        "the row stays under the route's body cap. That pass is the credential scanner "
+        "only: the exfiltration-URL scanner does not run here, and the gateway "
+        "redacts the row again when it signs it.",
+    ),
 )

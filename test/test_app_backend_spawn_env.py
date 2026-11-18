@@ -282,7 +282,9 @@ class TestGatewayOriginInjection:
     @pytest.fixture(autouse=True)
     def _owner_marker(self, _floor_monkeypatch):
         """An installed, enabled app holds the owner-enable marker the app token needs."""
-        _floor_monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
+        _floor_monkeypatch.setattr(
+            "kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True
+        )
 
     def test_an_app_without_the_owner_marker_gets_no_origin_and_no_proof(
         self, tmp_path, app_env, monkeypatch

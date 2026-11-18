@@ -14,9 +14,10 @@ caller refuses the action it could not audit. Anything else is queued and sent f
 one daemon thread, retried twice, then dropped with a warning; the backend never falls
 back to loading the key.
 
-Two writers exist, as only ``log_api_access`` is on the route's allowlist:
-``log_api_access`` and ``log_tool_invocation`` (an ``api_access`` row with the
-operation ``tool.<name>``, never the gateway's ``tool_invocation`` kind). An operation
+Three writers exist, as only ``log_api_access`` is on the route's allowlist:
+``log_api_access``, ``log_tool_invocation`` (an ``api_access`` row with the
+operation ``tool.<name>``, never the gateway's ``tool_invocation`` kind) and ``log``
+(a whole event as an ``api_access`` row, operation ``security.<event_type>``). An operation
 outside ``[A-Za-z0-9_.-]{1,64}`` is refused here with a warning and is never rewritten:
 a rewrite would hide a credential from the gateway's redaction. Any other ``log_*``
 method (``log_sel_rotation`` ...) warns once and writes nothing. ``log_governance_decision``
@@ -49,7 +50,7 @@ from typing import Any
 
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.loopback_http import loopback_urlopen
-from kiro_crew.sel import _redact_and_clip
+from kiro_crew.sel import SecurityEvent, _redact_and_clip
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,31 @@ class SelClient:
             resources=resources,
             error=error,
             critical=critical,
+        )
+
+    def log(self, event: SecurityEvent, *, critical: bool = False, **_gateway_only: Any) -> None:
+        """A whole security event as an app row: operation ``security.<event_type>``.
+
+        Still an ``api_access`` row, no new event kind. ``resources`` and the
+        ``metadata`` items (as ``key=value``) go through the writer's own redact-then-clip,
+        and the event's ``operation`` (the command or tool the event is about) leads the
+        row's resources so a grant row names what it granted; the actor, ``agent``,
+        ``source`` and ids are what the gateway sets and are dropped.
+        A ``deny_exception`` is always critical: the grant waits for the write and the
+        caller refuses it when the row is not taken.
+        """
+        parts = [f"operation={_redact_and_clip(str(event.operation))}"] if event.operation else []
+        if event.resources:
+            parts.append(str(event.resources))
+        parts += [
+            f"{key}={_redact_and_clip(str(value))}" for key, value in (event.metadata or {}).items()
+        ]
+        self.log_api_access(
+            operation=f"security.{event.event_type}",
+            outcome=event.outcome,
+            resources=" ".join(parts),
+            error=event.error,
+            critical=critical or event.event_type == "deny_exception",
         )
 
     def log_governance_decision(
