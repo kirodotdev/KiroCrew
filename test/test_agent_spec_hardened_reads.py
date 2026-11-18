@@ -1450,8 +1450,12 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
     "kiro_crew/doctor_deadpath.py": [("doctor", "cli")],
     "kiro_crew/execution_context.py": [("repair_session_execution", "unknown")],
-    # The crewmate half of the same overlay pass reads each crewmate file.
-    "kiro_crew/mcp_gateway/mate_overlays.py": [("mcp_overlay_rewrite", "unknown")],
+    # The crewmate half of the same overlay pass reads each crewmate file, and the
+    # export-shadowing check re-reads an app's own export to confirm its name.
+    "kiro_crew/mcp_gateway/mate_overlays.py": [
+        ("mcp_overlay_rewrite", "unknown"),
+        ("mcp_overlay_rewrite", "unknown"),
+    ],
     "kiro_crew/mcp_gateway/rewriter.py": [("mcp_overlay_rewrite", "unknown")],
     "kiro_crew/slack/handler_runtime/agent_names.py": [("slack_resolve_agent", "slack")],
     # A spawn refused because the parent's allowlist is unknown names each spec
