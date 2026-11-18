@@ -305,6 +305,13 @@ class TestReceiptTransport:
         """
         pinned_home = tmp_path / "pinned-home"
         real_home_config_dir = tmp_path / "real-home" / ".kiro" / "crew"
+        # Dropping KIROCREW_HOME below is process-wide: any other live thread
+        # (a stray worker from an earlier test on this runner) that calls
+        # config_dir() in that window would resolve and create the operator's
+        # real home. Relocate the default so such a call lands in tmp_path.
+        from kiro_crew.config import paths
+
+        monkeypatch.setattr(paths, "_resolved_home", tmp_path / "default-home")
         monkeypatch.setattr(beacon, "is_default_home", lambda: True)
 
         def fake_config_dir():
@@ -331,12 +338,23 @@ class TestReceiptTransport:
             ),
         )
         monkeypatch.setattr(install_receipt.urllib.request, "urlopen", _fake_urlopen([]))
+        # Hold the worker until the pin is gone, so every run exercises the
+        # late worker rather than only the runs where the scheduler is slow.
+        release = threading.Event()
+        real_send_configured = install_receipt._send_configured
+
+        def held_send_configured(*args, **kwargs):
+            release.wait(timeout=5.0)
+            real_send_configured(*args, **kwargs)
+
+        monkeypatch.setattr(install_receipt, "_send_configured", held_send_configured)
 
         monkeypatch.setenv("KIROCREW_HOME", str(pinned_home))
         install_receipt.dispatch("issue-radar", official=True, kind=install_receipt.KIND_FRESH)
-        # Simulate the test's own teardown unpatching KIROCREW_HOME while the
-        # background thread may still be about to run.
+        # Simulate the test's own teardown unpatching KIROCREW_HOME before the
+        # background thread runs.
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        release.set()
 
         install_receipt.wait_for_pending_receipt_writes(timeout=5.0)
 
