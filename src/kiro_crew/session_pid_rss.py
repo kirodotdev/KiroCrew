@@ -164,13 +164,19 @@ def get_session_rss_mb(
 
     Windows has no ``/proc`` or safe parent->child walk, so it uses
     ``platform_compat.proc_rss_tree_mb_for_pid`` (lineage-validated descendants
-    only; a 0 MiB reading would never recycle a session). macOS sums libproc
-    footprints (``_off_linux_tree_mb``). Other hosts return 0 and warn once.
-    *exclude_pids* is not honoured on Windows: exclude the pid before calling.
+    only; a 0 MiB reading would never recycle a session). It also reads the
+    tree's private bytes and returns the larger figure: a process that commits
+    10 GB while its working set stays at 120 MB is invisible to the working-set
+    read, and it is the commit charge a Windows host runs out of. macOS sums
+    libproc footprints (``_off_linux_tree_mb``). Other hosts return 0 and warn
+    once. *exclude_pids* is not honoured on Windows: exclude the pid before
+    calling.
     """
     if platform_compat.IS_WINDOWS and proc_root is None:
-        tree_mb = platform_compat.proc_rss_tree_mb_for_pid(pid)
-        return 0 if tree_mb is None else int(tree_mb)
+        rss_mb = platform_compat.proc_rss_tree_mb_for_pid(pid)
+        private_mb = platform_compat.proc_private_tree_mb_for_pid(pid)
+        readings = [value for value in (rss_mb, private_mb) if value is not None]
+        return int(max(readings)) if readings else 0
     if proc_root is None and sys.platform != "linux":
         return _off_linux_tree_mb(pid, exclude_pids)
     child_map = _build_child_map(proc_root)
@@ -307,3 +313,15 @@ def end_session_leftovers(sid: int, leftovers: SessionLeftovers, *, only_if_root
     if not targets:
         return 0
     return platform_compat.terminate_pids_pinned(targets, protected_pids=(sid,))
+
+
+def get_session_handle_peak(pid: int) -> int | None:
+    """Largest handle count in *pid*'s validated Windows tree, or None.
+
+    Windows-only. The watchdog reads this beside the memory ceiling because a
+    process leaking one handle per directory entry stays small in every memory
+    metric while its handle table grows without bound.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return None
+    return platform_compat.proc_handle_tree_max_for_pid(pid)

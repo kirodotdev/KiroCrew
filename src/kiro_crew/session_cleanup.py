@@ -21,6 +21,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import session_cleanup_handles as _cleanup_handles
 from kiro_crew import session_cleanup_leftovers as _leftovers
 from kiro_crew import session_cleanup_spare as _spare
 from kiro_crew.messaging.link import is_channel_session_key
@@ -35,6 +36,7 @@ from kiro_crew.runtime_reconcile import build_reconciler
 from kiro_crew.session_background_hold import background_hold_secs, hold_expired_reason
 from kiro_crew.session_idle_clock import last_activity as _last_activity
 from kiro_crew.session_rss_rebound import (
+    RSS_REBOUND_WINDOW_SECS,
     RssFootprint,
     RssHold,
     RssRecycle,
@@ -195,6 +197,9 @@ class CleanupState:
     rss_footprints: dict[int, RssFootprint] = field(default_factory=dict)
     # Busy session key -> leftover pids last reported this turn (session_cleanup_leftovers).
     leftover_noticed: dict[str, frozenset[int]] = field(default_factory=dict)
+    # Session key -> monotonic time a Windows handle warning was last emitted,
+    # pruned on ``RSS_REBOUND_WINDOW_SECS``.
+    handle_warned: dict[str, float] = field(default_factory=dict)
     # When the agent-scope reap hook last failed loudly. A failure there stops
     # every scope from being reclaimed, so it surfaces at WARNING at most once
     # per ``PROBE_FAILURE_WARN_INTERVAL_SECS``; a clean pass re-arms it.
@@ -276,6 +281,7 @@ class CleanupDeps:
     build_child_map: Callable[[], dict[int, list[int]]]
     rss_mb_from_tree: Callable[[int, dict[int, list[int]]], int]
     get_session_rss_mb: Callable[[int], int]
+    get_session_handle_peak: Callable[[int], int | None]
     is_windows: Callable[[], bool]
     getpid: Callable[[], int]
     monotonic: Callable[[], float]
@@ -772,6 +778,12 @@ class SessionCleanup:
                 )
 
     async def _rss_threshold_check(self) -> None:
+        windows = self._deps.is_windows()
+        if not self.state.rss_max_mb and not windows:
+            return
+        runtimes = await _cleanup_handles.live_runtimes(self, include_kept=windows)
+        if windows:
+            await _cleanup_handles.warn_handle_leaks(self, runtimes, RSS_REBOUND_WINDOW_SECS)
         if not self.state.rss_max_mb:
             return
 
@@ -779,17 +791,8 @@ class SessionCleanup:
 
         # A session with a turn in flight is never recycled; it is only reported
         # (``session_cleanup_leftovers.report_busy_sessions``).
-        candidates: list[tuple[str, int, SessionEntry]] = []
-        busy: list[tuple[str, int, SessionEntry]] = []
-        persistent_keys = self._deps.get_persistent_keys()
-        channel_prefix = self._deps.get_channel_prefix()
-        async with self._owner._lock:
-            for key, session in self._owner._sessions.items():
-                if key in persistent_keys or key.startswith(channel_prefix):
-                    continue
-                pid = self._owner.get_pid(key)
-                if pid is not None:
-                    (busy if session.semaphore.locked() else candidates).append((key, pid, session))
+        candidates = [(key, pid, session) for key, pid, session, kind in runtimes if kind == "idle"]
+        busy = [(key, pid, session) for key, pid, session, kind in runtimes if kind == "busy"]
         prune_rss_records(self.state, now, {pid for _key, pid, _session in candidates + busy})
 
         # The warm-pool spare is owned by no session, so its own pass
