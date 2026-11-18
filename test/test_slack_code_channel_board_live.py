@@ -1114,6 +1114,7 @@ def test_work_aggregate_rides_the_slot_frame_and_its_patch():
 # ── green round: the watch's own refresh, status, DNS and the wrap-up ───────
 
 repo = suite.repo
+_repo_template = suite._repo_template
 
 
 def test_the_watch_refreshes_through_the_channels_stored_binding(
