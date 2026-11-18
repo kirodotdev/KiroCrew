@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -117,6 +118,9 @@ def _handle() -> AcpSessionHandle:
     handle._mcp_report.fold_frame(frame)
     handle._queue.put_nowait(frame)
     handle._apply_init_notification = lambda *_a, **_k: None  # type: ignore[method-assign]
+    # The start path ends on the KAS model-select wait, covered in
+    # test_kas_model_select_capture.py; this bare handle has no runtime for it.
+    handle.settle_kas_model_select = AsyncMock()  # type: ignore[method-assign]
     return handle
 
 
