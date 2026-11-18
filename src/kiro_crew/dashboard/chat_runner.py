@@ -1153,7 +1153,10 @@ async def _run_chat(
         elif is_slash:
             if turn.first_word == "/compact":
                 _begin_compact_command(turn)
-            event_stream = client.stream_command(message)
+            event_stream = client.stream_command(
+                message,
+                **stop_hold.write_gate(client, slot, turn._stop_hold_stamp, call="stream_command"),
+            )
         else:
             event_stream = client.stream(
                 _segment_user_span(turn, full_message),

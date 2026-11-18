@@ -316,7 +316,9 @@ async def stream(
         await record_live_children_after_turn(self._client)
 
 
-async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEvent]:
+async def stream_command(
+    self: AcpProvider, command: str, *, prompt_gate: Callable[[], None] | None = None
+) -> AsyncIterator[LLMEvent]:
     _, self._sign_in_ask = getattr(self, "_sign_in_ask", ""), ""
     if stale_compaction.is_compact_command(
         command
@@ -343,6 +345,8 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
     self.essential_delivery.prepare_command(command)
     native = self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS
     send = self._client.stream_command if native else self._client.stream_events
+    if prompt_gate is not None:  # asked under the write lock (``stop_hold``)
+        send = functools.partial(send, prompt_gate=prompt_gate)
     # Whether THIS command makes a model request is the transport's per-command
     # answer: a session handle keeps /compact and /help on session/prompt even
     # on kiro, and only a real commands/execute call leaves the floor alone.

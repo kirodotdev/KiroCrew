@@ -195,7 +195,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "steer_needs_loss_recovery": ("property", False, "a6632a57e602", "acp"),
     "steer_upgrade_notice": ("property", False, "bb418bb7ece8", "acp"),
     "stream": ("function", "agen", "fa113e1bf480", "acp_turns"),
-    "stream_command": ("function", "agen", "c5944af5c808", "acp_turns"),
+    "stream_command": ("function", "agen", "12dc6a1f8bfe", "acp_turns"),
     "supports_effort": ("function", False, "a6632a57e602", "acp_model_effort"),
     "supports_refusal_steer": ("property", False, "a6632a57e602", "acp"),
     "supports_steer": ("property", False, "a6632a57e602", "acp"),

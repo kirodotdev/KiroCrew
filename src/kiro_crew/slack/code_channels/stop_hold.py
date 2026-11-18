@@ -235,19 +235,20 @@ class HeldAtWrite(Exception):
     """A Stop held the session after the dispatch gate: nothing was written or run."""
 
 
-def write_gate(client: Any, slot: Any, stamp_: str) -> dict[str, Any]:
-    """``client.stream``'s ``prompt_gate`` keyword: the turn's last ask, called by the
-    transport synchronously under its write lock, right before the prompt is written,
-    so a Stop that landed in the transport's awaits since the dispatch gate ends the
-    turn with nothing sent. Both real providers declare it; a client whose ``stream``
-    does not is called as before."""
+def write_gate(client: Any, slot: Any, stamp_: str, *, call: str = "stream") -> dict[str, Any]:
+    """The ``prompt_gate`` keyword for ``client.<call>`` (``stream``, or ``stream_command``
+    for a ``/`` command): the turn's last ask, called by the transport synchronously
+    under its write lock, right before the prompt or command is written, so a Stop that
+    landed in the transport's awaits since the dispatch gate ends the turn with nothing
+    sent. Both real providers declare it on both; a client whose method does not is
+    called as before."""
 
     def ask() -> None:
         if queues(slot, stamp_):
             raise HeldAtWrite(getattr(slot, "key", ""))
 
     try:
-        takes = "prompt_gate" in inspect.signature(client.stream).parameters
+        takes = "prompt_gate" in inspect.signature(getattr(client, call)).parameters
     except (AttributeError, TypeError, ValueError):  # no stream, or no signature to read
         takes = False
     return {"prompt_gate": ask} if takes else {}

@@ -326,7 +326,11 @@ def command_is_native(self: AcpSessionHandle, command: str) -> bool:
 
 
 async def stream_command(
-    self: AcpSessionHandle, command: str, timeout: float | None = None
+    self: AcpSessionHandle,
+    command: str,
+    timeout: float | None = None,
+    *,
+    prompt_gate: Callable[[], None] | None = None,
 ) -> AsyncIterator[AcpEvent]:
     """Execute a slash command natively and yield AcpEvents until it completes.
 
@@ -357,7 +361,7 @@ async def stream_command(
     """
     cmd_name, cmd_args = parse_slash_command(command)
     if not command_is_native(self, command):
-        async for event in self.prompt(command, timeout=timeout):
+        async for event in self.prompt(command, timeout=timeout, prompt_gate=prompt_gate):
             yield event
         return
 
@@ -374,6 +378,7 @@ async def stream_command(
         _build,
         timeout if timeout is not None else _COMMAND_TURN_TIMEOUT_SECS,
         extract_command_result=True,
+        prompt_gate=prompt_gate,
     )
     try:
         async for event in turn:

@@ -2635,16 +2635,18 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
     before admission's first await, right before the session claim, before the
     AgentSpawn and UserPromptSubmit hooks and again at each hook command's spawn
     (`run_script_hook(admit=)`), before the first post, at that gate, and last
-    under the transport's write lock right before the prompt is written
-    (`stop_hold.write_gate`, the `prompt_gate` seam): a Stop in the transport's
-    awaits writes no prompt and the turn ends as `channel_stopped`.
+    under the transport's write lock right before the prompt or the `/` command is
+    written (`stop_hold.write_gate`, the `prompt_gate` seam, given to `stream` and
+    to `stream_command` on both real providers, for the native `commands/execute`
+    path and the prompt fallback alike): a Stop in the transport's awaits writes
+    nothing and the turn ends as `channel_stopped`.
     A turn already starting at the press is asked at the dispatch gate and again
-    at the prompt write, and what it does between those two asks is not undone:
-    a decision-model request (model routing on), a hook command's spawn retry
-    after its backoff, and `/compact` on the prompt transport (`stream_command`
-    has no `prompt_gate`) can still go out for it. That is the window main's own
-    Stop has for a starting turn (`stop_slot_turn` answers `no_turn` and cancels
-    nothing); the fix belongs in the Stop itself.
+    at the write, and what it does between those two asks is not undone:
+    a decision-model request (model routing on), and on Windows a hook command
+    whose spawn worker asked the hold just before the Stop (no lock between that ask
+    and `CreateProcess`), can still go out for it. That is the window main's own
+    Stop has for a starting turn (`stop_slot_turn` answers
+    `no_turn` and cancels nothing); the fix belongs in the Stop itself.
   - **Where the hold lives.** The truth is the press recorded by session key
     (`stop_hold._keys`), for every session a press holds, live or absent, and the
     channel's fact `(session, press)` for a session replacing the channel's under a

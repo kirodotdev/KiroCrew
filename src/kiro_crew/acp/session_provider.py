@@ -959,7 +959,9 @@ class AcpSessionProvider(LLMProvider):
         """True when *command* goes to native ``commands/execute``, with no model request."""
         return bool(self._handle.command_is_native(command))
 
-    async def stream_command(self, command: str) -> AsyncIterator[LLMEvent]:
+    async def stream_command(
+        self, command: str, *, prompt_gate: Callable[[], None] | None = None
+    ) -> AsyncIterator[LLMEvent]:
         """Execute a slash command natively via ``_kiro.dev/commands/execute``.
 
         Routes through AcpSessionHandle.stream_command so kiro-cli executes the
@@ -981,11 +983,14 @@ class AcpSessionProvider(LLMProvider):
         stale_compaction.sync_provider_compaction_delivery(self, self.essential_delivery)
         self.essential_delivery.prepare_command(command)
         claim = self._claim_shared_turn()
+        send = self._handle.stream_command
+        if prompt_gate is not None:  # asked under the write lock (``stop_hold``)
+            send = functools.partial(send, prompt_gate=prompt_gate)
         try:
             async with aclosing(
                 self.essential_delivery.stream(
                     command,
-                    self._handle.stream_command,
+                    send,
                     lambda: self.context_incarnation,
                     # Native commands/execute makes no model request.
                     requests_model=not self.command_is_native(command),
@@ -1791,7 +1796,12 @@ class AcpSessionProvider(LLMProvider):
     # ── Streaming (AcpClient-compatible method name) ──
 
     def stream_events(
-        self, message: str, timeout: float | None = None, *, allow_image: bool = True
+        self,
+        message: str,
+        timeout: float | None = None,
+        *,
+        allow_image: bool = True,
+        prompt_gate: Callable[[], None] | None = None,
     ) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield events. AcpClient-compatible name for stream().
 
@@ -1801,9 +1811,12 @@ class AcpSessionProvider(LLMProvider):
         AcpRuntimeError, not an AcpError) escape chat_runner's handlers on a
         runtime death at prompt start -> unhandled crash instead of retry/login.
         """
+        # ``prompt_gate`` (``stop_hold``): None asks nothing, as before.
         if timeout is None:
-            return self.stream(message, allow_image=allow_image)
-        return self.stream(message, timeout=timeout, allow_image=allow_image)
+            return self.stream(message, allow_image=allow_image, prompt_gate=prompt_gate)
+        return self.stream(
+            message, timeout=timeout, allow_image=allow_image, prompt_gate=prompt_gate
+        )
 
     @property
     def resumed(self) -> bool:

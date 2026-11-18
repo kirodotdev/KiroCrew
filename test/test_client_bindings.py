@@ -379,7 +379,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "spec_zero_tools": ("property", False, "a6632a57e602", "client_class"),
     "steer": ("function", True, "b0a837a37097", "client_turn_control"),
     "steer_needs_loss_recovery": ("property", False, "a6632a57e602", "client_class"),
-    "stream_command": ("function", "agen", "07d1ae72fdc6", "client_turn_control"),
+    "stream_command": ("function", "agen", "4e6b979cd37c", "client_turn_control"),
     "stream_events": ("function", "agen", "8f253734e7ae", "client_turn"),
     "stream_unsolicited": ("function", "agen", "26ad8f8f419b", "client_turn"),
     "supports_config_option": ("function", False, "b86d69c93890", "client_model_selection"),

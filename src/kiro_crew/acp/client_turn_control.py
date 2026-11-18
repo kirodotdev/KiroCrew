@@ -26,7 +26,7 @@ import logging
 import time
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Collection
+from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Callable, Collection
 
 from kiro_crew import mediated_request_capability
 from kiro_crew import sel as sel_module
@@ -438,13 +438,19 @@ async def send_command(self: AcpClient, command: str, args: dict | None = None) 
 
 
 async def stream_command(
-    self: AcpClient, command: str, timeout: float | None = None
+    self: AcpClient,
+    command: str,
+    timeout: float | None = None,
+    *,
+    prompt_gate: Callable[[], None] | None = None,
 ) -> AsyncIterator[AcpEvent]:
     """Execute a slash command and yield streaming AcpEvents.
 
     Uses ``_kiro.dev/commands/execute`` with the TuiCommand object
     format (``{command, args}``) so kiro-cli executes the command
     natively and streams full output via ``session/update``.
+    ``prompt_gate`` runs under the write lock right before the frame is
+    written, as for a prompt; whatever it raises sends nothing.
     """
     timeout = await _effective_prompt_timeout_async(timeout)
     self._cancelled = False
@@ -458,6 +464,7 @@ async def stream_command(
             "sessionId": self._session_id,
             "command": {"command": cmd_name, "args": cmd_args},
         },
+        before_write=prompt_gate,
     )
     async for event in self._dispatch_events(req_id, timeout, extract_agent_from_result=True):
         yield event

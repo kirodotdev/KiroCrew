@@ -465,7 +465,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "absorb_config_options": ("function", False, "8174d98869b1", "session_handle_model_selection"),
     "settle_kas_model_select": ("function", True, "b60c5fea256e", "session_handle_model_selection"),
     "store_session_config": ("function", False, "83d029971996", "session_handle_model_selection"),
-    "stream_command": ("function", "agen", "07d1ae72fdc6", "session_handle_turn"),
+    "stream_command": ("function", "agen", "4e6b979cd37c", "session_handle_turn"),
     "supports_config_option": ("function", False, "b86d69c93890", "session_handle_model_selection"),
     "supports_refusal_steer": ("property", False, "a6632a57e602", "session_handle_class"),
     "supports_steer": ("property", False, "a6632a57e602", "session_handle_class"),
