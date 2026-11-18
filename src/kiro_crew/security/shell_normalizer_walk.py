@@ -928,11 +928,26 @@ def _matching_close_paren(
     with that state rather than re-reading the text before it, so the paren-only walk
     of a text with one span per line is linear; the steps from *open_end* on are the same.
     """
+    end, proven, _reach = _matching_close_paren_reach(text, open_end, at)
+    return end, proven
+
+
+def _matching_close_paren_reach(
+    text: str, open_end: int, at: "tuple[int, bool] | None" = None
+) -> "tuple[int, bool, int | None]":
+    """:func:`_matching_close_paren`'s ``(end, proven)``, plus how far its walks read.
+
+    The third value is the furthest index any walk read (each stops just past its own
+    close), or None when a walk ran to the end of *text* unproven.
+    """
     paren = _close_paren_walk(text, open_end, False, at)
     if text.find("{", open_end, paren[0]) < 0:
-        return paren  # no ``${`` on the way, so the second walk takes the same steps
+        # no ``${`` on the way, so the second walk takes the same steps
+        return paren[0], paren[1], paren[0] if paren[1] else None
     spanned = _close_paren_walk(text, open_end, True, at)
-    return spanned if spanned[1] and spanned[0] > paren[0] else paren
+    best = spanned if spanned[1] and spanned[0] > paren[0] else paren
+    reach = max(paren[0], spanned[0]) if paren[1] and spanned[1] else None
+    return best[0], best[1], reach
 
 
 def _close_paren_walk(
