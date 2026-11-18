@@ -29,13 +29,18 @@ from kiro_crew.apps.registry_pipeline.caches import (
 from kiro_crew.apps.registry_pipeline.checkout import (
     _CLONE_TIMEOUT,
     _HOOKS_NEUTRALIZER_ARGV,
-    _clone_branch_matches,
     _clone_origin_matches,
     _communicate_with_timeout,
     _git_fetch_branch,
     _git_fetch_commit,
     _mkdtemp_settled,
     _rmtree_force_settled,
+)
+from kiro_crew.apps.registry_pipeline.clone_metadata import _clone_branch_matches
+from kiro_crew.apps.registry_pipeline.gh_credential import (
+    _gh_access,
+    _github_https_repo,
+    _private_github_shaped,
 )
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _entry_git_url,
@@ -54,6 +59,7 @@ from kiro_crew.apps.registry_pipeline.sources import (
 )
 from kiro_crew.apps.registry_pipeline.store_art import _contained_join, _store_asset_path
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _GIT_CLONE_LOCALE,
     _git_network_env,
     _proxy_env_has_credentials,
     anonymous_git_env,
@@ -82,6 +88,7 @@ async def _fetch_app_manifest(
     commit: str = "",
     allow_remote: bool = True,
     provenance: dict[str, str] | None = None,
+    gh_path: str = "",
 ) -> dict[str, Any] | None:
     """Fetch app.json for an app from its source repo (lightweight).
 
@@ -103,6 +110,12 @@ async def _fetch_app_manifest(
     (``wrap_argv`` re-judges that against the tier). Only set when the entry's
     effective clone URL is byte-identical to the owner-configured registry repo
     URL.
+
+    *gh_path*: a private ``https://github.com/<owner>/<repo>`` source. An
+    *owner_designated* fetch that fails the way a private repository fails asks
+    :func:`_gh_access` and, when the host's ``gh`` can read the repository, runs
+    once more with *gh_path* through the split fetch, whose network step alone
+    signs in. A fetch that is not owner-designated never reaches ``gh``.
 
     *commit*: a pinned commit. When set, the manifest is read from THAT tree
     rather than a branch tip, and the local fast path compares commits instead of
@@ -138,9 +151,41 @@ async def _fetch_app_manifest(
         return None
     git_url = _strip_git_target_userinfo(credential_target)
     credentialed_transport = credential_target != git_url
+    if gh_path and (credentialed_transport or not owner_designated):
+        raise ValueError("a gh sign-in is only for an owner-designated, credential-free URL")
     # A proxy URL holding a password is a credential too: it takes the split path,
     # so no checkout-time filter inherits it (see `_proxy_env_has_credentials`).
-    isolate_transport = credentialed_transport or _proxy_env_has_credentials(git_url)
+    # A gh sign-in takes it as well: only the network step may run the helper.
+    isolate_transport = (
+        credentialed_transport or bool(gh_path) or _proxy_env_has_credentials(git_url)
+    )
+    # Where a private-looking failure may go on to the host's gh sign-in.
+    gh_repo = (
+        _github_https_repo(git_url)
+        if owner_designated and not gh_path and not credentialed_transport
+        else ""
+    )
+
+    async def _retry_with_gh(output: str) -> dict[str, Any] | None:
+        """The manifest fetched through gh, or ``None`` when gh does not apply or fails."""
+        if not gh_repo or not _private_github_shaped(output):
+            return None
+        found, cause = await _gh_access(gh_repo)
+        if cause:
+            logger.debug("manifest fetch through gh refused (%s)", cause)
+            return None
+        return await _fetch_app_manifest(
+            repo,
+            branch,
+            subdirectory,
+            app_name,
+            credential_target,
+            owner_designated=owner_designated,
+            commit=commit,
+            allow_remote=allow_remote,
+            provenance=provenance,
+            gh_path=found,
+        )
 
     # Try persistent clone first (already installed).
     #
@@ -255,6 +300,7 @@ async def _fetch_app_manifest(
                 clone_env=clone_env,
                 sandbox_mode=sandbox_mode,
                 forward_ssh_auth_sock=owner_designated,
+                gh_path=gh_path,
             )
             if err is not None:
                 logger.debug(
@@ -262,7 +308,7 @@ async def _fetch_app_manifest(
                     _strip_git_target_userinfo(git_url),
                     str(err),
                 )
-                return None
+                return await _retry_with_gh("\n".join(fetch_log))
         elif isolate_transport:
             # A credentialed `git clone` performs both the network fetch and the
             # checkout in one process. The checkout may launch an inherited filter
@@ -280,6 +326,7 @@ async def _fetch_app_manifest(
                 credential_target=credential_target,
                 clone_env=clone_env,
                 sandbox_mode=sandbox_mode,
+                gh_path=gh_path,
             )
             if err is not None:
                 logger.debug(
@@ -287,7 +334,7 @@ async def _fetch_app_manifest(
                     _strip_git_target_userinfo(git_url),
                     str(err),
                 )
-                return None
+                return await _retry_with_gh("\n".join(fetch_log))
         else:
             clone_cmd = [
                 "git",
@@ -311,6 +358,7 @@ async def _fetch_app_manifest(
             transport_env = _git_network_env(
                 _git_transport_env(credential_target, git_url, clone_env), git_url
             )
+            transport_env["LC_ALL"] = _GIT_CLONE_LOCALE
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -321,15 +369,16 @@ async def _fetch_app_manifest(
             )
             _, stderr = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
             if proc.returncode != 0:
+                clone_output = stderr.decode(errors="replace").strip()
                 logger.debug(
                     "manifest clone failed for %s: %s",
                     _strip_git_target_userinfo(git_url),
                     _loggable_git_transport_output(
-                        stderr.decode(errors="replace").strip(),
+                        clone_output,
                         credentialed=credentialed_transport,
                     ),
                 )
-                return None
+                return await _retry_with_gh(clone_output)
             checkout_root = Path(tmp_root)
         # Containment is measured from the root the tree actually landed in, which
         # differs by branch: the pinned fetch uses a child of `tmp_root` so it gets a
