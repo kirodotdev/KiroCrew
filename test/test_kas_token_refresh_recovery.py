@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp import kas_host_auth, runtime_session_load, session_handle_mcp
 from kiro_crew.acp.kas_host_auth import HostAuthCallbackError, answer_get_access_token
@@ -242,8 +243,9 @@ _PARAMS = {
 
 
 def _governance_off_handle() -> AcpSessionHandle:
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
-    handle._session_id = _SID
+    # No runtime: the MCP wait reads it through getattr, so these tests take the
+    # path with no connect progress and no server re-attempt.
+    handle = bare_session_handle(_SID, runtime=None)
     handle._mcp_report = McpSessionReport()
     handle._mcp_report.begin_session([])
     handle._queue = asyncio.Queue()
