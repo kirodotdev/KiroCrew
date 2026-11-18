@@ -1441,7 +1441,10 @@ original exception, and cancellation is not logged as failure.
 
 Restore reads this same registry. Unreadable storage leaves the file untouched
 and fences subsequent snapshot writes until restart after recovery. Invalid JSON
-is preserved as `.corrupt` when renaming succeeds. An invalid snapshot shape or
+is preserved as `.corrupt` (the rename is retried through the Windows sharing window
+off the event loop). When the rename still fails, the file stays in place and
+subsequent snapshot writes are fenced until restart, so the corrupt bytes are never
+overwritten, and the log claims a sidecar only after the rename succeeded. An invalid snapshot shape or
 malformed execution context refuses restore and fences writes; it is not hydrated
 through a hidden row or downgraded to Global memory. An obsolete
 `{"task_id": ..., "private_payload": true}` reference, which 0.7.0-insider.1 to .5

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1870,10 +1871,11 @@ class TestLoadRuns:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         (tmp_path / "runs.json").write_text("{not json", encoding="utf-8")
-        monkeypatch.setattr(Path, "replace", MagicMock(side_effect=OSError("cannot rename")))
+        monkeypatch.setattr(os, "replace", MagicMock(side_effect=OSError("cannot rename")))
         runner = _runner(tmp_path)
         assert runner._runs == {}
         assert (tmp_path / "runs.json").exists()
+        assert runner._snapshot_recovery_incomplete is True
 
     def test_running_run_recovers_as_resumable_without_trust(self, tmp_path: Path) -> None:
         (tmp_path / "runs.json").write_text(json.dumps([_registry_item()]), encoding="utf-8")
