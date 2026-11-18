@@ -336,47 +336,42 @@ class TestNoTurnWaitsForAWalk:
         assert len(results) == 4
         assert walk.calls == 1
 
-    def test_a_scope_served_from_a_snapshot_starts_no_worker(self, harness, monkeypatch):
-        _skill(harness.root, "alpha")
+    def test_a_scope_served_from_a_snapshot_revalidates_once(self, harness, monkeypatch):
+        alpha = _skill(harness.root, "alpha")
         first = harness.loader()
         assert _keys(first._iter()) == ["alpha"]
-        _await(
-            lambda: first._search_index is not None
-            and first._search_index.catalog_snapshot(first._catalog_scope_id("")) is not None,
-            "the snapshot to be stored",
-        )
-
+        assert first._load_catalog_snapshot("") is not None
         second = harness.loader()
-        monkeypatch.setattr(
-            second, "_iter_uncached", lambda project_key=None: pytest.fail("walked the tree")
-        )
-        assert _keys(second._iter()) == ["alpha"]
-        assert second._catalog_worker is None
+        walk = harness.stub_walk(second, monkeypatch, [("alpha", alpha, None)], blocked=False)
+        for _ in range(3):
+            assert _keys(second._iter()) == ["alpha"]
+        assert walk.calls == 1
 
 
 class TestTheStoredSnapshot:
-    def test_a_fresh_loader_reuses_it_instead_of_walking(self, harness, monkeypatch):
+    def test_a_fresh_loader_reuses_it_while_revalidating(self, harness, monkeypatch, request):
         _skill(harness.root, "alpha")
         _skill(harness.root, "team/beta")
         first = harness.loader()
         expected = _keys(first._iter())
+        request.getfixturevalue("instant_budget")
         assert sorted(expected) == ["alpha", "team/beta"]
-        _await(lambda: first._load_catalog_snapshot("") is not None, "the snapshot to be stored")
-
+        assert first._load_catalog_snapshot("") is not None
         second = harness.loader()
-        walk = harness.stub_walk(second, monkeypatch, rows=[], blocked=False)
+        walk = harness.stub_walk(second, monkeypatch, rows=[])
         assert _keys(second._iter()) == expected, "precedence order must survive a round trip"
-        assert walk.calls == 0
+        walk.await_start()
+        assert walk.calls == 1
 
-    def test_an_empty_scope_is_not_rewalked(self, harness, monkeypatch):
+    def test_an_empty_scope_is_not_rewalked_every_turn(self, harness, monkeypatch):
         first = harness.loader()
         assert first._iter() == []
-        _await(lambda: first._load_catalog_snapshot("") is not None, "the empty snapshot")
-
+        assert first._load_catalog_snapshot("") is not None
         second = harness.loader()
         walk = harness.stub_walk(second, monkeypatch, rows=[], blocked=False)
-        assert second._iter() == []
-        assert walk.calls == 0, "an enumerated-empty scope must not re-walk every turn"
+        for _ in range(3):
+            assert second._iter() == []
+        assert walk.calls == 1, "an enumerated-empty scope must only revalidate once"
 
     def test_it_is_not_shared_across_root_sets(self, harness, monkeypatch):
         _skill(harness.root, "alpha")
@@ -1312,13 +1307,13 @@ class TestAnExactKeyReadDoesNotWaitForDiscovery:
 
     def test_it_stops_once_the_catalog_is_authoritative(self, harness, monkeypatch):
         """A complete catalog is the only authority; no second resolution path."""
-        _skill(harness.root, "alpha")
+        alpha = _skill(harness.root, "alpha")
         loader = harness.loader()
         assert _keys(loader._iter()) == ["alpha"]
         assert loader.catalog_status() == "complete"
 
-        # Absent from the enumeration and the catalog is complete: the direct
-        # resolver must not answer, even though the file is on disk.
+        # On disk but left out of a complete catalog (walk stubbed): no answer.
+        harness.stub_walk(loader, monkeypatch, rows=[("alpha", alpha, None)], blocked=False)
         _skill(harness.root, "late-arrival", body="written out of band")
         assert loader.read_scoped_skill("late-arrival") is None
         assert loader._exact_read_while_building("late-arrival", None, None, 99_000) is None
@@ -1351,7 +1346,9 @@ class TestListingCost:
             (harness.root / "pack" / "skill-0" / "SKILL.md").stat().st_size
         }
 
-    def test_a_loader_serving_a_snapshot_still_validates_by_stat(self, harness, monkeypatch):
+    def test_a_loader_serving_a_snapshot_still_validates_by_stat(
+        self, harness, monkeypatch, request
+    ):
         _skill(harness.root, "alpha", description="from the first walk")
         first = harness.loader()
         assert _keys(first._iter()) == ["alpha"]
@@ -1361,9 +1358,8 @@ class TestListingCost:
         # the stored ones: an edit made between the two runs has to be noticed.
         _skill(harness.root, "alpha", description="edited out of band")
         second = harness.loader()
-        monkeypatch.setattr(
-            second, "_iter_uncached", lambda project_key=None: pytest.fail("walked the tree")
-        )
+        request.getfixturevalue("instant_budget")
+        harness.stub_walk(second, monkeypatch, rows=[])
         assert second._catalog_fingerprint_hint(None) == {}
         rows = second.list_skills()
         assert [row["description"] for row in rows] == ["edited out of band"]
@@ -1377,7 +1373,7 @@ class TestListingCost:
         ids=["catalog", "mapping"],
     )
     def test_a_restarted_app_gate_reads_only_what_the_saved_index_cannot_answer(
-        self, harness, monkeypatch, patient_budget, gated
+        self, harness, monkeypatch, patient_budget, gated, request
     ):
         _skill(harness.root, "kept")
         owned = "---\nname: {0}\ndescription: d\napp: off\n---\n{0}\n"
@@ -1390,9 +1386,8 @@ class TestListingCost:
         edited.write_text(owned.format("edited, out of band"), encoding="utf-8")
         second = harness.loader()
         monkeypatch.setattr(second, "_get_disabled_app_names", lambda: frozenset({"off"}))
-        monkeypatch.setattr(
-            second, "_iter_uncached", lambda project_key=None: pytest.fail("walked the tree")
-        )
+        request.getfixturevalue("instant_budget")
+        harness.stub_walk(second, monkeypatch, rows=[])
         vetted: list[Path] = []
         real_vet = second._vet_unconfined_path
         monkeypatch.setattr(
@@ -1438,7 +1433,7 @@ class TestAStoredRowIsNotAnAdmission:
         # Falling back to the walk is what keeps the answer complete.
         assert _keys(second._iter()) == ["alpha"]
 
-    def test_a_root_under_a_linked_home_serves_its_own_rows(self, tmp_path, monkeypatch):
+    def test_a_root_under_a_linked_home_serves_its_own_rows(self, tmp_path, monkeypatch, request):
         """A walk stores rows in the spelling of the root it walked.
 
         When ``$HOME`` is a link, that spelling is not the root's realpath. The
@@ -1457,9 +1452,10 @@ class TestAStoredRowIsNotAnAdmission:
             _await(lambda: first._load_catalog_snapshot("") is not None, "the snapshot")
 
             second = harness.loader()
-            walk = harness.stub_walk(second, monkeypatch, rows=[], blocked=False)
+            assert second._load_catalog_snapshot("") is not None
+            request.getfixturevalue("instant_budget")
+            harness.stub_walk(second, monkeypatch, rows=[])
             assert _keys(second._iter()) == ["alpha"]
-            assert walk.calls == 0, "the stored rows were refused and the tree re-walked"
             report = second.search_skills_report("", browse=True)
             assert [m["key"] for m in report.matches] == ["alpha"]
             assert report.matches[0]["description"] == "the alpha skill"
@@ -1516,8 +1512,8 @@ class TestAStoredRowIsNotAnAdmission:
             make_dir_link(path.parent, outside.parent)
 
             second = harness.loader()
-            harness.stub_walk(second, monkeypatch, rows=[], blocked=False)
-            assert _keys(second._iter()) == ["alpha"]
+            stored = second._load_catalog_snapshot("")
+            assert _keys(second._adopt_snapshot("", stored, generation=0)) == ["alpha"]
             refusals: list[str] = []
             assert second._read_enumerated_skill_bytes(path, None, refusal_reasons=refusals) is None
             assert refusals == ["snapshot_path_refused"]
@@ -1539,8 +1535,8 @@ class TestAStoredRowIsNotAnAdmission:
         _await(lambda: first._load_catalog_snapshot("") is not None, "the snapshot")
 
         second = harness.loader()
-        harness.stub_walk(second, monkeypatch, rows=[], blocked=False)
-        held = second._iter()
+        stored = second._load_catalog_snapshot("")
+        held = second._adopt_snapshot("", stored, generation=0)
         assert _keys(held) == ["alpha"]
         if invalidate:
             second._invalidate_iter_cache()
@@ -1610,8 +1606,8 @@ class TestAStoredRowIsNotAnAdmission:
         _await(lambda: first._load_catalog_snapshot("") is not None, "the snapshot")
 
         second = harness.loader()
-        harness.stub_walk(second, monkeypatch, rows=[], blocked=False)
-        assert _keys(second._iter()) == ["alpha"]
+        stored = second._load_catalog_snapshot("")
+        assert _keys(second._adopt_snapshot("", stored, generation=0)) == ["alpha"]
 
         calls: list[str] = []
         real = skills_module.validate_file_path
@@ -1717,8 +1713,8 @@ class TestAStoredRowIsNotAnAdmission:
         assert skills_module.validate_file_path(str(path)) is not None
 
         second = harness.loader()
-        harness.stub_walk(second, monkeypatch, rows=[], blocked=False)
-        held = second._iter()
+        stored = second._load_catalog_snapshot("")
+        held = second._adopt_snapshot("", stored, generation=0)
         assert _keys(held) == ["alpha"]
         refusals: list[str] = []
         assert second._read_enumerated_skill_bytes(path, None, refusal_reasons=refusals) is None
@@ -1962,7 +1958,7 @@ class TestLifecycle:
 
         The unsigned MCP fallback builds a loader per call and closes it as soon as
         the search returns, so discarding a finished walk's store would make every
-        call on such a host re-walk the tree forever.
+        call on such a host return an empty catalog while discovery runs.
         """
         alpha = _skill(harness.root, "alpha")
         loader = harness.loader()
@@ -1982,9 +1978,10 @@ class TestLifecycle:
             assert "" not in loader._iter_cache
         # ...but the next process finds the snapshot it wrote.
         later = harness.loader()
-        blocked = harness.stub_walk(later, monkeypatch, rows=[], blocked=False)
+        blocked = harness.stub_walk(later, monkeypatch, rows=[])
         assert _keys(later._iter()) == ["alpha"], "the abandoned walk persisted nothing"
-        assert blocked.calls == 0
+        blocked.await_start()
+        assert blocked.calls == 1
 
     def test_a_mutation_queues_the_rewalk_itself(self, harness, monkeypatch):
         """The next turn must not be the one that starts the post-mutation walk."""

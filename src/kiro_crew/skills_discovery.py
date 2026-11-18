@@ -58,7 +58,9 @@ _CATALOG_READ_BATCH = 64
 # (skill_live_loaders). The fence is otherwise per loader: another loader, in
 # this process or another one, that already HOLDS a list keeps serving it until
 # this deadline, and only a loader that reads the stored snapshot afterwards sees
-# the drop.
+# the drop. A skill dir added or removed straight on disk (an unzip into the
+# skills dir) does not wait for this deadline either: every served read compares a
+# cheap stamp of the roots (catalog._catalog_tree_stamp) and re-walks on a change.
 #
 # The value is sized against the walk it amortizes, not picked for tidiness: a walk
 # of a real skills tree (645 files across 21 roots on a dev desktop, incl.
@@ -701,6 +703,77 @@ _VENDORED_DIR_NAMES = frozenset({"node_modules", "__pycache__", "site-packages"}
 def _skippable_skill_dir(name: str) -> bool:
     """Whether the skill walk must not descend a directory called *name*."""
     return name.startswith(".") or name in _VENDORED_DIR_NAMES
+
+
+_StatKey = tuple[int, int, int, int] | None
+# ``(root, stat(root), ((container, lstat(container)), ...))`` per root.
+SkillRootsStamp = tuple[tuple[str, _StatKey, tuple[tuple[str, _StatKey], ...]], ...]
+
+
+def _stat_key(path: str, *, follow: bool = False) -> _StatKey:
+    """``(dev, ino, mtime, ctime)``; ctime because ``unzip`` restores archive mtimes."""
+    try:
+        st = os.stat(path, follow_symlinks=follow)
+    except (OSError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _root_containers(root: str) -> tuple[str, ...]:
+    """*root*'s top-level dirs holding no ``SKILL.md`` of their own (``pack/``).
+
+    One ``scandir`` plus one ``lstat`` per child, so it is paid only when a stamp
+    is CAPTURED, beside the walk, never per read. Symlinked children are left
+    out (an app's linked skills changing invalidates through the app bridge), and
+    the probe reaches no further than the walk's own resolve of each child.
+    """
+    containers: list[str] = []
+    try:
+        with os.scandir(root) as scan:
+            entries = [entry for entry in scan if not _skippable_skill_dir(entry.name)]
+    except (OSError, ValueError):
+        return ()
+    for entry in entries:
+        try:
+            if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            continue
+        if _stat_key(os.path.join(entry.path, "SKILL.md")) is None:
+            containers.append(entry.path)
+    return tuple(sorted(containers))
+
+
+def _skill_roots_stamp(
+    roots: tuple[str | Path, ...], known: SkillRootsStamp | None = None
+) -> SkillRootsStamp:
+    """A cheap fingerprint of unconfined skill *roots*, for the catalog cache.
+
+    ``(root, stat(root), ((container, lstat(container)), ...))`` per root. A skill
+    dir added or removed at the top level moves its root's mtime/ctime (the root
+    is followed, as the walk follows it), and one added under a container
+    (``pack/new``) moves that container's, so an ``unzip`` straight into the
+    skills dir is seen by the next catalog read instead of after
+    ``_ITER_CACHE_TTL_SECS``.
+
+    With *known* (the stamp captured before the served list was walked) the
+    container set is reused rather than rescanned, so a per-read check is one
+    ``stat`` per root and per container, whatever the skill count. Not covered,
+    and still converging on the TTL re-walk: an in-place ``SKILL.md`` edit and a
+    change deeper than one container.
+    """
+    spelled = [str(root) for root in roots]
+    if known is not None and [part[0] for part in known] == spelled:
+        return tuple(
+            (root, _stat_key(root, follow=True), tuple((path, _stat_key(path)) for path, _ in held))
+            for root, _root_key, held in known
+        )
+    stamp: list[tuple[str, _StatKey, tuple[tuple[str, _StatKey], ...]]] = []
+    for root in spelled:
+        root_key = _stat_key(root, follow=True)
+        containers = _root_containers(root) if root_key is not None else ()
+        stamp.append((root, root_key, tuple((path, _stat_key(path)) for path in containers)))
+    return tuple(stamp)
 
 
 def _iter_skill_files(
