@@ -194,6 +194,7 @@ class _ChatSlot:
         "_pending_reset_clears_cwd",
         "_pending_discard_conversation_key",
         "_pending_discard_from_wake",
+        "_pending_discard_drops_plan",
         "_pending_model_pick",
         "_deferred_model_switch_key",
         "_eager_spawn_task",
@@ -512,6 +513,7 @@ class _ChatSlot:
     _pending_reset_clears_cwd: bool
     _pending_discard_conversation_key: str | None
     _pending_discard_from_wake: bool
+    _pending_discard_drops_plan: bool
     _pending_model_pick: Any
     _deferred_model_switch_key: str
     _eager_spawn_task: asyncio.Task[None] | None
