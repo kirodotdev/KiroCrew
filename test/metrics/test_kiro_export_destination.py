@@ -337,6 +337,48 @@ class TestNotice:
             == beacon.PRIVACY_NOTICE_VERSION
         )
 
+    @pytest.mark.parametrize(
+        ("lists", "expected"),
+        [
+            ("kiro", 0),
+            ("own", beacon.PRIVACY_NOTICE_VERSION),
+            ("unreadable", beacon.PRIVACY_NOTICE_VERSION),
+        ],
+    )
+    def test_the_boot_answer_holds_back_only_when_the_listing_names_it(
+        self, home, monkeypatch, lists, expected
+    ):
+        """A provider that lists its own destinations instead of Kiro telemetry.
+
+        The chapter records the Kiro acknowledgement only when the listing shows
+        that row, so there it can never be recorded: holding the version back
+        would reopen the chapter on every dashboard load.
+        """
+        from unittest.mock import MagicMock
+
+        from aiohttp import web
+
+        from kiro_crew.dashboard.handlers import core as core_handlers
+        from kiro_crew.platform.interfaces_runtime import OtlpDestination
+
+        class _Provider(DefaultTelemetryProvider):
+            def otlp_destinations(self, cfg):
+                if lists == "unreadable":
+                    raise RuntimeError("provider down")
+                if lists == "own":
+                    return (
+                        OtlpDestination(
+                            name="edition", endpoint=OPS, signals=frozenset({"metrics"})
+                        ),
+                    )
+                return super().otlp_destinations(cfg)
+
+        monkeypatch.setattr(pm, "_telemetry_provider", _Provider)
+        _write_config(home, {}, ack=beacon.PRIVACY_NOTICE_VERSION, kiro_ack=0)
+        assert kiro_export.destinations()
+        resp = asyncio.run(core_handlers.api_theme_boot(MagicMock(spec=web.Request)))
+        assert json.loads(resp.body)["privacy_ack_version"] == expected
+
     def test_a_failed_print_does_not_count_as_told(self, home):
         from kiro_crew.metrics import notice
 

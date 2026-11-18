@@ -577,13 +577,18 @@ def _ack_version_for_the_chapter(cfg: Any) -> int:
     An acknowledgement whose text never named the build's Kiro telemetry
     destination (a chapter whose text did not name it, a redirected
     ``kirocrew telemetry enable``) leaves that destination waiting, so the
-    chapter, which names it, shows once more. Unreadable: the stored value.
+    chapter, which names it, shows once more. Only while the provider's listing
+    shows that destination: the chapter records its acknowledgement only then,
+    so on a build whose provider lists other destinations the chapter would
+    otherwise reopen on every load. Unreadable: the stored value.
     """
     stored = cfg.dashboard.privacy_ack_version
     try:
         from kiro_crew.metrics import kiro_export
 
-        if kiro_export.destinations() and not kiro_export.notice_shown(cfg):
+        if kiro_export.listed(
+            _metrics_provider.otlp_egress_listing(cfg.telemetry)
+        ) and not kiro_export.notice_shown(cfg):
             return min(stored, cfg.dashboard.kiro_telemetry_ack_version)
     except Exception:  # noqa: BLE001 - the stored value, as before
         logger.debug("kiro telemetry notice state unreadable", exc_info=True)
