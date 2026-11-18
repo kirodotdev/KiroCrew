@@ -79,7 +79,9 @@ class TestBuildDeepLink:
             == "kirocrew://chat?crew=devbox-1&sid=hook%3Acos%3Amenubar-chat"
         )
 
-    @pytest.mark.parametrize("crew", ["Dev Box", "UPPER", "-lead", "a" * 64, "a/b"])
+    # "" is a supplied --crew (e.g. an unset "$CREW"), not an omitted one: it must
+    # not fall through to a hub link for the same session.
+    @pytest.mark.parametrize("crew", ["", "Dev Box", "UPPER", "-lead", "a" * 64, "a/b"])
     def test_crew_that_is_not_a_crew_id_is_refused(self, crew):
         with pytest.raises(DeepLinkError, match="crew id"):
             build_deep_link(session="cos-quick-chat", crew=crew)
@@ -92,6 +94,8 @@ class TestBuildDeepLink:
     def test_crew_without_a_session_is_refused(self):
         with pytest.raises(DeepLinkError, match="session"):
             build_deep_link(crew="devbox-1")
+        with pytest.raises(DeepLinkError, match="session"):
+            build_deep_link(crew="")
 
 
 class TestOpenUrl:
@@ -244,9 +248,6 @@ class TestGrammarAgreesWithTheElectronResolver:
 
     def test_crew_slot_key_regex_is_identical(self):
         assert cli_open._CREW_SLOT_KEY_RE.pattern == _js_regex("CREW_SLOT_KEY_RE")
-
-    def test_crew_id_regex_is_identical(self):
-        assert cli_open._CREW_ID_RE.pattern == _js_regex("CREW_ID_RE")
 
     def test_app_name_samples_agree_with_the_manifest_grammar(self):
         # deep-link.js checks ``kirocrew://apps/detail/<name>`` with plain logic

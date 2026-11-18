@@ -35,9 +35,6 @@ _SLOT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 #: is also stored as that crew's last-chat hint, which holds at most 128 characters.
 _CREW_SLOT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
-#: Mirrors ``CREW_ID_RE`` in website/electron/deep-link.js, the registry's crew id rule.
-_CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-
 #: How long ``open_url`` waits for ``open`` / ``xdg-open`` to report whether an
 #: application took the URL.
 _LAUNCHER_WAIT_SECS = 2.0
@@ -56,7 +53,7 @@ def build_deep_link(*, session: str | None = None, crew: str | None = None) -> s
     a URL it then drops.
     """
     if not session:
-        if crew:
+        if crew is not None:
             raise DeepLinkError(
                 "--crew needs a session key: the link opens one session on that crew"
             )
@@ -66,14 +63,17 @@ def build_deep_link(*, session: str | None = None, crew: str | None = None) -> s
         # writes percent-encoded. ``%`` is outside the key grammar, so decoding once
         # changes nothing a valid key could mean; decoded junk still fails below.
         session = unquote(session)
-    if not crew:
+    if crew is None:
         if not _SLOT_KEY_RE.fullmatch(session):
             raise DeepLinkError(
                 "session key may contain letters, digits, '.', '_', ':' and '-', "
                 "must start with a letter or digit, and be at most 200 characters"
             )
         return f"{SCHEME}://chat?sid={quote(session, safe='')}"
-    if not _CREW_ID_RE.fullmatch(crew):
+    # The registry's own crew id rule; imported here so a hub link does not load it.
+    from kiro_crew.instances.registry import _ID_RE as crew_id_re
+
+    if not crew_id_re.fullmatch(crew):
         raise DeepLinkError(
             "crew id is the crew's key in instances.json (lowercase letters, digits "
             "and '-', at most 63 characters), not its display name"
