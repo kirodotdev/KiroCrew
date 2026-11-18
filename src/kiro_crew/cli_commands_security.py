@@ -251,7 +251,24 @@ def _security(args: argparse.Namespace) -> None:
         if since and until and since >= until:
             print("❌ --since must be earlier than --until")
             sys.exit(2)
-        events = sel().recent(limit=limit, since=since, until=until)
+        from kiro_crew.sel_filter import CLI_SCAN_LIMIT, FIELD_KEYS, select_events
+
+        filters = {name: getattr(args, name, "") or "" for name in FIELD_KEYS}
+        picked = select_events(
+            sel(),
+            limit=limit,
+            filters=filters,
+            since=since,
+            until=until,
+            scan_limit=CLI_SCAN_LIMIT,
+        )
+        events = picked.rows
+        if picked.scan_capped:
+            print(
+                f"note: looked at the newest {CLI_SCAN_LIMIT} rows only; set an earlier --until "
+                "to reach older rows",
+                file=sys.stderr,
+            )
         window = ""
         if since or until:
             window = (
@@ -259,7 +276,8 @@ def _security(args: argparse.Namespace) -> None:
                 f"{until.isoformat() if until else 'now'})"
             )
         if not events:
-            print(f"No security events recorded{window}.")
+            what = "matched the filters" if any(filters.values()) else "recorded"
+            print(f"No security events {what}{window}.")
             return
         print(f"📋 Last {len(events)} security event(s){window}:\n")
 
