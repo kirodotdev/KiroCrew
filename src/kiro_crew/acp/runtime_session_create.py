@@ -322,6 +322,7 @@ async def create_session(
                     harness_state is not None
                     and self._harness.permission_surface_owned(harness_state)
                 ),
+                harness_state=harness_state,
             )
         if mirrored is not None:
             mcp_servers = mirrored.servers

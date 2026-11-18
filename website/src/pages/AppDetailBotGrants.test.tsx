@@ -17,6 +17,7 @@ const api = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api }))
 
 import AppDetailBotGrants from './AppDetailBotGrants'
+import { PREVIEW_BOT_CHAT_APP_TOOLS, setPreviewFlag } from '../utils/previewFlags'
 
 function wrap(children: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -62,5 +63,19 @@ describe('AppDetailBotGrants', () => {
     expect(await screen.findByText('You have no bots yet.')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'New bot' })).toHaveAttribute('href', '/members?create=1')
     expect(screen.queryByRole('button', { name: 'Save bot access' })).toBeNull()
+  })
+
+  it('says the tools scope waits on its preview, with a link, only while the preview is off', async () => {
+    setPreviewFlag(PREVIEW_BOT_CHAT_APP_TOOLS, false)
+    const { unmount } = render(wrap(<AppDetailBotGrants appName="notes" declared={['read', 'tools']} />))
+    const note = await screen.findByTestId('bots-scope-tools-preview-off')
+    expect(note).toHaveTextContent('Off until you turn on App tools in bot chats in Feature previews.')
+    expect(screen.getByRole('link', { name: 'App tools in bot chats' })).toHaveAttribute('href', '/settings/developer/feature-previews')
+    unmount()
+    setPreviewFlag(PREVIEW_BOT_CHAT_APP_TOOLS, true)
+    render(wrap(<AppDetailBotGrants appName="notes" declared={['read', 'tools']} />))
+    await screen.findByRole('checkbox', { name: 'writer' })
+    expect(screen.queryByTestId('bots-scope-tools-preview-off')).toBeNull()
+    setPreviewFlag(PREVIEW_BOT_CHAT_APP_TOOLS, false)
   })
 })

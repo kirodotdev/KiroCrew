@@ -8050,6 +8050,35 @@ cannot tell a Bot it was not given from one that does not exist:
 A disabled app holds no Bot scope: `apps/bot_grants.app_bot_scopes` reads
 `is_app_enabled` on every call (pinned by `test_app_bot_disabled_token.py`).
 
+**The `tools` scope (preview `bot_chat_app_tools`, off by default).** A third scope
+mounts servers the app offers in `contributes.botChatServers` on the own chat of each
+ticked Bot. A Bot's chat runs on the shared `kirocrew-mate-conductor`, and its spec is
+built per session the way a Bot's worker spec is: `acp/session_mcp_crewmate.
+_crewmate_conductor_spec` (array hosts) and the KAS projection both call
+`bot_chat_app_tools.conductor_session_spec`, which adds an `<app>:<server>` entry
+read from the app agent's rendered spec only while the preview is on, the app is
+enabled, the scope is approved and the Bot is ticked. The shared conductor file is
+never written. Each Bot chat's agent process records the servers it was started
+with; the bot-grants PUT, enable, disable, update, uninstall and a switch of the
+preview each call `after_app_change`, which compares every live Bot chat with that
+record: a Bot that lost a server gets a queued no-replay discard (its next turn starts
+a fresh conversation without the old tool names), and a Bot whose servers were added
+or whose entries changed reloads in place. The preview reads through
+`edition_locks.feature_previews`, so it is off on LTS whatever is stored. A Bot chat
+on a harness outside `ACP_BACKENDS_MATE_WORKER_KIT` gets no app server: the array
+projection adds them only when its caller passes `bot_app_tools_carried` (the mirrors
+and the mirrorless member path pass `backend in ACP_BACKENDS_MATE_WORKER_KIT`), and
+Kiro CLI, which reads `--agent` off disk, never reaches `conductor_session_spec`. On
+any such harness the
+allocation door (`session_allocation_parts/get_or_create`) hands the provider's
+`mate_worker_kit_supported` to `bot_chat_app_tools.note_harness_without_app_tools`,
+which tells that chat once when the Bot has app tools turned on. This
+narrows `docs/decisions/2026-11-02-a-crewmates-worker-carries-its-template-policy.md`
+("the conductor takes nothing from the file") and
+`docs/decisions/2026-11-04-conductors-stay-simple-and-new-abilities-go-to-workers.md`
+("a mate's conductor mounts only Crew's own MCP servers") for this one case, and needs
+a superseding decision entry that names both.
+
 The app's requests still pass the path gate, so it also declares `/api/members` in
 `permissions.api`. The token allowlist, CORS and frame-ancestors are unchanged.
 

@@ -1461,6 +1461,16 @@ async def _get_or_create_impl(
                             )
                             if limited:
                                 raise CapabilityStartupError("capability_tool_limits_unsupported")
+                    # A Bot's own chat on a harness that cannot carry its per-session
+                    # spec runs without the app tools its owner turned on: say so.
+                    from kiro_crew.members import is_member_session_key
+
+                    if is_member_session_key(key):
+                        from kiro_crew.bot_chat_app_tools import note_harness_without_app_tools
+
+                        await note_harness_without_app_tools(
+                            key, provider.mate_worker_kit_supported is True
+                        )
                     # The key may have been fenced while this call waited for the
                     # semaphore or the reads above: refuse before a process is
                     # spawned that the registration door would only refuse later.

@@ -88,7 +88,7 @@ from kiro_crew import mcp_provenance
 from kiro_crew.acp.claude_mcp_names import claude_mcp_tool_name
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.acp.session_label import SESSION_LABEL_MARKER
-from kiro_crew.acp.session_mcp_crewmate import _crewmate_worker_spec
+from kiro_crew.acp.session_mcp_crewmate import _crewmate_conductor_spec, _crewmate_worker_spec
 from kiro_crew.acp.session_mcp_env_refs import expand_entry_env
 from kiro_crew.acp.session_mcp_restricted import session_mcp_restricted_servers
 from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-exported
@@ -1076,6 +1076,7 @@ def session_mcp_projection(
     spec_policy_honoured: bool = False,
     worker_mcp_tool_limits_honoured: bool = False,
     worker_native_tool_limits_honoured: bool = False,
+    bot_app_tools_carried: bool = False,
 ) -> SessionMcpProjection:
     """The array, the withhold set AND the per-tool restrictions, from ONE parse.
 
@@ -1108,6 +1109,10 @@ def session_mcp_projection(
         mcp_tool_limits_honoured=worker_mcp_tool_limits_honoured,
         native_tool_limits_honoured=worker_native_tool_limits_honoured,
     )
+    # A Bot's own chat gets its app servers only on a host that carries a per-session
+    # spec (``ACP_BACKENDS_MATE_WORKER_KIT``, the caller's *bot_app_tools_carried*).
+    if bot_app_tools_carried:
+        spec = _crewmate_conductor_spec(agent, spec, session_key)
     settings = _global_settings()
     disabled_tools = session_mcp_disabled_tools(
         agent, work_dir=work_dir, spec=spec, settings=settings

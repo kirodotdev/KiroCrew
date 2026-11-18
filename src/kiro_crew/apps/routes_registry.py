@@ -246,6 +246,14 @@ async def _reach_open_chats(request: web.Request, name: str) -> None:
         logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
 
 
+async def _reach_bot_chats(request: web.Request) -> None:
+    """End an install or update as ``handle_update_app`` does, so a Bot chat whose
+    app tools it moves catches up (``bot_chat_app_tools``)."""
+    from kiro_crew import bot_chat_app_tools
+
+    await bot_chat_app_tools.after_app_change(request.app.get("state"))
+
+
 async def handle_registry_install(request: web.Request) -> web.Response:
     """POST /api/apps/registry/install — install an app from the registry.
 
@@ -349,6 +357,7 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     # MCP change (app-kit-platform §1).
     if was_installed and (reg.mcp_servers or _held_mcp_servers(prior)):
         await _reach_open_chats(request, name)
+    await _reach_bot_chats(request)
     sel().log_api_access(
         caller="dashboard", operation="app_registry_install", outcome="completed", resources=name
     )
@@ -466,9 +475,10 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     # install, resource registration, backend start — runs under one per-app
     # lock (install_from_registry is lock-free internally).
     reach_open_chats = False
+    app_updated = False
 
     async def _locked_install() -> dict[str, Any]:
-        nonlocal reach_open_chats
+        nonlocal reach_open_chats, app_updated
         async with app_lifecycle_lock(name):
             # Read before the install, as in handle_registry_install.
             prior = await asyncio.to_thread(get_app, name)
@@ -502,6 +512,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
                 reach_open_chats = was_installed and bool(
                     reg.mcp_servers or _held_mcp_servers(prior)
                 )
+                app_updated = True
             return r
 
     install_task = asyncio.create_task(_locked_install())
@@ -555,6 +566,8 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     # handle_registry_install.
     if reach_open_chats:
         await _reach_open_chats(request, name)
+    if app_updated:
+        await _reach_bot_chats(request)
     sel().log_api_access(
         caller="dashboard",
         operation="app_registry_install_stream",

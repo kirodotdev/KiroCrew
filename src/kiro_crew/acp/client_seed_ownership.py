@@ -626,9 +626,10 @@ def _worker_settings_lag(self: ClaudeAcpClient, spec: dict[str, Any] | None) -> 
     Crew's durable seed record names (no link followed, bounded); a file that is
     not that seed counts as no rules. No spec, or any other session, is never held.
     """
-    from kiro_crew.mate_worker import MATE_WORKER_AGENT
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
 
-    is_worker = self._agent == MATE_WORKER_AGENT and bool(self._session_key)
+    # A Bot's own chat is held too: its array carries per-session app servers.
+    is_worker = self._agent in (MATE_WORKER_AGENT, MATE_CONDUCTOR_AGENT) and bool(self._session_key)
     if not (self.backend == ACP_BACKEND_CLAUDE and is_worker) or not isinstance(spec, dict):
         return False
     in_force: Any = self._session_mcp_inline_settings

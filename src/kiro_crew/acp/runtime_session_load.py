@@ -264,6 +264,7 @@ async def load_session(
             permission_surface_owned=(
                 harness_state is not None and self._harness.permission_surface_owned(harness_state)
             ),
+            harness_state=harness_state,
         )
     # The Connection bridge snapshots the array below wrote, for shutdown.
     crew_bridged: list[str] = []

@@ -1139,6 +1139,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             # claim consumed the one-shot resume, so every later exit owes it.
             turn._slim_resume_pending = bool(is_new and resumed)
             turn.client = client
+            if is_new:
+                # A Bot chat that just started on a harness without its app tools
+                # gets its one notice here, where the slot is in hand.
+                from kiro_crew.bot_chat_app_tools import deliver_harness_notice
+
+                await deliver_harness_notice(slot, session_key)
             break
         except SessionBusyError:
             if _wait_if_busy or _claim:

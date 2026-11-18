@@ -260,6 +260,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     info = await asyncio.to_thread(get_app, name)
     if not info:
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
+    from kiro_crew import bot_chat_app_tools
 
     body: dict[str, Any] = {}
     if request.can_read_body:
@@ -515,6 +516,8 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             await _reach_sessions(request)
         except Exception:  # noqa: BLE001 - the enable has committed
             logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
+    # A Bot chat the owner turned this app's server on for reconnects (``bot_chat_app_tools``).
+    await bot_chat_app_tools.after_app_change(request.app.get("state"))
     return web.json_response(resp)
 
 
@@ -538,6 +541,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
 
     warnings: list[str] = []
+    from kiro_crew import bot_chat_app_tools
 
     # Per-app lifecycle lock: disable stops the backend and deregisters
     # resources — must not interleave with a concurrent install/update/
@@ -661,6 +665,20 @@ async def handle_disable_app(request: web.Request) -> web.Response:
             await _reach_sessions(request)
         except Exception:  # noqa: BLE001 - the disable has committed
             logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
+    # Disable: immediately stop Bot chats running this app's servers (the app must not
+    # keep executing mid-turn after disable).  Rule D: propagate Bot-stop failures so
+    # callers know cleanup was incomplete.
+    # Bump generation before stopping so in-flight projections are fenced.
+    bot_chat_app_tools.revoke_app_generation(name)
+    _stopped, _failed = await bot_chat_app_tools.stop_app_bot_chat_servers(
+        request.app.get("state"), name
+    )
+    if _failed:
+        logger.warning("disable of %r: could not stop Bot chats for slugs %s", name, _failed)
+        resp.setdefault("warnings", []).append(
+            f"some bot chats running this app could not be stopped: {', '.join(_failed)}"
+        )
+    await bot_chat_app_tools.after_app_change(request.app.get("state"))
     return web.json_response(resp)
 
 

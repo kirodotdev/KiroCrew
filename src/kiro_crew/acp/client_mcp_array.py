@@ -58,6 +58,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKENDS_MATE_WORKER_KIT,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
@@ -70,6 +71,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CODEX,
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_CREW_OAUTH_BRIDGE,
 )
@@ -371,7 +373,9 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         stubbed = frozenset()
     mirror = mirror_for(self.backend)
     if mirror is None:
-        return _with_own_ipc_pickups(self, self._mirrorless_member_mounts(stubbed))
+        final = _with_own_ipc_pickups(self, self._mirrorless_member_mounts(stubbed))
+        _record_bot_chat_mounts(self, final)
+        return final
     # Recorded BEFORE the projection reads the governed flag, and beside the
     # array it authorizes: the session/new envelope reads this record, so an
     # array delivered under the exclusion always ships with it.
@@ -450,11 +454,15 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
             "changed after they were written, or the re-seed was declined). The worker "
             "runs without MCP tools; the next start reads the file again.",
         )
+        from kiro_crew.bot_chat_app_tools import mark_seed_lag_reproject
+
+        mark_seed_lag_reproject(self._session_key or "")
+        _record_bot_chat_mounts(self, [])
         return []
     # The restriction half of the projection's withhold set, from the SAME parse the
     # array came out of: the member append must not re-add a name this projection
     # refused on a transport where the withhold is the whole of the enforcement.
-    return _with_own_ipc_pickups(
+    final = _with_own_ipc_pickups(
         self,
         self._append_member_panel_server(
             self._append_member_dispatch_server(
@@ -464,6 +472,43 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
             projection.disabled_servers,
         ),
     )
+    _record_bot_chat_mounts(self, final)
+    return final
+
+
+def _record_bot_chat_mounts(client: AcpClient, servers: list[dict[str, Any]]) -> None:
+    """Settle a Bot chat's app-server record from the array this session is handed
+    (``bot_chat_app_tools.record_mounted``), after every withholding above."""
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    if client._agent != MATE_CONDUCTOR_AGENT or not client._session_key:
+        return
+    from kiro_crew.bot_chat_app_tools import (
+        check_and_filter_projection,
+        mounted_names,
+        record_mounted,
+    )
+    from kiro_crew.providers.mirrors.codex import codex_name
+
+    # codex registers each server under its whitespace-folded name.
+    spelled = codex_name if client._acp_backend == ACP_BACKEND_CODEX else str
+    # Strip any entry whose revocation generation advanced since the projection.
+    servers_dict = {e["name"]: e for e in servers if isinstance(e, dict) and e.get("name")}
+    # For codex: pass codex_name as name_transform so the sidecar lookup can match
+    # whitespace-folded aliases to the original form stored by conductor_session_spec.
+    name_xform = codex_name if client._acp_backend == ACP_BACKEND_CODEX else None
+    servers_dict = check_and_filter_projection(
+        client._session_key, servers_dict, name_transform=name_xform
+    )
+    servers[:] = list(servers_dict.values())
+    voided_apps = record_mounted(client._session_key, mounted_names(servers_dict), spelled)
+    if voided_apps:
+        servers_dict = {
+            a: e
+            for a, e in servers_dict.items()
+            if ":" not in a or a.split(":")[0] not in voided_apps
+        }
+        servers[:] = list(servers_dict.values())
 
 
 def _with_own_ipc_pickups(client: AcpClient, servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -579,6 +624,7 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
             session_key=self._session_key or "",
             worker_tool_limits_honoured=self.backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
             spec_policy_honoured=applies_spec_policy(self.backend),
+            bot_app_tools_carried=self.backend in ACP_BACKENDS_MATE_WORKER_KIT,
         )
     except Exception:
         if worker:

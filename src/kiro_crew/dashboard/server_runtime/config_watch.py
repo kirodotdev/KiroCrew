@@ -333,6 +333,22 @@ def _register_config_watch(
             return
         state.push_refresh("config")
 
+    async def _reconcile_bot_chat_app_tools(change: ConfigChange) -> None:
+        # Switching the preview adds or takes away app servers on every Bot chat
+        # that has them, from whichever writer flipped it.
+        from kiro_crew import bot_chat_app_tools
+
+        await bot_chat_app_tools.on_preview_change(state, change)
+
+    async def _revoke_execution_denied_bot_chats(change: ConfigChange) -> None:
+        # Closing blanket third-party trust or removing a per-app grant removes
+        # execution admission for apps that relied on it.  Bot chats that are
+        # currently running those apps must be stopped immediately -- the same
+        # path individual trust revocation takes via stop_app_bot_chat_servers.
+        from kiro_crew import bot_chat_app_tools
+
+        await bot_chat_app_tools.on_execution_trust_change(state)
+
     async def _alarm_crewmate_harness_fallback(change: ConfigChange) -> None:
         # A new Settings harness Crew bots cannot run on moves them onto KAS, and so
         # does a cleared pin on a Crew bot whose worker tool limits that harness
@@ -390,6 +406,19 @@ def _register_config_watch(
             "dashboard.update_nudge",
             callback=_stop_put_off_update,
             name="dashboard.update_nudge",
+        ),
+        live.subscribe(
+            "dashboard.feature_previews",
+            callback=_reconcile_bot_chat_app_tools,
+            name="dashboard.bot_chat_app_tools",
+        ),
+        live.subscribe(
+            "agent.apps_allow_third_party",
+            "agent.apps_trusted",
+            "agent.apps_trusted_repositories",
+            "agent.apps_trusted_local",
+            callback=_revoke_execution_denied_bot_chats,
+            name="agent.bot_chat_execution_trust",
         ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
         live.subscribe(

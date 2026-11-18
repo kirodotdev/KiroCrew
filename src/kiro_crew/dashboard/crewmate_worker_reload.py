@@ -51,10 +51,12 @@ _NOTICE = (
 )
 
 
-def _owed(state: Any) -> set[str]:
+def _owed(state: Any) -> dict[str, str]:
+    """``{slot key: notice}`` for the slots owed a reload, each with the notice its
+    reload was asked with, so a reload deferred to a turn end says the same thing."""
     owed = getattr(state, OWED_ATTR, None)
-    if not isinstance(owed, set):
-        owed = set()
+    if not isinstance(owed, dict):
+        owed = {}
         setattr(state, OWED_ATTR, owed)
     return owed
 
@@ -64,12 +66,12 @@ def is_owed(state: Any, slot: Any) -> bool:
     return getattr(slot, "key", "") in _owed(state)
 
 
-def _mark(state: Any, slot: Any, owed: bool) -> None:
+def _mark(state: Any, slot: Any, owed: bool, notice: str = _NOTICE) -> None:
     key = getattr(slot, "key", "")
     if owed:
-        _owed(state).add(key)
+        _owed(state)[key] = notice
     else:
-        _owed(state).discard(key)
+        _owed(state).pop(key, None)
 
 
 def _is_busy(state: Any, slot: Any, session_key: str) -> bool:
@@ -83,7 +85,7 @@ def _is_busy(state: Any, slot: Any, session_key: str) -> bool:
     )
 
 
-async def reload_if_idle(state: Any, slot: Any) -> str:
+async def reload_if_idle(state: Any, slot: Any, *, notice: str = _NOTICE) -> str:
     """Reload *slot*'s agent process now when it is idle; mark it pending when busy.
 
     Returns :data:`RELOADED`, :data:`BUSY` (marked, reloaded at its next turn
@@ -102,7 +104,7 @@ async def reload_if_idle(state: Any, slot: Any) -> str:
         # turn is in flight (``slot.running``) and spawns on the kit it already
         # projected, so it keeps the reload owed for its turn end.
         if _is_busy(state, slot, session_key):
-            _mark(state, slot, True)
+            _mark(state, slot, True, notice)
             return BUSY
         if state.sessions.get_provider(session_key) is None:
             _mark(state, slot, False)
@@ -114,13 +116,13 @@ async def reload_if_idle(state: Any, slot: Any) -> str:
             still_ours=lambda _after: state._slots.get(key) is slot,
             denied=lambda _session_key: None,
             busy=lambda sk: _is_busy(state, slot, sk),
-            notice=_NOTICE,
+            notice=notice,
         )
     except Exception:  # noqa: BLE001 - a missed reload leaves the next spawn to read it
         logger.warning("Bot reload of %s failed", key, exc_info=True)
         return GONE
     if response.status == 409:
-        _mark(state, slot, True)
+        _mark(state, slot, True, notice)
         return BUSY
     if response.status >= 400:
         return GONE
@@ -189,7 +191,8 @@ def schedule_reload_workers(state: Any, member: str) -> "asyncio.Task[dict[str, 
 async def _retry(state: Any, slot: Any) -> None:
     for attempt in range(RETRIES):
         await asyncio.sleep(RETRY_SECS * (attempt + 1))
-        outcome = await reload_if_idle(state, slot)
+        notice = _owed(state).get(getattr(slot, "key", ""), _NOTICE)
+        outcome = await reload_if_idle(state, slot, notice=notice)
         if outcome != BUSY:
             return
 
