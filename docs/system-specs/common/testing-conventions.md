@@ -144,7 +144,9 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   `exec_module` (a `@dataclass` module needs it), never under the real name.
   A `sys.modules` eviction restores the entry AND its parent package's attribute in the
   same scope (the rootdir package-attribute floor puts back a `kiro_crew` one a test
-  left changed, and names the test), and a new process-global ships its floor entry.
+  left changed, and names the test), and a new process-global ships its floor entry
+  (`test/test_process_cache_floor_ratchet.py` fails a new module-level cache in
+  `src/kiro_crew` that no floor resets).
   [Class 4](#4-order-dependence-and-shared-state).
 - **D12. Prove it.** Each new or changed test passes 20 times at `-n0`, 10 times at
   `-n 4` beside its neighbours, and in a shuffled order. A FIX to a flaky test also
