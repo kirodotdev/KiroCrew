@@ -69,6 +69,25 @@ def mcp_entry_names_launch(entry: Any) -> bool:
     return any(isinstance(entry.get(key), str) and entry.get(key) for key in ("command", "url"))
 
 
+def drop_superseded_registry_marker(entry: dict, spec: dict) -> None:
+    """Drop *entry*'s registry marker when *spec* declares a launch without one.
+
+    A ``"type": "registry"`` entry defers its launch to an admin's catalog
+    (:func:`mcp_entry_is_registry_governed`), and the gateway refuses to route
+    one. A source that now declares a ``command`` or ``url`` for the name has
+    replaced that pointer with a local launch. The merges overwrite only the
+    keys the source names, so without this a marker an earlier rebuild wrote is
+    read back on every rebuild and the server can never be routed. A source
+    whose own entry carries the marker keeps it.
+    """
+    if (
+        mcp_entry_names_launch(spec)
+        and mcp_entry_is_registry_governed(entry)
+        and not mcp_entry_is_registry_governed(spec)
+    ):
+        entry.pop("type", None)
+
+
 def mcp_entry_installs_server(entry: Any) -> bool:
     """Whether one ``mcpServers`` entry is the user installing its server, not a placeholder.
 

@@ -35,6 +35,7 @@ from kiro_crew.env import (
     expand_spec_args,
 )
 from kiro_crew.mcp_cleanup import (
+    drop_superseded_registry_marker,
     invalid_disabled_flag,
     mcp_entries_muted,
     mcp_entry_installs_server,
@@ -444,6 +445,7 @@ def _merge_source_owned(
     if name not in stale:
         return
     stale.discard(name)
+    drop_superseded_registry_marker(existing, spec)
     _project_modifier_keys(existing, spec)
     if not edition_owned:
         _previous = _merge_command_unit(existing, spec)
@@ -916,6 +918,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
                 # mcps[name] is a private copy (globals were copied in above),
                 # so update() does not mutate any source dict.
                 mcps[name].update(own)
+                drop_superseded_registry_marker(mcps[name], spec)
                 # An edition-supplied name keeps the env keys the edition ships:
                 # the store's own env keys win, but a same-named store entry
                 # must not drop the keys the server needs to run as shipped.
