@@ -434,7 +434,7 @@ class TestDoctorDiscordSection:
             monkeypatch, capsys, cfg=_cfg(enabled=True, allowed_user_ids=[_USER_ID])
         )
 
-        assert "token:       Error:" in out
+        assert "token:       ❌" in out
         assert "the channel never starts" in out
         assert "kirocrew restart" in out
         assert "discord: enabled without a bot token" in issues
@@ -444,7 +444,7 @@ class TestDoctorDiscordSection:
     ) -> None:
         out, issues = _render(monkeypatch, capsys, cfg=_cfg(enabled=True), token=_TOKEN)
 
-        assert "users:       Error:" in out
+        assert "users:       ❌" in out
         assert "EVERY message is denied" in out
         assert "Copy User ID" in out
         assert "discord: empty user allow-list denies every message" in issues
@@ -457,9 +457,9 @@ class TestDoctorDiscordSection:
             token=_TOKEN,
         )
 
-        assert "status:      OK:      enabled" in out
-        assert "token:       OK:      present" in out
-        assert "users:       OK:      2 allow-listed" in out
+        assert "status:      ✅ enabled" in out
+        assert "token:       ✅ present" in out
+        assert "users:       ✅ 2 allow-listed" in out
         assert issues == []
 
     def test_the_bot_token_is_never_printed_even_in_part(self, monkeypatch, capsys) -> None:
@@ -488,7 +488,7 @@ class TestDoctorDiscordSection:
             token=_TOKEN,
         )
 
-        assert "servers:     Note:    none, DMs only" in out
+        assert "servers:     ⏹ none, DMs only" in out
         assert issues == []
 
     def test_thread_and_channel_counts_are_reported(self, monkeypatch, capsys) -> None:
@@ -505,7 +505,7 @@ class TestDoctorDiscordSection:
             grants=intent_probe.IntentGrants(message_content=intent_probe.INTENT_ENABLED),
         )
 
-        assert "servers:     OK:      1 thread(s), 2 channel(s)" in out
+        assert "servers:     ✅ 1 thread(s), 2 channel(s)" in out
         # The allow-list is what makes the privileged intent mandatory, so the
         # line that reports it says so.
         assert "Message Content required" in out
@@ -535,7 +535,7 @@ class TestDoctorMessageContentIntent:
             ),
         )
 
-        assert "msg content: Error:   OFF" in out
+        assert "msg content: ❌ OFF" in out
         assert "4014" in out
         assert "Developer Portal" in out
         assert "discord: Message Content Intent off with threads allow-listed" in issues
@@ -549,7 +549,7 @@ class TestDoctorMessageContentIntent:
             grants=intent_probe.IntentGrants(message_content=intent_probe.INTENT_ENABLED),
         )
 
-        assert "msg content: OK:      granted" in out
+        assert "msg content: ✅ granted" in out
         assert "capped" not in out
         assert issues == []
 
@@ -562,7 +562,7 @@ class TestDoctorMessageContentIntent:
             grants=intent_probe.IntentGrants(message_content=intent_probe.INTENT_LIMITED),
         )
 
-        assert "msg content: OK:      granted" in out
+        assert "msg content: ✅ granted" in out
         assert "100 servers" in out
         assert issues == []
 
@@ -575,7 +575,7 @@ class TestDoctorMessageContentIntent:
             grants=intent_probe.IntentGrants(error="TimeoutError"),
         )
 
-        assert "msg content: Warning:" in out
+        assert "msg content: ⚠️" in out
         assert "cannot verify (TimeoutError)" in out
         assert issues == []
 
@@ -588,7 +588,7 @@ class TestDoctorMessageContentIntent:
             grants=intent_probe.IntentGrants(message_content=intent_probe.INTENT_DISABLED),
         )
 
-        assert "msg content: Skipped: not needed" in out
+        assert "msg content: ⏭  not needed" in out
         assert issues == []
 
     def test_dm_only_install_with_the_intent_on_says_it_is_unused(
@@ -664,7 +664,7 @@ class TestDoctorLiveConnection:
             live={"connected": True, "connect_error": ""},
         )
 
-        assert "connection:  OK:      connected" in out
+        assert "connection:  ✅ connected" in out
         assert issues == []
 
     def test_connect_error_is_shown_with_the_close_code_fixes(self, monkeypatch, capsys) -> None:
@@ -676,7 +676,7 @@ class TestDoctorLiveConnection:
             live={"connected": False, "connect_error": "gateway close 4014"},
         )
 
-        assert "connection:  Error:   not connected" in out
+        assert "connection:  ❌ not connected" in out
         assert "gateway close 4014" in out
         assert "4004 = reset the bot" in out
         assert "discord: channel not connected" in issues
@@ -702,7 +702,7 @@ class TestDoctorLiveConnection:
             live={"connected": False, "connect_error": ""},
         )
 
-        assert "connection:  Warning:" in out
+        assert "connection:  ⚠️" in out
         assert "kirocrew" in out and "restart" in out
         assert issues == []
 
@@ -715,7 +715,7 @@ class TestDoctorLiveConnection:
             live=None,
         )
 
-        assert "connection:  Note:    live state unavailable" in out
+        assert "connection:  ⏹ live state unavailable" in out
         assert issues == []
 
 
@@ -836,6 +836,6 @@ class TestDoctorInstallUrl:
             grants=intent_probe.IntentGrants(error="TimeoutError"),
         )
 
-        assert "install URL: Skipped: needs the app id" in out
+        assert "install URL: ⏭  needs the app id" in out
         assert "discord.com/oauth2/authorize" not in out
         assert issues == []

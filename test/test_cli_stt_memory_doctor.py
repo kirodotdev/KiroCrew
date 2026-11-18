@@ -67,7 +67,7 @@ class TestDoctorStaleProjectDir:
                 _doctor()
         out = capsys.readouterr().out
         assert "stale" in out
-        assert "source dir:  Warning: not set" not in out  # should NOT show fallback message
+        assert "source dir:  ⚠️  not set" not in out  # should NOT show fallback message
 
     def test_an_unreadable_project_dir_file_is_a_row_not_a_traceback(self, tmp_path, capsys):
         from kiro_crew.doctor_checks import install
@@ -297,13 +297,11 @@ class TestDoctorStt:
         out, code = self._report(tmp_path, capsys)
 
         section = self._stt_section(out)
-        assert "provider:    OK:      local" in section
-        assert (
-            "engine:      OK:      local recogniser loadable (whisper.cpp, in-process)" in section
-        )
+        assert "provider:    ✅ local" in section
+        assert "engine:      ✅ local recogniser loadable (whisper.cpp, in-process)" in section
         expected = _doc.stt.models_dir() / "ggml-small.bin"
-        assert f"model:       OK:      small at {expected}" in section
-        assert "ffmpeg:      OK:      available" in section
+        assert f"model:       ✅ small at {expected}" in section
+        assert "ffmpeg:      ✅ available" in section
         assert code == 0
 
     def test_doctor_stt_local_model_not_downloaded_is_a_note(self, tmp_path, capsys, monkeypatch):
@@ -323,7 +321,7 @@ class TestDoctorStt:
         megabytes = _doc.stt.resolve_model("base").size_bytes // 1_000_000
         section = self._stt_section(out)
         assert (
-            f"model:       Note:    base not downloaded yet "
+            f"model:       ⏹ base not downloaded yet "
             f"({megabytes} MB, fetched on first use)" in section
         )
         assert code == 0
@@ -349,10 +347,10 @@ class TestDoctorStt:
         out, code = self._report(tmp_path, capsys, ffmpeg=False)
 
         section = self._stt_section(out)
-        assert "engine:      Warning: needs the voice extra" in section
-        assert "ffmpeg:      Warning: not found" in section
+        assert "engine:      ⚠️  needs the voice extra" in section
+        assert "ffmpeg:      ⚠️  not found" in section
         assert _doc._FFMPEG_LINUX_HINT in section
-        assert "Error:" not in section
+        assert "❌" not in section
         assert "Fix these issues" not in out
         assert code == 0
 
@@ -373,8 +371,8 @@ class TestDoctorStt:
 
         out, code = self._report(tmp_path, capsys)
 
-        assert "engine:      Error:   recogniser failed to import" in out
-        assert "speech recogniser (stt_import_failed)" in out.split("Fix these issues: ", 1)[1]
+        assert "engine:      ❌ recogniser failed to import" in out
+        assert "speech recogniser (stt_import_failed)" in out.split("❌ Fix these issues: ", 1)[1]
         assert code == 1
 
     def test_doctor_stt_desktop_release_missing_engine_is_a_hard_issue(
@@ -397,8 +395,8 @@ class TestDoctorStt:
 
         out, code = self._report(tmp_path, capsys)
 
-        assert "engine:      Error:   needs the voice extra" in out
-        assert "speech recogniser (stt_extra_missing)" in out.split("Fix these issues: ", 1)[1]
+        assert "engine:      ❌ needs the voice extra" in out
+        assert "speech recogniser (stt_extra_missing)" in out.split("❌ Fix these issues: ", 1)[1]
         assert code == 1
 
     def test_doctor_stt_disabled(self, tmp_path, capsys, monkeypatch):
@@ -409,12 +407,12 @@ class TestDoctorStt:
         out, code = self._report(tmp_path, capsys, ffmpeg=False)
 
         section = self._stt_section(out)
-        assert "status:      Note:    disabled" in section
+        assert "status:      ⏹ disabled" in section
         # Wired to the constant pinned against the dashboard's own labels.
         from kiro_crew.doctor_checks import features
 
         assert f"enable from dashboard → {features._STT_SETTINGS_PATH}" in section
-        assert "ffmpeg:      Skipped: not installed (not needed)" in section
+        assert "ffmpeg:      ⏭  not installed (not needed)" in section
         assert "engine:" not in section
         assert "model:" not in section
         # A prerequisite nothing needs cannot fail the run.
@@ -443,7 +441,7 @@ class TestDoctorStt:
         )
 
         # A source install brings no ffmpeg, so the gap is a warning with the fix.
-        assert "ffmpeg:      Warning: not found" in out
+        assert "ffmpeg:      ⚠️  not found" in out
         # The wiring assertion: doctor must print the module constant the
         # resolvable-hint tests hold against the resolver's candidate list, so
         # nobody can inline a literal back into the _os_fix_hint call.
@@ -478,8 +476,8 @@ class TestDoctorStt:
         section = self._stt_section(out)
         assert "reinstall Kiro Crew (the bundled audio decoder is missing)" in section
         # The release ships the decoder, so its absence fails the run on macOS/Linux.
-        assert "ffmpeg:      Error:   not found" in section
-        assert "ffmpeg" in out.split("Fix these issues: ", 1)[1]
+        assert "ffmpeg:      ❌ not found" in section
+        assert "ffmpeg" in out.split("❌ Fix these issues: ", 1)[1]
         assert code == 1
         assert "brew install ffmpeg" not in section
         assert "winget install" not in section
@@ -519,7 +517,7 @@ class TestDoctorStt:
         section, issues = self._confined_release_without_its_decoder(
             tmp_path, capsys, monkeypatch, macos=True
         )
-        assert "ffmpeg:      Skipped: not checkable from this shell" in section
+        assert "ffmpeg:      ⏭  not checkable from this shell" in section
         assert "reinstall Kiro Crew" not in section
         assert "ffmpeg" not in issues
 
@@ -530,7 +528,7 @@ class TestDoctorStt:
         section, issues = self._confined_release_without_its_decoder(
             tmp_path, capsys, monkeypatch, macos=False
         )
-        assert "ffmpeg:      Error:   not found" in section
+        assert "ffmpeg:      ❌ not found" in section
         assert "not checkable" not in section
         assert "ffmpeg" in issues
 
@@ -561,7 +559,7 @@ class TestDoctorStt:
         )
 
         section = self._stt_section(out)
-        assert "ffmpeg:      Warning: not found" in section
+        assert "ffmpeg:      ⚠️  not found" in section
         assert "reinstall Kiro Crew" not in section
         assert "Fix: " in section
         # Like a source install, this release never shipped the part, so it is a note.
@@ -573,7 +571,7 @@ class TestDoctorStt:
         configuration does not have."""
         self._stt(monkeypatch, provider="transcribe", transcribe_region="us-west-2")
         # boto3 and amazon-transcribe are the OPTIONAL 'voice' extra and are not
-        # ambiently importable in a clean env, so the OK: arm has to be faked or the
+        # ambiently importable in a clean env, so the ✅ arm has to be faked or the
         # assertion below depends on what the host happens to have installed.
         out, code = self._report(
             tmp_path,
@@ -586,9 +584,9 @@ class TestDoctorStt:
         )
 
         section = self._stt_section(out)
-        assert "provider:    OK:      transcribe" in section
-        assert "transcribe:  OK:" in section
-        assert "boto3:       OK:" in section
+        assert "provider:    ✅ transcribe" in section
+        assert "transcribe:  ✅" in section
+        assert "boto3:       ✅" in section
         assert "engine:" not in section
         assert "model:" not in section
         assert code == 0
@@ -602,7 +600,7 @@ class TestDoctorStt:
         # raise for a package that is already loaded at test time.
         out, code = self._report(tmp_path, capsys, modules={"amazon_transcribe.client": None})
 
-        assert "transcribe:  Note:    optional cloud STT not installed" in out
+        assert "transcribe:  ⏹ optional cloud STT not installed" in out
         # The cloud dependencies by name: `pip install kirocrew[voice]` resolves
         # nowhere (this project is on no index), and it would also drag in the
         # local recogniser this provider does not use.
@@ -625,7 +623,7 @@ class TestDoctorStt:
             },
         )
 
-        assert "boto3:       Note:    optional AWS SDK not installed" in out
+        assert "boto3:       ⏹ optional AWS SDK not installed" in out
         # The cloud dependencies by name: `pip install kirocrew[voice]` resolves
         # nowhere (this project is on no index), and it would also drag in the
         # local recogniser this provider does not use.
@@ -653,7 +651,7 @@ class TestDoctorStt:
         out, code = self._report(tmp_path, capsys)
 
         section = self._stt_section(out)
-        assert "apple:       Error:   Apple on-device speech is macOS only" in section
+        assert "apple:       ❌ Apple on-device speech is macOS only" in section
         # The local provider's rows must not appear for a host capability.
         assert "engine:" not in section
         assert "apple speech (stt_apple_unsupported)" in out
@@ -667,7 +665,7 @@ class TestDoctorStt:
 
         out, code = self._report(tmp_path, capsys)
 
-        assert "apple:       OK:      on-device SpeechAnalyzer available" in out
+        assert "apple:       ✅ on-device SpeechAnalyzer available" in out
         assert code == 0
 
 
@@ -735,15 +733,15 @@ class TestDoctorEmbeddings:
         """Vendored runtime loads but no model file -> runtime OK, model pending."""
         self._run_doctor(tmp_path, monkeypatch, runtime_ok=True, model_present=False)
         out = capsys.readouterr().out
-        assert "runtime:     OK:      vendored llama-cpp-python importable" in out
-        assert "model:       Note:    not downloaded yet" in out
-        assert "embeddings:  OK:      always-on" in out
+        assert "runtime:     ✅ vendored llama-cpp-python importable" in out
+        assert "model:       ⏹ not downloaded yet" in out
+        assert "embeddings:  ✅ always-on" in out
 
     def test_doctor_reports_runtime_failure(self, tmp_path, capsys, monkeypatch):
         """Runtime import failing on a SUPPORTED platform is surfaced as an issue."""
         self._run_doctor(tmp_path, monkeypatch, runtime_ok=False, model_present=False)
         out = capsys.readouterr().out
-        assert "runtime:     Error:   vendored runtime failed to load" in out
+        assert "runtime:     ❌ vendored runtime failed to load" in out
         # A COMPLETE payload that still fails to load must not be blamed on
         # packaging — that would send the user reinstalling for nothing.
         assert "incomplete" not in out
@@ -843,7 +841,7 @@ class TestDoctorEmbeddings:
         )
         out = capsys.readouterr().out
 
-        assert "lib path:    Note:    LLAMA_CPP_LIB_PATH=(empty)" in out
+        assert "lib path:    ⏹ LLAMA_CPP_LIB_PATH=(empty)" in out
         assert "inherited from another Kiro Crew process" not in out
         if value_source == "startup-record":
             assert "was empty and removed at startup; treated as unset." in out
@@ -863,14 +861,14 @@ class TestDoctorEmbeddings:
             platform_supported=False,
         )
         out = capsys.readouterr().out
-        assert "runtime:     Note:    unsupported platform" in out
+        assert "runtime:     ⏹ unsupported platform" in out
         assert "embedding runtime" not in out
 
     def test_doctor_reports_model_present(self, tmp_path, capsys, monkeypatch):
         """Model file present -> reported with its path."""
         self._run_doctor(tmp_path, monkeypatch, runtime_ok=True, model_present=True)
         out = capsys.readouterr().out
-        assert "model:       OK:" in out
+        assert "model:       ✅" in out
 
     def test_doctor_probes_model_url_when_model_absent(self, tmp_path, capsys, monkeypatch):
         """Fork-added: with the model absent, doctor probes the resolved model URL."""
@@ -907,7 +905,7 @@ class TestDoctorEmbeddings:
                 _doctor()
         out = capsys.readouterr().out
         assert "https://mirror.example/m.gguf" in probed
-        assert "model url:   OK:      reachable" in out
+        assert "model url:   ✅ reachable" in out
 
     def test_doctor_reports_unreachable_model_url(self, tmp_path, capsys, monkeypatch):
         """Fork-added: an unreachable model URL is flagged with a fix hint."""
@@ -930,7 +928,7 @@ class TestDoctorEmbeddings:
             with contextlib.suppress(SystemExit):
                 _doctor()
         out = capsys.readouterr().out
-        assert "model url:   Error:   unreachable" in out
+        assert "model url:   ❌ unreachable" in out
         assert "Check network connectivity" in out
 
 
@@ -952,7 +950,7 @@ class TestModelUrlUnreachableCause:
         err = urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
         out = self._probe(monkeypatch, capsys, "https://mirror.example/m.gguf", err)
         assert (
-            "Error:   unreachable (the host name could not be resolved) https://mirror.example/m.gguf"
+            "❌ unreachable (the host name could not be resolved) https://mirror.example/m.gguf"
             in out
         )
         assert "Errno" not in out
@@ -960,13 +958,13 @@ class TestModelUrlUnreachableCause:
     def test_refused_connection_names_the_cause(self, monkeypatch, capsys):
         err = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
         out = self._probe(monkeypatch, capsys, "https://mirror.example/m.gguf", err)
-        assert "Error:   unreachable (connection refused)" in out
+        assert "❌ unreachable (connection refused)" in out
 
     def test_other_failures_keep_their_text(self, monkeypatch, capsys):
         out = self._probe(
             monkeypatch, capsys, "https://mirror.example/m.gguf", OSError("disk on fire")
         )
-        assert "Error:   unreachable (disk on fire)" in out
+        assert "❌ unreachable (disk on fire)" in out
 
     @pytest.mark.parametrize(
         "url",
@@ -983,7 +981,7 @@ class TestModelUrlUnreachableCause:
             monkeypatch, capsys, url, ValueError("nonnumeric port: 'hunter2@x' hunter2")
         )
         assert "hunter2" not in out
-        assert "Error:   unreachable (the model url could not be opened)" in out
+        assert "❌ unreachable (the model url could not be opened)" in out
 
     def test_a_real_urllib_error_for_a_colon_password_is_not_echoed(self, monkeypatch, capsys):
         import kiro_crew.cli_doctor as doc
@@ -993,9 +991,9 @@ class TestModelUrlUnreachableCause:
         doc._doctor_model_url_reachable([])
         out = capsys.readouterr().out
         assert "hunter2" not in out
-        assert "Error:   unreachable (the model url could not be opened)" in out
+        assert "❌ unreachable (the model url could not be opened)" in out
 
     def test_a_secret_bearing_url_still_names_a_known_cause(self, monkeypatch, capsys):
         err = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
         out = self._probe(monkeypatch, capsys, "https://user:pw@mirror.example/m.gguf", err)
-        assert "Error:   unreachable (connection refused)" in out
+        assert "❌ unreachable (connection refused)" in out

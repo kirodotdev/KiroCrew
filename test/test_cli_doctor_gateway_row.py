@@ -42,7 +42,7 @@ class TestGatewayRowBusyVsDown:
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
         out = capsys.readouterr().out
-        assert "gateway:     Pending: busy (up but did not answer)" in out
+        assert "gateway:     ⏳ busy (up but did not answer)" in out
         assert "not running" not in out
         assert issues == []
 
@@ -58,7 +58,7 @@ class TestGatewayRowBusyVsDown:
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
         out = capsys.readouterr().out
-        assert "gateway:     Note:    not running" in out
+        assert "gateway:     ⏹  not running" in out
         assert "busy" not in out
 
     def test_connect_phase_timeout_reads_not_running(
@@ -74,7 +74,7 @@ class TestGatewayRowBusyVsDown:
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
         out = capsys.readouterr().out
-        assert "gateway:     Note:    not running" in out
+        assert "gateway:     ⏹  not running" in out
         assert "busy" not in out
 
 
@@ -131,8 +131,8 @@ class TestRunningVersionRow:
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
         out = capsys.readouterr().out
-        assert "gateway:     OK:      running (token auth enabled)" in out
-        assert "running:     OK:      1.2.3 (same as on disk)" in out
+        assert "gateway:     ✅ running (token auth enabled)" in out
+        assert "running:     ✅ 1.2.3 (same as on disk)" in out
         assert "http://127.0.0.1:5476/api/health" in probed
         assert issues == []
 
@@ -144,7 +144,7 @@ class TestRunningVersionRow:
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
         out = capsys.readouterr().out
-        assert "running:     Warning: 1.2.3, on disk 1.2.4 (restart needed)" in out
+        assert "running:     ⚠️  1.2.3, on disk 1.2.4 (restart needed)" in out
         assert "Fix: `kirocrew restart`" in out
         assert issues == ["gateway restart needed (running version differs from on-disk)"]
 
@@ -170,7 +170,7 @@ class TestRunningVersionRow:
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
         out = capsys.readouterr().out
-        assert "running:     Warning: gateway version unknown (on disk 1.2.3)" in out
+        assert "running:     ⚠️  gateway version unknown (on disk 1.2.3)" in out
         assert issues == []
 
     def test_not_running_prints_no_version_row(

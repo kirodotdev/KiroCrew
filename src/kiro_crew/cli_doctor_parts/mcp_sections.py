@@ -69,7 +69,7 @@ def _spec_gate_closed(name: str) -> bool:
     unreadable keystone is indistinguishable from policy-closed through the
     boolean, by the gate's own design. That answer is still the
     emission-CONSISTENT one to report: in that state the entry genuinely is
-    omitted from every emitted spec, so the Note: line describes what the system
+    omitted from every emitted spec, so the ℹ️ line describes what the system
     actually does, even when the underlying cause is a broken enable-state
     read rather than a decision.
 
@@ -137,7 +137,7 @@ def _doctor_mcp_tools(
         # every .get() below would raise. Doctor exists to diagnose a broken
         # config, not die on one — treat it like the unparseable case, but say
         # what is actually wrong so the missing-server lines below make sense.
-        print("  Error:   agent spec is not a JSON object — re-run `kirocrew setup`")
+        print("  ❌ agent spec is not a JSON object — re-run `kirocrew setup`")
         agent_data = {}
 
     tools = agent_data.get("tools", [])
@@ -164,7 +164,7 @@ def _doctor_mcp_tools(
                     # defines, so kiro-cli has nothing to launch. Report it —
                     # repairing it either way would decide a grant for the user.
                     print(
-                        f"  {ref}: Warning: referenced in tools but absent from mcpServers "
+                        f"  {ref}: ⚠️  referenced in tools but absent from mcpServers "
                         "— add the server entry, or drop the ref"
                     )
                 continue
@@ -185,11 +185,11 @@ def _doctor_mcp_tools(
                 # auto-approve anything — the stale-ENTRY branch below is the
                 # one window where a grant is live, and the revoke runs there.
                 print(
-                    f"  {ref}: Note:    gated off on this host (feature disabled or "
+                    f"  {ref}: ℹ️  gated off on this host (feature disabled or "
                     "no driver for this platform) — absent from mcpServers by design"
                 )
                 continue
-            print(f"  {ref}: Error:   missing from mcpServers (re-run `kirocrew setup`)")
+            print(f"  {ref}: ❌ missing from mcpServers (re-run `kirocrew setup`)")
             issues.append(f"{ref} config")
             continue
         if not isinstance(mcps.get(name), dict):
@@ -198,7 +198,7 @@ def _doctor_mcp_tools(
             # diagnose a broken config rather than die on one. An opt-in name is
             # the one a human types, so say what is wrong and move on; a
             # malformed ALWAYS-ON entry is a broken install and counts as an issue.
-            print(f"  {ref}: Error:   malformed entry in mcpServers (expected an object)")
+            print(f"  {ref}: ❌ malformed entry in mcpServers (expected an object)")
             if name not in _OPT_IN_MCPS:
                 issues.append(f"{ref} config")
             continue
@@ -212,7 +212,7 @@ def _doctor_mcp_tools(
             # the entry is live in this spec until the retraction, so an
             # auto-approve exemption would be real for exactly that window.
             print(
-                f"  {ref}: Note:    gated off on this host (feature disabled or no "
+                f"  {ref}: ℹ️  gated off on this host (feature disabled or no "
                 "driver for this platform) — stale mcpServers entry is "
                 "retracted on the next `kirocrew setup` or gateway start"
             )
@@ -230,7 +230,7 @@ def _doctor_mcp_tools(
             # adding an issue: a deliberately staged entry is a legitimate state,
             # and doctor must not mount it to make itself green.
             print(
-                f"  {ref}: Warning: defined in mcpServers but not referenced in tools "
+                f"  {ref}: ⚠️  defined in mcpServers but not referenced in tools "
                 "— unreachable until the ref is added"
             )
         # `allowedTools` auto-approves, which is the one path that never reaches
@@ -282,7 +282,7 @@ def _doctor_mcp_tools(
             # enabled still prompts on every call — say it once, here, so
             # `kirocrew doctor` explains it.
             source = "hooks.confirm_tools" if by_confirm else "security policy"
-            print(f"  {ref}: Note:    auto-approve withheld by {source} — calls will prompt")
+            print(f"  {ref}: 🔒 auto-approve withheld by {source} — calls will prompt")
         elif ref not in allowed and name not in _NO_BLANKET_ALLOW_MCPS and not gate_closed:
             # Computer use is never blanket-allowed here: see _NO_BLANKET_ALLOW_MCPS.
             # A pre-existing user-made grant is left alone (doctor never REMOVES a
@@ -392,7 +392,7 @@ def _doctor_mcp_tools(
 
         probed = asyncio.run(_probe_all())
     except Exception as exc:
-        print(f"  Warning: probe failed: {exc}")
+        print(f"  ⚠️  probe failed: {exc}")
         return
 
     for server in probed:
@@ -400,10 +400,10 @@ def _doctor_mcp_tools(
         if server.status == "ok":
             count = len(server.tools)
             noun = "tool" if count == 1 else "tools"
-            print(f"  {ref}: OK:      {count} {noun}")
+            print(f"  {ref}: ✅ {count} {noun}")
             continue
         head, _, detail = (server.error or "unknown error").partition("\n")
-        print(f"  {ref}: Error:   {head or 'unknown error'}")
+        print(f"  {ref}: ❌ {head or 'unknown error'}")
         if detail:
             for line in detail.splitlines():
                 print(f"      {line}")
@@ -509,9 +509,9 @@ def _doctor_mcp_governance(
                 "and `kiro-cli whoami` did not say which account this is"
             )
             if declared:
-                print("  Warning: registry mode is declared")
+                print("  ⚠️  registry mode is declared")
             else:
-                print("  Warning: registry markers are present on the spec without the declaration")
+                print("  ⚠️  registry markers are present on the spec without the declaration")
             print(
                 "      run `kiro-cli whoami`. On a Builder ID or social sign-in kiro-cli "
                 "drops these servers; fix:  kirocrew config set agent.mcp_registry_mode false"
@@ -533,11 +533,11 @@ def _doctor_mcp_governance(
         print("  identity: not Identity Center or API key — an admin MCP registry cannot apply")
         if declared:
             print(
-                "  Error:   registry mode is declared, so kiro-cli treats these servers as "
+                "  ❌ registry mode is declared, so kiro-cli treats these servers as "
                 "registry-provided and drops them on an ungoverned account"
             )
         else:
-            print("  Error:   registry markers are present on the spec without the declaration")
+            print("  ❌ registry markers are present on the spec without the declaration")
         print(f"      affected: {', '.join(marked) if marked else names}")
         print("      fix:  kirocrew config set agent.mcp_registry_mode false")
         issues.append("MCP registry mode on non-IDC account")
@@ -547,7 +547,7 @@ def _doctor_mcp_governance(
     if declared:
         print(f"  registry mode: on — {len(marked)}/{len(expected)} managed servers marked")
         if len(marked) < len(expected):
-            print("  Error:   markers missing — re-run `kirocrew setup --agent-only`")
+            print("  ❌ markers missing — re-run `kirocrew setup --agent-only`")
             issues.append("MCP registry markers")
             return
         # Deliberately not a success line. Whether the administrator actually
@@ -563,7 +563,7 @@ def _doctor_mcp_governance(
 
     print("  registry mode: off")
     print(
-        "  Warning: If MCP tools are missing in sessions while probing OK above, your "
+        "  ⚠️  If MCP tools are missing in sessions while probing OK above, your "
         "administrator has configured an MCP Registry URL. In that mode kiro-cli "
         "connects only to servers marked 'type': \"registry\"."
     )

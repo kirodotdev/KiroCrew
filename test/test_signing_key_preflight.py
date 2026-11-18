@@ -809,7 +809,7 @@ class TestDoctorSigningKey:
         issues: list[str] = []
         doctor_access._doctor_signing_key(issues)
         out = capsys.readouterr().out
-        assert "signing key: OK:" in out and str(key) in out
+        assert "signing key: ✅" in out and str(key) in out
         assert issues == []
 
     def test_fresh_home_is_informational_not_a_warning(
@@ -821,7 +821,7 @@ class TestDoctorSigningKey:
         doctor_access._doctor_signing_key(issues)
         out = capsys.readouterr().out
         assert "not created yet" in out
-        assert "Warning:" not in out
+        assert "⚠" not in out
         assert issues == []
 
     def test_short_key_names_the_consequence_and_the_remedy(
@@ -832,7 +832,7 @@ class TestDoctorSigningKey:
         issues: list[str] = []
         doctor_access._doctor_signing_key(issues)
         out = capsys.readouterr().out
-        assert "Warning: signing key" in out
+        assert "⚠ signing key" in out
         assert "refuses to start" in out
         assert (
             len(issues) == 1 and "truncated" in issues[0]
@@ -886,7 +886,7 @@ class TestDoctorSigningKey:
             issues: list[str] = []
             doctor_access._doctor_signing_key(issues)
             out = capsys.readouterr().out
-            assert "OK:" not in out and "cannot open it" in out
+            assert "✅" not in out and "cannot open it" in out
             assert len(issues) == 1 and "cannot be read" in issues[0]
             assert "ephemeral secret" in issues[0] and "ephemeral secret" in out
             assert "refuses" not in issues[0] and "refuses" not in out
@@ -910,7 +910,7 @@ class TestDoctorSigningKey:
         monkeypatch.setattr(ts, "signing_key_health", lambda **kw: ("ok", key))
         issues: list[str] = []
         doctor_access._doctor_signing_key(issues)
-        assert "OK:" in capsys.readouterr().out and issues == []
+        assert "✅" in capsys.readouterr().out and issues == []
 
     def test_open_is_denied_only_for_a_refused_open(self, tmp_path: Path) -> None:
         readable = tmp_path / "readable"
@@ -933,7 +933,7 @@ class TestDoctorSigningKey:
         doctor_access._doctor_signing_key(issues)
         out = capsys.readouterr().out
         assert "masked inside the agent sandbox" in out
-        assert "Warning:" not in out and "-delete" not in out
+        assert "⚠" not in out and "-delete" not in out
         assert issues == []
 
     def test_own_confinement_doctor_masks_a_readable_fallback_key(
@@ -960,7 +960,7 @@ class TestDoctorSigningKey:
         doctor_access._doctor_signing_key(issues)
         out = capsys.readouterr().out
         assert "masked inside the agent sandbox" in out
-        assert "Warning:" not in out and "Delete it by hand" not in out and "rm " not in out
+        assert "⚠" not in out and "Delete it by hand" not in out and "rm " not in out
         assert issues == []
 
     @pytest.mark.skipif(
@@ -993,7 +993,7 @@ class TestDoctorSigningKey:
             doctor_access._doctor_signing_key(issues)
             out = capsys.readouterr().out
             assert "masked inside the agent sandbox" in out
-            assert "Warning:" not in out
+            assert "⚠" not in out
             assert issues == []
         finally:
             key.chmod(0o600)
@@ -1025,7 +1025,7 @@ class TestDoctorSigningKey:
         doctor_access._doctor_signing_key(issues)
         out = capsys.readouterr().out
         assert "masked inside the agent sandbox" not in out
-        assert "Warning: signing key" in out and "refuses to start" in out
+        assert "⚠ signing key" in out and "refuses to start" in out
         assert len(issues) == 1 and "truncated" in issues[0]
 
     def test_other_shapes_are_reported_without_a_remedy_that_could_mislead(
@@ -1036,6 +1036,6 @@ class TestDoctorSigningKey:
         issues: list[str] = []
         doctor_access._doctor_signing_key(issues)
         out = capsys.readouterr().out
-        assert "Warning: signing key" in out
+        assert "⚠ signing key" in out
         assert "not a regular file" in out
         assert "-delete" not in out

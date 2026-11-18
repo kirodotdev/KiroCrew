@@ -112,7 +112,7 @@ def test_doctor_reports_the_system_trust_store(monkeypatch, capsys) -> None:
     monkeypatch.setattr(_ssl_compat, "_TRUSTSTORE_INJECTED", True)
     issues: list[str] = []
     doctor_install._doctor_tls_trust(issues)
-    assert "OK:      macOS system trust store" in capsys.readouterr().out
+    assert "✅ macOS system trust store" in capsys.readouterr().out
     assert issues == []
 
 
@@ -121,7 +121,7 @@ def test_doctor_flags_the_fallback_with_its_reason(monkeypatch, capsys) -> None:
     issues: list[str] = []
     doctor_install._doctor_tls_trust(issues)
     out = capsys.readouterr().out
-    assert "Error:   macOS system trust store not in use" in out
+    assert "❌ macOS system trust store not in use" in out
     assert "RuntimeError: boom" in out
     assert issues == ["tls trust"]
 

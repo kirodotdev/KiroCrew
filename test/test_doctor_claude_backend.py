@@ -91,7 +91,7 @@ def test_an_install_resolved_off_path_is_not_printed_as_none(monkeypatch):
 
     The probe resolves through the spawn's own resolver -- ``CLAUDE_AGENT_ACP_BIN``, a
     vendored ``node_modules``, a ``mise`` shim -- while ``shutil.which`` only sees plain
-    PATH. Interpolating that miss produced "OK: None" for a working install, which reads
+    PATH. Interpolating that miss produced "✅ None" for a working install, which reads
     as a broken probe rather than a resolved one.
     """
     out = _report(monkeypatch, _state(INSTALLED), on_path=False)
@@ -109,7 +109,7 @@ def test_an_installed_adapter_row_names_its_version(monkeypatch):
     """The version is what tells an old adapter apart from a current one."""
     out = _report(monkeypatch, _state(INSTALLED), version="0.93.0")
     assert "/usr/local/bin/claude-agent-acp 0.93.0 (Claude Code installed)" in out
-    assert "Warning:" not in out
+    assert "⚠️" not in out
 
 
 def test_an_adapter_below_the_floor_warns_with_the_update_command(monkeypatch):
@@ -122,7 +122,7 @@ def test_an_adapter_below_the_floor_warns_with_the_update_command(monkeypatch):
 
     issues: list[str] = []
     out = _report(monkeypatch, _state(INSTALLED), version="0.49.0", required=True, issues=issues)
-    assert f"Warning: claude-agent-acp 0.49.0 is older than {claude_adapter_min_version()}" in out
+    assert f"⚠️  claude-agent-acp 0.49.0 is older than {claude_adapter_min_version()}" in out
     assert claude_adapter_install_command() in out
     assert issues == []
 
@@ -131,14 +131,14 @@ def test_an_adapter_at_the_floor_does_not_warn(monkeypatch):
     from kiro_crew.agent_sdk.drivers.acp import claude_adapter_min_version
 
     out = _report(monkeypatch, _state(INSTALLED), version=claude_adapter_min_version())
-    assert "Warning:" not in out
+    assert "⚠️" not in out
 
 
 @pytest.mark.parametrize("version", ["", "not-a-version"])
 def test_an_unreadable_version_neither_shows_nor_warns(monkeypatch, version):
     """Not knowing the version is no evidence that it is old."""
     out = _report(monkeypatch, _state(INSTALLED), version=version)
-    assert "Warning:" not in out
+    assert "⚠️" not in out
     assert "installed" in out
 
 
@@ -257,7 +257,7 @@ def test_a_selected_harness_missing_a_component_is_an_issue(monkeypatch):
     """
     issues: list[str] = []
     out = _report(monkeypatch, _state(MISSING, **_HALF_INSTALL), required=True, issues=issues)
-    assert "Error:   claude-agent-acp, claude not found (a selected backend runs it)" in out
+    assert "❌ claude-agent-acp, claude not found (a selected backend runs it)" in out
     assert "optional agent backend" not in out
     assert "npm i -g @agentclientprotocol/claude-agent-acp" in out
     assert issues == ["claude-acp: claude-agent-acp, claude not found"]

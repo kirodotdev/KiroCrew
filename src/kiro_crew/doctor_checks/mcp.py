@@ -45,7 +45,7 @@ def _doctor_unresolved_mcp_refs() -> None:
     ``has_mirror`` tells the two cases apart. kiro-cli resolves its refs against the
     spec it is handed, so a healthy install prints a clean row there. A mirror leaves
     Crew's own identity-bound servers out on purpose (``mirror_withheld_crew_refs``),
-    so those refs get a Note: "withholds by design" row, never a dropped ref's Warning:.
+    so those refs get a ⏹ "withholds by design" row, never a dropped ref's ⚠.
     """
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_PI
     from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs, mirror_withheld_crew_refs
@@ -57,7 +57,7 @@ def _doctor_unresolved_mcp_refs() -> None:
         # Triage must survive an unreadable spec or registry; the rows are advisory.
         return
     if not spec_found:
-        print("  mcp tool refs: Note:    no default agent spec on disk yet")
+        print("  mcp tool refs: \u23f9 no default agent spec on disk yet")
         return
 
     explained = False
@@ -67,7 +67,7 @@ def _doctor_unresolved_mcp_refs() -> None:
         if withheld:
             unresolved = [ref for ref in unresolved if ref not in withheld]
             shown = ", ".join(render._safe_display(ref) for ref in withheld)
-            print(f"  mcp tool refs: Note:    {label} withholds by design: {shown}")
+            print(f"  mcp tool refs: \u23f9 {label} withholds by design: {shown}")
             if not explained:
                 # Once, not per backend: the reason is the same on every such mirror.
                 explained = True
@@ -79,7 +79,7 @@ def _doctor_unresolved_mcp_refs() -> None:
                 )
         if not unresolved:
             if not withheld:
-                print(f"  mcp tool refs: OK:      {label} \u2014 every @server ref resolves")
+                print(f"  mcp tool refs: \u2705 {label} \u2014 every @server ref resolves")
             continue
         # Read off a hand-editable spec a cloned repo or an installed app can
         # author, so it can carry OSC/ANSI sequences that spoof the lines around
@@ -98,7 +98,7 @@ def _doctor_unresolved_mcp_refs() -> None:
             )
             continue
         if not has_mirror:
-            print(f"  mcp tool refs: Note:    {label} has no mirror; unprojected: {refs}")
+            print(f"  mcp tool refs: \u23f9 {label} has no mirror; unprojected: {refs}")
             # Same verdict as the runtime line (acp/mcp_ref_guard.py): the harness
             # may serve a listed ref from its own configuration, so never say "absent".
             render._print_wrapped(
@@ -114,7 +114,7 @@ def _doctor_unresolved_mcp_refs() -> None:
                 "projects elsewhere reads as unprojected here."
             )
             continue
-        print(f"  mcp tool refs: Warning: {label} projects a spec that still misses: {refs}")
+        print(f"  mcp tool refs: \u26a0 {label} projects a spec that still misses: {refs}")
         render._print_wrapped(
             "This backend HAS a mirror and its projection dropped these refs "
             "anyway -- a registry-marked entry, an entry with no usable "
@@ -200,13 +200,13 @@ def _doctor_authored_agent_mcp_refs(cfg: KiroCrewConfig) -> None:
                 continue
             refs = ", ".join(render._safe_display(ref) for ref in unresolved)
             print(
-                f"  mcp tool refs: Warning: agent {render._safe_display(name)} on {label}: "
+                f"  mcp tool refs: \u26a0 agent {render._safe_display(name)} on {label}: "
                 f"Kiro Crew's projection delivers none of {refs}"
             )
             reported = True
     unchecked = len(names) - _AUTHORED_AGENT_REF_CHECK_CAP
     if unchecked > 0:
-        print(f"  mcp tool refs: Note:    {unchecked} more authored agent(s) not checked")
+        print(f"  mcp tool refs: \u23f9 {unchecked} more authored agent(s) not checked")
     if reported:
         render._print_wrapped(
             "Each listed agent's tools list names these servers, and neither its "
@@ -276,7 +276,7 @@ def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
         return
     channel, tracking = declared.channel, declared.tracking
     label = agents._backend_policy_label(backend)
-    print(f"  mcp projection: Note:    {label} carries none of Kiro Crew's own tools")
+    print(f"  mcp projection: \u23f9 {label} carries none of Kiro Crew's own tools")
     render._print_wrapped(
         "This harness advertises no transport the session MCP array can use, so "
         "Crew's servers are absent by declaration rather than by a "
@@ -429,11 +429,11 @@ def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
     if info is None:
         if probe.outcome == dc.PROBE_ABSENT:
             print(
-                "  mcp gateway daemon: Note:    not running (pooling off, or no session has started one)"
+                "  mcp gateway daemon: ⏹ not running (pooling off, or no session has started one)"
             )
             return
         label, reason = _DAEMON_PROBE_REASONS.get(probe.outcome, ("unverified", probe.outcome))
-        print(f"  mcp gateway daemon: Warning: {label}: {reason} after {probe.elapsed_secs:.1f}s")
+        print(f"  mcp gateway daemon: ⚠ {label}: {reason} after {probe.elapsed_secs:.1f}s")
         return
     mine = code_fingerprint()
     owner = (
@@ -442,14 +442,14 @@ def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
         else f"owner pid {info.owner_pid} {'alive' if info.owner_alive else 'GONE'}"
     )
     if info.fingerprint == mine:
-        print(f"  mcp gateway daemon: OK:      pid {info.pid}, same code as this install ({owner})")
+        print(f"  mcp gateway daemon: ✅ pid {info.pid}, same code as this install ({owner})")
         return
     if info.fingerprint and not same_scheme(info.fingerprint, mine) and info.owner_alive:
         # Git revision vs mtime stamp with a live owner: another install's daemon.
         # Without a live owner this gateway may have adopted it, so it falls
         # through to the issue below, where a restart replaces it.
         print(
-            f"  mcp gateway daemon: Note:    pid {info.pid} belongs to another install "
+            f"  mcp gateway daemon: ⏹ pid {info.pid} belongs to another install "
             f"(runs {info.fingerprint}; this install is {mine}) ({owner})"
         )
         render._print_wrapped(
@@ -462,7 +462,7 @@ def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
         return
     theirs = info.fingerprint or "unknown (pre-fingerprint build)"
     print(
-        f"  mcp gateway daemon: Error:   pid {info.pid} runs code {theirs}; this install is {mine} ({owner})"
+        f"  mcp gateway daemon: ❌ pid {info.pid} runs code {theirs}; this install is {mine} ({owner})"
     )
     render._print_wrapped(
         "The daemon outlived a code change and its pooled MCP servers speak the "
@@ -568,7 +568,7 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
         # check readability first: this row must never call that healthy.
         problem = approvals_store_problem()
         if problem is not None:
-            print(f"  mcp sharing: Warning: cannot read launch approvals: {problem}")
+            print(f"  mcp sharing: ⚠ cannot read launch approvals: {problem}")
             render._print_wrapped(
                 f"{approvals_path()} could not be read, so whether the servers set to "
                 "share are approved is unknown. Every launch it would approve is "
@@ -578,16 +578,14 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
             return
         shares = refused_share_records(asked, refused_servers())
     except Exception as exc:
-        print(f"  mcp sharing: Warning: could not read launch approvals ({type(exc).__name__})")
+        print(f"  mcp sharing: ⚠ could not read launch approvals ({type(exc).__name__})")
         return
     hits = sorted(shares)
     if not hits:
-        print(
-            f"  mcp sharing: OK:      {len(asked)} server(s) set to share, none waiting for approval"
-        )
+        print(f"  mcp sharing: ✅ {len(asked)} server(s) set to share, none waiting for approval")
         return
     rows = ", ".join(f"{name} ({_share_refusal_label(shares[name])})" for name in hits)
-    print(f"  mcp sharing: Warning: not shared, one copy per chat: {rows}")
+    print(f"  mcp sharing: ⚠ not shared, one copy per chat: {rows}")
     render._print_wrapped(
         "Config asks to share these servers, but the gateway refused their launch "
         "until it is approved on the dashboard. Open MCP Servers, the "
@@ -634,7 +632,7 @@ def _doctor_strict_identity(cfg: KiroCrewConfig) -> None:
         routed = set()
     unrouted = [s for s in _STRICT_IDENTITY_SERVERS if s not in routed]
     if not unrouted:
-        print("  strict identity: Note:    routing configured — live session identity not verified")
+        print("  strict identity: ⏹ routing configured — live session identity not verified")
         render._print_wrapped(
             "This checks mcp_gateway.stub_servers, not the running session's "
             "launch command or per-call caller injection. Confirm a strict-identity "
@@ -642,7 +640,7 @@ def _doctor_strict_identity(cfg: KiroCrewConfig) -> None:
         )
         return
     names = ", ".join(unrouted)
-    print(f"  strict identity: Note:    not routed through the gateway: {names}")
+    print(f"  strict identity: ⏹ not routed through the gateway: {names}")
     render._print_wrapped(
         "This is the default and needs no change. Tools that must know which "
         "session is calling (monitor_start, cron_add, session_ledger_*, "

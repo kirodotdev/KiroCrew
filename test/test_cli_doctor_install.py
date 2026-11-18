@@ -38,7 +38,7 @@ class TestPathLauncherOwnership:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert "kirocrew CLI: OK:" in out
+        assert "kirocrew CLI: ✅" in out
         assert "different install" not in out
 
     def test_matching_launcher_prints_the_symlink_resolved_spelling(
@@ -59,7 +59,7 @@ class TestPathLauncherOwnership:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert f"kirocrew CLI: OK:      {os.path.realpath(exe)}" in out
+        assert f"kirocrew CLI: ✅ {os.path.realpath(exe)}" in out
         assert str(via_link) not in out
 
     def test_the_crew_home_forwarder_counts_as_this_install(
@@ -82,7 +82,7 @@ class TestPathLauncherOwnership:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert f"kirocrew CLI: OK:      {os.path.realpath(exe)}" in out
+        assert f"kirocrew CLI: ✅ {os.path.realpath(exe)}" in out
         assert "different install" not in out
 
     def test_divergent_launcher_names_both_paths(self, monkeypatch, tmp_path, capsys) -> None:
@@ -98,7 +98,7 @@ class TestPathLauncherOwnership:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert "Warning: kirocrew CLI on PATH belongs to a different install" in out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
         # Both sides must be named, or the user cannot tell which is which.
         # Compare like with like: the check prints realpath, and on Windows a
         # realpath can differ in form (short vs long name, case) from str(path).
@@ -113,8 +113,8 @@ class TestPathLauncherOwnership:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert "Note:    not on PATH" in out
-        assert "Warning:" not in out
+        assert "⏹ not on PATH" in out
+        assert "⚠" not in out
 
     def test_unresolvable_install_does_not_cry_wolf(self, monkeypatch, tmp_path, capsys) -> None:
         """A bare "kirocrew" sentinel is not a path, so there is nothing to
@@ -128,7 +128,7 @@ class TestPathLauncherOwnership:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert "kirocrew CLI: OK:" in out
+        assert "kirocrew CLI: ✅" in out
 
 
 class TestToolboxPathLauncher:
@@ -183,7 +183,7 @@ class TestToolboxPathLauncher:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert f"kirocrew CLI: OK:      {dispatcher} (Toolbox launcher, same version)" in out
+        assert f"kirocrew CLI: ✅ {dispatcher} (Toolbox launcher, same version)" in out
         assert "different install" not in out
         # The PATH spelling is run, since the dispatcher picks the tool from argv[0].
         assert calls == [[str(dispatcher), "--version"]]
@@ -216,7 +216,7 @@ class TestToolboxPathLauncher:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert "Warning: kirocrew CLI on PATH belongs to a different install" in out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
         assert self.wrapped == []
 
     @pytest.mark.parametrize(
@@ -238,8 +238,8 @@ class TestToolboxPathLauncher:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert "Warning: kirocrew CLI on PATH belongs to a different install" in out
-        assert "kirocrew CLI: OK:" not in out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
+        assert "kirocrew CLI: ✅" not in out
 
     def test_a_non_toolbox_install_is_not_probed(self, monkeypatch, tmp_path, capsys) -> None:
         from kiro_crew import version_line
@@ -251,7 +251,7 @@ class TestToolboxPathLauncher:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert "Warning: kirocrew CLI on PATH belongs to a different install" in out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
         assert calls == []
 
     def test_a_launcher_that_is_not_the_dispatcher_is_not_probed(
@@ -268,7 +268,7 @@ class TestToolboxPathLauncher:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert "Warning: kirocrew CLI on PATH belongs to a different install" in out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
         assert calls == [] and self.wrapped == []
 
 
@@ -331,7 +331,7 @@ class TestWindowsToolboxPathLauncher:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert f"kirocrew CLI: OK:      {launcher} (Toolbox launcher, same version)" in out
+        assert f"kirocrew CLI: ✅ {launcher} (Toolbox launcher, same version)" in out
         assert "different install" not in out
         assert self.calls == [[str(launcher), "--version"]]
         assert env.is_toolbox_install() is True
@@ -344,8 +344,8 @@ class TestWindowsToolboxPathLauncher:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert "Warning: kirocrew CLI on PATH belongs to a different install" in out
-        assert "kirocrew CLI: OK:" not in out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
+        assert "kirocrew CLI: ✅" not in out
 
     def test_a_kirocrew_exe_outside_the_toolbox_bin_is_not_probed(
         self, monkeypatch, tmp_path, capsys
@@ -361,7 +361,7 @@ class TestWindowsToolboxPathLauncher:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert "Warning: kirocrew CLI on PATH belongs to a different install" in out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
         assert self.calls == []
 
     def test_an_install_outside_the_toolbox_root_is_not_probed(
@@ -379,7 +379,7 @@ class TestWindowsToolboxPathLauncher:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert "Warning: kirocrew CLI on PATH belongs to a different install" in out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
         assert self.calls == []
         assert env.is_toolbox_install() is False
 
@@ -393,7 +393,7 @@ class TestWindowsToolboxPathLauncher:
         cli_doctor._doctor_path_launcher()
 
         out = capsys.readouterr().out
-        assert "Warning: kirocrew CLI on PATH belongs to a different install" in out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
         assert self.calls == []
         assert env.is_toolbox_install() is False
 
@@ -432,8 +432,8 @@ class TestSourceCheckout:
         )
         cli_doctor._doctor_source_checkout(self._repo(tmp_path))
         out = capsys.readouterr().out
-        assert "OK:      main (up to date" in out
-        assert "Warning:" not in out
+        assert "✅ main (up to date" in out
+        assert "⚠️" not in out
 
     def test_on_default_behind_warns_with_count(self, monkeypatch, tmp_path, capsys) -> None:
         monkeypatch.setattr(
@@ -449,7 +449,7 @@ class TestSourceCheckout:
         )
         cli_doctor._doctor_source_checkout(self._repo(tmp_path))
         out = capsys.readouterr().out
-        assert "Warning:" in out
+        assert "⚠️" in out
         assert "42 commit(s) behind" in out
         assert "update + restart" in out
 
@@ -470,7 +470,7 @@ class TestSourceCheckout:
         )
         cli_doctor._doctor_source_checkout(self._repo(tmp_path))
         out = capsys.readouterr().out
-        assert "Warning:" in out
+        assert "⚠️" in out
         assert "fix/some-feature" in out
         assert "798 commit(s) behind origin/main" in out
         assert "NOT active" in out
@@ -525,7 +525,7 @@ class TestSourceCheckout:
         )
         cli_doctor._doctor_source_checkout(self._repo(tmp_path))
         out = capsys.readouterr().out
-        assert "OK:" not in out
+        assert "✅" not in out
         assert "could not count commits behind" in out
 
     def test_feature_branch_unknown_distance_still_warns(
@@ -546,7 +546,7 @@ class TestSourceCheckout:
         )
         cli_doctor._doctor_source_checkout(self._repo(tmp_path))
         out = capsys.readouterr().out
-        assert "Warning:" in out
+        assert "⚠️" in out
         assert "on 'fix/some-feature' — not the default branch" in out
         assert "behind" not in out.split("not the default branch")[1].splitlines()[0]
 
@@ -576,8 +576,8 @@ class TestSourceCheckout:
         # handler's guard and stay quiet rather than warning.
         cli_doctor._doctor_source_checkout(tmp_path)
         out = capsys.readouterr().out
-        assert "Note:    not a git checkout" in out
-        assert "Warning:" not in out
+        assert "⏹ not a git checkout" in out
+        assert "⚠️" not in out
 
     def test_git_failure_reports_could_not_check(self, monkeypatch, tmp_path, capsys) -> None:
         monkeypatch.setattr(cli_doctor, "_git_line", self._fake_git({}))

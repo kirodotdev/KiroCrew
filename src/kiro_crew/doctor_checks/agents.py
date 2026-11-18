@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 #: the blocking issue, so these sections say "not checked" and move on instead
 #: of aborting the report -- or double-counting the same issue.
 _MEMBER_NAMES_NOT_CHECKED = (
-    "  Warning: not checked: the platform did not compose, so stored Bot names "
+    "  ⚠️  not checked: the platform did not compose, so stored Bot names "
     "cannot be vetted (see the Platform section above)"
 )
 
@@ -307,7 +307,7 @@ def _doctor_deprecated_agent_specs(cfg: KiroCrewConfig, issues: list[str]) -> No
     print("\nDeprecated Agent Specs")
     for holder, name, replacement in findings:
         print(
-            f"  {holder}:  Warning: names deprecated agent spec "
+            f"  {holder}:  \u26a0\ufe0f  names deprecated agent spec "
             f"'{name}' -- rename it to '{replacement}'"
         )
     print(
@@ -362,7 +362,7 @@ def _doctor_unreadable_allowed_commands(
     # Each value comes from a spec's own text, so it is shown through _safe_display.
     for agent, key, entry, reason in findings:
         print(
-            f"  allowed cmd: Warning: {render._safe_display(agent)} "
+            f"  allowed cmd: ⚠️  {render._safe_display(agent)} "
             f"toolsSettings.{key}.allowedCommands entry {render._safe_display(entry)}: {reason}"
         )
     render._print_wrapped(
@@ -401,13 +401,13 @@ def _doctor_claude_backend(issues: list[str], *, required: bool) -> None:
     except Exception:
         claude_state = None
     if claude_state is None:
-        print("  claude-acp:  Warning: could not check")
+        print("  claude-acp:  ⚠️  could not check")
     elif claude_state.installed == INSTALLED:
         # The probe resolves the adapter through the spawn's own resolver, which honours
         # CLAUDE_AGENT_ACP_BIN, a vendored node_modules and a mise shim -- none of which
         # a plain PATH lookup sees. So `which` is best-effort here and its miss must not
         # print as a location: naming the path only when we actually have one beats
-        # printing "OK: None" for a working install.
+        # printing "✅ None" for a working install.
         #
         # Says "installed", NOT "selectable": this branch reads the INSTALL probe, and
         # whether the deployment may select the backend is a separate answer that
@@ -417,17 +417,17 @@ def _doctor_claude_backend(issues: list[str], *, required: bool) -> None:
         shown = f" {version}" if version else ""
         where = shutil.which(_CLAUDE_ACP_BIN)
         if where:
-            print(f"  claude-acp:  OK:      {where}{shown} (Claude Code installed)")
+            print(f"  claude-acp:  ✅ {where}{shown} (Claude Code installed)")
         else:
-            print(f"  claude-acp:  OK:      resolved off PATH{shown} (Claude Code installed)")
+            print(f"  claude-acp:  ✅ resolved off PATH{shown} (Claude Code installed)")
         _warn_old_claude_adapter(version)
     elif claude_state.installed == MISSING:
         missing = ", ".join(claude_state.missing_components) or "components"
         if required:
-            print(f"  claude-acp:  Error:   {missing} not found (a selected backend runs it)")
+            print(f"  claude-acp:  ❌ {missing} not found (a selected backend runs it)")
             issues.append(f"claude-acp: {missing} not found")
         else:
-            print(f"  claude-acp:  Skipped: {missing} not found (optional agent backend)")
+            print(f"  claude-acp:  ⏭  {missing} not found (optional agent backend)")
         if claude_state.install_command:
             print(f"               {claude_state.install_command}")
     else:
@@ -435,7 +435,7 @@ def _doctor_claude_backend(issues: list[str], *, required: bool) -> None:
         # someone to install what they may already have -- the exact collapse the
         # probe's three-valued verdict exists to prevent, and which the dashboard
         # also refuses to make.
-        print("  claude-acp:  Warning: could not check")
+        print("  claude-acp:  ⚠️  could not check")
 
 
 def _claude_adapter_version() -> str:
@@ -471,7 +471,7 @@ def _warn_old_claude_adapter(version: str) -> None:
         command = claude_adapter_install_command()
     except Exception:
         return
-    print(f"               Warning: claude-agent-acp {version} is older than {floor}; update it:")
+    print(f"               ⚠️  claude-agent-acp {version} is older than {floor}; update it:")
     print(f"               {command}")
 
 
@@ -492,26 +492,26 @@ def _doctor_codex_backend(issues: list[str], *, required: bool) -> None:
     except Exception:
         codex_state = None
     if codex_state is None:
-        print("  codex-acp:   Warning: could not check")
+        print("  codex-acp:   ⚠️  could not check")
     elif codex_state.installed == INSTALLED:
         # The path and the version come from the resolver the spawn uses, never
         # from ``which``: CODEX_ACP_BIN, a vendored node_modules or a mise shim can
         # win over the copy on PATH, and the row must name the adapter that runs.
         where, version = _codex_adapter_install()
         shown = f" {version}" if version else ""
-        print(f"  codex-acp:   OK:      {where or 'path not read'}{shown} (Codex installed)")
+        print(f"  codex-acp:   ✅ {where or 'path not read'}{shown} (Codex installed)")
         _warn_untested_codex_adapter(version)
     elif codex_state.installed == MISSING:
         missing = ", ".join(codex_state.missing_components) or "components"
         if required:
-            print(f"  codex-acp:   Error:   {missing} not found (a selected backend runs it)")
+            print(f"  codex-acp:   ❌ {missing} not found (a selected backend runs it)")
             issues.append(f"codex-acp: {missing} not found")
         else:
-            print(f"  codex-acp:   Skipped: {missing} not found (optional agent backend)")
+            print(f"  codex-acp:   ⏭  {missing} not found (optional agent backend)")
         if codex_state.install_command:
             print(f"               {codex_state.install_command}")
     else:
-        print("  codex-acp:   Warning: could not check")
+        print("  codex-acp:   ⚠️  could not check")
 
 
 def _codex_adapter_install() -> tuple[str, str]:
@@ -541,7 +541,7 @@ def _warn_untested_codex_adapter(version: str) -> None:
     except Exception:
         return
     if notice:
-        print(f"               Warning: {notice}")
+        print(f"               ⚠️  {notice}")
 
 
 def _backend_policy_label(backend: str) -> str:
@@ -645,9 +645,9 @@ def _doctor_agent_auth() -> None:
 
         if separate:
             # No probe, by the rule above. "not checked here" is load-bearing: it
-            # tells the operator this Note: row is an absence of evidence, not a verdict
+            # tells the operator this ➖ is an absence of evidence, not a verdict
             # that the harness is signed out.
-            print(f"  {label.ljust(12)} Note:    {source} (not checked here)")
+            print(f"  {label.ljust(13)}➖ {source} (not checked here)")
             # The ACTION, not the state: nothing was measured on this row, and a
             # line reading "is not signed in" under a "not checked here" would
             # contradict the line above it and train the reader to skip both.
@@ -682,14 +682,14 @@ def _doctor_agent_auth() -> None:
                 # next spawn when the issuer has REJECTED its refresh token, because
                 # ``is_usable`` cannot know that without a network call (see its
                 # docstring) and ``vault_holds_identity`` reads only it. The glyph
-                # column is what an operator scans, so OK: requires a verdict that
+                # column is what an operator scans, so ✅ requires a verdict that
                 # affirms it: a detail line ending "-> usable". A missing detail
                 # (the two reads disagree -- a logout landed between them, or the
                 # describe probe failed) and an unrecognized verdict both degrade
-                # to Warning:, never to a false OK:.
+                # to ⚠️, never to a false ✅.
                 healthy = vault_detail is not None and vault_detail.endswith("-> usable")
-                glyph = "OK:      " if healthy else "Warning: "
-                print(f"  {label.ljust(12)} {glyph}Kiro Crew vault (signed in through Kiro Crew)")
+                glyph = "✅ " if healthy else "⚠️  "
+                print(f"  {label.ljust(13)}{glyph}Kiro Crew vault (signed in through Kiro Crew)")
                 if vault_detail:
                     render._print_wrapped(f"crew vault: {vault_detail}")
                 if backend == kas_backend and kas_bundle_route:
@@ -710,7 +710,7 @@ def _doctor_agent_auth() -> None:
                 # Nothing usable in the vault and no fallback owner: the engine's
                 # first prompt will fail with its own "not signed in". The remedy
                 # names Crew's sign-in alone, never ``kiro-cli login``.
-                print(f"  {label.ljust(12)} Note:    Kiro Crew vault; not signed in")
+                print(f"  {label.ljust(13)}⏹ Kiro Crew vault; not signed in")
                 render._print_wrapped(kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY)
                 if vault_detail:
                     render._print_wrapped(f"crew vault: {vault_detail}")
@@ -730,27 +730,25 @@ def _doctor_agent_auth() -> None:
             # which the next spawn uses (through kiro-cli, or on Kiro Crew's own
             # engine when kiro-cli cannot run).
             if host_signed_in is True:
-                print(f"  {label.ljust(12)} OK:      {source} (KAS through kiro-cli's relay)")
+                print(f"  {label.ljust(13)}✅ {source} (KAS through kiro-cli's relay)")
             else:
                 state = "could not check" if host_signed_in is None else "not signed in"
-                glyph = "Warning: " if host_signed_in is None else "Note:    "
-                print(
-                    f"  {label.ljust(12)} {glyph}{source}; {state} (KAS through kiro-cli's relay)"
-                )
+                glyph = "⚠  " if host_signed_in is None else "⏹ "
+                print(f"  {label.ljust(13)}{glyph}{source}; {state} (KAS through kiro-cli's relay)")
                 render._print_wrapped(for_terminal(remedy))
             if vault_detail:
                 render._print_wrapped(f"crew vault: {vault_detail}")
             continue
         if host_signed_in is True:
-            print(f"  {label.ljust(12)} OK:      {source}")
+            print(f"  {label.ljust(13)}✅ {source}")
         elif host_signed_in is None and not cli_doctor.resolve_kiro_cli():
             # Nothing to ask, so not a failed check: the kiro-cli row above
             # already reports the missing install.
-            print(f"  {label.ljust(12)} Skipped: {source}; kiro-cli not installed")
+            print(f"  {label.ljust(13)}⏭  {source}; kiro-cli not installed")
         elif host_signed_in is None:
-            print(f"  {label.ljust(12)} Warning: {source}; could not check")
+            print(f"  {label.ljust(13)}⚠️  {source}; could not check")
         else:
-            print(f"  {label.ljust(12)} Note:    {source}; not signed in")
+            print(f"  {label.ljust(13)}⏹ {source}; not signed in")
             # The signed-out STATEMENT here, because this row alone has evidence:
             # the host identity store is the one store this core may read.
             # Wrapped, not reflowed: ``textwrap.wrap`` only inserts line breaks, so

@@ -57,8 +57,8 @@ class TestDoctorMcpTools:
         ):
             _doctor_mcp_tools(agent_path, issues)
         out = capsys.readouterr().out
-        assert "@kirocrew-core: OK:      3 tools" in out
-        assert "@kirocrew-cron: OK:      1 tool" in out
+        assert "@kirocrew-core: ✅ 3 tools" in out
+        assert "@kirocrew-cron: ✅ 1 tool" in out
         assert issues == []
 
     def test_failure_shows_error_head_and_indented_stderr(self, tmp_path, capsys):
@@ -89,10 +89,10 @@ class TestDoctorMcpTools:
             _doctor_mcp_tools(agent_path, issues)
         out = capsys.readouterr().out
         # First line of error becomes the head; subsequent lines indent.
-        assert "@kirocrew-core: Error:   no response" in out
+        assert "@kirocrew-core: ❌ no response" in out
         assert "      stderr: Directory isn't within a workspace" in out
         assert "FindupException" in out
-        assert "@kirocrew-cron: OK:      0 tools" in out
+        assert "@kirocrew-cron: ✅ 0 tools" in out
         assert "@kirocrew-core probe" in issues
         # Healthy server must not pollute the issue list.
         assert "@kirocrew-cron probe" not in issues
@@ -113,8 +113,8 @@ class TestDoctorMcpTools:
         with self._mock_probe({}) as probe_mock:
             _doctor_mcp_tools(agent_path, issues)
         out = capsys.readouterr().out
-        assert "@kirocrew-core: Error:   missing from mcpServers" in out
-        assert "@kirocrew-cron: Error:   missing from mcpServers" in out
+        assert "@kirocrew-core: ❌ missing from mcpServers" in out
+        assert "@kirocrew-cron: ❌ missing from mcpServers" in out
         assert "re-run `kirocrew setup`" in out
         assert "@kirocrew-core config" in issues
         assert "@kirocrew-cron config" in issues
@@ -324,7 +324,7 @@ class TestDoctorMcpTools:
         ):
             _doctor_mcp_tools(agent_path, [])
         out = capsys.readouterr().out
-        assert "@kirocrew-core: Note:    auto-approve withheld by hooks.confirm_tools" in out
+        assert "@kirocrew-core: 🔒 auto-approve withheld by hooks.confirm_tools" in out
         assert "security policy" not in out
         resources = [
             c.kwargs.get("resources", "")
@@ -536,8 +536,8 @@ class TestDoctorMcpTools:
 
         out = capsys.readouterr().out
         # Empty config → both managed servers report missing from mcpServers.
-        assert "@kirocrew-core: Error:   missing from mcpServers" in out
-        assert "@kirocrew-cron: Error:   missing from mcpServers" in out
+        assert "@kirocrew-core: ❌ missing from mcpServers" in out
+        assert "@kirocrew-cron: ❌ missing from mcpServers" in out
         # No probe attempted since no server spec survived the parse failure.
         probe_mock.assert_not_called()
 
@@ -562,8 +562,8 @@ class TestDoctorMcpTools:
         # The defect itself is named, not just its downstream symptoms.
         assert "agent spec is not a JSON object" in out
         # Empty config → both managed servers report missing from mcpServers.
-        assert "@kirocrew-core: Error:   missing from mcpServers" in out
-        assert "@kirocrew-cron: Error:   missing from mcpServers" in out
+        assert "@kirocrew-core: ❌ missing from mcpServers" in out
+        assert "@kirocrew-cron: ❌ missing from mcpServers" in out
         # No probe attempted since no server spec survived the coercion.
         probe_mock.assert_not_called()
         # The no-clobber contract: doctor diagnoses the broken spec, it never
@@ -636,9 +636,9 @@ class TestDoctorMcpSpecGate:
         with self._pin_gate(lambda: False), self._mock_probe(probed):
             _doctor_mcp_tools(agent_path, issues)
         out = capsys.readouterr().out
-        assert "@kirocrew-computer: Note:    gated off on this host" in out
+        assert "@kirocrew-computer: ℹ️  gated off on this host" in out
         assert "feature disabled or no driver" in out
-        assert "@kirocrew-computer: Error:" not in out
+        assert "@kirocrew-computer: ❌" not in out
         assert issues == []
         # Nothing mounted, minted, or probed for the gated-off server — and the
         # stale ref emission leaves behind is not reported as "half a grant".
@@ -656,9 +656,7 @@ class TestDoctorMcpSpecGate:
         with self._pin_gate(lambda: True), self._mock_probe([]):
             _doctor_mcp_tools(agent_path, issues)
         out = capsys.readouterr().out
-        assert (
-            "@kirocrew-computer: Error:   missing from mcpServers (re-run `kirocrew setup`)" in out
-        )
+        assert "@kirocrew-computer: ❌ missing from mcpServers (re-run `kirocrew setup`)" in out
         assert "@kirocrew-computer config" in issues
 
     def test_gate_raising_is_treated_as_open(self, tmp_path, capsys):
@@ -679,7 +677,7 @@ class TestDoctorMcpSpecGate:
         with self._pin_gate(explode), self._mock_probe([]):
             _doctor_mcp_tools(agent_path, issues)
         out = capsys.readouterr().out
-        assert "@kirocrew-computer: Error:   missing from mcpServers" in out
+        assert "@kirocrew-computer: ❌ missing from mcpServers" in out
         assert "@kirocrew-computer config" in issues
         assert "gated off" not in out
 
@@ -705,7 +703,7 @@ class TestDoctorMcpSpecGate:
             # and answers False — the exact production shape.
             _doctor_mcp_tools(agent_path, issues)
         out = capsys.readouterr().out
-        assert "@kirocrew-computer: Note:    gated off on this host" in out
+        assert "@kirocrew-computer: ℹ️  gated off on this host" in out
         assert issues == []
 
     def test_gate_closed_stale_entry_is_not_mounted_or_probed(self, tmp_path, capsys):
