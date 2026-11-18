@@ -256,6 +256,7 @@
     "{dispatch_bind}",
     "{dispatch_seed}",
     "{bind_before_seed}",
+    "{send_files}",
     "{resource_wave}",
     "{item_budget}",
     "{own_files}",

@@ -158,6 +158,11 @@ nothing. A bound item with no seed is visible in your own ledger and you can see
 it next cycle; an unbound running worker is neither visible nor recoverable.
 
 """,
+    "send_files": """**Send the file's path, not a description of it.** When the person gives you a
+file or image a worker needs, put its absolute path in the worker's message and
+tell the worker to open it. Never retell it in words instead.
+
+""",
     "resource_wave": """**`resource_status` decides the wave.** Call it before you stand up several
 worker sessions at once. On `ample`, dispatch every ready, independent item.
 On `tight` or `unknown`, dispatch one and queue the rest; on `critical`,
@@ -400,6 +405,7 @@ call at a time, only to bind an existing session. The order is not a preference:
     ("dispatch_bind", _LEDGER_CONDUCTOR_RULES["dispatch_bind"]),
     ("dispatch_seed", _LEDGER_CONDUCTOR_RULES["dispatch_seed"]),
     ("bind_before_seed", _LEDGER_CONDUCTOR_RULES["bind_before_seed"]),
+    ("send_files", _LEDGER_CONDUCTOR_RULES["send_files"]),
     ("resource_wave", _LEDGER_CONDUCTOR_RULES["resource_wave"]),
     ("item_budget", _LEDGER_CONDUCTOR_RULES["item_budget"]),
     ("own_files", _LEDGER_CONDUCTOR_RULES["own_files"]),
