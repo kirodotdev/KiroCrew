@@ -11,7 +11,7 @@ an allowed feature-branch push (``_emit_push_allow_event``, offloaded by
 ``_schedule_push_allow_audit``) and dropped prompt-injection content
 (:func:`audit_injection_dropped`).
 
-The emitters live beside the gate because tests patch ``SecurityEventLog``,
+The emitters live beside the gate because tests patch ``sel`` (this module's own binding),
 ``maintenance_executor``, ``_emit_deny_event``, ``_emit_deny_exception_event`` and
 ``_deny_segment_views`` on ``kiro_crew.security``: the package's ``_EXPORTS`` table
 sends each of those writes here, and every reader of those names resolves them
@@ -32,7 +32,9 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.security import _submodule, logger
-from kiro_crew.sel import SecurityEvent, SecurityEventLog
+
+# Events go through ``sel()``; ``SecurityEventLog`` stays bound because the facade serves it.
+from kiro_crew.sel import SecurityEvent, SecurityEventLog, sel  # noqa: F401
 
 from .redaction_switch import always_scan
 from .shell_commands import sharing_views
@@ -77,8 +79,7 @@ def _emit_push_allow_event(command: str) -> None:
     allow decision (the push already passed the protected-branch gate).
     """
     try:
-        sel = SecurityEventLog()
-        sel.log(
+        sel().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
                 timestamp=datetime.now(tz=timezone.utc).isoformat(),
@@ -1410,7 +1411,6 @@ def _emit_deny_event(
     block stands regardless of audit success).
     """
     try:
-        sel = SecurityEventLog()
         # ``redact_and_truncate``, never a bare slice: it redacts over the FULL text
         # BEFORE cutting, which is the rule that function exists to enforce -- a
         # credential straddling the 200-char boundary would otherwise be cut in half,
@@ -1425,7 +1425,7 @@ def _emit_deny_event(
         }
         if raw_segment and raw_segment != segment:
             metadata["raw_segment"] = _audit_clip(raw_segment)
-        sel.log(
+        sel().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
                 timestamp=datetime.now(tz=timezone.utc).isoformat(),
@@ -1510,8 +1510,7 @@ def _emit_deny_exception_event(
     exists for.  The default keeps the glob path's historical value.
     """
     try:
-        sel = SecurityEventLog()
-        sel.log(
+        sel().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
                 timestamp=datetime.now(tz=timezone.utc).isoformat(),
@@ -1557,7 +1556,7 @@ def audit_injection_dropped(
     cannot break prompt building.
     """
     try:
-        SecurityEventLog().log(
+        sel().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
                 timestamp=datetime.now(tz=timezone.utc).isoformat(),

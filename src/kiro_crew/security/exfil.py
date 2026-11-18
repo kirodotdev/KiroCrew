@@ -1386,4 +1386,5 @@ if TYPE_CHECKING:  # project names it serves from outside its owners, from their
     from kiro_crew.sel import (  # noqa: F401
         SecurityEvent,
         SecurityEventLog,
+        sel,
     )
