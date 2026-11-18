@@ -103,6 +103,7 @@ class TestStreamProgress:
         assert slept == [wizard._PROGRESS_POLL_SECS] * 2
 
     def test_a_quiet_stretch_prints_the_elapsed_time(self, monkeypatch, capsys, slept):
+        monkeypatch.setattr(ui, "_ENABLE_GLYPHS", True)  # a Windows capture gets ASCII
         monkeypatch.setattr(ec2, "list_stack_events", lambda *_a: [])
         monkeypatch.setattr(wizard, "_now", mock.Mock(side_effect=[100, 110, 131, 140]))
         wizard._stream_progress(
@@ -210,6 +211,7 @@ class TestVerifyOperational:
     def _signed_out(self, _floor_monkeypatch):
         _floor_monkeypatch.setattr(login, "is_logged_in", lambda *_a, **_k: False)
         _floor_monkeypatch.setattr(login, "remote_identity_state", lambda *_a, **_k: "absent")
+        _floor_monkeypatch.setattr(ui, "_ENABLE_GLYPHS", True)  # a Windows capture gets ASCII
 
     def test_declining_the_sign_in_prompt_leaves_the_box_unsigned(self, monkeypatch):
         start = mock.Mock()

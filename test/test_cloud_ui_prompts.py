@@ -36,6 +36,7 @@ def _plain_text(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     for name in _COLORS:
         _floor_monkeypatch.setattr(ui, name, "")
     _floor_monkeypatch.setattr(ui, "_ENABLE_COLOR", False)
+    _floor_monkeypatch.setattr(ui, "_ENABLE_GLYPHS", True)
 
 
 def _answers(monkeypatch: pytest.MonkeyPatch, replies: Iterable[str | type[BaseException]]):
@@ -280,6 +281,64 @@ class TestOutput:
         ui.detail("d")
         ui.note("n")
         assert capsys.readouterr().out == "  → i\n  ✓ o\n  ⚠ w\n  ✗ f\n    d\n  n\n"
+
+
+class _Stdout(io.StringIO):
+    def __init__(self, tty: bool, encoding: str) -> None:
+        super().__init__()
+        self._tty = tty
+        self._encoding = encoding
+
+    def isatty(self) -> bool:
+        return self._tty
+
+    @property
+    def encoding(self) -> str:  # type: ignore[override]
+        return self._encoding
+
+
+class TestAsciiFallback:
+    """An unknown reader encoding gets ASCII, never mojibake."""
+
+    @pytest.fixture(autouse=True)
+    def _ascii(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        _floor_monkeypatch.setattr(ui, "_ENABLE_GLYPHS", False)
+
+    def test_steps_and_one_line_helpers_print_ascii(self, capsys) -> None:
+        ui.Steps(1).step("Deploy")
+        ui.info("i")
+        ui.ok("account 123 · us-east-1 · reachable")
+        ui.warn("w — x")
+        ui.fail("f")
+        out = capsys.readouterr().out
+        assert out == (
+            "\n  [1/1] Deploy\n"
+            f"  {'-' * 52}\n"
+            "  -> i\n  ok account 123 - us-east-1 - reachable\n  ! w - x\n  x f\n"
+        )
+        assert out.isascii()
+
+    def test_the_numbered_picker_prints_ascii(self, monkeypatch, capsys) -> None:
+        monkeypatch.setattr(ui, "_supports_cursor_menu", lambda: False)
+        asked = _answers(monkeypatch, [""])
+        assert ui.choose("Size", [("Small", "a · b"), ("Medium", "")], default_index=1) == 1
+        assert capsys.readouterr().out == (
+            "  Size\n    ( ) Small\n       a - b\n    (*) Medium (recommended)\n"
+        )
+        assert all(text.isascii() for text in asked)
+
+    @pytest.mark.parametrize(
+        ("platform", "tty", "encoding", "readable"),
+        [
+            ("win32", True, "utf-8", True),  # an interactive console
+            ("win32", False, "utf-8", False),  # captured by PowerShell
+            ("linux", False, "utf-8", True),  # a CI log
+            ("darwin", False, "UTF8", True),
+            ("linux", False, "ascii", False),
+        ],
+    )
+    def test_glyphs_follow_the_reader(self, platform, tty, encoding, readable) -> None:
+        assert ui._glyphs_readable(_Stdout(tty, encoding), platform) is readable
 
 
 class TestSpinner:
