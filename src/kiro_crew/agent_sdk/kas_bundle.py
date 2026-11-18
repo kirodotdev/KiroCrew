@@ -61,6 +61,7 @@ if TYPE_CHECKING:
         installed_versions,
         kas_engines_root,
         parse_manifest,
+        remove_version,
         sweep_stale_staging,
     )
 
@@ -91,6 +92,7 @@ _OWNED: dict[str, str] = {
         "installed_bundle",
         "installed_versions",
         "kas_engines_root",
+        "remove_version",
         "sweep_stale_staging",
     )
 }

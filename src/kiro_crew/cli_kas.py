@@ -494,7 +494,14 @@ def _remove(args: argparse.Namespace) -> int:
             print("aborted")
             return 1
     try:
-        shutil.rmtree(root)
+        if args.version is None:
+            shutil.rmtree(root)
+        else:
+            # One version goes whole or stays whole; removing every version stays in place.
+            kas_bundle.remove_version(args.version, root=root.parent)
+    except kas_bundle.KasBundleError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     except OSError as exc:
         print(f"Error: could not remove {root}: {exc}", file=sys.stderr)
         return 1
