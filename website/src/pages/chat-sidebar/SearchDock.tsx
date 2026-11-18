@@ -33,6 +33,7 @@ import { openGlobalChatSearch } from '../../components/globalChatSearch/globalCh
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { fmtList } from '../../i18n/format'
 import type { SessionFilterKey } from './types'
+import { pinnedFollowsStatus } from './rows'
 import { SESSION_FILTERS } from './filters'
 import { modelFilterLabel } from './models'
 import { CreatorFilterChip, CreatorFilterSection } from './creatorFilterMenu'
@@ -202,12 +203,19 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
     setToggleSaveFailed, showAllFolders, slotFilter, sortError, sortKey, staleCollapseMs, tagFilterRows, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleFoldersUnreadFirst, foldersUnreadFirst, toggleHideFilter, toggleModelFilter, toggleSaveFailed,
     toggleTagFilter, toggleUnfiledAboveFolders, unfiledAboveFolders, unfiledAboveFoldersError } = shell
+  // The Pinned wording only when pins really follow the other chips; otherwise a plain pause.
+  const pinsFollow = pinnedFollowsStatus({ active: activeFilters, paused: pausedFilters })
+  const pausedSuffix = (key: SessionFilterKey): string => key === 'pinned' && pinsFollow
+    ? i18nT('pages.chatSidebar.pinned_paused_suffix')
+    : i18nT('pages.chatSidebar.filter_paused_suffix')
   const chipPause = (key: Parameters<typeof toggleFilterPaused>[0], filterLabel: string): FilterChipPause => ({
     paused: pausedFilters.has(key),
     onToggle: () => toggleFilterPaused(key),
     pauseLabel: i18nT('pages.chatSidebar.pause_named_filter', { filter: filterLabel }),
-    resumeLabel: i18nT('pages.chatSidebar.resume_named_filter', { filter: filterLabel }),
-    pausedText: i18nT('pages.chatSidebar.filter_paused_suffix'),
+    resumeLabel: key === 'pinned' && pinsFollow
+      ? i18nT('pages.chatSidebar.paused_pinned_chip_title')
+      : i18nT('pages.chatSidebar.resume_named_filter', { filter: filterLabel }),
+    pausedText: pausedSuffix(key),
     pauseHint: i18nT('pages.chatSidebar.filter_chip_pause_hint'),
     resumeHint: i18nT('pages.chatSidebar.filter_chip_resume_hint'),
   })
@@ -460,7 +468,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                       className={canHide ? 'flex-1 min-w-0' : undefined}
                     >
                       {filterDef.icon(active)}
-                      <span className="flex-1 truncate">{filterLabel}{slotCount > 0 ? ` (${slotCount})` : ''}{active && pausedFilters.has(filterDef.key) && <span className="text-muted"> · {i18nT('pages.chatSidebar.filter_paused_suffix')}</span>}</span>
+                      <span className="flex-1 truncate">{filterLabel}{slotCount > 0 ? ` (${slotCount})` : ''}{active && pausedFilters.has(filterDef.key) && <span className="text-muted"> · {pausedSuffix(filterDef.key)}</span>}</span>
                       {active && (pausedFilters.has(filterDef.key) ? <Pause size={14} className="text-muted shrink-0" aria-hidden="true" /> : <Check size={14} className="text-accent shrink-0" />)}
                     </DropdownMenuItem>
                   )
