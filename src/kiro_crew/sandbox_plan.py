@@ -199,6 +199,10 @@ class PlanHost:
     #: spelling: renaming one carries the seal away. Seatbelt gets every one; the namespace
     #: backend only those this uid could rename, since it pins each with a mount.
     readonly_ancestor_guards: tuple[str, ...] = ()
+    #: Seatbelt only: the EXISTING ancestors of each ``extra_hidden_dirs`` entry. A missing
+    #: folder holds nothing a rename could carry away, and a deny on its name would stop
+    #: the child creating it, so the host lists only what exists now.
+    caller_ancestor_guards: tuple[str, ...] = ()
     #: Namespace only: the ``apps/<app>`` folder of each app that declares a credential
     #: mask, taken out of :attr:`readonly_ancestor_guards` and pinned AFTER the masks,
     #: so the masks and ``data/``'s pin stay on the mount an update's rename keeps.
@@ -1391,10 +1395,14 @@ def _seatbelt_plan(
     ssh_dir = os.path.join(home, ".ssh")
     runtime_parents = list(host.voice_runtime_parents)
     # A caller mask is a path rule here, so renaming a directory above it would reach the
-    # masked file under a new name: guard every ancestor the way the runtime parents' are.
-    caller_ancestor_guards = path_ancestor_guards(
-        m.path for m in masks if m.origin == "caller" and not m.cancelled
-    )
+    # masked file under a new name: guard each existing ancestor of a live mask the way the
+    # runtime parents' are.
+    live_caller = [m.path for m in masks if m.origin == "caller" and not m.cancelled]
+    caller_ancestor_guards = [
+        guard
+        for guard in host.caller_ancestor_guards
+        if any(path.startswith(guard.rstrip("/") + "/") for path in live_caller)
+    ]
     ancestor_guards = list(
         dict.fromkeys(
             (
