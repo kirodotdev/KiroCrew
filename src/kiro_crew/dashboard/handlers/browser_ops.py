@@ -38,7 +38,10 @@ the hub's release signal.
 
 The URL gate (public http(s) only, plus the operator's listed loopback origins)
 and the ``capabilities.browse`` governance check run in the shim BEFORE the
-post. The route asks ``capabilities.browse`` again itself, fail-closed (403
+post, and again in :func:`run_browser_op`, the one door every browser op goes
+through (this route and an app's ``PagePort``): the requested address is
+refused there before the browser starts, so a caller inside the gateway cannot
+skip it. The route asks ``capabilities.browse`` again itself, fail-closed (403
 ``policy_denied``, ``handlers/browser_policy.py``), and so does every helper the
 op runs (``HarnessSupervisor.call``), so a deny that lands mid-op ends it with the
 same code. Beyond that it enforces what only the gateway can see: who holds the
@@ -361,7 +364,10 @@ def committed_url_allowed(url: str) -> bool:
         port: int | None = mcp_core._api_port()
     except Exception:  # noqa: BLE001 - unknowable port -> no local target is provably safe
         port = None
-    return url_gate.url_allowed(url, allowed, port)
+    try:
+        return url_gate.url_allowed(url, allowed, port)
+    except ValueError:  # an address the URL parser cannot read is no page to open
+        return False
 
 
 def _site_gate(sites: tuple[str, ...]) -> Any:
@@ -375,13 +381,22 @@ def _site_gate(sites: tuple[str, ...]) -> Any:
 
 def session_app(request: web.Request, key: str) -> str:
     """The app that owns the dashboard slot *key*, or ``""`` (no slot, or a person's)."""
-    state = request.app.get("state") if hasattr(request.app, "get") else None
+    return slot_app(_request_state(request), key)
+
+
+def slot_app(state: Any, key: str) -> str:
+    """:func:`session_app`, read off the dashboard *state* itself."""
     slots = getattr(state, "_slots", None) or {}
     slot = slots.get(key) if isinstance(slots, dict) else None
     return str(getattr(slot, "_app", "") or "")
 
 
 async def session_sites(request: web.Request, key: str, *aliases: str) -> tuple[str, ...]:
+    """:func:`slot_sites` for the dashboard state *request* carries."""
+    return await slot_sites(_request_state(request), key, *aliases)
+
+
+async def slot_sites(state: Any, key: str, *aliases: str) -> tuple[str, ...]:
     """The approved ``browserSites`` of the app that owns slot *key*; empty for any other.
 
     The tool gate approves such a session's ``browser`` calls without a card
@@ -392,7 +407,7 @@ async def session_sites(request: web.Request, key: str, *aliases: str) -> tuple[
     :data:`browser_sites.NO_PAGES`, which admits no page, so a call approved before
     the revoke never runs unconfined.
     """
-    app = session_app(request, key)
+    app = slot_app(state, key)
     sites = await asyncio.to_thread(app_browser_sites, app) if app else ()
     if not sites and browser_sites.session_was_granted(
         key, *(a.removeprefix("dashboard:") for a in aliases)
@@ -469,11 +484,11 @@ def _end_allow_wait(hub: LiveHub, key: str) -> None:
         hub.set_state(key, STATE_ERROR)
 
 
-def _start_denied(request: web.Request, hub: LiveHub, key: str) -> web.Response:
+def _start_denied(request: Any, hub: LiveHub, key: str) -> tuple[dict[str, Any], int]:
     """The op's answer when a deny stopped the browser before it came up."""
     _end_allow_wait(hub, key)
     _audit(request, "denied", DENIED_CODE)
-    return web.json_response({"ok": False, "code": DENIED_CODE, "error": DENIED_TEXT}, status=403)
+    return {"ok": False, "code": DENIED_CODE, "error": DENIED_TEXT}, 403
 
 
 def _open_turn(hub: LiveHub, key: str) -> None:
@@ -626,19 +641,99 @@ async def api_browser_op(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "session_key required", "code": "session_key_required"}, status=400
         )
+    answer, status = await run_browser_op(
+        session_key, op, args, state=_request_state(request), caller=request
+    )
+    if status == 403:
+        # The one answer that is not 200: a browse deny before the op started.
+        return web.json_response(
+            {"ok": False, "code": DENIED_CODE, "error": DENIED_TEXT}, status=403
+        )
+    return web.json_response(answer)
+
+
+class GatewayCaller:
+    """The audit identity of a caller inside the gateway (an app's ``PagePort``).
+
+    :func:`_audit` reads a request's ``user``, ``remote`` and ``path``; this answers
+    the same three, so an SDK op writes the same audit row a Bot op does.
+    """
+
+    remote = ""
+
+    def __init__(self, user: str, path: str = "app.browser") -> None:
+        self._user = user
+        self.path = path
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._user if key == "user" else default
+
+
+def _request_state(request: web.Request) -> Any:
+    return request.app.get("state") if hasattr(request.app, "get") else None
+
+
+#: Refused before the op reaches the browser: the address it asked to open is not
+#: one the navigate gate admits (:func:`committed_url_allowed`).
+URL_BLOCKED_TEXT = (
+    "the browser only opens public http(s) pages, plus the loopback origins the user "
+    "listed under Settings -> Browser -> Local preview origins; this address is refused"
+)
+
+
+async def run_browser_op(
+    session_key: str,
+    op: str,
+    args: dict[str, Any],
+    *,
+    state: Any = None,
+    caller: Any = None,
+) -> tuple[dict[str, Any], int]:
+    """Run one browser op for *session_key* through every gate; ``(answer, http_status)``.
+
+    The one door every browser op goes through: the ``/api/browser/op`` route (the
+    Bot's ``browser`` tool) and an app's ``PagePort`` (``apps/browser_page_port.py``)
+    both call it, so no gate has two copies. In order: the ``capabilities.browse``
+    check for *session_key*; the navigate gate on the address the op asks to open
+    (before the browser starts, so a refused address is never requested); an app
+    slot's approved ``browserSites``; the takeover hold; the gateway-wide
+    :data:`_OP_LOCK`; the second browse check after the lock;
+    the per-session fence shared with takeover; the tab binding; and the per-caller
+    checks of :func:`caller_checked_call` and :class:`_GatedRelay`.
+
+    *session_key* is the caller's runtime session key (``dashboard:<slot>`` for a
+    dashboard slot), which governance binds on. *state* is the dashboard state, read
+    for the slot's owning app. *caller* is the audit identity: the route's request,
+    or a :class:`GatewayCaller`. Answers are the route's own bodies; the status is
+    403 only for a browse deny before the op started, else 200.
+    """
+    # The audit identity every helper below reads (``_audit`` takes a request's shape).
+    request: Any = caller if caller is not None else GatewayCaller("gateway")
+    if op not in harness_ops.OPS or not isinstance(args, dict):
+        return {"error": "unknown op", "code": "bad_op"}, 400
     # The shim asked (and audited) the same row before posting; this is the
     # gateway's own check, which a direct POST cannot skip and which fails closed.
     denied = await browse_refusal(session_key=session_key, audit=False)
     if denied is not None:
         _audit(request, "denied", DENIED_CODE)
-        return denied
+        return {"error": DENIED_TEXT, "code": DENIED_CODE}, denied.status
+    # The shim gates the requested address too, and answers sooner; this copy is the
+    # one an in-gateway caller cannot skip. Without it a request to an internal
+    # address leaves before the landing check (``_refuse_committed_url``) can refuse.
+    _readable, wanted = browser_call_url({"op": op, "args": args})
+    # Off the loop: the gate reads the operator's local-origins setting from disk.
+    if isinstance(wanted, str) and not await asyncio.to_thread(
+        committed_url_allowed, wanted.strip()
+    ):
+        _audit(request, "denied", "url_blocked")
+        return harness_ops.refusal("url_blocked", URL_BLOCKED_TEXT), 200
     hub = get_live_hub()
     key = live_session_key(session_key)
-    sites = await session_sites(request, key, session_key)
+    sites = await slot_sites(state, key, session_key)
     off_site = _off_site_url(op, args, sites) if sites else None
     if off_site is not None:
         _audit(request, "denied", "site_not_allowed")
-        return web.json_response(
+        return (
             harness_ops.refusal(
                 "site_not_allowed",
                 (
@@ -647,9 +742,14 @@ async def api_browser_op(request: web.Request) -> web.Response:
                     else f"{off_site} is not one of the pages this app may browse; "
                     "open one of its approved sites instead"
                 ),
-            )
+            ),
+            200,
         )
-    _open_turn(hub, key)
+    if not isinstance(request, GatewayCaller):
+        # The card's turn is the Bot's: its turn end folds it. An app's op joins a
+        # turn the Bot has open and never opens one, since nothing would end it,
+        # and opening one would wipe what the person said for the Bot.
+        _open_turn(hub, key)
     try:
         supervisor = await _supervisor(hub, key)
     except BrowsingDenied:
@@ -658,17 +758,18 @@ async def api_browser_op(request: web.Request) -> web.Response:
         if await browse_denied_async(session_key, audit=False):
             return _start_denied(request, hub, key)
         _end_allow_wait(hub, key)
-        return web.json_response({"ok": False, "code": "browser_error", "error": str(exc)})
+        return {"ok": False, "code": "browser_error", "error": str(exc)}, 200
     except Exception as exc:  # noqa: BLE001 - the browser plane failed to come up
         logger.warning("browser op: supervisor unavailable: %s", exc)
-        return web.json_response({"ok": False, "code": "browser_error", "error": _safe(exc)})
+        return {"ok": False, "code": "browser_error", "error": _safe(exc)}, 200
     if supervisor is None:
-        return web.json_response(
+        return (
             {
                 "ok": False,
                 "code": "not_installed",
                 "error": "browsing is not set up on this host; install it from Settings -> Browser",
-            }
+            },
+            200,
         )
     ctx = build_context(key, supervisor, hub, caller_key=session_key, sites=sites)
     # The optional decision-model hooks (``browser.step``), keyed by the caller's own
@@ -691,15 +792,17 @@ async def api_browser_op(request: web.Request) -> web.Response:
         # queued behind another chat's slow one is told so, instead of landing after
         # the tool has already reported it failed.
         _audit(request, "error", "browser_busy")
-        return web.json_response(
-            {"ok": False, "code": "browser_busy", "error": "another chat is using the browser"}
-        )
+        return {
+            "ok": False,
+            "code": "browser_busy",
+            "error": "another chat is using the browser",
+        }, 200
     try:
         # The route's first check may be a whole queued op old by now: ask again for
         # the caller before anything reaches the browser, the credential refresh too.
         late = await _denied_after_op(request, session_key)
         if late is not None:
-            return web.json_response(late)
+            return late, 200
         if op in _NAVIGATING_OPS:
             await _refresh_credentials(supervisor)
         # The per-session fence is shared with the person's Take over (LiveHub.claim):
@@ -734,18 +837,19 @@ async def api_browser_op(request: web.Request) -> web.Response:
     if op != "ask":
         hub.record_op(key, op, args, result, mark)
     # A note left for a parked poll that never came back to take it reaches this op.
-    said = hub.take_handback(key)
+    # The note is the person's word to the Bot: an app's op leaves it for the Bot.
+    said = None if isinstance(request, GatewayCaller) else hub.take_handback(key)
     if result.get("ok"):
         answer: dict[str, Any] = {"ok": True, "result": result}
         if said is not None:
             answer["handed_back"] = said
-        return web.json_response(answer)
+        return answer, 200
     if said is not None:
         result = {**result, "handed_back": said}
     if sites == browser_sites.NO_PAGES and result.get("code") == "redirect_refused":
         # A held slot's page was blanked: say why it is held and how it ends.
         result = {**result, "error": SITES_REVOKED_TEXT}
-    return web.json_response(result)
+    return result, 200
 
 
 #: Ops that can load a new page. Before each, the gateway asks the edition's
@@ -775,12 +879,14 @@ _INTERRUPTED = object()
 
 
 def _held(
-    request: web.Request, hub: LiveHub, key: str, op: str, *, interrupted: bool
-) -> web.Response:
+    request: Any, hub: LiveHub, key: str, op: str, *, interrupted: bool
+) -> tuple[dict[str, Any], int]:
     """The person holds the browser: a refusal the shim turns into a parked wait."""
     _audit(request, "allowed")
-    # The shim now polls for the hand-back: a note the person writes goes to it.
-    hub.park(key)
+    if not isinstance(request, GatewayCaller):
+        # The shim now polls for the hand-back: a note the person writes goes to it.
+        # An app's call does not wait for one, so it parks nothing.
+        hub.park(key)
     if interrupted:
         body = harness_ops.refusal(
             "interrupted",
@@ -793,7 +899,7 @@ def _held(
             "the user has taken over the browser; the op runs once they hand it back",
         )
     body["hold"] = True
-    return web.json_response(body)
+    return body, 200
 
 
 async def api_browser_handback(request: web.Request) -> web.Response:
