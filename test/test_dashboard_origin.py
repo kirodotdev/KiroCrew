@@ -559,7 +559,7 @@ class TestRemoteBootLines:
         lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476)
         text = "\n".join(lines)
         # Not the plain local-desktop branch.
-        assert "👻 Dashboard:\n   http://localhost:5476?token=t" not in text
+        assert "Dashboard:\n   http://localhost:5476?token=t" not in text
         # Points at BOTH forwarding paths and the guide.
         assert "AWS-StartPortForwardingSession" in text
         assert "ssh -NL 5476:localhost:5476" in text
@@ -573,7 +573,7 @@ class TestRemoteBootLines:
         self, _mh: object, _ssm: object, _dp: object
     ) -> None:
         lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476)
-        i = next(n for n, ln in enumerate(lines) if ln.startswith("👻 Forward:"))
+        i = next(n for n, ln in enumerate(lines) if ln.startswith("Forward:"))
         assert lines[i + 1] == "           (this machine calls itself box.corp.example)"
 
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
