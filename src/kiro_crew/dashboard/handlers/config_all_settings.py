@@ -72,6 +72,9 @@ READONLY_REASONS: dict[str, str] = {
     "mcp.honour_auto_approve": WHY_SAFETY,
     "mcp.protect_kiro_permission_rules": WHY_SAFETY,
     "hooks.batch_write_guard": WHY_SAFETY,
+    # Off, a git command other than a known read runs under trust, YOLO or a grant
+    # without a card (dashboard/chat_turn/tool_approval.py:_git_write_needing_confirm).
+    "hooks.confirm_git_writes": WHY_SAFETY,
     "skills.project_skills_enabled": WHY_SAFETY,
     "skills.generate_scripts": WHY_SAFETY,
     "skills.approval_required": WHY_SAFETY,

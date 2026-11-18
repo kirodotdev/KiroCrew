@@ -491,7 +491,7 @@ def _blocks(payload: str) -> dict[str, str]:
 #: then edit different lines (testing-conventions.md § Merge-safe ratchets and
 #: counts), and each block's extent stays exact.
 EXPECTED_EXTENTS = {
-    "[CRITICAL RULES": 5057,
+    "[CRITICAL RULES": 5335,
     "[CURRENT DATE]": 48,
     "[CURRENT AGENT]": 196,
     "[WORKSPACE IDENTITY]": 376,

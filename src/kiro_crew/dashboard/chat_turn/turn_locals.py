@@ -169,6 +169,7 @@ class _ChatTurn:
     _escalation: "PoisonedConversationEscalation"
     _failed_write_calls: "set[str]"
     _first_turn_history_assembled: "bool"
+    _git_write_confirm: "str"
     _had_empty_response_verdict: "bool"
     _held_after_terminal: "list[Any]"
     _echo_held: "list[tuple[Any, bool]]"
