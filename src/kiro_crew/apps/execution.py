@@ -747,6 +747,11 @@ def _execution_admission(
     return reason, provenance
 
 
+#: ``app_execution_denied(manifest=...)`` left unset: the caller acts on no manifest
+#: of its own, so the signed-package check does not run there.
+NO_MANIFEST: object = object()
+
+
 def app_execution_denied(
     app_name: str,
     *,
@@ -754,6 +759,7 @@ def app_execution_denied(
     app_root: Path | None = None,
     caller: str = "gateway",
     repository: str | None = None,
+    manifest: object = NO_MANIFEST,
 ) -> str | None:
     """Return a denial reason when an app execution surface must not run.
 
@@ -770,8 +776,25 @@ def app_execution_denied(
     The decision itself lives in :func:`_execution_admission`; this is that
     decision plus its audit row. Use THIS at every surface that is about to run
     code, so the admission or the refusal is recorded.
+
+    *manifest* is the manifest (an ``AppManifest`` or its ``to_dict`` projection)
+    the caller is about to act on. Given it, together with an ``app_root``, the
+    signed-package check (``admission.installed_package_refusal``) also runs; it is
+    a no-op unless the fleet sets ``require_signature``. A caller that runs code
+    a gate given its manifest already checked in the same activation (a hook
+    module load after the hook gate) passes none.
     """
     reason, provenance = _execution_admission(app_name, app_root=app_root, repository=repository)
+    audit_error = reason
+    if reason is None and app_root is not None and manifest is not NO_MANIFEST:
+        # Deferred: admission is imported by modules that load this one first.
+        from kiro_crew.apps.admission import installed_package_refusal
+
+        refusal = installed_package_refusal(app_name, app_root, manifest)
+        if refusal is not None:
+            # The audit row carries the classification only: the reason names the
+            # app and a publisher-written path.
+            reason, audit_error = refusal, refusal.classification
     if reason is None:
         try:
             sel().log_api_access(
@@ -790,7 +813,7 @@ def app_execution_denied(
             operation="app_execution_admission",
             outcome="denied",
             resources=f"action={action!r} {provenance}",
-            error=reason,
+            error=audit_error or "",
         )
     except Exception:  # noqa: BLE001 - denial must survive audit unavailability
         logger.debug("app execution denial audit failed", exc_info=True)

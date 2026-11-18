@@ -801,6 +801,22 @@ def _isolate_context_store_caches(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_app_pycache_holds(_floor_monkeypatch):
+    """Keep the bytecode cache dirs and reaper tasks a test holds in ``apps.admission``.
+
+    ``hold_pycache_dir`` records a dir per spawn key (``backend:<app>``) under the
+    test's data home, and ``release_pycache_dir_after`` keeps its reaper task, so a
+    later test on the worker would reuse or remove a dir in a deleted home. Same
+    copy-and-undo as :func:`_isolate_context_store_caches`.
+    """
+    admission = sys.modules.get("kiro_crew.apps.admission")
+    if admission is None:
+        return
+    _floor_monkeypatch.setattr(admission, "_held_pycache_dirs", dict(admission._held_pycache_dirs))
+    _floor_monkeypatch.setattr(admission, "_pycache_reapers", set(admission._pycache_reapers))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_advertised_model_cache(_floor_monkeypatch):
     """Keep one session's advertised model spellings and labels inside its own test."""
     from kiro_crew import model_registry

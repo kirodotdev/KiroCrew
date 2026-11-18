@@ -19,7 +19,12 @@ import logging
 from pathlib import Path
 from typing import Any, Literal
 
-from kiro_crew.apps.admission import app_admission_denied
+from kiro_crew.apps.admission import (
+    admission_audit_error,
+    admission_audit_resources,
+    admission_refusal_text,
+    app_admission_denied,
+)
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.apps.registry_pipeline import _FACADE, _facade
 from kiro_crew.apps.registry_pipeline.catalog import _version_newer, get_app
@@ -475,6 +480,7 @@ async def _clone_build_app_locked(
             app_name,
             manifest=cloned_app_manifest,
             action="install_from_registry",
+            app_root=app_source,
         )
     if denied:
         log_lines.append(_refusal_line(verb, f"blocked by admission policy: {denied}"))
@@ -483,8 +489,8 @@ async def _clone_build_app_locked(
                 caller="app_install_from_registry",
                 operation="admission_cloned",
                 outcome="rejected",
-                resources=f"name={app_name!r}",
-                error=denied,
+                resources=admission_audit_resources(denied, f"name={app_name!r}"),
+                error=admission_audit_error(denied),
             )
         except Exception as exc:  # an audit failure must never mask the refusal
             logger.debug("SEL audit failed for %s cloned admission: %s", app_name, exc)
@@ -502,7 +508,7 @@ async def _clone_build_app_locked(
         return {
             "ok": False,
             "name": app_name,
-            "error": f"blocked by admission policy: {denied}",
+            "error": admission_refusal_text(denied),
         }
 
     # DOWNGRADE GATE -- before the build too, so an older tree's build steps and

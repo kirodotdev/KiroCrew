@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from kiro_crew.apps.execution import NO_MANIFEST as _NO_MANIFEST
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
 from kiro_crew.apps.manager import app_dir, get_app_manifest
 from kiro_crew.apps.manifest import AppManifest
@@ -131,13 +132,19 @@ def _registration_denied(
     *,
     action: str,
     app_root: Path,
+    manifest: object = _NO_MANIFEST,
 ) -> str | None:
-    """Apply the shared execution decision to an executable-resource bridge."""
+    """Apply the shared execution decision to an executable-resource bridge.
+
+    *manifest* is the one :func:`_registration_source` returned, which the bridge
+    registers from; the signed-package check judges that object.
+    """
     denied = app_execution_denied(
         app_name,
         action=action,
         app_root=app_root,
         caller="app_bridge",
+        manifest=manifest,
     )
     if denied:
         logger.warning(

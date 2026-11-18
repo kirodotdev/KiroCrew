@@ -278,6 +278,7 @@ def reconcile_app_skills(app_name: str) -> list[str]:
         app_name,
         action="skill_reconcile",
         app_root=app_root,
+        manifest=manifest,
     ):
         # A policy tightened after a prior registration must revoke stale links,
         # not merely decline to create new ones.
