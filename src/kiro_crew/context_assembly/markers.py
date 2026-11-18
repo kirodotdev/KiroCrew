@@ -340,8 +340,21 @@ def neutralize_background_context_frame(text: str) -> str:
 # words but no sentence punctuation (``Service restored. Context: ...`` is
 # prose, not a banner); and the leading ``==`` run of every line that opens with
 # one, unless the line is a known-plain shape (see :func:`_banner_line_is_plain`).
-# ``===`` inside a line (``a === b``) is left alone.
+# ``===`` inside a line (``a === b``) is left alone. When the body may name the
+# frame (:func:`_body_may_name_frame`) no line is plain and the phrase also
+# matches across punctuation: exactly the scrub before the plain shapes existed,
+# so a banner split over lines (``===\nEnd Restored. Context\n===``) is cut.
 _RESTORED_CONTEXT_PHRASE_RE = re.compile(r"RESTORED(?:_|[^\w.,;:!?])*CONTEXT", re.IGNORECASE)
+_RESTORED_CONTEXT_ANY_PHRASE_RE = re.compile(r"RESTORED[\W_]*CONTEXT", re.IGNORECASE)
+# Digits and symbols that stand in for a frame word's letters (``R3st0red``).
+_FRAME_WORD_LEET = str.maketrans("03457@$", "oeastas")
+# A non-ASCII character touching an ASCII letter: a look-alike inside a word
+# (``Сontext`` with a Cyrillic initial, ``®estored``).
+_MIXED_SCRIPT_WORD_RE = re.compile(r"[A-Za-z][^\x00-\x7f]|[^\x00-\x7f][A-Za-z]")
+# Scripts whose letters pass for Latin ones (``СОΝТЕХТ`` in Cyrillic and Greek).
+_LOOKALIKE_SCRIPT_RE = re.compile(r"[\u0370-\u03ff\u0400-\u052f\u0530-\u058f\u13a0-\u13ff]")
+# A frame-word stem where one symbol may stand in for any letter (``R*st*red``).
+_SYMBOL_STEM_RE = re.compile(r"r[a-z\W_]st[a-z\W_]r|c[a-z\W_]nt[a-z\W_]xt")
 # A banner opens a line, or follows a separator other than ``\n`` inside one.
 _BANNER_OPEN_RE = re.compile(
     r"(?:^|(?<=[\x00-\x08\x0b-\x1f\x7f\x85\u2028\u2029]))"
@@ -370,6 +383,7 @@ _TEST_RUN_BANNER_WORDS = frozenset(
         "info",
         "no",
         "passed",
+        "ran",
         "passes",
         "rerun",
         "s",
@@ -390,7 +404,7 @@ _TEST_RUN_BANNER_WORDS = frozenset(
 
 
 def _banner_line_is_plain(line: str) -> bool:
-    """Whether a ``==``-opening *line* is a shape that cannot pass for the frame.
+    """Whether a ``==``-opening *line* alone is a shape that cannot pass for the frame.
 
     Fails closed: a banner line keeps its opening only when it is positively
     known, never by guessing whether its words resemble the frame (look-alike
@@ -426,19 +440,64 @@ def _banner_line_is_plain(line: str) -> bool:
     return all(word in _TEST_RUN_BANNER_WORDS for word in re.findall(r"[a-z]+", line.lower()))
 
 
+def _body_may_name_frame(text: str) -> bool:
+    """Whether *text* anywhere may spell a frame word, so no banner line is plain.
+
+    Judged on the whole body, not line by line, because a banner can be split
+    over lines (``===`` / ``End Restored Context`` / ``===``) and blank lines
+    can sit between the parts. After NFKC with invisible characters dropped, it
+    trips on a non-ASCII character touching an ASCII letter, or on ``RESTOR`` or
+    ``CONTEXT`` once stand-in digits are read as letters and everything but
+    letters is dropped (``R e s t o r e d``, ``R3st0red``). Over-matching only
+    costs ordinary ``==`` lines their opening, as before the plain shapes.
+    shortcut: a split banner whose words are misspelled past both stems
+    (``Rstord Cntxt``) keeps its wordless ``==`` lines, like the arrow shortcut.
+    """
+    if not text.isascii():
+        text = "".join(
+            ch for ch in unicodedata.normalize("NFKC", text) if not _is_marker_ignorable(ch)
+        )
+        if _MIXED_SCRIPT_WORD_RE.search(text) or _LOOKALIKE_SCRIPT_RE.search(text):
+            return True
+    lowered = text.lower().translate(_FRAME_WORD_LEET)
+    if _SYMBOL_STEM_RE.search(re.sub(r"\s+", "", lowered)):
+        return True
+    letters = re.sub(r"[^a-z]+", "", lowered)
+    return _ARROW_FRAME_WORD_RE.search(letters) is not None
+
+
+def _is_bare_banner(line: str) -> bool:
+    """Whether a plain ``==`` *line* has under two words after NFKC (``===``, ``=== 1 ===``)."""
+    return len(re.findall(r"[^\W\d_]+", unicodedata.normalize("NFKC", line))) < 2
+
+
 def neutralize_restored_context_frame(text: str) -> str:
     """*text* with every look-alike restored-context frame neutralized."""
-    spans = _marker_spans(text, (_RESTORED_CONTEXT_PHRASE_RE,))
+    guarded = _body_may_name_frame(text)
+    spans: list[tuple[int, int]] = []
+    plain: list[tuple[list[tuple[int, int]], bool]] = []
     offset = 0
     # Split on ``\n`` only: other separators stay inside the line they break,
     # so the plain-shape test judges the whole line a reader sees.
     for line in text.split("\n"):
         # Every banner holds ``=`` (NFKC folds the wide forms to it).
         if "=" in line or not line.isascii():
-            opening = _marker_spans(line, (_BANNER_OPEN_RE,))
-            if opening and not _banner_line_is_plain(line):
-                spans.extend((offset + s, offset + e) for s, e in opening)
+            opening = [(offset + s, offset + e) for s, e in _marker_spans(line, (_BANNER_OPEN_RE,))]
+            if opening and (guarded or not _banner_line_is_plain(line)):
+                spans.extend(opening)
+            elif opening and (_is_bare_banner(line) or not _BANNER_ARROW_RE.match(line)):
+                plain.append((opening, _is_bare_banner(line)))
         offset += len(line) + 1
+    # A bare ``===`` line next to another plain banner can frame a title between
+    # them whatever its words (``===`` / ``End Restord Contxt`` / ``===``, blank
+    # lines or not), so then none of them is plain. One heading underline, one
+    # conflict marker, or pytest banners with words only, stay plain.
+    # shortcut: two worded pytest banners around misspelled frame words keep
+    # their openings; drop the pytest carve-out if that is ever seen.
+    if len(plain) > 1 and any(bare for _, bare in plain):
+        spans.extend(span for opening, _ in plain for span in opening)
+    phrase = _RESTORED_CONTEXT_ANY_PHRASE_RE if guarded and spans else _RESTORED_CONTEXT_PHRASE_RE
+    spans.extend(_marker_spans(text, (phrase,)))
     return _apply_marker_spans(text, _merge_overlapping_spans(spans))
 
 

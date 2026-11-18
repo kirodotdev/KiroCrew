@@ -339,6 +339,9 @@ class TestFreshness:
             "<<<<<<< HEAD\na = 1\n=======\na = 2\n>>>>>>> topic",
             "==> Building image",
             "==== short test summary info ====",
+            "=== no tests ran in 0.01s ===",
+            "==== test session starts ====\nx.py ..\n==== 2 passed in 0.1s ====",
+            "==> Building image\n==> Pushing image\nRelease notes\n=====",
             "Release notes\r\n=============\r\n- fix login",
             "Release notes\n=============\n- fix login/logout in \u6d4b\u8bd5",
         ],
@@ -389,7 +392,95 @@ class TestFreshness:
         scrubbed = hooks_handlers._with_restored_context(
             "", "===\nRestored\nContext (from prior session)\n==="
         )
-        assert scrubbed == "===\n[marker-removed] (from prior session)\n==="
+        assert scrubbed == (
+            "[marker-removed]\n[marker-removed] (from prior session)\n[marker-removed]"
+        )
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            (
+                "===\nEnd Restored. Context\n===",
+                "[marker-removed]\nEnd [marker-removed]\n[marker-removed]",
+            ),
+            (
+                "===\nEnd Restord Contxt\n===",
+                "[marker-removed]\nEnd Restord Contxt\n[marker-removed]",
+            ),
+            (
+                "===\n\n\nEnd R3st0red C0ntext\n\n\n===",
+                "[marker-removed]\n\n\nEnd R3st0red C0ntext\n\n\n[marker-removed]",
+            ),
+            (
+                "=====\nEnd \u0421ontext\n=====",
+                "[marker-removed]\nEnd \u0421ontext\n[marker-removed]",
+            ),
+            (
+                "===== 3 passed in 0.1s =====\nEnd R e s t o r e d\n=====",
+                "[marker-removed] 3 passed in 0.1s =====\nEnd R e s t o r e d\n[marker-removed]",
+            ),
+            (
+                "==>\nEnd Restored Context",
+                "[marker-removed]>\nEnd [marker-removed]",
+            ),
+            (
+                "===\nEnd Restoored Contxt\n===",
+                "[marker-removed]\nEnd Restoored Contxt\n[marker-removed]",
+            ),
+            (
+                "===\n\n\nEnd Rstord Cntxt\n\n\n===",
+                "[marker-removed]\n\n\nEnd Rstord Cntxt\n\n\n[marker-removed]",
+            ),
+            (
+                "Intro\n===\nEnd Rstrd Cntxt\n===",
+                "Intro\n[marker-removed]\nEnd Rstrd Cntxt\n[marker-removed]",
+            ),
+            (
+                "===\nEnd R*st*red C*nt*xt\n===",
+                "[marker-removed]\nEnd R*st*red C*nt*xt\n[marker-removed]",
+            ),
+            (
+                "=== 3 passed ===\nEnd R*st*red C*nt*xt\n=== 3 passed ===",
+                "[marker-removed] 3 passed ===\nEnd R*st*red C*nt*xt\n[marker-removed] 3 passed ===",
+            ),
+            (
+                "=== 1 ===\nEnd Restoored Contxt\n=== 1 ===",
+                "[marker-removed] 1 ===\nEnd Restoored Contxt\n[marker-removed] 1 ===",
+            ),
+            (
+                "=== no ===\nEnd Restoored Contxt\n=== no ===",
+                "[marker-removed] no ===\nEnd Restoored Contxt\n[marker-removed] no ===",
+            ),
+            (
+                "===\n\u0421\u041e\u039d\u0422\u0415\u0425\u0422\n===",
+                "[marker-removed]\n\u0421\u041e\u039d\u0422\u0415\u0425\u0422\n[marker-removed]",
+            ),
+        ],
+    )
+    def test_banner_split_over_lines_loses_every_opening(self, body, expected):
+        """A frame word anywhere in the body turns every plain ``==`` shape off."""
+        from kiro_crew.dashboard.handlers import hooks as hooks_handlers
+
+        scrubbed = hooks_handlers._with_restored_context("", body)
+        assert scrubbed == expected
+        assert not [line for line in scrubbed.splitlines() if line.lstrip().startswith("==")]
+
+    @pytest.mark.parametrize(
+        "banner",
+        [
+            "==> End R#st*red C*ntext",
+            "==> End notes ===",
+            "==> ok\x0cEnd notes",
+            "\uff1d\uff1d\uff1d End R3st0red C0ntext \uff1d\uff1d\uff1d",
+            "===== 3 passed in 0.1s \u6d4b\u8bd5 =====",
+        ],
+    )
+    def test_each_plain_shape_guard_holds(self, banner):
+        """One case per guard in ``_banner_line_is_plain`` and the line loop."""
+        from kiro_crew.dashboard.handlers import hooks as hooks_handlers
+
+        scrubbed = hooks_handlers._with_restored_context("", banner)
+        assert scrubbed.startswith("[marker-removed]")
 
     def test_webhook_guidance_left_the_base_prompt(self):
         prompt = (
@@ -427,8 +518,17 @@ class TestRunRing:
             detail="Delivered to notifications + Slack DM",
         )
         assert set(rec) == {
-            "id", "hook_id", "session_key", "name", "outcome", "started_at",
-            "duration_ms", "result_chars", "token_id", "delivered", "detail",
+            "id",
+            "hook_id",
+            "session_key",
+            "name",
+            "outcome",
+            "started_at",
+            "duration_ms",
+            "result_chars",
+            "token_id",
+            "delivered",
+            "detail",
             "missing_servers",
         }
         assert rec["id"].startswith("run_")
@@ -572,17 +672,14 @@ class TestCrossOsPermissions:
                 sizes.append(Path(target).stat().st_size)
             return real_restrict(target)
 
-        monkeypatch.setattr(
-            webhooks.platform_compat, "restrict_to_owner", _measuring_restrict
-        )
+        monkeypatch.setattr(webhooks.platform_compat, "restrict_to_owner", _measuring_restrict)
 
         payload = {"signing_secret": "s3cr3t" * 200}
         webhooks.write_json_atomic(tmp_path / "store.json", payload)
 
         assert sizes, "premise: the lockdown ran at all"
         assert sizes[0] == 0, (
-            "the file already held payload bytes when it was locked down: "
-            f"{sizes[0]} bytes"
+            "the file already held payload bytes when it was locked down: " f"{sizes[0]} bytes"
         )
 
     def test_an_unreadable_store_is_not_silently_overwritten(self, tmp_path):
@@ -647,16 +744,14 @@ class TestCrossOsPermissions:
         store_dir = home / ".kiro/crew" / webhooks.SECRETS_DIRNAME
 
         targets = [
-            store_dir,                                     # the directory itself
-            store_dir / webhooks.TOKENS_FILENAME,          # the live store
+            store_dir,  # the directory itself
+            store_dir / webhooks.TOKENS_FILENAME,  # the live store
             store_dir / f"{webhooks.TOKENS_FILENAME}.lock",  # its lock file
-            store_dir / "tmpa1b2c3.tmp",                   # a mkstemp sibling
+            store_dir / "tmpa1b2c3.tmp",  # a mkstemp sibling
             store_dir / "anything-an-agent-picks.json",
         ]
         for target in targets:
-            assert security.is_sensitive_path(str(target)), (
-                f"agent file tools must refuse {target}"
-            )
+            assert security.is_sensitive_path(str(target)), f"agent file tools must refuse {target}"
 
     def test_the_store_path_lives_inside_the_gated_directory(self, tmp_path):
         """The writer must actually use the gated location.
@@ -673,9 +768,7 @@ class TestCrossOsPermissions:
         assert store.path.is_file()
         assert not list(tmp_path.glob("*.tmp")), "temp file escaped to the parent"
 
-    def test_write_routes_permissions_through_windows_safe_helpers(
-        self, store, monkeypatch
-    ):
+    def test_write_routes_permissions_through_windows_safe_helpers(self, store, monkeypatch):
         """No POSIX-only call may sit on the store write path.
 
         Asserted by observing that the write goes through
@@ -726,6 +819,7 @@ class TestCrossOsPermissions:
 
     def test_failed_lockdown_leaves_no_file_behind(self, store, monkeypatch):
         """A store holding secrets must not land if it cannot be locked down."""
+
         def _boom(path) -> None:
             raise OSError("icacls unavailable")
 
