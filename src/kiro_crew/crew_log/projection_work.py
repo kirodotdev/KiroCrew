@@ -380,7 +380,9 @@ def _work_step(state: dict[str, Any], entry: Entry) -> None:
     item = state["items"].get(item_id)
     if item is None and item_id in state["tombstones"]:
         # A closed item this fold already let go. The writer refuses every write to a
-        # closed item, so this entry was written BEFORE the close and is only folded
+        # closed item but the hub's own ``retire`` and ``destroy`` of its remote
+        # binding, which only move ``retired_bindings`` of an item the fold does not
+        # render; any other entry was written BEFORE the close and is only folded
         # after it, from a unit read later (a worker's). Parking it would wait for a
         # create that already went by, so it is dropped: it could only change fields of
         # an item the fold does not render, and its history stays in the crew log.

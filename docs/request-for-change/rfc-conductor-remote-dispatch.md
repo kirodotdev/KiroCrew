@@ -598,6 +598,18 @@ The new event kind needs a matching entry in `WORK_EVENT_KINDS`
 `worker_instance_id`, and each entry carries the crew id, the slot key, the
 branch, its state (`current`, `retired`, `destroyed`) and its timestamps.
 
+### 5c. Closing a remote item
+
+A peer worker's mailbox item closes only when its slot is deleted, and each open one holds a share of its crew's headroom. So when the hub records a write that closes a crew-bound item, it also leaves the worker's slot to close:
+
+1. **Record the pending close.** The hub records a `retire` on the closed item, with reason `owner_closed` or `item_closed`. The binding moves into the history as `retired`. That entry is durable, so it survives a hub restart: the close sweep finds it, the row counts it in `close_pending`, and the owner's `session_close(crew=)` may still name the slot (§5b). These two reasons are hub-only and are the only reasons a closed item takes. Any retired entry whose reason is not one that closes at once (`crew_unreachable`, the conductor's retire reasons, `owner_closed`) is treated as `item_closed`.
+2. **End the grant.** The hub sends `PATCH .../work-item` with `trust: false` at once (§4), whether or not the record landed.
+3. **Close the slot.** Who may DELETE a live worker follows the `session_close(crew=)` gate:
+   - **A turn the owner sent** (`owner_closed`): the slot is deleted as soon as its crew is connected, at once or by a later sweep.
+   - **Any other turn**, a patrol wake included (`item_closed`): no DELETE while the worker may still be working. The slot is deleted only when a full read of the crew's slot list shows it not running and not waiting on an approval, and the peer's copy of the item last reported `done`. Until then each sweep looks again, past the same backoff a failed close uses. A worker that never reaches `done` stays pending until the owner closes it with `session_close(crew=)`.
+
+No new timer: the sweep that closes retired slots (§5b, at boot and on every work-ledger patrol tick) drains these too. A close whose retire cannot be recorded (for example `retired_history_full`, no crew-log unit, or a hub restart between the close and the retire) still ends the grant, but leaves no pending entry: the slot then ends at its TTL, or by the owner's `session_close(crew=)` while the hub has not restarted. Known gaps: the idle check and the DELETE are two peer calls, so a turn the peer's own owner starts between them is cut off; a wake close that is never seen idle and `done` waits for the owner.
+
 ### 6. Relation to #12821 and #13476
 
 | | This RFC | [#12821](https://github.com/kirodotdev/KiroCrew/pull/12821) `spawn_run` remote |

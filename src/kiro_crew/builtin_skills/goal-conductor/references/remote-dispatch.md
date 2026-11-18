@@ -67,8 +67,11 @@ tell the user instead of retrying.
 
 **Driving it.** `session_send`, `session_read_message`, `session_stop` and
 `session_close` take the same `crew=` and reach only a crew session you created
-or one an open item of yours is bound to. After a hub restart only the open
-item counts, so close the worker's session before you `close` its item.
+or one an open item of yours is bound to. Closing a remote item ends its
+worker's Trust and records its session as pending close (`close_pending` on
+the row). In an owner turn the session is closed for you once its crew is
+connected. On a patrol wake it is closed only once its worker is idle and
+reported `done`; otherwise `session_close(crew=)` it in the next owner turn.
 `session_read_message(crew=)` takes `since` like the local read: pass the
 `next_since` it returned to get only what is new. A
 `decide` whose forward fails says it "did NOT reach the worker's crew"; record
