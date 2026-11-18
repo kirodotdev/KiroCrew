@@ -238,6 +238,20 @@ ledger write: the next `work_brief` or `work_report` call that gets through
 clears it. A conductor that sees it checks the worker's session and pull request
 and tells you what it finds, rather than calling the worker stalled.
 
+**A change of the host's posture wakes it too.** The host posture is the worse
+of memory (`ample`, `tight`, `critical`, as `resource_status` reads it) and disk
+(a temp root low on space or inodes is `tight`, under 3% space or 200 inodes
+`critical`). When it changes, every conductor with an active `work-ledger`
+patrol is woken once, with the reading:
+`[work-ledger wake] host posture is tight (memory 3.1 GB free; /tmp LOW on space, 6% space free, 40% inodes free (90000 inodes))`.
+A patrol held because every open item waits on a person is released by a
+posture change too, so the wake still reaches the conductor.
+The same posture again wakes nobody, and `ample` wakes nobody until a worse
+posture was seen. For a conductor, `resource_status` also lists each worker
+bound to an open item on its own board, by item id: its memory, process count,
+largest test run, whether a turn is running, and the free space of its working
+volume. No other session is shown.
+
 Reports belong at real milestones, not on a timer.
 `summary` is capped at 500 characters.
 A longer one is **cut to the cap, not refused**: the stored value carries a note

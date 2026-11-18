@@ -1599,6 +1599,12 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # supplied. It is also not model-reachable: no MCP tool routes to it,
         # because the deletion it performs is irreversible.
         "ledger_sweep.py",
+        # ``resource_status``'s per-worker rows (rfc-host-memory-guard.md §5.3). The
+        # caller is the session ``member_request_scope`` ATTESTED on the agent route,
+        # the board read is that session's own (``ledger_key`` of the attested key,
+        # never a supplied one), a worker is listed only when its binding names that
+        # board, and the reply carries item ids, sizes and flags, no session key.
+        "dashboard/handlers/session_memory_scope.py",
         # Remote dispatch's peer mailbox (rfc-conductor-remote-dispatch §2, §3),
         # behind the ``work_ledger.remote_dispatch`` Feature Preview. The same
         # principal argument as the Crew page below: its only callers are the

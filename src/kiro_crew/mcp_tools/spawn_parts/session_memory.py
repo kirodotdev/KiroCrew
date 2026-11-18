@@ -71,7 +71,30 @@ def render_session_memory(view: Mapping[str, object]) -> list[str]:
         out.append(line)
     else:
         out.append("  Runs you started: none live")
+    workers = view.get("workers")
+    if isinstance(workers, list) and workers:
+        out.append("  Your workers (by item):")
+        for row in workers:
+            if isinstance(row, Mapping):
+                out.append(_worker_line(row))
     return out
+
+
+def _worker_line(row: Mapping[str, object]) -> str:
+    test = row.get("test_mb")
+    disk = row.get("volume_free_pct")
+    parts = [
+        f"{_memory_mb(row.get('rss_mb'))}",
+        f"{_memory_count(row.get('procs'))} processes",
+        "no test run" if test == 0 else f"tests {_memory_mb(test)}",
+        str(row.get("turn") or "?"),
+        (
+            f"work volume {float(disk):.0f}% free"
+            if isinstance(disk, (int, float)) and not isinstance(disk, bool)
+            else "work volume unmeasured"
+        ),
+    ]
+    return f"    {row.get('item_id')}: " + ", ".join(parts)
 
 
 def session_memory_lines() -> list[str]:

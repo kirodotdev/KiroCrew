@@ -163,11 +163,17 @@ file or image a worker needs, put its absolute path in the worker's message and
 tell the worker to open it. Never retell it in words instead.
 
 """,
-    "resource_wave": """**`resource_status` decides the wave.** Call it before you stand up several
-worker sessions at once. On `ample`, dispatch every ready, independent item.
-On `tight` or `unknown`, dispatch one and queue the rest; on `critical`,
-dispatch none. Say what you queued. Carry no number of your own: a bound the
-user set is the goal's `concurrency_cap`.
+    "host_health": """**Keep the host healthy.** Your goal is that the gateway and every worker
+survive. Read `resource_status` at the start of every patrol turn and before
+each dispatch wave; it shows host memory and disk and each of your workers'
+share, and you are woken when the posture changes. On `tight` or `critical`, act
+on what your workers are doing, by whatever method fits the work. Hard bounds:
+never stop or slow the gateway; never delete or overwrite anything outside your
+own workers' output without asking the owner; tell the affected worker, and say
+in your reply what you did. *Examples only, not a rulebook:* dispatch less or
+none, ask the heaviest worker to serialize or shrink a heavy step, close an idle
+finished worker chat (`session_close` archives), ask a worker to remove its own
+build output once its work is pushed.
 
 """,
     "patrol_watch": """When a `session_create` or `bind` reply's `patrol=` is
@@ -421,7 +427,7 @@ call at a time, only to bind an existing session. The order is not a preference:
     ("dispatch_seed", _LEDGER_CONDUCTOR_RULES["dispatch_seed"]),
     ("bind_before_seed", _LEDGER_CONDUCTOR_RULES["bind_before_seed"]),
     ("send_files", _LEDGER_CONDUCTOR_RULES["send_files"]),
-    ("resource_wave", _LEDGER_CONDUCTOR_RULES["resource_wave"]),
+    ("host_health", _LEDGER_CONDUCTOR_RULES["host_health"]),
     ("item_budget", _LEDGER_CONDUCTOR_RULES["item_budget"]),
     ("own_files", _LEDGER_CONDUCTOR_RULES["own_files"]),
     ("merge_lines", _LEDGER_CONDUCTOR_RULES["merge_lines"]),

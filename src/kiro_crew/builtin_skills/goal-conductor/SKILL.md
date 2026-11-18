@@ -214,11 +214,14 @@ your work pool — Issue Radar crews label issues `claimed`, humans assign
 themselves. A candidate someone else already owns is excluded, listed in the
 plan as skipped with the reason, never dispatched over.
 
-**Capacity decides the wave, not your plan.** As your prompt says,
-`resource_status` decides the wave, every wave a reseed wave included (`unknown` is a reading that
-FAILED and queues like `tight`). Say what you queued in the plan. Each time an
-in-flight item lands, read `resource_status` again and dispatch from the queue
-the same way. Keep the patrol loop armed while anything is queued. If a wave
+**Keep the host healthy, as your prompt's host-health rule says**: it names the
+goal, what `resource_status` and a posture wake tell you, and the hard bounds.
+
+**Capacity decides the wave, not your plan.** So `resource_status` decides the
+wave, every wave a reseed wave included (`unknown` is a reading that FAILED and
+counts as `tight`). Say what you queued in the plan. Each time an
+in-flight item lands, read `resource_status` again and dispatch from the queue.
+Keep the patrol loop armed while anything is queued. If a wave
 dispatched nothing and no patrol is armed yet, arm
 `monitor_start(watch="work-ledger")` yourself, since no create or bind reply
 will arm one. The ledger's cap and the server's slot limits are the only
