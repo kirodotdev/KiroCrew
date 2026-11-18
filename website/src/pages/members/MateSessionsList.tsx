@@ -10,6 +10,8 @@
  * One list, two hosts: the Profile card's Sessions tab and the Bot page side
  * panel's Sessions tab. A row click is the host's `onOpen`; both hosts open the
  * session in the side panel's Sessions tab, where the recap is one toggle away.
+ * A host that passes `onWatch` gets a Live button on each row whose session is
+ * browsing now (the side panel's tab passes it).
  * The recap is read from records only, with no model call
  * (`GET .../crew-workers/{worker}/recap`).
  */
@@ -33,6 +35,7 @@ import {
 } from '../../lib/crewWorkers'
 import { crewWorkersQueryKey } from '../chat/command-center/CrewWorkerList'
 import { crewWorkersGapMs, readCrewWorkers } from '../../lib/crewWorkersPoll'
+import { isBrowsingNow, useBrowserLiveCurrent } from '../../hooks/useBrowserLive'
 import { timeAgo } from '../../utils/timeAgo'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { parseSourceLinkUrl } from '../../utils/pullRequestLinks'
@@ -91,6 +94,8 @@ export interface MateSessionsListProps {
   empty: ReactNode
   /** A row click: the host opens that session. */
   onOpen: (worker: CrewWorker) => void
+  /** Offered on a row whose session is browsing now: the host shows that live view. */
+  onWatch?: (worker: CrewWorker) => void
   /** Shown above the groups (a failed reopen, say). */
   notice?: ReactNode
 }
@@ -109,7 +114,7 @@ export function useMateSessionWorkers(root: string, liveSlots: readonly ChatSlot
   return { listed, workers }
 }
 
-export default function MateSessionsList({ root, mateName, liveSlots, slotsLoaded, empty, onOpen, notice }: MateSessionsListProps) {
+export default function MateSessionsList({ root, mateName, liveSlots, slotsLoaded, empty, onOpen, onWatch, notice }: MateSessionsListProps) {
   const { t } = useTranslation()
   const { listed, workers } = useMateSessionWorkers(root, liveSlots)
   const groups = useMemo(() => groupCrewWorkers(workers), [workers])
@@ -148,7 +153,7 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
         const list = (
           <ul className="list-none m-0 p-0 rounded-2xl border border-border bg-bg overflow-hidden">
             {rows.map(w => (
-              <MateSessionRow key={w.key} worker={w} onOpen={() => onOpen(w)} />
+              <MateSessionRow key={w.key} worker={w} onOpen={() => onOpen(w)} onWatch={onWatch ? () => onWatch(w) : undefined} />
             ))}
           </ul>
         )
@@ -178,13 +183,16 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
   )
 }
 
-function MateSessionRow({ worker, onOpen }: { worker: CrewWorker; onOpen: () => void }) {
+function MateSessionRow({ worker, onOpen, onWatch }: { worker: CrewWorker; onOpen: () => void; onWatch?: () => void }) {
+  const { t } = useTranslation()
   const title = sessionDisplayTitle({ key: worker.key, title: worker.title })
   const ts = worker.last_activity ? Date.parse(worker.last_activity) : 0
+  // Read only where the host offers Live; the Profile card's list does not.
+  const browsing = isBrowsingNow(useBrowserLiveCurrent(onWatch ? worker.key : null))
   return (
-    <li className="border-t border-border first:border-t-0" data-testid="mate-session-row" data-group={worker.group}>
+    <li className="flex items-center border-t border-border first:border-t-0" data-testid="mate-session-row" data-group={worker.group}>
       <button type="button" onClick={onOpen}
-        className="w-full flex items-center gap-3 px-3.5 py-3 text-left hover:bg-bg-hover transition-colors cursor-pointer"
+        className="flex-1 min-w-0 flex items-center gap-3 px-3.5 py-3 text-left hover:bg-bg-hover transition-colors cursor-pointer"
         data-testid="mate-session-open">
         <span className="flex-1 min-w-0 leading-tight">
           <span className="block text-[13px] font-semibold truncate">{title}</span>
@@ -196,6 +204,15 @@ function MateSessionRow({ worker, onOpen }: { worker: CrewWorker; onOpen: () => 
         </span>
         <ChevronRight size={15} className="shrink-0 text-muted" aria-hidden="true" />
       </button>
+      {browsing && onWatch && (
+        <button type="button" onClick={onWatch}
+          aria-label={t('pages.chat.browserLiveCard.expand')} title={t('pages.chat.browserLiveCard.expand')}
+          className="shrink-0 mr-2.5 inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[12px] font-semibold text-ok hover:bg-bg-hover transition-colors cursor-pointer"
+          data-testid="mate-session-watch">
+          <span aria-hidden="true" className="inline-block size-2 rounded-full bg-ok motion-safe:animate-pulse" />
+          {t('pages.chat.browserLiveCard.live')}
+        </button>
+      )}
     </li>
   )
 }

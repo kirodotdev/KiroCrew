@@ -245,6 +245,10 @@ interface SidePanelProps {
    *  Members page calls Files "Workspace": there it is the mate's own
    *  directory). Only the displayed title changes; the tab id stays the kind. */
   viewTitles?: Partial<Record<ViewKind, string>>
+  /** More sessions whose agent browser the Preview tab shows, besides `slot`.
+   *  The Members page passes the Bot's own sessions, whose browsing its
+   *  thread draws no card for. */
+  browserFollowKeys?: readonly string[]
   /** Pin Summary (`dashboard.side_panel_pin_summary`); see `usePinnedViews`. */
   pinSummary?: boolean
   /** Reports the tab the strip actually SHOWS whenever it changes — the stored
@@ -293,7 +297,7 @@ export default function SidePanel({
   slotTitle, chatMode,
   expanded, fillWidth, canDockBottom = true,
   leadingTabs, segments, extraReserveW = 0, defaultWidth = 460, hiddenViews: hostHiddenViews, onActiveTabChange, pinSummary = false,
-  viewTitles,
+  viewTitles, browserFollowKeys,
 }: SidePanelProps) {
   const { tabs, activeId: storedActiveId, openView, openPanelTab, openTerminal, openFolder, setActive, closeTab, patchTab, setOrder } = tabsCtl
   const hiddenViews = hostHiddenViews
@@ -1271,6 +1275,7 @@ export default function SidePanel({
                 // editor answer Escape and Cmd+S.
                 tab={t} active={isActive && !panelHidden}
                 slot={slot}
+                browserFollowKeys={browserFollowKeys}
                 onClose={() => handleCloseTab(t.id)}
                 onPanelHandle={registerPanelHandle}
                 onContentChange={(c) => patchTab(t.id, { content: c, placeholder: undefined })}

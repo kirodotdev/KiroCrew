@@ -50,9 +50,12 @@ export interface BotSessionsPanelTabProps {
   /** The side panel is mounted but hidden (`display:none`): a pane nobody can
    *  see gives the dictation key back. */
   panelHidden?: boolean
+  /** A row whose session is browsing now offers Live, which opens that live
+   *  view big in the panel's Preview tab. */
+  onWatchBrowser?: (key: string) => void
 }
 
-export default function BotSessionsPanelTab({ root, mateName, liveSlots, slotsLoaded, openKey, onOpenKey, onOpenInChat, onPaneFocusChange, panelHidden = false }: BotSessionsPanelTabProps) {
+export default function BotSessionsPanelTab({ root, mateName, liveSlots, slotsLoaded, openKey, onOpenKey, onOpenInChat, onPaneFocusChange, panelHidden = false, onWatchBrowser }: BotSessionsPanelTabProps) {
   const { t } = useTranslation()
   if (openKey) {
     return (
@@ -64,6 +67,7 @@ export default function BotSessionsPanelTab({ root, mateName, liveSlots, slotsLo
     <div className="h-full min-h-0 overflow-y-auto p-3" data-testid="bot-sessions-panel">
       <MateSessionsList root={root} mateName={mateName} liveSlots={liveSlots} slotsLoaded={slotsLoaded}
         onOpen={w => onOpenKey(w.key)}
+        onWatch={onWatchBrowser ? w => onWatchBrowser(w.key) : undefined}
         empty={<p className="m-0 text-[13px] text-muted" data-testid="bot-sessions-panel-empty">{t('pages.membersPage.sessions_panel_empty')}</p>} />
     </div>
   )

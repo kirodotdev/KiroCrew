@@ -939,12 +939,16 @@ on. The card renders these fields only: no loop-specific copy or op name lives i
 the card.
 
 **The big view.** Expand (the live card's menu, first item) and the done card's
-Replay open `useBrowserLive.stage`: on a desktop chat page the side panel's
-Preview tab switches to **Agent browser** (`components/PreviewTabBody.tsx`), the
+Replay open `useBrowserLive.stage`: on a desktop chat page, or a Bot's page, the
+side panel's Preview tab switches to **Agent browser** (`components/PreviewTabBody.tsx`), the
 chat card folds to one line ("Live/Replaying · host · Showing in side panel" and
 Bring back to chat), and the stage (`pages/chat/BrowserLiveStage.tsx`) shows the
 picture big; on a phone, or a page with no side panel, it is a full-screen sheet
-(`BrowserLiveSheet.tsx`). Local preview on the Preview tab's mode row, the Bring
+(`BrowserLiveSheet.tsx`). A Bot's page also hands its Preview tab the Bot's own
+sessions (`followKeys`), whose browsing its thread draws no card for: the tab
+shows a stage opened for any of them, and its Agent browser switch opens on the
+one browsing now, else the turn that started last (see
+[crew-mode](crew-mode.md)). Local preview on the Preview tab's mode row, the Bring
 back button on that row, the panel closing or leaving the tab all bring the
 picture back to the chat; the local preview stays mounted (hidden) throughout, so
 its page and annotation survive. The stage has a Full screen toggle

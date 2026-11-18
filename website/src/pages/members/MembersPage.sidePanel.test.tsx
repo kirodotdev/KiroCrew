@@ -7,10 +7,10 @@
  * src/test/MembersPageTestUtils.tsx (their shared fixtures) carry the same api
  * mock and module stubs below, word for word: change them together. */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act, within, cleanup } from '@testing-library/react'
 import { QueryClient } from '@tanstack/react-query'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
-import { sseConnected, sseSlots } from '../../store/dashboardSlice'
+import { sseConnected, sseDisconnected, sseSlots } from '../../store/dashboardSlice'
 import { __resetPaneDraftsForTests, readPaneDraft } from '../../utils/chatPaneDrafts'
 import { _resetViewedThreadForTests } from '../../lib/viewedThread'
 import {
@@ -302,6 +302,8 @@ import { CREW_SESSIONS_TAB_ID } from './membersPageModel'
 import { CREW_DASHBOARD_TAB_ID, CREW_PANEL_TAB_IDS, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_UNFED_VIEWS, MEMBERS_WITHHELD_VIEWS } from './MembersPage'
 import { resetFirstGreetingRequests } from './useFirstGreeting'
 import { __resetPanelTabs, VIEW_DATA_SOURCE } from '../../hooks/usePanelTabs'
+import { browserLiveStore } from '../../hooks/useBrowserLive'
+import { browserStageStore } from '../../hooks/useBrowserLive.stage'
 import {
   PANEL_OPEN_KEY,
   WIDE_WINDOW,
@@ -705,6 +707,78 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     fireEvent.click(await within(card).findByText('Fix login bug'))
     expect(await screen.findByTestId('bot-session-title')).toHaveTextContent('Fix login bug')
     expect(screen.getByTestId(`side-panel-leading-tab-${CREW_SESSIONS_TAB_ID}`)).toHaveAttribute('aria-selected', 'true')
+  })
+
+  // The big view's own writes (stream visibility, acks) go nowhere here: the api
+  // mock above carries no browser routes, and a mounted stage reports on mount.
+  const quietBrowserWrites = () => browserLiveStore.__setWritesForTests({
+    ack: async () => ({}), visibility: async () => ({}), claim: async () => ({}), release: async () => ({}),
+    input: async () => ({}), open: async () => ({}), reopen: async () => ({}), close: async () => ({}), answer: async () => ({}),
+  })
+  // Unmount before the module stores reset: their notify() would otherwise
+  // re-render the still-mounted page outside act(), ahead of RTL's own cleanup.
+  const resetBrowserStores = (writes: ReturnType<typeof quietBrowserWrites>) => {
+    cleanup()
+    browserLiveStore.__setWritesForTests(writes)
+    browserLiveStore.__resetForTests()
+    browserStageStore.__resetForTests()
+  }
+
+  it("a Sessions row's Live shows that worker's browser big in the panel's Preview tab", async () => {
+    const writes = quietBrowserWrites()
+    try {
+      const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+      fireEvent.click(await rosterRow('oncall'))
+      await screen.findByTestId('member-dashboard')
+      act(() => {
+        store.dispatch(sseSlots([
+          { key: 'member-oncall', mode: 'member', running: false, messages: 0 },
+          { key: 'chat-w1', title: 'Read the docs', mate_root: 'member-oncall', running: true, messages: 2 },
+        ] as never))
+        browserLiveStore.applyEvent({ session_key: 'chat-w1', turn_id: 't1', state: 'live', url: 'https://example.com/docs' })
+      })
+      fireEvent.click(screen.getByRole('tab', { name: 'Sessions' }))
+      fireEvent.click(await screen.findByTestId('mate-session-watch'))
+      // The page hosts the big view, so the stage is the panel's, not a sheet.
+      expect(browserStageStore.get('chat-w1')).toMatchObject({ turnId: null, mode: 'live', surface: 'panel' })
+      expect(await screen.findByTestId('preview-tab-body')).toHaveAttribute('data-mode', 'agent')
+      expect(screen.getByRole('tab', { name: 'Preview' })).toHaveAttribute('aria-selected', 'true')
+    } finally {
+      resetBrowserStores(writes)
+    }
+  })
+
+  it('while the thread re-confirms, Live is withheld, a shown stage is dropped and the Bot card falls back to the sheet', async () => {
+    const writes = quietBrowserWrites()
+    try {
+      const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+      act(() => { store.dispatch(sseConnected()) })
+      fireEvent.click(await rosterRow('oncall'))
+      await screen.findByTestId('member-dashboard')
+      act(() => {
+        store.dispatch(sseSlots([
+          { key: 'member-oncall', mode: 'member', running: false, messages: 0 },
+          { key: 'chat-w1', title: 'Read the docs', mate_root: 'member-oncall', running: true, messages: 2 },
+        ] as never))
+        browserLiveStore.applyEvent({ session_key: 'chat-w1', turn_id: 't1', state: 'live', url: 'https://example.com/docs' })
+      })
+      fireEvent.click(screen.getByRole('tab', { name: 'Sessions' }))
+      fireEvent.click(await screen.findByTestId('mate-session-watch'))
+      expect(browserStageStore.get('chat-w1')?.surface).toBe('panel')
+      // A reconnect re-POSTs the thread; its answer is held, so the slot is unconfirmed.
+      ;(api.memberThread as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(() => {}))
+      act(() => { store.dispatch(sseDisconnected()) })
+      act(() => { store.dispatch(sseConnected()) })
+      // The Preview tab is withheld now: its stage goes, and Live is not offered.
+      await waitFor(() => expect(browserStageStore.get('chat-w1')).toBeNull())
+      fireEvent.click(screen.getByRole('tab', { name: 'Sessions' }))
+      expect(screen.queryByTestId('mate-session-watch')).toBeNull()
+      // Expand on the Bot's own card in that window opens the full-screen sheet it hosts.
+      act(() => { browserStageStore.open('member-oncall', { turnId: null, mode: 'live' }) })
+      expect(browserStageStore.get('member-oncall')?.surface).toBe('sheet')
+    } finally {
+      resetBrowserStores(writes)
+    }
   })
 
   it('the Workspace tab heads its file browser "Workspace" too, not "Files" (issue #28031)', async () => {

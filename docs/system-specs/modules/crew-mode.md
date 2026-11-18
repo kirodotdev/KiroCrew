@@ -2887,13 +2887,33 @@ kept per Bot (`openSessionBy` in `useMembersPageSidePanel`), so it survives a
 switch to Dashboard and back. A session that is not open offers **Reopen
 session**, through the resume route (`POST .../resume`) without making it the
 chat page's active session; a session
-on another crew says where it runs.
+on another crew says where it runs. A row whose session's browser is live
+(`isBrowsingNow` over the live-browser store) shows **Live**, which opens that
+session's browser big in the panel's Preview tab.
 Child subagent runs remain presence for the roster but are not dashboard
 sessions. Every page-level request to open Profile — including a second use of
 the quiet-chat Sessions link after the reader changed card tabs or pushed a
 page — advances the Profile open nonce and remounts the card at the requested
 initial tab. The nonce advances only inside the action admitted by the schedule
 draft guard, so a veto neither remounts the card nor loses its pushed form.
+
+The Bot's thread draws no card for a worker's browsing, so the panel's Preview
+tab follows the Bot's sessions as well as its thread (`SidePanel.browserFollowKeys`,
+every open session stamped with the Bot's `mate_root`): its Agent browser switch
+appears once any of them has browsed and opens on the one browsing now, else the
+turn that started last. The page registers as the browser stage host
+(`registerBrowserStageHost`) while its thread is confirmed, so Expand or Replay on
+the Bot's own browser card in its thread opens the same Preview tab, as on the chat
+page, instead of a full-screen sheet over the thread; a phone keeps the sheet. A
+worker's pane in the Sessions tab draws no browser card (a `ChatPane` names no
+session to `TurnBlock`), so the panel's Preview tab and Live are where this page
+shows a worker's browser. While the thread is not confirmed (it re-confirms on
+every reconnect, or its open failed) the Preview tab is withheld and the page is no
+host: a shown stage closes, Expand opens the full-screen sheet the card hosts, and
+Live is not offered. When a docked Profile keeps its schedule draft, the Bot's own
+card falls back to the full-screen sheet and any other stage is dropped, so no card
+says it is showing in the side panel. The tab shows one big view: a stage opened
+for another of its sessions closes the older one.
 
 **Goals** (`CrewGoals.tsx`, `CrewGoalsPane`) is the Bot's goal record
 (`member_goals.py`), shared by the user and the Bot, never written to

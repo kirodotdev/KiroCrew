@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { Bot, Globe, Undo2 } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
 import { Btn } from './ui'
-import { browserLiveStore, useBrowserLiveSessionTurns } from '../hooks/useBrowserLive'
-import { browserStageStore, useBrowserStage } from '../hooks/useBrowserLive.stage'
+import { browserLiveStore, isBrowsingNow, useBrowserLiveNewest } from '../hooks/useBrowserLive'
+import { browserStageStore, usePanelBrowserStage } from '../hooks/useBrowserLive.stage'
 import WebPreviewPanel from './WebPreviewPanel'
 import { lazyRetry } from './lazyRetry'
 
@@ -28,36 +28,59 @@ const BrowserLiveStage = lazyRetry(() => import('../pages/chat/BrowserLiveStage'
  *     an iframe's app state and an annotation in progress survive a look at the
  *     agent.
  *   - Agent browser: `BrowserLiveStage`, the agent's browser big, live or
- *     replaying. Shown while the session's stage is on the panel.
+ *     replaying. Shown while a panel stage of one of its sessions is open.
  *
- * The switch between them is one segmented control, shown only once the session
- * has browsed. Local preview IS Bring back: it clears the stage, so the chat
- * card unfolds. The panel closing or the person moving to another tab clears it
- * too, so the picture never sits in a place nobody can see.
+ * Its sessions are `sessionKey` and `followKeys`: a Bot's page passes the Bot's
+ * own sessions, so their browsing shows here although the Bot's thread draws no
+ * card for it. Agent browser opens on the one browsing now, else the one that
+ * browsed last.
+ *
+ * The switch between them is one segmented control, shown only once one of its
+ * sessions has browsed. Local preview IS Bring back: it clears the stage, so the
+ * chat card unfolds. The panel closing or the person moving to another tab
+ * clears it too, so the picture never sits in a place nobody can see.
  */
-export default function PreviewTabBody({ sessionKey, active = true }: { sessionKey?: string | null; active?: boolean }) {
+export default function PreviewTabBody({ sessionKey, active = true, followKeys }: {
+  sessionKey?: string | null
+  active?: boolean
+  /** More sessions whose agent browser this tab shows, besides `sessionKey`. */
+  followKeys?: readonly string[]
+}) {
   const slot = sessionKey ?? null
-  const stage = useBrowserStage(slot)
-  const turns = useBrowserLiveSessionTurns(slot)
-  const agent = !!stage && stage.surface === 'panel'
-  const showSwitch = agent || turns.length > 0
+  const keys = useMemo(() => [...new Set([slot, ...(followKeys ?? [])])].filter((k): k is string => !!k), [slot, followKeys])
+  const stage = usePanelBrowserStage(keys)
+  const newest = useBrowserLiveNewest(keys)
+  const agent = !!stage
+  const showSwitch = agent || !!newest
 
-  const bringBack = useCallback(() => { if (slot) browserStageStore.close(slot) }, [slot])
+  const shownKey = stage?.sessionKey ?? null
+  const bringBack = useCallback(() => { if (shownKey) browserStageStore.close(shownKey) }, [shownKey])
   const showAgent = useCallback(() => {
-    if (!slot) return
-    const cur = browserLiveStore.current(slot)
-    const live = !!cur && !cur.turnOver && cur.state !== 'done' && cur.state !== 'error'
-    browserStageStore.open(slot, { turnId: live ? null : cur?.turnId ?? null, mode: live ? 'live' : 'replay' })
-  }, [slot])
+    const target = newest?.sessionKey ?? slot
+    if (!target) return
+    const cur = browserLiveStore.current(target)
+    const live = isBrowsingNow(cur)
+    browserStageStore.open(target, { turnId: live ? null : cur?.turnId ?? null, mode: live ? 'live' : 'replay' })
+  }, [newest, slot])
 
   // Shown, then not shown (another tab, the panel closed): the picture goes back
   // to the chat. Only a real true -> false: the body can mount inactive while the
   // host is still opening the panel for a fresh stage.
   const wasActive = useRef(active)
   useEffect(() => {
-    if (wasActive.current && !active && agent && slot) browserStageStore.close(slot)
+    if (wasActive.current && !active && shownKey) browserStageStore.close(shownKey)
     wasActive.current = active
-  }, [active, agent, slot])
+  }, [active, shownKey])
+
+  // One big view per tab: a stage opened for another of its sessions closes the
+  // older one, so Local preview or leaving the tab cannot reveal it or leave its
+  // card folded.
+  useEffect(() => {
+    if (!stage) return
+    for (const k of keys) {
+      if (k !== stage.sessionKey && browserStageStore.get(k)?.surface === 'panel') browserStageStore.close(k)
+    }
+  }, [stage, keys])
 
   const segBtn = (on: boolean) => `inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] cursor-pointer border-0 transition-colors ${
     on ? 'bg-accent-subtle text-accent font-semibold' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'
@@ -89,9 +112,10 @@ export default function PreviewTabBody({ sessionKey, active = true }: { sessionK
         <div className="absolute inset-0" hidden={agent}>
           <WebPreviewPanel sessionKey={sessionKey} active={active && !agent} />
         </div>
-        {agent && stage && slot && (
+        {stage && (
           <div className="absolute inset-0">
-            <BrowserLiveStage sessionKey={slot} stage={stage} active={active} />
+            {/* Keyed by session: a Bot's page can move the big view to another of its sessions. */}
+            <BrowserLiveStage key={stage.sessionKey} sessionKey={stage.sessionKey} stage={stage} active={active} />
           </div>
         )}
       </div>

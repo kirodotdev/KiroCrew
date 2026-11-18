@@ -421,3 +421,80 @@ describe('replay request errors', () => {
     expect(screen.queryByTestId('browser-live-stage-recordings-error')).toBeNull()
   })
 })
+
+describe('a Preview tab that follows more sessions (a Bot page and its workers)', () => {
+  const W = 'chat-worker'
+  const wev = (over: Record<string, unknown> = {}) => ev({ session_key: W, turn_id: 'w1', ...over })
+  const wframe = (seq: number): DecodedBrowserFrame => {
+    const f = frame(seq)
+    return { ...f, header: { ...f.header, session_key: W } }
+  }
+
+  it("shows a followed session's browser, live, though its own session never browsed", async () => {
+    browserStageStore.registerHost(() => {})
+    act(() => { browserLiveStore.applyEvent(wev()); browserLiveStore.applyFrame(wframe(1)) })
+    render(wrap(<PreviewTabBody sessionKey={S} active followKeys={[W]} />))
+    fireEvent.click(screen.getByTestId('preview-mode-agent'))
+    expect(browserStageStore.get(W)).toMatchObject({ turnId: null, mode: 'live', surface: 'panel' })
+    expect(browserStageStore.get(S)).toBeNull()
+    expect(screen.getByTestId('preview-tab-body')).toHaveAttribute('data-mode', 'agent')
+    expect(await screen.findByTestId('browser-live-stage', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })).toHaveAttribute('data-mode', 'live')
+    // The stream and the takeover are the followed session's.
+    expect(writes.visibility).toHaveBeenCalledWith(W, true)
+    fireEvent.click(screen.getByTestId('browser-live-stage-take-over'))
+    expect(writes.claim).toHaveBeenCalledWith(W)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByTestId('browser-live-stage-hand-back'))
+    expect(writes.release).toHaveBeenCalledWith(W)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByTestId('preview-mode-local'))
+    expect(browserStageStore.get(W)).toBeNull()
+    expect(screen.getByTestId('preview-tab-body')).toHaveAttribute('data-mode', 'local')
+  })
+
+  it('opens on the session browsing now; with none browsing, on the turn that started last', () => {
+    browserStageStore.registerHost(() => {})
+    act(() => {
+      browserLiveStore.applyEvent(wev({ started_at_ms: T0 }))
+      browserLiveStore.applyEvent(ev({ started_at_ms: T0 + 5000 }))
+      browserLiveStore.applyEvent(ev({ state: 'done' }))
+    })
+    render(wrap(<PreviewTabBody sessionKey={S} active followKeys={[W]} />))
+    // The worker is still browsing; the session's own turn, though later, is done.
+    fireEvent.click(screen.getByTestId('preview-mode-agent'))
+    expect(browserStageStore.get(W)).toMatchObject({ turnId: null, mode: 'live' })
+    expect(browserStageStore.get(S)).toBeNull()
+    fireEvent.click(screen.getByTestId('preview-mode-local'))
+    act(() => { browserLiveStore.applyEvent(wev({ state: 'done' })) })
+    fireEvent.click(screen.getByTestId('preview-mode-agent'))
+    expect(browserStageStore.get(S)).toMatchObject({ turnId: 't1', mode: 'replay' })
+    expect(browserStageStore.get(W)).toBeNull()
+  })
+
+  it("shows a stage a followed session's card opened, never another session's, and leaving the tab closes it", () => {
+    browserStageStore.registerHost(() => {})
+    act(() => { browserLiveStore.applyEvent(wev()); browserLiveStore.applyEvent(ev({ session_key: 'chat-other', turn_id: 'o1' })) })
+    const { rerender } = render(wrap(<PreviewTabBody sessionKey={S} active followKeys={[W]} />))
+    act(() => { browserStageStore.open('chat-other', { turnId: null, mode: 'live' }) })
+    expect(screen.getByTestId('preview-tab-body')).toHaveAttribute('data-mode', 'local')
+    act(() => { browserStageStore.open(W, { turnId: null, mode: 'live' }) })
+    expect(screen.getByTestId('preview-tab-body')).toHaveAttribute('data-mode', 'agent')
+    rerender(wrap(<PreviewTabBody sessionKey={S} active={false} followKeys={[W]} />))
+    expect(browserStageStore.get(W)).toBeNull()
+    expect(browserStageStore.get('chat-other')).not.toBeNull()
+  })
+
+  it("a stage opened for another of its sessions replaces the shown one, so Local preview shows the local preview", () => {
+    browserStageStore.registerHost(() => {})
+    act(() => { browserLiveStore.applyEvent(wev()); browserLiveStore.applyEvent(ev()) })
+    render(wrap(<PreviewTabBody sessionKey={S} active followKeys={[W]} />))
+    act(() => { browserStageStore.open(W, { turnId: null, mode: 'live' }) })
+    // The session's own card opens the big view while the worker's shows.
+    act(() => { browserStageStore.open(S, { turnId: null, mode: 'live' }) })
+    expect(browserStageStore.get(S)?.surface).toBe('panel')
+    expect(browserStageStore.get(W)).toBeNull()
+    fireEvent.click(screen.getByTestId('preview-mode-local'))
+    expect(browserStageStore.get(S)).toBeNull()
+    expect(screen.getByTestId('preview-tab-body')).toHaveAttribute('data-mode', 'local')
+  })
+})
