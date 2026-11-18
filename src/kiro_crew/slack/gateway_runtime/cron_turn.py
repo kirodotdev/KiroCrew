@@ -338,6 +338,9 @@ async def _cron_run_sequence(
                     needs_reinjection=_seq_reinjection,
                     minimal_context=job.minimal_context,
                     request_prefix_context=cap.prior_result or None,
+                    # Skills match the job's own words, not the expanded
+                    # prompt, as on the single-agent path.
+                    skill_trigger_text=msg,
                 )
                 # The step agent's own spec hooks on a backend that never runs
                 # them (KAS): AgentSpawn and UserPromptSubmit before the prompt,

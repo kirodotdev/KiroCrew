@@ -865,6 +865,8 @@ async def test_a_leading_prompt_mention_in_the_job_message_is_expanded(
         assert "Step one: check the pipeline." in built
         assert "1. pipeline 42" in built
         assert "@cron-sop" not in built
+        # Skills match the job's own words, not the expanded prompt.
+        assert call.kwargs["skill_trigger_text"] == "@cron-sop\n1. pipeline 42"
 
 
 @pytest.mark.asyncio

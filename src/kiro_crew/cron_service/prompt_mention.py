@@ -13,7 +13,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("kiro_crew.cron")
 
 
 async def expand_cron_prompt_mention(
@@ -32,18 +32,19 @@ async def expand_cron_prompt_mention(
     """
     if not message.startswith("@"):
         return message
-    from kiro_crew.dashboard.chat_turn.prompt_assembly import _resolve_prompt_mention
+    # Through the runner: it is the one import path to a chat-turn owner.
+    from kiro_crew.dashboard.chat_runner import _resolve_prompt_mention
 
     expanded, status, _chip = await asyncio.to_thread(
         _resolve_prompt_mention, message, Path(project_dir) if project_dir else None
     )
-    if status == "not_found":
-        return message
     mention = message.split(None, 1)[0]
+    # Every status is audited, not_found included: the no-link read refusal
+    # reports as not_found, and the chat path logs it the same way.
     try:
-        from kiro_crew.sel import sel
+        from kiro_crew import cron as seams  # the facade holds the patched names
 
-        sel().log_tool_invocation(
+        seams.sel.sel().log_tool_invocation(
             session_key=f"cron:{job_id}",
             tool_name="prompt_expansion",
             tool_kind="prompt",
@@ -52,6 +53,9 @@ async def expand_cron_prompt_mention(
         )
     except Exception:
         logger.debug("SEL logging failed in cron prompt expansion", exc_info=True)
+    if status == "not_found":
+        # Silent apart from the audit event: "@here ..." is not a prompt.
+        return message
     if status != "ok":
         logger.warning(
             "Cron '%s': prompt %s was not expanded (%s); the message runs as written",

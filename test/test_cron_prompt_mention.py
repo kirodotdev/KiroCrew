@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.cron_service.prompt_mention import expand_cron_prompt_mention
-from kiro_crew.dashboard.chat_turn import prompt_assembly
+from kiro_crew.dashboard import chat_runner
 
 
 def _resolver(monkeypatch: pytest.MonkeyPatch, status: str, seen: list[Any]) -> None:
@@ -17,7 +17,7 @@ def _resolver(monkeypatch: pytest.MonkeyPatch, status: str, seen: list[Any]) -> 
         seen.append((message, project_dir))
         return (f"EXPANDED<{message}>" if status == "ok" else message), status, ""
 
-    monkeypatch.setattr(prompt_assembly, "_resolve_prompt_mention", resolve)
+    monkeypatch.setattr(chat_runner, "_resolve_prompt_mention", resolve)
 
 
 @pytest.mark.asyncio
@@ -86,3 +86,27 @@ async def test_an_unknown_name_is_silent(
 
     assert out == "@here hi"
     assert caplog.text == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["ok", "blocked", "not_found"])
+async def test_every_status_writes_the_audit_event(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """A no-link read refusal reports as not_found, so it is audited too, as in chat."""
+    import kiro_crew.sel as sel_mod
+
+    events: list[dict[str, Any]] = []
+
+    class _Sel:
+        def log_tool_invocation(self, **kw: Any) -> None:
+            events.append(kw)
+
+    monkeypatch.setattr(sel_mod, "sel", lambda: _Sel())
+    _resolver(monkeypatch, status, [])
+
+    await expand_cron_prompt_mention("@x rest", None, job_id="j1", job_name="n")
+
+    assert [(e["session_key"], e["tool_name"], e["outcome"]) for e in events] == [
+        ("cron:j1", "prompt_expansion", status)
+    ]
