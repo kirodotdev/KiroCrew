@@ -1466,8 +1466,10 @@ jobs:
   #
   # Whole-file shards, assigned before import using the same plugin as POSIX.
   # Eight runners share the work; the per-job timeout remains unchanged.
-  # File hashing avoids full-suite item collection in every worker, but does not
-  # claim equal durations across files or platforms.
+  # scripts/ci_file_shard_pins_windows.txt moves the heaviest files to fixed
+  # shards so the shards' Windows test time comes out even; the slowest shard
+  # sets this job's time. scripts/ci_file_shard_pins.py --platform windows
+  # regenerates it.
   backend-test-windows:
     name: Backend Tests (Windows)
     needs: [changes, await-fast-gate, lint-gate]
@@ -1604,7 +1606,8 @@ jobs:
           python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards \
             --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
             -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
-            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --file-shard-pins scripts/ci_file_shard_pins_windows.txt
         # Ordinary shards plus backend-test-ipv6 retain every Windows test.
         # Windows has no namespace sandbox, so `userns_available()` is False and every
         # sandbox-dependent test skips. Residual POSIX assumptions in

@@ -260,10 +260,27 @@ class TestFileShards(unittest.TestCase):
 
     def test_committed_pin_file_matches_the_workflow_shard_count(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
-        count = workflow["jobs"]["backend-test"]["env"]["SHARD_COUNT"]
-        pins = read_pins(ROOT / "scripts/ci_file_shard_pins.txt", count)
-        # The pins balance the shards only if every shard holds some of them.
-        self.assertEqual(set(pins.values()), set(range(1, count + 1)))
+        for job, name in (
+            ("backend-test", "ci_file_shard_pins.txt"),
+            ("backend-test-windows", "ci_file_shard_pins_windows.txt"),
+        ):
+            count = workflow["jobs"][job]["env"]["SHARD_COUNT"]
+            pins = read_pins(ROOT / "scripts" / name, count)
+            # The pins balance the shards only if every shard holds some of them.
+            self.assertEqual(set(pins.values()), set(range(1, count + 1)), name)
+
+    def test_pin_generator_reads_only_the_named_platforms_artifacts(self):
+        run = self.root / "runs" / "a"
+        for platform, module in (("linux", "test/test_lin.py"), ("windows", "test/test_win.py")):
+            shard_dir = run / f"{platform}-pytest-progress-1"
+            shard_dir.mkdir(parents=True)
+            record = {"event": "phase_end", "module": module, "phase": "call", "elapsed": 5.0}
+            (shard_dir / "gw0.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+            self.write(module, "def test_ok(): pass\n")
+        out = self.root / "pins.txt"
+        argv = [str(run), "--platform=windows", "--shards=2", "--pins=5"]
+        self.assertEqual(ci_file_shard_pins.main(argv + [f"--out={out}", f"--root={self.root}"]), 0)
+        self.assertEqual(set(read_pins(out, 2)), {"test/test_win.py"})
 
     def test_pin_generator_balances_measured_seconds_and_is_deterministic(self):
         runs = self.root / "runs"
@@ -779,7 +796,8 @@ class TestFileShards(unittest.TestCase):
                     ],
                 )
             else:
-                self.assertNotIn("--file-shard-pins", command)
+                self.assertEqual(command.count("--file-shard-pins"), 1)
+                self.assertIn("--file-shard-pins scripts/ci_file_shard_pins_windows.txt", command)
         for name, job in workflow["jobs"].items():
             if name not in ("backend-test", "backend-test-windows"):
                 self.assertNotIn("ci_file_shards", json.dumps(job))

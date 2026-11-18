@@ -6926,8 +6926,14 @@ summed test seconds come out even, and every other file keeps its hash owner. A
 pin only changes which shard owns a file, so a new or renamed file is still
 collected, on its hash shard. `scripts/ci_file_shard_pins.py` regenerates the pin
 file from the `linux-pytest-progress-<N>` artifacts of several green `main` runs;
-regenerate it when the Linux shards' `Run tests` times drift apart again. Windows,
-macOS, release and the reduced and leaf scopes keep pure hash ownership.
+regenerate it when the Linux shards' `Run tests` times drift apart again. The
+Windows run adds its own pin file, `--file-shard-pins
+scripts/ci_file_shard_pins_windows.txt`, generated the same way with
+`--platform windows` from the `windows-pytest-progress-<N>` artifacts. Windows
+keeps a separate file because a file's share of the time differs there: the
+Linux pins cut the slowest Windows shard by a median 12% of its summed test
+seconds over six held-out green runs, the Windows pins by 20%. macOS, release
+and the reduced and leaf scopes keep pure hash ownership.
 
 macOS assigns whole files like the other platforms, in eight shards. The shard
 count is the knob to reach for when the suite grows, not the 60-minute cap,
