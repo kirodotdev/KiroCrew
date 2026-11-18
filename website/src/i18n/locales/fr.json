@@ -20566,6 +20566,8 @@
         "remote_editor_host_save_error": "Impossible d’enregistrer l’hôte SSH.",
         "show_topbar_search": "Afficher la recherche dans la barre supérieure",
         "show_topbar_search_desc": "Affiche le champ de recherche au centre de la barre supérieure. Désactivé, son espace revient aux commandes de chaque côté, et les valeurs CPU, MEM et DSK restent visibles dans les fenêtres plus étroites. Le raccourci de recherche ouvre toujours la recherche. Tant que les raccourcis sont désactivés, le champ reste affiché.",
+        "reopen_last_page": "Reprendre là où je m'étais arrêté",
+        "reopen_last_page_desc": "Ouvrir l'application installée depuis son icône ramène à la dernière page ouverte sur cet appareil, par exemple le chat d'un équipier, au lieu de Sessions. Un lien ou une notification qui désigne une page ouvre toujours cette page.",
         "command_bar": "Utiliser la Command Bar",
         "command_bar_desc": "Cmd+K ou Ctrl+K ouvre la Command Bar : saisis une commande pour aller à une application, un réglage ou une session. Désactivé, le raccourci ouvre la palette de recherche, qui cherche aussi dans les connaissances, les compétences et les prompts.",
         "command_bar_save_failed": "Impossible d’enregistrer le réglage de la Command Bar.",

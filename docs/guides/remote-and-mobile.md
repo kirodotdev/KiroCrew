@@ -750,6 +750,16 @@ on the gateway host itself.
 launch from the new icon. The manifest's `"display": "standalone"` is what drops
 Safari's address bar.
 
+**The installed app can reopen the last page it showed.** iOS opens the
+manifest's `/`, not the page you added, so the app opens at Sessions. To change
+that on one device, turn on **Settings > Display > Reopen where I left off**.
+The switch is off by default and shows only in the installed app. With it on, a
+launch at `/` replaces it with the last dashboard page the app was on on that
+device, such as one crewmate's chat. A link or notification that names a page
+still opens that page. Only same-origin dashboard pages are reopened, and
+parameters that look like credentials are never stored. A normal browser tab
+always opens the URL you typed.
+
 **The service worker provides a limited offline shell.**
 [`website/public/sw.js`](../../website/public/sw.js) caches exactly `/` and
 `/index.html`. Every other same-origin `GET` falls into one of two buckets: a

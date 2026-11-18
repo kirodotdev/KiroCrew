@@ -34,6 +34,7 @@
  *     in its description/keywords/tab.
  */
 import { crewModeEnabled } from '../../lib/crewMode'
+import { isStandaloneDisplay } from '../../lib/standaloneLastRoute'
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
 import { PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
@@ -149,6 +150,9 @@ export const CHANNELS_SWITCH_KEY = 'dashboard.channels_enabled'
 export const ENABLE_REMOTE_CREWS_SETTING_ID = 'instances.enable-remote-crew-management'
 export const AUTO_CONNECT_CREWS_SETTING_ID = 'instances.auto-connect-crews'
 
+/** Registry id of "Reopen where I left off", which DisplayPanel draws only in the installed app. */
+export const REOPEN_LAST_PAGE_SETTING_ID = 'display.reopen-where-i-left-off'
+
 /** The governance answers the search needs, as the two surfaces resolve them. */
 export interface SettingsSearchGovernance {
   /**
@@ -224,6 +228,7 @@ export function settingEntryOffered(
   if (entry.labelKey === 'pages.developer.featurePreviewsTab.dashboard_stale_wake') {
     return readPreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS)
   }
+  if (entry.id === REOPEN_LAST_PAGE_SETTING_ID) return isStandaloneDisplay()
   if (entry.id === FEATURE_TIPS_SETTING_ID) return governance.tipsEnabled
   if (entry.id === GATEWAY_AUTO_UPDATE_SETTING_ID) return governance.updateSwitches.gateway
   if (entry.id === APP_AUTO_DOWNLOAD_SETTING_ID) return governance.updateSwitches.app

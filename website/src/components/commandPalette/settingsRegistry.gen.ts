@@ -2941,6 +2941,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.reopen-where-i-left-off",
+    "label": "Reopen where I left off",
+    "labelKey": "pages.settings.displayPanel.reopen_last_page",
+    "hint": "Opening the installed app from its icon returns to the last page you had open on this device, such as one crewmate's chat, instead of Sessions. A link or notification that names a page still opens that page.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
+  },
+  {
     "id": "display.reuse-the-current-terminal",
     "label": "Reuse the current terminal",
     "labelKey": "pages.settings.displayPanel.terminal_reuse_current",

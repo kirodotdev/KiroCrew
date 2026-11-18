@@ -20566,6 +20566,8 @@
         "remote_editor_host_save_error": "Impossibile salvare l’host SSH.",
         "show_topbar_search": "Mostra la ricerca nella barra superiore",
         "show_topbar_search_desc": "Mostra il campo di ricerca al centro della barra superiore. Disattivato, il suo spazio va ai controlli ai lati, così i valori di CPU, MEM e DSK restano visibili nelle finestre più strette. La scorciatoia di ricerca apre ancora la ricerca. Finché le scorciatoie sono disattivate, il campo resta visibile.",
+        "reopen_last_page": "Riprendi da dove avevo lasciato",
+        "reopen_last_page_desc": "Aprendo l'app installata dalla sua icona torni all'ultima pagina aperta su questo dispositivo, come la chat di un compagno, invece che a Sessions. Un link o una notifica che indica una pagina apre comunque quella pagina.",
         "command_bar": "Usa la Command Bar",
         "command_bar_desc": "Cmd+K o Ctrl+K apre la Command Bar: digita un comando per andare a un’app, un’impostazione o una sessione. Disattivata, la scorciatoia apre la palette di ricerca, che cerca anche in conoscenza, competenze e prompt.",
         "command_bar_save_failed": "Impossibile salvare l’impostazione della Command Bar.",
