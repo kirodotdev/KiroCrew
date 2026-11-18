@@ -305,20 +305,34 @@ class TestRunLaunch:
         assert "was removed" in out.error
 
     @pytest.mark.parametrize(
-        ("exists", "confirms", "says", "never_says"),
+        ("exists", "confirms", "says", "never_says", "rollback"),
         [
-            (False, True, "was never created, so it is not billing", "was removed"),
-            (True, True, "was removed so it stops billing", "never created"),
-            (False, False, "did NOT confirm", "not billing"),
-            (RuntimeError("Throttling"), True, "was removed so it stops billing", "never created"),
+            (
+                False,
+                True,
+                "was never created, so it is not billing",
+                "was removed",
+                lj.ROLLBACK_NEVER_CREATED,
+            ),
+            (True, True, "was removed so it stops billing", "never created", lj.ROLLBACK_REMOVED),
+            (False, False, "did NOT confirm", "not billing", lj.ROLLBACK_UNCONFIRMED),
+            (
+                RuntimeError("Throttling"),
+                True,
+                "was removed so it stops billing",
+                "never created",
+                lj.ROLLBACK_REMOVED,
+            ),
         ],
     )
     def test_a_failed_provision_says_whether_a_stack_existed(
-        self, tmp_path, exists, confirms, says, never_says
+        self, tmp_path, exists, confirms, says, never_says, rollback
     ):
         """A refusal before CloudFormation (a denied CreateChangeSet, a subnet with no
         egress) created no stack, so the card must not report one removed. The delete
-        runs whatever the lookup said, so an unconfirmed one keeps its billing warning."""
+        runs whatever the lookup said, so an unconfirmed one keeps its billing warning.
+        The outcome is a job field too, persisted, so the dashboard can tell a launch
+        that left nothing from one that may have left a stack."""
 
         class ProbingEngine(FakeEngine):
             def resource_exists(self, *, tag, profile, region):
@@ -342,6 +356,24 @@ class TestRunLaunch:
         ]
         assert says in out.error
         assert never_says not in out.error
+        assert out.rollback == rollback
+        assert s.get(out.id).rollback == rollback
+
+    def test_a_rollback_that_raises_is_recorded_on_the_job(self, tmp_path):
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        eng = FakeEngine(
+            provision_exc=RuntimeError("AccessDenied: ec2:RunInstances"),
+            teardown_exc=RuntimeError("ExpiredToken"),
+        )
+        out = lj.run_launch(job, s, eng)
+
+        assert out.rollback == lj.ROLLBACK_ERROR
+        assert "could not be removed automatically" in out.error
+
+    def test_a_job_without_a_rollback_loads_with_none(self):
+        assert lj.LaunchJob.from_dict({"id": "abc"}).rollback == ""
+        assert lj.LaunchJob(id="a", profile="", region="", size_key="").to_dict()["rollback"] == ""
 
     def test_the_ec2_engine_answers_existence_from_the_stack_lookup(self, monkeypatch):
         from kiro_crew.cloud import launch_engine as le
@@ -818,6 +850,7 @@ class TestCancelRollsBackTheStack:
         assert out.status == lj.CANCELLED
         assert ("teardown", out.tag) in eng.calls
         assert out.step(lj.STEP_PROVISION).detail == f"Removed {out.tag} after cancellation."
+        assert out.rollback == lj.ROLLBACK_REMOVED
 
     def test_an_unconfirmed_delete_is_not_reported_as_removed(self, tmp_path):
         """`destroy(wait=False)` only means the request was accepted. A stack that
@@ -831,11 +864,13 @@ class TestCancelRollsBackTheStack:
         assert out.tag in (out.error or "")
         assert "did NOT confirm" in (out.error or "")
         assert "billing" in (out.error or "")
+        assert out.rollback == lj.ROLLBACK_UNCONFIRMED
 
     def test_a_failed_rollback_names_the_stack_so_the_user_can_remove_it(self, tmp_path):
         out, _ = self._cancel_at_signin(tmp_path, teardown_exc=RuntimeError("access denied"))
 
         assert out.status == lj.CANCELLED
+        assert out.rollback == lj.ROLLBACK_ERROR
         assert out.tag in (out.error or ""), "the user must be told what to delete"
         assert "billing" in (out.error or "")
 

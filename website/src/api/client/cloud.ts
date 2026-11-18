@@ -151,6 +151,10 @@ export interface LaunchJob {
   signin?: CloudLaunchSignin | null
   signin_detected?: boolean
   error?: string
+  /** What the rollback delete of a failed or cancelled launch found: empty (or
+   *  absent, from an older gateway) when none ran. Only `never_created` says the
+   *  launch left nothing in AWS. */
+  rollback?: '' | 'never_created' | 'removed' | 'unconfirmed' | 'error'
   created_at: number
   updated_at: number
 }
