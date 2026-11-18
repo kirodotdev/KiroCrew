@@ -64,6 +64,7 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 from kiro_crew.notifications.bus import _MAX_BODY_LEN, NotificationPayload
+from kiro_crew.platform_compat_metrics import linux_memory_psi_full_avg10
 from kiro_crew.resource_status import (
     POSTURE_AMPLE,
     POSTURE_CRITICAL,
@@ -88,6 +89,15 @@ CHANNEL = "system.resources"
 # heartbeat) ticks faster; this gate makes the probe cadence independent of
 # the caller's interval.
 SAMPLE_INTERVAL_SECS = 30.0
+
+# The cadence while the last posture was tight or critical: the heartbeat's own
+# 5 s, so every beat samples and no timer is added. At 30 s a swapless host can
+# go from tight to livelock between two samples (rfc-host-memory-guard.md §4.1).
+FAST_SAMPLE_INTERVAL_SECS = 5.0
+
+# PSI ``full avg10`` at or above this, on a TIGHT reading, counts as critical for
+# the memory guard only: not for the notes, the spawn gate or the create refusal.
+GUARD_PSI_FULL_AVG10 = 10.0
 
 # How long posture must stay tight (without recovering to ample) before the
 # sustained-tight note fires.
@@ -215,6 +225,7 @@ class ResourcePressureNotifier:
         clock: Callable[[], float] = time.monotonic,
         disk_fn: Callable[[], tuple[str, str]] = _read_disk_posture,
         on_posture_change: Callable[[], None] = _pull_watching_conductors,
+        psi_fn: Callable[[], float | None] = linux_memory_psi_full_avg10,
     ) -> None:
         self._bus = bus
         self._probe = probe_fn
@@ -225,6 +236,14 @@ class ResourcePressureNotifier:
         self._disk: tuple[str, str] = (POSTURE_AMPLE, "")
         # The combined level last published; a change of it pulls conductors forward.
         self._posture_level: str | None = None
+        self._psi_fn = psi_fn
+        # The newest PSI reading, written by the worker thread with the probe and
+        # read on the loop after the probe returned in time.
+        self._psi: float | None = None
+        # The memory guard (``session_memory_guard.request``): called on the loop
+        # with ``(status, psi, trigger)`` when the guard trigger holds. It
+        # schedules its own pass and returns at once. None until the gateway wires it.
+        self.memory_guard: Callable[[ResourceStatus, float | None, str], None] | None = None
         self._next_sample = 0.0
         self._inflight = False
         # Set by the worker thread at entry, read on the loop side after a
@@ -303,6 +322,9 @@ class ResourcePressureNotifier:
                     logger.debug("agents-slice OOM push failed", exc_info=True)
             self.observe(status, now)
             self.observe_posture(status)
+            if status.posture in (POSTURE_TIGHT, POSTURE_CRITICAL):
+                self._next_sample = now + FAST_SAMPLE_INTERVAL_SECS
+            self._maybe_guard(status)
         except Exception:
             logger.debug("resource-pressure sample failed", exc_info=True)
 
@@ -348,9 +370,45 @@ class ResourcePressureNotifier:
                 self._disk = self._disk_fn()
             except Exception:
                 logger.debug("disk posture read failed", exc_info=True)
-            return self._probe()
+            status = self._probe()
+            try:
+                self._psi = self._psi_fn()
+            except Exception:
+                self._psi = None
+                logger.debug("memory PSI read failed", exc_info=True)
+            return status
         finally:
             self._inflight = False
+
+    def guard_trigger(self, status: ResourceStatus) -> str | None:
+        """``"critical"``, ``"psi"`` or None: whether the memory guard should run now.
+
+        Off with ``agent.resource_critical_gb = 0`` on both arms: the critical
+        posture never occurs then, and PSI only stands in for critical, so it is
+        armed only while that threshold is on. PSI counts only on a tight
+        reading, so an IO-only stall on an ample host stops nothing.
+        """
+        if not status.critical_gb or status.critical_gb <= 0:
+            return None
+        if status.posture == POSTURE_CRITICAL:
+            return "critical"
+        psi = self._psi
+        if status.posture == POSTURE_TIGHT and psi is not None and psi >= GUARD_PSI_FULL_AVG10:
+            return "psi"
+        return None
+
+    def _maybe_guard(self, status: ResourceStatus) -> None:
+        """Hand the sample to the memory guard when its trigger holds. Never raises."""
+        guard = self.memory_guard
+        if guard is None:
+            return
+        trigger = self.guard_trigger(status)
+        if trigger is None:
+            return
+        try:
+            guard(status, self._psi, trigger)
+        except Exception:
+            logger.warning("memory guard request failed", exc_info=True)
 
     def observe(self, status: ResourceStatus, now: float) -> None:
         """Advance the episode state machine with one posture reading."""

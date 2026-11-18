@@ -1236,6 +1236,7 @@ from kiro_crew.work_ledger_writes import (  # noqa: E402, F401
     apply_acceptance_update,
     apply_ask_record,
     apply_conductor_action,
+    apply_guard_report,
     apply_person_steer,
     apply_worker_report,
     create_bound_item,

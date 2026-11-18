@@ -952,6 +952,13 @@ class SessionManager:
         # Fired once per turn by the RSS tick for a session over the ceiling whose
         # memory is held by processes outside its runtime's tree. Args: (key, notice).
         self.on_leftover_memory: Callable[[str, str], None] | None = None
+        # Fired by the host memory guard (``session_memory_guard``) for the tree it
+        # stopped, or could not stop, at critical memory. Args: (key, notice,
+        # ledger summary or None when nothing was stopped).
+        self.on_memory_guard_stop: Callable[[str, str, str | None], None] | None = None
+        from kiro_crew.session_memory_guard import MemoryGuardState
+
+        self._memory_guard = MemoryGuardState()
         # Fired once when the RSS recycle stops recycling a session whose fresh
         # processes keep climbing straight back over the ceiling
         # (``session_rss_rebound``), so the chat can say which setting to raise.

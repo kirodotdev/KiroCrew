@@ -854,3 +854,7 @@ def wire_session_recycle_callback(self: DashboardState) -> None:
             )
 
     self.sessions.on_rss_hold = _on_rss_hold
+
+    from kiro_crew.dashboard.memory_guard_events import wire_memory_guard
+
+    wire_memory_guard(self)

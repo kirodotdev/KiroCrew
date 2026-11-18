@@ -336,6 +336,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         system_cpu_percent _MIB_BYTES _NATURAL_T _HOST_VM_INFO64 _VMStatistics64
         _EXTERNAL_PAGE_COUNT_ELEMENTS macos_vm_statistics _macos_available_mib
         _linux_available_mib host_total_mib _darwin_memsize_bytes host_available_mib MEMORY_PRESSURE_NORMAL
+        _LINUX_MEMORY_PSI_PATH linux_memory_psi_full_avg10
         MEMORY_PRESSURE_WARN MEMORY_PRESSURE_CRITICAL _MEMORY_PRESSURE_NAMES
         _MEMORY_PRESSURE_SYSCTL memory_pressure_level memory_pressure_name
         POWER_AC POWER_BATTERY POWER_UNKNOWN _LINUX_POWER_SUPPLY_ROOT _WIN_AC_OFFLINE

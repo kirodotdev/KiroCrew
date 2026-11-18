@@ -976,9 +976,11 @@ class AgentConfig:
             "Resource Critical Threshold (GB)",
             "Available memory (GB) at or below which the [RESOURCES] context line "
             "escalates to 'critically low' and advises against starting heavy work "
-            "at all. Should be <= resource_pressure_gb. 0 disables the critical tier. "
-            "When the container's memory limit is at or under it, the gateway logs one "
-            "start-up warning naming the settings to lower.",
+            "at all. Should be <= resource_pressure_gb. It also arms the host memory guard, "
+            "which on Linux stops the largest Crew tool or test tree at critical memory, or "
+            "at tight memory with PSI full avg10 >= 10. 0 disables the critical tier and "
+            "turns the memory guard off. When the container's memory limit is at or under "
+            "it, the gateway logs one start-up warning naming the settings to lower.",
         ),
     )
     admission_gate: bool = field(
@@ -991,7 +993,9 @@ class AgentConfig:
             "summaries, history consolidation) are skipped while it lasts. Subagent "
             "spawns are not gated on this posture; they wait on spawn_min_memory_gb instead. "
             "Manually triggered cron runs and direct chat turns are never gated; an unreadable "
-            "probe admits (fail-open). Set false to make the critical posture advisory-only.",
+            "probe admits (fail-open). Set false to make the critical posture advisory-only "
+            "for these deferrals; it does not stop the host memory guard (see "
+            "resource_critical_gb).",
         ),
     )
     task_queue_enabled: bool = field(
