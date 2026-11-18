@@ -110,6 +110,10 @@ export type McpManagedServer = {
   measure_due?: boolean
 }
 
+/** `POST /api/mcp/try-tool`: a server's tools, or one run's redacted, size-capped result. */
+export type McpTryToolRow = { name: string; description: string; inputSchema: Record<string, unknown> | null; needsConfirm: boolean; switchedOff: boolean }
+export type McpTryToolAnswer = { ok: boolean; tools?: McpTryToolRow[]; leftOut?: number; withheld?: number; result?: string; isError?: boolean; truncated?: boolean }
+
 export type McpGatewayFootprint = {
   using_now_bytes: number | null
   with_sharing_bytes: number | null
@@ -153,6 +157,10 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
       put(`/api/mcp/custom/${encodeURIComponent(name)}`, { spec }).then(j) as Promise<{ ok: boolean; name: string; agent_spec_rewritten?: boolean }>,
     mcpActive: (agent?: string) => fetch('/api/mcp/active' + (agent ? `?agent=${encodeURIComponent(agent)}` : '')).then(j),
     mcpProbe: () => post('/api/mcp/probe').then(j),
+    /** The Try a tool panel (`mcp.tool_tester`): no `tool` lists the server's
+     *  tools, a `tool` runs it once and returns its redacted result. */
+    mcpTryTool: (body: { server: string; tool?: string; arguments?: Record<string, unknown>; confirm?: boolean }) =>
+      post('/api/mcp/try-tool', body).then(j) as Promise<McpTryToolAnswer>,
     mcpResetProbeFailures: (name: string) =>
       post('/api/mcp/quarantine/clear', { name }).then(j) as Promise<{ ok: boolean; name: string; released: boolean }>,
     mcpSync: () => post('/api/mcp/sync').then(j),

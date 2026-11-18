@@ -189,6 +189,9 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # redactor decodes (``_PLANTUML_SOURCE_CAP``).
     "handlers/plantuml_render.py::api_plantuml_svg": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/redaction.py::api_redaction_allow_host": ("_MAX_BODY", _BOUNDED_BY_DEFAULT),
+    # The Try a tool panel: a server and tool name, a confirm flag and the arguments
+    # the owner typed into one tool's form, which the shared ceiling covers.
+    "handlers/mcp_try_tool.py::api_mcp_try_tool": ("<default>", _BOUNDED_BY_DEFAULT),
     # A control click is one short closed name, so 256 bytes is far above any
     # legitimate body.
     "handlers/telemetry_ui_control.py::api_ui_control_clicked": (

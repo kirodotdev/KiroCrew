@@ -9,6 +9,9 @@ swallow it, so neither the lines within this function nor the order in which
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from aiohttp import web
 
 from kiro_crew.dashboard import handlers
@@ -28,6 +31,40 @@ from kiro_crew.dashboard.handlers.mcp_discover import (
     api_mcp_discover_detail,
     api_mcp_discover_install,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def tool_tester_enabled() -> bool:
+    """Whether ``mcp.tool_tester`` is on; a config that cannot be read reads as off. Blocking."""
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return KiroCrewConfig.load().mcp.tool_tester is True
+    except Exception:
+        logger.debug("mcp.tool_tester: config unreadable; the route stays off", exc_info=True)
+        return False
+
+
+async def api_mcp_try_tool(request: web.Request) -> web.StreamResponse:
+    """``POST /api/mcp/try-tool``, the owner's Try a tool panel, while ``mcp.tool_tester`` is on.
+
+    Registered at every start but loads nothing until a request
+    (no-new-work-on-gateway-boot-path): the owner gate answers first, as on every
+    mutating route here; with the setting off the path then answers as an unknown
+    route does. The setting is read per request, off the loop, and the tester
+    module is imported only once it is on, so turning it on needs no restart.
+    """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_try_tool")
+    if denied is not None:
+        return denied
+    if not await asyncio.to_thread(tool_tester_enabled):
+        raise web.HTTPNotFound()
+    from kiro_crew.dashboard.handlers import mcp_try_tool
+
+    return await mcp_try_tool.api_mcp_try_tool(request)
 
 
 def register(app: web.Application) -> None:
@@ -90,6 +127,9 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/mcp/custom/{name}", api_mcp_custom_update)
     app.router.add_post("/api/mcp/probe", handlers.api_mcp_probe)
     app.router.add_get("/api/mcp/probe", handlers.api_mcp_probe_cached)
+    # The owner's Try a tool panel; while mcp.tool_tester is off it answers as an
+    # unknown route does.
+    app.router.add_post("/api/mcp/try-tool", api_mcp_try_tool)
     app.router.add_post("/api/mcp/quarantine/clear", handlers.api_mcp_quarantine_clear)
     app.router.add_post("/api/mcp/measure", handlers.api_mcp_measure_start)
     app.router.add_get("/api/mcp/measure", handlers.api_mcp_measure_progress)
