@@ -131,8 +131,10 @@ END_REASON_SHUTDOWN = "shutdown"
 #: than folded into ``reset``: it pops the registry directly and never calls
 #: ``reset``, and an identity change is a different event from an idle sweep.
 #: ``reload_provider_factory`` reports this too for the registry it clears on a
-#: provider switch -- both are "this process is not the right host for these
-#: sessions", which is why they share a label rather than minting a second one.
+#: provider switch, and so does ``SessionAllocationService._evict_stale_session``
+#: for a stricter ``agent.sandbox`` -- each is "this process is not the right host
+#: for these sessions", which is why they share a label rather than minting a
+#: second one.
 END_REASON_RETIRED = "retired"
 #: ``CompactionCoordinator._recycle_held`` -- context overflow replaced the
 #: provider in place. Also pops directly rather than routing through ``reset``.

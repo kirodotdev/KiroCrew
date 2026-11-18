@@ -304,6 +304,12 @@ class _WorkflowSessionWorker:
                     self._key,
                     exc_info=True,
                 )
+            # A worker keeps one claim across tasks, so a stricter agent.sandbox
+            # reaches it here, at its task boundary, as a fresh process.
+            if await self._sessions.recycle_if_sandbox_tightened(self._key):
+                self._provider = None
+                await self.start()
+                return
             try:
                 await new_conv()
                 await self._reapply_effort()

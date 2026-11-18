@@ -133,6 +133,10 @@ class FakeSessions:
         """Whether the check flagged the session now registered under *key*."""
         return bool(getattr(self._sessions.get(key), "flagged", False))
 
+    async def recycle_if_sandbox_tightened(self, key):
+        """The tier never tightens here (``test_sandbox_tier_recycle.py`` drives that)."""
+        return False
+
     def has_session(self, key):
         return key in self._sessions
 

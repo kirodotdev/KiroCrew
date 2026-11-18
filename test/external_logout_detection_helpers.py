@@ -112,6 +112,9 @@ class _FakeSemaphore:
 
 
 class _FakeProvider:
+    # ``LLMProvider``'s default: no spawn tier to compare.
+    sandbox_mode = None
+
     def __init__(self, backend: str, *, sid: str = "") -> None:
         self.backend = backend
         self.client = SimpleNamespace(_session_id=sid, backend=backend)
