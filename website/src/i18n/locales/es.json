@@ -10806,10 +10806,6 @@
       "changes_count_one": "{{count}} cambio",
       "changes_count_many": "{{count}} cambios",
       "changes_count_other": "{{count}} cambios",
-      "reset_confirm_title": "¿Restablecer este agente a “{{name}}”?",
-      "reset_confirm_body": "Tus cambios — “{{fields}}” — se descartarán. Este agente usará la plantilla “{{name}}” tal cual.",
-      "switch_confirm_title": "¿Cambiar a “{{name}}”?",
-      "switch_confirm_body": "Tus cambios en “{{origin}}” (“{{fields}}”) se descartarán. Este agente usará la plantilla “{{name}}” tal cual.",
       "discard_and_switch": "Descartar cambios y cambiar"
     },
     "restartRequiredBadge": {

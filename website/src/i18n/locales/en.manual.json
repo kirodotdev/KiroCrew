@@ -4407,10 +4407,6 @@
     "agentTemplateDetail": {
       "changes_count_one": "{{count}} change",
       "changes_count_other": "{{count}} changes",
-      "reset_confirm_title": "Reset this agent to “{{name}}”?",
-      "reset_confirm_body": "Your changes — “{{fields}}” — will be discarded. This agent will use the “{{name}}” template as-is.",
-      "switch_confirm_title": "Switch to “{{name}}”?",
-      "switch_confirm_body": "Your changes to “{{origin}}” (“{{fields}}”) will be discarded. This agent will use the “{{name}}” template as-is.",
       "discard_and_switch": "Discard changes and switch"
     },
     "questionCard": {

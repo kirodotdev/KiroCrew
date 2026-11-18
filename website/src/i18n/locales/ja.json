@@ -10324,10 +10324,6 @@
     },
     "agentTemplateDetail": {
       "changes_count_other": "{{count}} 件の変更",
-      "reset_confirm_title": "このエージェントを 「{{name}}」 にリセットしますか？",
-      "reset_confirm_body": "あなたの変更 — 「{{fields}}」 — は破棄されます。このエージェントは 「{{name}}」 テンプレートをそのまま使います。",
-      "switch_confirm_title": "「{{name}}」 に切り替えますか？",
-      "switch_confirm_body": "「{{origin}}」 へのあなたの変更（「{{fields}}」）は破棄されます。このエージェントは 「{{name}}」 テンプレートをそのまま使います。",
       "discard_and_switch": "変更を破棄して切り替え"
     },
     "restartRequiredBadge": {

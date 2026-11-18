@@ -10565,10 +10565,6 @@
     "agentTemplateDetail": {
       "changes_count_one": "{{count}}টি পরিবর্তন",
       "changes_count_other": "{{count}}টি পরিবর্তন",
-      "reset_confirm_title": "এই এজেন্টকে “{{name}}”-এ রিসেট করবেন?",
-      "reset_confirm_body": "আপনার পরিবর্তন — “{{fields}}” — বাতিল হয়ে যাবে। এই এজেন্ট “{{name}}” টেমপ্লেট যেমন আছে তেমনই ব্যবহার করবে।",
-      "switch_confirm_title": "“{{name}}”-এ যাবেন?",
-      "switch_confirm_body": "“{{origin}}”-এ আপনার পরিবর্তন (“{{fields}}”) বাতিল হয়ে যাবে। এই এজেন্ট “{{name}}” টেমপ্লেট যেমন আছে তেমনই ব্যবহার করবে।",
       "discard_and_switch": "পরিবর্তন বাতিল করে যান"
     },
     "restartRequiredBadge": {

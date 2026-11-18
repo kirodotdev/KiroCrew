@@ -10529,10 +10529,6 @@
     "agentTemplateDetail": {
       "changes_count_one": "[{{count}} çĥàñğè ···········]",
       "changes_count_other": "[{{count}} çĥàñğèş ············]",
-      "reset_confirm_title": "[Ŕèşèţ ţĥìş àğèñţ ţø “{{name}}”? ················]",
-      "reset_confirm_body": "[Ýøùŕ çĥàñğèş — “{{fields}}” — ẁìĺĺ ƀè ðìşçàŕðèð. Ţĥìş àğèñţ ẁìĺĺ ùşè ţĥè “{{name}}” ţèɱþĺàţè àş-ìş. ························]",
-      "switch_confirm_title": "[Şẁìţçĥ ţø “{{name}}”? ············]",
-      "switch_confirm_body": "[Ýøùŕ çĥàñğèş ţø “{{origin}}” (“{{fields}}”) ẁìĺĺ ƀè ðìşçàŕðèð. Ţĥìş àğèñţ ẁìĺĺ ùşè ţĥè “{{name}}” ţèɱþĺàţè àş-ìş. ··························]",
       "discard_and_switch": "[Ðìşçàŕð çĥàñğèş àñð şẁìţçĥ ··················]"
     },
     "restartRequiredBadge": {

@@ -10806,10 +10806,6 @@
       "changes_count_one": "{{count}} modifica",
       "changes_count_many": "{{count}} modifiche",
       "changes_count_other": "{{count}} modifiche",
-      "reset_confirm_title": "Ripristinare questo agente a «{{name}}»?",
-      "reset_confirm_body": "Le tue modifiche — «{{fields}}» — verranno scartate. Questo agente userà il modello «{{name}}» così com’è.",
-      "switch_confirm_title": "Passare a «{{name}}»?",
-      "switch_confirm_body": "Le tue modifiche a «{{origin}}» («{{fields}}») verranno scartate. Questo agente userà il modello «{{name}}» così com’è.",
       "discard_and_switch": "Scarta le modifiche e passa"
     },
     "restartRequiredBadge": {

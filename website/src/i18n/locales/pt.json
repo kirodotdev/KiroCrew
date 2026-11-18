@@ -10806,10 +10806,6 @@
       "changes_count_one": "{{count}} alteração",
       "changes_count_many": "{{count}} alterações",
       "changes_count_other": "{{count}} alterações",
-      "reset_confirm_title": "Redefinir este agente para “{{name}}”?",
-      "reset_confirm_body": "Suas alterações — “{{fields}}” — serão descartadas. Este agente usará o modelo “{{name}}” como está.",
-      "switch_confirm_title": "Mudar para “{{name}}”?",
-      "switch_confirm_body": "Suas alterações em “{{origin}}” (“{{fields}}”) serão descartadas. Este agente usará o modelo “{{name}}” como está.",
       "discard_and_switch": "Descartar alterações e mudar"
     },
     "restartRequiredBadge": {
