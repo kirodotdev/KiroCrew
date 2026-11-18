@@ -14,9 +14,10 @@ from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_identity
 from kiro_crew.dashboard import transcript_snapshot
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_persistence import (
+    DeleteWitness,
     _coerce_requested_mode,
     save_slot_off_loop,
-    session_was_deleted,
+    session_delete_witness,
 )
 from kiro_crew.dashboard.chat_title import (
     _TITLE_ORIGIN_AUTO,
@@ -257,6 +258,23 @@ class _ForkRefused(Exception):
     def __init__(self, response: web.Response) -> None:
         super().__init__(response.status)
         self.response = response
+
+
+def _source_refusal(witness: DeleteWitness) -> tuple[str, web.Response]:
+    """The log cause and the 409 for a source the fork must not copy.
+
+    An UNVERIFIABLE read refuses too, but it proves no delete, so it says the check
+    failed and can be retried. The code stays ``fork_source_deleted`` for both
+    because clients match on it.
+    """
+    if witness is DeleteWitness.DELETED:
+        cause, error = "was permanently deleted", "the source session was permanently deleted"
+    else:
+        cause, error = (
+            "could not be checked",
+            "the source session could not be checked; retry the fork",
+        )
+    return cause, web.json_response({"error": error, "code": "fork_source_deleted"}, status=409)
 
 
 @dataclass(frozen=True)
@@ -1037,19 +1055,11 @@ async def fork_slot(
         # ``saved``-checks above only cover a delete observed by THIS
         # handler's flush; this probe answers regardless of who consumed the
         # signal.
-        if session_was_deleted(state, slot):
-            logger.warning(
-                "chat_fork: source slot=%s belongs to a permanently deleted "
-                "session; refusing to fork it",
-                slot.key,
-            )
-            return web.json_response(
-                {
-                    "error": "the source session was permanently deleted",
-                    "code": "fork_source_deleted",
-                },
-                status=409,
-            )
+        witness = session_delete_witness(state, slot)
+        if witness is not DeleteWitness.PRESENT:
+            cause, refusal = _source_refusal(witness)
+            logger.warning("chat_fork: source slot=%s %s; refusing to fork it", slot.key, cause)
+            return refusal
     # Fork indices arrive in the PAGINATED corpus's visible-row space, which
     # prepends each chain key's size-rotated archive head
     # (read_messages_chained_full). Mirror that corpus here, or every index
@@ -1434,7 +1444,9 @@ async def fork_slot(
     # survives the source, the way a repo fork outlives what it came from.
     # Acknowledgment is the only boundary a handler owns, so it is the line
     # drawn here.
-    if session_was_deleted(state, slot):
+    witness = session_delete_witness(state, slot)
+    if witness is not DeleteWitness.PRESENT:
+        cause, refusal = _source_refusal(witness)
         # Roll the destination back. It has not been acknowledged, and no
         # message of it was broadcast (every ``append`` above passed
         # ``broadcast=False``). Its sidebar row went out when the mint block
@@ -1442,8 +1454,7 @@ async def fork_slot(
         # back. Removing it leaves no trace of the deleted conversation instead
         # of a fresh key holding a full copy. Removing the destination cannot
         # harm the source -- different key, different lock -- so a false positive
-        # here (``session_was_deleted`` fails CLOSED when a stat or metadata
-        # read is unverifiable) costs a retryable 409 against a still-live
+        # here (an UNVERIFIABLE stat or metadata read refuses too) costs a retryable 409 against a still-live
         # source, not data.
         removed = False
         if state.conversation_log is not None:
@@ -1466,9 +1477,10 @@ async def fork_slot(
         await _withdraw_fork_child(state, new_slot, announced=True)
         if removed:
             logger.warning(
-                "chat_fork: source slot=%s was permanently deleted during the "
-                "destination save; removed the unacknowledged fork %s",
+                "chat_fork: source slot=%s %s during the destination save; "
+                "removed the unacknowledged fork %s",
                 slot.key,
+                cause,
                 new_slot.key,
             )
         else:
@@ -1477,10 +1489,11 @@ async def fork_slot(
             # prevent and it now needs a human -- but still a 409: reporting
             # success would additionally hide it.
             logger.error(
-                "chat_fork: source slot=%s was permanently deleted during the "
-                "destination save, but the fork transcript for %s could not be "
-                "removed; a copy of the deleted conversation remains on disk",
+                "chat_fork: source slot=%s %s during the destination save, but "
+                "the fork transcript for %s could not be removed; a copy of the "
+                "source remains on disk",
                 slot.key,
+                cause,
                 new_slot.key,
             )
         sel().log_api_access(
@@ -1492,15 +1505,9 @@ async def fork_slot(
                 f"from={slot.key},to={new_slot.key},"
                 f"rollback={'removed' if removed else 'failed'}"
             ),
-            error="source session permanently deleted during the destination save",
+            error=f"source session {cause} during the destination save",
         )
-        return web.json_response(
-            {
-                "error": "the source session was permanently deleted",
-                "code": "fork_source_deleted",
-            },
-            status=409,
-        )
+        return refusal
     sel().log_api_access(
         caller=audit_caller,
         operation=audit_operation,
