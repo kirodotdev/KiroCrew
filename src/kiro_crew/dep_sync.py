@@ -784,7 +784,8 @@ def venv_not_mapped_to(origin: str | None, repo: Path) -> str | None:
         )
     mapped = os.path.normcase(str(Path(origin).resolve()))
     root = os.path.normcase(str(Path(repo).resolve()))
-    if mapped != root and not mapped.startswith(root + os.sep):
+    # A drive or filesystem root (``C:\``, ``/``) already ends in a separator.
+    if mapped != root and not mapped.startswith(root.rstrip(os.sep) + os.sep):
         return (
             f"the target venv imports this project from {Path(origin).resolve()}, "
             f"which is outside {Path(repo).resolve()}, so a dependency install "
