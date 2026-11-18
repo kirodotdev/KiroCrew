@@ -60,6 +60,7 @@ from kiro_crew.browser_harness.relay import (
     RelayClosed,
     Upstream,
     pipe_upstream_from_fds,
+    request_browser_close,
 )
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -758,8 +759,8 @@ class HarnessSupervisor:
             return False
         return True
 
-    @staticmethod
     async def _abandon_start(
+        self,
         relay: CdpRelay,
         browser_proc: asyncio.subprocess.Process | None,
         daemon: asyncio.subprocess.Process | None,
@@ -767,7 +768,7 @@ class HarnessSupervisor:
         """Undo a ``_start`` that did not reach a handle: nothing it spawned survives."""
         await relay.close()
         await _stop_process(daemon)
-        await _stop_process(browser_proc)
+        await _stop_browser(browser_proc, self.profile_dir)
 
     async def _teardown(self) -> None:
         # Never both: a start runs only after a teardown that finished.
@@ -792,7 +793,7 @@ class HarnessSupervisor:
             await _stop_process(handle.worker)
             await _stop_process(handle.daemon)
             await handle.relay.close()
-            await _stop_process(handle.browser)
+            await _stop_browser(handle.browser, self.profile_dir)
         except BaseException:
             # Cut before its last stop: the next teardown (the gateway's exit
             # path, the next stop or ensure) stops the children this one never
@@ -908,7 +909,7 @@ class HarnessSupervisor:
                 await asyncio.sleep(_POLL_SECS)
             raise BrowserUnavailable("Kiro's Chromium did not open its debugging port")
         except BaseException:
-            await _stop_unowned(proc)
+            await _stop_unowned(proc, profile)
             raise
 
     def _env(self) -> Mapping[str, str]:
@@ -1276,8 +1277,45 @@ async def _stop_process(proc: asyncio.subprocess.Process | None) -> None:
         logger.debug("browser harness child did not stop cleanly", exc_info=True)
 
 
-async def _stop_unowned(proc: asyncio.subprocess.Process) -> None:
+async def _close_browser_first(proc: asyncio.subprocess.Process | None, profile: Path) -> None:
+    """Windows: ask Kiro's Chromium to close, and wait up to the grace for it to exit.
+
+    ``terminate_and_reap`` has no graceful step there, and a forced tree kill leaves
+    the profile marked ``Crashed`` and loses the cookies Chromium had not yet
+    committed. A browser that ignores the request, or whose debugging port is
+    gone, is left for the forced stop that follows.
+    """
+    if not platform_compat.IS_WINDOWS or proc is None or proc.returncode is not None:
+        return
+
+    async def _ask_and_wait() -> None:
+        url = await _devtools_ws_url(profile)
+        if url is not None:
+            await request_browser_close(url)
+            await proc.wait()
+
+    try:
+        await asyncio.wait_for(_ask_and_wait(), _STOP_GRACE_SECS)
+    except Exception:  # noqa: BLE001 - a browser that will not close is stopped by force next
+        logger.info("browser: Kiro's Chromium did not close on request", exc_info=True)
+
+
+async def _stop_browser(proc: asyncio.subprocess.Process | None, profile: Path) -> None:
+    """Stop Kiro's Chromium: a close request first on Windows, then the forced stop.
+
+    The forced stop runs even when a cancellation cuts the close request short, so
+    a restart's deadline cannot leave the browser running with its profile locked.
+    """
+    try:
+        await _close_browser_first(proc, profile)
+    finally:
+        await _stop_process(proc)
+
+
+async def _stop_unowned(proc: asyncio.subprocess.Process, profile: Path | None = None) -> None:
     """Stop a child its launcher spawned but never handed to its caller.
+
+    With *profile* the child is Kiro's Chromium and gets the close-first stop.
 
     Runs from an ``except BaseException`` while a cancellation (a disconnect, a
     gateway shutdown) may be unwinding the launcher, so the stop is shielded: a
@@ -1286,7 +1324,9 @@ async def _stop_unowned(proc: asyncio.subprocess.Process) -> None:
     end before this returns, and a cancellation that arrived meanwhile is raised
     afterwards rather than dropped.
     """
-    task = asyncio.ensure_future(_stop_process(proc))
+    task = asyncio.ensure_future(
+        _stop_process(proc) if profile is None else _stop_browser(proc, profile)
+    )
     cancelled = False
     while not task.done():
         try:

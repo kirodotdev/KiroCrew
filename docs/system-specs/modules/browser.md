@@ -241,7 +241,15 @@ registered with `pre_exec_stops`; the cleanup hook unregisters it once its own
 stop has returned; a teardown cut before its last child sets that handle aside,
 never to be reused, so the next stop reaches the children it never got to
 without retrying the tab close; that best-effort close is bounded at 3 s, so a
-stalled CDP connection cannot spend the stop's bound before the children stop), and
+stalled CDP connection cannot spend the stop's bound before the children stop).
+On Windows `terminate_and_reap` has no graceful step, so before the forced stop of
+Kiro's Chromium (`_stop_handle`, `_abandon_start`, and the port launcher's
+`_stop_unowned`) the supervisor sends CDP `Browser.close` over a connection of its
+own (`relay.request_browser_close`, to the URL in `DevToolsActivePort`) and waits up
+to `_STOP_GRACE_SECS` for the process to exit, so Chromium writes its profile
+(`exit_type` `Normal`) and keeps recent cookies. A browser that ignores the request,
+or has no live port, gets the forced tree kill after that wait. macOS and Linux are
+unchanged. The gateway also
 reclaims a stray daemon from a previous life at startup, then runs the startup
 auto-install (see the driver section).
 
