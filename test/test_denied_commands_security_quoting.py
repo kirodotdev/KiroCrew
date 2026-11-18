@@ -703,14 +703,16 @@ class TestDenyMatchingIsQuoteNormalized:
             def log(self, event: object) -> None:
                 captured.append(event)
 
-        original = security.SecurityEventLog
-        security.SecurityEventLog = _Recorder  # type: ignore[assignment]
+        from kiro_crew.security import deny_gate
+
+        original = deny_gate.sel
+        deny_gate.sel = lambda: _Recorder()  # type: ignore[assignment]
         try:
             secret = "AKIA" + "Q" * 16
             padded = "x" * 190 + secret + " rm -rf /"
             security._emit_deny_event("probe", "rm -rf /.*", padded, raw_segment=padded)
         finally:
-            security.SecurityEventLog = original  # type: ignore[assignment]
+            deny_gate.sel = original  # type: ignore[assignment]
 
         assert captured, "no event recorded"
         meta = captured[-1].metadata  # type: ignore[attr-defined]

@@ -50,8 +50,9 @@ _BINDS_THE_PACKAGE = re.compile(
     r"kiro_crew\.security\b|from kiro_crew import[^\n]*\bsecurity\b|from kiro_crew import \("
 )
 
-#: One of each seam the two splits had to keep, which the scan must find: the audit log
-#: and executor the deny gate's emitters read, the emitters and view builder the gate calls,
+#: One of each seam the two splits had to keep, which the scan must find: the
+#: executor the deny gate's emitters read (they reach the audit log through ``sel()``, so
+#: ``SecurityEventLog`` is not a seam), the emitters and view builder the gate calls,
 #: the stream holdback bounds, ``redact`` beside the stream redactor that defaults to it,
 #: the shell-reader names the argv floor reads late through ``_shell_normalizer``, the
 #: payload-walk helpers the nested-payload extractor calls, a name only a loop over string
@@ -59,7 +60,6 @@ _BINDS_THE_PACKAGE = re.compile(
 _KNOWN_SEAMS: dict[str, frozenset[str]] = {
     PACKAGE: frozenset(
         {
-            "SecurityEventLog",
             "maintenance_executor",
             "_emit_deny_event",
             "_deny_segment_views",
@@ -343,7 +343,7 @@ def test_the_family_is_the_facade_the_reader_and_every_owner() -> None:
 def test_every_reader_of_a_patched_name_reads_it_where_the_patch_writes() -> None:
     """The reach the unsplit modules had, for a module-global read: in the facade, the
     reader and every owner, a function that reads a patched name from its own globals sits
-    in the module the patch writes -- the emitters with ``SecurityEventLog``, the stream
+    in the module the patch writes -- the emitters with ``maintenance_executor``, the stream
     redactor with its bounds and ``redact``, the payload walk with its helpers."""
     homes = _patched_homes()
     assert bare_read_violations(_texts(_family()), homes) == []
