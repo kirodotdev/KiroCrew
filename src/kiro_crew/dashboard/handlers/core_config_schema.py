@@ -46,6 +46,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.sections import (
     BROWSER_CHOICES,
+    BROWSER_ISOLATIONS,
     BROWSER_LOCAL_ORIGIN_PATTERN,
     BROWSER_LOCAL_ORIGINS_MAX,
     COMPACT_WAIT_SECS_MAX,
@@ -629,6 +630,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Values come from the config section itself, so this gate and the loader's
     # own normalization cannot drift.
     "browser.choice": {"type": "enum", "values": list(BROWSER_CHOICES)},
+    "browser.isolation": {"type": "enum", "values": list(BROWSER_ISOLATIONS)},
     "browser.live.enabled": {"type": "bool"},
     "browser.live.quality": {"type": "enum", "values": list(LIVE_QUALITIES)},
     "browser.live.max_fps": {"type": "enum", "values": list(LIVE_MAX_FPS_CHOICES)},

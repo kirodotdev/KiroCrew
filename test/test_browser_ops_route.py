@@ -52,6 +52,7 @@ class _Supervisor:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.relay = MagicMock()
         self.relay.agent_targets.return_value = ["T1"]
+        self.relay.context_of.return_value = ""  # every tab in the default context
         self.tab = {"targetId": "T1", "url": "https://u", "title": "t"}
 
     def status(self) -> dict[str, Any]:

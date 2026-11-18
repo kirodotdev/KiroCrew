@@ -33,6 +33,17 @@ The agent acts only on tabs it opened; it never touches the ones you have open.
 Kiro's own Chromium keeps its own profile (so a login you did during a takeover
 stays signed in next time), and the agent cannot read that profile's files.
 
+**One sign-in per chat.** By default every chat shares the browser's sign-ins. Set
+"Browser isolation" on Settings → Browser to "Isolated browser per chat"
+(`browser.isolation: per_session`) and each chat browses with its own private
+cookies and site storage instead, so two chats can be signed in to two accounts
+of the same site at once. A chat's set starts empty (on Kiro's own Chromium it
+gets the sign-in below), lives only in memory, and is thrown away with its tabs
+when the chat ends; sign in through a takeover in each chat that needs it. On a
+desktop each chat's tabs open in a separate browser window. Switching the setting
+takes effect at the chat's next browser step, which opens a new tab; the tabs
+(and window) from the other mode stay open until the chat ends.
+
 ## Signed in before the first page
 
 Kiro's own Chromium can start already signed in, so a headless or remote browser

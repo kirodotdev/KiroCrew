@@ -6538,6 +6538,7 @@
       "enumValues": null,
       "defaultValue": {
         "choice": "auto",
+        "isolation": "shared",
         "report_changes": false,
         "live": {
           "enabled": true,
@@ -6574,6 +6575,23 @@
         "headless"
       ],
       "defaultValue": "auto"
+    },
+    {
+      "path": "browser.isolation",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Browser isolation",
+      "help": "`per_session` gives each chat its own browser container: separate cookies, site storage and cache that no other chat can see, discarded when the chat ends; on a desktop its tabs open in their own window. `shared` lets every chat use the one browser as it is.",
+      "hasChildren": false,
+      "enumValues": [
+        "shared",
+        "per_session"
+      ],
+      "defaultValue": "shared"
     },
     {
       "path": "browser.report_changes",

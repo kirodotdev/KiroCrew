@@ -7,9 +7,11 @@ send, and no browser, daemon or network is involved.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -36,6 +38,7 @@ class FakeRelay:
         self.refuse = refuse or set()
         self.closed = False
         self.on_upstream_closed: Any = None
+        self.contexts: list[str] = []
 
     async def send(
         self, method: str, params: dict[str, Any] | None = None, session_id: str | None = None
@@ -60,6 +63,9 @@ class FakeRelay:
 
     def agent_targets(self) -> list[str]:
         return []
+
+    def session_context_ids(self) -> list[str]:
+        return list(self.contexts)
 
     def cookies_set(self) -> list[dict[str, Any]]:
         return [c for m, p in self.sent if m == "Storage.setCookies" for c in p["cookies"]]
@@ -557,6 +563,11 @@ async def test_each_injection_writes_one_audit_row_without_a_value(
     assert row["operation"] == "browser_harness.credentials_injected"
     assert row["resources"] == "provider=Test sign-in reason=start cookies=1 domains=example.com"
     assert SECRET not in json.dumps(fake.rows)
+    # A refresh with an open chat context: one pull, one row, each context's count on it.
+    _relays[-1].contexts.append("CTX-a")
+    await sup._apply_credentials(_relays[-1], sup._handle.choice, "source_changed")
+    assert fake.rows[-1]["resources"].endswith(" cookies=1 domains=example.com contexts=1,1")
+    assert SECRET not in json.dumps(fake.rows)
 
 
 @pytest.mark.asyncio
@@ -575,6 +586,83 @@ async def test_a_changed_fingerprint_re_pulls_before_the_next_navigation(
     provider.fp = None  # cannot tell: never re-pulled
     assert await sup.refresh_credentials_if_source_changed() is False
     assert events.count("Storage.setCookies") == 2
+
+
+@pytest.mark.asyncio
+async def test_a_chat_s_own_context_is_seeded_and_kept_current_with_the_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # browser.isolation: per_session -- each chat's context starts empty, so the
+    # edition's sign-in is written into it, and into it alone.
+    provider = FakeProvider()
+    provider.fp = "v1"
+    sup, _events, relays, _argvs = _supervisor_with_fakes(tmp_path, monkeypatch, provider)
+    await sup.ensure()
+    relay = relays[-1]
+    relay.sent.clear()
+    relay.contexts.append("CTX-a")
+    await sup.seed_context(relay, "CTX-a")
+    assert [(m, p.get("browserContextId")) for m, p in relay.sent] == [
+        ("Storage.setCookies", "CTX-a")
+    ]
+    assert provider.targets[-1].reason == "context"
+    relay.sent.clear()
+    pulls = len(provider.targets)
+    provider.fp = "v2"
+    assert await sup.refresh_credentials_if_source_changed() is True
+    assert [(m, p.get("browserContextId")) for m, p in relay.sent] == [
+        ("Storage.setCookies", None),
+        ("Storage.setCookies", "CTX-a"),
+    ]
+    # One pull from the provider fills the default context and the chat's alike,
+    # and the status keeps each context's landed count for the audit row.
+    assert len(provider.targets) == pulls + 1
+    assert sup._credentials.applied_per_context == (sup._credentials.applied,) * 2
+
+
+@pytest.mark.asyncio
+async def test_a_hung_provider_leaves_a_chat_context_unseeded_within_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A provider that never answers must not eat the op's whole budget on every
+    # first op of an isolated chat: past the navigation budget the context is kept,
+    # signed out, and the bind goes on.
+    provider = FakeProvider()
+    sup, _events, relays, _argvs = _supervisor_with_fakes(tmp_path, monkeypatch, provider)
+    await sup.ensure()
+    relay = relays[-1]
+    relay.sent.clear()
+    hung = threading.Event()
+
+    def cookies(target: Any) -> list[dict[str, Any]]:
+        hung.wait(5)  # flake-ok: released by the test; the deadline only bounds a failed run
+        return []
+
+    monkeypatch.setattr(provider, "cookies", cookies)
+    monkeypatch.setattr(
+        supervisor, "NAV_REFRESH_BUDGET_SECS", 0.05
+    )  # flake-ok: the budget under test; the provider never answers
+    await asyncio.wait_for(
+        sup.seed_context(relay, "CTX-a"), 1
+    )  # flake-ok: safety deadline well above the 0.05s budget
+    hung.set()
+    assert [m for m, _p in relay.sent if m == "Storage.setCookies"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_chat_context_on_the_person_s_chrome_gets_no_cookies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = FakeProvider()
+    sup, _events, relays, _argvs = _supervisor_with_fakes(
+        tmp_path, monkeypatch, provider, kind="user_chrome"
+    )
+    await sup.ensure()
+    relays[-1].sent.clear()
+    await sup.seed_context(relays[-1], "CTX-a")
+    await sup.seed_context(FakeRelay(), "CTX-b")  # not the connected browser's relay
+    assert relays[-1].sent == []
+    assert provider.targets == []
 
 
 @pytest.mark.asyncio

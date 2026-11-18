@@ -215,6 +215,9 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # Kiro's own Chromium holds none of the person's logins; ``auto`` and
     # ``user_chrome`` hand the agent the person's Chrome, signed in.
     "browser.choice": ("headless", "kiro_chromium", "auto", "user_chrome"),
+    # ``shared`` lets a chat use whatever the one browser is already signed in
+    # to; ``per_session`` gives each chat a container no other chat can see.
+    "browser.isolation": ("per_session", "shared"),
     # Off, password boxes show in the live picture.
     "browser.live.mask_passwords": (True, False),
     # On, Kiro's Chromium starts signed in to the edition's sites.
