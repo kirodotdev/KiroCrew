@@ -54,6 +54,12 @@ _RLIMIT_FLAG = "--rlimits="
 _OOM_BIAS_FLAG = "--oom-bias"
 _CHDIR_FD_FLAG = "--chdir-fd="
 _CTTY_FD_FLAG = "--ctty-fd="
+# The three jobs ``Popen`` does in a forked child, done here instead when the
+# parent started this shim with ``posix_spawn`` (no fork, so no copy of the
+# gateway's memory): ``start_new_session``, ``cwd`` and ``close_fds``.
+_SETSID_FLAG = "--setsid"
+_CHDIR_FLAG = "--chdir="
+_CLOSE_FDS_FLAG = "--close-fds"
 _ARGV_SEPARATOR = "--"
 # Shell convention for "command found but could not be executed", so a caller
 # that only sees the exit status can still tell an exec failure from the
@@ -223,6 +229,39 @@ def _acquire_controlling_tty(fd: int) -> bool:
     return True
 
 
+def _close_inherited_fds() -> None:
+    """Close every descriptor above stderr, as ``Popen(close_fds=True)`` would.
+
+    A ``posix_spawn`` start cannot close them on macOS, so the child arrives
+    holding every INHERITABLE descriptor of the parent (Python opens its own as
+    non-inheritable, so these are few). Listing ``/dev/fd`` (``/proc/self/fd`` on
+    Linux) visits only the open ones; ``closerange`` up to the soft limit is the
+    fallback.
+    """
+    for fd_dir in ("/proc/self/fd", "/dev/fd"):
+        try:
+            names = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for name in names:
+            try:
+                fd = int(name)
+            except ValueError:
+                continue
+            if fd > 2:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        return
+    limit = 65536
+    if _resource is not None:
+        soft = _resource.getrlimit(_resource.RLIMIT_NOFILE)[0]
+        if soft != _resource.RLIM_INFINITY:
+            limit = soft
+    os.closerange(3, limit)
+
+
 def _default_ignored_signals() -> list[int]:
     """Give the terminal session the default dispositions a login would.
 
@@ -278,12 +317,21 @@ def main(argv: list[str] | None = None) -> int:
     want_oom_bias = False
     chdir_fd: int | None = None
     ctty_fd: int | None = None
+    want_setsid = False
+    chdir_path: str | None = None
+    want_close_fds = False
     while args and args[0] != _ARGV_SEPARATOR:
         item = args.pop(0)
         if item.startswith(_RLIMIT_FLAG):
             spec = item[len(_RLIMIT_FLAG) :]
         elif item == _OOM_BIAS_FLAG:
             want_oom_bias = True
+        elif item == _SETSID_FLAG:
+            want_setsid = True
+        elif item == _CLOSE_FDS_FLAG:
+            want_close_fds = True
+        elif item.startswith(_CHDIR_FLAG):
+            chdir_path = item[len(_CHDIR_FLAG) :]
         elif item.startswith(_CTTY_FD_FLAG):
             raw_fd = item[len(_CTTY_FD_FLAG) :]
             try:
@@ -331,6 +379,25 @@ def main(argv: list[str] | None = None) -> int:
     except (UnicodeEncodeError, ValueError):
         sys.stderr.write("spawn shim: command argv is not encodable\n")
         return _EXEC_FAILED
+
+    # The posix_spawn start's stand-ins for Popen's child-side setup, in Popen's
+    # order: new session, then the working directory, then the descriptors.
+    # Looked up like ``os.login_tty`` above: the shim only ever runs on POSIX.
+    new_session = getattr(os, "setsid", None)
+    if want_setsid and new_session is not None:
+        try:
+            new_session()
+        except OSError:
+            pass  # already a session leader: what was asked for already holds
+    if chdir_path is not None:
+        try:
+            os.chdir(chdir_path)
+        except OSError as exc:
+            # Fail closed: Popen's own cwd failure fails the spawn too.
+            sys.stderr.write(f"spawn shim: cannot enter {chdir_path!r}: {exc.strerror}\n")
+            return _EXEC_FAILED
+    if want_close_fds:
+        _close_inherited_fds()
 
     # Ahead of the limits, like every other allocating step: the failure path
     # here writes to stderr, and a tight RLIMIT_AS must not be what breaks it.

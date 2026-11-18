@@ -76,8 +76,14 @@ async def _gather_bounded(entries: list[Any], resolve: Any) -> list[Any]:
     gate = asyncio.Semaphore(_MANIFEST_RESOLVE_CONCURRENCY)
 
     async def _one(entry: Any) -> Any:
+        # The fan-out's git children start with posix_spawn: a fork holds the GIL
+        # while it copies the gateway's memory, which stalls the loop on macOS.
+        # Imported here so the registry facade's name inventory stays as it is.
+        from kiro_crew.sandbox_rlimit import fork_free_spawns
+
         async with gate:
-            return await resolve(entry)
+            with fork_free_spawns():
+                return await resolve(entry)
 
     return await asyncio.gather(*[_one(e) for e in entries], return_exceptions=True)
 
