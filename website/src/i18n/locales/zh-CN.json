@@ -22478,7 +22478,12 @@
       "advanced_title": "高级",
       "api_call_label": "API 调用",
       "owner_only": "只有 Crew 所有者可以查看或更改密钥。",
-      "relay_unavailable": "只能在 Crew 所在的电脑上查看和更改密钥，无法通过 Remote Control 操作。"
+      "relay_unavailable": "只能在 Crew 所在的电脑上查看和更改密钥，无法通过 Remote Control 操作。",
+      "rotate_by_label": "轮换期限（可选）",
+      "rotate_by_hint": "超过此日期后会显示“需要轮换”。要轮换，在此用相同名称保存新值。不填日期保存会移除提醒。",
+      "rotate_by_note": "在 {{date}} 前轮换",
+      "rotation_due": "需要轮换",
+      "rotation_due_aria": "{{name}} 需要轮换：轮换期限 {{date}} 已过"
     }
   },
   "store": {

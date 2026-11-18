@@ -23600,7 +23600,12 @@
       "advanced_title": "Avanzado",
       "api_call_label": "Llamada a la API",
       "owner_only": "Solo el propietario de la Crew puede ver o cambiar los secretos.",
-      "relay_unavailable": "Los secretos solo se pueden ver y cambiar en el equipo de la Crew, no a través de Remote Control."
+      "relay_unavailable": "Los secretos solo se pueden ver y cambiar en el equipo de la Crew, no a través de Remote Control.",
+      "rotate_by_label": "Rotar antes del (opcional)",
+      "rotate_by_hint": "Muestra \"Rotación pendiente\" después de esta fecha. Para rotarlo, guarda aquí un valor nuevo con el mismo nombre. Si lo guardas sin fecha, se quita el recordatorio.",
+      "rotate_by_note": "Rotar antes del {{date}}",
+      "rotation_due": "Rotación pendiente",
+      "rotation_due_aria": "Rotación pendiente para {{name}}: la fecha de rotación {{date}} ya pasó"
     }
   },
   "store": {

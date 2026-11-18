@@ -11251,7 +11251,12 @@
       "wakatime_oauth_tokens_description": "Your WakaTime sign-in, kept by {{productName}}. Managed in the WakaTime panel.",
       "wakatime_oauth_tokens_manage": "Manage in WakaTime",
       "connections_client_secret_description": "Client secret of a Connections OAuth app. Managed under Settings → Connections.",
-      "connections_client_secret_manage": "Manage in Connections"
+      "connections_client_secret_manage": "Manage in Connections",
+      "rotate_by_label": "Rotate by (optional)",
+      "rotate_by_hint": "Shows “Rotation due” after this date. To rotate, save a new value under the same name here. Saving without a date removes the reminder.",
+      "rotate_by_note": "Rotate by {{date}}",
+      "rotation_due": "Rotation due",
+      "rotation_due_aria": "Rotation due for {{name}}: the rotate-by date {{date}} has passed"
     },
     "tabs": {
       "about": {

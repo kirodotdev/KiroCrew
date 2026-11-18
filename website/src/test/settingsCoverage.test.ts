@@ -69,6 +69,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'BrowserEngineSection.tsx': "the Browser tab's Engine row under More (Harness and Chromium versions) with a Redownload action; status and one action, no setting of its own",
   'BrowserStatusCard.tsx': "the Browser tab's main card (browser, status dot, one state-dependent Install / Retry / Allow / Connect / Disconnect action); it reports the engine and holds no setting",
   'KiroHarnessFallbackNote.tsx': 'informational note ChatPanel mounts above the fallback pickers on a Kiro harness, zero controls',
+  'RotateByNote.tsx': "the Secrets tab's read-only rotate-by line and Rotation due chip under a vault entry, zero controls",
   'ChannelDisabledPanel.tsx': 'informational placeholder (locked/loading/error states), zero controls',
   'ChannelFolderBackfill.tsx': 'one action button shared by the channel panels; files existing conversations into the folder the OWNING panel configures, and holds no setting of its own',
   'CustomSoundsSection.tsx': 'the Notifications tab\'s add-a-sound form (name + tones) and the list of saved sounds; it creates entries rather than holding settings, and the sounds it saves are chosen through the per-category pickers NotificationsPanel already indexes',
@@ -322,8 +323,8 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       '— transient CRUD, not persistent knobs',
   },
   'SecretsPanelLegacy.tsx': {
-    counts: { Input: 2 },
-    reason: 'add-secret name/value form — transient CRUD, not persistent knobs',
+    counts: { Input: 3 },
+    reason: 'add-secret name/value/rotate-by form — transient CRUD, not persistent knobs',
   },
   'SecurityPanelDeniedCommands.tsx': {
     counts: { Toggle: 4, Checkbox: 1, Input: 5 },

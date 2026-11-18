@@ -23600,7 +23600,12 @@
       "advanced_title": "Avanzate",
       "api_call_label": "Chiamata API",
       "owner_only": "Solo il proprietario della Crew può vedere o modificare i segreti.",
-      "relay_unavailable": "I segreti si possono vedere e modificare solo sul computer della Crew, non tramite Remote Control."
+      "relay_unavailable": "I segreti si possono vedere e modificare solo sul computer della Crew, non tramite Remote Control.",
+      "rotate_by_label": "Ruota entro il (facoltativo)",
+      "rotate_by_hint": "Mostra «Rotazione scaduta» dopo questa data. Per ruotare, salva qui un nuovo valore con lo stesso nome. Se salvi senza data, il promemoria viene rimosso.",
+      "rotate_by_note": "Ruota entro il {{date}}",
+      "rotation_due": "Rotazione scaduta",
+      "rotation_due_aria": "Rotazione scaduta per {{name}}: la data di rotazione {{date}} è passata"
     }
   },
   "store": {
