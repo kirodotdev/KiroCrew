@@ -313,7 +313,6 @@ nobody reports) and the ledger shows no report since your last turn, do not just
 re-read the board: for each open item, compare its elapsed time with its
 `budget: <N>m` and look for the files its brief named. Re-plan now, and say why,
 any item that is stalled, past budget with nothing to show, or on a wrong brief.
-With nothing wrong, the one line a patrol wake gets says so.
 
 """,
     "routine_incidents": """**Handle routine incidents from the goal, then report them.** A worker out of
@@ -323,6 +322,19 @@ merge a branch or clear build output, record the decision first (`action=decide`
 on the item, naming the PR or path, the head sha and the reason).
 
 """,
+    "skill_first": """The `goal-conductor` skill carries the operating procedure — the work-item
+tests, the dispatch steps, the patrol cycle, the stop conditions. Read it before
+acting on a goal. When a turn carries a REINJECTED AFTER COMPACTION block, the
+skill text you read is gone: read it again before you act. """,
+}
+
+
+#: How a conductor-mode conductor speaks on a wait and on a quiet patrol wake: the
+#: root charter and the team lead (``_SHARED_CONDUCTOR_RULES_BLOCK``) carry these, a
+#: Bot's ``conductor.patrol`` does not. A person reads a Bot's thread once or twice a
+#: day, so the Bot's piece words its own silent ending instead; the parity test's
+#: ALLOWLIST names each of these with that reason.
+_CONDUCTOR_MODE_RULES: dict[str, str] = {
     "report_before_park": """**Report before you park.** When you stop on a wait you have not reported yet
 (workers running, a CI run, a person's answer), first say in one line what you
 wait on and what wakes you next: in your reply, or as `work_report` `progress`
@@ -342,16 +354,13 @@ is reported in full. A Heartbeat or `[Worker report]` turn keeps its own quiet
 end.
 
 """,
-    "skill_first": """The `goal-conductor` skill carries the operating procedure — the work-item
-tests, the dispatch steps, the patrol cycle, the stop conditions. Read it before
-acting on a goal. When a turn carries a REINJECTED AFTER COMPACTION block, the
-skill text you read is gone: read it again before you act. """,
 }
 
 
 #: ``_CONDUCTOR_SYSTEM_PROMPT`` in reading order, one ``(name, text)`` per section.
 #: A section whose name is a ``_LEDGER_CONDUCTOR_RULES`` key IS that rule; every
-#: other one is this charter's own and is on the parity test's allowlist with the
+#: other one, ``_CONDUCTOR_MODE_RULES`` included, is conductor mode's own and is on
+#: the parity test's allowlist with the
 #: reason a crewmate's conductor does not carry it. A new section is one or the
 #: other: a rule a crewmate's conductor needs too goes into the rules above.
 _CONDUCTOR_PROMPT_SECTIONS: tuple[tuple[str, str], ...] = (
@@ -545,8 +554,8 @@ steer.
     ("read_message_detail", _LEDGER_CONDUCTOR_RULES["read_message_detail"]),
     ("wake_check", _LEDGER_CONDUCTOR_RULES["wake_check"]),
     ("routine_incidents", _LEDGER_CONDUCTOR_RULES["routine_incidents"]),
-    ("report_before_park", _LEDGER_CONDUCTOR_RULES["report_before_park"]),
-    ("patrol_reply", _LEDGER_CONDUCTOR_RULES["patrol_reply"]),
+    ("report_before_park", _CONDUCTOR_MODE_RULES["report_before_park"]),
+    ("patrol_reply", _CONDUCTOR_MODE_RULES["patrol_reply"]),
     (
         "tracker",
         """**Add a tracker when one patrol read no longer fits.** Your `compact` ledger
@@ -717,17 +726,22 @@ Overview shows that goal; the re-plan itself still waits for the round boundary.
 _CONDUCTOR_SYSTEM_PROMPT = "".join(text for _name, text in _CONDUCTOR_PROMPT_SECTIONS)
 
 
-#: Every ``_LEDGER_CONDUCTOR_RULES`` rule, for an agent that conducts from the
+#: Every ``_LEDGER_CONDUCTOR_RULES`` rule and every ``_CONDUCTOR_MODE_RULES`` rule,
+#: for an agent that conducts from the
 #: goal-conductor skill without the root charter: the team lead
-#: (``service_agents._install_team_lead_agent``). The skill points at "your
+#: (``service_agents._install_team_lead_agent``), which conductor mode can run. The
+#: skill points at "your
 #: prompt's" rules instead of restating them, so this block is what makes that
-#: pointer true for it. The same text the root charter and a Bot's
+#: pointer true for it. The shared rules are the text the root charter and a Bot's
 #: ``conductor.patrol`` render; ``test_mate_conductor_parity.py`` holds all three.
 _SHARED_CONDUCTOR_RULES_BLOCK = (
     "## The rules every conductor shares\n\n"
     "The dispatch steps are 1. `work_ledger_record` `action=create`, 2. "
     "`session_create` with `agent` set explicitly, 3. `bind`, 4. the seed.\n\n"
-    + "\n\n".join(rule.strip() for rule in _LEDGER_CONDUCTOR_RULES.values())
+    + "\n\n".join(
+        rule.strip()
+        for rule in (*_LEDGER_CONDUCTOR_RULES.values(), *_CONDUCTOR_MODE_RULES.values())
+    )
     + "\n"
 )
 

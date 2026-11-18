@@ -3945,9 +3945,8 @@ every assembled prompt, offline; the fixtures and their goldens are in
 A member-mode slot's transcript is the Bot's whole working record: the
 `[auto-nudge cycle N]` turns of its patrol loop, `[Cron notification …]` and
 `[Subagent completion event]` envelopes, every tool call, and the say-nothing
-reply a quiet Heartbeat or `[Worker report]` turn ends on. A work-ledger patrol
-wake with nothing for the user ends on one visible line of what the Bot did
-(`patrol_reply`), which the chat pane shows. The Members page's chat pane shows **only what
+reply a quiet Heartbeat, `[Worker report]` or work-ledger patrol turn ends on.
+The Members page's chat pane shows **only what
 the Bot says to the user** and the user's own messages. Everything else stays in the slot's history and is filtered at render time by `filterCrewmateChat`
 (`website/src/components/chat/crewmateBubbles.ts`), which `ChatPane` applies
 when its host passes `crewmate`. Ordinary chats never pass it and are drawn
@@ -4745,11 +4744,20 @@ compaction, and the long-task and
 team rules every turn needs: the item budget, one owner per file and one
 integrator per output, merging two lines, reusing a finished worker only for the
 next step of its own line, the plan reviewer, the `pr_merged` bar,
-the hourly check on a quiet wake, routine incidents, reporting before a park, and
-the one-line reply on a patrol wake that has nothing the person must see) are written once,
+the hourly check on a quiet wake and routine incidents) are written once,
 in `agent_parts/spec_prompts.py` `_LEDGER_CONDUCTOR_RULES`: the root charter is
 assembled from them (`_CONDUCTOR_PROMPT_SECTIONS`) and `conductor.patrol` names
 each as a placeholder (`context_assembly.member.ledger_rules_block`).
+How a conductor speaks when nothing needs the person is not shared. Conductor
+mode reports a park in one line and gives a patrol wake with nothing for the
+person one line (`_CONDUCTOR_MODE_RULES`: `report_before_park`, `patrol_reply`),
+for a person who may be watching that chat live. A person reads a Bot's thread
+once or twice a day, so `conductor.patrol` words its own quiet ending: a park
+writes nothing, since the open items already show the wait, and such a patrol
+wake ends with `nothing_to_do` and no text. The piece says those two replace any
+speaking rule elsewhere in the prompt, because a Bot can run on `kirocrew-team-lead`,
+whose prompt carries conductor mode's. Both rules are on the parity `ALLOWLIST`
+with that reason.
 `test/test_mate_conductor_parity.py` roots at `crew_mode.crew_mode_agent()`, the
 agent conductor mode runs, checks that every shared rule is in both installed
 prompts, and compares the effective agents, not the spec
@@ -4765,7 +4773,8 @@ front-desk wording) is not drift. Conductor mode chats run `kirocrew-conductor`
 by default, the root conductor compared above. `goal-conductor/SKILL.md` points
 at the shared rules ("your prompt's ... rule") instead of restating them, so a
 `kirocrew-team-lead` that `agent.crew_mode_agent` names carries every shared rule
-in its own prompt (`_SHARED_CONDUCTOR_RULES_BLOCK`, the same text). The same test
+and both conductor-mode rules in its own prompt (`_SHARED_CONDUCTOR_RULES_BLOCK`,
+the same text). The same test
 fails when the team lead's installed prompt lacks a shared rule, and when the
 skill drops one of its pointers (`SKILL_POINTERS`), and when `goal-conductor` or
 `team-lead` copies a shared rule's sentence instead of pointing at it.

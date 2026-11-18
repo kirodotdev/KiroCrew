@@ -51,6 +51,7 @@ import pytest
 from kiro_crew import agent, crew_mode, crewmate_prompts
 from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME, MATE_CONDUCTOR_AGENT_FILENAME
 from kiro_crew.agent_materialization import service_agents
+from kiro_crew.agent_parts import spec_prompts
 from kiro_crew.config import paths as paths_mod
 
 #: Every intended difference, one line of reason each. Keys are ``<kind>:<name>``,
@@ -81,6 +82,8 @@ ALLOWLIST: dict[str, str] = {
     "prompt:tool_inventory": "lists the root conductor's narrowed tool set; a crewmate has the default tools and its member pieces name the crewmate-only ones",
     "prompt:goal_changes": "round-boundary goal changes; a crewmate's goal is set through set_goal (member pieces)",
     "prompt:tracker": "a tracker is for a fleet one compact read cannot hold; a crewmate's ledger is one level on one machine and its [Worker report] turns carry each worker's state",
+    "prompt:report_before_park": "a person reads a Bot's thread once or twice a day, so a Bot parks without a line: its open ledger items already show the wait (conductor.patrol 'Park quietly')",
+    "prompt:patrol_reply": "a person reads a Bot's thread once or twice a day, so a Bot's patrol wake with nothing for them ends with nothing_to_do and no text (conductor.patrol 'A quiet patrol wake writes nothing')",
 }
 
 #: Where a new rule or mount goes, quoted by every failure below.
@@ -490,7 +493,6 @@ _NEW_SHARED = (
     "bar_pr_merged",
     "wake_check",
     "routine_incidents",
-    "report_before_park",
 )
 
 
@@ -499,31 +501,85 @@ def test_the_long_task_and_team_rules_are_shared() -> None:
     assert set(_NEW_SHARED) <= crewmate_prompts.placeholders(_MATE_PIECE)
 
 
-def test_a_patrol_wake_gets_one_line_on_both_conductors(specs) -> None:
-    """The one-line patrol reply is a shared rule both installed conductors carry, and
-    no quiet-end wording tells a patrol wake to stay silent, so neither side is told
-    two things."""
+#: The Bot's own quiet ending for each conductor-mode speaking rule, as rendered
+#: words (:func:`_words`).
+_BOT_QUIET = {
+    "report_before_park": "park quietly. when you stop on a wait",
+    "patrol_reply": "a quiet patrol wake writes nothing.",
+}
+
+
+def test_a_quiet_patrol_wake_speaks_only_in_conductor_mode(
+    specs, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Conductor mode gives a patrol wake with nothing for the person one line, and
+    reports a park in one line; a Bot's thread stays silent on both, so neither side
+    is told two things."""
     root_spec, _mate = specs
-    rule = agent._LEDGER_CONDUCTOR_RULES["patrol_reply"].strip()
-    assert "patrol_reply" in crewmate_prompts.placeholders(_MATE_PIECE)
-    for side, text in (
-        (_ROOT, root_spec["prompt"]),
-        ("kirocrew-mate-conductor", _mate_ledger_text()),
-    ):
-        assert rule in text, f"{side} lacks the patrol_reply rule"
-    assert "nothing_to_do" not in agent._LEDGER_CONDUCTOR_RULES["wake_check"]
-    assert "its wakes are the one exception" in _words(
-        crewmate_prompts.text("conductor.how_you_work")
-    )
+    mate = _mate_ledger_text()
+    team_lead = _team_lead_prompt(tmp_path, monkeypatch)
+    assert set(_BOT_QUIET) == set(spec_prompts._CONDUCTOR_MODE_RULES)
+    assert not set(spec_prompts._CONDUCTOR_MODE_RULES) & set(agent._LEDGER_CONDUCTOR_RULES)
+    for name, rule in spec_prompts._CONDUCTOR_MODE_RULES.items():
+        assert rule.strip() in root_spec["prompt"], f"{_ROOT} lacks {name}"
+        assert rule.strip() in team_lead, f"kirocrew-team-lead lacks {name}"
+        assert rule.strip() not in mate, f"a Bot is told conductor mode's {name}"
+        assert name not in crewmate_prompts.placeholders(_MATE_PIECE)
+        assert _BOT_QUIET[name] in _words(mate), f"a Bot lacks its quiet {name}"
+    assert "one short line" in _words(spec_prompts._CONDUCTOR_MODE_RULES["patrol_reply"])
+    assert "call nothing_to_do and end with no text" in _words(mate)
+    # The shared hourly check says nothing about how the wake ends.
+    wake_check = _words(agent._LEDGER_CONDUCTOR_RULES["wake_check"])
+    assert "one line" not in wake_check and "nothing_to_do" not in wake_check
+    # The Bot's how-you-work items 2 and 5 carry no one-line exception.
+    how = _words(crewmate_prompts.text("conductor.how_you_work"))
+    assert "one exception" not in how and "gets its one line" not in how
+    assert 'never "nothing new". every word you write' in how
     assert 'never post "nothing changed"' not in _skill_text("goal-conductor")
     # The one line is for a wake with no news only: milestones keep their full
     # report (and the root's in-chat board), and the Bot's Heartbeat and
     # [Worker report] turns keep their own quiet end.
-    words = _words(rule)
+    words = _words(spec_prompts._CONDUCTOR_MODE_RULES["patrol_reply"])
     assert "a task starting, finishing or getting stuck is reported in full" in words
     assert "a heartbeat or [worker report] turn keeps its own quiet end" in words
     talking = dict(agent._CONDUCTOR_PROMPT_SECTIONS)["talking_to_the_person"]
     assert "patrol wake with no milestone" in _words(talking)
+
+
+#: The Bot piece's override of any speaking rule its system prompt carries, as words.
+_BOT_OVERRIDE = (
+    "in this thread the next two rules replace any rule elsewhere in your prompt that asks "
+    "for a line on a park or on a quiet patrol wake"
+)
+
+
+def test_a_bot_on_the_team_lead_is_told_the_quiet_rules_win(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Bot can run on ``kirocrew-team-lead`` (a lead is a crewmate), whose installed
+    prompt carries conductor mode's one-line rules. The Bot's ``conductor.patrol``
+    says its quiet rules replace them in its thread, so that chat is not left with
+    two opposite rules and no order between them."""
+    team_lead = _team_lead_prompt(tmp_path, monkeypatch)
+    assert spec_prompts._CONDUCTOR_MODE_RULES["patrol_reply"].strip() in team_lead
+    mate = _words(_mate_ledger_text())
+    assert _BOT_OVERRIDE in mate
+    assert mate.index(_BOT_OVERRIDE) < mate.index(_BOT_QUIET["report_before_park"])
+    assert mate.index(_BOT_OVERRIDE) < mate.index(_BOT_QUIET["patrol_reply"])
+
+
+def test_the_quiet_wake_check_sees_a_bot_told_the_one_line(
+    specs, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Positive control: a Bot piece that renders conductor mode's one-line rule again
+    is reported."""
+    from kiro_crew.context_assembly import member
+
+    real = member.ledger_rules_block
+    rule = spec_prompts._CONDUCTOR_MODE_RULES["patrol_reply"].strip()
+    monkeypatch.setattr(member, "ledger_rules_block", lambda key: real(key) + "\n" + rule)
+    with pytest.raises(AssertionError, match="a Bot is told conductor mode's patrol_reply"):
+        test_a_quiet_patrol_wake_speaks_only_in_conductor_mode(specs, tmp_path, monkeypatch)
 
 
 def test_the_render_check_sees_a_rule_lost_on_one_side(
@@ -621,9 +677,8 @@ def test_a_team_lead_carries_every_shared_rule_in_its_prompt(
     the root charter and a Bot's ``conductor.patrol`` (above), and a team lead set as
     ``agent.crew_mode_agent``, through ``_SHARED_CONDUCTOR_RULES_BLOCK``."""
     prompt = _team_lead_prompt(tmp_path, monkeypatch)
-    missing = sorted(
-        name for name, rule in agent._LEDGER_CONDUCTOR_RULES.items() if rule.strip() not in prompt
-    )
+    rules = {**agent._LEDGER_CONDUCTOR_RULES, **spec_prompts._CONDUCTOR_MODE_RULES}
+    missing = sorted(name for name, rule in rules.items() if rule.strip() not in prompt)
     assert missing == [], f"shared rules the team lead's prompt lacks: {missing}"
 
 
@@ -642,7 +697,8 @@ def test_the_team_lead_check_sees_a_lost_rule(
 
 
 #: Shared rules goal-conductor/SKILL.md names by a pointer instead of restating:
-#: the phrase that points at each. A pointer the skill drops leaves a reader who
+#: the phrase that points at each. A conductor-mode rule's pointer resolves on a
+#: Bot to its own quiet variant (:data:`_BOT_QUIET`). A pointer the skill drops leaves a reader who
 #: only skims the skill with no hint the rule exists.
 SKILL_POINTERS: dict[str, str] = {
     "dependent_calls": "your prompt's rule on dependent calls",
@@ -654,7 +710,7 @@ SKILL_POINTERS: dict[str, str] = {
     "send_files": "as your prompt's send-files rule says",
     "patrol_watch": "exactly as your prompt's patrol rules say",
     "routine_incidents": "your prompt's routine-incidents rule lists them",
-    "report_before_park": "report before you park, as your prompt's rule says",
+    "report_before_park": "do as your prompt's park rule says",
     "claimed_pr": "your prompt's claimed-pr rule",
     "bar_pr_merged": "as your prompt's rule on landed code says",
     "plan_reviewer": "as your prompt's plan-reviewer rule says",
@@ -681,7 +737,9 @@ def test_every_reference_the_goal_conductor_skill_names_exists() -> None:
 
 def test_goal_conductor_points_at_each_shared_rule_it_no_longer_restates() -> None:
     skill = _skill_text("goal-conductor")
-    assert set(SKILL_POINTERS) <= set(agent._LEDGER_CONDUCTOR_RULES)
+    rules = set(agent._LEDGER_CONDUCTOR_RULES) | set(spec_prompts._CONDUCTOR_MODE_RULES)
+    assert set(SKILL_POINTERS) <= rules
+    assert "in a bot's thread with no text, as its quiet-wake rule says" in skill
     missing = sorted(key for key, phrase in SKILL_POINTERS.items() if phrase not in skill)
     assert missing == [], f"goal-conductor/SKILL.md lost its pointer to shared rules: {missing}"
 

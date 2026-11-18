@@ -180,6 +180,7 @@ from kiro_crew.agent_parts.spec_lookup import (
     session_agent_spec_path,
 )
 from kiro_crew.agent_parts.spec_prompts import (
+    _CONDUCTOR_MODE_RULES,
     _CONDUCTOR_PROMPT_SECTIONS,
     _CONDUCTOR_SYSTEM_PROMPT,
     _CONDUCTOR_WORK_LEDGER_PROTOCOL,

@@ -373,7 +373,8 @@ more workers rather than letting it slip. Escalate to the person only an ask cas
 to an owner ruling is (e). Send a conflict with another lead to the lead that
 dispatched you as `question`; with none, decide it and record it.
 
-**Report before you park**, as your prompt's rule says.
+**Before you park**, do as your prompt's park rule says: one line in conductor
+mode, no line in a Bot's thread.
 
 **Record each slip.** Record a slip of your own with `session_ledger_record`:
 an event with the time, what happened, the root cause, and the fix or guard,
@@ -575,9 +576,11 @@ Each cycle:
    **When the lines show the item itself is wrong** (already done on main,
    mis-scoped, needing a split, a bar that cannot be met), re-plan that item now
    (Close the round).
-6. **A patrol wake gets one line**, as your prompt's patrol-reply rule says,
-   and more only in the cases it names. Never stop bare after your tool
-   calls: that keeps the empty-response recovery.
+6. **End a patrol wake with nothing for the person as your prompt says**: in
+   conductor mode with one line, as your prompt's patrol-reply rule says; in a
+   Bot's thread with no text, as its quiet-wake rule says. Write more only in
+   the cases your prompt names. Never stop bare after your tool calls: that
+   keeps the empty-response recovery.
 
 ### Close the round
 
