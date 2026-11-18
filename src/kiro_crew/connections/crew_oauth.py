@@ -731,16 +731,6 @@ def authorize_url(slug: str, client_id: str, redirect: str, state: str, challeng
     return f"{_ENDPOINTS[slug]['authorize']}?{urllib.parse.urlencode(query)}"
 
 
-def _same_issuer_text(iss: str, issuer: str) -> bool:
-    """RFC 9207 comparison; the callback's ``iss`` is vendor text, so a bad one is a mismatch."""
-    from kiro_crew.connections.l0_probe import same_issuer
-
-    try:
-        return same_issuer(iss, issuer)
-    except ValueError:
-        return False
-
-
 class SignIn:
     """One pending consent: the listener, the verifier and ``state``, in memory only.
 
@@ -857,16 +847,6 @@ class SignIn:
 
             if not iss_ok(self._dcr.client, request.query.get("iss")):
                 # RFC 9207 mix-up defence: the answer came from another server.
-                self._done.set_exception(CrewOAuthError("issuer_mismatch"))
-                return web.Response(status=400, text="This sign-in answer is not trusted.")
-        else:
-            # A pre-registered provider that advertises an ``issuer`` gets the same
-            # RFC 9207 check when the answer carries an ``iss``. shortcut: no table
-            # entry declares an issuer yet and an absent ``iss`` is accepted; add the
-            # issuer per provider once its metadata is verified.
-            issuer = _ENDPOINTS.get(self.slug, {}).get("issuer")
-            iss = request.query.get("iss")
-            if issuer and iss and not _same_issuer_text(iss, issuer):
                 self._done.set_exception(CrewOAuthError("issuer_mismatch"))
                 return web.Response(status=400, text="This sign-in answer is not trusted.")
         if not code or "error" in request.query:
