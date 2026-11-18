@@ -184,6 +184,40 @@ class TestABackgroundTurnOnKas:
         assert sessions.calls == ["get_or_create", "reset", "release"]
 
 
+class TestTheRefusalNamesTheCause:
+    """A refusal says another tool most likely wrote the entry, and what to do."""
+
+    def test_a_refusal_after_the_start_names_the_write_back(self, monkeypatch):
+        path = _install(monkeypatch)
+        sessions = _sessions(ACP_BACKEND_KAS, on_spawn=lambda: _inject(path))
+
+        with pytest.raises(RuntimeError, match="not acquired") as caught:
+            asyncio.run(_turn(sessions))
+        message = str(caught.value)
+        assert "another tool" in message
+        assert "leave Kiro Crew's tool-less specs alone" in message
+        assert "@other-tool" not in message
+
+    def test_a_refusal_before_the_start_names_the_write_back(self, monkeypatch):
+        from kiro_crew.llm_helpers_parts import background_turns
+
+        path = _install(monkeypatch)
+        _inject(path)
+
+        async def no_repair(_sessions: Any) -> None:
+            return None
+
+        monkeypatch.setattr(background_turns, "_rewrite_lite_spec", no_repair)
+        sessions = _sessions(ACP_BACKEND_KAS)
+
+        with pytest.raises(RuntimeError, match="not acquired") as caught:
+            asyncio.run(_turn(sessions))
+        assert "get_or_create" not in sessions.calls
+        message = str(caught.value)
+        assert "another tool" in message
+        assert "leave Kiro Crew's tool-less specs alone" in message
+
+
 class TestABackgroundTurnOnKiroCli:
     def test_a_registered_injection_still_refuses(self, monkeypatch, registered):
         """kiro-cli loads the file on disk, so the injection would run there."""

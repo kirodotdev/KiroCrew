@@ -755,6 +755,8 @@ class TestASpecThatNeverSticks:
         assert str(_spec_path(agents_dir)) in message
         assert "mcpServers" in message and "allowedTools" in message
         assert _NONCE not in message and "launcher-creds" not in message
+        # The refusal names the likely writer and what to do about it.
+        assert "leave Kiro Crew's tool-less specs alone" in message
 
         # A later ingest inside the window spawns nothing.
         with pytest.raises(llm_pool.KnowledgeSpecUnconfirmed):

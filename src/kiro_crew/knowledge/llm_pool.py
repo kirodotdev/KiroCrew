@@ -30,6 +30,7 @@ from kiro_crew.agent_sdk.backends import (
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_spec_injections import WRITE_BACK_CAUSE
 from kiro_crew.config import live
 from kiro_crew.config.loader import read_merged_config_files
 from kiro_crew.config.paths import config_dir
@@ -841,8 +842,9 @@ class AcpWorker(Worker):
                 f"{KnowledgeSpecUnconfirmed.code}: knowledge agent {AGENT_NAME!r} could not "
                 "be confirmed to declare a zero-tool spec after Kiro Crew's repair "
                 f"({detail}); refusing to run the knowledge pool without a confirmed tool "
-                "ban. Remove or rename the file named here, or stop the tool that rewrites "
-                f"it; the pool tries again after {int(SPEC_REFUSAL_COOLDOWN_SECS)} seconds"
+                f"ban. {WRITE_BACK_CAUSE}, or remove or rename the file named here if you "
+                "added it yourself; the pool tries again after "
+                f"{int(SPEC_REFUSAL_COOLDOWN_SECS)} seconds"
             )
         await self._apply_effort()
         # Shield the live worker PID from the periodic orphan sweep for as long

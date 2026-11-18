@@ -110,6 +110,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _lite_resets_failed,
         _lite_rewrite_tasks,
         _lite_rewrites,
+        _lite_spec_refusal,
         _lite_spec_unconfirmed,
         _raise_if_unfinished,
         _record_background_crew_log,
