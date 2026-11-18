@@ -221,7 +221,7 @@ registers:
 | Switch | Feature block | Bot scopes | Bot events |
 |---|---|---|---|
 | `agent_sessions` | `agent_view` (`agent_description`) | `assistant:write` | `app_context_changed`, `agent_session_stopped`, `agent_session_title_changed` |
-| `code_channels` (Phase 2) | `code_channels: {enabled: true}` | `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` | `agent_session_stopped`, `code_channel_action` (the context bar's action items, amended 2026-11-16) |
+| `code_channels` (Phase 2) | `code_channels: {enabled: true}` | `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` | `agent_session_stopped` (`code_channel_action` removed 2026-11-18: Slack's manifest editor refuses it as a bot event, open question 2) |
 
 `channels:read`, `groups:read`, `groups:history` and `message.groups` are already
 in the base manifest. No `slash_command_url` is set: Socket Mode delivers channel
@@ -483,8 +483,9 @@ crewmates' private copies.
   merges or closes while no helper-agent PR is open; otherwise the slot shows a
   single helper-agent PR the same way, or several as one item linked to the board
   (`3 PRs open`, `3 PRs: 2 open · 1 merged`). Create
-  PR and Stop are `item_type: "action"` items with no URL; a click arrives as a
-  `code_channel_action` event (open question 2) and runs an existing path with
+  PR and Stop are `item_type: "action"` items with no URL; Slack's docs say a
+  click delivers a `code_channel_action` event (how it arrives is open question
+  2), and a click the gateway receives that way runs an existing path with
   that path's own checks and audit. Any other key is refused, and the agent
   cannot set an action key.
 * **Plan-canvas comments** (amended 2026-11-16). Slack sends no event for a
@@ -692,10 +693,10 @@ saves it on, a stored value is kept, and an unset one reads off, so an existing
 install changes nothing on upgrade. One default changes for a code channel with no
 settings (amended 2026-11-16): it runs the owner's default agent, not the
 conductor, including one filed in an auto folder that still holds the legacy
-`kirocrew-conductor`; a session already bound keeps its agent. The context bar's
-action items need the `code_channel_action` event (amended 2026-11-16), which an
-app set up before it does not subscribe until the person updates its manifest;
-the drift status checks scopes only, so it does not flag a missing event. With every switch off, the rendered manifest and the deep-link
+`kirocrew-conductor`; a session already bound keeps its agent. The manifest
+subscribes no event for the context bar's action items (amended 2026-11-18):
+Slack's App Manifest editor refuses `code_channel_action` as a bot event (open
+question 2). With every switch off, the rendered manifest and the deep-link
 payload are byte-identical to before (pinned by a test), so an existing app needs
 no change and `kirocrew manifest` prints what it always printed. With a switch on
 but its scope not yet granted, or Slack answering `feature_disabled`, the runtime
@@ -789,3 +790,13 @@ staying in place.
    never values, so the real shape can be pinned down from a live workspace.
    This question closes once Slack publishes the body; then only the documented
    fields are read.
+   Amended 2026-11-18: the manifest no longer subscribes `code_channel_action`.
+   Pasted into Slack's App Manifest editor on 2026-11-18, the manifest with Code
+   channels on was refused: "Scopes could not be verified for
+   `code_channel_action` as it is not a valid bot user event type". Slack
+   documents no subscribable event for the click: its events reference lists
+   none, and its interaction payloads reference lists no code-channel payload
+   type. Whether a click on Create PR or Stop in the bar reaches the app is not
+   yet confirmed in a live workspace. The click handling stays as it is, so a
+   `code_channel_action` event Slack sends with no subscription still runs.
+   `/create-pr`, `!stop` and Slack's own Stop button do not depend on it.

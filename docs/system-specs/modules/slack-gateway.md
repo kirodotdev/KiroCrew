@@ -2674,9 +2674,10 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   never carries a `url` (Slack would save it as info), and `set_context_bar` refuses
   a list outside Slack's schema (five items, key 64, label 128, url 2048 https, the icon
   set) before sending. The agent's own items stay links: the actions are Kiro Crew's.
-- **Actions (`actions.py`).** A click arrives as a `code_channel_action` event
-  (manifest-subscribed with `code_channels`; `events._on_event` hands it to
-  `actions.dispatch`). `stop` goes first, ahead of every other gate: it builds an
+- **Actions (`actions.py`).** The manifest does not subscribe `code_channel_action`,
+  because Slack's manifest editor refuses it as a bot event; `events._on_event` still
+  hands any such event Slack delivers to `actions.dispatch`, and whether a click
+  arrives is open question 2 of the Code channels RFC. `stop` goes first, ahead of every other gate: it builds an
   `agent_session_stopped` for the whole channel (its own de-dup key) and is asked
   exactly what Slack's own Stop event is (`session_events.admits`: the feature, or a
   bound session still running, and the workspace; then `session_events.handle_stopped`:

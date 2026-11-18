@@ -349,7 +349,7 @@ enabled** in the panel, and Slack keeps working as before.
 | Switch | Manifest additions |
 |---|---|
 | Agent sessions (`slack.agent_sessions`) | `features.agent_view`; bot scope `assistant:write`; events `agent_session_stopped`, `agent_session_title_changed` |
-| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` (the work board pins itself); events `agent_session_stopped`, `code_channel_action` |
+| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` (the work board pins itself); event `agent_session_stopped`. Slack's manifest editor refuses `code_channel_action` as a bot event, so the manifest does not list it; whether a click on the context bar's Create PR or Stop reaches the app is not yet confirmed in a live workspace. `/create-pr`, `!stop` and Slack's own Stop button do not depend on it |
 
 > **Agent view is one-way.** Slack cannot switch an app from `agent_view` back to
 > `assistant_view` once the manifest is saved in Slack.
