@@ -39,6 +39,7 @@ from kiro_crew.browser_harness.live_hub_wheel import (  # noqa: F401 - live_hub 
     _wheel_settle,
     _wheel_target,
 )
+from kiro_crew.browser_harness.run_budget import RunCount
 from kiro_crew.browser_harness.screencast import (
     LiveConfig,
     LiveStream,
@@ -185,6 +186,9 @@ class LiveSession:
     #: event takes the label of the step it reported (:meth:`LiveHub.record_op`).
     step_seq: int = 0
     last_step: str = ""
+    #: The current repeat run against ``browser.run.max_repeats``. Starts again on a
+    #: takeover (:meth:`LiveHub.claim`) and when the chat's session ends (:meth:`LiveHub.reset_run`).
+    run: RunCount = field(default_factory=RunCount)
     #: The loop op's counters for the card's loop line (:meth:`LiveHub.loop`), or
     #: ``None``. Kept after the loop stops, so the card says why, until the next op.
     loop: dict[str, Any] | None = None
@@ -714,6 +718,12 @@ class LiveHub:
 
     # ── the replay recorder's events ───────────────────────────────────────
 
+    def reset_run(self, session_key: str) -> None:
+        """The chat's ``browser.run`` repeat count starts again."""
+        sess = self._sessions.get(session_key)
+        if sess is not None:
+            sess.run = RunCount()
+
     def op_mark(self, session_key: str) -> OpMark:
         """Note where an op begins; :meth:`record_op` turns it into its replay event."""
         sess = self._session(session_key)
@@ -1098,6 +1108,7 @@ class LiveHub:
             sess.park_resumed = False
         sess.claim_turn = sess.turn_id
         sess.seen_at = self._clock()
+        sess.run = RunCount()
         sess.released.clear()
         task = sess.op_task
         if task is not None and not task.done():

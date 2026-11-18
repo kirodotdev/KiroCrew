@@ -6554,6 +6554,9 @@
           "enabled": true,
           "max_session_mb": 200,
           "max_total_mb": 1024
+        },
+        "run": {
+          "max_repeats": 0
         }
       }
     },
@@ -6810,6 +6813,36 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1024
+    },
+    {
+      "path": "browser.run",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Run limits",
+      "help": "An optional stop for a long browser task: a most number of repeats of one step. Off by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "max_repeats": 0
+      }
+    },
+    {
+      "path": "browser.run.max_repeats",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Most repeats of one step",
+      "help": "After this many times in a row of the same browser step with the same details (the same click on the same element, the same scroll), the next one is not run and the agent is told to try something else. Any different step starts the count again. 0 (the default) sets no limit.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "decisions",
