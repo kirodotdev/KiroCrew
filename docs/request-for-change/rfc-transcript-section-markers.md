@@ -699,3 +699,18 @@ marker would vanish on one of the two write paths.
    there are two answers to "what happens at a turn boundary", which is the kind
    of pair that drifts. Whether they should be one seam is a maintainer call, and
    it is not a prerequisite for either change.
+9. **Does this clash with a crew manager "section view" on the side panel?**
+   **ANSWERED.** A marker is one transcript row the writer adds at a turn
+   boundary. It carries a short label and no summary, so it does not compete with
+   a feature that summarises session content. No side-panel section view is on
+   main today. If one lands, it can read `section_marker` rows as its boundaries
+   instead of inferring them, so both surfaces share one record. If maintainers
+   prefer the panel to own the view, the inline rule (Phase 1's web row) can be
+   dropped and the stored row kept as the panel's input.
+10. **Does it work for every provider, not only kiro-cli?** **ANSWERED.**
+    `section_marker` is a Kiro Crew MCP tool, and the dashboard applies it, not
+    the harness. The tool returns an encoded directive in its result string, and
+    `_on_tool_result` (`dashboard/chat_turn/tool_results.py`) decodes it from the
+    same `EVENT_TOOL_RESULT` the turn loop in `chat_runner.py` handles for every
+    provider. So any harness that can call MCP tools can emit a marker, on the
+    same path as `suggest_followup` and `ask_question`.
