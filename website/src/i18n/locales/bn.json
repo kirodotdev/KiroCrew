@@ -11579,6 +11579,10 @@
       "undo_failed": "খসড়াটি আবার সরিয়ে রাখা গেল না: জায়গা নেই বা ব্রাউজারের স্টোরেজ পাওয়া যাচ্ছে না।",
       "discarded_one": "সরিয়ে রাখা খসড়াটি বাতিল করা হয়েছে। এখনও {{count}}টি সরিয়ে রাখা আছে।",
       "discarded_other": "সরিয়ে রাখা খসড়াটি বাতিল করা হয়েছে। এখনও {{count}}টি সরিয়ে রাখা আছে।"
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}}টি ফিল্ড",
+      "heading_other": "Frontmatter · {{count}}টি ফিল্ড"
     }
   },
   "hooks": {

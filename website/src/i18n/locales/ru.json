@@ -12117,6 +12117,12 @@
       "discarded_many": "Отложенный черновик удалён. Ещё отложено: {{count}}.",
       "discarded_one": "Отложенный черновик удалён. Ещё отложено: {{count}}.",
       "discarded_other": "Отложенный черновик удалён. Ещё отложено: {{count}}."
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} поле",
+      "heading_few": "Frontmatter · {{count}} поля",
+      "heading_many": "Frontmatter · {{count}} полей",
+      "heading_other": "Frontmatter · {{count}} поля"
     }
   },
   "hooks": {

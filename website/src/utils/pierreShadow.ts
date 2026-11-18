@@ -170,6 +170,8 @@ export function searchRuns(root: Element): Text[][] {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
     acceptNode: (n) => {
       if (n.nodeType === Node.TEXT_NODE) return n.nodeValue?.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+      // Not shown (a collapsed section keeps its rows mounted): nothing to find.
+      if ((n as Element).hasAttribute('hidden')) return NodeFilter.FILTER_REJECT
       if ((n as Element).localName !== CODE_HOST) return NodeFilter.FILTER_SKIP
       return isParked(n as Element, root) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
     },

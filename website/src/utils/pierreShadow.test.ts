@@ -471,6 +471,13 @@ describe('a block parked beside its plain copy', () => {
 })
 
 describe('searchRuns', () => {
+  it('skips an element with the hidden attribute and everything under it', () => {
+    const hidden = para('collapsed row')
+    hidden.setAttribute('hidden', '')
+    const root = page(para('Intro'), hidden, para('Outro'))
+    expect(lines(root)).toEqual(['Intro', 'Outro'])
+  })
+
   it('keeps the light DOM node by node and a code line as one run, in document order', () => {
     const root = page(
       para('Intro'),

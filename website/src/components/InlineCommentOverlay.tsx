@@ -127,6 +127,9 @@ export function InlineCommentOverlay({
     const ro = new ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(compute) })
     ro.observe(textRoot)
     ro.observe(scroller)
+    // The parent too: content above the text root (the markdown frontmatter
+    // strip) can collapse and move the text without resizing either one.
+    if (textRoot.parentElement && textRoot.parentElement !== scroller) ro.observe(textRoot.parentElement)
     return () => { cancelAnimationFrame(raf); ro.disconnect() }
   }, [scrollRef, textRef, sig, anchored, replyCounts, unreadRootIds])
 

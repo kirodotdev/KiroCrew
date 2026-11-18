@@ -11848,6 +11848,11 @@
       "discarded_many": "Bozza scartata. Restano {{count}} bozze messe da parte.",
       "discarded_one": "Bozza scartata. Resta {{count}} bozza messa da parte.",
       "discarded_other": "Bozza scartata. Restano {{count}} bozze messe da parte."
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} campo",
+      "heading_many": "Frontmatter · {{count}} campi",
+      "heading_other": "Frontmatter · {{count}} campi"
     }
   },
   "hooks": {

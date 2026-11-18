@@ -6636,6 +6636,10 @@
       "shortcut_hint_mac": "⌃⇧M mutes or unmutes",
       "mute_short": "Mute",
       "unmute_short": "Unmute"
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} field",
+      "heading_other": "Frontmatter · {{count}} fields"
     }
   },
   "connectedComputers": {

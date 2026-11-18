@@ -11310,6 +11310,9 @@
       "discard_failed": "초안을 삭제하지 못했습니다. 브라우저 저장소를 사용할 수 없습니다. 초안은 그대로 보관되어 있습니다.",
       "undo_failed": "초안을 다시 보관하지 못했습니다. 보관함이 가득 찼거나 브라우저 저장소를 사용할 수 없습니다.",
       "discarded_other": "보관한 초안을 삭제했습니다. {{count}}개가 남아 있습니다."
+    },
+    "frontmatterCard": {
+      "heading_other": "Frontmatter · 필드 {{count}}개"
     }
   },
   "hooks": {

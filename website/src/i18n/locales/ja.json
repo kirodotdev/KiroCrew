@@ -11310,6 +11310,9 @@
       "discard_failed": "下書きを破棄できませんでした。ブラウザーのストレージを利用できません。下書きは一時保存されたままです。",
       "undo_failed": "下書きを一時保存に戻せませんでした。一時保存がいっぱいか、ブラウザーのストレージを利用できません。",
       "discarded_other": "一時保存した下書きを破棄しました。残りは {{count}} 件です。"
+    },
+    "frontmatterCard": {
+      "heading_other": "Frontmatter · {{count}} 個のフィールド"
     }
   },
   "hooks": {

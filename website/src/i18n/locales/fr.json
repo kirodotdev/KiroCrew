@@ -11848,6 +11848,11 @@
       "discarded_many": "Brouillon supprimé. {{count}} brouillons restent mis de côté.",
       "discarded_one": "Brouillon supprimé. {{count}} brouillon reste mis de côté.",
       "discarded_other": "Brouillon supprimé. {{count}} brouillons restent mis de côté."
+    },
+    "frontmatterCard": {
+      "heading_one": "Frontmatter · {{count}} champ",
+      "heading_many": "Frontmatter · {{count}} champs",
+      "heading_other": "Frontmatter · {{count}} champs"
     }
   },
   "hooks": {

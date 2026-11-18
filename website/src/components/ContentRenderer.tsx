@@ -15,6 +15,8 @@
  */
 import { memo, useMemo } from 'react'
 import MarkdownRenderer, { BasePathCtx } from './MarkdownRenderer'
+import { splitFrontmatter } from './markdown/frontmatter'
+import { FrontmatterCard } from './markdown/FrontmatterCard'
 import { ImageViewer, CsvViewer, JsonViewer, JsonlViewer, HtmlViewer, PdfViewer, OfficeViewer, SheetViewer, SvgViewer, ExcalidrawViewer, MediaPlayer } from './FileRenderers'
 import { PierreCode, type PierreEditorHandle } from '../pierre'
 import { CodeEditor } from './CodeEditor'
@@ -109,6 +111,10 @@ export const ContentRenderer = memo(function ContentRenderer({
   onLiveDiffDegraded?: (degraded: boolean) => void
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // File-preview only: split a leading YAML frontmatter block so it renders as
+  // a metadata strip instead of a GFM thematic break + setext heading. Cheap
+  // when there is no block (the raw string is returned as `body`).
+  const frontmatter = useMemo(() => splitFrontmatter(displayContent), [displayContent])
   const codeFile = useMemo(
     () => ({ name: filePath?.split('/').pop() || `file.${lang}`, contents: content }),
     [filePath, lang, content],
@@ -205,9 +211,14 @@ export const ContentRenderer = memo(function ContentRenderer({
         />
       )}
       {!isRichType && !editing && isMarkdown && (
+        // The strip lives INSIDE `previewRef`: comment capture and highlight lookup
+        // measure text offsets under it, so a comment on strip text anchors like any
+        // other. Collapsing hides the rows without unmounting them (FrontmatterCard),
+        // which keeps every stored offset stable.
         <div ref={previewRef as React.RefObject<HTMLDivElement>} data-hl-scope="" className={markdownClassName ?? 'msg-content text-sm leading-relaxed'}>
+          {frontmatter.hasFrontmatter && <FrontmatterCard entries={frontmatter.entries} />}
           <BasePathCtx.Provider value={filePath || null}>
-            <MarkdownRenderer content={displayContent} sourcePos onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />
+            <MarkdownRenderer content={frontmatter.body} sourcePos onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />
           </BasePathCtx.Provider>
         </div>
       )}
