@@ -740,6 +740,83 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: bash .github/scripts/cancel-superseded-run.sh
 
+  # ── AI review hold (off unless CI_AI_BLOCK_HOLD is set) ──────────────
+  # The two blocking line reviewers (Opus 5.5 Review, GPT 6.1 Review) run in
+  # their own workflows and usually publish a verdict before the lint jobs
+  # finish. A head one of them BLOCKed is replaced by a new push, so the heavy
+  # jobs that start on it test a commit nobody will merge. This job reads the
+  # verdicts that are ALREADY published for the head, once, at the moment the
+  # lint jobs have passed, and `lint-gate` skips when it reports a hold.
+  #
+  # The repository variable CI_AI_BLOCK_HOLD switches it:
+  #   unset (or any other value)  the job is skipped and nothing changes
+  #   shadow    reads, reports what it would hold in the job summary, releases
+  #   enforce   fails with `hold=true` when a lane published BLOCK for the head
+  #
+  # It never waits for a verdict that is not published, and every read it
+  # cannot make releases the heavy jobs (see ai-block-hold.sh). `lint-gate`
+  # keys on the `hold` output and not on this job's result, so a runner fault
+  # or a timeout here releases them too.
+  #
+  # Same-repository pull requests only. A fork's reviewers start after Fast
+  # Gate completes and publish through the fork-* lanes, a merge group and a
+  # push are not reviewed at all, so on those events the job is skipped and
+  # `lint-gate` runs as it always has.
+  #
+  # A held run is red: this job fails, and Coverage Gate fails closed on the
+  # skipped shards and names the hold. Once the lane is green for the head (a
+  # passing re-run or a recorded `/ai-review override`), "Re-run failed jobs"
+  # re-runs this job, which reads the new verdict and releases the heavy jobs.
+  ai-block-hold:
+    name: AI Review Hold
+    needs: [changes, await-fast-gate, backend-lint, frontend-lint]
+    if: >-
+      ${{ !cancelled()
+      && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && (vars.CI_AI_BLOCK_HOLD == 'shadow' || vars.CI_AI_BLOCK_HOLD == 'enforce')
+      && needs.changes.result == 'success'
+      && needs.await-fast-gate.result == 'success'
+      && contains(fromJSON('["success","skipped"]'), needs.backend-lint.result)
+      && contains(fromJSON('["success","skipped"]'), needs.frontend-lint.result) }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      # checks:read is what lets this read the review lanes' check-runs and
+      # their annotations. Job-level permissions REPLACE the top-level grant,
+      # so contents:read is restated for the checkout.
+      checks: read
+      contents: read
+    outputs:
+      hold: ${{ steps.read.outputs.hold }}
+    steps:
+      # Sparse, shallow and credential-free, like the barrier's checkout: only
+      # .github/scripts is needed, and the gh reads authenticate with GH_TOKEN.
+      # A checkout that fails must not red the run: the step below releases the
+      # heavy jobs when the script is not there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        continue-on-error: true
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Hold the heavy jobs on a published AI review BLOCK
+        id: read
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # The head sha, not github.sha: the review lanes publish their
+          # check-runs on the PR head, and github.sha is the merge commit.
+          SHA: ${{ github.event.pull_request.head.sha }}
+          MODE: ${{ vars.CI_AI_BLOCK_HOLD }}
+        run: |
+          if [ ! -f .github/scripts/ai-block-hold.sh ]; then
+            echo "::warning::AI Review Hold: the script was not checked out. Releasing the heavy jobs."
+            exit 0
+          fi
+          bash .github/scripts/ai-block-hold.sh
+
   # ── Lint first (RFC "Fewer review loops and fewer escaped bugs", D2) ──
   # The heavy jobs below `need` this one, so a push that fails Backend Lint or
   # Frontend Lint does not start the test shards, Windows legs, e2e or builds.
@@ -760,15 +837,22 @@ jobs:
   # applies the implicit `success()`, which reads every ancestor, not only the
   # direct needs: the lint job skipped on a backend-only or frontend-only diff
   # would skip every heavy job behind a green gate.
+  #
+  # `ai-block-hold` is a need so this job starts after it, and the `hold`
+  # output is the only thing read from it: the output is `true` only when that
+  # job positively read a published AI review BLOCK in enforce mode. Skipped
+  # (the default), green, failed for another reason or timed out, it leaves the
+  # output empty and this job runs.
   lint-gate:
     name: Lint Gate
-    needs: [changes, await-fast-gate, backend-lint, frontend-lint]
+    needs: [changes, await-fast-gate, backend-lint, frontend-lint, ai-block-hold]
     if: >-
       ${{ !cancelled()
       && needs.changes.result == 'success'
       && needs.await-fast-gate.result == 'success'
       && contains(fromJSON('["success","skipped"]'), needs.backend-lint.result)
-      && contains(fromJSON('["success","skipped"]'), needs.frontend-lint.result) }}
+      && contains(fromJSON('["success","skipped"]'), needs.frontend-lint.result)
+      && needs.ai-block-hold.outputs.hold != 'true' }}
     runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
@@ -3030,7 +3114,7 @@ jobs:
     # CodeBuild-hosted runner (pilot); artifact-only job, default size. Rollback: `ubuntu-latest`.
     runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
-    needs: [coverage-combine, frontend-test, frontend-coverage-merge, backend-test, backend-test-ipv6, backend-test-kernel-lock-owner, changes, backend-lint, frontend-lint]
+    needs: [coverage-combine, frontend-test, frontend-coverage-merge, backend-test, backend-test-ipv6, backend-test-kernel-lock-owner, changes, backend-lint, frontend-lint, ai-block-hold]
     # Single source of truth for the floors -- referenced by the check steps,
     # their names, and the summary table so the three can never drift apart.
     #
@@ -3124,6 +3208,7 @@ jobs:
           ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
           BACKEND_LINT: ${{ needs.backend-lint.result }}
           FRONTEND_LINT: ${{ needs.frontend-lint.result }}
+          AI_BLOCK_HOLD: ${{ needs.ai-block-hold.outputs.hold }}
         run: |
           echo "coverage-combine=$CC  frontend-test=$FE  frontend-coverage-merge=$FCM  backend-test=$BE  only_backend=$ONLY_BACKEND  only_frontend=$ONLY_FRONTEND  backend-lint=$BACKEND_LINT  frontend-lint=$FRONTEND_LINT"
           # Empty flags mean the surface-detection job never reported (it failed
@@ -3140,6 +3225,13 @@ jobs:
           if [ "$BACKEND_LINT" = "failure" ] || [ "$BACKEND_LINT" = "cancelled" ] \
             || [ "$FRONTEND_LINT" = "failure" ] || [ "$FRONTEND_LINT" = "cancelled" ]; then
             echo "::error::lint did not pass (backend-lint=$BACKEND_LINT, frontend-lint=$FRONTEND_LINT), so the test shards never started -- failing closed. Fix 'Backend Lint & Type Check' / 'Frontend Lint & Type Check' first; coverage was not measured."
+            exit 1
+          fi
+          # The AI review hold skips `lint-gate` the same way, so name it too:
+          # the shards are skipped because a reviewer BLOCKed this head, not
+          # because coverage fell.
+          if [ "$AI_BLOCK_HOLD" = "true" ]; then
+            echo "::error::the heavy jobs were held because an AI review lane published BLOCK for this head, so the test shards never started -- failing closed. See 'AI Review Hold'; coverage was not measured."
             exit 1
           fi
           # Both test jobs always RUN (only their scope narrows), so both must

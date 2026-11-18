@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { modelHealthKey, useModelsDegraded } from '../providers/modelListHealth'
+import { modelHealthKey, useModelsAuthRequired, useModelsDegraded } from '../providers/modelListHealth'
 import { defaultWriteFailureOf, type DefaultWriteFailure } from './AgentDropdownList'
 import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMessage } from '../utils/agentSwitchFeedback'
 import { setAgentSwitchNotice } from '../store/chatSlice'
@@ -28,6 +28,7 @@ import { displayModel, modelChipMarker } from '../lib/model'
 import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { i18nT } from '../i18n/t'
 import { slotRowByKey } from '../store/slotIndex'
+import { useSlotRunsHere } from './sessionEnvironmentHooks'
 
 /**
  * `ChatPane`'s agent and model pickers, bound to the pane's own slot through
@@ -143,6 +144,14 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   // entitlement — and is subscribed to, since it can flip while the served list
   // stays identical.
   const _modelsDegraded = useModelsDegraded(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
+  // The configured list is short because kiro-cli's own login is missing (see
+  // ComposerDockView); a harness's own list (`models_backend`) never sets it.
+  const kiroCliSignedOut = useModelsAuthRequired(provider.id) && selectionCapabilitiesQ.data?.models_backend === undefined
+  // A chat on another machine refuses a local run, so its sign-in row copies.
+  const paneRunsHere = useSlotRunsHere(paneSlot && paneSlot.executor !== 'remote' ? paneSlot.key : null)
+  // The terminal receiver uses the page's active chat, even for a split pane.
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  const activeSlotRunsHere = useSlotRunsHere(activeSlot)
   const displayModels = codexPairModels
     ? filterInteractiveModels(availableModels, [], [], true)
     : availableModels
@@ -202,7 +211,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
     installedAgents, displayAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, defaultAgentFailed, toggleDefaultAgent, agentDD,
     selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, codexPairModels, hiddenModelsQ, modelPickerConfigured, jevRouteOn, modelDD,
     attachModelList, modelListEdges, agentBtnRect, anchorAgentBtn, modelBtnRect, anchorModelBtn, shownModel,
-    effortSupported, effortLevelsOverride, effortAutoNote, defaultEffort, effectiveEffort, chipDefault, modelMarker,
+    effortSupported, effortLevelsOverride, effortAutoNote, defaultEffort, effectiveEffort, chipDefault, modelMarker, kiroCliSignedOut, paneRunsHere, activeSlotRunsHere,
   }
 }
 

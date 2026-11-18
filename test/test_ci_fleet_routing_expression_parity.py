@@ -399,6 +399,7 @@ _CANONICAL_DESKTOP_X64_EXPR = (
 )
 _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     ("ci.yml", "lint-gate"): _CANONICAL_CONSUMER_EXPR,
+    ("ci.yml", "ai-block-hold"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "backend-lint"): _CANONICAL_CONSUMER_EXPR_LARGE,
     # Default Linux, not large: black is the only backend gate that needs the
     # large fleet for its process pool, and it runs in backend-lint.
