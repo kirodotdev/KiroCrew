@@ -109,7 +109,7 @@ jobs:
       # The raw `windows` path bucket below, for EVERY event. Backend Tests
       # (Windows) takes the reduced or leaf scope only when this reads 'false';
       # 'true' or an absent output keeps the full Windows suite.
-      windows_paths: ${{ steps.filter.outputs.windows }}
+      windows_paths: ${{ 'false' }}
       # Central runner labels: eligible repository/event/actor combinations
       # use CodeBuild. Any other run EXECUTING in this repository uses the
       # `kirocrew-runners` group's own runner label, and a fork running its own
@@ -296,6 +296,8 @@ jobs:
             if [ "$FRONTEND" = "true" ] && [ "$BACKEND" != "true" ]; then only_frontend=true; fi
           fi
           echo "only_backend=$only_backend"   >> "$GITHUB_OUTPUT"
+          # MEASUREMENT ONLY (throwaway draft, never merged): force the frontend-only scope.
+          only_frontend=true
           echo "only_frontend=$only_frontend" >> "$GITHUB_OUTPUT"
           echo "backend=$BACKEND frontend=$FRONTEND meta=$META full_run=$FULL_RUN -> only_backend=$only_backend only_frontend=$only_frontend"
 
@@ -1837,6 +1839,55 @@ jobs:
           path: ${{ runner.temp }}/pytest-progress/*.jsonl
           if-no-files-found: ignore
           retention-days: 7
+
+  # MEASUREMENT ONLY (throwaway draft PR, never merged).
+  prewarm-probe:
+    name: Prewarm probe (${{ matrix.os }})
+    needs: [changes]
+    if: ${{ !cancelled() }}
+    runs-on: ${{ matrix.os == 'linux' && (startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest') || (startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && format('codebuild-kirocrew-gha-windows-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.windows_runner || 'windows-latest') }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, windows]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - if: matrix.os == 'windows'
+        uses: ./.github/actions/setup-windows-tests
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+      - name: Install dependencies
+        shell: bash
+        run: uv pip install --system -e ".[voice,desktop,otlp]" --group dev
+      - if: matrix.os == 'linux'
+        uses: ./.github/actions/run-as-runner
+      - name: Probe (linux)
+        if: matrix.os == 'linux'
+        shell: /usr/local/bin/ci-shell {0}
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          PINS: scripts/ci_file_shard_pins.txt
+          WORKERS: "6"
+        run: bash scripts/tmp_prewarm_probe.sh
+      - name: Probe (windows)
+        if: matrix.os == 'windows'
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          PINS: scripts/ci_file_shard_pins_windows.txt
+          WORKERS: "4"
+        run: bash scripts/tmp_prewarm_probe.sh
 
   # Native IPv6 loopback is required here, not enabled on the shared fleet.
   # Keep both OS contracts, including Windows' real IPv6 listener discovery.
