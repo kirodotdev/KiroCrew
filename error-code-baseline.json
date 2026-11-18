@@ -214,7 +214,7 @@
     },
     "dashboard/handlers/cron_runs.py": {
       "dynamic_status": 1,
-      "missing_code": 6
+      "missing_code": 5
     },
     "dashboard/handlers/kiro_prerequisite.py": {
       "missing_code": 1

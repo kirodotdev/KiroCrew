@@ -121,6 +121,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _HISTORY_PAGE_MAX,
         _ack_job,
         _history_page,
+        _run_target_missing,
         api_cron_ack,
         api_cron_cancel,
         api_cron_history,
