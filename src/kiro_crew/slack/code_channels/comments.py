@@ -274,6 +274,9 @@ def plan_canvas_text(
     elif not comments:
         lines.append("No open comments.")
     if comments:
+        # By Slack ts, so the newest are kept (a thread's replies sit after its own
+        # comment in the listing, whatever their age).
+        comments.sort(key=lambda c: _ts_key(c.ts))
         shown = comments[-MAX_READ_COMMENTS:]
         lines.append(f"Open comments ({len(shown)} shown, oldest first):")
         for c in shown:

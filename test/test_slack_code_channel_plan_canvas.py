@@ -181,3 +181,20 @@ async def test_comments_are_withheld_when_the_inbound_policy_refuses_the_channel
     out = await _read(env)
     assert out.ok and "1. Inventory cron jobs" in out.text  # the plan is the agent's own
     assert "billing last" not in out.text and "inbound policy" in out.text
+
+
+async def test_the_newest_feedback_is_kept_when_a_read_is_cut(env: Any) -> None:
+    _bind(env)
+    _plan(env)
+    threads = [_thread(f"A{n}", OWNER, f"c{n}") for n in range(100)]
+    for n, thread in enumerate(threads):
+        thread["ts"] = f"1000.{n + 1:06d}"
+    # The newest item of all is a reply under the OLDEST thread.
+    threads[0]["replies"] = [{"ts": "2000.000001", "user_id": OWNER, "text": "newest reply"}]
+    threads[1]["replies"] = [{"ts": "1000.000050", "user_id": OWNER, "text": "older reply"}]
+    env.api.responses[GET] = _answer(*threads)
+    out = await _read(env)
+    # 102 items, the 2 oldest by ts (c0, c1) go; the reply under thread 0 stays.
+    assert "newest reply" in out.text and "older reply" in out.text
+    assert ": c0\n" not in out.text and ": c1\n" not in out.text
+    assert "2 older comments are not shown" in out.text
