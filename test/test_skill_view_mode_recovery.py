@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import native_skill_projection_helpers
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp import skill_projection as projection
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError, _format_runtime_rpc_error
@@ -393,12 +394,10 @@ async def test_create_and_load_map_a_stored_view_before_any_guard():
 
 @pytest.mark.asyncio
 async def test_a_handle_set_mode_sends_the_source_agent():
-    from kiro_crew.acp.session_handle import AcpSessionHandle
-
     projection._remember_view_sources({"custom": VIEW})
     runtime = MagicMock()
     runtime.send_request = AsyncMock()
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle()
     handle._runtime = runtime
     handle._session_id = "s"
     await handle.set_mode(VIEW)

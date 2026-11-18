@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from unittest.mock import AsyncMock
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp import runtime_session_load
 from kiro_crew.acp.mcp_session_report import McpSessionReport
@@ -44,7 +44,7 @@ def _status(**states: str) -> JsonRpcMessage:
 
 
 def _handle(*frames: JsonRpcMessage | None) -> AcpSessionHandle:
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle(runtime=None)
     handle._session_id = _SID
     handle._mcp_report = McpSessionReport()
     handle._mcp_report.begin_session([])
@@ -52,8 +52,6 @@ def _handle(*frames: JsonRpcMessage | None) -> AcpSessionHandle:
     for frame in frames:
         _deliver(handle, frame)
     handle._apply_init_notification = lambda *_a, **_k: None  # type: ignore[method-assign]
-    # The late-select settle step reads the runtime; these handles have none.
-    handle.settle_kas_model_select = AsyncMock()  # type: ignore[method-assign]
     return handle
 
 

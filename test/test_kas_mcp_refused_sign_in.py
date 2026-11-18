@@ -15,6 +15,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp.mcp_reattempt import is_refused_sign_in
 from kiro_crew.acp.mcp_session_report import McpSessionReport
@@ -86,7 +87,7 @@ def _handle(begun: list) -> AcpSessionHandle:
         begun.append((session_id, name))
         return True
 
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle()
     handle._session_id = "s1"
     handle._runtime = SimpleNamespace(begin_mcp_sign_in=begin)
     handle._mcp_sign_in_needed = set()
