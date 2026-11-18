@@ -40,14 +40,14 @@ class TestPredicate:
         ids=["long", "short", "padded"],
     )
     def test_the_placeholder_in_each_spelling_is_an_echo(self, text):
-        from kiro_crew.dashboard.alternation_echo import could_be_echo, is_echo
+        from kiro_crew.messaging.alternation_echo import could_be_echo, is_echo
 
         assert is_echo(text)
         assert could_be_echo(text)
 
     @pytest.mark.parametrize("cut", [0, 1, 5, 20, 60, len(PLACEHOLDER) - 1])
     def test_every_prefix_could_still_be_the_echo(self, cut):
-        from kiro_crew.dashboard.alternation_echo import could_be_echo
+        from kiro_crew.messaging.alternation_echo import could_be_echo
 
         assert could_be_echo(PLACEHOLDER[:cut])
 
@@ -62,7 +62,7 @@ class TestPredicate:
         ids=["parenthesis", "no-parenthesis", "words-after", "plain"],
     )
     def test_the_model_s_own_words_are_not_an_echo(self, text):
-        from kiro_crew.dashboard.alternation_echo import could_be_echo, is_echo
+        from kiro_crew.messaging.alternation_echo import could_be_echo, is_echo
 
         assert not is_echo(text)
         assert not could_be_echo(text)

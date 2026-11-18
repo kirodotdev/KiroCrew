@@ -1749,7 +1749,8 @@ against sweep completeness, and are torn down at `close_all`.
   **The placeholder at a turn's start.** The model also repeats that
   placeholder as the FIRST text of a later turn (after a quiet end, a
   tool-only turn or an interrupted one), where no `ends_turn` signal exists.
-  There the dashboard runner keys on the wording (`dashboard/alternation_echo.py`):
+  There the dashboard runner keys on the wording (`messaging/alternation_echo.py`,
+  which the channel turn driver shares: [messaging](messaging.md), Layer 2):
   a segment that opens like `(No assistant response was recorded` is held off
   the wire and the window while it could still be that text. It is dropped
   when the segment ends (a tool call, the turn's end) as the whole placeholder,
