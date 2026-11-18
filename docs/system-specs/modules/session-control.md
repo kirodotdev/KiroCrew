@@ -35,12 +35,12 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_history_list` | `GET /api/session-control/history` | List the archived sessions the caller could revive, newest first, optionally narrowed to one folder; every row passes the same containment and ownership fence `session_revive` applies |
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn, or cut it into the turn already running (`steer`) |
 | `session_broadcast` | `POST /api/session-control/broadcast` | Deliver ONE message to the named `targets`, or with `all: true` to every session the caller created, in a required `queue` or `steer` mode, reporting the outcome per target; a call that selects neither, or both, is refused |
-| `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears |
+| `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears; a live row's `activity` names the turn, running or queued sub-agents, workflow, synthesis, preparation, compaction or automation it owns |
 | `session_adopt` | `POST /api/session-control/adopt` | Take another session under the caller in the session tree, keeping the parent it had on record; refused when the target is already above the caller |
 | `session_handoff` | `POST /api/session-control/handoff` | Make another session the manager of a target the caller manages, so the verbs that run the target answer to the new manager; `_created_by` does not move |
 | `session_release` | `POST /api/session-control/release` | Let a session the caller holds, or the caller itself, out from under its parent; the released session keeps its own subtree |
-| `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
-| `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
+| `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness; `running` covers all current session-owned execution and `activity` names which kind, `turn` for the model turn itself |
+| `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + the same liveness fields as `session_read_message`, authorized as that verb is; never generates one |
 | `work_dispatch` | `POST /api/work-ledger/record`, then `POST /api/session-control/create`, `record` again and `POST /api/session-control/send` | Create a work item, open its worker, bind it and seed it in one call ([rfc-work-dispatch](../../request-for-change/rfc-work-dispatch.md)). No route of its own: the MCP process calls the four routes in order as the caller, sends the seed only after `bind` succeeded and only to the key `create` returned, and on a failure names the step and closes what it made (session, then item). The step-1 create carries `dispatch`; `/api/work-ledger/record` strips it before schema validation and refuses `no_ledger` when the verified caller owns no ledger, so `work_dispatch` never opens one and only `kirocrew-work`'s `work_ledger_record` does (rfc-work-dispatch amendment 2026-10-28); not auto-approved |
 | `session_queue` | `POST /api/session-control/queue` | List or move queue entries on a session the caller manages (its creator until `session_handoff` names another manager; with `agent.session_manager_chain` on, any manager up the line); move reaches only entries the caller queued (sender stamp), and a move earlier may pass only the caller's own entries |
 | `session_run_queued` | `POST /api/session-control/run-queued` | Run one entry the caller queued on a session it manages now, through the queue card's Run-now path: a running target is stopped cooperatively with the entry promoted and marked chosen (the turn's end drains exactly it, past the sub-agent hold) and the rest of the queue kept; an idle one dispatches it, refused `queue_held` while an edit or teardown hold is on. Same manager fence as `session_queue` and its rule for which entries qualify, but unlike a move it puts the caller's entry ahead of a person's waiting message |
@@ -241,7 +241,31 @@ The MCP tool writes `released` on an `idle` or `queued` row's line, never on a
 process exists.
 
 The row's `status` separates `working` / `queued` / `idle` / `closed` / `lost` /
-`unknown`. `queued` means an entry will start on its own: a queue holding only
+`unknown`. For a live row, `running` means the session still owns current execution,
+not only a model turn: `activity` is a closed list naming `turn`, `admission`,
+`subagents`, `subagents_queued`, `workflow`, `synthesis`, `preparing`, `compaction`,
+`automation`, or `unknown`; `turn` is the actual model-turn fact, and admission
+reads `admission`, never `turn`.
+`subagents` includes actual outer run tasks through task completion, including
+the inner done-to-report gap and remote or late cleanup after report settlement,
+live follow-up watchers and unfinished owned terminal reports, even after the
+completed run record is evicted or the run-id task index is cleared
+(`SubagentManager.has_current_execution_for`, synchronous and loop-safe).
+Parked spawn approvals do not count as execution: the outer task registers
+ownership only once approval and start admission have finished, and the dashboard
+excludes public rows marked `awaitingSpawnApproval` from its running-row probe.
+`subagents_queued` reads only the manager's last published queue depth, independently
+of execution: queued-only reads `queued` with `running: false`, and queued work
+beside finalizing reports names both activity kinds and remains `working`.
+`automation` alone remains idle with
+`looping: true`, because the loop is between checks; every other activity kind is
+working, and `unknown` fails closed to working for the status reader. The work
+ledger uses the stricter positive-evidence half: known execution and queued
+sub-agents suppress a false stale verdict, `unknown` does not, and only
+the worker slot's model turn (`slot.turn_running`) can clear an unanswered
+`needs_human` report. `session_read_message`
+and `session_summary` return the same status fields as `session_status`.
+`queued` means an entry will start on its own: a queue holding only
 cards restored after a restart (`is_held_queue_entry`) reads `idle`, since those
 wait for a person. A tree-backed row absent from the dashboard is `closed` or `lost`: the
 roster records that a session the dashboard no longer holds still existed, and
@@ -3152,6 +3176,10 @@ goes to its owner, and the owners import each other lowest layer first, in this 
 - `src/kiro_crew/dashboard/session_control_parts/session_messaging.py`: `session_send` and
   `session_broadcast`, the provenance envelope, and the steer deliveries a cancelled
   sender leaves behind.
+- `src/kiro_crew/dashboard/session_activity.py`: the one in-memory snapshot of a
+  live session's model turn, sub-agents, workflow, synthesis, preparation,
+  compaction and automation; session-control, the work ledger and the Crew panel
+  read it instead of treating `slot.running` as the whole session.
 - `src/kiro_crew/dashboard/session_control_parts/session_status.py`: the read verbs: the
   status roster of the sessions a caller created, a target's transcript tail and its
   cached summary, and their limits.

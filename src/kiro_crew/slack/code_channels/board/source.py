@@ -271,10 +271,12 @@ def approval_activity(state: Any, worker_key: str) -> model.Activity:
 def worker_live(state: Any, worker_key: str) -> tuple[str, str]:
     """``(word, approval kind)`` for a worker's session; the kind only while one is pending.
 
-    The word is :mod:`.model`'s ``LIVE_*``. Running and gone are the conductor
-    wake gate's own resolvers (``ledger_wake.worker_running`` /
-    ``worker_closed``), so the board and the gate cannot disagree about a worker;
-    a pending approval is the session-status verb's answer.
+    The word is :mod:`.model`'s ``LIVE_*``. Gone is the conductor wake gate's own
+    ``ledger_wake.worker_closed``. Running is ``ledger_wake.worker_running``, a
+    model turn in flight only: narrower than the gate's injected predicate, which
+    also counts sub-agents, workflows and other session-owned work, so a worker
+    the gate holds back from a stall can still read idle or queued here. A
+    pending approval is the session-status verb's answer.
     """
     if not worker_key:
         return model.LIVE_UNBOUND, ""

@@ -136,7 +136,7 @@ reading of a transcript.**""",
 On any finding (drift, a block, the work already on main, a failed acceptance),
 rewrite Plan and Changed at once with a plain `action=goal`, not `new_goal`
 (each write bumps `goal_version`). Then record a `decide` for each affected
-worker's item and send that worker the change. When the item itself is wrong,
+worker's item and steer that worker the change. When the item itself is wrong,
 re-plan it now: `close` it `abandoned` with the reason in `decision` and
 `create` its replacement, or `action=accept` a corrected bar never weaker than
 the goal asks; record `decide` on the item still open (a closed one refuses
@@ -196,6 +196,15 @@ landed, what is left, and the links. Then, in a later step, stop the loop with
 *requested* confirms receipt only — do not retry it in the same turn.
 Confirm activation from the gateway arm notice or `monitor_inspect` on a later turn. """,
     "dependent_calls": _DEPENDENT_CALLS_RULE,
+    "worker_communication": """**Every direct message to an existing worker is a steer, never a queued turn.**
+After the initial dispatch seed, pass `steer: true` on every `session_send` to a
+worker: answers, rulings, corrections, nudges and follow-ups. On a busy worker it
+lands in the running turn; on an idle worker it starts a turn like a plain send.
+The initial seed stays plain because the new session has no turn to steer. A
+steer does not withdraw an older queued message, so name any instruction it
+supersedes.
+
+""",
     "act_by_status": """Read the ledger first, every cycle. A cycle a worker's report woke you for
 arrives with a `[work-ledger wake]` line naming each item that moved and a
 `[work-ledger]` line telling you what to call. The wake is a notification, not the
@@ -225,8 +234,8 @@ three of them:
 - **`blocked`** — an external dependency stopped the work. Yours to clear or to
   re-plan around.
 - **`question`** — the worker needs a decision only you can make. Answer it with
-  `session_send`, then record it with `work_ledger_record` `action=decide`, and
-  read the reply with `session_read_message`. When your check leaves it an
+  `session_send` and `steer: true`, then record it with `work_ledger_record`
+  `action=decide`, and read the reply with `session_read_message`. When your check leaves it an
   ask case and you relay it, load and call `work_ask_record` in that
   turn: `what` you need, `why` only they can, each option with its `outcome`,
   and your `pick` with `pick_why`.
@@ -278,9 +287,10 @@ session when the new item continues that worker's own output (review fixes or a
 rebase of its PR, the code for the decision or RFC it wrote) and the worker is
 idle. Open a fresh session when the item is new work, when it reviews, tests or
 judges that worker's output, when it could run beside what the worker is doing,
-or when the worker is still mid-turn: a bind moves at once, a plain send waits
-behind the turn. A steer that changes the open item's scope goes into that item;
-a steer that adds separate work is its own item.
+or when the worker is still mid-turn: a bind moves at once, and every direct
+follow-up uses `session_send` with `steer: true` rather than waiting behind that
+turn. A steer that changes the open item's scope goes into that item; a steer
+that adds separate work is its own item.
 
 """,
     "plan_reviewer": """**A reviewer grills your plan.** For a goal of more than one item, before the
@@ -514,6 +524,7 @@ this checklist, and pass it again on every cycle while the ask is open:
 """,
     ),
     ("dependent_calls", _LEDGER_CONDUCTOR_RULES["dependent_calls"]),
+    ("worker_communication", _LEDGER_CONDUCTOR_RULES["worker_communication"]),
     ("act_by_status", _LEDGER_CONDUCTOR_RULES["act_by_status"]),
     (
         "steer",
@@ -822,6 +833,13 @@ worker's reasoning. Verifying a CLAIMED GREEN against the bar is measurement and
 stays yours; re-deriving a diagnosis is duplication, and the worker is closer to
 the code than you are. When a worker is stuck and its status line does not say
 what it needs, ask it in one line rather than reading its history.
+
+**Every direct message to an existing worker is a steer, never a queued turn.**
+After the initial seed, pass `steer: true` on every `session_send` to a worker:
+rulings, corrections, nudges, resume requests and follow-ups. A busy worker gets
+it in the running turn; an idle worker starts a turn. The initial seed stays
+plain because the new session has no turn to steer. Name any older queued
+instruction the steer supersedes.
 
 **Decide; do not escalate.** Scope calls, design judgements inside one item and
 dispositions on reviewer findings are yours. Four classes go to the person, and
