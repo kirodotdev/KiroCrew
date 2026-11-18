@@ -1210,12 +1210,11 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // theme-independent: palette swatches re-derive from the theme accent,
     // a custom color is frozen. Muted-text legibility still goes through the
     // same APCA boost via boostFor.
-    // The agent default color is resolved at RENDER time (not creation): a
-    // session with no explicit per-session color inherits its agent's
-    // session_color. Deriving it here rather than persisting at creation means
-    // it applies to EVERY origin (dashboard, channel, cron, subagent — anything
-    // with s.agent), needs no event-loop config I/O, and re-tints live when the
-    // agent's color is edited.
+    // The agent default color is resolved at RENDER time (not creation): a session with no
+    // explicit per-session color inherits its agent's session_color. Deriving it here rather
+    // than persisting at creation means it applies to EVERY origin (dashboard, channel, cron,
+    // subagent — anything with s.agent), needs no event-loop config I/O, and re-tints live
+    // when the agent's color is edited.
     const resolvedColor = resolveSessionColor(s, paletteColors, s.agent ? installedAgents.find(a => a.name === s.agent)?.session_color : null)
     const rowColor = resolvedColor?.hex ?? null
     const boostStyle: Record<string, string> = {}

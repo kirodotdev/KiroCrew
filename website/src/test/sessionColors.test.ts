@@ -358,4 +358,18 @@ describe('rowFillStyle', () => {
   it('returns nothing when the boost has no entry for the colour', () => {
     expect(rowFillStyle({ hex: '#222222', index: 5 }, boost, boostFor)).toEqual({})
   })
+
+  it('weakens a white wash on Solarized Dark so the selected title stays readable', () => {
+    // Solarized Dark sidebar #0a3f4c with --text #93a1a1: a 30% white wash took the
+    // title from 4.3:1 to 1.8:1.
+    const solarized = (hex: string) => computePaletteBoost([hex], '#0a3f4c', '#586e75', '#93a1a1', true)
+    const white = rowFillStyle({ hex: '#ffffff', index: null }, boost, solarized)
+    const active = parseInt(white['--session-fill-active-pct'], 10)
+    expect(active).toBeGreaterThan(0)
+    expect(active).toBeLessThan(16)
+    expect(white['--session-fill-hover-pct']).toBe(white['--session-fill-active-pct'])
+    // A mid-tone palette colour on the usual dark surface keeps its full selected wash.
+    const dark = (hex: string) => computePaletteBoost([hex], DARK_BG, '#71717a', '#e4e4e7', true)
+    expect(rowFillStyle({ hex: '#3b82f6', index: null }, boost, dark)['--session-fill-active-pct']).toBe('30%')
+  })
 })
