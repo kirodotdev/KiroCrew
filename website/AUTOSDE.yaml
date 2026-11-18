@@ -735,6 +735,11 @@ custom-rules:
         `App.tsx` update-modal form). It does NOT make the navigation safe:
         the tree beneath the dialog still unmounts, so over an unsaved draft
         the no-hand-off form applies, `onHandoff` or not.
+      - `gate` DOES make it safe: it runs the hand-off through the host's own
+        leave guard (`useGuardedLeave`'s `leave`), which asks before the
+        navigation discards a draft, and a veto stages nothing. A notice next
+        to a draft whose host passes that guard keeps `askAgent` with `gate`
+        (the Bot editor's Abilities load error, `leaveGate`).
 
       `impact` says what the failure costs on this surface
       (`docs/request-for-change/rfc-error-notice-impact.md`). `blocking` (the
