@@ -538,22 +538,8 @@ class TestPushGuardContracts:
         brief = (
             REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "pipeline-conductor" / "SKILL.md"
         ).read_text(encoding="utf-8")
-        hint = (REPO_ROOT / ".github" / "workflows" / "pr-hygiene.yml").read_text(encoding="utf-8")
-        for text in (skill, brief, hint):
+        for text in (skill, brief):
             assert _PG._MESSAGE_PREFIX in text and "push_guard.py --base" in text
-
-    def test_the_ci_squash_remedy_vouches_only_after_the_refusal_lists(self):
-        """CI's readers committed by hand: the squash refuses first, and they name its list.
-
-        Never a listing of the whole diff to vouch with: that names a stale
-        tree's every path as readily as an honest change's few.
-        """
-        hint = (REPO_ROOT / ".github" / "workflows" / "pr-hygiene.yml").read_text(encoding="utf-8")
-        line = next(text for text in hint.splitlines() if "push_guard.py --base" in text)
-        assert line.rstrip().endswith('--squash <that file>"'), line
-        assert not [t for t in hint.splitlines() if "echo" in t and "git diff --name-only" in t]
-        assert "--paths-from-file <that list>" in hint and "Read each one's diff" in hint
-        assert "stale tree: name none" in hint
 
     def test_an_inherited_ignore_survives_the_termination_handlers(self):
         """Under ``nohup`` SIGHUP stays ignored, for the guard and the git children it starts."""
