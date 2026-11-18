@@ -1068,6 +1068,12 @@ counts the sessions passing the search that the creator filter excluded. The
 list covers persisted sessions; a slot that has never been saved is not in it.
 The route answers only the dashboard user, and refuses an app token or an
 internal caller with 403, so it reaches no session the existing list does not.
+People and mode, which every open dashboard polls, read the same catalog with
+the preview on: concurrent reads of the same route by one viewer share one build
+that started after each of them arrived (`crew_board_flight`). The access check
+runs per request; the key is the gateway and the viewer (for mode, also whether
+the Crew is a relay team Crew), so two viewers never share an answer, and
+nothing is kept between builds.
 
 The `unattributed` filter (the older `unknown` value is accepted and echoed as
 `unattributed`) lists sessions with no human creator and no named trigger; a
