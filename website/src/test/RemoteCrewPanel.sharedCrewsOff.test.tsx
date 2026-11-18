@@ -6,7 +6,7 @@
  * A teammate gets an owner-only notice in place of the "off" card's switch.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { act, screen, waitFor, cleanup } from '@testing-library/react'
+import { screen, waitFor, cleanup } from '@testing-library/react'
 import { api, ApiError } from '../api/client'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 import { renderWithProviders } from './helpers'
@@ -42,15 +42,6 @@ describe('RemoteCrewPanel with remote crew management off', () => {
     expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
     expect(await screen.findByTestId('shared-crews-card')).toBeInTheDocument()
     expect(screen.getByTestId('shared-crew-row')).toHaveTextContent('Platform team')
-  })
-
-  it('leaves the Shared Crews card hidden without the desktop bridge', async () => {
-    managementOff()
-    const crews = vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [] })
-    await act(async () => { renderWithProviders(<RemoteCrewPanel />) })
-    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
-    expect(crews).not.toHaveBeenCalled()
-    expect(screen.queryByTestId('shared-crews-card')).not.toBeInTheDocument()
   })
 
   it('leaves the Shared Crews card hidden while the relay viewer is off (the route 404s)', async () => {

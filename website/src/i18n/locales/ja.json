@@ -7543,6 +7543,8 @@
       "refusal_throttled": "リクエストが多すぎます。1 分後にもう一度お試しください。",
       "refusal_signed_out": "共有 Crew を表示するには Kiro にサインインしてください。",
       "refusal_not_configured": "リレー経由の共有 Crew は設定されていません。",
+      "refusal_browser_not_local": "このCrewを実行しているマシンのブラウザーから開いてください。",
+      "refusal_popup_blocked": "ブラウザーが新しいタブをブロックしました。このページのポップアップを許可して、もう一度お試しください。",
       "refusal_generic": "このクルーを開けませんでした。",
       "refusal_list_generic": "共有 Crew を読み込めませんでした。",
       "try_again": "もう一度試してください",

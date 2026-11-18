@@ -7751,6 +7751,8 @@
       "refusal_throttled": "बहुत ज़्यादा अनुरोध। एक मिनट बाद फिर कोशिश करो।",
       "refusal_signed_out": "अपने साझा Crew देखने के लिए Kiro में साइन इन करो।",
       "refusal_not_configured": "रिले से साझा Crew अभी सेट अप नहीं हैं।",
+      "refusal_browser_not_local": "इस Crew को उसी मशीन के ब्राउज़र से खोलो जिस पर यह Crew चलता है।",
+      "refusal_popup_blocked": "तुम्हारे ब्राउज़र ने नया टैब ब्लॉक कर दिया। इस पेज के लिए पॉप-अप की अनुमति दो और फिर से कोशिश करो।",
       "refusal_generic": "यह क्रू नहीं खुल सका।",
       "refusal_list_generic": "तुम्हारे साझा Crew लोड नहीं हो सके।",
       "try_again": "फिर कोशिश करो",

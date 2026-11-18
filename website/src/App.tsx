@@ -81,7 +81,7 @@ import { REGISTERED_OVERLAYS_PACK, readExperience, subscribeExperience } from '.
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
 import { relayPaneBridge } from './lib/relayCrewPanes'
-// Only while the hidden relay pane key is on, so its code stays out of the first load.
+// Only in a desktop shell with the relay pane calls, so its code stays out of the first load elsewhere.
 const RelayCrewPaneHost = lazy(() => import('./components/RelayCrewPaneHost'))
 import RemoteUpdateOffer from './components/RemoteUpdateOffer'
 import KiroSignInNoticeFallback from './components/KiroSignInNoticeFallback'

@@ -414,7 +414,10 @@ Request flow:
    process gets an owner token with no `app` claim and a success record whose
    `resources` is `token-issued`. A registry that raises names no app and leaves
    the host-process leg to decide as before. `/api/relay-viewer/token` refuses the
-   same callers by the same `is not None` test. On loopback TCP the caller's
+   same callers by the same `is not None` test. Its browser twin,
+   `POST /api/relay-viewer/browser-open`, is an ordinary owner-only dashboard route
+   instead: it answers only a URL, never the token, and refuses any request that
+   is not straight from this machine. On loopback TCP the caller's
    pid comes from `platform_compat.get_tcp_peer_pid`, a scan of every process's
    descriptors, so it is resolved once per accepted connection: the answer is kept
    against that connection's transport with the process start id read beside it,

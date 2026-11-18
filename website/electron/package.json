@@ -187,6 +187,7 @@
       "relay-crew-client.js",
       "relay-crew-window.js",
       "relay-crew-renewal.js",
+      "relay-crew-handoff.js",
       "relay-crew-reachability.js",
       "relay-crew-notice.js",
       "relay-crew-notice-preload.js",

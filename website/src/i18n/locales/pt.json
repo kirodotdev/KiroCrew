@@ -7959,6 +7959,8 @@
       "refusal_throttled": "Solicitações demais. Tente de novo em um minuto.",
       "refusal_signed_out": "Entre no Kiro para ver suas Crews compartilhadas.",
       "refusal_not_configured": "As Crews compartilhadas pelo relay não estão configuradas.",
+      "refusal_browser_not_local": "Abra esta Crew em um navegador na máquina que executa esta Crew.",
+      "refusal_popup_blocked": "Seu navegador bloqueou a nova aba. Permita pop-ups nesta página e tente novamente.",
       "refusal_generic": "Não foi possível abrir esta crew.",
       "refusal_list_generic": "Não foi possível carregar suas Crews compartilhadas.",
       "try_again": "Tentar novamente",

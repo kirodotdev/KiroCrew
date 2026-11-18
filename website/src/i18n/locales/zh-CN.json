@@ -7543,6 +7543,8 @@
       "refusal_throttled": "请求过多，请一分钟后重试。",
       "refusal_signed_out": "登录 Kiro 以查看你的共享 Crew。",
       "refusal_not_configured": "尚未设置通过中继访问共享 Crew。",
+      "refusal_browser_not_local": "请在运行此 Crew 的机器上用浏览器打开它。",
+      "refusal_popup_blocked": "浏览器拦截了新标签页。请允许此页面弹出窗口后重试。",
       "refusal_generic": "无法打开此 Crew。",
       "refusal_list_generic": "无法加载你的共享 Crew。",
       "try_again": "重试",

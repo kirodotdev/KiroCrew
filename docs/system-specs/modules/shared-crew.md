@@ -2025,7 +2025,7 @@ tokens, rows wrap at narrow widths):
 | teammate | the card's invite button disabled, with a lock and "Only the owner of this Crew can invite people." |
 | a gateway without the routes | nothing |
 
-### Team Crews in the desktop app's Crew switcher
+### Team Crews in the Crew switcher
 
 The Crew switcher's relay group is headed "Remote Crews"
 (`components.relayCrews.group_team_crews`); the Notifications page names the
@@ -2036,9 +2036,22 @@ shows its raw value with no icon. The "Shared with me" section on Remote Crew re
 same two type strings. The signed-in account line ("Signed in with ...") sits
 under the heading. Each online row's one visible action is a small
 Connect (accessible name "Connect <name>"); an offline row shows none. Connect
-hands only the endpoint ID to the desktop shell (`relayCrewAPI.open`), which opens
-the Crew in a window of its own. Only a click connects one: nothing connects when
-the list loads, when the menu opens or when the dashboard reloads.
+hands only the endpoint ID on. In the desktop app the shell (`relayCrewAPI.openPane`)
+shows the Crew as a tab in the main window, under the local top bar; another
+dashboard window hands the open to the main window, and a shell without the pane
+calls opens a window of its own. In a browser the dashboard opens a new tab and
+the gateway (`POST /api/relay-viewer/browser-open`, owner-only, direct local
+request only) mints the token, keeps it, and relays the Crew on an origin of its
+own per open, `http://kcr-<sid>.localhost:<port>` (`relay_viewer/browser_origin.py`).
+Each relayed page gets one gateway-served same-origin script (`/.kcr/watch.js`)
+that holds `/.kcr/alive` open; the gateway answers it the moment the open is
+dropped (sign-out, sign-in, account change), or the sign-in it compares on each
+hold has changed, and the tab then loads the closed page in place of the old
+one. The dashboard cannot close the tab itself: it cut the tab's `opener`.
+The gateway's shared relay session keeps no cookie jar, so no upstream cookie
+reaches another Crew, app or account.
+Only a click connects one: nothing connects when the list loads, when the menu
+opens or when the dashboard reloads.
 
 ## 8. Capabilities
 

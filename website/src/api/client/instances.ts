@@ -190,6 +190,9 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
     // Remote Crews reachable through the Kiro relay. 404 `RELAY_VIEWER_OFF` while
     // `tunnel.relay_viewer_enabled` is off; it throws but is not journaled.
     relayViewerCrews: () => get('/api/relay-viewer/crews').then(jRelayViewer) as Promise<{ crews: RelayCrewEntry[]; account?: RelayViewerAccount }>,
+    // A browser tab's open: the gateway keeps the grant and answers only the tab's URL.
+    relayViewerBrowserOpen: (endpointId: string) =>
+      post('/api/relay-viewer/browser-open', { endpointId }).then(jRelayViewer) as Promise<{ url: string }>,
     // Clears the dot of each named Crew; an ID the gateway does not hold is ignored.
     relayViewerCrewsSeen: (endpointIds: string[]) =>
       post('/api/relay-viewer/crews/seen', { endpointIds }).then(j) as Promise<{ ok: boolean }>,
