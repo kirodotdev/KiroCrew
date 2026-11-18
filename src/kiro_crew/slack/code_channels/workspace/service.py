@@ -1695,6 +1695,12 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
             # A board read and then refused or fenced is unsent: the re-armed pass
             # reads it again, under the scope check.
             held = board is None
+            # The PR tabs before the board, so the board (and its Workers tab)
+            # can link each one; the channel's own PR gets its tab with no board.
+            # It never raises. (The Code tab, published above, can displace a PR
+            # tab at the cap; :func:`.publishing.call` then runs one more pass so
+            # the board drops that link.)
+            await self._publish_pr_tabs(binding, record, board)
             if board is not None and self._publish_board is not None:
                 # The board's pointers live on the channel's surface record,
                 # not this one, so nothing here merges back for it.
@@ -1791,6 +1797,33 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
 
     async def _turn_bar(self, binding: Any) -> None:
         await publishing.turn_bar(self, binding)
+
+    async def _publish_pr_tabs(
+        self, binding: Any, record: WorkspaceRecord, board: BoardSnapshot | None
+    ) -> None:
+        """Native pull-request tabs for the channel's newest open PRs (:mod:`..tabs`).
+
+        The channel's own PR and its workers' -- the ones the context bar and the
+        board show, from this same pass -- at most two, newest first.
+        """
+        if record.slack_off:
+            return
+        from kiro_crew.slack.code_channels import tabs
+
+        own = (
+            tabs.PrRef(record.pr_number, record.pr_url, record.pr_state)
+            if record.pr_number
+            else None
+        )
+        rows = board.rows if board is not None else ()
+        # A board that could not be read (or PRs the forge did not answer for)
+        # leaves its tabs alone: only PRs SEEN merged or closed lose theirs.
+        await tabs.sync_pr_tabs(
+            binding,
+            tabs.wanted_prs(own, rows),
+            settled=tabs.settled_prs(own, rows),
+            own=record.pr_number if own is not None else 0,
+        )
 
     async def _publish_resource(self, record: WorkspaceRecord, binding: Any = None) -> None:
         await publishing.publish_resource(self, record, binding)

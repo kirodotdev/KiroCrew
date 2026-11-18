@@ -40,7 +40,7 @@ from typing import Any
 
 from kiro_crew.slack.code_channels import surface
 from kiro_crew.slack.code_channels.binding import code_channels_on, live_config
-from kiro_crew.slack.code_channels.store import store
+from kiro_crew.slack.code_channels.store import Binding, store
 from kiro_crew.slack.code_channels.workspace.context_bar import ACTION_CREATE_PR, ACTION_STOP
 
 logger = logging.getLogger(__name__)
@@ -70,14 +70,15 @@ def _id(value: Any) -> str:
     return str(value or "") if isinstance(value, (str, int)) else ""
 
 
-_shape_logged = [False]
+#: The labels whose first click's field names were logged (one log line each).
+_shape_logged: set[str] = set()
 
 
-def _log_shape(event: dict[str, Any]) -> None:
-    """Log the first click's field NAMES (never values), to pin the body once seen."""
-    if not _shape_logged[0]:
-        _shape_logged[0] = True
-        logger.info("code_channel_action body keys: %s", sorted(str(k) for k in event))
+def _log_shape(event: dict[str, Any], what: str = "code_channel_action body") -> None:
+    """Log the first *what*'s field NAMES (never values), to pin the body once seen."""
+    if what not in _shape_logged:
+        _shape_logged.add(what)
+        logger.info("%s keys: %s", what, sorted(str(k) for k in event))
 
 
 def parse(payload: dict[str, Any], event: dict[str, Any]) -> Click:
@@ -113,7 +114,9 @@ def parse(payload: dict[str, Any], event: dict[str, Any]) -> Click:
 _seen: Any = None
 
 
-def _first_delivery(click: Click) -> bool:
+def _first_delivery(click: Click, scope: str = EVENT) -> bool:
+    """Whether *click* is new: one de-duplication cache for every channel button,
+    keyed by *scope* and the click's own delivery id."""
     if not click.dedupe:
         return True
     global _seen
@@ -121,7 +124,7 @@ def _first_delivery(click: Click) -> bool:
         from kiro_crew.slack.events import SeenCache
 
         _seen = SeenCache()
-    return not _seen.check_and_add(f"{EVENT}:{click.channel}:{click.dedupe}")
+    return not _seen.check_and_add(f"{scope}:{click.channel}:{click.dedupe}")
 
 
 def _responder(channel: str, user: str) -> Callable[[str], Awaitable[None]]:
@@ -188,35 +191,9 @@ async def _handle(orch: Any, payload: dict[str, Any], event: dict[str, Any]) -> 
     resources = f"channel={click.channel} action={click.key[:64] or '-'}"
     if not _first_delivery(click):
         return "duplicate"
-    if not click.user:
-        surface.audit("", OPERATION, "denied", resources, "no single clicking user")
-        return "denied"
-    if not surface.workspace_admitted(click.team):
-        surface.audit(
-            click.user,
-            OPERATION,
-            "denied",
-            f"{resources} team_id={click.team}",
-            "enterprise_origin_mismatch",
-        )
-        return "denied"
-    from kiro_crew.messaging.identity import channel_inbound_permitted
-    from kiro_crew.slack.channel_policy import channel_refusal
-
-    channel = click.channel
-    # The pair every Slack inbound gate makes: the channels ceiling and the
-    # per-channel one (allowed_channel_ids, audited at the policy seam).
-    if not (
-        await channel_inbound_permitted("slack")
-        and not channel_refusal(channel, operation=OPERATION, caller=click.user or "slack")
-    ):
-        surface.audit(click.user, OPERATION, "denied", resources, "channels governance policy")
-        return "denied"
     respond = _responder(click.channel, click.user)
-    binding = await asyncio.to_thread(store().get_binding, click.channel) if click.channel else None
+    binding = await admit(click, respond, resources)
     if binding is None:
-        surface.audit(click.user, OPERATION, "denied", resources, "not a bound code channel")
-        await respond(NOT_A_CODE_CHANNEL_TEXT)
         return "denied"
     # The gates above were read before the binding's read: asked again live, right
     # before the click acts (a person's click is not held back by Slack's Stop).
@@ -244,6 +221,77 @@ async def _handle(orch: Any, payload: dict[str, Any], event: dict[str, Any]) -> 
     surface.audit(click.user, OPERATION, "denied", resources, "unknown action")
     await respond(UNKNOWN_ACTION_TEXT)
     return "unknown"
+
+
+async def admit(
+    click: Click,
+    respond: Callable[[str], Awaitable[None]],
+    resources: str,
+    *,
+    operation: str = OPERATION,
+) -> Binding | None:
+    """The gates every channel button passes before its own path; the binding, or None.
+
+    One clicking user, the event's workspace admitted, the ``channels`` policy
+    admitting inbound Slack, and a bound code channel. Each refusal is SEL-audited
+    under *operation*; the last is also told to the person privately. Shared by the
+    context bar's actions and the Workers tab's Stop (:mod:`.worker_stop`), so
+    neither adds a rule of its own.
+    """
+    if not click.user:
+        surface.audit("", operation, "denied", resources, "no single clicking user")
+        return None
+    if not surface.workspace_admitted(click.team):
+        surface.audit(
+            click.user,
+            operation,
+            "denied",
+            f"{resources} team_id={click.team}",
+            "enterprise_origin_mismatch",
+        )
+        return None
+    from kiro_crew.messaging.identity import channel_inbound_permitted
+    from kiro_crew.slack.channel_policy import channel_refusal
+
+    channel = click.channel
+    # The pair every Slack inbound gate makes (events.py, interactions.dispatch):
+    # the channels ceiling and the per-channel one (allowed_channel_ids, audited
+    # at the policy seam), both before any side effect.
+    if not (
+        await channel_inbound_permitted("slack")
+        and not channel_refusal(channel, operation=operation, caller=click.user)
+    ):
+        surface.audit(click.user, operation, "denied", resources, "channels governance policy")
+        return None
+    binding = await asyncio.to_thread(store().get_binding, channel) if channel else None
+    if binding is None:
+        surface.audit(click.user, operation, "denied", resources, "not a bound code channel")
+        await respond(NOT_A_CODE_CHANNEL_TEXT)
+        return None
+    return binding
+
+
+_RESOLVE: Any = object()
+
+
+def _may_stop(orch: Any, binding: Binding, user: str, *, cfg: Any = _RESOLVE) -> bool:
+    """The checks Slack's Stop runs for a code channel (``session_events.handle_stopped``
+    then ``routing.stop_from_channel``), for the Workers tab's Stop (:mod:`.worker_stop`).
+
+    *cfg* is the live config the caller already resolved (the gateway's one
+    config object, updated in place), for a caller that must not resolve it here.
+    """
+    from kiro_crew.slack.agent_sessions.session_events import _may_use_bot
+    from kiro_crew.slack.code_channels.routing import _origin_of, channel_and_origin_permit
+    from kiro_crew.slack.handler import is_allowed_user
+
+    # session_events.handle_stopped's own check, then the code channel's stop
+    # handler's (routing.handle_session_stopped).
+    if not _may_use_bot(user) or not is_allowed_user(user):
+        return False
+    origin = _origin_of(binding.channel_id, binding, None)
+    live = live_config(orch) if cfg is _RESOLVE else cfg
+    return channel_and_origin_permit(live, binding.channel_id, origin)
 
 
 async def _stop(orch: Any, click: Click) -> str:

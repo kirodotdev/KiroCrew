@@ -9,8 +9,8 @@ import time
 from dataclasses import replace as _event_with_text
 from typing import TYPE_CHECKING
 
-from kiro_crew.dashboard.alternation_echo import could_be_echo, echo_prefix_len, is_echo
 from kiro_crew.dashboard.chat_utils import chunk_generation, open_construct_at_end
+from kiro_crew.messaging.alternation_echo import could_be_echo, echo_prefix_len, is_echo
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (

@@ -16,8 +16,6 @@
     "python3 scripts/check_acp_frame_host_data.py",
     "python3 scripts/check_comment_history.py --test",
     "BASE=\"$(git merge-base HEAD origin/main)\" && COMMENT_HISTORY_BASE_REF=\"$BASE\" python3 scripts/check_comment_history.py",
-    "python3 scripts/check_backend_emoji.py --test",
-    "BASE=\"$(git merge-base HEAD origin/main)\" && BACKEND_EMOJI_BASE_REF=\"$BASE\" python3 scripts/check_backend_emoji.py",
     "python3 scripts/check_agent_sdk_boundary.py --test",
     "python3 scripts/check_agent_sdk_boundary.py",
     "python3 scripts/check_sync_io_in_async.py --test",

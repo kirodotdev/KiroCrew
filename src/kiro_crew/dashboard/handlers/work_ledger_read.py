@@ -34,6 +34,11 @@ from kiro_crew.dashboard.handlers.work_ledger_refusals import (
     _refuse_403,
     _validation_code,
 )
+from kiro_crew.dashboard.session_activity import (
+    session_activity_for_key,
+    session_known_execution_active,
+    session_work_pending,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.validation import WORK_LEDGER_READ_SCHEMA, ValidationError, validate_tool_args
 
@@ -361,9 +366,12 @@ def _row_with_flags(
         held=_slot_loop_held,
         remote=remote_live if item.worker_instance_id else None,
     )
+    pending = (
+        False if item.worker_instance_id else _slot_pending(state, item.worker_session_key or "")
+    )
     row["stale"] = work_ledger.is_stale(
         item,
-        worker_running=running,
+        worker_running=running or pending,
         worker_closed=closed,
         worker_looping=looping,
         worker_loop_held=held,
@@ -553,17 +561,18 @@ def _tail_events(key: str, item_id: str, limit: int) -> list[work_ledger.WorkEve
 
 
 def _slot_running(state: DashboardState, key: str) -> bool:
-    """Whether *key*'s slot has a TURN IN FLIGHT — not merely an open tab.
+    """Whether positive evidence says *key* executes work now."""
+    return session_known_execution_active(session_activity_for_key(state, key))
 
-    ``stale`` is the conjunction "quiet past the window AND not running AND the
-    worker's last word still left the move with it", and the running half means the
-    worker is doing something (a thirty-minute build), not that its session exists. An idle worker whose tab is still open but which
-    stopped without reporting is exactly the case the flag exists to surface, and
-    testing slot EXISTENCE here would never flag it. ``orphaned`` keeps the
-    existence test, because a conductor's absence is what that flag means.
-    """
-    slot = _find_slot(state, key)
-    return bool(getattr(slot, "running", False)) if slot is not None else False
+
+def _slot_pending(state: DashboardState, key: str) -> bool:
+    """Whether current or queued work prevents *key* from being stale."""
+    return session_work_pending(session_activity_for_key(state, key))
+
+
+def _slot_turn_running(state: DashboardState, key: str) -> bool:
+    """Whether *key* has an actual model turn, not background work or admission."""
+    return "turn" in session_activity_for_key(state, key)
 
 
 def _slot_closed(state: DashboardState, key: str) -> bool:

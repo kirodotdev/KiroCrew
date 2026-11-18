@@ -265,12 +265,14 @@ def test_a_notice_that_raises_leaves_the_spawn_unchanged(tmp_path, caplog, _fres
         )
     assert recorders and result["argv"], "the spawn did not proceed"
     # Same child as a spawn whose notice computes to nothing (minus the per-spawn
-    # random session credential, which differs between any two spawns).
+    # random session credential and spawn instance, which differ between any two spawns).
+    from kiro_crew.constants import KIROCREW_SPAWN_INSTANCE_ENV
     from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
+    per_spawn = {STUB_SESSION_TOKEN_ENV, KIROCREW_SPAWN_INSTANCE_ENV}
     baseline = _spawn(tmp_path, forward=False, notice="", calls=[], sock="/tmp/a.sock")
-    got = {k: v for k, v in recorders[0].env.items() if k != STUB_SESSION_TOKEN_ENV}
-    assert got == {k: v for k, v in baseline.items() if k != STUB_SESSION_TOKEN_ENV}
+    got = {k: v for k, v in recorders[0].env.items() if k not in per_spawn}
+    assert got == {k: v for k, v in baseline.items() if k not in per_spawn}
     assert "SSH_AUTH_SOCK" not in got
     assert "ssh-agent not forwarded" not in caplog.text
     # One attempt per harness: a notice that could not be computed is not retried.

@@ -20,6 +20,7 @@ __all__ = [
     "MAX_SCANNED_TEXT_CHARS",
     "is_hex",
     "is_minted",
+    "json_pr_numbers",
     "times_of",
     "token_keys",
     "tokens_of",
@@ -181,15 +182,20 @@ def _json_pr_numbers(value: Any, out: set[str], depth: int = 0) -> None:
             pass
 
 
-def _pr_field_numbers(raw: str, plain: str, out: set[str]) -> None:
-    """``"pr": <n>``: from the parsed JSON when *raw* is JSON, and found in the
-    *plain* text with one optional space after the colon (a JSON value can sit
-    in prose, or in a cut that does not parse)."""
+def _parsed_pr_numbers(raw: str, out: set[str]) -> None:
+    """``"pr": <n>`` from *raw* parsed as JSON, when it is JSON."""
     if raw.lstrip()[:1] in ("{", "["):
         try:
             _json_pr_numbers(json.loads(raw), out)
         except (ValueError, RecursionError):
             pass
+
+
+def _pr_field_numbers(raw: str, plain: str, out: set[str]) -> None:
+    """``"pr": <n>``: from the parsed JSON when *raw* is JSON, and found in the
+    *plain* text with one optional space after the colon (a JSON value can sit
+    in prose, or in a cut that does not parse)."""
+    _parsed_pr_numbers(raw, out)
     at = plain.find('"pr":')
     while at >= 0:
         rest = plain[at + 5 : at + 5 + 16]
@@ -211,6 +217,19 @@ def tokens_of(text: Any) -> set[str]:
     _gh_pr_numbers(plain, out)
     if '"pr' in plain:
         _pr_field_numbers(raw, plain, out)
+    return out
+
+
+def json_pr_numbers(text: Any) -> set[str]:
+    """The ``"pr"`` field numbers :func:`tokens_of` finds in *text* by parsing all
+    of it as JSON, its one detector that does not match inside a short window: a
+    reader of a growing text's new part runs it on the whole text. Run only when
+    :func:`tokens_of` runs it, so a text with no ``"pr`` is not parsed."""
+    out: set[str] = set()
+    if isinstance(text, str) and text:
+        raw = text[:MAX_SCANNED_TEXT_CHARS]
+        if '"pr' in _plain(raw):
+            _parsed_pr_numbers(raw, out)
     return out
 
 

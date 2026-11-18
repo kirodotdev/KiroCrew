@@ -18,7 +18,7 @@ no other.
 
 The manager fields this module uses. Writes: ``_completion_keep``,
 ``_completion_keep_chars``, ``_process_handles``, ``_published_depths``, ``_running_count``,
-``_tasks``, ``_teardown_gates``. Reads: ``_admission``, ``_await_report``,
+``_run_task_owners``, ``_tasks``, ``_teardown_gates``. Reads: ``_admission``, ``_await_report``,
 ``_claim_finalize``, ``_default_timeout``, ``_default_turn_limit``, ``_drain_queue``,
 ``_effective_turn_limit``, ``_fire_event``, ``_on_event``, ``_record_cost``,
 ``_release_slot``, ``_retain_process_handles``, ``_run_inner``,
@@ -378,6 +378,18 @@ def _leave_for_next_start_impl(
 
 async def _run_impl(self: RunEventCoordinator, info: SubagentInfo) -> None:
     """Execute a subagent task in its own session."""
+    # The approval wrapper reaches here only once the start is admitted. Hold
+    # the actual task through every await, even after its record is evicted or
+    # teardown removes the run-id index. A completion callback covers all exits.
+    task = asyncio.current_task()
+    if task is not None:
+        owners = self._manager._run_task_owners
+        owners[task] = (info.id, info.parent_session_key)
+
+        def forget_owner(completed: asyncio.Task[None]) -> None:
+            owners.pop(completed, None)
+
+        task.add_done_callback(forget_owner)
     session_key = info.conversation_key or f"subagent:{info.id}"
     # Set by the reap-echo arm below: the run ended because a reap in
     # flight tore its runtime down, and that reap publishes the terminal

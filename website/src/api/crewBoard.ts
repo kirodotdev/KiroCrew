@@ -107,6 +107,8 @@ export interface WorkBoardConductor {
 export interface WorkBoardResponse {
   conductor: WorkBoardConductor
   conductor_alive: AliveState
+  /** Session-owned root activity outside the work ledger. */
+  conductor_working?: boolean
   items: WorkBoardItem[]
   /**
    * Whether this gateway can take an orphaned item over. False on main: no
