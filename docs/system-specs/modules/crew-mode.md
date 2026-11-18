@@ -5209,7 +5209,10 @@ capability covers, and `mcp__<server>` for each of its servers under a held `mcp
 limit, on every claude session attributed to that Bot, a helper it spawns
 included (`mate_held_rules.claude_ask_rules`, read off the event loop by
 `acp/client_claude_session._prepare_claude_held_asks` before each envelope and sent by
-`acp/client_claude_session._claude_session_meta`), since claude's `default` mode
+`acp/client_claude_session._claude_session_meta`; on a shared claude process the session
+reads them in `acp/claude_shared_session.ClaudeSharedSession.prepare` and
+`acp/harness/claude.ClaudeHarness.session_meta` adds the `mcp__<server>` asks for the
+array that start sends), since claude's `default` mode
 runs in-project Read, Grep and Glob without a permission request. Under a held `mcp`
 limit such a session also runs with `strictMcpConfig` (`mate_held_rules.claude_holds_mcp`),
 since its asks name only Crew's servers and a server from the user's own claude
@@ -5235,7 +5238,10 @@ a child the Bot starts under its identity, a named `spawn_run` agent or an
 `availableAgents` target, gets the same: its own spec loses those pre-approvals and
 gains an `ask` per held capability (`mate_held_rules.held_child_spec`, applied in
 `acp/harness/kas.KasHarness.session_extras` and
-`acp/kas_subagent_targets._project_target`). Each ask is added only while KAS
+`acp/kas_subagent_targets._project_target`). A child spec that cannot be narrowed
+once the Bot is known to hold limits is refused (`mate_held_rules.HeldLimitsNotApplied`:
+the session does not start, the target is not registered), never started with its full
+pre-approvals. Each ask is added only while KAS
 still reads the child's `permissions` block (`agent_sdk.kas_tool_view.permissions_block_readable`,
 which counts rules after each long `match` is split), since KAS refuses an
 over-cap block whole, denies included; an ask left out still asks at Crew's gate. Kiro CLI reads a
