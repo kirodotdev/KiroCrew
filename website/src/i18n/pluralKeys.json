@@ -569,5 +569,15 @@
   "components.notifications.systemNote.moved_to_history_idle_body",
   "pages.overview.usageTab.period_messages",
   "pages.overview.usageTab.period_tool_calls",
-  "components.notifications.systemNote.relay_crews_available_title"
+  "components.notifications.systemNote.relay_crews_available_title",
+  "components.promptStash.badge",
+  "components.promptStash.stashed",
+  "components.promptStash.stashed_touch",
+  "components.promptStash.restored",
+  "components.promptStash.menu_restore_desc",
+  "components.promptStash.menu_restore_desc_touch",
+  "components.promptStash.clear_others",
+  "components.promptStash.clear_others_confirm",
+  "components.promptStash.cleared_others",
+  "components.promptStash.discarded"
 ]
