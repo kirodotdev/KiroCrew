@@ -320,10 +320,16 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     from kiro_crew.shared_crew.teammate_access import is_admission_config_key
 
     if is_admission_config_key(path_key) and not is_host_owner_dashboard_request(request):
-        # A Shared Crew teammate passes the owner gate above, but which listeners run
-        # and who an allow-list lets in stay the machine owner's to decide.
+        # A Shared Crew teammate passes the owner gate above, but which listeners run,
+        # which tunnels this machine opens to other crews and who an allow-list lets
+        # in stay the machine owner's to decide.
+        message = (
+            "only the Crew owner can manage remote crews"
+            if path_key == "instances" or path_key.startswith("instances.")
+            else "only the Crew owner can change who may reach this Crew"
+        )
         return _deny(
-            "only the Crew owner can change who may reach this Crew",
+            message,
             f"admission key {path_key}",
             status=403,
             code="owner_only",

@@ -356,7 +356,11 @@
     "tab_title_session": "{{session}} — {{panel}}",
     "release_notes_not_published_yet": "Le note di rilascio di {{release}} non sono ancora state pubblicate. Vengono mostrate invece le note di {{shown}}.",
     "titlebar_menu_disabled_footer": "Alcuni elementi non sono disponibili qui. Le scorciatoie mostrate funzionano ancora.",
-    "titlebar_menu_refused_notice": "\"{{item}}\" non è stato eseguito. Questo comando non è disponibile qui in questo momento."
+    "titlebar_menu_refused_notice": "\"{{item}}\" non è stato eseguito. Questo comando non è disponibile qui in questo momento.",
+    "relay_remote_control_off": "L'accesso remoto a questa Crew è disattivato",
+    "relay_remote_control_off_detail": "Il proprietario della Crew ha disattivato l'accesso remoto. Solo lui può riattivarlo, dal computer della Crew.",
+    "relay_remote_control_off_waits": "Questa pagina si ricollega da sola appena viene riattivato.",
+    "terminal_owner_only": "Solo il proprietario della Crew può usare il terminale."
   },
   "appSdk": {
     "chatSession": {
@@ -6441,7 +6445,8 @@
       "sign_out_or_switch": "Esci o cambia account nelle Impostazioni",
       "sign_out_link_config_unreadable": "Impossibile caricare le impostazioni, quindi il link per uscire non può essere mostrato.",
       "switch_in_settings": "Cambia account nelle Impostazioni",
-      "bots_sign_in_in_settings": "Accesso a Kiro per i Bot nelle Impostazioni"
+      "bots_sign_in_in_settings": "Accesso a Kiro per i Bot nelle Impostazioni",
+      "kiro_account_in_settings": "Account Kiro nelle Impostazioni"
     },
     "agentDropdownList": {
       "active_in_this_session": "Attivo in questa sessione",
@@ -7817,9 +7822,12 @@
       "use_folder_project": "Passa a {{folder}}"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "Archiviata in {{folder}}",
       "folder_suggestion": "Suggerimento cartella",
+      "keep_it_here": "Mantieni",
       "move_to_folder_prompt": "Spostare questa sessione in questa cartella?",
       "no_thanks": "Non ora",
+      "undo_filing": "Annulla",
       "yes_move_it": "Sposta"
     },
     "followUpBar": {
@@ -7958,7 +7966,8 @@
       "opens_own_window": "Si apre in una finestra a sé",
       "new_crew": "Nuovo",
       "seen_not_saved": "Impossibile salvare che l’hai visto. Verrà mostrato di nuovo come nuovo.",
-      "open_crew_failed": "Impossibile aprire {{name}}."
+      "open_crew_failed": "Impossibile aprire {{name}}.",
+      "sign_in": "Accedi a Kiro"
     },
     "instancesViewport": {
       "connecting": "Connessione in corso…",
@@ -8174,6 +8183,8 @@
       "waiting_for_you_to_approve": "In attesa della tua approvazione…",
       "continue_with_builder_id": "Continua con AWS Builder ID",
       "continue_with_company_sso": "Continua con l'SSO aziendale",
+      "builder_id_hint": "Un accesso personale e gratuito per sviluppatori. Non ti serve un account AWS.",
+      "company_sso_hint": "Per gli account di lavoro su AWS IAM Identity Center. Ti serve l'URL del portale di accesso fornito dalla tua azienda, anche se ti fa accedere tramite Okta o Microsoft Entra.",
       "sso_start_url_label": "URL di accesso aziendale",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "Incolla l'URL del portale di accesso AWS fornito dalla tua azienda.",
@@ -8195,7 +8206,7 @@
       "loopback_fell_back": "L'accesso non è riuscito a tornare direttamente su questo computer, quindi ecco un codice.",
       "cancel_unsettled": "Impossibile annullare l’accesso. È ancora in corso: premi di nuovo la stessa opzione per riprovare.",
       "pending_cancel_unsettled": "Accesso effettuato, ma non è stato possibile annullare l’accesso avviato qui. Resta aperto fino alla scadenza.",
-      "card_intro": "Usato solo dal backend Kiro Agent: i suoi agenti vengono eseguiti con questo account Kiro. Kiro CLI mantiene il proprio accesso kiro-cli, quindi accedere qui non lo modifica.",
+      "card_intro": "Kiro Agent e le altre funzioni di Kiro funzionano con questo account Kiro, qualunque harness dell’agente tu usi. Kiro CLI mantiene il proprio accesso kiro-cli, quindi accedere qui non lo cambia.",
       "previous_sign_in_not_removed": "Accesso effettuato, ma non è stato possibile rimuovere l’accesso precedente",
       "previous_sign_in_not_removed_body": "Il nuovo account è salvato, ma quello da cui stavi passando è ancora presente e ha la precedenza. Esci da quell’account, poi controlla l’accesso mostrato qui."
     },
@@ -8756,6 +8767,8 @@
         "chat_stopped_stalled_body": "La chat si è bloccata e non è riuscita a riprendersi. Apri la chat per avviarne una nuova.",
         "folder_agent_label_title": "Controlla l’agente predefinito di una cartella",
         "folder_agent_label_body": "L’agente predefinito di queste cartelle ha il nome di un Bot, ma le nuove chat al loro interno non vengono eseguite su quel Bot: {{folders}}. Per usare il Bot, sceglilo come agente predefinito nelle impostazioni della cartella.",
+        "folder_agent_key_title": "Controlla l’agente predefinito di una cartella",
+        "folder_agent_key_body": "Un aggiornamento precedente potrebbe aver spostato queste cartelle da un agente personalizzato al Bot con lo stesso nome, quindi le nuove chat al loro interno vengono eseguite su quel Bot: {{folders}}. Se intendevi l’agente personalizzato, sceglilo di nuovo come agente predefinito nelle impostazioni della cartella.",
         "repeated_failures_title": "Gli errori degli strumenti continuano a ripetersi",
         "repeated_failures_body": "Alcune chiamate a strumenti dell’agente sono fallite più volte questa settimana. Apri questo avviso per vederle e trasformarne una in lezione.",
         "mcp_share_paused_title": "Un server MCP condiviso è in pausa",
@@ -11541,6 +11554,9 @@
       "expired_detail_bots": "I Bot non possono essere eseguiti finché non accedi di nuovo. L’accesso salvato è scaduto e non può essere rinnovato.",
       "refused_detail_bots": "I Bot si fermeranno alla scadenza di questo accesso. Accedi di nuovo perché continuino a funzionare.",
       "refused_expired_detail_bots": "I Bot non possono essere eseguiti finché non accedi di nuovo. Questo accesso è già scaduto.",
+      "expired_detail_account": "Le funzioni che usano il tuo account Kiro non possono funzionare finché non accedi di nuovo. L’accesso salvato è scaduto e non può essere rinnovato.",
+      "refused_detail_account": "Le funzioni che usano il tuo account Kiro si fermeranno alla scadenza di questo accesso. Accedi di nuovo perché continuino a funzionare.",
+      "refused_expired_detail_account": "Le funzioni che usano il tuo account Kiro non possono funzionare finché non accedi di nuovo. Questo accesso è già scaduto.",
       "status_unavailable_detail": "Apri le impostazioni di accesso per controllare il tuo accesso a Kiro, oppure chiedi all’agente di verificare.",
       "config_unavailable": "Impossibile leggere le impostazioni della dashboard",
       "config_unavailable_detail": "Ricarica la pagina per riprovare, oppure chiedi all’agente di verificare.",
@@ -11758,6 +11774,68 @@
       "shortcut_hint_mac": "⌃⇧M disattiva o riattiva",
       "mute_short": "Disattiva",
       "unmute_short": "Riattiva"
+    },
+    "promptStash": {
+      "badge_full_hint": "Non c’è più spazio per le bozze. Scartane o recuperane una prima di metterne da parte un’altra; {{chord}} con la casella di testo vuota recupera l’ultima.",
+      "badge_full_hint_touch": "Non c’è più spazio per le bozze. Scartane o recuperane una prima di metterne da parte un’altra; entrambe le azioni sono nel menu {{menu}}.",
+      "badge_hint": "Bozze messe da parte per questa chat. {{chord}} con la casella di testo vuota recupera l’ultima.",
+      "badge_hint_touch": "Bozze messe da parte per questa chat. Recupera l’ultima dal menu {{menu}}.",
+      "badge_many": "{{count}} bozze messe da parte",
+      "badge_one": "{{count}} bozza messa da parte",
+      "badge_other": "{{count}} bozze messe da parte",
+      "empty": "Nessuna bozza messa da parte. Premi {{chord}} quando la casella di testo contiene qualcosa per metterlo da parte.",
+      "empty_touch": "Nessuna bozza messa da parte. Scrivi qualcosa, poi mettilo da parte dal menu {{menu}}.",
+      "full": "Non c’è più spazio per le bozze (massimo {{max}}). Scarta una bozza messa da parte per fare spazio.",
+      "menu_restore": "Recupera la bozza messa da parte",
+      "menu_restore_has_draft": "Prima metti da parte o invia la bozza.",
+      "menu_restore_desc_many": "{{count}} bozze messe da parte; torna l’ultima. {{chord}} con la casella di testo vuota fa lo stesso.",
+      "menu_restore_desc_one": "{{count}} bozza messa da parte. {{chord}} con la casella di testo vuota fa lo stesso.",
+      "menu_restore_desc_other": "{{count}} bozze messe da parte; torna l’ultima. {{chord}} con la casella di testo vuota fa lo stesso.",
+      "menu_restore_desc_touch_many": "{{count}} bozze messe da parte. Recupera l’ultima da questo menu.",
+      "menu_restore_desc_touch_one": "{{count}} bozza messa da parte. La recupera da questo menu.",
+      "menu_restore_desc_touch_other": "{{count}} bozze messe da parte. Recupera l’ultima da questo menu.",
+      "menu_restore_none": "Ancora nessuna bozza messa da parte.",
+      "menu_stash": "Metti da parte la bozza",
+      "menu_stash_desc": "Mette da parte il testo e svuota la casella di testo ({{chord}}).",
+      "menu_stash_desc_touch": "Mette da parte il testo e svuota la casella di testo.",
+      "menu_stash_empty": "Scrivi qualcosa da mettere da parte.",
+      "notice_attachments": "Rimuovi gli allegati per mettere da parte o recuperare.",
+      "notice_full": "Spazio esaurito ({{max}}). Scarta una bozza messa da parte per fare spazio.",
+      "notice_stashed": "Messa da parte. {{chord}} con il campo del messaggio vuoto la recupera.",
+      "notice_stashed_touch": "Messa da parte. Recuperala dal menu {{menu}}.",
+      "restored_many": "Bozza recuperata. Restano {{count}} bozze messe da parte.",
+      "restored_last": "Bozza recuperata.",
+      "restored_one": "Bozza recuperata. Resta {{count}} bozza messa da parte.",
+      "restored_other": "Bozza recuperata. Restano {{count}} bozze messe da parte.",
+      "save_failed": "Impossibile mettere da parte la bozza: lo spazio di archiviazione del browser è pieno o non disponibile. La tua bozza è ancora nella casella di testo.",
+      "shortcut_label": "Metti da parte la bozza o recuperala in una casella di testo vuota",
+      "stashed_many": "Bozza messa da parte. Ci sono {{count}} bozze messe da parte; premi {{chord}} con la casella di testo vuota per recuperare l’ultima.",
+      "stashed_one": "Bozza messa da parte. C’è {{count}} bozza messa da parte; premi {{chord}} con la casella di testo vuota per recuperarla.",
+      "stashed_other": "Bozza messa da parte. Ci sono {{count}} bozze messe da parte; premi {{chord}} con la casella di testo vuota per recuperare l’ultima.",
+      "stashed_touch_many": "Bozza messa da parte. Ci sono {{count}} bozze messe da parte; recupera l’ultima dal menu {{menu}}.",
+      "stashed_touch_one": "Bozza messa da parte. C’è {{count}} bozza messa da parte; recuperala dal menu {{menu}}.",
+      "stashed_touch_other": "Bozza messa da parte. Ci sono {{count}} bozze messe da parte; recupera l’ultima dal menu {{menu}}.",
+      "too_large": "Impossibile mettere da parte: le bozze messe da parte hanno raggiunto il limite di dimensione. La tua bozza è ancora nella casella di testo. Scarta una bozza messa da parte per fare spazio.",
+      "too_large_single": "Impossibile mettere da parte: questa bozza supera il limite di dimensione delle bozze messe da parte. La tua bozza è ancora nella casella di testo.",
+      "clear_others_one": "Rimuovi {{count}} bozza messa da parte in altre sessioni",
+      "clear_others_many": "Rimuovi {{count}} bozze messe da parte in altre sessioni",
+      "clear_others_other": "Rimuovi {{count}} bozze messe da parte in altre sessioni",
+      "clear_others_confirm_one": "Elimina definitivamente {{count}} bozza messa da parte",
+      "clear_others_confirm_many": "Elimina definitivamente {{count}} bozze messe da parte",
+      "clear_others_confirm_other": "Elimina definitivamente {{count}} bozze messe da parte",
+      "cleared_others_one": "Eliminata {{count}} bozza messa da parte in altre sessioni. Metti di nuovo da parte questa.",
+      "cleared_others_many": "Eliminate {{count}} bozze messe da parte in altre sessioni. Metti di nuovo da parte questa.",
+      "cleared_others_other": "Eliminate {{count}} bozze messe da parte in altre sessioni. Metti di nuovo da parte questa.",
+      "menu_discard": "Scarta la bozza messa da parte",
+      "menu_discard_desc": "Elimina la bozza appena recuperata, altrimenti l’ultima messa da parte. Puoi annullare.",
+      "discarded_last": "Bozza messa da parte scartata.",
+      "discard_undone": "La bozza scartata è di nuovo messa da parte.",
+      "undo_discard": "Annulla",
+      "discard_failed": "Impossibile scartare la bozza: l’archivio del browser non è disponibile. È ancora messa da parte.",
+      "undo_failed": "Impossibile rimettere da parte la bozza: lo spazio è esaurito o l’archivio del browser non è disponibile.",
+      "discarded_many": "Bozza scartata. Restano {{count}} bozze messe da parte.",
+      "discarded_one": "Bozza scartata. Resta {{count}} bozza messa da parte.",
+      "discarded_other": "Bozza scartata. Restano {{count}} bozze messe da parte."
     }
   },
   "hooks": {
@@ -11904,7 +11982,8 @@
         "reason_work": "Ha ancora lavoro in corso. Chiuderla ferma quel lavoro.",
         "reason_setting": "Non c’è nulla in esecuzione. Te lo chiediamo perché «{{setting}}» è attivo nelle Impostazioni.",
         "actions": "La conversazione e la bozza nella casella del messaggio vengono conservate, e puoi riaprire la sessione in seguito.",
-        "confirm": "Chiudi la sessione"
+        "confirm": "Chiudi la sessione",
+        "reason_other_starter": "{{name}} ha avviato questa chat. Chiuderla la chiude per tutte le persone di questo Crew."
       },
       "reload_failed": "Ricarica della sessione non riuscita. L'agente potrebbe essere impegnato in un turno o il gateway non raggiungibile; riprova quando la sessione è inattiva.",
       "duplicate_unreachable": "Impossibile duplicare questa sessione. {{productName}} non è raggiungibile. Controlla la connessione e riprova.",
@@ -12010,6 +12089,7 @@
   },
   "pages": {
     "mcpPage": {
+      "bot_workers_note": "Un server aggiunto qui non raggiunge i worker dei Bot. I worker di un Bot lo ricevono solo se viene aggiunto a quel Bot.",
       "title": "Server MCP",
       "view_servers": "Server",
       "view_sharing": "Condivisione"
@@ -12236,6 +12316,7 @@
       "grants_reconsent_link_full_url": "Indirizzi completi dei link: le schede dell’app vedono anche la parte di un link dopo ? o #, che può contenere un codice di accesso.",
       "grants_reconsent_message_actions": "Azioni sui messaggi: cosa possono leggere le voci di menu dell'app sui messaggi della chat.",
       "grants_approved": "Approvate: {{entries}}. L'app può usarle da ora.",
+      "grants_reconsent_browser_sites": "Siti di navigazione: l'agente dell'app può aprire, leggere, digitare e fare clic su queste pagine nel tuo browser, con il tuo accesso, senza chiedere ogni volta.",
       "grants_reconsent_frame_sources": "Siti incorporati: consente alle pagine dell'app di mostrare questi siti nella dashboard.",
       "grants_reconsent_link_open_hosts": "Link aperti: consente all'app di aprire i link a questi siti quando ne fai clic su uno in un messaggio della chat.",
       "grants_reconsent_link_open_full_url": "Indirizzi completi dei link aperti: l'app vede anche la parte di un link dopo ? o #, che può contenere un codice di accesso.",
@@ -12362,6 +12443,7 @@
       "update_needs_trust": "{{name}} non è stata aggiornata: ha bisogno del tuo permesso. Usa il suo pulsante di aggiornamento per consentirla.",
       "updated_needs_session_approval_consent": "{{name}} è disattivata perché ora chiede di controllare le tue chat. Controlla l’autorizzazione nei dettagli dell’app, poi attivala.",
       "update_needs_repository_trust": "{{name}} non è stata aggiornata perché la versione più recente proviene da un repository che non hai ancora autorizzato. Apri i suoi dettagli e scegli «Autorizza il repository e aggiorna».",
+      "open_app_details": "Apri i dettagli di {{name}}",
       "refresh_store": "Aggiorna lo store",
       "refreshing_store": "Aggiornamento dello store…",
       "store_catalog_unreachable": "Impossibile raggiungere il catalogo ufficiale delle app, quindi lo store mostra il suo elenco offline. Verifica che il gateway raggiunga Internet, poi aggiorna di nuovo."
@@ -13905,7 +13987,7 @@
         "code_channel_worktree_not_ready": "Il worktree di questo canale di codice non è ancora pronto, quindi il messaggio non è stato eseguito. Invialo di nuovo tra un momento.",
         "remote_crew_read_only": "Questa chat è stata eseguita su una crew remota ed è ora in sola lettura. Apri la sessione della crew per continuare.",
         "archive_failed_turn_cancelled": "L’archiviazione di questa scheda non è riuscita dopo l’annullamento del turno in corso. La scheda è stata mantenuta, ma quel turno non è terminato — invia di nuovo il messaggio per continuare.",
-        "kas_signed_out": "Non hai effettuato l’accesso a Kiro. Accedi da Impostazioni → Harness dell’agente → Kiro Agent → Accesso a Kiro, poi invia di nuovo il messaggio.",
+        "kas_signed_out": "Non hai effettuato l’accesso a Kiro. Accedi da Impostazioni → Account Kiro, poi invia di nuovo il messaggio.",
         "kas_signed_out_sign_in_below": "Non hai effettuato l’accesso a Kiro. Accedi qui sotto, poi invia di nuovo il messaggio.",
         "windows_spawn_blocked": "Windows non è riuscito ad avviare il programma dell’agente ({{binary}}). Probabilmente l’ha bloccato AppLocker, un prodotto EDR o un criterio di gruppo su questo computer. Chiedi all’amministratore IT di consentire quel file, poi avvia una nuova chat.",
         "tools_not_ready": "L’agente non è riuscito ad avviarsi perché i suoi strumenti integrati non erano pronti in tempo. Il tuo messaggio è ancora qui. Riprova tra un momento. Se continua a succedere, il log del gateway contiene i dettagli.",
@@ -14893,7 +14975,8 @@
       "jump_to_new_one": "{{count}} nuovo · Vai in fondo",
       "jump_to_new_other": "{{count}} nuovi · Vai in fondo",
       "jump_to_new_many": "{{count}} nuovi · Vai in fondo",
-      "could_not_repair_images": "Impossibile riparare le immagini"
+      "could_not_repair_images": "Impossibile riparare le immagini",
+      "session_closed_elsewhere": "Questa chat è stata chiusa fuori da questa finestra."
     },
     "chatSidebar": {
       "needsMeCard": {
@@ -16085,11 +16168,11 @@
     },
     "developer": {
       "agentBackendTab": {
-        "orchestrator_memory_label": "Memoria dell’orchestratore",
+        "orchestrator_memory_label": "Kiro Memory",
         "orchestrator_memory_description": "Usa i ricordi esistenti di Kiro nelle chat personali. Le modifiche si applicano all’avvio di una sessione dell’agente; avvia una nuova chat per usare l’impostazione aggiornata.",
-        "orchestrator_memory_hint": "Usa i ricordi salvati in altri client Kiro insieme alla memoria esistente di {{productName}}. Qui i ricordi di Kiro sono di sola lettura. Il comportamento di apprendimento di {{productName}} e la memoria separata di ogni Bot restano invariati. I ricordi di Kiro sono disponibili nelle chat Incognito, ma esclusi dalle chat Temporaneo.",
+        "orchestrator_memory_hint": "Usa Kiro Memory insieme alla memoria esistente di {{productName}} per accedere ai ricordi salvati in altri client Kiro. Qui questi ricordi sono di sola lettura. Il comportamento di apprendimento di {{productName}} e la memoria separata di ogni Bot restano invariati.",
         "orchestrator_memory_preview": "Anteprima",
-        "orchestrator_memory_save_failed": "Impossibile salvare la memoria dell’orchestratore. Riprova.",
+        "orchestrator_memory_save_failed": "Impossibile salvare l’impostazione di Kiro Memory. Riprova.",
         "approval_agent_spec": "Chiede prima di ogni strumento, perché {{productName}} glielo impone.",
         "approval_seeded_settings": "Chiede prima di ogni strumento solo se le sue impostazioni lo dicono. {{productName}} scrive quell'impostazione e non può confermare che abbia avuto effetto.",
         "approval_session_config": "Chiede prima di eseguire un comando o modificare un file. {{productName}} lo attiva e lo verifica. Le semplici letture non chiedono.",
@@ -16127,6 +16210,9 @@
         "install_check_failed_can_still_switch": "Non è stato possibile verificare se è installato su questa macchina. Puoi comunque passare a questo agente. Se non è installato, la sessione lo segnala all'avvio.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_cli_description": "Usa il kiro-cli installato su questo computer, con l’accesso proprio di kiro-cli.",
+        "kiro_account_not_signed_in": "Accesso non effettuato",
+        "kiro_account_signed_in_as": "Accesso effettuato come {{name}}",
         "kiro_row_runs_on_kas": "Kiro CLI ora gira su Kiro Agent. Le nuove sessioni usano già Kiro Agent, quindi qui non resta nulla da cambiare.",
         "kiro_runs_on_kas": "Kiro CLI ora gira su Kiro Agent, quindi le nuove sessioni lo usano già. Salvare Kiro Agent come tua impostazione?",
         "kiro_runs_on_kas_save": "Salva Kiro Agent come mia impostazione",
@@ -16147,7 +16233,6 @@
         "mcp_deny_manage_link": "Apri l'elenco dei server MCP",
         "mcp_deny_rule": "Spegnere uno strumento MCP su {{name}} ferma tutti gli strumenti dello stesso server, non solo quello che hai spento.",
         "missing_components": "Mancante su questa macchina: {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "Le nuove sessioni usano questo agente. Le sessioni aperte mantengono quello con cui sono partite.",
         "not_offered_by_this_build": "Questa build non offre questo agente.",
         "note_crew_command_channel": "I comandi slash passano dal canale comandi di {{productName}}.",
         "note_crew_sandbox_stands_down": "Ha un proprio ambiente isolato. Su Windows, e su macOS quando il suo isolamento interno è attivo, quello di {{productName}} si ritira per lui.",
@@ -16388,8 +16473,6 @@
         "chat_runtime_sharing_harness_save_failed": "Impossibile salvare l'interruttore. Riprova.",
         "chat_runtime_sharing_harness_load_failed": "Impossibile caricare questi interruttori.",
         "chat_runtime_sharing_desc_summary": "Risparmia memoria del computer eseguendo più chat in un unico programma in background. Scegli tu quali tipi di chat lo condividono. Rispondono contemporaneamente e non vedono i messaggi delle altre. Disattivalo e ogni nuova chat torna ad avere il proprio programma.",
-        "secrets_vault": "Nuovo design della cassaforte Secrets",
-        "secrets_vault_desc": "Mostra Secrets come un elenco accanto all’elemento aperto e ti permette di salvare accessi e note.",
         "worker_grill": "Controllo rapido dei worker prima di una scelta difficile",
         "worker_grill_desc": "Quando un conductor incontra una scelta con due strade e sbagliare è difficile da rimediare, propone di farla discutere prima a due o tre worker, invece di un dibattito di 45 minuti. Controllano i fatti da soli e chiudono con un breve riepilogo: la risposta, il perché, e cosa hanno scelto per te. Non ti convince? Avviane un'altra.",
         "worker_grill_desc_summary": "Due o tre worker mettono alla prova una scelta importante e ti danno un breve riepilogo.",
@@ -16408,7 +16491,7 @@
       },
       "kasBundleCard": {
         "toggle_label": "Esegui KAS con il motore di {{productName}}",
-        "toggle_description": "Usa la versione del motore KAS testata con questa versione di {{productName}}, al posto della Kiro CLI. Vale per ogni nuova sessione di questo {{productName}}, non solo per questo dispositivo. Accede con il tuo account Kiro da Impostazioni → Harness dell’agente. Ha effetto quando {{productName}} si riavvia.",
+        "toggle_description": "Usa la versione del motore KAS testata con questa versione di {{productName}}, al posto della Kiro CLI. Vale per ogni nuova sessione di questo {{productName}}, non solo per questo dispositivo. Accede con il tuo account Kiro da Impostazioni → Account Kiro. Ha effetto quando {{productName}} si riavvia.",
         "installed": "Motore KAS {{version}} (installato da te)",
         "installed_bundled": "Motore KAS {{version}} (incluso nell'applicazione)",
         "off_note": "Disattivato: KAS usa la tua installazione della Kiro CLI. Attivato: usa il motore incluso in questa versione.",
@@ -19821,7 +19904,9 @@
         "needs_setup": "Configurazione necessaria",
         "not_connected": "Non connesso",
         "off_by_admin": "Disattivato dall'amministratore",
-        "status_unavailable": "Stato non disponibile"
+        "status_unavailable": "Stato non disponibile",
+        "not_set_up": "Non configurato",
+        "owner_only": "Solo il proprietario della Crew può collegare o modificare i canali."
       },
       "chatPanel": {
         "advanced": "Avanzate",
@@ -19843,6 +19928,11 @@
         "topic_tags": "Tag di argomento",
         "topic_tags_desc": "Tagga ogni nuova sessione nella barra laterale con fino a due argomenti, come \"debugging\". Usa una chiamata al modello in background per nuova sessione.",
         "transcript": "Conversazione",
+        "group_messages": "Messaggi",
+        "group_steps": "Passaggi e strumenti",
+        "group_files_links": "File e link",
+        "group_replies": "Risposte",
+        "group_context": "Indicatore del contesto",
         "about_you": "Su di te",
         "answer_only_details_on_request": "Solo risposta — parole semplicissime, dettagli su richiesta",
         "auto_add_documents": "Aggiungi documenti automaticamente",
@@ -19965,6 +20055,8 @@
         "feature_tips": "Suggerimenti sulle funzionalità",
         "file_change_chips": "Chip delle modifiche ai file",
         "folder_suggestions": "Suggerimenti cartelle",
+        "folder_suggestions_auto_apply": "Applica automaticamente i suggerimenti cartelle",
+        "folder_suggestions_auto_apply_desc": "Archivia una nuova sessione nella cartella pertinente senza chiedere. Una scheda indica dove è finita, con l'annullamento.",
         "follow_up_bar_layout": "Layout della barra dei follow-up",
         "fork_keeps_only_the_messages_after_the_chosen_po": "La diramazione conserva solo i messaggi successivi al punto scelto, non quelli precedenti.",
         "full": "Completo",
@@ -20221,7 +20313,8 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "Su Windows, i tasti premuti assumono il focus della tastiera e i clic per coordinate spostano il cursore reale: questa piattaforma non ha un percorso di input per singola app.",
         "the_app_lists_in_computer_use_json_could_not_be": "Non è stato possibile leggere gli elenchi di app in computer_use.json, quindi qui appaiono vuoti. L’agente continua a rifiutare ogni azione che dipende da essi fino a quando il file non è JSON valido.",
         "your_chat_sessions_were_restarted_so_this_takes": "Le tue sessioni di chat sono state riavviate perché questa modifica abbia effetto subito — Kiro legge l’elenco dei suoi strumenti una volta per sessione, quindi una chat aperta non l’avrebbe recepita. I tuoi messaggi sono ancora lì; l’agente rilegge il proprio contesto al tuo prossimo messaggio.",
-        "your_chat_sessions_were_restarted": "Le tue sessioni di chat sono state riavviate. I tuoi messaggi sono ancora lì."
+        "your_chat_sessions_were_restarted": "Le tue sessioni di chat sono state riavviate. I tuoi messaggi sono ancora lì.",
+        "linux_unsupported": "Computer Use non è disponibile su Linux in questa versione."
       },
       "crewmatesSection": {
         "reply_threads": "Thread di risposta sui messaggi della chat di un Bot",
@@ -20447,6 +20540,12 @@
         "theme_mode_auto": "Automatico",
         "theme_mode_light": "Chiaro",
         "theme_mode_dark": "Scuro",
+        "theme_mode_scheduled": "Programmato",
+        "theme_schedule_light_from": "Chiaro dalle",
+        "theme_schedule_light_from_hint": "La modalità programmata passa a chiaro a quest'ora, nel fuso orario di questo dispositivo.",
+        "theme_schedule_dark_from": "Scuro dalle",
+        "theme_schedule_dark_from_hint": "La modalità programmata passa a scuro a quest'ora, nel fuso orario di questo dispositivo.",
+        "theme_schedule_save_failed": "Impossibile salvare questi orari. Questo dispositivo li usa; gli altri dispositivi mantengono quelli precedenti. Riprova.",
         "color_mode_solid_tint": "Tinta unita",
         "color_mode_gradient": "Sfumatura",
         "intensity_soft": "Tenue",
@@ -20619,7 +20718,8 @@
         "warm_cap_tune_with_many": "Fino a {{count}} crew remote restano calde (tunnel attivo) contemporaneamente; le altre si riconnettono su richiesta. Regola con <setting/>.",
         "warm_cap_tune_with_other": "Fino a {{count}} crew remote restano calde (tunnel attivo) contemporaneamente; le altre si riconnettono su richiesta. Regola con <setting/>.",
         "remote_port_value": "· porta remota {{port}}",
-        "filled_in_from_a_link": "Compilato da un link. Controlla che l’host SSH sia una macchina che usi, poi aggiungila."
+        "filled_in_from_a_link": "Compilato da un link. Controlla che l’host SSH sia una macchina che usi, poi aggiungila.",
+        "owner_only": "Solo il proprietario della Crew può gestire le crew remote."
       },
       "notificationsPanel": {
         "deliver_floor_all": "Tutte le priorità",
@@ -21795,7 +21895,8 @@
         "recheck": "Controlla di nuovo",
         "language": "Lingua",
         "language_for_spoken_replies": "Lingua delle risposte vocali",
-        "language_provider_default": "Predefinito del provider"
+        "language_provider_default": "Predefinito del provider",
+        "no_engine_teammate": "Il computer della Crew non ha un motore vocale integrato. Scegli un altro provider o chiedi al proprietario della Crew di installarne uno."
       },
       "weComPanel": {
         "allow_all_bypass_note": "«Consenti a tutti» è attivo: l’elenco di userid qui sopra viene ignorato. Viene conservato per quando tornerai indietro.",
@@ -21993,7 +22094,9 @@
         "turn_off_disconnects": "Disattivandolo, gli altri tuoi dispositivi vengono disconnessi entro pochi secondi.",
         "turn_off_needs_terminal": "Per riattivarlo in seguito, esegui <command/> in un terminale sulla macchina che esegue {{productName}}, poi riavvia {{productName}}.",
         "turn_off_failed": "Impossibile disattivare il controllo remoto",
-        "load_failed": "Impossibile leggere l'impostazione del controllo remoto"
+        "load_failed": "Impossibile leggere l'impostazione del controllo remoto",
+        "on_teammate": "Il controllo remoto è attivo. Le persone con accesso possono raggiungere questa Crew tramite il relay di Kiro.",
+        "owner_only": "Solo il proprietario della Crew può disattivare il controllo remoto."
       },
       "remoteCrewPanel": {
         "added_by_you": "Aggiunta da te",
@@ -23050,9 +23153,6 @@
       "profile_dashboard_card_send_hint": "Attivo: un pulsante di risposta nella scheda Dashboard di {{name}} pubblica quella risposta direttamente nella tua chat con {{name}} con un clic. Disattivato: il pulsante mette la risposta nella casella della chat perché tu la riveda e la invii.",
       "profile_dashboard_card_send_failed_on": "Impossibile attivare l'invio con un clic. È ancora disattivato. Riprova.",
       "profile_dashboard_card_send_failed_off": "Impossibile disattivare l'invio con un clic. È ancora attivo. Riprova.",
-      "profile_show_sessions_in_list_switch": "Mostra nel mio elenco sessioni",
-      "profile_show_sessions_in_list_hint": "Le chat aperte da {{name}} compaiono anche nel tuo elenco sessioni. La sua scheda Sessioni le mostra sempre.",
-      "profile_show_sessions_in_list_failed": "Impossibile salvare questa impostazione. Non è cambiata. Riprova.",
       "goals_loading": "Caricamento degli obiettivi…",
       "goals_load_failed": "Impossibile caricare gli obiettivi.",
       "goals_save_failed": "Impossibile salvare la modifica. Riprova.",
@@ -23203,10 +23303,14 @@
       "member_count_filtered_other": "Bot: {{shown}}/{{n}}",
       "sessions_group_waiting_on_mate": "In attesa di {{name}}",
       "sessions_read_failed": "Impossibile caricare l’elenco completo delle sessioni. Vengono mostrate le sessioni aperte.",
+      "sessions_panel_empty": "Questo Bot non ha ancora avviato nessuna sessione.",
+      "sessions_panel_recap": "Riepilogo",
+      "sessions_panel_open_in_chat": "Apri nella chat",
+      "sessions_panel_closed": "Questa sessione è chiusa. Riaprila per leggerla e scriverle qui.",
+      "sessions_panel_reopen": "Riapri la sessione",
+      "sessions_panel_remote": "Questa sessione è in esecuzione su {{crew}}. Aprila lì.",
       "recap_loading": "Caricamento…",
       "recap_failed": "Impossibile caricare i dettagli di questa sessione.",
-      "recap_show": "Dettagli",
-      "recap_hide": "Nascondi",
       "recap_answer_where": "apri quella sessione dalla barra laterale per rispondere",
       "recap_no_report": "Ancora nessun rapporto",
       "recap_status": "Stato",
@@ -23330,7 +23434,11 @@
     "envOverrideWithSettingRef": "L'heartbeat è disattivato perché <settingRef/> è impostata in questo ambiente. Rimuovila per gestire la telemetria qui.",
     "localDataBodyOn": "Registri di utilizzo e contesto. Le metriche sulle prestazioni vengono registrate adesso su questo dispositivo.",
     "localDataBodyOff": "Registri di utilizzo e contesto. Le metriche sulle prestazioni non vengono registrate adesso su questo dispositivo.",
-    "doNotTrackCaption": "Impostare DO_NOT_TRACK=1 disattiva le metriche sulle prestazioni e il segnale."
+    "doNotTrackCaption": "Impostare DO_NOT_TRACK=1 disattiva le metriche sulle prestazioni e il segnale.",
+    "localDataTitleShared": "Resta sul computer della Crew",
+    "localDataBodyShared": "Registri di utilizzo e contesto. Le metriche sulle prestazioni vengono registrate sul computer della Crew per impostazione predefinita. L'interruttore «Registra le metriche» in Impostazioni > Privacy mostra se sono attive adesso.",
+    "localDataBodyOnShared": "Registri di utilizzo e contesto. Le metriche sulle prestazioni vengono registrate adesso sul computer della Crew.",
+    "localDataBodyOffShared": "Registri di utilizzo e contesto. Le metriche sulle prestazioni non vengono registrate adesso sul computer della Crew."
   },
   "settings": {
     "advanced": {
@@ -23476,15 +23584,16 @@
       "connections": {
         "label": "Connessioni",
         "description": "Connetti servizi ufficiali e configura le loro app OAuth"
+      },
+      "kiroAccount": {
+        "description": "Accedi a Kiro, cambia account o esci",
+        "go_to": "Vai ad Account Kiro",
+        "label": "Account Kiro"
       }
     },
     "secrets": {
-      "title": "Cassaforte dei segreti",
-      "description": "Archivia chiavi API e credenziali in modo sicuro. I segreti sono crittografati a riposo e negati alle letture di file e ai comandi shell dell'agente; solo il codice che ha bisogno di un segreto può leggerlo.",
       "managed_title": "Usate automaticamente da {{productName}}",
-      "managed_description": "Credenziali riconosciute e usate automaticamente da {{productName}}. Aggiungi o ruota qui i valori.",
       "gerrit_http_credential_label": "Credenziale HTTP di Gerrit",
-      "gerrit_http_credential_description": "Autentica le ricerche delle modifiche Gerrit per un host configurato. Inseriscila come utente:password HTTP, generata nelle impostazioni HTTP Credentials di quel server.",
       "gerrit_global_unused_multi_host": "Non viene usata da Gerrit quando sono configurati più host. Imposta sopra la credenziale di ogni host o elimina questa voce.",
       "gerrit_global_unused_host_credential": "Non viene usata perché la credenziale Gerrit specifica dell’host ha la precedenza. Elimina questa voce se non ti serve più il fallback.",
       "jira_api_token_label": "Token API Jira",
@@ -23492,17 +23601,11 @@
       "jira_global_unused_multi_host": "Non viene usato da Jira quando sono configurati più host. Imposta sopra la credenziale di ogni host o elimina questa voce.",
       "jira_global_unused_host_token": "Non viene usato perché la credenziale Jira specifica dell’host ha la precedenza. Elimina questa voce se non ti serve più il fallback.",
       "jira_host_token_label": "Token API dell'host Jira",
-      "jira_host_token_description": "Autentica le ricerche dei ticket Jira per un host configurato.",
       "wakatime_api_key_label": "Chiave API WakaTime",
       "wakatime_api_key_description": "Autentica la sincronizzazione dell’attività di programmazione quando WakaTime è abilitato.",
       "custom_title": "Segreti personalizzati",
-      "custom_description": "Chiavi cifrate per server MCP e impostazioni .env. Fai riferimento a una come secret://YOUR_KEY; il valore non viene mai mostrato nella chat.",
-      "custom_authorize": "Per consentire a un agente in una chat di un membro di chiamare un’API approvata con un segreto, concedi all’agente {{server}}, poi esegui il comando qui sotto in una shell o nella pagina Terminale.",
-      "custom_empty": "Nessun segreto personalizzato ancora archiviato. Aggiungine uno per farvi riferimento da un server MCP come secret://YOUR_KEY.",
       "managed_config_error": "Alcune credenziali automatiche sono nascoste perché non è stato possibile leggere $KIROCREW_HOME/config.json (predefinito: ~/.kiro/crew/config.json).",
       "managed_name_hint": "Salvando qui, {{name}} viene aggiornato nella sezione delle credenziali automatiche. — {{productName}}",
-      "managed_unconfigured_hint": "Per usare WakaTime o Jira automaticamente, abilita WakaTime o aggiungi un host Jira in $KIROCREW_HOME/config.json (predefinito: ~/.kiro/crew/config.json).",
-      "managed_setup_guide": "Apri la guida alla configurazione dei secret",
       "delete_managed_confirm": "Eliminare definitivamente «{{name}}»? Il valore attuale non può essere recuperato.",
       "delete_managed_name": "Elimina {{name}}",
       "save_managed_name": "Salva {{name}}",
@@ -23511,7 +23614,6 @@
       "saved": "Salvato",
       "name_placeholder": "MY_API_KEY",
       "value_placeholder": "sk-...",
-      "no_secrets": "Nessun segreto memorizzato.",
       "add_secret": "Aggiungi segreto",
       "name_label": "Nome",
       "value_label": "Valore",
@@ -23530,7 +23632,6 @@
       "wakatime_unused_hint": "Non viene usato mentre WakaTime è disabilitato. Abilita WakaTime o elimina questa voce.",
       "wakatime_oauth_tokens_description": "Il tuo accesso a WakaTime, custodito da {{productName}}. Gestito nel pannello WakaTime.",
       "wakatime_oauth_tokens_manage": "Gestisci in WakaTime",
-      "connections_client_secret_description": "Client secret di un'app OAuth delle Connessioni. Gestito in Impostazioni → Connessioni.",
       "connections_client_secret_manage": "Gestisci in Connessioni",
       "how_it_works": "Come funziona",
       "type_label": "Cosa stai salvando?",
@@ -23578,7 +23679,9 @@
       "use_in_tool_title": "Usa in uno strumento",
       "use_in_tool_tip": "Incolla questo nelle impostazioni di uno strumento, come l’ambiente di un server MCP. Lo strumento riceve il valore quando viene eseguito; il valore non compare mai lì.",
       "advanced_title": "Avanzate",
-      "api_call_label": "Chiamata API"
+      "api_call_label": "Chiamata API",
+      "owner_only": "Solo il proprietario della Crew può vedere o modificare i segreti.",
+      "relay_unavailable": "I segreti si possono vedere e modificare solo sul computer della Crew, non tramite Remote Control."
     }
   },
   "store": {
@@ -24275,6 +24378,9 @@
     "webhooks_frame": "I sistemi esterni risvegliano questo Bot chiamandolo. La creazione e la revoca dei token restano nella pagina Webhook.",
     "loading_template": "Caricamento…",
     "load_error": "Impossibile caricare le capacità di questo Bot.",
+    "load_error_timed_out": "Le capacità di questo Bot non hanno finito di caricarsi in tempo. Un Bot con molte capacità aggiunte, o una cartella su un’unità lenta o irraggiungibile, può superare il limite. Il log del gateway indica il Bot e quanto tempo ha impiegato.",
+    "load_error_details": "Il log del gateway contiene i dettagli.",
+    "load_retry": "Riprova",
     "stat_mcp_servers": "Server MCP",
     "memory_empty": "Questo Bot non ha ancora un archivio di memoria privato.",
     "memory_profile_frame": "Note che questo Bot scrive su di te e sul suo lavoro man mano che impara, e che porta in ogni sessione. Puoi leggerle e modificarle; il Bot continua ad aggiornarle.",
@@ -24639,7 +24745,8 @@
     "preview_save_failed": "Impossibile salvare l’impostazione della Crew condivisa.",
     "preview_restart_failed": "Impossibile riavviare il gateway.",
     "raised_by": "Avviato da {{name}}",
-    "take_over_keeps_draft": "Prendi il controllo per scrivere. La bozza di {{name}} resta sua."
+    "take_over_keeps_draft": "Prendi il controllo per scrivere. La bozza di {{name}} resta sua.",
+    "hero_shared_team": "Condiviso con il tuo team"
   },
   "milestone": {
     "crew_mode": {
@@ -24746,6 +24853,13 @@
         "pop_out_label_to_its_own_window": "Apri {{label}} in una finestra separata",
         "label_is_open_in_its_own_window_focus_it": "L'app {{label}} è aperta in una finestra separata — mettila a fuoco"
       }
+    }
+  },
+  "connectedComputers": {
+    "preview": {
+      "description": "Le chat su questo server possono lavorare in una cartella sul tuo computer. Non viene condiviso nulla finché non lo approvi su quel computer.",
+      "hint": "Il tuo computer si collega a questo server e condivide solo la cartella che approvi. Disattivarlo interrompe la condivisione e non elimina mai file. Remote Crew fa il contrario: ti permette di usare questo server da un altro dispositivo.",
+      "label": "Computer connessi"
     }
   }
 }

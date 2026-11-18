@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { fmtList, fmtPercent, joinSentences } from '../../i18n/format'
-import { Check, Cpu, Gauge, Layers, List, Loader2, Puzzle, SendHorizontal, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
+import { Check, Cpu, Gauge, Layers, Loader2, Puzzle, SendHorizontal, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
@@ -251,19 +251,6 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
   // Show the state being requested while the write is in flight, so the switch does
   // not snap back before the roster row is updated.
   const displayCardSend = cardSendFlip.isPending ? (cardSendFlip.variables ?? cardSendOn) : cardSendOn
-
-  // Whether the chats this Bot opens also show in the person's Sessions list. Off by
-  // default: they are listed on the Bot's Sessions tab only. The gateway re-sends the
-  // slot list when it is saved, so the person's lists follow it.
-  const showSessionsFlip = useMutation({
-    mutationFn: (want: boolean) => api.updateKirocrewAgent(member.name, { show_sessions_in_list: want }),
-    onSuccess: (_data, want) => {
-      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
-        rows?.map((r) => (r.name === member.name ? { ...r, show_sessions_in_list: want } : r)))
-    },
-  })
-  const showSessionsOn = member.show_sessions_in_list === true
-  const displayShowSessions = showSessionsFlip.isPending ? (showSessionsFlip.variables ?? showSessionsOn) : showSessionsOn
 
   // Dynamic capabilities: a per-crewmate preview, off by default, stored on the
   // crewmate's own record (`kiro_crew/crewmate_dynamic_capabilities.py`). On, the
@@ -802,24 +789,6 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
       <RowGroup>
         {pickers.map(row)}
       </RowGroup>
-      {/* Its own group, so its caption (where the Bot's chats are listed) sits under it. */}
-      <RowGroup caption={t('pages.membersPage.profile_show_sessions_in_list_hint', { name })}>
-        <RowStatic icon={<List size={16} />} tone="accent" label={t('pages.membersPage.profile_show_sessions_in_list_switch')} testId="crew-profile-show-sessions-in-list">
-          <Toggle
-            checked={displayShowSessions}
-            onChange={(v) => showSessionsFlip.mutate(v)}
-            disabled={showSessionsFlip.isPending}
-            label={t('pages.membersPage.profile_show_sessions_in_list_switch')}
-          />
-        </RowStatic>
-      </RowGroup>
-      {/* No hand-off: as for the card-send notice below, the Crewmates page's
-          composer may hold an unsent draft to this Bot, and "Ask the agent" would
-          navigate away and discard it. The notice only says the save failed. */}
-      <ErrorNotice
-        message={showSessionsFlip.isError ? t('pages.membersPage.profile_show_sessions_in_list_failed') : null}
-        testId="crew-profile-show-sessions-in-list-error"
-      />
       {/* Its own group, so its caption (what a click on a card does) sits under it. */}
       <RowGroup caption={t('pages.membersPage.profile_dashboard_card_send_hint', { name })}>
         <RowStatic icon={<SendHorizontal size={16} />} tone="accent" label={t('pages.membersPage.profile_dashboard_card_send_switch')} testId="crew-profile-dashboard-card-send">

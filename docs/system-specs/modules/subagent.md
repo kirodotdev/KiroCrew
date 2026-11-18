@@ -395,7 +395,9 @@ unlearned price and any local bucket's learned settled figure, never under
 `subagent_cost_gb`), a lower bound since the warming reserve lives in the
 gateway's manager. When that bar is not met the tool says
 new top-level subagents cannot start and that they wait in the queue, in place
-of the AMPLE guidance. For a session bound to a remote workspace no reading is
+of the AMPLE guidance. Both numbers print at two decimals; a blocked line
+rounds the figure down and the bar up, so the figure shown is always below the
+bar shown. For a session bound to a remote workspace no reading is
 taken and nothing is reported blocked, since the gate prices that session's
 children without the floor.
 
@@ -1575,8 +1577,8 @@ made; no gate reads it back. Two consumers:
   `{"status": "queued", ...}` record for a member that had not started when its
   wait ended (and reports it only there, never also as an error), `kirocrew spawn run` prints `Queued subagent <id> …`, and the
   channel `spawn <task>` keyword (`messaging/commands.py`) replies
-  `⏳ Queued subagent …` with the reason instead of `🚀 Spawned subagent …`, and
-  `⚠️ Subagent … was not started: <error>` for a refusal (a terminal record, not
+  `Queued subagent …` with the reason instead of `Spawned subagent …`, and
+  `Warning: Subagent … was not started: <error>` for a refusal (a terminal record, not
   None). A
   `concurrency_limit` wait keeps `status: "spawned"`: it is the ordinary wave
   shape and clears within seconds. Neither the admission verdicts nor the memory
@@ -2004,6 +2006,20 @@ SEL row vocabulary (`SubagentRows`) live in `tool_permission.py`; which stages
 the subagent runs and in which order live in `_permission_policy`, and what reads
 or moves this run's own state (the approval prompt's wait flag and crew-log
 pair, the log lines, the counter, `tool_count`) lives beside it in `run.py`.
+
+**A turn that ends on a host refusal resumes.** Two backends end the turn on the
+reject itself, so no steer reaches the model: codex aborts it (`cancelled`), and
+opencode closes the call with its stock "user rejected permission" text and ends
+it `end_turn` with nothing after it. The run then withholds that ending and sends
+`deny_notice.build_refused_turn_resume_prompt` (the redacted notice, plus the fact
+that the turn was stopped) as the next prompt on the same session, at most
+`REFUSED_TURN_RESUME_MAX` times per run (`subagent_manager/run_turn.py`). The clean
+ending resumes only on opencode (the provider's `is_opencode_backend`; other
+harnesses go on after a reject, so their clean ending is the model's own), and
+only when the model wrote no text and made no new tool call after the latest
+refusal; a
+turn the model went on with, a person's no in the same attempt, and a stop, reap
+or shutdown end as they ended. Pinned by `test_subagent_refused_turn_resume.py`.
 
 The `is_yolo()` read happens once, when `parent_policy` is resolved at
 `_run_inner` start — a YOLO toggle mid-execution takes effect on the next
@@ -2927,7 +2943,7 @@ Verdict → action:
 - `DEAD` / `STUCK_INPUT` — positive evidence of a wedge, so it flags **immediately**, skipping the two-sweep confirmation that exists to dampen guesses. That skip is **withdrawn whenever the runtime is session-shared** (see the third bound below), because the trust it assumes is exactly what a shared runtime removes — the parent session is always a co-tenant of that process, so a lone subagent is no safer than one with siblings.
 - `UNKNOWN` — no attributable evidence (no tool in flight, a non-shell tool with no child to match, unreadable `/proc`, or a refused executor): falls back to idle-time-only with two-sweep confirmation.
 
-The one non-shell tool that is attributable is the kirocrew-core `wait`. Its declared-duration contract (`ToolCallState.declared_wait_verdict`, shared with the main-agent oracle) reads only the call's own `seconds` and dispatch instant, so `_stall_verdict` answers it directly, with no `/proc` walk: `WORKING` until `min(seconds, WAIT_TOOL_MAX_SECS) + WAIT_TOOL_SLACK_SECS` has elapsed, then `UNKNOWN`. The reaper selects it by the adapter-authored identity (`ToolCallState.is_trusted_wait`: `mcp_server_name` is `kirocrew-core` from a provenance-verified frame and `tool_name` is `wait`, bare or server-qualified such as `kirocrew-core___wait`), never by the model-authored title, because this verdict is exempt from the ceiling below. opencode sends no server field and names the call only by its fused tool id, so on a run whose provider is opencode `ToolCallState.identity_of` reads that frame's own title: exactly `kirocrew-core_<tool>` with kind `other` and no `_` in the tool half, which no other server's tool fuses to. Its `tool_call` carries `rawInput: {}`, so the run loop takes the declared seconds from the call's first `tool_call_update` that names them (`_note_tool_update`) and counts the duration from that update, after any approval the call waited on, and the permission request for the same call keeps the identity already read. A project's own opencode tool or plugin registered under that exact id would also read as the wait; it runs inside opencode with the harness's own trust, and the contract it gets is this verdict alone, ending at its declared duration plus slack.
+The one non-shell tool that is attributable is the kirocrew-core `wait`. Its declared-duration contract (`ToolCallState.declared_wait_verdict`, shared with the main-agent oracle) reads only the call's own `seconds` and dispatch instant, so `_stall_verdict` answers it directly, with no `/proc` walk: `WORKING` until `min(seconds, WAIT_TOOL_MAX_SECS) + WAIT_TOOL_SLACK_SECS` has elapsed, then `UNKNOWN`. The reaper selects it by the adapter-authored identity (`ToolCallState.is_trusted_wait`: `mcp_server_name` is `kirocrew-core` from a provenance-verified frame and `tool_name` is `wait`, bare or server-qualified such as `kirocrew-core___wait`), never by the model-authored title, because this verdict is exempt from the ceiling below. opencode sends no server field and names the call only by its fused tool id, so on a run whose provider is opencode `ToolCallState.identity_of` reads that frame's own title: exactly `kirocrew-core_<tool>` with kind `other` and no `_` in the tool half, which no other server's tool fuses to. Its `tool_call` carries `rawInput: {}`, so the run loop takes the declared seconds from the call's first `tool_call_update` that names them (`_note_tool_update`) and counts the duration from that update, after any approval the call waited on, and the permission request for the same call keeps the identity already read. A project's own opencode tool or plugin registered under that exact id would also read as the wait; it runs inside opencode with the harness's own trust, and the contract it gets is this verdict alone, ending at its declared duration plus slack. pi and claude also send no server field and name the call only by a fused `mcp__<server>__<tool>`: pi in the frame's own title (kind `other`), claude only in the adapter's `_meta.claudeCode.toolName` (`AcpEvent.claude_mcp_tool_name`, never the title). On those providers the run loop hands `identity_of` the servers the session gave the harness (`AcpClient._harness_mcp_server_names`), and the pair is read only when `kirocrew-core` is one of them, the tool half holds no `__` and starts and ends with no `_`, and, on pi, which writes every server character outside `[A-Za-z0-9_]` as `_`, no other of those servers spells as `kirocrew_core`. So `kirocrew_core`, `kirocrew-core-x` and `kirocrew-core__x` never read as Crew's server. A tool that pi's own extensions or claude's own config register under exactly `kirocrew-core`'s name reads as the wait in the same way as on opencode, with the same bounded contract.
 
 Four bounds keep this honest, and each exists for a failure that was observed rather than imagined:
 

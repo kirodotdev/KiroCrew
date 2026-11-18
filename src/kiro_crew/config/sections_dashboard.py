@@ -55,13 +55,15 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "artifact_deploy",
     "bridge_approvals",
     "chat_runtime_sharing",
+    # Has server behavior: kiro_crew.connected_computers.flag gates enrollment,
+    # the connector socket, the chat choice and every start on it.
+    "connected_computers",
     "crew_oauth",
     "dashboard_stale_fields",
     "dashboard_stale_wake",
     "explore",
     "folder_conductor",
     "remote_crew_chat",
-    "secrets_vault",
     "session_environments",
     "session_harness",
     "webhooks",
@@ -953,9 +955,29 @@ class DashboardConfig:
         default="",
         metadata=_meta(
             "Theme Mode",
-            "Dashboard color mode preference: 'dark', 'light', or 'system'. "
-            "Empty = unset (frontend falls back to localStorage or 'system').",
-            enum=["", "dark", "light", "system"],
+            "Dashboard color mode preference: 'dark', 'light', 'system', or "
+            "'schedule' (light from theme_schedule_light, dark from "
+            "theme_schedule_dark). Empty = unset (frontend falls back to "
+            "localStorage or 'system').",
+            enum=["", "dark", "light", "system", "schedule"],
+        ),
+    )
+    theme_schedule_light: str = field(
+        default="",
+        metadata=_meta(
+            "Theme Schedule Light",
+            "24-hour HH:MM at which the 'schedule' theme mode turns light, read in "
+            "the time zone of the device showing the dashboard. Empty = never set "
+            "(07:00).",
+        ),
+    )
+    theme_schedule_dark: str = field(
+        default="",
+        metadata=_meta(
+            "Theme Schedule Dark",
+            "24-hour HH:MM at which the 'schedule' theme mode turns dark, read in "
+            "the time zone of the device showing the dashboard. Empty = never set "
+            "(19:00).",
         ),
     )
     sso_login_flags: str = field(
@@ -1245,6 +1267,15 @@ class DashboardConfig:
         metadata=_meta(
             "Folder Suggestions Enabled",
             "Offer to file a newly-titled, unfiled chat session into a matching folder.",
+        ),
+    )
+    folder_suggestions_auto_apply: bool = field(
+        default=False,
+        metadata=_meta(
+            "Folder Suggestions Auto Apply",
+            "While folder suggestions are on, file the session into the suggested "
+            "folder instead of asking first; the card then says where it went, with "
+            "an undo. Ignored while folder suggestions are off.",
         ),
     )
     project_tags_enabled: bool = field(

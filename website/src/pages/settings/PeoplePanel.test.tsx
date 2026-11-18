@@ -11,7 +11,7 @@ import { sharedCrewKeys } from '../../hooks/sharedCrew/sharedCrewSocket'
 import { tailscaleInvitesKey } from './TailscaleInvites'
 
 vi.mock('../../api/client', () => ({
-  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), tailscaleInvites: vi.fn(), sharedCrewSsm: vi.fn(), tailscaleRevokeInvite: vi.fn(), sharedCrewSetPersonDisplay: vi.fn(), kirocrewConfig: vi.fn(), patchConfig: vi.fn() },
+  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), tailscaleInvites: vi.fn(), sharedCrewSsm: vi.fn(), tailscaleRevokeInvite: vi.fn(), sharedCrewSetPersonDisplay: vi.fn(), kirocrewConfig: vi.fn(), patchConfig: vi.fn(), viewerOwnerOk: vi.fn() },
 }))
 vi.mock('../../components/settingRef/useConfigSchema', () => {
   const schema = new Map([
@@ -63,6 +63,8 @@ function mount() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // The owner by default; the teammate case overrides it for itself only.
+  vi.mocked(api.viewerOwnerOk).mockReset().mockResolvedValue(true)
   // An older gateway: no mode route, so the mode is read from capabilities.
   modeApi.mockResolvedValue(null)
   copy.mockResolvedValue(true)
@@ -693,6 +695,37 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     expect(owner).toHaveTextContent('Crew owner')
     expect(owner).not.toHaveTextContent('You')
     expect(screen.queryByTestId('people-advanced')).toBeNull()
+  })
+
+  it('names an owner known only by a machine name "Crew owner", with the machine name as its detail', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available', tailnet_direct: DIRECT })
+    const host = row('p_o', 'build-host-7', { is_owner: true })
+    host.principal.display.login = ''
+    people.mockResolvedValue({ ...EMPTY, people: [host, row('p_me', 'Pat', { is_viewer: true })] })
+    modeApi.mockResolvedValue(modeBody('network'))
+    mount()
+    const owner = await screen.findByTestId('person-p_o')
+    expect(within(owner).getByTitle('Crew owner')).toBeInTheDocument()
+    expect(within(owner).getByTestId('person-activity')).toHaveTextContent('build-host-7')
+    expect(within(owner).getAllByText('Crew owner')).toHaveLength(1)
+  })
+
+  it('shows a teammate the Crew as shared, not Tailscale "Not set up", which only the owner can change', async () => {
+    vi.mocked(api.viewerOwnerOk).mockResolvedValue(false)
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
+    people.mockResolvedValue({ ...EMPTY, people: [row('p_o', 'Owner', { is_owner: true }), row('p_me', 'Pat', { is_viewer: true })] })
+    modeApi.mockResolvedValue(modeBody('network'))
+    mount()
+    await waitFor(() => expect(screen.getByTestId('share-hero-state')).toHaveTextContent('Shared with your team'))
+    expect(screen.getByTestId('share-hero-state')).not.toHaveTextContent('Not set up')
+  })
+
+  it('says nothing about per-person work when it is switched off, not failed', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
+    people.mockResolvedValue({ ...EMPTY, usage_off: true, people: [row('p_a', 'Ann')] })
+    mount()
+    expect(await screen.findByTestId('people-list')).toBeInTheDocument()
+    expect(screen.queryByTestId('people-note')).toBeNull()
   })
 
   it('keeps Advanced reachable for an owner whose only answered read is SSM, still switched off', async () => {

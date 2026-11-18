@@ -157,7 +157,7 @@ _QUOTE_TRUNCATION_MARK = "\n> […] (too long to quote in full — the rest is s
 #: is one tap. Deliberately not the generic "please try again", which is what
 #: this issue's investigation found misleading.
 RESTART_NOTICE = (
-    "⚠️ The gateway was restarting when this arrived, so it was never "
+    "Warning: The gateway was restarting when this arrived, so it was never "
     "processed — nothing is wrong with it. Resend it when you are ready:\n\n{quoted}"
 )
 

@@ -44,13 +44,13 @@ from kiro_crew.work_ledger_records import (
     WorkLedgerError,
     _now_iso,
     logger,
+    parse_stamp,
 )
 from kiro_crew.work_ledger_rules import (
     _require_artifacts,
     _require_choice,
     _require_pr,
     _require_text,
-    parse_stamp,
 )
 from kiro_crew.work_ledger_store import (
     _CONDUCTOR_FILE,

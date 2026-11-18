@@ -70,6 +70,8 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.apps import browser_sites
+from kiro_crew.apps.browser_sites import app_browser_sites, browser_call_url, url_matches
 from kiro_crew.browser_harness import ops as harness_ops
 from kiro_crew.browser_harness import url_gate
 from kiro_crew.browser_harness.budgets import (
@@ -240,12 +242,16 @@ def build_context(
     hub: LiveHub | None = None,
     *,
     caller_key: str | None = None,
+    sites: tuple[str, ...] = (),
 ) -> harness_ops.OpContext:
     """Bind the gateway's supervisor, relay and live hub to one caller's session.
 
     *caller_key* is the caller's own runtime session key, which governance binds on;
     *session_key* is the card's normalized key. With it, every helper re-asks the
-    ceiling for that caller (:func:`caller_checked_call`).
+    ceiling for that caller (:func:`caller_checked_call`). *sites* are the approved
+    ``browserSites`` of the app that owns the session (:func:`session_sites`): when
+    there are any, a page is allowed only if it is one of them as well, so a landing
+    off the list is refused and blanked like any other refused landing.
     """
     hub = hub if hub is not None else get_live_hub()
     helper = supervisor.call if caller_key is None else caller_checked_call(supervisor, caller_key)
@@ -284,7 +290,7 @@ def build_context(
         screenshot_dir=harness_ops.screenshot_dir(config_dir()),
         staging_dir=config_dir() / IPC_LEAF / "shots",
         sleep=asyncio.sleep,
-        url_allowed=committed_url_allowed,
+        url_allowed=committed_url_allowed if not sites else _site_gate(sites),
         loop=_loop,
         mark=_mark,
         record=_record,
@@ -356,6 +362,61 @@ def committed_url_allowed(url: str) -> bool:
     except Exception:  # noqa: BLE001 - unknowable port -> no local target is provably safe
         port = None
     return url_gate.url_allowed(url, allowed, port)
+
+
+def _site_gate(sites: tuple[str, ...]) -> Any:
+    """:func:`committed_url_allowed`, narrowed to the pages *sites* name."""
+
+    def _allowed(url: str) -> bool:
+        return committed_url_allowed(url) and url_matches(sites, url)
+
+    return _allowed
+
+
+def session_app(request: web.Request, key: str) -> str:
+    """The app that owns the dashboard slot *key*, or ``""`` (no slot, or a person's)."""
+    state = request.app.get("state") if hasattr(request.app, "get") else None
+    slots = getattr(state, "_slots", None) or {}
+    slot = slots.get(key) if isinstance(slots, dict) else None
+    return str(getattr(slot, "_app", "") or "")
+
+
+async def session_sites(request: web.Request, key: str, *aliases: str) -> tuple[str, ...]:
+    """The approved ``browserSites`` of the app that owns slot *key*; empty for any other.
+
+    The tool gate approves such a session's ``browser`` calls without a card
+    (``hooks._tier_app_browser_sites``), so its ops are held to these pages
+    whoever approved them. Read fresh per op, off the loop: a revoke lands at the
+    next op. A slot the gate approved a call for in this process (*key* or one of
+    *aliases*, the caller's own spelling) stays held once its sites are gone:
+    :data:`browser_sites.NO_PAGES`, which admits no page, so a call approved before
+    the revoke never runs unconfined.
+    """
+    app = session_app(request, key)
+    sites = await asyncio.to_thread(app_browser_sites, app) if app else ()
+    if not sites and browser_sites.session_was_granted(
+        key, *(a.removeprefix("dashboard:") for a in aliases)
+    ):
+        return browser_sites.NO_PAGES
+    return sites
+
+
+#: The refusal a held slot (:data:`browser_sites.NO_PAGES`) answers with: what happened
+#: and how it ends. The hold lasts only while the app has no approved site.
+SITES_REVOKED_TEXT = (
+    "this app's approved browsing sites were withdrawn (the app was disabled or "
+    "uninstalled, its trust was removed, or its site approval was dropped), so this "
+    "chat opens no page; enable the app and approve its sites again on the app's page, "
+    "and this chat browses those pages again"
+)
+
+
+def _off_site_url(op: str, args: dict[str, Any], sites: tuple[str, ...]) -> str | None:
+    """The URL *op* would open that *sites* do not name, or None (the tool gate's reading)."""
+    _readable, url = browser_call_url({"op": op, "args": args})
+    if url is None or url_matches(sites, url.strip()):
+        return None
+    return url[:120]
 
 
 async def _supervisor(hub: LiveHub, key: str) -> Any:
@@ -466,7 +527,12 @@ async def _bind_target(hub: LiveHub, key: str, supervisor: Any, call: Any = None
 
 
 async def follow_current_tab(
-    hub: LiveHub, key: str, supervisor: Any, *, caller_key: str | None = None
+    hub: LiveHub,
+    key: str,
+    supervisor: Any,
+    *,
+    caller_key: str | None = None,
+    sites: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     """Point the session's stream at the daemon's current tab; update the address pill.
 
@@ -503,7 +569,7 @@ async def follow_current_tab(
         return None
     if url != "about:blank":
         refused = await harness_ops._refuse_committed_url(
-            build_context(key, supervisor, hub, caller_key=caller_key), url
+            build_context(key, supervisor, hub, caller_key=caller_key, sites=sites), url
         )
         if refused is not None:
             await hub.stop_stream(key)
@@ -568,6 +634,21 @@ async def api_browser_op(request: web.Request) -> web.Response:
         return denied
     hub = get_live_hub()
     key = live_session_key(session_key)
+    sites = await session_sites(request, key, session_key)
+    off_site = _off_site_url(op, args, sites) if sites else None
+    if off_site is not None:
+        _audit(request, "denied", "site_not_allowed")
+        return web.json_response(
+            harness_ops.refusal(
+                "site_not_allowed",
+                (
+                    SITES_REVOKED_TEXT
+                    if sites == browser_sites.NO_PAGES
+                    else f"{off_site} is not one of the pages this app may browse; "
+                    "open one of its approved sites instead"
+                ),
+            )
+        )
     _open_turn(hub, key)
     try:
         supervisor = await _supervisor(hub, key)
@@ -589,7 +670,7 @@ async def api_browser_op(request: web.Request) -> web.Response:
                 "error": "browsing is not set up on this host; install it from Settings -> Browser",
             }
         )
-    ctx = build_context(key, supervisor, hub, caller_key=session_key)
+    ctx = build_context(key, supervisor, hub, caller_key=session_key, sites=sites)
     # The optional decision-model hooks (``browser.step``), keyed by the caller's own
     # session key -- the identity the gate samples and governance binds on, not the
     # card's slot key. They ask the gate first and run the op exactly as written
@@ -628,7 +709,16 @@ async def api_browser_op(request: web.Request) -> web.Response:
         async with hub.op_fence(key):
             mark = hub.op_mark(key)
             result = await _fenced_op(
-                request, hub, key, supervisor, ctx, op, args, budget, caller_key=session_key
+                request,
+                hub,
+                key,
+                supervisor,
+                ctx,
+                op,
+                args,
+                budget,
+                caller_key=session_key,
+                sites=sites,
             )
     finally:
         _OP_LOCK.release()
@@ -652,6 +742,9 @@ async def api_browser_op(request: web.Request) -> web.Response:
         return web.json_response(answer)
     if said is not None:
         result = {**result, "handed_back": said}
+    if sites == browser_sites.NO_PAGES and result.get("code") == "redirect_refused":
+        # A held slot's page was blanked: say why it is held and how it ends.
+        result = {**result, "error": SITES_REVOKED_TEXT}
     return web.json_response(result)
 
 
@@ -771,6 +864,7 @@ async def _fenced_op(
     budget: float,
     *,
     caller_key: str = DASHBOARD_SURFACE_KEY,
+    sites: tuple[str, ...] = (),
 ) -> dict[str, Any] | object:
     """Bind, run, follow -- under both locks.
 
@@ -799,7 +893,9 @@ async def _fenced_op(
         if op == "ask":
             # A quick ask binds to the card's own stream: make sure one runs on the
             # tab just bound, then put the ask on the card (it never runs ``run_op``).
-            refused = await follow_current_tab(hub, key, supervisor, caller_key=caller_key)
+            refused = await follow_current_tab(
+                hub, key, supervisor, caller_key=caller_key, sites=sites
+            )
             if refused is not None:
                 _audit(request, "denied", str(refused.get("code") or ""))
                 return refused
@@ -839,7 +935,7 @@ async def _fenced_op(
     if denied is not None:
         return denied
     if not hub.in_control(key):
-        refused = await follow_current_tab(hub, key, supervisor, caller_key=caller_key)
+        refused = await follow_current_tab(hub, key, supervisor, caller_key=caller_key, sites=sites)
         if refused is not None:
             _audit(request, "denied", str(refused.get("code") or ""))
             return refused

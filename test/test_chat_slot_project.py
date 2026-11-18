@@ -57,11 +57,76 @@ class TestChatSlotProject:
                 assert data["ok"] is True
                 assert data["project"] == str(tmp_path)
                 assert slot.project == str(tmp_path)
+                # A person's pick, which a Bot worker then keeps.
+                assert slot._project_picked is True
+
+    @pytest.mark.asyncio
+    async def test_picking_the_folder_the_slot_already_has_is_a_pick(self, tmp_path):
+        slot = _ChatSlot("test")
+        slot.project = str(tmp_path)
+        slot._dirty = False
+        state = _mock_state(slot)
+        with patch("kiro_crew.dashboard.chat_handlers._save_recent_project"):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(tmp_path)},
+                )
+                assert resp.status == 200
+                assert (slot.project, slot._project_picked) == (str(tmp_path), True)
+                assert slot._dirty is True
+
+    @pytest.mark.asyncio
+    async def test_a_folder_moved_during_the_save_is_not_marked_picked(self, tmp_path):
+        """An unlocked write (the set_project tool) during the await is not a pick."""
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        other = str(tmp_path / "other")
+
+        def moved(_project):
+            slot.project = other
+
+        with patch("kiro_crew.dashboard.chat_handlers._save_recent_project", side_effect=moved):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(tmp_path)},
+                )
+                assert resp.status == 200
+                assert (slot.project, slot._project_picked) == (other, False)
+
+    @pytest.mark.asyncio
+    async def test_an_app_resending_the_folder_keeps_the_persons_pick(self, tmp_path):
+        slot = _ChatSlot("test")
+        slot.project = str(tmp_path)
+        slot._project_picked = True
+        state = _mock_state(slot)
+
+        @web.middleware
+        async def as_app(request, handler):
+            request["app"] = "design-tweak"
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.append(as_app)
+        with (
+            patch("kiro_crew.dashboard.chat_handlers._save_recent_project"),
+            patch("kiro_crew.dashboard.chat_handlers.deny_app_slot_access", return_value=None),
+            patch("kiro_crew.dashboard.chat_handlers._app_cancel_denied", return_value=None),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(tmp_path)},
+                )
+                assert resp.status == 200
+                assert (slot.project, slot._project_picked) == (str(tmp_path), True)
 
     @pytest.mark.asyncio
     async def test_clear_project(self, tmp_path):
         slot = _ChatSlot("test")
         slot.project = str(tmp_path)
+        slot._project_picked = True
         state = _mock_state(slot)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
@@ -70,6 +135,7 @@ class TestChatSlotProject:
             )
             assert resp.status == 200
             assert slot.project == ""
+            assert slot._project_picked is False
 
     @pytest.mark.asyncio
     async def test_nonexistent_dir_returns_400(self):

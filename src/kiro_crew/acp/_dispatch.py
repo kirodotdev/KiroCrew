@@ -756,6 +756,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         antigravity_gate_params,
         antigravity_unverifiable_params,
         classify_tool_call,
+        claude_mcp_stamp,
         codex_tool_name,
         harness_tool_name,
         is_shell_kind,

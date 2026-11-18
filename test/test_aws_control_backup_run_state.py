@@ -108,6 +108,39 @@ class TestUnreadableStateIsNotOverwritten:
         backup.set_nightly(ACCOUNT, True)
         assert self._on_disk()["accounts"][ACCOUNT]["nightly"] is True
 
+    def test_a_utf8_bom_file_is_read_as_the_document_it_is(self):
+        # A Windows "UTF-8 with BOM" save is a whole document, not a corrupt one:
+        # the mutation must carry every other account forward, and the display
+        # read must see the configured toggles before any write.
+        doc = {
+            "accounts": {
+                OTHER_ACCOUNT: {
+                    "nightly": True,
+                    "nightly_sessions": True,
+                    "runs": [{"key": "snapshots/a.tar.gz", "bytes": 1}],
+                }
+            }
+        }
+        self.state_file.write_bytes(b"\xef\xbb\xbf" + json.dumps(doc).encode("utf-8"))
+
+        assert backup.nightly_enabled(OTHER_ACCOUNT) is True
+        backup.set_nightly(ACCOUNT, True)
+
+        on_disk = self._on_disk()["accounts"]
+        assert on_disk[OTHER_ACCOUNT] == doc["accounts"][OTHER_ACCOUNT]
+        assert on_disk[ACCOUNT]["nightly"] is True
+
+    @pytest.mark.parametrize(
+        "raw",
+        [b'{"accounts": {"a": "\xe9"}}', '{"accounts": {}}'.encode("utf-16")],
+        ids=["not-utf8", "utf16-bom"],
+    )
+    def test_undecodable_bytes_abandon_the_mutation(self, raw):
+        self.state_file.write_bytes(raw)
+        with pytest.raises(backup._StateUnreadable):
+            backup.set_nightly(ACCOUNT, True)
+        assert self.state_file.read_bytes() == raw
+
     def test_a_completed_run_reports_itself_without_publishing_over_unread_state(self, monkeypatch):
         # `_record_run` runs AFTER the archive is already in the bucket. Raising
         # would 500 a request whose upload succeeded and send the operator back

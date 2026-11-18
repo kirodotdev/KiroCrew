@@ -61,7 +61,7 @@ def test_file_with_local_writes_the_overlay_not_the_base(home, capsys):
     overlay_src.write_text(json.dumps({"agent": {"provider": "acp"}}), encoding="utf-8")
     _run(home, _args(file=str(overlay_src), local=True))
     out = capsys.readouterr().out
-    assert "✅" in out
+    assert "Done: " in out
     assert "config.local.json" in out
     # The overlay holds the document; the base is left untouched.
     written = json.loads((home / "config.local.json").read_text(encoding="utf-8"))
@@ -88,7 +88,7 @@ def test_file_with_a_key_warns_and_still_writes_the_base(home, capsys):
     assert "ignoring the key/value" in captured.err
     assert "agent.provider" in captured.err
     # The --file write still landed on the base (back-compat).
-    assert "✅" in captured.out
+    assert "Done: " in captured.out
     written = json.loads((home / "config.json").read_text(encoding="utf-8"))
     assert written["agent"] == {"provider": "acp"}
 
@@ -99,7 +99,7 @@ def test_plain_file_still_replaces_the_base_config(home, capsys):
     src.write_text(json.dumps({"agent": {"provider": "acp"}}), encoding="utf-8")
     _run(home, _args(file=str(src)))
     out = capsys.readouterr().out
-    assert "✅" in out
+    assert "Done: " in out
     written = json.loads((home / "config.json").read_text(encoding="utf-8"))
     # The file's document is installed whole (the loader adds a meta stamp).
     assert written["agent"] == {"provider": "acp"}
@@ -136,7 +136,7 @@ def test_file_with_local_keeps_an_unchanged_base_workspace_binding(home, capsys)
         encoding="utf-8",
     )
     _run(home, _args(file=str(src), local=True))
-    assert "✅" in capsys.readouterr().out
+    assert "Done: " in capsys.readouterr().out
     written = json.loads((home / "config.local.json").read_text(encoding="utf-8"))
     assert written["workspaces"]["new"] == {"dir": str(home)}
 
@@ -156,7 +156,7 @@ def test_file_with_local_warns_not_refuses_a_dir_the_base_already_binds(home, ca
     src.write_text(json.dumps({"workspaces": {"proj": {"dir": gone}}}), encoding="utf-8")
     _run(home, _args(file=str(src), local=True))
     captured = capsys.readouterr()
-    assert "✅" in captured.out
+    assert "Done: " in captured.out
     assert "not an existing directory" in captured.err
     written = json.loads((home / "config.local.json").read_text(encoding="utf-8"))
     assert written["workspaces"]["proj"] == {"dir": gone}
@@ -180,7 +180,7 @@ def test_file_with_local_judges_each_workspace_on_its_own(home, capsys):
     )
     _run(home, _args(file=str(src), local=True))
     captured = capsys.readouterr()
-    assert "✅" in captured.out
+    assert "Done: " in captured.out
     assert "'proj'" in captured.err
     written = json.loads((home / "config.local.json").read_text(encoding="utf-8"))
     assert written["workspaces"] == {"keep": {"dir": gone}, "proj": {"dir": also_gone}}

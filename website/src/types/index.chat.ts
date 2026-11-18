@@ -138,6 +138,8 @@ export interface McpSessionReport {
    * an older gateway sends no such key.
    */
   reload_pending?: string[]
+  /** Advisory: remote servers Crew's credential-free probe saw ask for a sign-in (opencode). Never a reason to call a server unusable. */
+  sign_in_suspected?: string[]
   /**
    * The servers this session cannot use right now, by what is true of each.
    * Optional: a gateway or an agent backend that does not report it sends no
@@ -396,10 +398,6 @@ export interface ChatSlot extends TurnIdentityFields {
    *  chat shows its pending approvals and question cards, and the mate's
    *  Sessions tab lists such rows. Absent elsewhere. */
   mate_root?: string
-  /** On a crewmate thread's own row: its Bot's "Show in my Sessions list" switch
-   *  (`crew_mode.MATE_LISTED_FIELD`). Off, the sessions it dispatched leave the
-   *  person's lists for the Bot's Sessions tab; on, they stay listed. */
-  show_sessions_in_list?: boolean
   /** True on a conversation that started in Slack while
    *  `slack.show_in_session_list` is off (`dashboard/slack_session_list.py`).
    *  The person's session lists leave it out unless it is the open session

@@ -34,6 +34,9 @@ export function useTerminalRestoreProbe(): boolean {
       // otherwise. A transient/auth-timing failure of this probe must NOT hide
       // an enabled terminal by falling back to {enabled:false}, which with
       // staleTime would keep the panel hidden for 60s.
+      // The relay's host-offline answer says nothing about the Terminal: fail the
+      // read so it is taken again when the Crew reconnects.
+      if (!r.ok && r.headers.get('x-kiro-relay-error')) throw new Error('relay host offline')
       if (!r.ok) return { enabled: true }
       return r.json()
     },

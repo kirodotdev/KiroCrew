@@ -7,6 +7,10 @@ import os
 import platform
 import re
 from collections.abc import Iterator
+from typing import TYPE_CHECKING, TypeAlias
+
+if TYPE_CHECKING:
+    from kiro_crew.option_marker_scan import MarkerRun
 
 # Positive-identity marker injected into the environment of every subprocess
 # tree KiroCrew spawns (the ACP provider, MCP probes, gateway pool backends).
@@ -755,6 +759,19 @@ def _line_marker_candidates(pattern: re.Pattern[str], text: str) -> Iterator[re.
         head = text.find("[OPTIONS:", end)
 
 
+if TYPE_CHECKING:
+    #: What a marker matcher yields: a pattern match, or a line's run of siblings.
+    MarkerMatch: TypeAlias = re.Match[str] | MarkerRun
+
+
+def _sibling_marker(text: str, start: int, end: int) -> re.Match[str] | None:
+    """``text[start:end]`` as a line marker whose labels balance, else ``None``."""
+    match = _RAW_OPTIONS_RE_LINE.fullmatch(text, start, end)
+    if match is None or _marker_labels_have_unmatched_opener(match.group("labels")):
+        return None
+    return match
+
+
 class _MarkerMatcher:
     """A candidate pattern plus the balance decision the pattern cannot make.
 
@@ -775,17 +792,44 @@ class _MarkerMatcher:
         """The candidate pattern's source."""
         return self._pattern.pattern
 
-    def finditer(self, text: str) -> Iterator[re.Match[str]]:
-        """Every candidate whose terminator is its own, in order."""
+    def finditer(self, text: str) -> Iterator[MarkerMatch]:
+        """Every marker whose terminator is its own, in order.
+
+        A line is accepted or refused whole. The pattern finds each line's final
+        candidate, and :func:`markers_before` decides the rest of that line: a
+        candidate inside an unclosed head is refused, and the sibling markers
+        before it are yielded with it as one :class:`MarkerRun`. Siblings join
+        only when the final marker offers a label, as the web parser's
+        ``findOptionMarkers`` does, so ``[OPTIONS: A] [OPTIONS:]`` keeps
+        ``[OPTIONS: A]`` as text instead of emptying the message.
+        """
+        # Imported here so a server that only lists its tools never loads the walk.
+        from kiro_crew.option_marker_scan import HEAD_CAP, MarkerRun, head_count, markers_before
+
+        if head_count(text) > HEAD_CAP:
+            return
         if self._pattern is _RAW_OPTIONS_RE_LINE:
             candidates = _line_marker_candidates(self._pattern, text)
         else:
             candidates = self._pattern.finditer(text)
         for match in candidates:
-            if not _marker_labels_have_unmatched_opener(match.group("labels")):
+            if _marker_labels_have_unmatched_opener(match.group("labels")):
+                continue
+            before = markers_before(
+                text,
+                match.start(),
+                MARKER_OPENERS,
+                MARKER_CLOSERS,
+                lambda start, end: _sibling_marker(text, start, end),
+            )
+            if before is None:
+                continue
+            if before and match.group("labels").replace("|", "").strip():
+                yield MarkerRun(before[0], match)
+            else:
                 yield match
 
-    def search(self, text: str) -> re.Match[str] | None:
+    def search(self, text: str) -> MarkerMatch | None:
         """The first accepted marker, or ``None``.
 
         A refused candidate cannot hide an accepted one inside its span: the body

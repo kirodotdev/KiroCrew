@@ -1362,6 +1362,53 @@
         out.invalid.push(clip(nameOf(field, true), GLANCE_NAME_CAP) || "field");
       }
       return out;
+    },
+
+    // The owner's media buttons on an app's page (`browser_harness/media.py`): play,
+    // pause, seek or set the volume of the tab's main <video>/<audio>, and report its
+    // state. Top document only. The element is the one playing, else the largest
+    // shown one. Runs in the isolated world, so a page script cannot swap the
+    // methods it calls. Reads no page text: only the element's own playback state.
+    media: function (action, value) {
+      var els = document.querySelectorAll("video,audio");
+      var pick = null;
+      var best = -1;
+      for (var i = 0; i < els.length; i++) {
+        var box = els[i].getBoundingClientRect();
+        var score = (els[i].paused ? 0 : 1e12) + box.width * box.height;
+        if (score > best) { best = score; pick = els[i]; }
+      }
+      if (!pick) return { ok: false, code: "no_media" };
+      var num = typeof value === "number" && isFinite(value) ? value : null;
+      if (action === "play") {
+        try {
+          var started = pick.play();
+          if (started && typeof started.catch === "function") started.catch(function () {});
+        } catch (e) { /* refused autoplay: the state below says paused */ }
+      } else if (action === "pause") {
+        pick.pause();
+      } else if (action === "seek") {
+        if (num === null || num < 0) return { ok: false, code: "bad_value" };
+        pick.currentTime = num;
+      } else if (action === "volume") {
+        if (num === null || num < 0 || num > 1) return { ok: false, code: "bad_value" };
+        pick.volume = num;
+        if (num > 0) pick.muted = false;
+      } else if (action !== "state") {
+        return { ok: false, code: "bad_action" };
+      }
+      var r = pick.getBoundingClientRect();
+      return {
+        ok: true,
+        kind: pick.tagName.toLowerCase(),
+        paused: !!pick.paused,
+        ended: !!pick.ended,
+        currentTime: isFinite(pick.currentTime) ? pick.currentTime : 0,
+        duration: isFinite(pick.duration) ? pick.duration : null,
+        volume: pick.volume,
+        muted: !!pick.muted,
+        center: r.width > 0 && r.height > 0 ? [r.left + r.width / 2, r.top + r.height / 2] : null
+      };
     }
   };
   return api;

@@ -66,11 +66,11 @@ describe('lazy catalog loading', () => {
     const { initI18n, changeLanguage, i18next } = await freshLazy()
     initI18n('en')
     const seen: string[] = []
-    i18next.on('languageChanged', () => { seen.push(i18next.t('settings.secrets.title')) })
+    i18next.on('languageChanged', () => { seen.push(i18next.t('settings.tabs.secrets.description')) })
 
     await changeLanguage('ja')
 
-    const expected = (ja as { settings: { secrets: { title: string } } }).settings.secrets.title
+    const expected = (ja as { settings: { tabs: { secrets: { description: string } } } }).settings.tabs.secrets.description
     expect(i18next.language).toBe('ja')
     expect(seen).toEqual([expected])
   })
@@ -81,8 +81,8 @@ describe('lazy catalog loading', () => {
 
     await ensureCatalog(i18next.language)
 
-    const expected = (ja as { settings: { secrets: { title: string } } }).settings.secrets.title
-    expect(i18next.t('settings.secrets.title')).toBe(expected)
+    const expected = (ja as { settings: { tabs: { secrets: { description: string } } } }).settings.tabs.secrets.description
+    expect(i18next.t('settings.tabs.secrets.description')).toBe(expected)
   })
 
   it('shares one fetch between concurrent requests for a language', async () => {
@@ -121,7 +121,7 @@ describe('lazy catalog loading', () => {
 
     // The store still only holds English, so the language must not claim German.
     expect(i18next.language).toBe('en')
-    expect(i18next.t('settings.secrets.title')).toBe('Secrets Vault')
+    expect(i18next.t('settings.tabs.secrets.description')).toBe('Store API keys and credentials securely')
     expect(error).toHaveBeenCalled()
     await expect(ensureCatalog('de')).resolves.toBe(false)
   })
@@ -145,7 +145,7 @@ describe('lazy catalog loading', () => {
     setCatalogLoader(async () => {
       attempts += 1
       if (attempts === 1) throw new Error('chunk 404')
-      return { settings: { secrets: { title: 'Geheimnis-Tresor' } } }
+      return { settings: { tabs: { secrets: { description: 'Geheimnis-Tresor' } } } }
     })
 
     await changeLanguage('de')
@@ -155,7 +155,7 @@ describe('lazy catalog loading', () => {
 
     expect(attempts).toBe(2)
     expect(i18next.language).toBe('de')
-    expect(i18next.t('settings.secrets.title')).toBe('Geheimnis-Tresor')
+    expect(i18next.t('settings.tabs.secrets.description')).toBe('Geheimnis-Tresor')
   })
 
   it('recognises only hashed catalog chunk errors', async () => {

@@ -295,7 +295,7 @@ class TestSessionsCommand:
 
         assert seen and seen[-1]["outcome"] == "error"
         assert seen[-1]["source"] == "telegram"
-        assert client.sent[-1][0] == "⚠️ Recent sessions are unavailable."
+        assert client.sent[-1][0] == "Warning: Recent sessions are unavailable."
 
 
 class TestAgentPicker:
@@ -380,16 +380,16 @@ class TestAgentPicker:
         assert dispatcher._conv.current_gen(route) == 0
         assert dispatcher._session_key(route) == "telegram:kirocrew:direct:1"
 
-        assert await dispatcher._apply_agent(route, "alpha") == "✅ Agent set to alpha."
+        assert await dispatcher._apply_agent(route, "alpha") == "Agent set to alpha."
         assert dispatcher._session_key(route) == "telegram:alpha:direct:1:gen2"
 
         await dispatcher.handle_message(_msg("/new"))
-        assert client.sent[-1][0] == "✅ New conversation started."
+        assert client.sent[-1][0] == "New conversation started."
         assert dispatcher._session_key(route) == "telegram:alpha:direct:1:gen3"
         assert reserved == ["telegram:alpha:direct:1:gen3"]
 
         # Back to the default row: its own latest again, not alpha's counter.
-        assert await dispatcher._apply_agent(route, "") == "✅ Agent set to Default (kirocrew)."
+        assert await dispatcher._apply_agent(route, "") == "Agent set to Default (kirocrew)."
         assert dispatcher._session_key(route) == "telegram:kirocrew:direct:1"
 
     @pytest.mark.asyncio
@@ -407,7 +407,7 @@ class TestAgentPicker:
         key = dispatcher._session_key(route)
         assert key == "telegram:alpha:direct:1:gen3"
 
-        assert await dispatcher._apply_agent(route, "alpha") == "ℹ️ Already using alpha."
+        assert await dispatcher._apply_agent(route, "alpha") == "Note: Already using alpha."
         assert dispatcher._session_key(route) == key
         assert dispatcher._conv.is_awaiting(route)
 
@@ -416,9 +416,9 @@ class TestAgentPicker:
         await dispatcher._apply_agent(route, "")
         dispatcher._conv.bump_gen(route)
         key = dispatcher._session_key(route)
-        assert await dispatcher._apply_agent(route, "") == "ℹ️ Already using Default (kirocrew)."
+        assert await dispatcher._apply_agent(route, "") == "Note: Already using Default (kirocrew)."
         assert dispatcher._session_key(route) == key
-        assert await dispatcher._apply_agent(route, "kirocrew") == ("ℹ️ Already using kirocrew.")
+        assert await dispatcher._apply_agent(route, "kirocrew") == ("Note: Already using kirocrew.")
         assert dispatcher._session_key(route) == key
 
     @pytest.mark.asyncio
@@ -1031,13 +1031,13 @@ class TestAgentPickerCharacterization:
         assert client.edits == [] and client.markup_edits == [] and len(client.sent) == sent_before
         assert "7:101" in d._agent_pickers
         asyncio.run(d.on_callback(_press("g:25")))
-        assert client.edits[-1][1] == "⌛ This agent list is no longer active — send /agent again."
+        assert client.edits[-1][1] == "This agent list is no longer active — send /agent again."
 
     def test_each_agent_reply_is_exact(self, monkeypatch: Any) -> None:
         from test_telegram import _press
 
         rotated = (
-            "✅ Agent set to {} — this leaves the current conversation. "
+            "Agent set to {} — this leaves the current conversation. "
             "Switch back to return to it."
         )
         d, client, sess = _dispatcher({7})
@@ -1052,11 +1052,11 @@ class TestAgentPickerCharacterization:
 
         d, client, sess = _dispatcher({7})
         sess._has = False
-        assert asyncio.run(d._apply_agent(("direct", "7"), "alpha")) == "✅ Agent set to alpha."
-        assert asyncio.run(d._apply_agent(("direct", "7"), "alpha")) == "ℹ️ Already using alpha."
+        assert asyncio.run(d._apply_agent(("direct", "7"), "alpha")) == "Agent set to alpha."
+        assert asyncio.run(d._apply_agent(("direct", "7"), "alpha")) == "Note: Already using alpha."
         sess._busy = True
         assert asyncio.run(d._apply_agent(("direct", "7"), "beta")) == (
-            "⏳ Still working on your last message — send /agent again once it finishes "
+            "Still working on your last message — send /agent again once it finishes "
             "to switch to beta."
         )
         # The Default row's label names the configured agent; with no pick it
@@ -1064,16 +1064,16 @@ class TestAgentPickerCharacterization:
         d, _client, sess = _dispatcher({7}, default_agent="research")
         sess._has = False
         assert asyncio.run(d._apply_agent(("direct", "7"), "")) == (
-            "ℹ️ Already using Default (research)."
+            "Note: Already using Default (research)."
         )
         asyncio.run(d._apply_agent(("direct", "7"), "alpha"))
         assert asyncio.run(d._apply_agent(("direct", "7"), "")) == (
-            "✅ Agent set to Default (research)."
+            "Agent set to Default (research)."
         )
         d.agent = "override"
         asyncio.run(d._apply_agent(("direct", "7"), "alpha"))
         assert asyncio.run(d._apply_agent(("direct", "7"), "")) == (
-            "✅ Agent set to Default (override)."
+            "Agent set to Default (override)."
         )
 
     def test_a_busy_refusal_is_still_audited_as_allowed(self, monkeypatch: Any) -> None:
@@ -1098,7 +1098,7 @@ class TestAgentPickerCharacterization:
                 "resources": "agent=alpha",
             }
         ]
-        assert client.edits[-1][1].startswith("⏳ Still working")
+        assert client.edits[-1][1].startswith("Still working")
         assert client.edits[-1][2] == {"inline_keyboard": []}
 
 
@@ -1179,7 +1179,7 @@ class TestServiceAndDashboardCharacterization:
                     "resources": "ttl=7200",
                 },
             ),
-            ("send", "🔗 Dashboard link (valid 2h):\nhttps://dash.example:8443/?token=tok123"),
+            ("send", "Dashboard link (valid 2h):\nhttps://dash.example:8443/?token=tok123"),
         ]
 
     def test_the_ttl_is_clamped_and_rendered(self, _dashboard: dict[str, Any]) -> None:
@@ -1189,13 +1189,13 @@ class TestServiceAndDashboardCharacterization:
                 _dashboard, f"/kirocrew dashboard{arg}", "https://dash.example"
             )
             assert _dashboard["minted"] == [("1", ttl)], arg
-            assert client.sent[-1][0].startswith(f"🔗 Dashboard link (valid {shown}):"), arg
+            assert client.sent[-1][0].startswith(f"Dashboard link (valid {shown}):"), arg
 
     def test_a_topic_is_refused_without_minting(self, _dashboard: dict[str, Any]) -> None:
         d, client, _sess = _dispatcher({1}, allow_forum=True, allowed_forum_chat_ids=[-100999])
         asyncio.run(d.handle_message(_forum_msg("/kirocrew dashboard")))
         assert client.sent[-1][0] == (
-            "🔒 Dashboard links are only sent in a direct message — DM me `/kirocrew dashboard`."
+            "Dashboard links are only sent in a direct message — DM me `/kirocrew dashboard`."
         )
         assert client.send_threads[-1] == 4
         assert _dashboard["minted"] == [] and _dashboard["order"] == []
@@ -1204,7 +1204,7 @@ class TestServiceAndDashboardCharacterization:
         _dashboard["mint_error"] = RuntimeError("boom")
         client = self._dm_dashboard(_dashboard, "/kirocrew dashboard", "https://dash.example")
         assert [kw["outcome"] for kind, kw in _dashboard["order"] if kind == "sel"] == ["error"]
-        assert client.sent[-1][0] == "⚠️ Could not generate dashboard link: boom"
+        assert client.sent[-1][0] == "Warning: Could not generate dashboard link: boom"
 
 
 class TestHostListingAudienceCharacterization:
@@ -1220,7 +1220,7 @@ class TestHostListingAudienceCharacterization:
         d, client, _sess = _dispatcher({1}, allow_forum=True, allowed_forum_chat_ids=[-100999])
         await d.handle_message(_forum_msg("/sessions"))
         assert client.sent[-1][0] == (
-            "🔒 The conversation list is only sent in a direct message. DM me `/sessions`."
+            "The conversation list is only sent in a direct message. DM me `/sessions`."
         )
         assert client.send_threads[-1] == 4
         assert rows == [
@@ -1247,8 +1247,7 @@ class TestHostListingAudienceCharacterization:
         d, client, _sess = _dispatcher({1}, allow_forum=True, allowed_forum_chat_ids=[-100999])
         await d.handle_message(_forum_msg(text))
         assert (
-            client.sent[-1][0]
-            == f"🔒 The {subject} is only sent in a direct message. DM me `/{cmd}`."
+            client.sent[-1][0] == f"The {subject} is only sent in a direct message. DM me `/{cmd}`."
         )
 
     @pytest.mark.asyncio
@@ -1261,7 +1260,7 @@ class TestHostListingAudienceCharacterization:
         d, client, _sess = _dispatcher({7, 8})
         await d.handle_message(_dm("/sessions"))
         assert client.sent[-1][0] == (
-            "🔒 The conversation list names conversations across this whole install, so it is "
+            "The conversation list names conversations across this whole install, so it is "
             "only sent when `telegram.allowed_user_ids` holds a single operator. It currently "
             "holds several, and the agent cannot tell which of them owns the install."
         )

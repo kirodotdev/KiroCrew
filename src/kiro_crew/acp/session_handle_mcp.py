@@ -8,7 +8,7 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_config_options``, ``_mcp_launches``, ``_mcp_network_servers``,
+Instance fields written: ``_mcp_launches``, ``_mcp_network_servers``,
 ``_mcp_reattempt_counts``, ``_mcp_reattempt_waiting``, ``_mcp_sign_in_completed``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``, ``_mcp_sign_in_dropped``, ``_mcp_sign_in_needed``,
 ``_mcp_sign_in_wanted``, ``_oauth_emitted_servers``, ``_pending_oauth_requests``.
@@ -54,6 +54,7 @@ from kiro_crew.acp.session_handle_runtime_contract import (
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INIT_FAILURE,
+    METHOD_KAS_MCP_GOVERNANCE_DISABLED,
     METHOD_KAS_MCP_STATUS,
     JsonRpcMessage,
 )
@@ -379,11 +380,13 @@ async def wait_mcp_ready(
     tool_policy: dict[str, Any] | None = None,
     injected: frozenset[str] = frozenset(),
     governed: bool = False,
+    policy_hidden: frozenset[str] = frozenset(),
 ) -> None:
     """Wait for KAS's active managed roster and catalog, or fail before prompting.
 
     ``injected`` is the subset of ``required`` that travelled in the request's
-    own ``mcpServers`` array; see :class:`KasMcpReadiness`.
+    own ``mcpServers`` array, and ``policy_hidden`` the subset that lists no tool
+    for this agent; see :class:`KasMcpReadiness`.
 
     *governed* means the operator declared registry mode. Then at
     :data:`GOVERNED_SETTLE_SECS`, and again at the deadline, if every pending
@@ -405,8 +408,19 @@ async def wait_mcp_ready(
     A required server that failed only because its start ran out of time is
     re-attempted once on the same deadline (:func:`_reattempt_timed_out_start`)
     before its failure ends the start.
+
+    A ``_kiro/mcp/governance_disabled`` for this session with reason
+    :data:`GOVERNANCE_API_FAILURE_REASON` says the host turned MCP off after
+    its governance read failed. Undeclared, it arms a checkpoint
+    :data:`GOVERNED_SETTLE_SECS` later: if by then the host has named none of
+    the required servers for this session, the start fails naming the transient
+    read. Any status entry or tag for a required server before then (the host re-read
+    and mounted them) keeps the ordinary wait, so a start that would have
+    succeeded still does. Governed, the registry checkpoint decides as before.
     """
-    readiness = KasMcpReadiness(self._session_id, required, tool_policy, injected)
+    readiness = KasMcpReadiness(
+        self._session_id, required, tool_policy, injected, policy_hidden=policy_hidden
+    )
     self._mcp_report.include_configured(required)
     # Servers re-attempted after a start timeout, each mapped to whether a status
     # snapshot since the reset has shown it in a state other than failed.
@@ -419,12 +433,25 @@ async def wait_mcp_ready(
         start + GOVERNED_SETTLE_SECS if governed and GOVERNED_SETTLE_SECS < timeout else None
     )
     stale = max(0, stale_report_frames)
+    # Whether the host said it turned this session's MCP off on a failed
+    # governance read. Undeclared only; it arms ``checkpoint`` once.
+    governance_off = False
+    # Set once the checkpoint passes with ``governance_off``: the start fails as
+    # soon as the queue holds no unread frame and no required server was named.
+    governance_due = False
     while readiness.pending:
         now = time.monotonic()
         if checkpoint is not None and now >= checkpoint:
             checkpoint = None
             if _record_dropped(self._mcp_report, readiness, governed):
                 return
+            governance_due = governance_off
+        if governance_due and self._queue.empty():
+            # Frames already queued are read first: one may name a server, or
+            # be the runtime-death marker.
+            if not readiness.seen:
+                raise KasGovernanceOffError(_governance_off_message())
+            governance_due = False
         remaining = (checkpoint if checkpoint is not None else wait.deadline) - now
         if checkpoint is None and remaining <= 0:
             if _record_dropped(self._mcp_report, readiness, governed):
@@ -442,6 +469,7 @@ async def wait_mcp_ready(
             if _record_dropped(self._mcp_report, readiness, governed):
                 return
             if stage_was_checkpoint:
+                governance_due = governance_off
                 continue
             if wait.extend(readiness, time.monotonic(), self._session_id):
                 continue
@@ -456,6 +484,13 @@ async def wait_mcp_ready(
             self._apply_init_notification(msg, classify_notification(msg))
         except Exception:
             logger.debug("error processing init notification", exc_info=True)
+        # Before the stale-frame skip: governance_disabled is session-scoped,
+        # not roster-scoped, so a pre-switch count must not swallow it either.
+        # Governed, the registry checkpoint keeps deciding, as for a registry
+        # drop: a declared install starts without Crew's servers.
+        if not governed and not governance_off and _governance_api_failure(self._session_id, msg):
+            governance_off = True
+            checkpoint = min(time.monotonic() + GOVERNED_SETTLE_SECS, wait.deadline)
         if stale:
             stale -= 1
             continue
@@ -477,6 +512,44 @@ async def wait_mcp_ready(
                     return
             else:
                 raise AcpRuntimeError(_registry_filtered_message(readiness))
+
+
+#: The ``_kiro/mcp/governance_disabled`` reason that can end an undeclared
+#: readiness wait early. ``api_failure`` means the host's governance READ
+#: failed and it fail-closed MCP, a transient miss rather than a policy;
+#: ``admin_disabled`` is a real verdict and stays on the ordinary path.
+GOVERNANCE_API_FAILURE_REASON = "api_failure"
+
+
+def _governance_api_failure(session_id: str, msg: JsonRpcMessage) -> bool:
+    """Whether *msg* says the host fail-closed *session_id*'s MCP on a failed governance read."""
+    params = msg.params if isinstance(msg.params, dict) else {}
+    return (
+        msg.id is None
+        and msg.is_method(METHOD_KAS_MCP_GOVERNANCE_DISABLED)
+        and params.get("sessionId") == session_id
+        and params.get("reason") == GOVERNANCE_API_FAILURE_REASON
+    )
+
+
+class KasGovernanceOffError(AcpRuntimeError):
+    """The host turned MCP off for this session after its governance read failed.
+
+    ``transient = True`` because a new start re-reads governance, so the retry
+    layer (``acp_error_is_transient``) tries again, as it does for a readiness
+    timeout (:class:`AcpRequestTimeout`).
+    """
+
+    transient = True
+
+
+def _governance_off_message() -> str:
+    return (
+        "KAS managed MCP initialization failed: the host turned MCP off for this "
+        f"session after its governance read failed ({GOVERNANCE_API_FAILURE_REASON}) "
+        f"and reported none of the managed servers within {GOVERNED_SETTLE_SECS:g}s. "
+        "The read is transient: send the message again to start a new session."
+    )
 
 
 def _reattempt_timed_out_start(
@@ -1220,8 +1293,7 @@ def _apply_init_notification(self: AcpSessionHandle, msg: JsonRpcMessage, action
         if isinstance(update, dict) and update.get("sessionUpdate") == "config_option_update":
             cfg = update.get("configOptions")
             if isinstance(cfg, list):
-                self._config_options = cfg
-                self._sync_effort_levels()
+                self.absorb_config_options(cfg)
     elif action == "mcp_oauth_request":
         request = self._accept_oauth_request(msg)
         if request is not None:

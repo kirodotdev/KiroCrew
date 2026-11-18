@@ -256,6 +256,10 @@ _FACADE_DEFS = (
     "_screen_windows_links",
     "FileTooLargeError",
     "ScriptHook",
+    # The ``app-browser-sites`` gate row: a thin row whose body is imported at call time
+    # from ``apps.browser_sites``. It stays here because ``gate_tiers`` is at its line cap
+    # and a new owner module would add one to every MCP listing's import count.
+    "_tier_app_browser_sites",
 )
 
 #: Collaborators the facade re-offers that belong to another module. Their identity is

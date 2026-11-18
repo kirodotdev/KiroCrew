@@ -666,6 +666,47 @@ class TestAppCli:
         assert "restart" not in out
         assert "backend process" not in out
 
+    def test_file_only_enable_prints_the_platform_refusal_instead_of_a_restart(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An exec backend native Windows refuses starts at no restart."""
+        refusal = "App demo declares an exec (shell launcher) backend which is not supported."
+        with (
+            patch("kiro_crew.cli_commands._app_declares_backend", return_value=True),
+            patch("kiro_crew.apps.backend.exec_backend_platform_refusal", return_value=refusal),
+        ):
+            cc._print_file_only_app_result("demo", enabled=True)
+
+        out = capsys.readouterr().out
+        assert "picks up the app's crons and hooks within a minute." in out
+        assert refusal in out
+        assert "restart the gateway" not in out
+
+    def test_file_only_enable_keeps_the_restart_when_nothing_refuses_the_backend(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A Python or Node backend, or any POSIX host, gets no refusal and keeps the restart."""
+        with (
+            patch("kiro_crew.cli_commands._app_declares_backend", return_value=True),
+            patch("kiro_crew.apps.backend.exec_backend_platform_refusal", return_value=None),
+        ):
+            cc._print_file_only_app_result("demo", enabled=True)
+
+        assert "restart the gateway to start it now." in capsys.readouterr().out
+
+    def test_file_only_disable_never_asks_for_the_refusal(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A disable still stops the backend at the next start, so its line is unchanged."""
+        with (
+            patch("kiro_crew.cli_commands._app_declares_backend", return_value=True),
+            patch("kiro_crew.apps.backend.exec_backend_platform_refusal") as refusal,
+        ):
+            cc._print_file_only_app_result("demo", enabled=False)
+
+        refusal.assert_not_called()
+        assert "restart the gateway to stop it now." in capsys.readouterr().out
+
     def test_file_only_message_minute_covers_both_gateway_polls(self) -> None:
         """Both gateway polls behind the message's "within a minute" run at least once a minute."""
         assert max(CRON_POLL_SECS, HOOK_POLL_SECS) <= 60

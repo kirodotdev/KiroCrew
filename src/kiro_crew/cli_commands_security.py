@@ -537,8 +537,16 @@ def _explain_batch(
     from kiro_crew.platform.governance import SCOPE_CATALOG
 
     # A caller-supplied path goes through the sensitive-path gate, like the CLI's other reads.
+    # Stdin is read as bytes and decoded as UTF-8 with the file path's newline handling,
+    # because text-mode stdin uses the locale code page (cp1252 on Windows), which
+    # mis-reads a BOM or a non-ASCII item. A stream with no byte buffer is read as text.
+    stdin_bytes = getattr(sys.stdin, "buffer", None) if source == "-" else None
     try:
-        text = sys.stdin.read() if source == "-" else safe_read_file(source)
+        if stdin_bytes is not None:
+            raw = stdin_bytes.read().decode("utf-8")
+            text = raw.replace("\r\n", "\n").replace("\r", "\n")
+        else:
+            text = sys.stdin.read() if source == "-" else safe_read_file(source)
     except PermissionError:
         print(
             "Refusing to read the batch file: it is protected or resolves to a sensitive location.",

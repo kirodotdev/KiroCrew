@@ -290,7 +290,7 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/thread_parent.py` | The first message of a thread a new Slack-born session was opened in: fetched once for the fenced prompt block and recorded once as a display-only `notice` transcript row (see "Thread parent for a new Slack-born session") |
 | `slack/thread_replies.py` | Thread replies a turn has not seen yet, bounded, redacted and injection-screened, for the fenced `[SLACK THREAD REPLIES — UNTRUSTED DATA]` prompt block (see "Thread replies since the last turn") |
 | `slack/code_channels/workspace/` | A code channel's workspace: per-channel git worktree, the Code-tab diff (`setView type=diff`), the context bar (repo/branch/PR/CI). See [Code-channel workspace](#code-channel-workspace) |
-| `slack/code_channels/board/` | A conductor-led code channel's work board: the pinned, edited-in-place board message and its needs-you replies. See [Conductor work board](#conductor-work-board) |
+| `slack/code_channels/board/` | A conductor-led code channel's work board: the pinned, edited-in-place board message, its needs-you replies and the context bar's Workers item. See [Conductor work board](#conductor-work-board) |
 
 ## Composition
 
@@ -1473,7 +1473,7 @@ and turn-hook interface other features build on.
 | Sender attribution | `creation.slack_sender`, passed by `routing._route_to_slot` as `maybe_route_linked_thread(user_meta=...)` | Each person's message handed to a bound session (the opening request, every later one, and a button answer clicked in the channel -- `routing.action_user_meta` from the interaction payload, through `handle_message(user_meta=...)`) stores `meta["slack_sender"] = {team_id, enterprise_id, user_id}` on its user row; a queued one carries it on its queue entry too, so the row the drain writes for its turn has it, and a merged row keeps it only when every merged entry names the same sender; editing a queued entry's text drops it, and so does an opener whose origin thread could not be seated as background context and rides inline (other people's words). `team_id` is the event's team (the envelope's), `enterprise_id` the envelope's `enterprise_id` copied onto the event (`""` outside Enterprise Grid), `user_id` the sender: the workspace and org the gateway admitted the message under, which for a Slack Connect participant from another organisation is this install's, not theirs. Raw ids, each full-matched against its shape (`\AT[A-Z0-9]{1,31}\Z`, `\AE[A-Z0-9]{1,31}\Z` or `""`, `\A[UW][A-Z0-9]{1,31}\Z`: verbatim the shapes Shared Crew's reader checks, pinned by `test_the_id_shapes_are_the_shared_crew_readers_verbatim`); a bot copy, Slack's origin-context copy or any malformed id leaves the key off. Plain data for Shared Crew's attribution: no access decision reads it. A reply that reaches a bound session through the ordinary linked-thread path (code channels off, or a failed channel lookup) is not a code-channel turn and carries no sender. |
 | Dispatch from a code channel | `session_control_parts/code_channel_exemption.judge_code_channel` at the creator, session-control and work-ledger gates | The channel's recorded session may create, drive and close its own one-level workers and run its own ledger, on owner-driven turns, in a workspace-internal channel, with only the published-fields projection reaching the channel; switch `slack.code_channel_dispatch` (off when unset; its sub-toggle under Code channels on the Slack Code card; a settings save that first turns Code channels on saves it on, and a stored value, an explicit off included, is kept). See [session-control: Code-channel conductor callers](session-control.md#code-channel-conductor-callers-the-second-exemption). The channel's share state (`audience.py`) is refreshed from the `conversations.info` read above. |
 | Replies and status | `chat_runner._run_chat` mirror leg; `binding.mirror_post_thread`, `notify_turn_start/end`; `status` | Mirror posts and the stream omit `thread_ts` for a code channel's own session (`start_stream` omits an empty `thread_ts`). Turn hooks fire once per turn on every exit path; the built-in subscriber moves the channel to `processing` then `active` through its own `agent_sessions.status.AgentSessionStatus` instance (the one `setStatus` writer, `thread_ts=None`), gated on code channels rather than on thread agent sessions. A code-channel turn runs outside a Slack turn scope, so no keepalive is armed and Slack's one-hour timeout bounds `processing`. The gate is read live, so when `slack.code_channels` goes off mid-turn a settle to `active` (turn end or `settle_after_stop`) still goes through for a channel this driver left on `processing`, clearing Slack's loader; a `processing` write stays gated. |
-| Stop | `agent_sessions.session_events.register_channel_stop_handler` (whole-channel Stops); `!stop` in the gate | Stops the bound slot through `stop_slot_turn(escalate=True)`: a redelivered `!stop` is answered from `inbound_gate`'s per-message memory and a redelivered native Stop is dropped by its `event_ts`, so each call is a fresh press and a second one takes the escalation (the compaction escape included). A Stop declined because the session is compacting posts `COMPACTING_STOP_TEXT` in the channel. An idle channel's status is set back to `active`. |
+| Stop | `agent_sessions.session_events.register_channel_stop_handler` (whole-channel Stops); `!stop` in the gate; the context bar's Stop (`actions.py`) | Stops the bound slot through `stop_slot_turn(escalate=True)`: a redelivered `!stop` is answered from `inbound_gate`'s per-message memory and a redelivered native Stop is dropped by its `event_ts`, so each call is a fresh press and a second one takes the escalation (the compaction escape included). A Stop declined because the session is compacting posts `COMPACTING_STOP_TEXT` in the channel. An idle channel's status is set back to `active`. It also stops the channel's helper agents and their sub-agents (see "What a Stop covers"). Every Stop (Slack's button, `!stop` and the bar's Stop) runs `routing._stop_bound`, the stop fence first (`surface.mark_stopped`). The bar's Stop is the same Stop as Slack's button: it is asked exactly the checks Slack's Stop event is (`session_events.admits`, then `handle_stopped`), none in front of them and none left out, so with `slack.code_channels` switched off mid-turn it still stops the running session. |
 | Archive, unarchive, rename | `lifecycle.dispatch`, routed by `_on_event` (`channel_*` / `group_*` events, subscribed under `#@code_channels`) | Only a bound channel is touched, and nothing while the code-channels gate is shut. Events for one channel apply one at a time in delivery order (a per-channel lock taken before the first await), so an archive cannot land after the unarchive that followed it. An event with no workspace id, from a workspace `slack_gate.check_message_origin` does not admit, or not naming exactly the binding's recorded workspace (a binding with none matches nothing), is refused and SEL-audited. Archive stamps `archived_at`, unarchive clears it, rename sets `channel_name`; each applied change is audited as `slack.code_channel.lifecycle` and re-pushes the dashboard slot list. |
 | Dashboard badge | `dashboard_view.with_code_channels`, applied by `DashboardState.serialize_slots` for a dashboard user or owner and by `serialize_slot_views` to the dashboard-user and owner frames | A bound session's slot row carries `code_channel` (`channel_name`, `status` = `archived` > `wrapped_up` > `active`, and `web_url` `https://slack.com/app_redirect?channel=…&team=…`, Slack's documented redirect that opens the desktop app when it is installed and the web client otherwise; empty unless the team and channel ids are well formed; only what the badge draws). Absent for an unbound session and for every session while the gate is shut; the gate is read first, and a store not yet read from its file yields no badge while it is loaded off the loop and the slot list re-pushed. Meanwhile every row that carries a Slack thread (`slack_linked`, or a Slack-born session's `slack_origin_thread_ts`) carries `code_channel_pending: true` instead, so the header draws no thread link on a session that may turn out to be a code channel's. It reaches a person's dashboard only: the bare list (`/api/stream` SSE, an app token's `GET /api/chat/slots`) never carries it and `filter_slots_for_app` removes it from an app token's WebSocket rows; within a person's views the member-principal row filter drops it with any row the member may not see. Withholding a field from audiences that never had it is not a per-request decision and these are the sidebar's high-frequency list reads, so it writes no SEL row of its own. The sidebar row (on its meta line, so the row keeps its height, and standing in for the row's connected-to-Slack mark so the row shows one Slack mark) and the session header draw a "Slack code channel" badge from it (`CodeChannelBadge.tsx`). |
 
@@ -2496,30 +2496,53 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   `session_deep_link` over the dashboard (or opted-in tunnel) origin and NEVER carry a
   click token, because the board is in a shared channel.
 - **What a Stop covers.** A Stop (native or `!stop`) stops the channel's own
-  session and fences the work in flight at the press: that turn's own turn-end
-  refresh is skipped, and a board pass admitted before the press writes nothing
-  more. The helper agents keep running (Stop does not reach them; the RFC's
-  amended Stop, `rfc-slack-code-channels.md` §3, will stop them in its own
-  change), so the board's
+  session, the running turn of every helper agent the store records for it
+  (`stop_helpers.stop_helpers`: `store().workers_of`, never the crew-log tree; read
+  again after the stops, so a helper born or started during the Stop is
+  stopped too) and the sub-agents of each (`cancel_for_parent`, before their
+  parents' turns, since a parent's hard Stop stops the ones sharing its process
+  uncounted, and once more at the end), and fences the
+  work in flight at the press (`surface.mark_stopped`, before any await): that
+  turn's own turn-end refresh is skipped, and a board pass admitted before the
+  press writes nothing more. The session and its running helpers are stopped
+  together, so no helper waits out another's soft-stop budget. Each running helper gets
+  `stop_slot_turn(escalate=True)` (a pending approval is rejected; a second press
+  escalates) and one SEL row per stop call; one that ended meanwhile answers "not running" and
+  is not counted, and one idle at its call that has started a new turn by the
+  second read is stopped then (a second call, a second row); one whose compaction declined the stop is counted in the
+  reply as not stopped (a second press forces it), and one whose stop was refused,
+  failed or was cancelled midway is audited as `result=error` and counted in the reply as not stopped
+  (so is the channel's own session when its stop raises, or `result=refused` when
+  it is refused). A
+  sub-agent sweep that failed is said even when a later sweep works, since it may
+  have stopped some before failing. After the stops, an idle channel's status is
+  set back to `active` only if its session is still idle; the channel's own
+  session is stopped once, at the press, and is not read again (a turn a person's
+  next message starts during the Stop is theirs). Whether it runs is read at the
+  press, before any await (`stop_channel`), so a message sent after an idle
+  channel's Stop is not stopped, and neither is a helper report or wake that
+  starts the channel's session during the sweep (as before this change; holding
+  it is the follow-up hold change). The board also watches the
+  sessions filed in the channel's folder and the crew-log children its last board
+  names; a running one the store does not record as a helper agent is not stopped,
+  and the reply counts it as still running (`stop_helpers.left_running` over
+  `BoardCache.watched_sessions`, empty when the board's scope refuses the channel,
+  read right before the reply's send with no await between). After the fence,
+  `routing._stop_bound` hands the rest to `stop_helpers.stop_channel` (the stops,
+  the status settle, the SEL rows and the reply). The reply says how many it
+  stopped ("Stopped N: this channel's session, K helper agents and M
+  sub-agents.") and names none of them; with none
+  stopped and nothing to report, `!stop` says "Nothing running." and the native Stop posts nothing. A
+  Stop does not hold anything afterwards: a message queued for a stopped helper,
+  its AutoNudge or patrol, or a send from the channel's session can start it
+  again. Holding them until a person writes is the follow-up hold change. The board's
   own passes (`surface.own_pass`: every refresh and the watch's scope checks) are
   fenced by their admission alone, and the next helper-agent turn start or end,
   approval, ledger move or re-arm republishes the board and the needs-you
-  replies. A `!stop` while the session is idle but helper agents run
-  answers "This channel's session isn't running, but N helper agents still are" and
-  names them (`render.idle_stop_text` over `BoardCache.running_helpers`): up to
-  `render.STOP_NAMED` (5) by their board title, each linked to its chat with the board's
-  own link builder (no click token; a URL `_linkable` refuses leaves the escaped title
-  in bold), the rest, and any the board has no row for, folded into "and N more" and
-  pointed at the lead session (linked when it can be). With no dashboard origin it
-  names them and says to open them from the lead session in the dashboard. It never
-  sends anyone to the board for a link: there only a waiting-on-you row carries one.
-  Each one's chat has **Stop generation**.
+  replies.
 - **When a board write goes out.** The board's four writes (post, edit, pin and a
   needs-you reply) are its only writes of the helper agents' content, besides the
-  Code tab (gated as above), the wrap-up's outcome lines (below) and the idle
-  `!stop` reply's helper titles, which `_stop_bound` reads under the board's
-  scope check (`BoardCache.running_helpers`) after its last await, right before the
-  send. Each board write
+  Code tab (gated as above) and the wrap-up's outcome lines (below). Each board write
   re-checks the board's scope and the Stop right before its raw send, with no await
   between: the publisher asks `_writable` right before the raw client's call, which
   awaits nothing before its HTTP request. `test_slack_code_channel_commit_point.py`
@@ -2561,6 +2584,14 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   The first pass after a restart reads again every board the surface record names.
 - **Channel PR.** A refresh only the board triggered re-reads the channel's own PR at
   most once a minute; any turn end in the channel always re-reads it.
+- **Context bar.** One **Workers** item leads the bar: the board's tally in short words
+  (`board.model.bar_label`: `2 working · 1 needs you`, `3 of 3 done`), linked to the
+  pinned board message (its `chat.getPermalink`, read once per board message and kept
+  on the surface record). It rides only a bar sent with the channel's binding and is
+  scope-checked right before that send; a refresh sends the bar again once its board is
+  known (a digest match sends nothing). The bar's ONE PR slot is the channel's own PR;
+  each worker's PR is the board's. The label is counts only, so
+  a worker's new report line edits the board without resending the bar.
 - **Triggers.** The conductor's own turn end (the core's hooks); a session in the
   channel's folder starting or ending a turn (the workspace's own folder watcher,
   `watch_tick`: an end refreshes as it always did, a start -- idle to running, or a new
@@ -2625,10 +2656,77 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   repo / branch / PR / CI items by `agent_bar.merge` inside
   `WorkspaceService._publish_bar` (five items, keys unique, the workspace's keys
   reserved); `republish_bar` publishes at once when the agent changes them.
-  Action items are not offered: Slack's `code_channel_action` click event has no
-  documented payload and the manifest does not subscribe to it.
+  Slack keeps the FIRST five of a longer list and only warns
+  (`too_many_context_bar_items`), so the workspace budgets the bar itself
+  (`workspace/context_bar.py`), in priority order: **Workers** (a conductor-led
+  channel), repo, branch, the **Stop** action while the bound session's turn runs
+  (decided when the bar is SENT, so a refresh racing a turn start or end never sends a
+  stale one; `on_turn_start` adds it from the last published state with no git read,
+  the turn end's refresh drops it), then ONE PR slot: the channel's own PR with its CI
+  in one label, else the **Create PR** action when there is no PR at
+  all, `pr_capability` holds and the branch has commits past the Code tab's own base
+  (`_fork_point`). Each worker's PR is on the board. That is five at most; the agent's items and then **Open in
+  dashboard** (a `session_deep_link`, never a click token; only an https one) take only
+  a slot left free. A bar is not resent when it matches the last send that landed
+  (kept in memory per channel, whichever publisher sent it, and stored as `bar_hash`). The agent may not use any of those keys (`agent_bar.reserved`), and its
+  tool reports what the last built bar actually shows (`published_keys`). An action item
+  never carries a `url` (Slack would save it as info), and `set_context_bar` refuses
+  a list outside Slack's schema (five items, key 64, label 128, url 2048 https, the icon
+  set) before sending. The agent's own items stay links: the actions are Kiro Crew's.
+- **Actions (`actions.py`).** A click arrives as a `code_channel_action` event
+  (manifest-subscribed with `code_channels`; `events._on_event` hands it to
+  `actions.dispatch`). `stop` goes first, ahead of every other gate: it builds an
+  `agent_session_stopped` for the whole channel (its own de-dup key) and is asked
+  exactly what Slack's own Stop event is (`session_events.admits`: the feature, or a
+  bound session still running, and the workspace; then `session_events.handle_stopped`:
+  the owner or an allowed user, then the code channel's stop handler, which stops the
+  channel's session, its helper agents and their sub-agents; the presser is told
+  "Nothing is running." privately only when none of those ran at the click). Every other
+  key gets the feature gate, a redelivery check (`event_id`), the per-workspace origin
+  gate, the `channels` inbound ceiling and must be in a bound code channel;
+  `create-pr` runs `commands.run_command` exactly as `/create-pr` (`via=action` in its
+  SEL row). A refused person gets an ephemeral; any other key is refused. SEL:
+  `slack.code_channel.action`. Slack does not yet document the event body, so
+  `actions.parse` reads the channel, user and key from the spellings its other events
+  use, refuses a body naming two different users, and logs the first body's field
+  names (never values).
+- **Plan-canvas comments (`comments.py`).** Slack sends no canvas-comment event, so
+  `agents.conversations.getCanvas` (open threads only) is read at each turn end of the
+  bound session (one that ended normally) and by a 60 s poll over idle channels with a
+  plan canvas (25 a pass, idle ones only, every skipped channel stamped so none
+  starves the rest). A stopped turn's unwinding reads and publishes nothing
+  (`surface.channel_stopped`, the stop fence).
+  New comments and replies (never our own) become one message per commenter, redacted
+  and framed as feedback, delivered through `routing._route_to_slot` like a typed
+  message; a commenter who may not use Kiro Crew, or an origin that no longer admits
+  the bot, is skipped and audited. A comment delivered once is never delivered again,
+  whatever a listing shows: delivered ids are stored only after the delivery
+  succeeded, never pruned because Slack's listing (the newest 100 threads, 100
+  replies each, no resolved threads) left them out, and bounded at 10,200 by dropping
+  the oldest by Slack ts behind a floor that only rises (`canvas_floor`), so nothing
+  dropped reads as new; a canvas created before read-back has its existing comments,
+  and all older than them, baselined. At most 20 per read, 1,000 chars each.
+- **View tabs (`views.py`).** Every tab this gateway opens is recorded on the surface
+  record; that record is the only proof a view is ours (`listViews` carries no owner).
+  A `setView` refused `too_many_views` reads `listViews`, drops record entries Slack no
+  longer lists (a vanished Plan tab is re-attached on the next publish), removes the
+  least recently written listed view of OURS (never the Plan tab or the diff) and sends
+  the write once more; with nothing of ours to remove the tool says so. The diff
+  publish uses the same path.
+- **Resource and live summary.** A channel PR sets `agent_resource`
+  (`pull_request`, `github`, `<title> (#N[, merged|closed|draft])`, redacted, within
+  Slack's limits), resent only when it changes. The work board message is recorded as
+  `code_channel.summary_message` when it is posted (once per message), unless a current
+  wrap-up is the summary.
+- **Refusal notices (`notices.py`).** `not_agent_channel` / `not_authorized`, which
+  switch a channel's publishing or commands off, raise one dashboard notification per
+  channel; `feature_disabled` keeps its install-wide capability notification. The
+  agent's tools answer each of the three with a plain sentence.
 - **Status.** `code_channel_set_status("suspended")` holds through the turn end
-  (`status.hold_after_turn`); the next turn start clears it.
+  (`status.hold_after_turn`); the next turn start clears it. A tool approval raised on
+  the bound session (`slot_turns.register_approval` -> `status.note_approval`) shows
+  `suspended` until the last pending one is answered, then `processing` again while
+  the turn still runs (Slack's lifecycle: a session waiting on a person is suspended).
 - **Commands.** At each turn start (off the turn's path) `commands.sync_commands`
   registers `/summarize` and `/wrap-up`, plus `/create-pr` only while
   `pr_capability` holds (a worktree, a GitHub remote this install may reach, `gh`

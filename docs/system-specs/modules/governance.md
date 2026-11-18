@@ -598,8 +598,10 @@ in an oss build). One fetch is the Kiro control plane's
   land in the one `capabilities.extension_install` gate, by kind (`skill:`, `mcp:`,
   `agent:`): a scope-less allow, or an `allow all` / `allow builtin` copied onto them,
   grants install of that kind (D13); an `mcp` grant installs a whole server only
-  (`server` or `server/*`); a named deny on `skill` or `subagent` turns that kind's
-  install off, because the install id is a package; plugin sync stays off. A row may
+  (`server` or `server/*`); a `skill` rule lands by skill name, and the install seam
+  checks every skill a package holds (see "Extensions" below), but a named deny on
+  `skill` inside an allowed glob (no one-mode form), or any named deny on `subagent`
+  (an agent install id is a package), turns that kind's install off; plugin sync stays off. A row may
   land in more than one key (`Managed.also`). Not read yet: `embedding_model_use`
   (D13). A rule on a meta-capability
   (`all`, `builtin`, `filesystem`) reaches the managed capabilities beneath it in
@@ -1507,6 +1509,19 @@ projection in flight), and the next poll or watch tick re-projects over its writ
 ahead of the seed and `start_refresher`, so a failure in either does not take it down, and
 `_shutdown` cancels it beside the refresher, so no re-projection starts into a closing
 gateway.
+
+Two MCP server names are never kept by `may_skip_gate`, with or without a ceiling, as a
+whole server, one tool or a wildcard: `@workspace` (`session_environment.WORKSPACE_SERVER_NAME`,
+a remote workspace's tools, which stand in for the floor-gated built-ins) and every
+`@connected-computer-<name>` (`session_environment.CONNECTED_MCP_SERVER_PREFIX`), a local MCP server a
+connected computer exposed (providers.md § Connected computers behaviors). Each call on one
+acts on a person's own computer, so it always reaches the PreToolUse gate and its approval;
+a declined approval means the bridge never writes the call. Any other server name keeps its
+answer, including `@computer-use` and any other name that does not start with the whole
+prefix. The `@connected-computer-` rule holds only while the `connected_computers` preview
+is on, read from the live config snapshot (`_connected_computers_may_run`; no snapshot
+keeps the rule): with the preview off no such server is mounted, and a person's own `connected-computer-*` server keeps its
+earlier answer.
 
 A builtin can also be governed by a **capability** rather than by its name:
 `BUILTIN_TOOL_CAPABILITIES` maps `use_subagent` to `capabilities.spawn`. A capability is not
@@ -3883,13 +3898,17 @@ Three keys from the RFC [crew-lts-edition](../../request-for-change/rfc-crew-lts
 
 | Key | What it governs | Item asked | Where |
 |---|---|---|---|
-| `capabilities.extension_install` | Installing MCP servers, skills and agent packages, uninstalling them, and plugin sync, through the edition's `CapabilityManager` | install: `extensions:<kind>:<id>` (`mcp`, `skill`, `agent`, `plugin`); uninstall: the gate only | `platform/capability_bound.py::BoundedCapabilityManager`, the seam every caller of `current_context().capability_manager` goes through |
+| `capabilities.extension_install` | Installing MCP servers, skills and agent packages, uninstalling them, and plugin sync, through the edition's `CapabilityManager` | install: `extensions:<kind>:<id>` (`mcp`, `skill`, `agent`, `plugin`); uninstall: the gate only | `platform/capability_bound.py::BoundedCapabilityManager`, the seam every caller of `current_context().capability_manager` goes through; in an LTS build also the Discover installs, `dashboard/handlers/discover.py::api_skills_discover_install` and `mcp_discover.py::official_install_plan` |
 | `app_versions` (ruleset, `identifier`) | Which third-party app versions may be installed and loaded | `<app>@<version>` from the manifest, or the registration's own version when no manifest is sent, or, for an activation (boot, enable, restart) whose manifest names no version, the installed record's version (an install or update never falls back); with no readable (semver) version, such as none or a JSON `null`, any policy that governs the key refuses. The registry install's pre-clone admission skips the version (its manifest can be a stale local checkout); the clone-time admission asks it on the fetched manifest before the build or `onInstall` | `apps/admission.py::app_admission_denied`, run at install, update, boot, restart and enable; builtins stay exempt as for every admission rule |
 | `capabilities.app_dev_mode` | App developer mode: the toggle and every dev-mode read | the gate | `apps/dev_mode.py` (`set_dev_mode`, `is_dev_mode`, `is_dev_mode_cached`, `_load_dev_apps`) through `extension_governance.developer_mode_permitted`, which any other developer-mode switch reads too |
 
 The seam runs each check on `governance_executor`, off the event loop, because the profile store stats the profiles directory. The async registry install paths (`registry_pipeline/install.py`, `install_clone.py`) run `app_admission_denied` in a thread for the same reason; the self-managed registration, which stays on the loop, asks `admission.app_version_refusal` off the loop first and passes `version_checked=True` to `register_external_app`. `is_dev_mode_cached` (the UI hot path) reads only the in-memory set: `_load_dev_apps` and the off-loop cache writers filter it by the key, and the watcher re-reads it on the tick after the key's answer changes. A denial and a governed permit are audited; a permit nothing governs is not. In an LTS build with no ceiling and no profile, where `governance_permits` answers "ungoverned" (left to the LTS gate, see above), `extension_governance` asks `resolve` instead, so these three keys answer the baseline and stay off; other scopes are unchanged.
 
 Plugin sync asks `extensions:plugin:<package>` for each package `plugins_out_of_sync` reports, and refuses the whole sync if any is denied. A package that drifts between that read and the sync is not asked (a known gap). A refused dev-mode toggle answers `locked_by_policy` (409 over HTTP), audited as a denied `app_dev_mode` SEL row, as before.
+
+A skill install in an LTS build is judged by the skills the package holds, not by its package id (RFC D13): the policy's `skill` term names skills, and the install id is a package (`owner/repo`). With install on, the seam asks the edition's optional `skill_names(package)` op before anything is installed, then asks `extensions:skill:<name>` for each name (`extension_governance.skill_package_denied`). One denied name refuses the whole package, and the error names that skill. A package that cannot be listed (no `skill_names` op, an error, a timeout, an empty list or a name that is not a non-empty string) is refused, fail-closed. The `oss` edition still asks `extensions:skill:<package>` and never lists the package.
+
+In an LTS build the Discover installs ask the same key. `/api/skills/-/discover/install` (skills.sh, GitHub and edition providers) refuses with install off before it fetches anything. Otherwise it reads the skill names from the bundle's staged copy, the dot-prefixed folder the loader skips, and asks each one before the publish; a refusal removes the stage, so nothing is installed. The staged copy is read, not the bundle's own paths, so the names are the ones the publish would install (`./AGENTS.md` or `SKILL.md/` land as plain files, and an `AGENTS.md` is copied to `SKILL.md`). Each file named `SKILL.md`, in any case and at any depth, is one skill, named as the loader reads it (byte-order mark stripped): its frontmatter `name`, or else its catalog key (`<provider>/<slug>`, with any nested folders after it). A single-file install is judged on its one file before it is written. A bundle with no skill file is refused. The refusal answers 403 `blocked_by_policy`, its text redacted like other provider text. The official MCP registry plan (`official_install_plan`, read by `/api/mcp/discover/install` and by `resolve_server` for `request_capabilities` and `request_server`) asks `extensions:mcp:<registry id>` before it fetches the entry. The `oss` edition asks neither. A custom MCP server the user writes by hand (`/api/mcp/custom`) is not an install and stays with the `mcp` use row.
 
 ```json
 {"version": 1, "app_versions": {"mode": "allow", "allow": ["file-explorer@1.*"]}, "capabilities": {"extension_install": {"scopes": {"extensions": {"mode": "allow", "allow": ["mcp:github", "skill:*"]}}}, "app_dev_mode": {"enabled": false}}}
@@ -4492,7 +4511,8 @@ aliases and `own_scopes` off-scope pairs refuse on an allow-mode miss less often
 binds in all of them) — and, as `gate verdict`, `gate_decision` over the item read as a display
 title with no arguments, which ignores the scope. `--json` prints that answer as one object (the
 inputs plus `verdict`, `profile`, `rule`, `layer`, `reason`, `explicit_deny`, `gate_verdict`,
-`gate_reason`); `--batch FILE` (`-` = stdin; a path is read through `safe_read_file`) answers one
+`gate_reason`); `--batch FILE` (`-` = stdin, read as bytes and decoded as UTF-8 like a file, not in the console code
+page; a path is read through `safe_read_file`) answers one
 JSON Lines request per line (`scope`, `item`, optional `session_key`/`agent`/`app` defaulting to the
 flags; other keys ignored) in one boot, each record carrying its `line`, writes an error record
 `{"line", "error"}` for an unreadable line or unknown scope, and exits 1 at the end if any line

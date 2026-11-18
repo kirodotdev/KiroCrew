@@ -326,7 +326,11 @@
     "tab_title_session": "{{session}} — {{panel}}",
     "release_notes_not_published_yet": "{{release}} 的更新日志尚未发布，现改为显示 {{shown}} 的更新日志。",
     "titlebar_menu_disabled_footer": "部分项目在此处不可用。显示的快捷键仍然有效。",
-    "titlebar_menu_refused_notice": "“{{item}}”未执行。此命令目前在此处不可用。"
+    "titlebar_menu_refused_notice": "“{{item}}”未执行。此命令目前在此处不可用。",
+    "relay_remote_control_off": "此 Crew 的远程访问已关闭",
+    "relay_remote_control_off_detail": "Crew 的所有者关闭了远程访问。只有所有者能在 Crew 所在的电脑上重新开启。",
+    "relay_remote_control_off_waits": "重新开启后，此页面会自动重新连接。",
+    "terminal_owner_only": "只有 Crew 所有者可以使用终端。"
   },
   "appSdk": {
     "chatSession": {
@@ -6101,7 +6105,8 @@
       "sign_out_or_switch": "在设置中登出或切换账号",
       "sign_out_link_config_unreadable": "无法加载设置，因此无法显示登出链接。",
       "switch_in_settings": "在设置中切换账号",
-      "bots_sign_in_in_settings": "在设置中为 Bot 登录 Kiro"
+      "bots_sign_in_in_settings": "在设置中为 Bot 登录 Kiro",
+      "kiro_account_in_settings": "设置中的 Kiro 账户"
     },
     "agentDropdownList": {
       "active_in_this_session": "在此会话中使用",
@@ -7407,9 +7412,12 @@
       "use_folder_project": "切换到 {{folder}}"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "已归入 {{folder}}",
       "folder_suggestion": "文件夹建议",
+      "keep_it_here": "保留",
       "move_to_folder_prompt": "要将此会话移动到此文件夹吗？",
       "no_thanks": "暂不",
+      "undo_filing": "撤销",
       "yes_move_it": "移动"
     },
     "followUpBar": {
@@ -7542,7 +7550,8 @@
       "opens_own_window": "在单独的窗口中打开",
       "new_crew": "新",
       "seen_not_saved": "无法保存你已查看的状态，它会再次显示为新的。",
-      "open_crew_failed": "无法打开 {{name}}。"
+      "open_crew_failed": "无法打开 {{name}}。",
+      "sign_in": "登录 Kiro"
     },
     "instancesViewport": {
       "connecting": "正在连接…",
@@ -7756,6 +7765,8 @@
       "waiting_for_you_to_approve": "等待你批准…",
       "continue_with_builder_id": "使用 AWS Builder ID 继续",
       "continue_with_company_sso": "使用公司 SSO 继续",
+      "builder_id_hint": "面向开发者的免费个人登录方式，无需 AWS 账户。",
+      "company_sso_hint": "适用于 AWS IAM Identity Center 上的工作账户。你需要公司提供的访问门户网址，即使它通过 Okta 或 Microsoft Entra 让你登录。",
       "sso_start_url_label": "公司登录网址",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "粘贴公司提供给你的 AWS 访问门户网址。",
@@ -7777,7 +7788,7 @@
       "loopback_fell_back": "登录结果无法直接回到这台电脑，所以改为使用验证码。",
       "cancel_unsettled": "无法取消登录。登录仍在进行中，请再次点击同一选项重试。",
       "pending_cancel_unsettled": "已登录，但无法取消你在此处发起的登录。该登录会保持开启，直到超时。",
-      "card_intro": "仅供 Kiro Agent 后端使用：其 Agent 将以这个 Kiro 账号运行。Kiro CLI 仍沿用自己的 kiro-cli 登录，在此登录不会改变它。",
+      "card_intro": "Kiro Agent 和其他 Kiro 功能都以这个 Kiro 账号运行，无论你使用哪个代理运行框架。Kiro CLI 仍沿用自己的 kiro-cli 登录，在此登录不会改变它。",
       "previous_sign_in_not_removed": "已登录，但无法移除之前的登录",
       "previous_sign_in_not_removed_body": "新账号已保存，但你切换前的那个账号仍然存在且优先生效。请先将其登出，再确认此处显示的登录。"
     },
@@ -8338,6 +8349,8 @@
         "chat_stopped_stalled_body": "聊天已停滞且无法恢复。请打开聊天，开始新的聊天。",
         "folder_agent_label_title": "检查文件夹的默认智能体",
         "folder_agent_label_body": "这些文件夹的默认智能体与某个 Bot 同名，但其中的新聊天不会在该 Bot 上运行：{{folders}}。要使用该 Bot，请在文件夹设置中把它选为默认智能体。",
+        "folder_agent_key_title": "检查文件夹的默认智能体",
+        "folder_agent_key_body": "之前的一次更新可能已把这些文件夹从自定义代理换成了同名 Bot，因此其中新聊天会在该 Bot 上运行：{{folders}}。如果你原本想用的是自定义代理，请在文件夹设置中重新把它选为默认智能体。",
         "repeated_failures_title": "工具失败反复出现",
         "repeated_failures_body": "本周智能体的一些工具调用一再失败。打开这条通知查看它们，并把其中一个转成经验。",
         "mcp_share_paused_title": "有共享的 MCP 服务器已暂停",
@@ -11025,6 +11038,9 @@
       "expired_detail_bots": "重新登录之前，Bot 无法运行。已保存的登录已失效，且无法续期。",
       "refused_detail_bots": "此登录失效后，Bot 将停止运行。请重新登录，让它们继续运行。",
       "refused_expired_detail_bots": "重新登录之前，Bot 无法运行。此登录已失效。",
+      "expired_detail_account": "在你重新登录之前，使用 Kiro 账户的功能都无法工作。已保存的登录已过期，且无法续期。",
+      "refused_detail_account": "此登录失效后，使用 Kiro 账户的功能将停止工作。请重新登录，让它们继续工作。",
+      "refused_expired_detail_account": "在你重新登录之前，使用 Kiro 账户的功能都无法工作。此登录已经过期。",
       "status_unavailable_detail": "打开登录设置检查你的 Kiro 登录，或让 agent 帮你排查。",
       "config_unavailable": "无法读取仪表板设置",
       "config_unavailable_detail": "请重新加载页面后重试，或请代理排查。",
@@ -11240,6 +11256,48 @@
       "shortcut_hint_mac": "⌃⇧M 切换静音",
       "mute_short": "静音",
       "unmute_short": "取消静音"
+    },
+    "promptStash": {
+      "badge_full_hint": "暂存区已满。请先丢弃或恢复一条草稿，再暂存新的草稿；在空白输入框中按 {{chord}} 可恢复最近一条。",
+      "badge_full_hint_touch": "暂存区已满。请先丢弃或恢复一条草稿，再暂存新的草稿；两者都在 {{menu}} 菜单中。",
+      "badge_hint": "此聊天中暂存的草稿。在空白输入框中按 {{chord}} 可恢复最近一条。",
+      "badge_hint_touch": "此聊天中暂存的草稿。可通过 {{menu}} 菜单恢复最近一条。",
+      "badge_other": "已暂存 {{count}} 条草稿",
+      "empty": "没有暂存的草稿。输入框中有内容时按 {{chord}} 即可暂存。",
+      "empty_touch": "没有暂存的草稿。输入内容后，可通过 {{menu}} 菜单暂存。",
+      "full": "暂存区已满（{{max}} 条草稿）。要腾出空间，请丢弃一条暂存的草稿。",
+      "menu_restore": "恢复暂存的草稿",
+      "menu_restore_has_draft": "请先暂存或发送当前草稿。",
+      "menu_restore_desc_other": "已暂存 {{count}} 条，恢复最近一条。在空白输入框中按 {{chord}} 效果相同。",
+      "menu_restore_desc_touch_other": "已暂存 {{count}} 条。从此菜单恢复最近一条。",
+      "menu_restore_none": "还没有暂存的草稿。",
+      "menu_stash": "暂存草稿",
+      "menu_stash_desc": "暂存文本并清空输入框（{{chord}}）。",
+      "menu_stash_desc_touch": "暂存文本并清空输入框。",
+      "menu_stash_empty": "输入内容后即可暂存。",
+      "notice_attachments": "请移除附件后再暂存或恢复。",
+      "notice_full": "暂存区已满（{{max}} 条）。请丢弃一条暂存的草稿以腾出空间。",
+      "notice_stashed": "已暂存。在空白的消息输入框中按 {{chord}} 可恢复。",
+      "notice_stashed_touch": "已暂存。可通过 {{menu}} 菜单恢复。",
+      "restored_last": "已恢复暂存的草稿。",
+      "restored_other": "已恢复暂存的草稿。仍有 {{count}} 条暂存。",
+      "save_failed": "无法暂存草稿：浏览器存储已满或不可用。草稿仍保留在输入框中。",
+      "shortcut_label": "暂存草稿，或在空白输入框中恢复草稿",
+      "stashed_other": "草稿已暂存。当前共暂存 {{count}} 条；在空白输入框中按 {{chord}} 可恢复最近一条。",
+      "stashed_touch_other": "草稿已暂存。当前共暂存 {{count}} 条；可通过 {{menu}} 菜单恢复最近一条。",
+      "too_large": "无法暂存：暂存区已达到大小上限。草稿仍保留在输入框中。要腾出空间，请丢弃一条暂存的草稿。",
+      "too_large_single": "无法暂存：此草稿超过了暂存区的大小上限。草稿仍保留在输入框中。",
+      "clear_others_other": "清除其他会话中暂存的 {{count}} 条草稿",
+      "clear_others_confirm_other": "永久删除 {{count}} 条暂存的草稿",
+      "cleared_others_other": "已删除其他会话中暂存的 {{count}} 条草稿。请重新暂存这条草稿。",
+      "menu_discard": "丢弃暂存的草稿",
+      "menu_discard_desc": "删除刚恢复的草稿；若没有，则删除最近一条暂存。可以撤销。",
+      "discarded_last": "已丢弃暂存的草稿。",
+      "discard_undone": "已丢弃的草稿已放回暂存区。",
+      "undo_discard": "撤销",
+      "discard_failed": "无法丢弃草稿：浏览器存储不可用。草稿仍在暂存区中。",
+      "undo_failed": "无法将草稿放回暂存区：暂存区已满或浏览器存储不可用。",
+      "discarded_other": "已丢弃暂存的草稿。仍有 {{count}} 条暂存。"
     }
   },
   "hooks": {
@@ -11384,7 +11442,8 @@
         "reason_work": "它仍有工作在运行。关闭会停止这些工作。",
         "reason_setting": "它没有正在运行的内容。之所以询问，是因为设置中开启了“{{setting}}”。",
         "actions": "对话和消息框中的草稿都会保留，之后可以重新打开会话。",
-        "confirm": "关闭会话"
+        "confirm": "关闭会话",
+        "reason_other_starter": "这个聊天是 {{name}} 发起的。关闭后，这个 Crew 里的所有人都看不到它了。"
       },
       "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
       "duplicate_unreachable": "无法复制此会话。无法连接到 {{productName}}。请检查网络连接后重试。",
@@ -11490,6 +11549,7 @@
   },
   "pages": {
     "mcpPage": {
+      "bot_workers_note": "在这里添加的服务器不会进入 Bot 的工作者。只有把服务器添加到某个 Bot，该 Bot 的工作者才能使用它。",
       "title": "MCP 服务器",
       "view_servers": "服务器",
       "view_sharing": "共享"
@@ -11714,6 +11774,7 @@
       "grants_reconsent_link_full_url": "完整链接地址：应用的悬停卡片还会看到链接中 ? 或 # 之后的部分，其中可能包含登录代码。",
       "grants_reconsent_message_actions": "消息操作：应用在聊天消息上的菜单项能读取哪些内容。",
       "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。",
+      "grants_reconsent_browser_sites": "浏览网站：应用自带的智能体可以在你浏览器里用你登录的账号打开、阅读这些页面，并在上面输入和点击，不再每次询问。",
       "grants_reconsent_frame_sources": "嵌入的网站：允许应用的页面在仪表板内显示这些网站。",
       "grants_reconsent_link_open_hosts": "打开的链接：你在聊天消息中点击指向这些网站的链接时，允许应用打开它。",
       "grants_reconsent_link_open_full_url": "所打开链接的完整地址：应用还会看到链接中 ? 或 # 之后的部分，其中可能含有登录码。",
@@ -11828,6 +11889,7 @@
       "update_needs_trust": "{{name}} 未更新：需要你的许可。请使用它自己的更新按钮来允许。",
       "updated_needs_session_approval_consent": "{{name}} 已被禁用，因为它新增了控制你对话的请求。请在应用详情中查看该权限，然后启用它。",
       "update_needs_repository_trust": "{{name}} 未更新，因为它的新版本来自你尚未信任的仓库。请打开其详情并选择“信任该仓库并更新”。",
+      "open_app_details": "打开 {{name}} 的详情",
       "refresh_store": "刷新商店",
       "refreshing_store": "正在刷新商店…",
       "store_catalog_unreachable": "无法连接官方应用目录，商店正在显示离线列表。请检查网关能否访问互联网，然后再次刷新。"
@@ -13261,7 +13323,7 @@
         "code_channel_worktree_not_ready": "此代码频道的 worktree 尚未就绪，因此未运行该消息。请稍后重新发送。",
         "remote_crew_read_only": "此聊天在远程团队上运行，现在为只读。要继续，请打开该团队自己的会话。",
         "archive_failed_turn_cancelled": "取消正在运行的一轮后，归档此标签页失败。标签页已保留，但该轮没有完成 — 请重新发送消息以继续。",
-        "kas_signed_out": "尚未登录 Kiro。请在“设置 → 代理运行框架 → Kiro Agent → Kiro 登录”中登录，然后重新发送你的消息。",
+        "kas_signed_out": "尚未登录 Kiro。请在“设置 → Kiro 账户”中登录，然后重新发送你的消息。",
         "kas_signed_out_sign_in_below": "尚未登录 Kiro。请在下方登录，然后重新发送你的消息。",
         "windows_spawn_blocked": "Windows 未能启动代理程序（{{binary}}）。很可能是这台电脑上的 AppLocker、EDR 产品或组策略拦截了它。请联系 IT 管理员放行该文件，然后开始新的对话。",
         "tools_not_ready": "智能体未能启动，因为它的内置工具没有及时就绪。你的消息仍在这里。请稍后重试。如果反复出现，详情见网关日志。",
@@ -14209,7 +14271,8 @@
       "comments_sent_other": "{{count}} 条评论已发送",
       "your_crewmate": "你的 Bot",
       "jump_to_new_other": "{{count}} 条新 · 跳到最新",
-      "could_not_repair_images": "无法修复图片"
+      "could_not_repair_images": "无法修复图片",
+      "session_closed_elsewhere": "此聊天已在此窗口之外关闭。"
     },
     "chatSidebar": {
       "needsMeCard": {
@@ -15269,11 +15332,11 @@
     },
     "developer": {
       "agentBackendTab": {
-        "orchestrator_memory_label": "编排器记忆",
+        "orchestrator_memory_label": "Kiro Memory",
         "orchestrator_memory_description": "在个人聊天中使用 Kiro 已有的记忆。更改在智能体会话启动时生效；请开始新聊天以使用更新后的设置。",
-        "orchestrator_memory_hint": "将其他 Kiro 客户端中保存的记忆与 {{productName}} 现有的记忆一起使用。Kiro 记忆在这里为只读。{{productName}} 的学习行为和每个 Bot 各自独立的记忆保持不变。Kiro 记忆可在隐身聊天中使用，但不会用于临时聊天。",
+        "orchestrator_memory_hint": "将 Kiro Memory 与 {{productName}} 现有的记忆一起使用，以访问其他 Kiro 客户端保存的记忆。这些记忆在这里为只读。{{productName}} 的学习行为和每个 Bot 各自独立的记忆保持不变。",
         "orchestrator_memory_preview": "预览",
-        "orchestrator_memory_save_failed": "无法保存编排器记忆设置，请重试。",
+        "orchestrator_memory_save_failed": "无法保存 Kiro Memory 设置，请重试。",
         "approval_agent_spec": "每次用工具前都会先问，因为 {{productName}} 就是这么定的。",
         "approval_seeded_settings": "只有它自己的设置这么写时，才会每次用工具前先问。{{productName}} 会写入这项设置，但无法确认是否真的生效。",
         "approval_session_config": "运行命令或改动文件前会先问。{{productName}} 打开这个开关并做检查。只是读取时不会问。",
@@ -15311,6 +15374,9 @@
         "install_check_failed_can_still_switch": "无法检查本机是否已安装。仍然可以切换到它。如果未安装，会话启动时会说明。",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_cli_description": "使用这台机器上安装的 kiro-cli，以及 kiro-cli 自己的登录。",
+        "kiro_account_not_signed_in": "未登录",
+        "kiro_account_signed_in_as": "已登录为 {{name}}",
         "kiro_row_runs_on_kas": "Kiro CLI 现在运行在 Kiro Agent 上。新会话已经在用 Kiro Agent，所以这里没有需要切换的。",
         "kiro_runs_on_kas": "Kiro CLI 现在运行在 Kiro Agent 上，所以新会话已经在用它。要把 Kiro Agent 保存为你的设置吗？",
         "kiro_runs_on_kas_save": "将 Kiro Agent 保存为我的设置",
@@ -15331,7 +15397,6 @@
         "mcp_deny_manage_link": "打开 MCP 服务器列表",
         "mcp_deny_rule": "在 {{name}} 上关掉一个 MCP 工具，同一台服务器上的所有工具都会停，不只是你关掉的那个。",
         "missing_components": "本机缺少：{{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "新会话使用此代理。已打开的会话保持启动时所用的代理。",
         "not_offered_by_this_build": "这个构建不提供这个代理。",
         "note_crew_command_channel": "斜杠命令走 {{productName}} 自己的命令通道。",
         "note_crew_sandbox_stands_down": "它有自己的隔离环境。在 Windows 上，以及在 macOS 上开启其内部隔离时，{{productName}} 的隔离不再介入。",
@@ -15570,8 +15635,6 @@
         "chat_runtime_sharing_harness_save_failed": "开关没能保存，请重试。",
         "chat_runtime_sharing_harness_load_failed": "这些开关没能加载。",
         "chat_runtime_sharing_desc_summary": "让多个聊天在同一个后台程序里运行，少占电脑内存。哪类聊天共用由你来选。它们同时回复，看不到彼此的消息。关闭后，每个新聊天重新各用一个程序。",
-        "secrets_vault": "Secrets 保险库新设计",
-        "secrets_vault_desc": "将 Secrets 显示为列表，旁边是打开的条目，并可保存登录和笔记。",
         "worker_grill": "难选的事，先让 worker 快速过一遍",
         "worker_grill_desc": "conductor 遇到有两条路、选错很难挽回的选择时，会提议先让两三个 worker 快速讨论，而不是走一场 45 分钟的辩论。事实由它们自己查清，最后给你一份简报：结论、理由，以及替你选了什么。不满意就再开一场。",
         "worker_grill_desc_summary": "两三个 worker 先检验一个重要的选择，最后给你一份简报。",
@@ -15590,7 +15653,7 @@
       },
       "kasBundleCard": {
         "toggle_label": "用 {{productName}} 自带的引擎运行 KAS",
-        "toggle_description": "使用本 {{productName}} 版本测试过的 KAS 引擎版本，代替 Kiro CLI。对这个 {{productName}} 的所有新会话生效，不只是这台设备。使用设置 → 代理运行框架中的 Kiro 账户登录。{{productName}} 重启后生效。",
+        "toggle_description": "使用本 {{productName}} 版本测试过的 KAS 引擎版本，代替 Kiro CLI。对这个 {{productName}} 的所有新会话生效，不只是这台设备。在设置 → Kiro 账户中登录。{{productName}} 重启后生效。",
         "installed": "KAS 引擎 {{version}}（由你安装）",
         "installed_bundled": "KAS 引擎 {{version}}（随应用提供）",
         "off_note": "已关闭：KAS 使用你安装的 Kiro CLI。开启后：使用本版本自带的引擎。",
@@ -18799,7 +18862,9 @@
         "needs_setup": "需要设置",
         "not_connected": "未连接",
         "off_by_admin": "管理员已关闭",
-        "status_unavailable": "状态不可用"
+        "status_unavailable": "状态不可用",
+        "not_set_up": "未设置",
+        "owner_only": "只有 Crew 所有者可以连接或更改渠道。"
       },
       "chatPanel": {
         "advanced": "高级",
@@ -18821,6 +18886,11 @@
         "topic_tags": "主题标签",
         "topic_tags_desc": "在侧边栏为每个新会话打上最多 2 个主题标签，例如“debugging”。每个新会话调用一次后台模型。",
         "transcript": "对话记录",
+        "group_messages": "消息",
+        "group_steps": "步骤和工具",
+        "group_files_links": "文件和链接",
+        "group_replies": "回复",
+        "group_context": "上下文用量",
         "about_you": "关于你",
         "answer_only_details_on_request": "仅结论 — 最简单的话说清，细节按需提供",
         "auto_add_documents": "自动添加文档",
@@ -18943,6 +19013,8 @@
         "feature_tips": "功能提示",
         "file_change_chips": "文件变更标签",
         "folder_suggestions": "文件夹建议",
+        "folder_suggestions_auto_apply": "自动应用文件夹建议",
+        "folder_suggestions_auto_apply_desc": "不再询问，直接将新会话归入匹配的文件夹。会有卡片显示它去了哪里，并可撤销。",
         "follow_up_bar_layout": "后续建议栏布局",
         "fork_keeps_only_the_messages_after_the_chosen_po": "分叉仅保留所选位置之后的消息，而不是之前的消息。",
         "full": "完整",
@@ -19191,7 +19263,8 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "在 Windows 上，按键会夺取你的键盘焦点，坐标点击会移动真实光标——这个平台没有面向单个应用的输入通道。",
         "the_app_lists_in_computer_use_json_could_not_be": "无法读取 computer_use.json 中的应用列表，因此这里显示为空。在该文件成为有效 JSON 之前，代理仍会拒绝所有依赖这些列表的操作。",
         "your_chat_sessions_were_restarted_so_this_takes": "你的聊天会话已重启，所以改动立即生效 — Kiro 每个会话只读取一次工具列表，否则已经打开的聊天不会拾取到改动。你的消息都还在；代理会在你下一条消息时重新读取上下文。",
-        "your_chat_sessions_were_restarted": "你的聊天会话已重启。你的消息仍然保留。"
+        "your_chat_sessions_were_restarted": "你的聊天会话已重启。你的消息仍然保留。",
+        "linux_unsupported": "此版本中 Computer Use 不支持 Linux。"
       },
       "crewmatesSection": {
         "reply_threads": "Bot 对话消息的回复话题",
@@ -19417,6 +19490,12 @@
         "theme_mode_auto": "自动",
         "theme_mode_light": "浅色",
         "theme_mode_dark": "深色",
+        "theme_mode_scheduled": "定时",
+        "theme_schedule_light_from": "浅色开始时间",
+        "theme_schedule_light_from_hint": "定时模式在此时间切换为浅色，按本设备的时区计算。",
+        "theme_schedule_dark_from": "深色开始时间",
+        "theme_schedule_dark_from_hint": "定时模式在此时间切换为深色，按本设备的时区计算。",
+        "theme_schedule_save_failed": "无法保存这些时间。本设备会使用新时间，其他设备仍使用原来的时间。请重试。",
         "color_mode_solid_tint": "纯色着色",
         "color_mode_gradient": "渐变",
         "intensity_soft": "柔和",
@@ -19587,7 +19666,8 @@
         "remote_port_ttl": "· 远程端口 {{port}} · ttl {{ttl}}",
         "warm_cap_tune_with_other": "最多 {{count}} 个远程 Crew 可同时保持预热（活动隧道）；其余按需重连。可通过 <setting/> 调整。",
         "remote_port_value": "· 远程端口 {{port}}",
-        "filled_in_from_a_link": "已根据链接填写。请确认 SSH 主机是你在用的机器，然后再添加。"
+        "filled_in_from_a_link": "已根据链接填写。请确认 SSH 主机是你在用的机器，然后再添加。",
+        "owner_only": "只有 Crew 所有者可以管理远程团队。"
       },
       "notificationsPanel": {
         "deliver_floor_all": "所有优先级",
@@ -20729,7 +20809,8 @@
         "recheck": "重新检出",
         "language": "语言",
         "language_for_spoken_replies": "朗读回复的语言",
-        "language_provider_default": "提供方默认"
+        "language_provider_default": "提供方默认",
+        "no_engine_teammate": "这个 Crew 的计算机没有内置语音引擎。请选择其他提供方，或请 Crew 所有者安装一个。"
       },
       "weComPanel": {
         "allow_all_bypass_note": "已开启全部允许：上方的 userid 列表不再生效。它会保留下来，方便你切换回去。",
@@ -20927,7 +21008,9 @@
         "turn_off_disconnects": "关闭后，你的其他设备会在几秒内断开连接。",
         "turn_off_needs_terminal": "以后如需重新开启，请在运行 {{productName}} 的那台机器的终端中运行 <command/>，然后重启 {{productName}}。",
         "turn_off_failed": "无法关闭远程控制",
-        "load_failed": "无法读取远程控制设置"
+        "load_failed": "无法读取远程控制设置",
+        "on_teammate": "远程控制已开启。有访问权限的人可以通过 Kiro 中继访问这个 Crew。",
+        "owner_only": "只有 Crew 所有者可以关闭远程控制。"
       },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
@@ -21932,9 +22015,6 @@
       "profile_dashboard_card_send_hint": "开启后，点击 {{name}} Dashboard 标签页上的回复按钮，会一键把该回复直接发到你和 {{name}} 的聊天里。关闭后，按钮会把回复放进聊天框，供你查看后再发送。",
       "profile_dashboard_card_send_failed_on": "无法开启一键发送，仍为关闭。请重试。",
       "profile_dashboard_card_send_failed_off": "无法关闭一键发送，仍为开启。请重试。",
-      "profile_show_sessions_in_list_switch": "显示在我的会话列表",
-      "profile_show_sessions_in_list_hint": "{{name}} 打开的聊天也会显示在你的会话列表里。它的会话标签始终列出这些聊天。",
-      "profile_show_sessions_in_list_failed": "无法保存此设置，未做更改。请重试。",
       "goals_loading": "正在加载目标…",
       "goals_load_failed": "无法加载目标。",
       "goals_save_failed": "无法保存这项更改，请重试。",
@@ -22081,10 +22161,14 @@
       "member_count_filtered_other": "显示 {{shown}} / {{n}} 个 Bot",
       "sessions_group_waiting_on_mate": "等待 {{name}}",
       "sessions_read_failed": "无法加载完整的会话列表。只显示打开的会话。",
+      "sessions_panel_empty": "此 Bot 还没有开启任何会话。",
+      "sessions_panel_recap": "摘要",
+      "sessions_panel_open_in_chat": "在聊天中打开",
+      "sessions_panel_closed": "此会话已关闭。重新打开后可在这里查看并发消息。",
+      "sessions_panel_reopen": "重新打开会话",
+      "sessions_panel_remote": "此会话运行在 {{crew}} 上，请在那里打开。",
       "recap_loading": "加载中…",
       "recap_failed": "无法加载这个会话的详情。",
-      "recap_show": "详情",
-      "recap_hide": "收起",
       "recap_answer_where": "在侧边栏打开那个会话来处理",
       "recap_no_report": "还没有报告",
       "recap_status": "状态",
@@ -22208,7 +22292,11 @@
     "envOverrideWithSettingRef": "心跳已关闭，因为 <settingRef/> 在此环境中已设置。取消设置以在此处管理遥测。",
     "localDataBodyOn": "使用记录和上下文记录。性能指标当前正在本设备上记录。",
     "localDataBodyOff": "使用记录和上下文记录。性能指标当前未在本设备上记录。",
-    "doNotTrackCaption": "设置 DO_NOT_TRACK=1 会关闭性能指标和心跳。"
+    "doNotTrackCaption": "设置 DO_NOT_TRACK=1 会关闭性能指标和心跳。",
+    "localDataTitleShared": "保留在这个 Crew 的计算机上",
+    "localDataBodyShared": "使用记录和上下文记录。性能指标默认记录在这个 Crew 的计算机上。“设置 > 隐私”中的“记录指标”开关显示它们当前是否开启。",
+    "localDataBodyOnShared": "使用记录和上下文记录。性能指标当前正在这个 Crew 的计算机上记录。",
+    "localDataBodyOffShared": "使用记录和上下文记录。性能指标当前未在这个 Crew 的计算机上记录。"
   },
   "settings": {
     "advanced": {
@@ -22354,15 +22442,16 @@
       "connections": {
         "label": "连接",
         "description": "连接官方服务并设置其 OAuth 应用"
+      },
+      "kiroAccount": {
+        "description": "登录 Kiro、切换账户或退出登录",
+        "go_to": "前往 Kiro 账户",
+        "label": "Kiro 账户"
       }
     },
     "secrets": {
-      "title": "密钥保险库",
-      "description": "安全存储API密钥和凭据。密钥在静态时加密，代理的文件读取和 shell 命令会被拒绝访问；只有需要密钥的代码才能读取它。",
       "managed_title": "由 {{productName}} 自动使用",
-      "managed_description": "{{productName}} 可识别并自动使用的凭证。在此添加或轮换其值。",
       "gerrit_http_credential_label": "Gerrit HTTP 凭证",
-      "gerrit_http_credential_description": "用于一个已配置主机的 Gerrit 变更查询身份验证。请按 用户名:HTTP 密码 的格式输入，该密码在该服务器的 HTTP Credentials 设置中生成。",
       "gerrit_global_unused_multi_host": "配置多个主机时，Gerrit 不会使用此凭证。请在上方设置每个主机的凭证，或删除此条目。",
       "gerrit_global_unused_host_credential": "不会使用，因为主机专用的 Gerrit 凭证优先。如果不再需要回退项，请删除此条目。",
       "jira_api_token_label": "Jira API 令牌",
@@ -22370,17 +22459,11 @@
       "jira_global_unused_multi_host": "配置多个主机时，Jira 不会使用此密钥。请在上方设置每个主机的凭证，或删除此条目。",
       "jira_global_unused_host_token": "不会使用，因为主机专用的 Jira 凭证优先。如果不再需要回退项，请删除此条目。",
       "jira_host_token_label": "Jira 主机 API 令牌",
-      "jira_host_token_description": "用于一个已配置主机的 Jira 问题查询身份验证。",
       "wakatime_api_key_label": "WakaTime API 密钥",
       "wakatime_api_key_description": "启用 WakaTime 时用于编码活动同步的身份验证。",
       "custom_title": "自定义密钥",
-      "custom_description": "用于 MCP 服务器和 .env 设置的加密密钥。以 secret://YOUR_KEY 引用；其值绝不会在聊天中显示。",
-      "custom_authorize": "若要让成员聊天中的智能体使用密钥调用一个已批准的 API，请为该智能体授予 {{server}}，然后在 shell 或终端页面中运行下方命令。",
-      "custom_empty": "尚未存储任何自定义密钥。添加一个即可从 MCP 服务器以 secret://YOUR_KEY 引用它。",
       "managed_config_error": "无法读取 $KIROCREW_HOME/config.json（默认 ~/.kiro/crew/config.json），因此部分自动凭证已隐藏。",
       "managed_name_hint": "在此保存会更新自动凭证部分中的 {{name}}。 — {{productName}}",
-      "managed_unconfigured_hint": "要自动使用 WakaTime 或 Jira，请在 $KIROCREW_HOME/config.json（默认 ~/.kiro/crew/config.json）中启用 WakaTime 或添加 Jira 主机。",
-      "managed_setup_guide": "打开密钥设置指南",
       "delete_managed_confirm": "永久删除“{{name}}”？当前值无法恢复。",
       "delete_managed_name": "删除{{name}}",
       "save_managed_name": "保存 {{name}}",
@@ -22389,7 +22472,6 @@
       "saved": "已保存",
       "name_placeholder": "MY_API_KEY",
       "value_placeholder": "sk-...",
-      "no_secrets": "尚未存储任何密钥。",
       "add_secret": "添加密钥",
       "name_label": "名称",
       "value_label": "值",
@@ -22408,7 +22490,6 @@
       "wakatime_unused_hint": "WakaTime 禁用时不会使用。请启用 WakaTime 或删除此条目。",
       "wakatime_oauth_tokens_description": "你的 WakaTime 登录凭据，由 {{productName}} 保管。在 WakaTime 面板中管理。",
       "wakatime_oauth_tokens_manage": "前往 WakaTime 管理",
-      "connections_client_secret_description": "“连接”OAuth 应用的客户端密钥。在“设置 → 连接”中管理。",
       "connections_client_secret_manage": "前往“连接”管理",
       "how_it_works": "工作原理",
       "type_label": "要存什么？",
@@ -22456,7 +22537,9 @@
       "use_in_tool_title": "在工具中使用",
       "use_in_tool_tip": "把它粘贴到工具的设置里，例如 MCP 服务器的环境变量。工具运行时才拿到值，值本身不会出现在那里。",
       "advanced_title": "高级",
-      "api_call_label": "API 调用"
+      "api_call_label": "API 调用",
+      "owner_only": "只有 Crew 所有者可以查看或更改密钥。",
+      "relay_unavailable": "只能在 Crew 所在的电脑上查看和更改密钥，无法通过 Remote Control 操作。"
     }
   },
   "store": {
@@ -23147,6 +23230,9 @@
     "webhooks_frame": "外部系统通过调用来唤醒此 Bot。令牌的签发和吊销仍在 Webhook 页面进行。",
     "loading_template": "正在加载…",
     "load_error": "无法加载此 Bot 的能力。",
+    "load_error_timed_out": "此 Bot 的能力未能及时加载完成。添加了很多能力的 Bot，或文件夹位于缓慢或无法访问的驱动器上时，加载时间可能超过上限。网关日志会记录是哪个 Bot 以及耗时多久。",
+    "load_error_details": "详情见网关日志。",
+    "load_retry": "重试",
     "stat_mcp_servers": "MCP 服务器",
     "memory_empty": "此 Bot 还没有私有记忆库。",
     "memory_profile_frame": "此 Bot 在学习过程中记录的关于你和它工作的笔记——会带入每一次会话。你可以阅读和编辑它们；Bot 也会持续更新。",
@@ -23511,7 +23597,8 @@
     "preview_save_failed": "无法保存共享 Crew 设置。",
     "preview_restart_failed": "无法重启网关。",
     "raised_by": "由 {{name}} 发起",
-    "take_over_keeps_draft": "接手后即可输入。{{name}} 的草稿会保留。"
+    "take_over_keeps_draft": "接手后即可输入。{{name}} 的草稿会保留。",
+    "hero_shared_team": "已与你的团队共享"
   },
   "milestones": {
     "getting_started_result": "第一个完成的成果",
@@ -23604,6 +23691,13 @@
         "pop_out_label_to_its_own_window": "把 {{label}} 弹出到独立窗口",
         "label_is_open_in_its_own_window_focus_it": "{{label}} 已在独立窗口中打开 — 聚焦它"
       }
+    }
+  },
+  "connectedComputers": {
+    "preview": {
+      "description": "这台服务器上的聊天可以在你自己电脑上的文件夹中工作。你在那台电脑上批准之前，不会共享任何内容。",
+      "hint": "你的电脑会连接到这台服务器，并且只共享你批准的文件夹。关闭后会停止共享，绝不会删除文件。Remote Crew 正好相反：它让你从另一台设备使用这台服务器。",
+      "label": "已连接的电脑"
     }
   }
 }

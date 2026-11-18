@@ -268,6 +268,20 @@ def test_a_teammate_reads_and_uses_a_channel(method: str, path: str) -> None:
     assert is_owner_dashboard_request(_request("relay", path, method))
 
 
+@pytest.mark.parametrize("method", ["PUT", "POST", "DELETE"])
+@pytest.mark.parametrize("who", TEAMMATES)
+def test_turning_remote_access_off_stays_the_owners(who: str, method: str) -> None:
+    """Turning it back on takes the host machine, so a teammate could shut every
+    person out of the Crew and not undo it."""
+    assert not is_owner_dashboard_request(_request(who, "/api/remote-control", method))
+    assert is_owner_dashboard_request(_request("owner", "/api/remote-control", method))
+
+
+@pytest.mark.parametrize("who", TEAMMATES)
+def test_a_teammate_reads_the_remote_access_state(who: str) -> None:
+    assert is_owner_dashboard_request(_request(who, "/api/remote-control", "GET"))
+
+
 @pytest.mark.parametrize(
     "key",
     [
@@ -276,6 +290,7 @@ def test_a_teammate_reads_and_uses_a_channel(method: str, path: str) -> None:
         "dashboard.tailscale.trust_identity",
         "dashboard.tailscale.allowed_logins",
         "tunnel.relay_enabled",
+        "instances.enabled",
         "slack.allowed_users",
         "telegram.accounts.main.allowed_user_ids",
         "webex.allow_group_rooms",
@@ -311,8 +326,17 @@ def test_every_allow_list_in_the_config_schema_is_an_admission_key() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        ("dashboard.shared_crew.ssm", "only the Crew owner can change who may reach this Crew"),
+        ("instances.enabled", "only the Crew owner can manage remote crews"),
+    ],
+)
 @pytest.mark.parametrize("who", TEAMMATES)
-async def test_a_teammate_cannot_patch_an_admission_key(state, who: str) -> None:
+async def test_a_teammate_cannot_patch_an_admission_key(
+    state, who: str, key: str, message: str
+) -> None:
     from kiro_crew.dashboard.handlers import core
 
     @web.middleware
@@ -324,12 +348,11 @@ async def test_a_teammate_cannot_patch_an_admission_key(state, who: str) -> None
     app["state"] = state
     app.router.add_patch("/api/config/kirocrew", core.api_kirocrew_config_patch)
     async with TestClient(TestServer(app)) as client:
-        resp = await client.patch(
-            "/api/config/kirocrew", json={"path": "dashboard.shared_crew.ssm", "value": True}
-        )
+        resp = await client.patch("/api/config/kirocrew", json={"path": key, "value": True})
         body = await resp.json()
     assert resp.status == 403, body
     assert body["code"] == "owner_only"
+    assert body["error"] == message
 
 
 @pytest.mark.parametrize("who", ["tailscale", "tailscale_serve"])

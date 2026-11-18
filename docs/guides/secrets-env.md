@@ -365,8 +365,7 @@ kirocrew config set agent.env '{"HTTPS_PROXY": "http://proxy.example:3128", "NO_
 
 ## Where a vault item is used
 
-With the **Secrets vault redesign** preview on, each item's pane in Settings →
-Secrets has a **Used by** card. It lists the places that read the item now:
+Each item's pane in Settings → Secrets has a **Used by** card. It lists the places that read the item now:
 
 - **MCP server**: a `secret://NAME` value in the server's `env`, or the sign-in
   entries Kiro Crew keeps for an owner-added remote server.

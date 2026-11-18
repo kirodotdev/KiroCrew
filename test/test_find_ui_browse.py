@@ -268,7 +268,8 @@ TASK_LOCATION: dict[str, str] = {
     "Artifact comments": "artifacts.detail.comments",
     # Indexed, but in a RELATED area of the one the corpus names (the listing
     # names that area under `related`): Settings -> Customize, Connections ->
-    # Settings (its Agent Harness tab holds the model sign-in), Shell -> Sessions (the
+    # Settings (its Agent Harness tab holds the model provider sign-in, its Kiro
+    # account tab the Kiro sign-in), Shell -> Sessions (the
     # built-in browser is a view of a chat's side panel, not shell chrome).
     "Install skill": "skills.add",
     "Provider authentication": "settings.tab.agent",
@@ -481,8 +482,8 @@ def test_related_areas_and_area_titles_name_real_things() -> None:
         assert set(area.related) | set(area.exclude) <= set(ui_index.AREAS), name
         assert area.title is None or area.title in idx.by_id, name
         assert all(a in idx.by_id for a in area.anchors), name
-    # The model sign-in lives on Settings' Agent Harness tab, which Connections
-    # names as related.
+    # The model provider sign-in lives on Settings' Agent Harness tab (the Kiro
+    # sign-in on its Kiro account tab), which Connections names as related.
     assert ui_index._loc_label(idx, "settings.tab.agent", "en") == "Agent Harness"
     assert "settings" in ui_index.AREAS["connections"].related
     # The tool description lists the same vocabulary.

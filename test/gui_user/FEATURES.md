@@ -348,7 +348,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
-| P0 | `kas-auth-sign-in-card-signed-out` | As an operator, I want to see whether Kiro Crew holds a Kiro identity and how to sign in, so that I can fix a session that cannot start. | `/settings/agent` | minimal | smoke | 2 |
+| P0 | `kas-auth-sign-in-card-signed-out` | As an operator, I want to see whether Kiro Crew holds a Kiro identity and how to sign in, so that I can fix a session that cannot start. | `/settings/kiro-account` | minimal | smoke | 2 |
 | P1 | `dashboard-token-login-gate` | As an operator, I want the dashboard to refuse unauthenticated visitors and accept my one-time token link, so that only I can drive the gateway. | `/` | minimal | smoke | 3 |
 
 ## Onboarding (`onboarding`)

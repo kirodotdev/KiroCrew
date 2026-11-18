@@ -448,7 +448,7 @@ class TestHandleMessageShortcut:
             })
 
         display_text = orch.slack.views_opened[0]["view"]["blocks"][0]["text"]["text"]
-        file_line_start = display_text.index("\n📎 5 file(s): ")
+        file_line_start = display_text.index("\n5 file(s): ")
         assert len(display_text) <= 3000
         assert display_text[file_line_start - 1] == "…"
         file_line = display_text[file_line_start:]
@@ -580,7 +580,7 @@ class TestFitPrivateMetadata:
             assert 0 < kept < 5
             assert meta["omitted_files"] == 5 - kept
             display = built["blocks"][0]["text"]["text"]
-            assert "📎 5 file(s)" in display
+            assert "5 file(s)" in display
             assert f"(+{5 - kept} more)" in display
             with patch("kiro_crew.slack.interactions.handle_message", new_callable=AsyncMock):
                 await _handle_shortcut_submission({

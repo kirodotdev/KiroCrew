@@ -79,6 +79,10 @@ describe('composer dock clearance', () => {
     expect(num(/const TRANSCRIPT_TAIL_SPACER_PX = (\d+)/, CHAT_PAGE)).toBeGreaterThan(0)
   })
 
+  it('a pane brings a focused control clear of the floating header and the dock', () => {
+    expect(CHAT_PANE).toMatch(/scrollPaddingTop: 12 \+ topInset, scrollPaddingBottom: dockH \+ DOCK_CLEARANCE_PX \}/)
+  })
+
   it('measures the dock root from a callback ref through a ResizeObserver', () => {
     expect(CHAT_PAGE).toMatch(/<div ref=\{dockRef\} className="[^"]*\babsolute\b[^"]*\bbottom-0\b[^"]*" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root"[^>]*>/)
     // A callback ref, not a `[]` layout effect: the dock sits inside the pane's

@@ -24,7 +24,7 @@ describe('a gateway-written note', () => {
   afterEach(async () => { await i18next.changeLanguage('en') })
 
   // The turn-limit, default-model and folder Default agent notes.
-  it.each(['turn_limit', 'default_model_applied', 'default_model_failed', 'folder_agent_label'] as const)('renders the %s copy in the dashboard language', async (id) => {
+  it.each(['turn_limit', 'default_model_applied', 'default_model_failed', 'folder_agent_label', 'folder_agent_key'] as const)('renders the %s copy in the dashboard language', async (id) => {
     await i18next.changeLanguage('zh-CN')
     renderWithProviders(<NotificationCard n={note({ i18n: { id, params: { surface: 'discord', folders: 'Jira Tickets (jira-ticket)' } } })} />)
     const copy = zh.components.notifications.systemNote

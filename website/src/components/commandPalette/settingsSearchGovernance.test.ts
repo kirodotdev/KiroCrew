@@ -506,57 +506,47 @@ describe('DECISIONS_SETTING_IDS covers the whole card', () => {
   })
 })
 
-describe('the Kiro sign-in entry follows the selected harness', () => {
+describe('the Kiro sign-in entry follows whether the build offers Kiro sign-in', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  // The search reads the harness from the cache the shell's boot read fills, so
-  // each case seeds that cache (or leaves it empty) instead of serving a fetch.
-  const renderWithConfig = async (cached: unknown) => {
-    const config = vi.spyOn(api, 'kirocrewConfig')
+  // The search reads the build's harness choices from the `['config-schema']`
+  // cache the Settings page fills, so each case seeds that cache (or leaves it
+  // empty) beside the harness config.
+  const renderWithSchema = async (choices: string[] | undefined, acp_backend = 'kas') => {
     vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
     vi.spyOn(api, 'tipsStatus').mockResolvedValue({ enabled_config: true } as never)
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    if (cached !== undefined) client.setQueryData(['kirocrewConfig'], cached)
+    client.setQueryData(['kirocrewConfig'], { agent: { acp_backend } })
+    if (choices !== undefined) {
+      client.setQueryData(['config-schema'], new Map([
+        ['agent.acp_backend', { path: 'agent.acp_backend', type: 'enum', enum: choices }],
+      ]))
+    }
     const wrapper = ({ children }: { children: ReactNode }) =>
       createElement(Provider, { store: createTestStore() },
         createElement(QueryClientProvider, { client }, createElement(MemoryRouter, null, children)))
     const hook = renderHook(() => useSettingsProvider(), { wrapper })
     await waitFor(() => expect(client.getQueryState(['tipsStatus'])?.status).not.toBe('pending'))
-    // Cache only: opening a search never issues a request of its own.
-    expect(config).not.toHaveBeenCalled()
     return hook
   }
-  const harness = (acp_backend: string) => ({ agent: { acp_backend } })
   const offersSignIn = (provider: ResourceProvider) =>
     (provider.search('sign out') as { id?: string }[]).some(r => (r.id ?? '').endsWith(KIRO_SIGN_IN_SETTING_ID))
 
-  it.each(['kas', ''])('offers it on the KAS harness (acp_backend=%j)', async backend => {
-    const { result } = await renderWithConfig(harness(backend))
+  it.each(['kas', 'kiro', 'claude'])('offers it on the %s harness when the build offers KAS', async backend => {
+    const { result } = await renderWithSchema(['kas', 'kiro', 'claude'], backend)
     await waitFor(() => expect(offersSignIn(result.current)).toBe(true))
   })
 
-  it.each(['kiro', 'claude'])('withholds it on the %s harness, whose account the card does not sign out', async backend => {
-    const { result } = await renderWithConfig(harness(backend))
+  it('withholds it on a build whose harness choices do not list KAS', async () => {
+    const { result } = await renderWithSchema(['kiro', 'claude'])
     await waitFor(() => expect(offersSignIn(result.current)).toBe(false))
   })
 
-  it('offers it while the harness is unknown (no answer in the cache)', async () => {
-    const { result } = await renderWithConfig(undefined)
+  it('offers it while the build is unknown (no schema in the cache)', async () => {
+    const { result } = await renderWithSchema(undefined)
     expect(offersSignIn(result.current)).toBe(true)
-  })
-
-  // The gateway's `kas_in_use` covers Bots: a Kiro CLI or Claude main harness
-  // whose Bots run on KAS (an unset or KAS Bot harness, or a Bot pinned to KAS).
-  it.each(['kiro', 'claude'])('offers it on the %s harness when Bots run on KAS', async backend => {
-    const { result } = await renderWithConfig({ ...harness(backend), kas_in_use: true })
-    await waitFor(() => expect(offersSignIn(result.current)).toBe(true))
-  })
-
-  it('withholds it on a KAS-named main harness the gateway says nothing runs on', async () => {
-    const { result } = await renderWithConfig({ ...harness('kas'), kas_in_use: false })
-    await waitFor(() => expect(offersSignIn(result.current)).toBe(false))
   })
 })
 

@@ -45,7 +45,7 @@ const AGENT_REGISTRY_FILE = path.resolve(
 const VALID_TABS = new Set([
   'overview', 'imports', 'chat', 'voice', 'display', 'browser', 'skills', 'computer-use',
   'instances', 'security', 'secrets', 'notifications', 'channels', 'developer', 'about',
-  'privacy', 'shortcuts', 'connections', 'session-environments', 'agent', 'advanced',
+  'privacy', 'shortcuts', 'connections', 'session-environments', 'agent', 'advanced', 'kiro-account',
 ])
 
 describe('settingsRegistry.gen.ts — anti-stale guard', () => {

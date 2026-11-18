@@ -288,7 +288,7 @@ class TestAForeignSectionIsNeverReplaced:
         )
         out = capsys.readouterr().out
         assert "not an object" in out, "the refusal was silent"
-        assert "✅" not in out, "the step reported success after writing nothing"
+        assert "Done: " not in out, "the step reported success after writing nothing"
 
     def test_the_slash_command_step_still_creates_an_absent_slack_section(
         self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import re
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -704,6 +705,7 @@ class LinkedRoute(enum.Enum):
     UNROUTED = "unrouted"  # no linked slot took it: normal routing continues
     ROUTED = "routed"  # run or queued on the linked slot
     REFUSED = "refused"  # answered with a refusal; nothing was appended
+    HELD = "held"  # the caller's gate refused it last: nothing appended or said
 
 
 async def route_linked_thread(
@@ -718,6 +720,7 @@ async def route_linked_thread(
     user_meta: dict[str, Any] | None = None,
     turn_context: str | None = None,
     interpret_commands: bool = True,
+    admit: Callable[[], Awaitable[bool]] | None = None,
 ) -> LinkedRoute:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
@@ -749,6 +752,9 @@ async def route_linked_thread(
     a pending entry would be taken by whichever turn starts first.
     *interpret_commands* off (an OPTIONS answer) hands *text* over with commands
     off, so the slot reads it as content, never as a ``/`` command.
+    *admit* (the caller's live gate: a code channel's fences) is asked last,
+    after every await here and right before the row is appended or the turn
+    starts; False holds the message (:attr:`LinkedRoute.HELD`).
     """
     if not (_dashboard_state and hasattr(_dashboard_state, "get_linked_slot")):
         return LinkedRoute.UNROUTED
@@ -848,6 +854,7 @@ async def route_linked_thread(
                 user_meta=user_meta,
                 turn_context=turn_context,
                 interpret_commands=interpret_commands,
+                admit=admit,
             )
 
     # A channel pinned to an agent is served only by that agent. A slot on any
@@ -894,15 +901,6 @@ async def route_linked_thread(
         return LinkedRoute.REFUSED
 
     _linked_slot_key = _linked_slot.key
-    # Who wrote the text this slot is about to carry, for the code-channel
-    # dispatch exemption: it admits a channel-origin turn only while every author
-    # on record is the Slack owner (``is_owner``; this one passed
-    # ``is_allowed_user`` above, which only lets the text in).
-    from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
-        note_channel_sender,
-    )
-
-    note_channel_sender(_linked_slot, user_id)
     # Before the redaction and the handoff: the turn below runs after this
     # message's handler task has deleted its downloaded files. The copy awaits,
     # so the slot is checked again once it is back: still registered, and for an
@@ -948,8 +946,36 @@ async def route_linked_thread(
             user_meta=user_meta,
             turn_context=turn_context,
             interpret_commands=interpret_commands,
+            admit=admit,
         )
     text = _stored
+    if admit is not None:
+        # The caller's own live gate, asked after every await above (the agent
+        # read, the window load, the image copy) and right before anything is
+        # appended or started; the slot is checked again after its await. Fails
+        # closed: a gate that raises holds the message. Nothing below awaits
+        # until the row is appended and the turn started or queued; keep it so.
+        # HELD is silent here: the caller says why.
+        try:
+            admitted = await admit()
+        except Exception:
+            logger.debug("linked route gate failed for %s", channel, exc_info=True)
+            admitted = False
+        if not admitted or not (
+            _dashboard_state._slots.get(_linked_slot_key) is _linked_slot  # type: ignore[attr-defined]
+            and (route_pinned or _dashboard_state.get_linked_slot(reply_ts) is _linked_slot)
+        ):
+            return LinkedRoute.HELD
+    # Who wrote the text this slot is about to carry, for the code-channel
+    # dispatch exemption: it admits a channel-origin turn only while every author
+    # on record is the Slack owner (``is_owner``; this one passed
+    # ``is_allowed_user`` above, which only lets the text in). Recorded once the
+    # text is sure to be appended: a held message carried nothing.
+    from kiro_crew.dashboard.session_control_parts.code_channel_exemption import (
+        note_channel_sender,
+    )
+
+    note_channel_sender(_linked_slot, user_id)
     # Redact for UI display only — LLM receives original text so it can process
     # user intent fully (redaction strips URLs/creds that may be relevant
     # context). The LLM's own output is redacted before display.

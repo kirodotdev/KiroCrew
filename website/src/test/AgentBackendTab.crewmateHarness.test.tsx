@@ -27,8 +27,8 @@ vi.mock('../components/settingRef/useConfigSchema', () => ({
   useConfigSchema: () => schemaMock(),
 }))
 
-vi.mock('../pages/developer/KiroSignInCard', () => ({
-  KiroSignInCard: () => <div data-testid="kiro-sign-in-card" />,
+vi.mock('../pages/developer/KiroAccountStatusLine', () => ({
+  KiroAccountStatusLine: () => <div data-testid="kiro-account-status-line" />,
 }))
 
 import { schemaWith, probeRow, wrap } from './AgentBackendTabTestUtils'

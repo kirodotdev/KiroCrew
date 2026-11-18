@@ -518,7 +518,7 @@ class TestRebindConversationLocation:
             sess, key=_KEY, location=here, unlink_command="`!unlink`"
         )
         assert plain == (
-            "✅ Linked. Replies from the dashboard for this conversation will also "
+            "Linked. Replies from the dashboard for this conversation will also "
             "show up here. Send /unlink to stop."
         )
         assert coded == plain.replace("/unlink", "`!unlink`")

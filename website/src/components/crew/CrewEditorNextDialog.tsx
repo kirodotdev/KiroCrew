@@ -41,8 +41,9 @@ import MemoryRetiredCard from '../../pages/overview/MemoryRetiredCard'
 import MemoryCarveCard from '../../pages/overview/MemoryCarveCard'
 import { api } from '../../api/client'
 import { pathBasename } from '../../utils/pathBasename'
-import { apiErrorCode } from '../../api/apiError'
+import { ApiError, apiErrorCode } from '../../api/apiError'
 import { isDeadlineError } from '../../api/queryClient'
+import { parseErrorField, reportForError } from '../../utils/errorReport'
 import { type CrewEditorController } from './useCrewEditor'
 import CrewEditorNextRail from './CrewEditorNextRail'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -50,15 +51,18 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 export type NextSection = 'general' | 'builtFrom' | 'approvals' | 'schedules' | 'webhooks' | 'memory' | 'danger'
 type MemoryTab = 'profile' | 'memories' | 'recovery'
 
-/** What the Abilities pane shows for a failed capabilities read. A read the
- *  gateway gave up on (`capabilities_unavailable`, its code as its message) and
- *  one the dashboard's own deadline ended (the untranslated `deadline exceeded`)
- *  carry no sentence of their own, so both read as the pane's load error. */
+/** The sentence under the Abilities pane's load error. A read past either
+ *  deadline (the gateway's `reason: timed_out`, or the dashboard's own, the
+ *  untranslated `deadline exceeded`) names the likely causes; any other
+ *  `capabilities_unavailable` points at the gateway log. Neither shows the code. */
 function capabilitiesLoadErrorText(error: unknown): string {
-  if (isDeadlineError(error) || apiErrorCode(error) === 'capabilities_unavailable') {
-    return i18nT('crewEditorNext.load_error')
+  const timedOut = isDeadlineError(error)
+    || (error instanceof ApiError && parseErrorField(error.body, 'reason') === 'timed_out')
+  if (timedOut) return i18nT('crewEditorNext.load_error_timed_out')
+  if (apiErrorCode(error) === 'capabilities_unavailable') {
+    return i18nT('crewEditorNext.load_error_details')
   }
-  return error instanceof Error ? error.message : i18nT('crewEditorNext.load_error')
+  return error instanceof Error ? error.message : i18nT('crewEditorNext.load_error_details')
 }
 
 /** Split a skill id into owner/namespace + skill name, and de-slugify the name
@@ -792,13 +796,28 @@ export default function CrewEditorNextDialog({
                       </div>
                     )}
                     {capsQuery.error && (
-                      // No hand-off: the editor is a modal holding the user's
-                      // unsaved edits in its other sections; the hand-off would
-                      // navigate away and discard them.
+                      // The hand-off goes through the editor's leave guard
+                      // (`leaveGate`): the modal holds the user's unsaved edits
+                      // in its other sections, and the guard asks before the
+                      // navigation to the chat would discard them.
                       <ErrorNotice
+                        title={i18nT('crewEditorNext.load_error')}
                         message={capabilitiesLoadErrorText(capsQuery.error)}
-                        variant="inline"
-                        askAgent={false}
+                        report={reportForError(capsQuery.error)}
+                        askAgent
+                        gate={ctl.leaveGate}
+                        actions={(
+                          // A refetch of a query with no data goes back to
+                          // pending, so the pane shows its loading line, not
+                          // this notice, until the read settles again.
+                          <button
+                            type="button"
+                            onClick={() => { void capsQuery.refetch() }}
+                            data-testid="next-builtfrom-retry"
+                          >
+                            {i18nT('crewEditorNext.load_retry')}
+                          </button>
+                        )}
                         testId="next-builtfrom-error"
                       />
                     )}

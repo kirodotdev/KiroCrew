@@ -266,8 +266,14 @@ def test_wiring_with_admission_off_claims_no_queueing_or_containment(monkeypatch
         assert caps.queueing is CapabilityState.DISABLED
         assert caps.containment is CapabilityState.DISABLED
         assert caps.containment_level is EnforcementLevel.NONE
-        with pytest.raises(LookupError):
+        with pytest.raises(people.UsageOff):
             wiring.admission_usage()
+        # The People page reads it as a setting, not as a failed count.
+        view = people.people_view(
+            local_operator_principal("local-app"), [], reg=people.ObservedPeople()
+        )
+        assert view["usage_off"] is True
+        assert view["usage_available"] is False
     finally:
         wiring.uninstall()
 
@@ -432,9 +438,9 @@ async def test_native_slack_controls_do_not_wait_for_model_capacity(
             assert records == []
         replies = [payload["text"] for kind, payload in slack.actions if kind == "post"]
         if revoked:
-            assert "🔒 YOLO mode disabled." in replies
+            assert "YOLO mode disabled." in replies
         if user == "UOTHER":
-            assert "⛔ Owner-only command." in replies
+            assert "Blocked: Owner-only command." in replies
     finally:
         release.set()
         if command is not None and not command.done():

@@ -373,51 +373,6 @@ def fallback_text(snapshot: model.BoardSnapshot) -> str:
     return f"{FALLBACK_PREFIX}: {snapshot.aggregate}"
 
 
-#: Helper agents the idle Stop reply names; the rest fold into one "and N more".
-STOP_NAMED = 5
-
-
-def idle_stop_text(helpers: list[tuple[str, str]], link_for: LinkFor, lead_key: str) -> str:
-    """The reply to a Stop while the channel's own session is idle.
-
-    *helpers* are ``(session key, board title)`` of the helper agents still
-    running. A Stop stops only the channel's session, so each one the board
-    shows is named, linked to its chat when a link can be built (the board's own
-    links, never a token); the rest, and every one when no link can be built,
-    are pointed at the lead session, which lists them.
-    """
-    if not helpers:
-        return "Nothing running."
-    n = len(helpers)
-    agents = "1 helper agent still is" if n == 1 else f"{n} helper agents still are"
-    named = [(key, title) for key, title in helpers if title][:STOP_NAMED]
-    names: list[str] = []
-    linked = 0
-    for key, title in named:
-        url = link_for(key)
-        ok = _linkable(url)
-        linked += ok
-        names.append(_link(url, title) if ok else f"*{_escape(title)}*")
-    more = n - len(named)
-    listed = ", ".join(names)
-    if more:
-        listed = f"{listed} and {more} more" if listed else ""
-    text = f"This channel's session isn't running, but {agents}" + (
-        f": {listed}." if listed else "."
-    )
-    lead = link_for(lead_key) if lead_key else ""
-    where = (
-        _link(lead, "the lead session") if _linkable(lead) else "the lead session in the dashboard"
-    )
-    if linked == n:
-        how = "open it"
-    elif linked:
-        how = f"open it (the rest from {where})"
-    else:
-        how = f"open it from {where}"
-    return f"{text} To stop one, {how} and press *Stop generation* in its chat."
-
-
 def outcome_line(row: model.WorkerRow) -> str:
     """One wrap-up line: ``• Fix login: PR #12 merged`` / ``rejected, PR #9 closed``."""
     pr = pr_words(row)

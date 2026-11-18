@@ -243,6 +243,15 @@ describe('VoicePanel system fields', () => {
     await waitFor(() => expect(systemVoices.mock.calls.length).toBeGreaterThan(calls))
   })
 
+  it('tells a teammate the Crew has no engine without the install command for a host they cannot reach', async () => {
+    vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(false)
+    seed({ provider: 'system' }, { systemUnavailable: true })
+    await waitFor(() => {
+      expect(screen.getByTestId('system-engine-absent').textContent).toMatch(/Crew's computer has no built-in speech engine/)
+    }, { timeout: 5_000 })
+    expect(screen.getByTestId('system-engine-absent').textContent).not.toMatch(/sudo|install espeak-ng/)
+  })
+
   it('disables the re-fetch button while the probe is in flight', async () => {
     // The probe spawns a subprocess, so it takes real time. Leaving the button
     // idle and the notice unchanged makes the click look ignored and invites

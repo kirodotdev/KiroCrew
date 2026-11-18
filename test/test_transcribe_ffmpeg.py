@@ -1102,9 +1102,48 @@ class TestFfmpegCandidateDirsWindows:
         monkeypatch.setattr(tr.shutil, "which", fake_which)
         tr.ensure_ffmpeg_in_path()
 
-        assert calls and calls[0][0] == "ffmpeg"
+        assert calls and calls[0][0] == os.path.join(str(target_dir), "ffmpeg")
         assert calls[0][1] == str(target_dir)
         assert os.environ["PATH"].startswith(str(target_dir))
+
+    def test_ensure_ffmpeg_ignores_working_directory_hit(self, tmp_path, monkeypatch):
+        """Windows ``shutil.which`` searches the working directory before
+        ``path=`` for a bare name. A cwd ``ffmpeg.exe`` must not make every
+        candidate look populated; only the folder that holds ffmpeg is prepended.
+        """
+        from kiro_crew import transcribe as tr
+
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        (cwd / "ffmpeg.exe").write_text("")
+        real = tmp_path / "real"
+        real.mkdir()
+        (real / "ffmpeg.exe").write_text("")
+        missing = tmp_path / "missing"
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.chdir(cwd)
+        monkeypatch.setattr(tr, "_FFMPEG_CANDIDATE_DIRS", [str(missing), str(empty), str(real)])
+        monkeypatch.setenv("PATH", "/nowhere")
+
+        def windows_which(name, path=None):
+            # Windows semantics: a bare name tries the cwd first, then ``path``;
+            # a name with a directory part is looked up only there. PATHEXT=.EXE.
+            head, base = os.path.split(name)
+            dirs = [head] if head else [os.curdir, *(path or "").split(os.pathsep)]
+            for d in dirs:
+                candidate = os.path.join(d, base + ".exe")
+                if d and os.path.isfile(candidate):
+                    return candidate
+            return None
+
+        monkeypatch.setattr(tr.shutil, "which", windows_which)
+        tr.ensure_ffmpeg_in_path()
+
+        parts = os.environ["PATH"].split(os.pathsep)
+        assert str(real) in parts
+        assert str(missing) not in parts
+        assert str(empty) not in parts
 
     def test_ensure_ffmpeg_skips_dirs_already_on_path(self, tmp_path, monkeypatch):
         from kiro_crew import transcribe as tr

@@ -743,7 +743,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Sandbox",
-      "help": "Sandbox mode for ACP provider. Default 'auto' engages OS-level isolation (namespace on Linux, sandbox-exec on macOS) at the standard tier and automatically defers to kiro-cli's internal sandbox on macOS when it is enabled (kiro-cli >= 2.13; nested seatbelt causes EPERM). The standard tier deliberately leaves ~/.aws, ~/.ssh and ~/.kube visible to the agent's shell so the aws CLI, boto3 credential_process, git-over-SSH and kubectl keep working; the file tools still refuse those paths. Set to 'strict' to also hide ~/.aws (including ~/.aws/sso/cache, kiro-cli's grant store for OAuth-connected remote MCP servers), ~/.ssh (except known_hosts), ~/.kube and ~/.config/gh, plus the credential files ~/.npmrc, ~/.pypirc, ~/.netrc and ~/.git-credentials, from every agent subprocess -- opt-in, and inside the agent it breaks the aws CLI, boto3, git-over-SSH, gh, kubectl, npm/pip registry auth, .netrc HTTPS auth, the git credential store and remote-MCP OAuth for the same reason. Like every value of this key, a change applies to sessions started after it; a session already running keeps the tier it was spawned with until it ends. 'strict' changes nothing where Kiro Crew applies no sandbox of its own: Windows has no OS backend, and a macOS spawn delegated to kiro-cli's internal sandbox is confined by that profile instead. Set to 'off' to skip Kiro Crew's own OS-level sandbox -- delegation to kiro-cli's internal sandbox still fires on macOS if it is enabled, and a SECURITY warning is logged when neither layer is active.",
+      "help": "Sandbox mode for ACP provider. Default 'auto' engages OS-level isolation (namespace on Linux, sandbox-exec on macOS) at the standard tier and automatically defers to kiro-cli's internal sandbox on macOS when it is enabled (kiro-cli >= 2.13; nested seatbelt causes EPERM). The standard tier deliberately leaves ~/.aws, ~/.ssh and ~/.kube visible to the agent's shell so the aws CLI, boto3 credential_process, git-over-SSH and kubectl keep working; the file tools still refuse those paths. Set to 'strict' to also hide ~/.aws (including ~/.aws/sso/cache, kiro-cli's grant store for OAuth-connected remote MCP servers), ~/.ssh (except known_hosts), ~/.kube and ~/.config/gh, plus the credential files ~/.npmrc, ~/.pypirc, ~/.netrc and ~/.git-credentials, from every agent subprocess -- opt-in, and inside the agent it breaks the aws CLI, boto3, git-over-SSH, gh, kubectl, npm/pip registry auth, .netrc HTTPS auth, the git credential store and remote-MCP OAuth for the same reason. A stricter value also reaches sessions already running: each one restarts under it at its next turn, as after any restart; a looser value applies to sessions started after the change. 'strict' changes nothing where Kiro Crew applies no sandbox of its own: Windows has no OS backend, and a macOS spawn delegated to kiro-cli's internal sandbox is confined by that profile instead. Set to 'off' to skip Kiro Crew's own OS-level sandbox -- delegation to kiro-cli's internal sandbox still fires on macOS if it is enabled, and a SECURITY warning is logged when neither layer is active.",
       "hasChildren": false,
       "enumValues": [
         "auto",
@@ -1932,7 +1932,7 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Orchestrator memory",
+      "label": "Kiro Memory",
       "help": "Let a new chat in your own dashboard read the memories the Kiro agent engine already stored for you, so it recalls your preferences without being told again. Read-only: the chat never adds, changes or deletes a memory, and it reflects on nothing. It applies to chats you start after turning it on, never to one already open, and only on the Kiro agent engine (agent.acp_backend unset). Withheld from workers, Bot DM threads, app-owned and scheduled sessions, Temporary chats, and from every session once anyone else can reach this Crew, because the memories are yours alone. Off by default.",
       "hasChildren": false,
       "enumValues": null,
@@ -10232,6 +10232,8 @@
         "session_folder_root": "",
         "default_session_folder": "",
         "theme_mode": "",
+        "theme_schedule_light": "",
+        "theme_schedule_dark": "",
         "sso_login_flags": "",
         "theme_color": "",
         "instance_label": "",
@@ -10259,6 +10261,7 @@
         "feature_videos_cache_max_mb": 500.0,
         "milestones_enabled": true,
         "folder_suggestions_enabled": true,
+        "folder_suggestions_auto_apply": false,
         "project_tags_enabled": true,
         "topic_tags_enabled": false,
         "tips_cadence_hours": 6.0,
@@ -10697,6 +10700,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.connected_computers",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: connected_computers",
+      "help": "Turn on the 'connected_computers' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.crew_oauth",
       "kind": "core",
       "type": "boolean",
@@ -10776,20 +10793,6 @@
       "tags": [],
       "label": "Feature preview: remote_crew_chat",
       "help": "Turn on the 'remote_crew_chat' feature preview.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
-    },
-    {
-      "path": "dashboard.feature_previews.secrets_vault",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Feature preview: secrets_vault",
-      "help": "Turn on the 'secrets_vault' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -11650,14 +11653,43 @@
       "sensitive": false,
       "tags": [],
       "label": "Theme Mode",
-      "help": "Dashboard color mode preference: 'dark', 'light', or 'system'. Empty = unset (frontend falls back to localStorage or 'system').",
+      "help": "Dashboard color mode preference: 'dark', 'light', 'system', or 'schedule' (light from theme_schedule_light, dark from theme_schedule_dark). Empty = unset (frontend falls back to localStorage or 'system').",
       "hasChildren": false,
       "enumValues": [
         "",
         "dark",
         "light",
-        "system"
+        "system",
+        "schedule"
       ],
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.theme_schedule_light",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Theme Schedule Light",
+      "help": "24-hour HH:MM at which the 'schedule' theme mode turns light, read in the time zone of the device showing the dashboard. Empty = never set (07:00).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.theme_schedule_dark",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Theme Schedule Dark",
+      "help": "24-hour HH:MM at which the 'schedule' theme mode turns dark, read in the time zone of the device showing the dashboard. Empty = never set (19:00).",
+      "hasChildren": false,
+      "enumValues": null,
       "defaultValue": ""
     },
     {
@@ -12053,6 +12085,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.folder_suggestions_auto_apply",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Folder Suggestions Auto Apply",
+      "help": "While folder suggestions are on, file the session into the suggested folder instead of asking first; the card then says where it went, with an undo. Ignored while folder suggestions are off.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.project_tags_enabled",
@@ -13123,20 +13169,6 @@
       "defaultValue": false
     },
     {
-      "path": "agents.*.show_sessions_in_list",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Show in my Sessions list",
-      "help": "Off by default. The chats this crewmate opens are listed on its profile's Sessions tab and left out of your Sessions list. Turn it on to list them in your Sessions list too.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
-    },
-    {
       "path": "agents.*.watchdog_tool_stall_suspect_secs",
       "kind": "core",
       "type": "number",
@@ -13491,6 +13523,48 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "templates",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Templates",
+      "help": "Per-template user settings, keyed by the agent template's name.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "templates.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "templates.*.model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Model",
+      "help": "Model every session on this agent template starts on, in place of the model the template's own file pins. Empty inherits that pin, so the template runs exactly as it would without this setting. A model picked for the session and a model pinned on a crew that uses the template win over it; it wins over the app and global defaults. Only the model is read: a crew sharing the template's name lends a template session nothing. A model this account cannot run is withheld like any other pin.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "auto_update",

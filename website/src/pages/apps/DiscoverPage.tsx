@@ -19,7 +19,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, RefreshCw, ShoppingBag, X } from 'lucide-react'
-import { EmptyState, IconButton, PageHeader, SearchInput } from '../../components/ui'
+import { Btn, EmptyState, IconButton, PageHeader, SearchInput } from '../../components/ui'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Tabs, TabsContent, TabsCount, TabsList, TabsTrigger } from '../../components/ui/tabs'
@@ -196,7 +196,7 @@ function DiscoverPageBody() {
   // keeps every row on this worklist updating where it stands: the header
   // and Update All promise in-place updating, so a row's button must not
   // navigate away mid-triage (the hook's comment carries the full contract).
-  const { updatingAll, updatePending, runUpdate, updateAll } = useAppUpdates({
+  const { updatingAll, updatePending, runUpdate, updateAll, trustHandoff } = useAppUpdates({
     apps, updatables, announceAppsChanged, updateApp,
     setError, setSuccess: showSuccess,
     // A lapsed execution trust on an in-place update is a consent prompt:
@@ -464,12 +464,27 @@ function DiscoverPageBody() {
         </div>
         {/* Notifications. No hand-off on the error notice: the SourcesPopover's
             install-path input shares this page — navigating away would discard
-            what the user typed. */}
+            what the user typed. An Update All notice that sends apps to their
+            details (repository trust, chat-control consent) carries a button
+            per app to the detail page; a trust app's button reruns the update
+            there, which offers that trust. Only while that notice is the one
+            shown. */}
         {displayError && (
           <ErrorNotice
             message={displayError}
             onDismiss={dismissError}
             className="mb-4 animate-rise"
+            footer={trustHandoff && trustHandoff.message === displayError ? (
+              // One app per line: a batch can name any number of apps, and a
+              // row of buttons holds at most two (max-two-buttons-per-row).
+              <div className="flex flex-col items-start gap-2 mt-1">
+                {trustHandoff.apps.map(({ name, label, rerunUpdate }) => (
+                  <Btn key={name} onClick={() => (rerunUpdate ? updateApp(name) : openDetail(name))}>
+                    {i18nT('pages.appsPage.open_app_details', { name: label })}
+                  </Btn>
+                ))}
+              </div>
+            ) : undefined}
           />
         )}
         {/* No hand-off: the SourcesPopover's install-path input shares this

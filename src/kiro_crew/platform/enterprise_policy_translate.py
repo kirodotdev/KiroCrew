@@ -114,8 +114,10 @@ _INSTALL_INNER = "extensions"
 #: denied when the install list is written as a deny-list.
 _UNGRANTED_KINDS = ("plugin",)
 #: Kinds whose install id is a package, not the policy term's name. A denied name
-#: cannot be matched to a package yet, so it turns that kind's install off.
-_PACKAGE_KINDS = frozenset({"skill", "agent"})
+#: cannot be matched to a package yet, so it turns that kind's install off. A skill
+#: package is not one: the install seam checks each skill name it holds
+#: (``extension_governance.skill_package_denied``).
+_PACKAGE_KINDS = frozenset({"agent"})
 
 #: A policy pattern's place in a reduction: what it grants, or what it takes away.
 ALLOW_ROLE = "allow"
@@ -900,9 +902,13 @@ def _install_gate(
     policy is not refused for it, since a refusal would fail every other control.
     Install is never left on with no list, which would admit plugin sync.
 
-    shortcut: a skill or agent is installed by package, not by the term's name, so a
-    named deny on ``skill`` or ``subagent`` turns that kind's install off rather than
-    miss the package; read the names once install maps a package to its names.
+    A ``skill`` row lands by skill name: the install seam checks every skill a
+    package holds. A denied skill name inside an allowed glob has no one-mode form, so
+    skill install is turned off for it, which only narrows.
+
+    shortcut: an agent is installed by package, not by the term's name, so a named
+    deny on ``subagent`` turns agent install off rather than miss the package; read
+    the names once install maps an agent package to its names.
     """
     named = False
     listed: Dict[str, List[str]] = {}
@@ -911,18 +917,22 @@ def _install_gate(
     excepted: Dict[str, List[str]] = {}
     for capability, row in targets:
         kind = row.extension
-        if kind in _PACKAGE_KINDS and _named_deny(rules, capability):
-            # A denied name inside an allowed glob has no one-mode form, and this
-            # kind's install is off either way, so only that refusal is dropped; a
-            # malformed rule still refuses the policy.
-            try:
-                ruleset(rules, capability, row)
-            except Unrepresentable:
-                pass
+        named_deny = _named_deny(rules, capability)
+        try:
+            rs = ruleset(rules, capability, row)
+        except Unrepresentable:
+            # A denied name inside an allowed glob has no one-mode form. A skill or
+            # agent install is then off, which only narrows, so only that refusal
+            # is dropped; a malformed rule, or an MCP one, still refuses the policy.
+            if kind == "mcp" or not named_deny:
+                raise
             named = True
             off.append(kind)
             continue
-        rs = ruleset(rules, capability, row)
+        if kind in _PACKAGE_KINDS and named_deny:
+            named = True
+            off.append(kind)
+            continue
         if rs is None:
             off.append(kind)
             continue

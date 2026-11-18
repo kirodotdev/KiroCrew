@@ -128,7 +128,19 @@ not yet read is looked for again at the following turn; a `set_model` that lands
 first ends the wait, since the session runs that model.
 
 KAS sends no `models` object; its list is only the `configOptions` `model`
-select, and it defaults a new session to `auto`. The pooled check asks that select
+select, and it defaults a new session to `auto`. From engine 0.66.117 the
+`session/new` answer carries no `model` select: the engine sends it in a
+`config_option_update` about 0.3 s later. A config option update is read by one
+reader, `absorb_config_options`, on the live stream and in the start path's
+notification drain; on KAS it runs `store_config_options` (served ids, served
+model, engine catalog). After its drain, KAS's managed-MCP start step
+(`_wait_managed_mcp`, a step the Kiro path does not take) calls
+`settle_kas_model_select`: on an engine known to send the select late
+(`kas_engine_features.engine_sends_model_select_late`: the bundle route at 0.66.117
+or later; the relay route's engine version is unknown), while the select is still
+missing, it keeps draining (at most `_KAS_SELECT_WAIT_SECS`, 2 s) until the select
+is in, then runs the pooled check below on it, whether the drain or this wait read
+it, before any prompt. The pooled check asks that select
 one question: is the session on an `auto` the select does not list? If so it moves
 to a listed id. The select never becomes the session's advertised list, so the
 picker's entitlement narrowing and the explicit-pick guard are unchanged for KAS,
@@ -817,6 +829,19 @@ its own once the cache refreshes with a list that carries it.
   the account later stops serving is withheld at session start like any inherited
   default. It never re-purposes `decisions.model_route`, whose tiers are the Auto
   router's.
+- **Pick a model for one agent template** through `templates.<name>.model`, keyed
+  by the template's name. Empty or `auto` inherits the template's own pin, so a
+  template nobody picked for resolves exactly as it would without the setting. It
+  is the template tier of `config.loader.resolve_effective_model`
+  (`_template_model`): above the template file's pin, below a crew's own pin and
+  the session's own pick, and above `apps.<name>.model` and the global default. It
+  reaches every session that launches the template, a template session and a
+  crew bound to it that pins nothing alike, and the provider factory's fallback
+  (`acp_effective_model`) reads it before the template pin. It is a model setting
+  only: a template session still takes no field, model included, from a crew row
+  that shares the template's name or from the `default` row. A pick the active
+  harness cannot claim defers to the template pin, as every tier does. No
+  dashboard control writes it yet; it is set in `config.json`.
 - **Entitlement checks** always use the shared predicate
   `acp.client.model_is_unusable(id, advertised)` together with
   `advertised_model_ids(...)`. It is one predicate on purpose: two spellings of "can

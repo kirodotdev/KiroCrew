@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from kiro_crew.browser_harness import quick_ask as qa
-from kiro_crew.browser_harness.ops import OPS
+from kiro_crew.browser_harness.ops import OPS, STEPS_CAP
 
 # Re-exported for the registry tests and the prompt gate: the ops the gateway serves.
 BROWSER_OPS: tuple[str, ...] = OPS
@@ -41,7 +41,10 @@ def schemas() -> list[dict[str, Any]]:
                 "element refs; call it before click/type and again after the page "
                 "changes; elements inside a cross-origin iframe carry refs like f1e3 and "
                 "work like any ref); click {ref | x,y, button?, clicks?: 1|2}; type {ref?, text, "
-                "submit?} (a password field is refused: the user signs in by taking "
+                "submit?} or {ref?, steps: [{text} | {key, modifiers?}]} (steps run in "
+                f"order, at most {STEPS_CAP}, and stop at the first refusal, whose result "
+                "names its 0-based `step`; a \\t in text inserts a tab character, not the Tab "
+                "key; a password field is refused: the user signs in by taking "
                 "over); press_key {key, modifiers?}; hover {ref | x,y}; drag {ref|x,y "
                 "-> to_ref|to_x,to_y}; scroll {ref|x,y?, dx?, dy?}; select_option "
                 "{ref, values}; wait_for {text | textGone | time (s) | load}; "

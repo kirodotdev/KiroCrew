@@ -70,11 +70,11 @@ logger = logging.getLogger("kiro_crew.slack.interactions")
 
 
 def _mark_button_clicked(blocks: list[dict], clicked_action_id: str, label: str) -> list[dict]:
-    """Replace a clicked button with a ✓ context block in the Block Kit message.
+    """Replace a clicked button with a "Chosen:" context block in the Block Kit message.
 
     Walks *blocks* looking for an ``actions`` block containing *clicked_action_id*.
     Removes that button element and inserts a ``context`` block with
-    ``✓ {label}`` immediately before the actions block.  If no elements
+    ``Chosen: {label}`` immediately before the actions block.  If no elements
     remain, the empty actions block is dropped entirely.
     """
     result: list[dict] = []
@@ -88,8 +88,10 @@ def _mark_button_clicked(blocks: list[dict], clicked_action_id: str, label: str)
             # Clicked button not in this actions block — keep as-is
             result.append(block)
             continue
-        # Insert ✓ context block before the (possibly empty) actions block
-        result.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"✓ {label}"}]})
+        # Insert the chosen-label context block before the (possibly empty) actions block
+        result.append(
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Chosen: {label}"}]}
+        )
         if remaining:
             result.append({**block, "elements": remaining})
     return result
@@ -177,7 +179,7 @@ async def _route_action_to_session(
     label, _ = redact_exfiltration_urls(label)
     label = redact_credentials(label)[0]
 
-    # Update the message: replace clicked element with ✓ label
+    # Update the message: replace clicked element with the chosen label
     updated_blocks = _mark_button_clicked(blocks, action_id_value, label)
     try:
         await _orch.slack.update_message(channel, msg_ts, text=label, blocks=updated_blocks)
@@ -465,7 +467,7 @@ async def _refuse_stale_options(channel: str, msg_ts: str, payload: dict) -> Non
 
 
 _ALREADY_ANSWERED = "Already answered."
-_NOT_AUTHORIZED = "⛔ You are not authorized to use these buttons."
+_NOT_AUTHORIZED = "Blocked: You are not authorized to use these buttons."
 
 
 async def _tell_user(channel: str, user_id: str, thread_ts: str, text: str) -> None:
@@ -505,7 +507,7 @@ async def _answer_options(
     answered is refused with a private "Already answered" and sends nothing; the
     claim is taken under the message's edit lock, so two quick clicks cannot both
     send. On success the card is edited in place: its buttons give way to a
-    ``✅ <who> chose <choice> · <time>`` line.
+    ``<who> chose <choice> · <time>`` line.
     """
     if not (_orch and _orch.slack):
         return

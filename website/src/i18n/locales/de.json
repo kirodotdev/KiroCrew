@@ -341,7 +341,11 @@
     "tab_title_session": "{{session}} — {{panel}}",
     "release_notes_not_published_yet": "Die Versionshinweise für {{release}} sind noch nicht veröffentlicht. Stattdessen werden die Hinweise zu {{shown}} angezeigt.",
     "titlebar_menu_disabled_footer": "Einige Einträge sind hier nicht verfügbar. Die angezeigten Tastenkürzel funktionieren weiterhin.",
-    "titlebar_menu_refused_notice": "„{{item}}“ wurde nicht ausgeführt. Dieser Befehl ist hier derzeit nicht verfügbar."
+    "titlebar_menu_refused_notice": "„{{item}}“ wurde nicht ausgeführt. Dieser Befehl ist hier derzeit nicht verfügbar.",
+    "relay_remote_control_off": "Der Fernzugriff auf diese Crew ist ausgeschaltet",
+    "relay_remote_control_off_detail": "Der Besitzer der Crew hat den Fernzugriff ausgeschaltet. Nur er kann ihn wieder einschalten, am Computer der Crew.",
+    "relay_remote_control_off_waits": "Diese Seite verbindet sich von selbst neu, sobald er wieder eingeschaltet ist.",
+    "terminal_owner_only": "Nur der Besitzer der Crew kann das Terminal nutzen."
   },
   "appSdk": {
     "chatSession": {
@@ -6271,7 +6275,8 @@
       "sign_out_or_switch": "In den Einstellungen abmelden oder Konto wechseln",
       "sign_out_link_config_unreadable": "Einstellungen konnten nicht geladen werden, daher kann der Abmelde-Link nicht angezeigt werden.",
       "switch_in_settings": "In den Einstellungen Konto wechseln",
-      "bots_sign_in_in_settings": "Kiro-Anmeldung für Bots in den Einstellungen"
+      "bots_sign_in_in_settings": "Kiro-Anmeldung für Bots in den Einstellungen",
+      "kiro_account_in_settings": "Kiro-Konto in den Einstellungen"
     },
     "agentDropdownList": {
       "active_in_this_session": "In dieser Sitzung aktiv",
@@ -7612,9 +7617,12 @@
       "use_folder_project": "Zu {{folder}} wechseln"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "Abgelegt in {{folder}}",
       "folder_suggestion": "Ordnervorschlag",
+      "keep_it_here": "Behalten",
       "move_to_folder_prompt": "Diese Sitzung in diesen Ordner verschieben?",
       "no_thanks": "Nicht jetzt",
+      "undo_filing": "Rückgängig",
       "yes_move_it": "Verschieben"
     },
     "followUpBar": {
@@ -7750,7 +7758,8 @@
       "opens_own_window": "Öffnet sich in einem eigenen Fenster",
       "new_crew": "Neu",
       "seen_not_saved": "Konnte nicht speichern, dass du das gesehen hast. Es wird wieder als neu angezeigt.",
-      "open_crew_failed": "{{name}} konnte nicht geöffnet werden."
+      "open_crew_failed": "{{name}} konnte nicht geöffnet werden.",
+      "sign_in": "Bei Kiro anmelden"
     },
     "instancesViewport": {
       "connecting": "Wird verbunden…",
@@ -7965,6 +7974,8 @@
       "waiting_for_you_to_approve": "Warten auf deine Bestätigung…",
       "continue_with_builder_id": "Mit AWS Builder ID fortfahren",
       "continue_with_company_sso": "Mit Firmen-SSO fortfahren",
+      "builder_id_hint": "Eine kostenlose persönliche Anmeldung für Entwickler. Du brauchst kein AWS-Konto.",
+      "company_sso_hint": "Für Arbeitskonten in AWS IAM Identity Center. Du brauchst die Zugangsportal-URL deiner Firma, auch wenn sie dich über Okta oder Microsoft Entra anmeldet.",
       "sso_start_url_label": "Anmelde-URL deiner Firma",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "Füge die AWS-Zugangsportal-URL ein, die deine Firma dir gegeben hat.",
@@ -7986,7 +7997,7 @@
       "loopback_fell_back": "Die Anmeldung konnte nicht direkt auf diesen Computer zurückkommen, deshalb gibt es stattdessen einen Code.",
       "cancel_unsettled": "Die Anmeldung konnte nicht abgebrochen werden. Sie läuft noch – wähle dieselbe Option erneut, um es noch einmal zu versuchen.",
       "pending_cancel_unsettled": "Angemeldet, aber die hier gestartete Anmeldung konnte nicht abgebrochen werden. Sie bleibt offen, bis sie abläuft.",
-      "card_intro": "Wird nur vom Backend Kiro Agent verwendet: Dessen Agenten laufen unter diesem Kiro-Konto. Kiro CLI behält seine eigene kiro-cli-Anmeldung; eine Anmeldung hier ändert daran nichts.",
+      "card_intro": "Kiro Agent und andere Kiro-Funktionen laufen mit diesem Kiro-Konto, egal welchen Agent-Harness du nutzt. Kiro CLI behält seine eigene kiro-cli-Anmeldung, daher ändert eine Anmeldung hier sie nicht.",
       "previous_sign_in_not_removed": "Angemeldet, aber die vorherige Anmeldung konnte nicht entfernt werden",
       "previous_sign_in_not_removed_body": "Das neue Konto ist gespeichert, aber das Konto, von dem du gewechselt hast, ist noch da und hat Vorrang. Melde dich dort ab und prüfe dann die hier angezeigte Anmeldung."
     },
@@ -8547,6 +8558,8 @@
         "chat_stopped_stalled_body": "Der Chat hing fest und konnte nicht wiederhergestellt werden. Öffne den Chat, um einen neuen zu starten.",
         "folder_agent_label_title": "Standard-Agent eines Ordners prüfen",
         "folder_agent_label_body": "Der Standard-Agent dieser Ordner trägt den Namen eines Bots, aber neue Chats darin laufen nicht auf diesem Bot: {{folders}}. Um den Bot zu nutzen, wähle ihn in den Einstellungen des Ordners als Standard-Agent aus.",
+        "folder_agent_key_title": "Standard-Agent eines Ordners prüfen",
+        "folder_agent_key_body": "Ein früheres Update hat diese Ordner möglicherweise von einem benutzerdefinierten Agenten auf den gleichnamigen Bot umgestellt, daher laufen neue Chats darin auf diesem Bot: {{folders}}. Wenn du den benutzerdefinierten Agenten gemeint hast, wähle ihn in den Einstellungen des Ordners erneut als Standard-Agent aus.",
         "repeated_failures_title": "Tool-Fehler kommen immer wieder",
         "repeated_failures_body": "Einige Tool-Aufrufe des Agenten sind diese Woche immer wieder fehlgeschlagen. Öffne diesen Hinweis, um sie zu sehen und einen davon in eine Lektion zu verwandeln.",
         "mcp_share_paused_title": "Ein geteilter MCP-Server ist pausiert",
@@ -11283,6 +11296,9 @@
       "expired_detail_bots": "Bots können erst wieder laufen, wenn du dich erneut anmeldest. Die gespeicherte Anmeldung ist abgelaufen und kann nicht erneuert werden.",
       "refused_detail_bots": "Bots hören auf zu laufen, sobald diese Anmeldung abläuft. Melde dich erneut an, damit sie weiterlaufen.",
       "refused_expired_detail_bots": "Bots können erst wieder laufen, wenn du dich erneut anmeldest. Diese Anmeldung ist bereits abgelaufen.",
+      "expired_detail_account": "Funktionen, die dein Kiro-Konto nutzen, funktionieren erst wieder, wenn du dich erneut anmeldest. Die gespeicherte Anmeldung ist abgelaufen und kann nicht erneuert werden.",
+      "refused_detail_account": "Funktionen, die dein Kiro-Konto nutzen, hören auf zu funktionieren, sobald diese Anmeldung abläuft. Melde dich erneut an, damit sie weiter funktionieren.",
+      "refused_expired_detail_account": "Funktionen, die dein Kiro-Konto nutzen, funktionieren erst wieder, wenn du dich erneut anmeldest. Diese Anmeldung ist bereits abgelaufen.",
       "status_unavailable_detail": "Öffne die Anmeldeeinstellungen, um deine Kiro-Anmeldung zu prüfen, oder bitte den Agenten, sich das anzusehen.",
       "config_unavailable": "Die Dashboard-Einstellungen konnten nicht gelesen werden",
       "config_unavailable_detail": "Lade die Seite neu, um es erneut zu versuchen, oder bitte den Agenten, sich das anzusehen.",
@@ -11499,6 +11515,58 @@
       "shortcut_hint_mac": "⌃⇧M schaltet stumm oder laut",
       "mute_short": "Stummschalten",
       "unmute_short": "Stumm aus"
+    },
+    "promptStash": {
+      "badge_full_hint": "Es ist kein Platz für weitere Entwürfe. Verwirf einen oder stelle einen wieder her, bevor du einen weiteren zurücklegst; {{chord}} in einem leeren Eingabefeld stellt den neuesten wieder her.",
+      "badge_full_hint_touch": "Es ist kein Platz für weitere Entwürfe. Verwirf einen oder stelle einen wieder her, bevor du einen weiteren zurücklegst; beides findest du im {{menu}}-Menü.",
+      "badge_hint": "Zurückgelegte Entwürfe für diesen Chat. {{chord}} in einem leeren Eingabefeld stellt den neuesten wieder her.",
+      "badge_hint_touch": "Zurückgelegte Entwürfe für diesen Chat. Über das {{menu}}-Menü holst du den neuesten zurück.",
+      "badge_one": "{{count}} Entwurf zurückgelegt",
+      "badge_other": "{{count}} Entwürfe zurückgelegt",
+      "empty": "Es sind keine Entwürfe zurückgelegt. Drücke {{chord}}, wenn das Eingabefeld Text enthält, um ihn zurückzulegen.",
+      "empty_touch": "Es sind keine Entwürfe zurückgelegt. Gib etwas ein und lege es dann über das {{menu}}-Menü zurück.",
+      "full": "Es ist kein Platz für weitere Entwürfe (höchstens {{max}}). Verwirf einen zurückgelegten Entwurf, um Platz zu schaffen.",
+      "menu_restore": "Zurückgelegten Entwurf wiederherstellen",
+      "menu_restore_has_draft": "Lege deinen Entwurf zuerst zurück oder sende ihn.",
+      "menu_restore_desc_one": "{{count}} Entwurf zurückgelegt. {{chord}} in einem leeren Eingabefeld macht dasselbe.",
+      "menu_restore_desc_other": "{{count}} Entwürfe zurückgelegt; der neueste kommt zurück. {{chord}} in einem leeren Eingabefeld macht dasselbe.",
+      "menu_restore_desc_touch_one": "{{count}} Entwurf zurückgelegt. Stellt ihn über dieses Menü wieder her.",
+      "menu_restore_desc_touch_other": "{{count}} Entwürfe zurückgelegt. Stellt den neuesten über dieses Menü wieder her.",
+      "menu_restore_none": "Noch nichts zurückgelegt.",
+      "menu_stash": "Entwurf zurücklegen",
+      "menu_stash_desc": "Legt den Text zurück und leert das Eingabefeld ({{chord}}).",
+      "menu_stash_desc_touch": "Legt den Text zurück und leert das Eingabefeld.",
+      "menu_stash_empty": "Gib etwas ein, um es zurückzulegen.",
+      "notice_attachments": "Entferne die Anhänge, um zurückzulegen oder wiederherzustellen.",
+      "notice_full": "Kein Platz mehr ({{max}}). Verwirf einen zurückgelegten Entwurf, um Platz zu schaffen.",
+      "notice_stashed": "Zurückgelegt. {{chord}} in einem leeren Nachrichtenfeld holt ihn zurück.",
+      "notice_stashed_touch": "Zurückgelegt. Über das {{menu}}-Menü holst du ihn zurück.",
+      "restored_last": "Zurückgelegter Entwurf wiederhergestellt.",
+      "restored_one": "Zurückgelegter Entwurf wiederhergestellt. {{count}} Entwurf ist noch zurückgelegt.",
+      "restored_other": "Zurückgelegter Entwurf wiederhergestellt. {{count}} Entwürfe sind noch zurückgelegt.",
+      "save_failed": "Der Entwurf konnte nicht zurückgelegt werden: Der Browserspeicher ist voll oder nicht verfügbar. Dein Entwurf ist noch im Eingabefeld.",
+      "shortcut_label": "Entwurf zurücklegen oder in einem leeren Eingabefeld wiederherstellen",
+      "stashed_one": "Entwurf zurückgelegt. {{count}} Entwurf ist zurückgelegt; drücke {{chord}} in einem leeren Eingabefeld, um ihn wiederherzustellen.",
+      "stashed_other": "Entwurf zurückgelegt. {{count}} Entwürfe sind zurückgelegt; drücke {{chord}} in einem leeren Eingabefeld, um den neuesten wiederherzustellen.",
+      "stashed_touch_one": "Entwurf zurückgelegt. {{count}} Entwurf ist zurückgelegt; stelle ihn über das {{menu}}-Menü wieder her.",
+      "stashed_touch_other": "Entwurf zurückgelegt. {{count}} Entwürfe sind zurückgelegt; stelle den neuesten über das {{menu}}-Menü wieder her.",
+      "too_large": "Konnte nicht zurückgelegt werden: Die zurückgelegten Entwürfe haben ihre Größengrenze erreicht. Dein Entwurf ist noch im Eingabefeld. Verwirf einen zurückgelegten Entwurf, um Platz zu schaffen.",
+      "too_large_single": "Konnte nicht zurückgelegt werden: Dieser Entwurf ist größer als die Größengrenze für zurückgelegte Entwürfe. Dein Entwurf ist noch im Eingabefeld.",
+      "clear_others_one": "{{count}} in anderen Sitzungen zurückgelegten Entwurf entfernen",
+      "clear_others_other": "{{count}} in anderen Sitzungen zurückgelegte Entwürfe entfernen",
+      "clear_others_confirm_one": "{{count}} zurückgelegten Entwurf endgültig löschen",
+      "clear_others_confirm_other": "{{count}} zurückgelegte Entwürfe endgültig löschen",
+      "cleared_others_one": "{{count}} in anderen Sitzungen zurückgelegter Entwurf gelöscht. Lege diesen erneut zurück.",
+      "cleared_others_other": "{{count}} in anderen Sitzungen zurückgelegte Entwürfe gelöscht. Lege diesen erneut zurück.",
+      "menu_discard": "Zurückgelegten Entwurf verwerfen",
+      "menu_discard_desc": "Löscht den gerade wiederhergestellten Entwurf, sonst den neuesten zurückgelegten. Du kannst es rückgängig machen.",
+      "discarded_last": "Zurückgelegter Entwurf verworfen.",
+      "discard_undone": "Der verworfene Entwurf ist wieder zurückgelegt.",
+      "undo_discard": "Rückgängig",
+      "discard_failed": "Der Entwurf konnte nicht verworfen werden: Der Browser-Speicher ist nicht verfügbar. Er ist noch zurückgelegt.",
+      "undo_failed": "Der Entwurf konnte nicht zurückgelegt werden: Es ist kein Platz mehr oder der Browser-Speicher ist nicht verfügbar.",
+      "discarded_one": "Zurückgelegter Entwurf verworfen. {{count}} Entwurf ist noch zurückgelegt.",
+      "discarded_other": "Zurückgelegter Entwurf verworfen. {{count}} Entwürfe sind noch zurückgelegt."
     }
   },
   "hooks": {
@@ -11644,7 +11712,8 @@
         "reason_work": "In ihr läuft noch Arbeit. Schließen stoppt diese Arbeit.",
         "reason_setting": "In ihr läuft nichts. Du wirst gefragt, weil „{{setting}}“ in den Einstellungen aktiviert ist.",
         "actions": "Die Unterhaltung und der Entwurf in deinem Eingabefeld bleiben erhalten, und du kannst die Sitzung später wieder öffnen.",
-        "confirm": "Sitzung schließen"
+        "confirm": "Sitzung schließen",
+        "reason_other_starter": "{{name}} hat diesen Chat begonnen. Wenn du ihn schließt, ist er für alle in dieser Crew geschlossen."
       },
       "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Durchlauf oder das Gateway ist nicht erreichbar; versuche es erneut, wenn die Sitzung inaktiv ist.",
       "duplicate_unreachable": "Diese Sitzung konnte nicht dupliziert werden. {{productName}} ist nicht erreichbar. Prüfe deine Verbindung und versuche es erneut.",
@@ -11750,6 +11819,7 @@
   },
   "pages": {
     "mcpPage": {
+      "bot_workers_note": "Ein hier hinzugefügter Server erreicht die Worker von Bots nicht. Die Worker eines Bots erhalten ihn nur, wenn er diesem Bot hinzugefügt wird.",
       "title": "MCP-Server",
       "view_servers": "Server",
       "view_sharing": "Freigabe"
@@ -11975,6 +12045,7 @@
       "grants_reconsent_link_full_url": "Vollständige Linkadressen: Die Hover-Karten der App sehen auch den Teil eines Links nach ? oder #, der einen Anmeldecode enthalten kann.",
       "grants_reconsent_message_actions": "Nachrichtenaktionen: was die Menüeinträge der App an Chatnachrichten lesen können.",
       "grants_approved": "Genehmigt: {{entries}}. Die App kann sie jetzt nutzen.",
+      "grants_reconsent_browser_sites": "Besuchte Websites: Der eigene Agent der App kann diese Seiten in deinem Browser, mit deiner Anmeldung, öffnen, lesen, darauf tippen und klicken, ohne jedes Mal zu fragen.",
       "grants_reconsent_frame_sources": "Eingebettete Websites: Erlaubt den Seiten der App, diese Websites im Dashboard anzuzeigen.",
       "grants_reconsent_link_open_hosts": "Geöffnete Links: erlaubt der App, Links zu diesen Seiten zu öffnen, wenn du in einer Chat-Nachricht auf einen klickst.",
       "grants_reconsent_link_open_full_url": "Vollständige Adressen geöffneter Links: Die App sieht auch den Teil eines Links nach ? oder #, der einen Anmeldecode enthalten kann.",
@@ -12095,6 +12166,7 @@
       "update_needs_trust": "{{name}} wurde nicht aktualisiert: Die App braucht deine Erlaubnis. Nutze ihre eigene Update-Schaltfläche, um sie zu erlauben.",
       "updated_needs_session_approval_consent": "{{name}} ist deaktiviert, weil die App neu darum bittet, deine Chats zu steuern. Prüfe die Berechtigung in den App-Details und aktiviere sie dann.",
       "update_needs_repository_trust": "{{name}} wurde nicht aktualisiert, weil die neuere Version aus einem Repository stammt, dem du noch nicht vertraust. Öffne die App-Details und wähle „Repository vertrauen und aktualisieren“.",
+      "open_app_details": "Details zu {{name}} öffnen",
       "refresh_store": "Store aktualisieren",
       "refreshing_store": "Store wird aktualisiert…",
       "store_catalog_unreachable": "Der offizielle App-Katalog war nicht erreichbar, daher zeigt der Store seine Offline-Liste. Prüfe, ob das Gateway das Internet erreicht, und aktualisiere dann erneut."
@@ -13583,7 +13655,7 @@
         "code_channel_worktree_not_ready": "Der Worktree dieses Code-Kanals ist noch nicht bereit, deshalb wurde die Nachricht nicht ausgeführt. Sende sie gleich noch einmal.",
         "remote_crew_read_only": "Dieser Chat lief auf einer entfernten Crew und ist jetzt schreibgeschützt. Öffne die eigene Sitzung der Crew, um weiterzumachen.",
         "archive_failed_turn_cancelled": "Das Archivieren dieses Tabs ist fehlgeschlagen, nachdem seine laufende Runde abgebrochen wurde. Der Tab wurde behalten, aber diese Runde wurde nicht beendet — sende deine Nachricht erneut, um fortzufahren.",
-        "kas_signed_out": "Nicht bei Kiro angemeldet. Melde dich unter Einstellungen → Agent-Harness → Kiro Agent → Kiro-Anmeldung an und sende dann deine Nachricht erneut.",
+        "kas_signed_out": "Nicht bei Kiro angemeldet. Melde dich unter Einstellungen → Kiro-Konto an und sende dann deine Nachricht erneut.",
         "kas_signed_out_sign_in_below": "Nicht bei Kiro angemeldet. Melde dich unten an und sende dann deine Nachricht erneut.",
         "windows_spawn_blocked": "Windows hat das Agent-Programm ({{binary}}) nicht gestartet. Wahrscheinlich hat AppLocker, ein EDR-Produkt oder eine Gruppenrichtlinie auf diesem Computer es blockiert. Bitte deinen IT-Administrator, die Datei zuzulassen, und starte dann einen neuen Chat.",
         "tools_not_ready": "Der Agent konnte nicht starten, weil seine integrierten Tools nicht rechtzeitig bereit waren. Deine Nachricht ist noch da. Versuch es gleich noch einmal. Wenn das wieder passiert, stehen die Details im Gateway-Protokoll.",
@@ -14551,7 +14623,8 @@
       "your_crewmate": "Dein Bot",
       "jump_to_new_one": "{{count}} neue · Zum Ende",
       "jump_to_new_other": "{{count}} neue · Zum Ende",
-      "could_not_repair_images": "Die Bilder konnten nicht repariert werden"
+      "could_not_repair_images": "Die Bilder konnten nicht repariert werden",
+      "session_closed_elsewhere": "Dieser Chat wurde außerhalb dieses Fensters geschlossen."
     },
     "chatSidebar": {
       "needsMeCard": {
@@ -15677,11 +15750,11 @@
     },
     "developer": {
       "agentBackendTab": {
-        "orchestrator_memory_label": "Orchestrator-Gedächtnis",
+        "orchestrator_memory_label": "Kiro Memory",
         "orchestrator_memory_description": "Vorhandene Kiro-Erinnerungen in persönlichen Chats nutzen. Änderungen gelten beim Start einer Agentensitzung; starte einen neuen Chat, um die aktualisierte Einstellung zu nutzen.",
-        "orchestrator_memory_hint": "Nutzt in anderen Kiro-Clients gespeicherte Erinnerungen zusammen mit dem vorhandenen Gedächtnis von {{productName}}. Kiro-Erinnerungen werden hier nur gelesen. Das Lernverhalten von {{productName}} und das separate Gedächtnis von jedem Bot bleiben unverändert. Kiro-Erinnerungen sind in Inkognito-Chats verfügbar, aber von temporären Chats ausgeschlossen.",
+        "orchestrator_memory_hint": "Nutzt Kiro Memory zusammen mit dem vorhandenen Gedächtnis von {{productName}}, um auf Erinnerungen zuzugreifen, die in anderen Kiro-Clients gespeichert wurden. Diese Erinnerungen werden hier nur gelesen. Das Lernverhalten von {{productName}} und das separate Gedächtnis von jedem Bot bleiben unverändert.",
         "orchestrator_memory_preview": "Vorschau",
-        "orchestrator_memory_save_failed": "Das Orchestrator-Gedächtnis konnte nicht gespeichert werden. Versuch es erneut.",
+        "orchestrator_memory_save_failed": "Die Kiro Memory-Einstellung konnte nicht gespeichert werden. Versuch es erneut.",
         "approval_agent_spec": "Fragt vor jedem Werkzeug, weil {{productName}} es so vorgibt.",
         "approval_seeded_settings": "Fragt vor jedem Werkzeug nur, wenn die eigenen Einstellungen es sagen. {{productName}} schreibt diese Einstellung und kann ihre Wirkung nicht bestätigen.",
         "approval_session_config": "Fragt, bevor es einen Befehl ausführt oder eine Datei ändert. {{productName}} schaltet das ein und prüft es. Reines Lesen fragt nicht.",
@@ -15719,6 +15792,9 @@
         "install_check_failed_can_still_switch": "Es konnte nicht geprüft werden, ob dies auf diesem Rechner installiert ist. Du kannst trotzdem darauf umschalten. Fehlt es, sagt die Sitzung es beim Start.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_cli_description": "Nutzt das auf diesem Rechner installierte kiro-cli, mit der eigenen Anmeldung von kiro-cli.",
+        "kiro_account_not_signed_in": "Nicht angemeldet",
+        "kiro_account_signed_in_as": "Angemeldet als {{name}}",
         "kiro_row_runs_on_kas": "Kiro CLI läuft jetzt auf Kiro Agent. Neue Sitzungen nutzen Kiro Agent bereits, daher gibt es hier nichts umzuschalten.",
         "kiro_runs_on_kas": "Kiro CLI läuft jetzt auf Kiro Agent, daher nutzen neue Sitzungen es bereits. Kiro Agent als deine Einstellung speichern?",
         "kiro_runs_on_kas_save": "Kiro Agent als meine Einstellung speichern",
@@ -15739,7 +15815,6 @@
         "mcp_deny_manage_link": "MCP-Server-Liste öffnen",
         "mcp_deny_rule": "Schaltest du auf {{name}} ein MCP-Tool ab, hört jedes Tool auf demselben Server auf, nicht nur das abgeschaltete.",
         "missing_components": "Auf diesem Rechner fehlt: {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "Neue Sitzungen verwenden diesen Agenten. Offene Sitzungen behalten den, mit dem sie gestartet wurden.",
         "not_offered_by_this_build": "Dieser Build bietet diesen Agenten nicht an.",
         "note_crew_command_channel": "Slash-Befehle laufen über den Befehlskanal von {{productName}}.",
         "note_crew_sandbox_stands_down": "Hat eine eigene Sandbox. Unter Windows, und unter macOS, wenn ihre interne Sandbox eingeschaltet ist, tritt die Sandbox von {{productName}} dafür zurück.",
@@ -15979,8 +16054,6 @@
         "chat_runtime_sharing_harness_save_failed": "Der Schalter konnte nicht gespeichert werden. Versuche es erneut.",
         "chat_runtime_sharing_harness_load_failed": "Diese Schalter konnten nicht geladen werden.",
         "chat_runtime_sharing_desc_summary": "Spart Arbeitsspeicher, indem mehrere Chats in einem Hintergrundprogramm laufen. Du wählst, welche Arten von Chats es teilen. Sie antworten gleichzeitig und sehen die Nachrichten der anderen nicht. Ausgeschaltet bekommt jeder neue Chat wieder sein eigenes Programm.",
-        "secrets_vault": "Neues Design für den Secrets-Tresor",
-        "secrets_vault_desc": "Zeigt Secrets als Liste neben dem geöffneten Eintrag und lässt dich Logins und Notizen speichern.",
         "worker_grill": "Kurzer Worker-Check vor einer schweren Wahl",
         "worker_grill_desc": "Trifft ein Conductor auf eine Wahl mit zwei Wegen, bei der ein Fehlgriff schwer rückgängig zu machen ist, bietet er an, zuerst zwei oder drei Worker darüber reden zu lassen, statt einer 45-minütigen Debatte. Sie prüfen die Fakten selbst und schließen mit einer kurzen Zusammenfassung: die Antwort, warum, und was sie für dich gewählt haben. Nicht zufrieden? Starte eine neue Runde.",
         "worker_grill_desc_summary": "Zwei oder drei Worker prüfen eine wichtige Wahl und geben dir eine kurze Zusammenfassung.",
@@ -15999,7 +16072,7 @@
       },
       "kasBundleCard": {
         "toggle_label": "KAS mit der eigenen Engine von {{productName}} ausführen",
-        "toggle_description": "Nutzt die KAS-Engine-Version, mit der diese {{productName}}-Version getestet wurde, statt der Kiro CLI. Gilt für jede neue Sitzung in diesem {{productName}}, nicht nur auf diesem Gerät. Meldet sich mit deinem Kiro-Konto aus Einstellungen → Agent-Harness an. Gilt, sobald {{productName}} neu startet.",
+        "toggle_description": "Nutzt die KAS-Engine-Version, mit der diese {{productName}}-Version getestet wurde, statt der Kiro CLI. Gilt für jede neue Sitzung in diesem {{productName}}, nicht nur auf diesem Gerät. Meldet sich mit deinem Kiro-Konto aus Einstellungen → Kiro-Konto an. Gilt, sobald {{productName}} neu startet.",
         "installed": "KAS-Engine {{version}} (selbst installiert)",
         "installed_bundled": "KAS-Engine {{version}} (in der App enthalten)",
         "off_note": "Aus: KAS nutzt deine Kiro-CLI-Installation. Ein: KAS nutzt die Engine, die mit dieser Version kommt.",
@@ -19310,7 +19383,9 @@
         "needs_setup": "Einrichtung nötig",
         "not_connected": "Nicht verbunden",
         "off_by_admin": "Vom Administrator deaktiviert",
-        "status_unavailable": "Status nicht verfügbar"
+        "status_unavailable": "Status nicht verfügbar",
+        "not_set_up": "Nicht eingerichtet",
+        "owner_only": "Nur der Besitzer der Crew kann Kanäle verbinden oder ändern."
       },
       "chatPanel": {
         "advanced": "Erweitert",
@@ -19332,6 +19407,11 @@
         "topic_tags": "Themen-Tags",
         "topic_tags_desc": "Taggt jede neue Sitzung in der Seitenleiste mit bis zu zwei Themen, etwa „debugging“. Nutzt einen Hintergrund-Modellaufruf pro neuer Sitzung.",
         "transcript": "Verlauf",
+        "group_messages": "Nachrichten",
+        "group_steps": "Schritte und Tools",
+        "group_files_links": "Dateien und Links",
+        "group_replies": "Antworten",
+        "group_context": "Kontextanzeige",
         "about_you": "Über Sie",
         "answer_only_details_on_request": "Nur Antwort — einfachste Worte, Details auf Anfrage",
         "auto_add_documents": "Dokumente automatisch hinzufügen",
@@ -19454,6 +19534,8 @@
         "feature_tips": "Funktionstipps",
         "file_change_chips": "Chips für Dateiänderungen",
         "folder_suggestions": "Ordnervorschläge",
+        "folder_suggestions_auto_apply": "Ordnervorschläge automatisch anwenden",
+        "folder_suggestions_auto_apply_desc": "Ordnet eine neue Sitzung ohne Nachfrage in den passenden Ordner ein. Eine Karte zeigt, wohin sie kam, mit Rückgängig.",
         "follow_up_bar_layout": "Layout der Folgeleiste",
         "fork_keeps_only_the_messages_after_the_chosen_po": "Beim Verzweigen werden nur die Nachrichten nach dem gewählten Punkt behalten, nicht die davor.",
         "full": "Voll",
@@ -19706,7 +19788,8 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "Unter Windows übernehmen Tastenanschläge Ihren Tastaturfokus und Koordinatenklicks bewegen Ihren echten Mauszeiger — auf dieser Plattform gibt es keinen App-spezifischen Eingabeweg.",
         "the_app_lists_in_computer_use_json_could_not_be": "Die App-Listen in computer_use.json konnten nicht gelesen werden, daher werden sie hier leer angezeigt. Der Agent verweigert weiterhin jede Aktion, die von ihnen abhängt, bis die Datei gültiges JSON ist.",
         "your_chat_sessions_were_restarted_so_this_takes": "Deine Chat-Sitzungen wurden neu gestartet, damit dies sofort wirkt — Kiro liest seine Werkzeugliste einmal pro Sitzung, ein offener Chat hätte sie sonst nicht übernommen. Deine Nachrichten sind weiterhin da; der Agent liest seinen Kontext bei deiner nächsten Nachricht erneut.",
-        "your_chat_sessions_were_restarted": "Deine Chat-Sitzungen wurden neu gestartet. Deine Nachrichten sind noch da."
+        "your_chat_sessions_were_restarted": "Deine Chat-Sitzungen wurden neu gestartet. Deine Nachrichten sind noch da.",
+        "linux_unsupported": "Computer Use ist in dieser Version unter Linux nicht verfügbar."
       },
       "crewmatesSection": {
         "reply_threads": "Antwort-Threads auf Nachrichten im Chat eines Bot",
@@ -19932,6 +20015,12 @@
         "theme_mode_auto": "Automatisch",
         "theme_mode_light": "Hell",
         "theme_mode_dark": "Dunkel",
+        "theme_mode_scheduled": "Zeitplan",
+        "theme_schedule_light_from": "Hell ab",
+        "theme_schedule_light_from_hint": "Der Zeitplan-Modus wechselt zu dieser Uhrzeit zu Hell, in der Zeitzone dieses Geräts.",
+        "theme_schedule_dark_from": "Dunkel ab",
+        "theme_schedule_dark_from_hint": "Der Zeitplan-Modus wechselt zu dieser Uhrzeit zu Dunkel, in der Zeitzone dieses Geräts.",
+        "theme_schedule_save_failed": "Diese Uhrzeiten konnten nicht gespeichert werden. Dieses Gerät verwendet sie; andere Geräte behalten die alten. Versuch es erneut.",
         "color_mode_solid_tint": "Einfarbige Tönung",
         "color_mode_gradient": "Farbverlauf",
         "intensity_soft": "Sanft",
@@ -20103,7 +20192,8 @@
         "warm_cap_tune_with_one": "Bis zu {{count}} Remote-Crew bleibt gleichzeitig warm (aktiver Tunnel); die übrigen verbinden sich bei Bedarf neu. Anpassen mit <setting/>.",
         "warm_cap_tune_with_other": "Bis zu {{count}} Remote-Crews bleiben gleichzeitig warm (aktiver Tunnel); die übrigen verbinden sich bei Bedarf neu. Anpassen mit <setting/>.",
         "remote_port_value": "· Remote-Port {{port}}",
-        "filled_in_from_a_link": "Aus einem Link ausgefüllt. Prüfe, ob der SSH-Host ein Rechner ist, den du nutzt, und füge die Crew dann hinzu."
+        "filled_in_from_a_link": "Aus einem Link ausgefüllt. Prüfe, ob der SSH-Host ein Rechner ist, den du nutzt, und füge die Crew dann hinzu.",
+        "owner_only": "Nur der Besitzer der Crew kann entfernte Crews verwalten."
       },
       "notificationsPanel": {
         "deliver_floor_all": "Jede Priorität",
@@ -21262,7 +21352,8 @@
         "recheck": "Erneut prüfen",
         "language": "Sprache",
         "language_for_spoken_replies": "Sprache für gesprochene Antworten",
-        "language_provider_default": "Standard des Anbieters"
+        "language_provider_default": "Standard des Anbieters",
+        "no_engine_teammate": "Der Computer der Crew hat keine integrierte Sprachausgabe. Wähle einen anderen Anbieter oder bitte den Besitzer der Crew, eine zu installieren."
       },
       "weComPanel": {
         "allow_all_bypass_note": "„Alle erlauben“ ist aktiv: Die Liste der userids oben wird übergangen. Die Liste bleibt erhalten, falls du zurückwechselst.",
@@ -21460,7 +21551,9 @@
         "turn_off_disconnects": "Beim Ausschalten werden deine anderen Geräte innerhalb weniger Sekunden getrennt.",
         "turn_off_needs_terminal": "Um sie später wieder einzuschalten, führe <command/> in einem Terminal auf dem Rechner aus, der {{productName}} ausführt, und starte {{productName}} dann neu.",
         "turn_off_failed": "Die Fernsteuerung konnte nicht ausgeschaltet werden",
-        "load_failed": "Die Einstellung für die Fernsteuerung konnte nicht gelesen werden"
+        "load_failed": "Die Einstellung für die Fernsteuerung konnte nicht gelesen werden",
+        "on_teammate": "Die Fernsteuerung ist an. Personen mit Zugriff erreichen diese Crew über das Kiro-Relay.",
+        "owner_only": "Nur der Besitzer der Crew kann die Fernsteuerung ausschalten."
       },
       "remoteCrewPanel": {
         "added_by_you": "Von dir hinzugefügt",
@@ -22491,9 +22584,6 @@
       "profile_dashboard_card_send_hint": "An: Eine Antwort-Schaltfläche auf {{name}}s Dashboard-Tab postet diese Antwort mit einem Klick direkt in deinen Chat mit {{name}}. Aus: Die Schaltfläche legt die Antwort ins Chat-Feld, damit du sie prüfen und senden kannst.",
       "profile_dashboard_card_send_failed_on": "Senden mit einem Klick konnte nicht eingeschaltet werden. Es ist weiterhin aus. Versuche es erneut.",
       "profile_dashboard_card_send_failed_off": "Senden mit einem Klick konnte nicht ausgeschaltet werden. Es ist weiterhin an. Versuche es erneut.",
-      "profile_show_sessions_in_list_switch": "In meiner Sitzungsliste zeigen",
-      "profile_show_sessions_in_list_hint": "Chats, die {{name}} öffnet, erscheinen auch in deiner Sitzungsliste. Der Sitzungen-Tab zeigt sie immer.",
-      "profile_show_sessions_in_list_failed": "Die Einstellung konnte nicht gespeichert werden. Sie ist unverändert. Versuche es erneut.",
       "goals_loading": "Ziele werden geladen…",
       "goals_load_failed": "Die Ziele konnten nicht geladen werden.",
       "goals_save_failed": "Die Änderung konnte nicht gespeichert werden. Bitte versuche es noch einmal.",
@@ -22642,10 +22732,14 @@
       "member_count_filtered_other": "{{shown}} von {{n}} Bots",
       "sessions_group_waiting_on_mate": "Wartet auf {{name}}",
       "sessions_read_failed": "Die vollständige Sitzungsliste konnte nicht geladen werden. Die offenen Sitzungen werden angezeigt.",
+      "sessions_panel_empty": "Dieser Bot hat noch keine Sitzungen gestartet.",
+      "sessions_panel_recap": "Zusammenfassung",
+      "sessions_panel_open_in_chat": "Im Chat öffnen",
+      "sessions_panel_closed": "Diese Sitzung ist geschlossen. Öffne sie erneut, um sie hier zu lesen und ihr zu schreiben.",
+      "sessions_panel_reopen": "Sitzung erneut öffnen",
+      "sessions_panel_remote": "Diese Sitzung läuft auf {{crew}}. Öffne sie dort.",
       "recap_loading": "Wird geladen…",
       "recap_failed": "Die Details dieser Sitzung konnten nicht geladen werden.",
-      "recap_show": "Details",
-      "recap_hide": "Ausblenden",
       "recap_answer_where": "öffne diese Sitzung in der Seitenleiste, um zu antworten",
       "recap_no_report": "Noch kein Bericht",
       "recap_status": "Status",
@@ -22769,7 +22863,11 @@
     "envOverrideWithSettingRef": "Der Heartbeat ist deaktiviert, weil <settingRef/> in dieser Umgebung gesetzt ist. Entferne die Variable, um Telemetrie hier zu verwalten.",
     "localDataBodyOn": "Nutzungs- und Kontextdaten. Leistungsmetriken werden gerade auf diesem Gerät aufgezeichnet.",
     "localDataBodyOff": "Nutzungs- und Kontextdaten. Leistungsmetriken werden auf diesem Gerät gerade nicht aufgezeichnet.",
-    "doNotTrackCaption": "DO_NOT_TRACK=1 schaltet Leistungsmetriken und das Lebenszeichen aus."
+    "doNotTrackCaption": "DO_NOT_TRACK=1 schaltet Leistungsmetriken und das Lebenszeichen aus.",
+    "localDataTitleShared": "Bleibt auf dem Computer der Crew",
+    "localDataBodyShared": "Nutzungs- und Kontextdaten. Leistungsmetriken werden standardmäßig auf dem Computer der Crew aufgezeichnet. Der Schalter „Metriken aufzeichnen“ unter Einstellungen > Datenschutz zeigt, ob sie gerade aktiviert sind.",
+    "localDataBodyOnShared": "Nutzungs- und Kontextdaten. Leistungsmetriken werden gerade auf dem Computer der Crew aufgezeichnet.",
+    "localDataBodyOffShared": "Nutzungs- und Kontextdaten. Leistungsmetriken werden auf dem Computer der Crew gerade nicht aufgezeichnet."
   },
   "settings": {
     "advanced": {
@@ -22915,15 +23013,16 @@
       "connections": {
         "label": "Verbindungen",
         "description": "Offizielle Dienste verbinden und ihre OAuth-Apps einrichten"
+      },
+      "kiroAccount": {
+        "description": "Bei Kiro anmelden, Konto wechseln oder abmelden",
+        "go_to": "Zum Kiro-Konto",
+        "label": "Kiro-Konto"
       }
     },
     "secrets": {
-      "title": "Geheimnis-Tresor",
-      "description": "API-Schlüssel und Anmeldedaten sicher speichern. Geheimnisse werden verschlüsselt gespeichert und für Dateilesezugriffe und Shell-Befehle des Agenten gesperrt; nur der Code, der ein Geheimnis braucht, kann es lesen.",
       "managed_title": "Automatisch von {{productName}} verwendet",
-      "managed_description": "Anmeldedaten, die {{productName}} erkennt und automatisch verwendet. Werte hier hinzufügen oder rotieren.",
       "gerrit_http_credential_label": "Gerrit-HTTP-Anmeldedaten",
-      "gerrit_http_credential_description": "Authentifiziert Gerrit-Change-Abfragen für einen konfigurierten Host. Gib sie als Benutzername:HTTP-Passwort ein, erzeugt in den HTTP-Credentials-Einstellungen dieses Servers.",
       "gerrit_global_unused_multi_host": "Wird von Gerrit nicht verwendet, solange mehrere Hosts konfiguriert sind. Leg oben die Anmeldedaten für jeden Host fest oder lösch diesen Eintrag.",
       "gerrit_global_unused_host_credential": "Wird nicht verwendet, da die hostspezifischen Gerrit-Anmeldedaten Vorrang haben. Lösch diesen Eintrag, wenn du den Fallback nicht mehr brauchst.",
       "jira_api_token_label": "Jira-API-Token",
@@ -22931,17 +23030,11 @@
       "jira_global_unused_multi_host": "Wird von Jira nicht verwendet, solange mehrere Hosts konfiguriert sind. Legen Sie oben die Anmeldedaten für jeden Host fest oder löschen Sie diesen Eintrag.",
       "jira_global_unused_host_token": "Wird nicht verwendet, da die hostspezifischen Jira-Anmeldedaten Vorrang haben. Löschen Sie diesen Eintrag, wenn Sie den Fallback nicht mehr benötigen.",
       "jira_host_token_label": "Jira-Host-API-Token",
-      "jira_host_token_description": "Authentifiziert Jira-Vorgangsabfragen für einen konfigurierten Host.",
       "wakatime_api_key_label": "WakaTime-API-Schlüssel",
       "wakatime_api_key_description": "Authentifiziert die Synchronisierung der Programmieraktivität, wenn WakaTime aktiviert ist.",
       "custom_title": "Benutzerdefinierte Geheimnisse",
-      "custom_description": "Verschlüsselte Schlüssel für MCP-Server und .env-Einstellungen. Referenziere einen als secret://YOUR_KEY; der Wert wird nie im Chat angezeigt.",
-      "custom_authorize": "Damit ein Agent in einem Mitglieder-Chat eine freigegebene API mit einem Geheimnis aufrufen kann, gewähre dem Agenten {{server}} und führe dann den folgenden Befehl in einer Shell oder auf der Terminal-Seite aus.",
-      "custom_empty": "Noch keine benutzerdefinierten Geheimnisse gespeichert. Fügen Sie eines hinzu, um es von einem MCP-Server aus als secret://YOUR_KEY zu referenzieren.",
       "managed_config_error": "Einige automatisch verwendeten Anmeldedaten sind ausgeblendet, weil $KIROCREW_HOME/config.json (Standard: ~/.kiro/crew/config.json) nicht gelesen werden konnte.",
       "managed_name_hint": "Beim Speichern hier wird {{name}} im Bereich für automatische Anmeldedaten aktualisiert. — {{productName}}",
-      "managed_unconfigured_hint": "Um WakaTime oder Jira automatisch zu verwenden, aktivieren Sie WakaTime oder fügen Sie einen Jira-Host in $KIROCREW_HOME/config.json (Standard: ~/.kiro/crew/config.json) hinzu.",
-      "managed_setup_guide": "Anleitung zur Secret-Einrichtung öffnen",
       "delete_managed_confirm": "„{{name}}“ dauerhaft löschen? Der aktuelle Wert kann nicht wiederhergestellt werden.",
       "delete_managed_name": "{{name}} löschen",
       "save_managed_name": "{{name}} speichern",
@@ -22950,7 +23043,6 @@
       "saved": "Gespeichert",
       "name_placeholder": "MY_API_KEY",
       "value_placeholder": "sk-...",
-      "no_secrets": "Noch keine Geheimnisse gespeichert.",
       "add_secret": "Geheimnis hinzufügen",
       "name_label": "Name",
       "value_label": "Wert",
@@ -22969,7 +23061,6 @@
       "wakatime_unused_hint": "Wird nicht verwendet, solange WakaTime deaktiviert ist. Aktiviere WakaTime oder lösche diesen Eintrag.",
       "wakatime_oauth_tokens_description": "Deine WakaTime-Anmeldung, von {{productName}} verwahrt. Wird im WakaTime-Bereich verwaltet.",
       "wakatime_oauth_tokens_manage": "In WakaTime verwalten",
-      "connections_client_secret_description": "Client-Secret einer Verbindungen-OAuth-App. Wird unter Einstellungen → Verbindungen verwaltet.",
       "connections_client_secret_manage": "In Verbindungen verwalten",
       "how_it_works": "So funktioniert es",
       "type_label": "Was speicherst du?",
@@ -23017,7 +23108,9 @@
       "use_in_tool_title": "In einem Tool verwenden",
       "use_in_tool_tip": "Füge dies in die Einstellungen eines Tools ein, etwa in die Umgebung eines MCP-Servers. Das Tool erhält den Wert beim Ausführen; der Wert selbst erscheint dort nie.",
       "advanced_title": "Erweitert",
-      "api_call_label": "API-Aufruf"
+      "api_call_label": "API-Aufruf",
+      "owner_only": "Nur der Besitzer der Crew kann Geheimnisse sehen oder ändern.",
+      "relay_unavailable": "Secrets lassen sich nur auf dem Computer der Crew ansehen und ändern, nicht über Remote Control."
     }
   },
   "store": {
@@ -23711,6 +23804,9 @@
     "webhooks_frame": "Externe Systeme wecken diesen Bot durch einen Aufruf. Das Erstellen und Widerrufen von Tokens bleibt auf der Webhooks-Seite.",
     "loading_template": "Wird geladen…",
     "load_error": "Die Fähigkeiten dieses Bot konnten nicht geladen werden.",
+    "load_error_timed_out": "Die Fähigkeiten dieses Bot wurden nicht rechtzeitig fertig geladen. Ein Bot mit vielen hinzugefügten Fähigkeiten oder ein Ordner auf einem langsamen oder nicht erreichbaren Laufwerk kann länger brauchen als das Limit. Das Gateway-Protokoll nennt den Bot und die Dauer.",
+    "load_error_details": "Die Details stehen im Gateway-Protokoll.",
+    "load_retry": "Noch einmal versuchen",
     "stat_mcp_servers": "MCP-Server",
     "memory_empty": "Dieser Bot hat noch keinen privaten Gedächtnisspeicher.",
     "memory_profile_frame": "Notizen, die dieser Bot beim Lernen über dich und seine Arbeit schreibt – in jede Sitzung übernommen. Du kannst sie lesen und bearbeiten; der Bot aktualisiert sie weiter.",
@@ -24075,7 +24171,8 @@
     "preview_save_failed": "Die Einstellung für die geteilte Crew konnte nicht gespeichert werden.",
     "preview_restart_failed": "Das Gateway konnte nicht neu gestartet werden.",
     "raised_by": "Ausgelöst von {{name}}",
-    "take_over_keeps_draft": "Übernehmen, um zu tippen. Der Entwurf von {{name}} bleibt erhalten."
+    "take_over_keeps_draft": "Übernehmen, um zu tippen. Der Entwurf von {{name}} bleibt erhalten.",
+    "hero_shared_team": "Mit deinem Team geteilt"
   },
   "milestone": {
     "widgets": {
@@ -24175,6 +24272,13 @@
         "pop_out_label_to_its_own_window": "{{label}} in ein eigenes Fenster auskoppeln",
         "label_is_open_in_its_own_window_focus_it": "{{label}} ist in einem eigenen Fenster geöffnet — dieses fokussieren"
       }
+    }
+  },
+  "connectedComputers": {
+    "preview": {
+      "description": "Chats auf diesem Server können in einem Ordner auf deinem eigenen Computer arbeiten. Nichts wird geteilt, bis du es auf diesem Computer genehmigst.",
+      "hint": "Dein Computer verbindet sich mit diesem Server und teilt nur den Ordner, den du genehmigst. Ausschalten beendet die Freigabe und löscht nie Dateien. Remote Crew ist das Gegenstück: Damit nutzt du diesen Server von einem anderen Gerät aus.",
+      "label": "Verbundene Computer"
     }
   }
 }

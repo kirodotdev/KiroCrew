@@ -7,6 +7,9 @@
  * never connect. "Turn off" writes an explicit
  * `false`, so Remote Control stays off across a restart; turning it back on is the
  * terminal command.
+ *
+ * A teammate reads the same status about this Crew but gets no Turn off: turning it
+ * back on takes the host machine, so the switch is the machine owner's.
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -17,7 +20,9 @@ import { ApiError } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsCard, SettingsSection } from '../../components/settings'
 import { CopyCommandButton } from '../../components/settingRef/CopyCommandButton'
+import StatusNotice from '../../components/StatusNotice'
 import { Btn } from '../../components/ui'
+import { useViewerIsNotOwner } from '../../hooks/sharedCrew/useSharedCrew'
 import { i18nT } from '../../i18n/t'
 
 export const REMOTE_CONTROL_QUERY_KEY = ['remote-control'] as const
@@ -36,6 +41,7 @@ function TurnOnCommand() {
 export function RemoteControlCard() {
   const queryClient = useQueryClient()
   const [turnedOff, setTurnedOff] = useState(false)
+  const { notOwner } = useViewerIsNotOwner()
   const { data, error: loadError } = useQuery<RemoteControlState>({
     queryKey: REMOTE_CONTROL_QUERY_KEY,
     queryFn: () => api.remoteControl(),
@@ -87,7 +93,11 @@ export function RemoteControlCard() {
             </p>
           )}
           {shown && !data.locked && data.running && (
-            <p className="m-0 text-[13px]">{i18nT('pages.settings.remoteControlCard.on')}</p>
+            <p className="m-0 text-[13px]">
+              {notOwner
+                ? i18nT('pages.settings.remoteControlCard.on_teammate')
+                : i18nT('pages.settings.remoteControlCard.on')}
+            </p>
           )}
           {shown && !data.locked && !data.running && (
             <p className="m-0 text-[13px]" role="status">
@@ -114,7 +124,14 @@ export function RemoteControlCard() {
               message={off.error instanceof Error ? off.error.message : String(off.error)}
             />
           )}
-          {shown && (
+          {shown && notOwner && (
+            <StatusNotice
+              tone="info"
+              testId="remote-control-owner-only"
+              message={i18nT('pages.settings.remoteControlCard.owner_only')}
+            />
+          )}
+          {shown && !notOwner && (
             <Btn onClick={() => off.mutate()} disabled={off.isPending}>
               {off.isPending
                 ? i18nT('pages.settings.remoteControlCard.turning_off')
@@ -124,7 +141,7 @@ export function RemoteControlCard() {
           {/* Says what the click costs: open relayed connections close, and undoing it
               needs the terminal (guard.stop_after_drain drains, then stops the relay). */}
           {/* Locked: `remote-control on` is refused here, so no turn-on hint. */}
-          {shown && !data.locked && (
+          {shown && !data.locked && !notOwner && (
             <p className="m-0 text-[12px] text-muted" data-testid="remote-control-off-effect">
               {data.running && (
                 <>{i18nT('pages.settings.remoteControlCard.turn_off_disconnects')} </>

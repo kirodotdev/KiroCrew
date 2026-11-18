@@ -38,11 +38,13 @@ export function stagedGrantsOf(app: AppInfo | null) {
   const stagedDesktopCapabilities = knownDesktopCapabilities(app?.desktopCapabilitiesGrant?.staged)
   // Framed sites (`ui.frameSources`) an update or an edit added wait the same way.
   const stagedFrameSources = app?.frameSourcesGrant?.staged || []
-  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
+  // Pages the app's own agent may browse unasked: an install never approves them.
+  const stagedBrowserSites = app?.browserSitesGrant?.staged || []
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length + stagedBrowserSites.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
   return {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
     stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
-    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, hasStagedGrants,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, hasStagedGrants,
   }
 }

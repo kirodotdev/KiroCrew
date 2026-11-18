@@ -58,14 +58,11 @@ vi.mock('../components/settingRef/useConfigSchema', () => ({
   useConfigSchema: () => schemaMock(),
 }))
 
-// The card under the switch is a sentinel: its own behaviour (status query,
-// chooser, sign-out) is pinned in KiroSignInCard.test.tsx, and the real card
-// would need the kas-login API this file does not mock. Unlike the real card it
-// renders unconditionally, so its absence in a test can only be the tab's gate.
-vi.mock('../pages/developer/KiroSignInCard', () => ({
-  KiroSignInCard: ({ compact }: { compact?: boolean }) => (
-    <div data-testid="kiro-sign-in-card" data-compact={compact ? 'true' : 'false'} />
-  ),
+// The Kiro account line in the KAS detail is a sentinel: its behaviour is pinned
+// in KiroAccountStatusLine.test.tsx, and the real line would need the kas-login
+// API this file does not mock.
+vi.mock('../pages/developer/KiroAccountStatusLine', () => ({
+  KiroAccountStatusLine: () => <div data-testid="kiro-account-status-line" />,
 }))
 
 // Same sentinel treatment for the engine card under it: its behaviour is pinned in
@@ -938,6 +935,7 @@ describe('AgentBackendTab status strip', () => {
       expect(detail().textContent).toContain('Kiro CLI is installed and ready to use.'),
     )
     expect(detail().textContent).not.toContain('Recommended')
+    expect(detail().textContent).toContain("Uses the kiro-cli installed on this machine, with kiro-cli's own sign-in.")
     expect(panel().queryByText('Experimental')).toBeNull()
     const kiroStatus = document.getElementById('agent-backend-row-status-kiro')?.textContent ?? ''
     expect(kiroStatus).not.toMatch(/Recommended|Experimental/)

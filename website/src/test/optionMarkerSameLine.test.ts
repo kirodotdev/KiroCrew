@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest'
 import type { ChatMessage } from '../types'
 import { parseOptions } from '../app-sdk/protocol'
+import { findOptionMarkers } from '../app-sdk/protocol/optionMarker'
 import { searchableText } from '../utils/searchableText'
 
 describe('two markers on ONE line', () => {
@@ -42,10 +43,16 @@ describe('a row the strip would empty keeps a marker only when nothing renders i
     expect(searchableText(msg('[OPTIONS: Alpha | Beta]'))).not.toContain('Alpha')
   })
 
-  it('keeps the row, on screen and in search, when the marker that WOULD render offers nothing', () => {
-    // The pills come from the LAST marker, so an earlier one's options must not vouch for a
-    // final one that renders none: that left a row with neither prose nor pills.
+  it('keeps an earlier sibling as text when the LAST marker on the line offers nothing', () => {
     const raw = '[OPTIONS: A] [OPTIONS:]'
+    expect(parseOptions(raw).options).toEqual([])
+    expect(parseOptions(raw).text).toBe('[OPTIONS: A]')
+    expect(searchableText(msg(raw))).toBe('[OPTIONS: A]')
+    expect(findOptionMarkers(raw).map(m => m[0])).toEqual(['[OPTIONS:]'])
+  })
+
+  it('keeps the row, on screen and in search, when markers on separate lines leave it empty', () => {
+    const raw = '[OPTIONS: A]\n[OPTIONS:]'
     expect(parseOptions(raw).options).toEqual([])
     expect(parseOptions(raw).text).toBe(raw)
     expect(searchableText(msg(raw))).toBe(raw)

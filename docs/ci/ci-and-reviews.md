@@ -558,7 +558,7 @@ See [oss-fork-boundaries](../system-specs/oss-fork-boundaries.md).
 
 | Job | What it enforces |
 |---|---|
-| `source-gates` | The fifteen stdlib-only gates in the step table below, run as consecutive steps of one job: one checkout, one pinned Python setup, and a few seconds of work per gate. One job rather than fifteen because, as separate jobs, ~70% of their job-seconds went to runner acquisition and checkout while each held a runner slot of its own on every push, and the two ratchet jobs beside it are the long pole of the run, so the sequence adds no wall clock to the verdict `await-fast-gate` and the fork reviewers wait on. Every gate step carries `if: ${{ !cancelled() }}`, so a red gate does not hide the gates after it: the job fails, and every failing gate is named in the same run |
+| `source-gates` | The sixteen stdlib-only gates in the step table below, run as consecutive steps of one job: one checkout, one pinned Python setup, and a few seconds of work per gate. One job rather than sixteen because, as separate jobs, ~70% of their job-seconds went to runner acquisition and checkout while each held a runner slot of its own on every push, and the two ratchet jobs beside it are the long pole of the run, so the sequence adds no wall clock to the verdict `await-fast-gate` and the fork reviewers wait on. Every gate step carries `if: ${{ !cancelled() }}`, so a red gate does not hide the gates after it: the job fails, and every failing gate is named in the same run |
 | `static-ratchets` | The seven source-only exact-set / exact-count ratchets (error codes, crew-log `exc_info` sites, PID readers, fleet-routing parity, security posture, backend cards, fold catalogue), run with `-n 4 --no-cov`. They also stay in the backend shards; this job only returns the verdict in about a minute instead of after a 20-40 min shard |
 | `flake-pattern-ratchet` | `test/test_flake_pattern_ratchet.py`, its detector and base-resolver self-tests first. Holds every test file a change touches to its own count of flake-shaped sites at the change's merge-base (see the [Determinism contract](../system-specs/common/testing-conventions.md#determinism-contract-read-this-first)). The ratchet also runs in the backend shards (depth-2 checkout), but that verdict arrives after a 20-40 min shard and a shard with an unreadable base warns `compared nothing` and passes. This job checks out depth 2 so the merge commit's first parent, the base this tree was merged onto, is readable to the ratchet's own resolver, answers in about a minute ahead of the matrix, and turns a `compared nothing` run into a red: a gate that compared nothing is not a pass. The job's last step, `scripts/net_strict_changed.py`, runs only the test files the change adds or changes with `KIROCREW_NET_STRICT=1` and writes any that reach past loopback to a report file under `$RUNNER_TEMP` (the step runs as the unprivileged user, which cannot write `$GITHUB_STEP_SUMMARY`); the next step publishes the file to the job summary under the runner identity. It is warn-only (`continue-on-error`), skips when no test file changed, ignores deleted files, and hands the file names to pytest as an argument list |
 
@@ -571,6 +571,7 @@ description.
 | `vendor-manifest` | `scripts/verify_vendor_manifest.py`. Hashes every file under `src/kiro_crew/_vendor` against the committed `scripts/vendor_manifest.sha256` — the tree is excluded from semgrep and the AI reviewers' diff, so this checksum is its only content review. Hashing the ~26MB tree takes seconds, so it is always-on like every step of this job |
 | `brand-lint` | `scripts/check_brand_name.py`, self-test first. Fails on a newly added line that joins the two words of the product name. Diff-scoped: the tree still carries thousands of pre-convention prose lines, so a whole-tree gate would charge that backlog to whoever pushed next; the whole-tree count is still printed as a non-failing report |
 | `comment-history-lint` | `scripts/check_comment_history.py`, self-test first. Fails when an added Python comment or docstring narrates change history (PR/issue ids, commit SHAs, dated incidents, review rounds, or past-tense change markers) instead of explaining current behavior. Diff-scoped; whole-tree runs report the backlog without enforcing it |
+| `backend-emoji-lint` | `scripts/check_backend_emoji.py`, self-test first. Fails when an added Python string under `src/kiro_crew` (docstrings included; not comments, tests, `apps/builtins/` or `_vendor/`) carries an emoji or pictograph glyph, or a Slack `:shortcode:` such as `:white_check_mark:`. Strings are found with `tokenize`. A line whose glyph is data (a reaction name, a user-picked icon, text parsed from elsewhere) takes a trailing `# emoji-ok: <reason>` comment. Diff-scoped for the same reason as `brand-lint`, and reports whole-tree |
 | `focus-cue-lint` | `scripts/check_focus_cue.py`, self-test first. Fails when a change writes the `className` of an element that then has no visible focus cue. Diff-scoped for the same reason as `brand-lint`, and reports whole-tree |
 | `emoji-icon-lint` | `scripts/check_emoji_icons.py`, self-test first. Fails when an added code line under `website/src` (not a comment, a test file or one of the `no-emoji-as-icons` exceptions in `website/AUTOSDE.yaml`) carries an emoji or pictograph glyph such as `✅ ⚠ ● ▸ ✕`; arrows, the middle dot, the bullet `•` and keyboard glyphs are typography and pass, so a `•` drawn as a status mark is caught only by review. A line that only matches text the gateway writes (a leading tool glyph, a notice prefix) takes an `emoji-ok: <whose text>` comment. Diff-scoped for the same reason as `brand-lint`, and reports whole-tree |
 | `feature-map-lint` | `scripts/check_feature_map.py`, self-test first. Fails when a file is ADDED or DELETED under `website/src/pages/` or `src/kiro_crew/dashboard/handlers/`, or a `<Route>` entry arrives or leaves `website/src/App.tsx`, while `docs/feature-map/README.md` stays untouched. The blocking root AUTOSDE rule `feature-map-correctness` is the semantic half: it verifies changed rows against the code, rejects unrelated or cosmetic map churn, and checks that the map's net diff matches the PR's stated scope. Structural on purpose: an edit to an existing page changes a feature's behavior, which the map does not describe, so an edit-only diff never fires — a gate demanding a map review on every UI fix produces a map nobody reads. Fails OPEN on an unreadable diff, unlike the other gates here: this one guards a documentation habit, not an invariant a bad line carries into `main` forever |
@@ -3117,7 +3118,10 @@ run came from a `code-review.yml` that still hears `edited`, so it counts.
   failing the build. Time-boxed exceptions live in
   `.vulnerability-exceptions.json`, and a registry stall or connection fault is
   retried inside one shared time budget before it fails (see the
-  transient-failure contract in the security spec).
+  transient-failure contract in the security spec). The same workflow also runs
+  on its own every day at 22:00 UTC, eight hours before the nightly, as an early
+  warning: a red run there files a `scheduled-failure` issue (see
+  [A new advisory](#a-new-advisory-upgrade-if-a-fix-ships-otherwise-add-a-dated-exception)).
 - **`pr-hygiene`** (`pr-hygiene.yml`) enforces a Conventional-Commits PR title (it
   becomes the squash-merge message), at most two commits (`git rev-list --count <= 2`), and a
   `## Pattern harvest` section on `fix`/`revert` PRs containing either
@@ -5457,10 +5461,28 @@ The command contacts npm's registry/advisory service. Unit tests mock the subpro
 cover malformed output, operational failures, report resolution, schema constraints, expiry, and
 exact-match exception behavior without network access.
 
-### A new advisory: land Dependabot's bump with a maintainer push
+### A new advisory: upgrade if a fix ships, otherwise add a dated exception
 
 An advisory published against a version main already pins turns the gate red on the next nightly,
-although no pull request changed anything. Dependabot usually opens the bump the same day, but a run
+although no pull request changed anything. To see it before the nightly does,
+`dependency-vulnerability.yml` also runs on a `schedule:` at 22:00 UTC (14:00 PST, 15:00 PDT),
+eight hours ahead of the 06:00 UTC nightly. That run gates nothing. When it is red,
+`scheduled-failure-watch.yml` opens or bumps the issue titled
+`Production Dependency Vulnerability Gate scheduled run is failing`, labelled `scheduled-failure`.
+Clear it the same day, by one of two routes:
+
+| The advisory has | Do this |
+|---|---|
+| A patched version | Upgrade to it: take Dependabot's bump (below), or bump the lockfile or an `overrides` entry yourself. |
+| No patched version | Add an entry to `.vulnerability-exceptions.json` with an `expires` date at most 30 days ahead, an `owner`, and a `reason` naming the mitigation. Remove it once a fix ships. |
+
+Never skip the gate or widen an exception beyond its package, advisory and lockfile.
+A run that fails on a registry stall rather than a finding needs no change; the next run
+retries it.
+
+#### Landing Dependabot's bump with a maintainer push
+
+Dependabot usually opens the bump the same day, but a run
 Dependabot triggers gets the Dependabot secret set, which holds neither `KIRO_RELEASE_GATE_ROLE_ARN`
 nor `KIRO_RELEASE_GATE_BUCKET`. The Internal Content Scan then reaches no verdict ("This run has no
 credentials for the ruleset") and the pull request cannot go green on its own.

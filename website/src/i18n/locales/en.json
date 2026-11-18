@@ -57,7 +57,8 @@
     "updating_kirocrew": "Updating {{productName}}…",
     "v": "v",
     "what_s_new": "What's new",
-    "you_re_on_the_latest_version": "You're on the latest version"
+    "you_re_on_the_latest_version": "You're on the latest version",
+    "terminal_owner_only": "Only the Crew's owner can use the Terminal."
   },
   "appSdk": {
     "chatSession": {
@@ -4996,8 +4997,11 @@
       "use_folder_project": "Switch to {{folder}}"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "Filed in {{folder}}",
       "folder_suggestion": "Folder suggestion",
+      "keep_it_here": "Keep it",
       "no_thanks": "Not now",
+      "undo_filing": "Undo",
       "yes_move_it": "Move it"
     },
     "followUpBar": {
@@ -5075,7 +5079,8 @@
       "opens_own_window": "Opens in its own window",
       "new_crew": "New",
       "seen_not_saved": "Couldn't save that you've seen this. It will show as new again.",
-      "open_crew_failed": "Couldn't open {{name}}."
+      "open_crew_failed": "Couldn't open {{name}}.",
+      "sign_in": "Sign in to Kiro"
     },
     "instancesViewport": {
       "loading_pane": "Loading pane…",
@@ -6633,6 +6638,13 @@
       "unmute_short": "Unmute"
     }
   },
+  "connectedComputers": {
+    "preview": {
+      "description": "Chats on this server can work in a folder on your own computer. Nothing is shared until you approve it on that computer.",
+      "hint": "Your computer connects to this server and shares only the folder you approve. Turning this off stops sharing and never deletes files. Remote Crew is the reverse: it lets you use this server from another device.",
+      "label": "Connected computers"
+    }
+  },
   "hooks": {
     "usePanelTabs": {
       "git": "Git"
@@ -6658,6 +6670,11 @@
     },
     "useMoveSlotToFolder": {
       "move_refused": "The session was not moved."
+    },
+    "useSessionActions": {
+      "close_confirm": {
+        "reason_other_starter": "{{name}} started this chat. Closing it closes it for everyone in this Crew."
+      }
     }
   },
   "pages": {
@@ -6835,6 +6852,7 @@
       "updated_from_its_repository": "Updated {{name}} from its repository.",
       "updated_needs_session_approval_consent": "{{name}} is disabled because it newly asks to control your chats. Review the permission in the app details, then enable it.",
       "update_needs_repository_trust": "{{name}} was not updated, because its newer version comes from a repository you have not trusted yet. Open its details and choose Trust the repository and update.",
+      "open_app_details": "Open {{name}} details",
       "refresh_store": "Refresh the store",
       "refreshing_store": "Refreshing the store…",
       "store_catalog_unreachable": "Could not reach the official app catalog, so the store is showing its offline list. Check that the gateway can reach the internet, then refresh again."
@@ -7630,7 +7648,7 @@
         "code_channel_worktree_not_ready": "This code channel's worktree is not ready, so the message was not run. Send it again in a moment.",
         "remote_crew_read_only": "This chat ran on a remote crew and is read-only now. Open the crew's own session to keep going.",
         "archive_failed_turn_cancelled": "Archiving this tab failed after its running turn was cancelled. The tab was kept, but that turn did not finish — send your message again to continue.",
-        "kas_signed_out": "Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro Agent → Kiro sign-in, then send your message again.",
+        "kas_signed_out": "Not signed in to Kiro. Sign in from Settings → Kiro account, then send your message again.",
         "kas_signed_out_sign_in_below": "Not signed in to Kiro. Sign in below, then send your message again.",
         "windows_spawn_blocked": "Windows would not start the agent program ({{binary}}). AppLocker, an EDR product or group policy on this computer likely blocked it. Ask your IT administrator to allow that file, then start a new chat.",
         "tools_not_ready": "The agent could not start because its built-in tools were not ready in time. Your message is still here. Try again in a moment. If it keeps happening, the gateway log has the details.",
@@ -7896,7 +7914,8 @@
       "type_to_filter": "Type to filter…",
       "what_can_i_do_for_you": "What can I do for you?",
       "jump_to_new_one": "{{count}} new · Jump to latest",
-      "jump_to_new_other": "{{count}} new · Jump to latest"
+      "jump_to_new_other": "{{count}} new · Jump to latest",
+      "session_closed_elsewhere": "This chat was closed outside this window."
     },
     "chatSidebar": {
       "needsMeCard": {
@@ -8440,11 +8459,11 @@
     },
     "developer": {
       "agentBackendTab": {
-        "orchestrator_memory_label": "Orchestrator memory",
+        "orchestrator_memory_label": "Kiro Memory",
         "orchestrator_memory_description": "Use existing Kiro memories in personal chats. Changes apply when an agent session starts; start a new chat to use the updated setting.",
-        "orchestrator_memory_hint": "Uses memories saved in other Kiro clients alongside {{productName}}'s existing memory. Kiro memories are read-only here. {{productName}}'s learning behavior and each Bot's separate memory are unchanged. Kiro memories are available in Incognito chats, but excluded from Temporary chats.",
+        "orchestrator_memory_hint": "Uses Kiro Memory alongside {{productName}}’s existing memory to access memories saved by other Kiro clients. These memories are read-only here. {{productName}}’s learning behavior and each Bot’s separate memory are unchanged.",
         "orchestrator_memory_preview": "Preview",
-        "orchestrator_memory_save_failed": "Could not save orchestrator memory. Try again.",
+        "orchestrator_memory_save_failed": "Could not save the Kiro Memory setting. Try again.",
         "approval_agent_spec": "Asks before each tool, because {{productName}} tells it to.",
         "approval_seeded_settings": "Asks before each tool only if its own settings say so. {{productName}} writes that setting and cannot confirm it took effect.",
         "approval_session_config": "Asks before it runs a command or changes a file. {{productName}} turns that on and checks it. Plain reads do not ask.",
@@ -8481,6 +8500,9 @@
         "install_check_failed": "Could not check whether this is installed on this machine.",
         "kas_kiro_agent": "Kiro Agent",
         "kiro_cli": "Kiro CLI",
+        "kiro_cli_description": "Uses the kiro-cli installed on this machine, with kiro-cli's own sign-in.",
+        "kiro_account_not_signed_in": "Not signed in",
+        "kiro_account_signed_in_as": "Signed in as {{name}}",
         "kiro_row_runs_on_kas": "Kiro CLI now runs on Kiro Agent. New sessions already use Kiro Agent, so there is nothing to switch here.",
         "kiro_runs_on_kas": "Kiro CLI now runs on Kiro Agent, so new sessions already use it. Save Kiro Agent as your setting?",
         "kiro_runs_on_kas_save": "Save Kiro Agent as my setting",
@@ -8501,7 +8523,6 @@
         "mcp_deny_manage_link": "Open the MCP Servers list",
         "mcp_deny_rule": "Turning off one MCP tool on {{name}} stops every tool on the same server, not just the one you turned off.",
         "missing_components": "Missing on this machine: {{components}}",
-        "new_sessions_use_this_agent_a_session_that_is_al": "New sessions use this agent. Open sessions keep the one they started with.",
         "not_offered_by_this_build": "This build does not offer this agent.",
         "note_crew_command_channel": "Slash commands travel on the {{productName}} command channel.",
         "note_crew_sandbox_stands_down": "Has its own sandbox. On Windows, and on macOS when its internal sandbox is turned on, the {{productName}} sandbox stands down for it.",
@@ -9335,9 +9356,6 @@
       "profile_dashboard_card_send_hint": "On, a reply button on {{name}}'s Dashboard tab posts that reply straight into your chat with {{name}} in one click. Off, the button puts the reply in the chat box for you to review and send.",
       "profile_dashboard_card_send_failed_on": "Couldn't turn on one-click send. It's still off. Try again.",
       "profile_dashboard_card_send_failed_off": "Couldn't turn off one-click send. It's still on. Try again.",
-      "profile_show_sessions_in_list_switch": "Show in my Sessions list",
-      "profile_show_sessions_in_list_hint": "Chats {{name}} opens also show in your Sessions list. Its Sessions tab always lists them.",
-      "profile_show_sessions_in_list_failed": "Couldn't save this setting. It's unchanged. Try again.",
       "goals_loading": "Loading goals…",
       "goals_load_failed": "Couldn't load the goals.",
       "goals_save_failed": "Couldn't save that change. Please try again.",
@@ -9467,10 +9485,14 @@
       "member_count_filtered_other": "{{shown}} of {{n}} bots",
       "sessions_group_waiting_on_mate": "Waiting on {{name}}",
       "sessions_read_failed": "Could not load the full session list. Showing the open sessions.",
+      "sessions_panel_empty": "This Bot has not started any sessions yet.",
+      "sessions_panel_recap": "Recap",
+      "sessions_panel_open_in_chat": "Open in chat",
+      "sessions_panel_closed": "This session is closed. Reopen it to read and type to it here.",
+      "sessions_panel_reopen": "Reopen session",
+      "sessions_panel_remote": "This session runs on {{crew}}. Open it there.",
       "recap_loading": "Loading…",
       "recap_failed": "Could not load this session's details.",
-      "recap_show": "Details",
-      "recap_hide": "Hide",
       "recap_answer_where": "open that session from the sidebar to answer it",
       "recap_no_report": "No report yet",
       "recap_status": "Status",
@@ -10649,7 +10671,9 @@
       "channelsPanel": {
         "channels": "Messaging Channels",
         "chat_channels": "Chat channels",
-        "off_by_admin": "Off by admin"
+        "off_by_admin": "Off by admin",
+        "not_set_up": "Not set up",
+        "owner_only": "Only the Crew's owner can connect or change channels."
       },
       "chatPanel": {
         "about_you": "About You",
@@ -10672,6 +10696,11 @@
         "topic_tags": "Topic tags",
         "topic_tags_desc": "Tags each new session in the sidebar with up to two topics, like \"debugging\". Uses one background-model call per new session.",
         "transcript": "Transcript",
+        "group_messages": "Messages",
+        "group_steps": "Steps and tools",
+        "group_files_links": "Files and links",
+        "group_replies": "Replies",
+        "group_context": "Context meter",
         "answer_only_details_on_request": "Answer only — plainest words, details on request",
         "auto_add_documents": "Auto-Add Documents",
         "auto_add_saved_artifacts": "Auto-Add Saved Artifacts",
@@ -10725,6 +10754,8 @@
         "feature_tips": "Feature Tips",
         "file_change_chips": "File Change Chips",
         "folder_suggestions": "Folder suggestions",
+        "folder_suggestions_auto_apply": "Apply folder suggestions automatically",
+        "folder_suggestions_auto_apply_desc": "File a new session into the matching folder without asking. A card says where it went, with an undo.",
         "follow_up_bar_layout": "Follow-Up Bar Layout",
         "fork_keeps_only_the_messages_after_the_chosen_po": "Fork keeps only the messages after the chosen point instead of those up to it.",
         "history_expanded": "History Expanded",
@@ -10857,7 +10888,8 @@
         "retry": "Retry",
         "screen_recording": "Screen Recording",
         "screenshot_width": "Screenshot width",
-        "show_cursor_motion": "Show cursor motion"
+        "show_cursor_motion": "Show cursor motion",
+        "linux_unsupported": "Computer Use isn't available on Linux in this release."
       },
       "developerPanel": {
         "developer_tools": "Developer Tools",
@@ -10933,6 +10965,12 @@
         "theme_mode_auto": "Auto",
         "theme_mode_light": "Light",
         "theme_mode_dark": "Dark",
+        "theme_mode_scheduled": "Scheduled",
+        "theme_schedule_light_from": "Light from",
+        "theme_schedule_light_from_hint": "Scheduled mode switches to light at this time, in this device's time zone.",
+        "theme_schedule_dark_from": "Dark from",
+        "theme_schedule_dark_from_hint": "Scheduled mode switches to dark at this time, in this device's time zone.",
+        "theme_schedule_save_failed": "Couldn't save these times. This device uses them; other devices keep the old ones. Try again.",
         "color_mode_solid_tint": "Solid Tint",
         "color_mode_gradient": "Gradient",
         "intensity_soft": "Soft",
@@ -11017,7 +11055,8 @@
         "warm_cap_tune_with_one": "Up to {{count}} remote crew stays warm (live tunnel) at once; the rest reconnect on demand. Tune with <setting/>.",
         "warm_cap_tune_with_other": "Up to {{count}} remote crews stay warm (live tunnel) at once; the rest reconnect on demand. Tune with <setting/>.",
         "remote_port_value": "· remote port {{port}}",
-        "filled_in_from_a_link": "Filled in from a link. Check that the SSH host is a machine you use, then add it."
+        "filled_in_from_a_link": "Filled in from a link. Check that the SSH host is a machine you use, then add it.",
+        "owner_only": "Only the Crew's owner can manage remote crews."
       },
       "notificationsPanel": {
         "app": "app",
@@ -11374,7 +11413,8 @@
         "recheck": "Check again",
         "language": "Language",
         "language_for_spoken_replies": "Language for spoken replies",
-        "language_provider_default": "Provider default"
+        "language_provider_default": "Provider default",
+        "no_engine_teammate": "The Crew's computer has no built-in speech engine. Pick another provider, or ask the Crew's owner to install one."
       },
       "webexPanel": {
         "access": "Access",
@@ -11433,7 +11473,9 @@
         "turn_off_disconnects": "Turning it off disconnects your other devices within a few seconds.",
         "turn_off_needs_terminal": "To turn it back on later, run <command/> in a terminal on the machine running {{productName}}, then restart {{productName}}.",
         "turn_off_failed": "Couldn't turn Remote Control off",
-        "load_failed": "Couldn't read the Remote Control setting"
+        "load_failed": "Couldn't read the Remote Control setting",
+        "on_teammate": "Remote Control is on. People with access can reach this Crew through the Kiro relay.",
+        "owner_only": "Only the Crew's owner can turn Remote Control off."
       },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
@@ -12076,9 +12118,6 @@
       }
     },
     "secrets": {
-      "title": "Secrets Vault",
-      "description": "Store API keys and credentials securely. Secrets are encrypted at rest and refused to the agent's file reads and shell commands; only the code that needs a secret can read it.",
-      "no_secrets": "No secrets stored yet.",
       "add_secret": "Add secret",
       "name_label": "Name",
       "value_label": "Value",
@@ -12139,7 +12178,9 @@
       "use_in_tool_title": "Use in a tool",
       "use_in_tool_tip": "Paste this into a tool’s settings, such as an MCP server’s environment. The tool gets the value when it runs; the value itself never appears there.",
       "advanced_title": "Advanced",
-      "api_call_label": "API call"
+      "api_call_label": "API call",
+      "owner_only": "Only the Crew's owner can see or change secrets.",
+      "relay_unavailable": "Secrets can be seen and changed only on the Crew's computer, not through Remote Control."
     }
   },
   "uiLocations": {
@@ -12396,7 +12437,8 @@
     "first_share_laptop_no_keep_awake": "This computer is a laptop. When it sleeps, they lose access until it wakes.",
     "direct_link_note": "Anyone allowed by Tailscale access rules can open this link.",
     "raised_by": "Raised by {{name}}",
-    "take_over_keeps_draft": "Take over to type. {{name}}'s draft stays with them."
+    "take_over_keeps_draft": "Take over to type. {{name}}'s draft stays with them.",
+    "hero_shared_team": "Shared with your team"
   },
   "shell": {
     "nav": {

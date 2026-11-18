@@ -68,6 +68,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "memory_stores",
         "default_memory_store",
         "apps",
+        "templates",
         "stt",
         "computer_use",
         "aws",
@@ -225,7 +226,9 @@ _RETIRED_SECTION_KEYS_WARNED: dict = {
 #: dropped on save just as ``agent.<key>`` was. Captured one level deeper, as
 #: ``{section: {record_name: {key: value}}}``. ``hooks`` is NOT here: it is
 #: emitted raw (``"hooks": self.hooks``) and round-trips whole.
-_RECORD_MAP_SECTIONS: frozenset = frozenset({"agents", "workspaces", "memory_stores", "apps"})
+_RECORD_MAP_SECTIONS: frozenset = frozenset(
+    {"agents", "workspaces", "memory_stores", "apps", "templates"}
+)
 
 #: Digests of the ``(section, key list)`` pairs :func:`capture_extra_section_keys` has
 #: logged in this process. The gateway rebuilds the config several times a second from

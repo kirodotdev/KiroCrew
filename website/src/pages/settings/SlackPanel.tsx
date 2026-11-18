@@ -621,7 +621,7 @@ export function SlackPanel() {
           {/* Optional auto-connect of every new dashboard session, always into
               the owner's bot DM. Off by default: the thread carries the
               session's title and first prompt into Slack. */}
-          <div className="border-t border-border mt-4 pt-4">
+          <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.slackPanel.auto_link_sessions')}
               description={i18nT('pages.settings.slackPanel.auto_link_sessions_desc_summary')}
@@ -634,7 +634,7 @@ export function SlackPanel() {
           </div>
           {/* Whether conversations that start in Slack are listed in the session
               list. On by default; off leaves them out of the list only. */}
-          <div className="border-t border-border mt-4 pt-4">
+          <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.slackPanel.show_in_session_list')}
               description={i18nT('pages.settings.slackPanel.show_in_session_list_desc_summary')}
@@ -647,7 +647,7 @@ export function SlackPanel() {
           </div>
           {/* Optional per-channel session filing. Off by default: Slack
               conversations stay unfiled in the sidebar, as before. */}
-          <div className="border-t border-border mt-4 pt-4">
+          <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
               hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
@@ -680,7 +680,7 @@ export function SlackPanel() {
       </SettingsSection>
 
       {/* ── Save (hidden on read-only remote sessions) ── */}
-      {!ro && <div className="flex flex-wrap items-center gap-3 mt-1 mb-4">
+      {!ro && <div className="flex flex-row-reverse flex-wrap items-center gap-3 mt-3 mb-4 max-w-[720px]">
         <Btn primary onClick={handleSave} disabled={saveMut.isPending}>
           {saveMut.isPending ? i18nT('pages.settings.slackPanel.saving') : i18nT('pages.settings.slackPanel.save_slack_settings')}
         </Btn>

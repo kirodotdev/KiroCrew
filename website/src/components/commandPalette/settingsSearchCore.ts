@@ -171,8 +171,8 @@ export interface SettingsSearchGovernance {
   updateSwitches: { app: boolean; gateway: boolean }
   /**
    * Whether the Kiro sign-in entry may be offered. False only once the config
-   * read SUCCEEDED and names a harness other than KAS: the card signs out Crew's
-   * own Kiro sign-in, which agents run as only on KAS. Omitted means offered.
+   * schema read SUCCEEDED and this build's harness choices do not list KAS:
+   * then no Kiro account tab exists. Omitted means offered.
    */
   kiroSignInOffered?: boolean
   /**

@@ -410,7 +410,7 @@ async def _cron_run_sequence(
                 )
                 _seq_missing = declared_mcp_not_ready_note(client)
                 if _seq_missing:
-                    _seq_mcp_notes.append(f"⚠ {agent}: {_seq_missing}.")
+                    _seq_mcp_notes.append(f"Warning: {agent}: {_seq_missing}.")
                 # The spec notices for this step's session, once per agent.
                 _seq_notices = _seq_hooks.notices()
                 if _seq_notices and _seq_notices not in _seq_mcp_notes:
@@ -982,7 +982,7 @@ async def _cron_run_single(
         )
         _missing = declared_mcp_not_ready_note(client)
         if _missing:
-            result_text = f"⚠ {_missing}.\n\n{result_text}"
+            result_text = f"Warning: {_missing}.\n\n{result_text}"
         if _directive_refusals:
             result_text = "\n\n".join([*_directive_refusals, result_text])
         # Before set_run_result and the dedup hash below, so the stored

@@ -53,7 +53,6 @@ import {
   PREVIEW_DASHBOARD_STALE_FIELDS,
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
-  PREVIEW_SECRETS_VAULT,
   PREVIEW_WORKER_GRILL,
   readPreviewFlag,
   setPreviewFlag,
@@ -383,11 +382,11 @@ describe('Settings > Developer > Feature Previews', () => {
     'Send pending approvals to chat apps': true,
     'Agent Harness for worker chats': true,
     'Session Environments': true,
+    'Connected computers': true,
     'ACP runtime sharing': true,
     'Artifact Deploy': true,
     'Webhooks': true,
     'MCP sign-in by Kiro Crew': true,
-    'Secrets vault redesign': false,
     'Decisions': true,
   }
   /** The drawn rows in the table's shape: label -> carries an InfoTip. */
@@ -519,8 +518,10 @@ describe('Settings > Developer > Feature Previews', () => {
      * hand-off; neither navigates. Its Install button exists only once a status
      * says nothing is installed, which `KasBundleCard.test.tsx` pins.
      */
+    // The KAS card is a plain row of its group box; its own `data-settings-card`
+    // wrapper is the frame, so the walk stays inside the card.
     const kasFrame = () =>
-      container.querySelector('[data-testid="kas-bundle-card"]')?.closest('.animate-rise') ?? null
+      container.querySelector('[data-testid="kas-bundle-card"]')?.closest('[data-settings-card]') ?? null
     const kasButtons = () =>
       Array.from(kasFrame()?.querySelectorAll('button') ?? [])
         .map(nameOf)
@@ -643,14 +644,6 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(approvals.getAttribute('aria-checked')).toBe('false')
     await act(async () => { approvals.click() })
     expect(localStorage.getItem(PREVIEW_BRIDGE_APPROVALS)).toBe('1')
-  })
-
-  it('offers the Secrets vault redesign switch, off by default', async () => {
-    renderTab()
-    const vault = screen.getByRole('switch', { name: /^secrets vault redesign$/i })
-    expect(vault.getAttribute('aria-checked')).toBe('false')
-    await act(async () => { vault.click() })
-    expect(localStorage.getItem(PREVIEW_SECRETS_VAULT)).toBe('1')
   })
 
   it('offers the worker grill switch, off by default', async () => {

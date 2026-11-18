@@ -446,8 +446,10 @@ def chat_folder_for_minted_tab(state: DashboardState, job: "CronJob") -> str:
     Asked only when the tab is minted, never for one that already exists. An
     existing tab with no folder may be one the reader dragged out to the root
     -- indistinguishable from never-filed -- and filing on "unfiled" would drag
-    it back on every run. A freshly minted tab has no placement history, so
-    filing it cannot undo anyone's. Later transitions belong to the save
+    it back on every run. A tab minted for the first time has no placement
+    history, so filing it cannot undo anyone's; one minted again after a close
+    gets its stored folder back first (:func:`_bind_cron_slot`), and the job's
+    folder replaces it. Later transitions belong to the save
     (:func:`move_cron_job_tab`).
 
     A folder the reader deleted while the job still names it leaves the tab
@@ -559,7 +561,9 @@ def persist_cron_chat_folder(state: DashboardState, job: "CronJob", slot: Any) -
     if not target:
         return
     task = asyncio.create_task(
-        _commit_cron_tab_placement(state, job, slot, placed=target, restore_to="")
+        _commit_cron_tab_placement(
+            state, job, slot, placed=target, restore_to=getattr(slot, "folder_id", "")
+        )
     )
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
@@ -648,6 +652,7 @@ def _bind_cron_slot(
     *,
     session_key: str = "",
     workspace: str | None = None,
+    stored_folder: str = "",
 ) -> Any | None:
     """Create-or-find the job's dashboard slot, bind its identity, publish it.
 
@@ -666,6 +671,11 @@ def _bind_cron_slot(
 
     ``workspace`` is the job agent's workspace (:func:`cron_tab_workspace`) when
     the caller resolved it off the loop; ``None`` resolves it here.
+
+    ``stored_folder`` is the folder the transcript's line names
+    (:func:`stored_cron_folder`), read off the loop by the caller. A tab minted
+    again after a close is filed back in it, so its first save does not write
+    the tab unfiled over the person's filing; the job's own folder still wins.
     """
     link_key = session_key or f"cron:{job.id}"
     name = cron_tab_name(link_key)
@@ -749,6 +759,13 @@ def _bind_cron_slot(
 
     _sync_dashboard_slots(state)
     if minted:
+        # A folder deleted since, or one this tab's store may not sit in, is
+        # dropped: the tab lands unfiled, as it does for the job's own folder.
+        memory_store = str(getattr(slot, "memory_store", "") or "")
+        if chat_folder_exists(state, stored_folder) and not chat_folder_refuses_store(
+            state, stored_folder, memory_store
+        ):
+            slot.folder_id = stored_folder
         persist_cron_chat_folder(state, job, slot)
     return slot
 
@@ -787,6 +804,7 @@ def inject_cron_result_to_dashboard(
     context_reading: dict[str, Any] | None = None,
     turn_stats: dict[str, Any] | None = None,
     session_key: str = "",
+    stored_folder: str = "",
 ) -> None:
     """Inject cron result into linked dashboard chat slot (shared by to-chat and auto-inject).
 
@@ -840,8 +858,13 @@ def inject_cron_result_to_dashboard(
     ``session_key`` is a ``new_chat_per_run`` run's own key: the run lands in
     its own tab and transcript (see :func:`_bind_cron_slot`). Empty means the
     job's ``cron:{id}`` tab.
+
+    ``stored_folder`` is :func:`_bind_cron_slot`'s: the folder a tab minted
+    again is filed back in.
     """
-    slot = _bind_cron_slot(state, job, history, dismissed, session_key=session_key)
+    slot = _bind_cron_slot(
+        state, job, history, dismissed, session_key=session_key, stored_folder=stored_folder
+    )
     if slot is None:
         return
     safe_name = _safe_job_name(job)
@@ -1073,6 +1096,24 @@ async def prefetch_cron_dismissed(state: DashboardState, job_id: str) -> object:
     return dismissed
 
 
+async def stored_cron_folder(state: DashboardState, job_id: str) -> str:
+    """Off-loop read of the folder the job's closed tab was filed in; ``""`` if none.
+
+    Read only while the job has no tab, the one case :func:`_bind_cron_slot`
+    mints it and needs the line's ``folder_id``. A failed or unreadable read
+    answers ``""``: the tab lands unfiled, as it did before this read existed.
+    """
+    log = state.conversation_log
+    if log is None or state.get_slot(f"cron-{job_id}") is not None:
+        return ""
+    try:
+        meta, readable = await asyncio.to_thread(log.get_metadata_status, f"cron:{job_id}")
+    except Exception:
+        return ""
+    folder = meta.get("folder_id") if readable else ""
+    return folder if isinstance(folder, str) else ""
+
+
 async def ensure_cron_slot(state: DashboardState, job: "CronJob") -> None:
     """Make an eligible job's tab exist — and carry its identity — at run START.
 
@@ -1119,7 +1160,8 @@ async def ensure_cron_slot(state: DashboardState, job: "CronJob") -> None:
         return
     history = await prefetch_cron_history(state, job.id)
     dismissed = await prefetch_cron_dismissed(state, job.id)
-    _bind_cron_slot(state, job, history, dismissed, workspace=workspace)
+    folder = await stored_cron_folder(state, job.id)
+    _bind_cron_slot(state, job, history, dismissed, workspace=workspace, stored_folder=folder)
     await restore_cron_turn_timeout(state, job.id)
 
 

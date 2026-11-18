@@ -12,7 +12,7 @@ import { Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -45,7 +45,7 @@ import { LOCKED_FEATURE_PREVIEWS, useControlLocked } from '../../utils/editionLo
  * keys across fourteen catalogs buys no user-visible change.
  *
  * ONE ROW PER FEATURE, grouped by what the feature is about: each group is a
- * heading over one boxed card (`PreviewGroup`), and every direct child of that
+ * heading over one group box (`PreviewGroup`), and every direct child of that
  * card is one feature's row. Everything that belongs to a feature lives inside
  * its row: the headline, the sentence explaining what state it is in, its
  * toggle, and any ingress that only appears once it is on. A reader scanning the
@@ -136,10 +136,10 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_DASHBOARD_STALE_WAKE: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_wake')
     case PREVIEW_BRIDGE_APPROVALS: return i18nT('pages.developer.featurePreviewsTab.bridge_approvals')
     case PREVIEW_CHAT_RUNTIME_SHARING: return i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')
-    case PREVIEW_SECRETS_VAULT: return i18nT('pages.developer.featurePreviewsTab.secrets_vault')
     case PREVIEW_WORKER_GRILL: return i18nT('pages.developer.featurePreviewsTab.worker_grill')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
     case PREVIEW_SESSION_HARNESS: return i18nT('pages.developer.featurePreviewsTab.session_harness')
+    case PREVIEW_CONNECTED_COMPUTERS: return i18nT('connectedComputers.preview.label')
     default: return i18nT('pages.settings.developerPanel.feature_previews')
   }
 }
@@ -160,21 +160,22 @@ export const FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR = 'feature-previews-section'
 export const SHARED_CREW_RESTART_VERIFY_TIMEOUT_MS = 60_000
 
 /**
- * One group of preview rows: a heading over ONE boxed card, each direct child of
+ * One group of preview rows: a heading over ONE group box, each direct child of
  * the card a row. The whole group, heading included, is hidden while its box
- * holds no row (`:has` over the box's `:empty`): an LTS build withholds the flag
+ * holds no row (`:has` over the box's `:empty`, the group's OWN box only, so a
+ * row that is itself a box and renders empty never hides the group): an LTS build withholds the flag
  * rows, and a config-backed card renders nothing until its read answers, so a
  * heading is never left standing over an empty box.
  */
 function PreviewGroup({ title, children }: { title?: string; children: ReactNode }) {
   return (
-    <div className="mt-6 first:mt-0 has-[[data-settings-box]:empty]:hidden">
+    <div className="mt-6 first:mt-0 has-[>[data-settings-card]>[data-settings-box]:empty]:hidden has-[>div>[data-settings-card]>[data-settings-box]:empty]:hidden">
       {title ? (
         <SettingsSection title={title}>
-          <SettingsCard boxed>{children}</SettingsCard>
+          <SettingsCard>{children}</SettingsCard>
         </SettingsSection>
       ) : (
-        <SettingsCard boxed>{children}</SettingsCard>
+        <SettingsCard>{children}</SettingsCard>
       )}
     </div>
   )
@@ -194,10 +195,10 @@ export function FeaturePreviewsSection() {
   const dashboardStaleWake = usePreviewFlag(PREVIEW_DASHBOARD_STALE_WAKE)
   const bridgeApprovals = usePreviewFlag(PREVIEW_BRIDGE_APPROVALS)
   const chatRuntimeSharing = usePreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING)
-  const secretsVault = usePreviewFlag(PREVIEW_SECRETS_VAULT)
   const workerGrill = usePreviewFlag(PREVIEW_WORKER_GRILL)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const sessionHarness = usePreviewFlag(PREVIEW_SESSION_HARNESS)
+  const connectedComputers = usePreviewFlag(PREVIEW_CONNECTED_COMPUTERS)
   const explore = usePreviewFlag(PREVIEW_EXPLORE)
   const crewOauth = usePreviewFlag(PREVIEW_CREW_OAUTH)
   const writeError = usePreviewFlagWriteError()
@@ -489,6 +490,18 @@ export function FeaturePreviewsSection() {
             {chatRuntimeSharing && <ChatRuntimeSharingHarnessRows />}
           </div>
         )}
+        {/* Connected computers (`connected_computers`): read by this gateway's
+            backend too (`kiro_crew.connected_computers.flag`): off refuses sharing,
+            connects and starts, and ends live connections. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('connectedComputers.preview.label')}
+            description={i18nT('connectedComputers.preview.description')}
+            hint={i18nT('connectedComputers.preview.hint')}
+            checked={connectedComputers}
+            onChange={value => setPreviewFlag(PREVIEW_CONNECTED_COMPUTERS, value)}
+          />
+        )}
         {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch
             and the Install button for the pinned engine. It lives here, not on the
             KAS harness row, while the route is in shadow testing, so the one click
@@ -496,14 +509,17 @@ export function FeaturePreviewsSection() {
             plain view of every KAS user. Unlike the rows around it, the switch is not
             a preview flag but its own config value; the card writes it through the
             same config PATCH it always did, and says itself that it needs a
-            restart. Its own SettingsCard so a capture or test can find the card's
-            frame; isolated so a throwing card cannot take the group down. */}
+            restart. A plain row of the group box, not a box of its own: a nested
+            group box that renders empty (status still loading, or the boundary's
+            null fallback) would match the group's `:empty` hide rule and take the
+            whole group down. `data-settings-card` keeps the capture/test anchor;
+            isolated so a throwing card cannot take the group down. */}
         {kasOffered && (
-          <SettingsCard>
+          <div data-settings-card="">
             <ErrorBoundary scope="feature-preview-kas-bundle" fallback={null}>
               <KasBundleCard />
             </ErrorBoundary>
-          </SettingsCard>
+          </div>
         )}
         {/* Conductor remote dispatch (`work_ledger.remote_dispatch`). Like the KAS card
             above, its switch is the gateway's own config value, not a preview flag:
@@ -588,16 +604,6 @@ export function FeaturePreviewsSection() {
             hint={i18nT('pages.developer.featurePreviewsTab.crew_oauth_desc')}
             checked={crewOauth}
             onChange={v => setPreviewFlag(PREVIEW_CREW_OAUTH, v)}
-          />
-        )}
-        {/* Secrets vault redesign (`secrets_vault`): Settings > Secrets as a
-            list-detail pane; off, the tab is the single-page panel. */}
-        {!previewsOff && (
-          <SettingsToggle
-            label={i18nT('pages.developer.featurePreviewsTab.secrets_vault')}
-            description={i18nT('pages.developer.featurePreviewsTab.secrets_vault_desc')}
-            checked={secretsVault}
-            onChange={v => setPreviewFlag(PREVIEW_SECRETS_VAULT, v)}
           />
         )}
       </PreviewGroup>

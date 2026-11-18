@@ -314,8 +314,12 @@ def _install_mate_worker_agent() -> None:
     The agent a crewmate's worker sessions run on: the session its chat opens
     with ``session_create`` to hand work off. Derived from the default template
     like the mate conductor above, so its base prompt, tools and ``mcpServers``
-    are the ones a crewmate's hand-off session ran on before it had a worker of
-    its own. This file is the worker's whole SOURCE BASE; a crewmate's own
+    are the template's. The ``~/.kiro/crew/mcp.json`` store is not merged in, so
+    a server added on the MCP Servers page does not reach a Bot's worker base; a
+    Bot's worker gets it only when it is added to that Bot
+    (``docs/architecture/agent-mcp-and-skill-reach.md``, "Mate worker", and
+    ``docs/decisions/*-conductors-stay-simple-and-new-abilities-go-to-workers.md``).
+    This file is the worker's whole SOURCE BASE; a crewmate's own
     additions (``~/.kiro/mates/agents/<id>.json``) are layered on at projection
     time by :mod:`kiro_crew.mate_worker`, never written here, so one file serves
     every crewmate.

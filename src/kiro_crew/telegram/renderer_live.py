@@ -114,7 +114,7 @@ def _consume_reply_to(self: TelegramRenderer) -> int | None:
 async def _stream_live(self: TelegramRenderer, *, force: bool = False) -> None:
     """Throttled in-place edit of the current segment (plaintext, so partial
     markdown never 400s). Sends the message on first render. The transient
-    ``🔧 {tool}…`` footer and the stall mark are appended ONLY here (live
+    ``Running {tool}…`` footer and the stall mark are appended ONLY here (live
     frames) — seals and the final render read ``_segment_text`` and never
     carry either. ``force`` bypasses the throttle so a tool-call event, or a
     stall mark the typing tick noticed, surfaces immediately.
@@ -141,7 +141,7 @@ async def _stream_live_locked(self: TelegramRenderer, *, force: bool) -> None:
     stall = self._stall_mark()
     # The tool footer wins: it names what is happening, which is strictly
     # more informative than "nothing has happened".
-    footer = f"🔧 {self._tool}…" if self._tool else stall
+    footer = f"Running {self._tool}…" if self._tool else stall
     if footer:
         # Keep the footer visible even when it must displace body tail chars.
         room = self._limit() - _utf16_len(footer) - 2
@@ -212,7 +212,7 @@ async def _delete_replaced_frame(self: TelegramRenderer, mid: int | None) -> Non
 def note_steer(self: TelegramRenderer, text: str) -> None:
     """Record the user's own mid-turn steer text (their typed words, NOT the
     redacted backend echo). Called by the dispatcher when a steer is actually
-    injected; rendered as an inline "↪️ steered: …" chip in on_done. Capped to
+    injected; rendered as an inline "↪ steered: …" chip in on_done. Capped to
     avoid unbounded growth on a pathological steer burst."""
     t = (text or "").strip()
     if t and len(self._steer_texts) < 50:

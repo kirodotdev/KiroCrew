@@ -30,7 +30,7 @@ document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-li
 const SLOT = 'main'
 
 const WIRE =
-  "KAS runs through kiro-cli's relay. Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, then start a new chat."
+  "KAS runs through kiro-cli's relay. Not signed in to Kiro. Sign in from Settings → Kiro account, then send your message again."
 let seq = 0
 const msg = (role: string, content: string, over: Partial<ChatMessage> = {}): ChatMessage => ({
   role,

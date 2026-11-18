@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, act } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -115,10 +116,12 @@ afterEach(() => {
 describe('KnowledgePage — a bulk action that fails part-way', () => {
   for (const action of ['Delete', 'Archive'] as const) {
     it(`${action}: the item the server changed leaves the list, the refused one stays`, async () => {
-      vi.stubGlobal('confirm', vi.fn(() => true))
       renderPage()
       await searchAndSelectBoth()
       await userEvent.click(screen.getByRole('button', { name: action }))
+      if (action === 'Delete') {
+        await confirmAction('Delete')
+      }
       // The refusal is already in; the other write is still in flight. No
       // failure is reported until every request has answered.
       await waitFor(() => expect(releaseHeld).not.toBeNull(), PAGE_REQUEST_CHAIN())

@@ -120,12 +120,12 @@ def admission_source() -> CapabilityContribution:
 def admission_usage() -> Mapping[str, Mapping[str, int]]:
     """``principal id -> {"active", "queued"}`` from the fair scheduler.
 
-    Raises when admission is off, so the People page reports usage as
-    unavailable rather than as zero.
+    Raises ``people.UsageOff`` when admission is off, so the People page reports
+    usage as not counted rather than as zero or as a failure.
     """
     service = admission_gate.installed_service()
     if service is None or not service.enabled:
-        raise LookupError("fair admission is off")
+        raise people.UsageOff("fair admission is off")
     snap = service.scheduler.snapshot()
     principals = snap.get("principals")
     out: dict[str, dict[str, int]] = {}

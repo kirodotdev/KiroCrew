@@ -366,7 +366,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 {"error": f"{_text_field} must be a string", "code": f"invalid_{_text_field}"},
                 status=400,
             )
-    for _bool_field in ("dashboard_card_send", "show_sessions_in_list"):
+    for _bool_field in ("dashboard_card_send",):
         if _bool_field in body and not isinstance(body[_bool_field], bool):
             return web.json_response(
                 {"error": f"{_bool_field} must be a boolean", "code": f"invalid_{_bool_field}"},
@@ -831,9 +831,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # Already validated above, before any mutation.
             agent.dashboard_card_send = body["dashboard_card_send"]
             changed.append("dashboard_card_send")
-        if "show_sessions_in_list" in body:
-            agent.show_sessions_in_list = body["show_sessions_in_list"]
-            changed.append("show_sessions_in_list")
         effort_inputs_after = _effort_inputs(agent)
         # Avatar rollback applies only to ordinary failure: cancellation may
         # arrive after the drained worker published the new avatar pin. Store

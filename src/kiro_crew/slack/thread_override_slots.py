@@ -118,7 +118,7 @@ def setter_refusal(kind: str, value: str) -> str | None:
         return None
     noun = "agent name" if kind == "agent" else "project path"
     return (
-        f"❌ Not set: that {noun} is {len(value)} characters, over the "
+        f"Error: Not set: that {noun} is {len(value)} characters, over the "
         f"{OVERRIDE_VALUE_MAX_CHARS}-character limit."
     )
 
@@ -222,7 +222,7 @@ def pin(
 def refusal_text() -> str:
     """What ``!ta`` and ``!project`` reply when :func:`pin` refuses."""
     return (
-        f"❌ Not set: {MAX_PINNED_THREADS} threads already have a thread agent or project in "
+        f"Error: Not set: {MAX_PINNED_THREADS} threads already have a thread agent or project in "
         "this process. Clear one with `!ta off` or `!project off` in its thread, then try again."
     )
 
@@ -238,7 +238,7 @@ def unheld_reset_text(kind: str) -> str:
     """
     noun, command = ("agent", "!ta off") if kind == "agent" else ("project", "!project off")
     return (
-        f"🔄 Thread {noun} reset for now. {MAX_PINNED_THREADS} threads already have a thread "
+        f"Thread {noun} reset for now. {MAX_PINNED_THREADS} threads already have a thread "
         f"agent or project in this process, so this thread cannot be kept, and its recorded "
         f"{noun} can come back. Clear one in another thread, then run "
         f"`{command}` here again."

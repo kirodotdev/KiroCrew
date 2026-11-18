@@ -279,6 +279,10 @@ class KasMcpReadiness:
     required: tuple[str, ...]
     tool_policy: dict[str, Any] | None = None
     injected: frozenset[str] = frozenset()
+    #: Required servers whose every tool the agent's managed tool policy hides
+    #: (``mcp_start_wait.policy_hidden_servers``). Such a server lists nothing for
+    #: this session, so it is ready once connected, like a server ``tools`` hides.
+    policy_hidden: frozenset[str] = frozenset()
     states: dict[str, str] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)
     #: Exposure evidence, kept per source because each snapshot is authoritative
@@ -312,8 +316,11 @@ class KasMcpReadiness:
 
         ``permissions`` controls approval, not exposure. Read only the projected
         ``tools`` / ``excludedTools`` and the backend's per-tool disabled flags.
-        Missing or empty catalogs alone never establish an intentional restriction.
+        Missing or empty catalogs alone never establish an intentional restriction;
+        the managed tool policy (:attr:`policy_hidden`) does.
         """
+        if name in self.policy_hidden:
+            return False
         if self.tool_policy is None or "tools" not in self.tool_policy:
             return True
         raw = self.tool_policy["tools"]
@@ -761,6 +768,11 @@ class McpSessionReport:
     _ready: list[str] = field(default_factory=list)
     _failed: list[str] = field(default_factory=list)
     _awaiting_auth: list[str] = field(default_factory=list)
+    #: Servers Crew's credential-free probe found asking for a sign-in
+    #: (:meth:`record_sign_in_asked`). Advisory, and kept apart from
+    #: ``_awaiting_auth``: the host may already hold their sign-in, so no reader of
+    #: the buckets or of :meth:`not_ready` may call them unusable.
+    _sign_in_suspected: list[str] = field(default_factory=list)
     _failures: dict[str, str] = field(default_factory=dict)
     #: Name -> the count of the frame that last reported it (:meth:`record_frame`),
     #: for the names a FRAME put where they are, as opposed to ones Kiro Crew
@@ -862,6 +874,7 @@ class McpSessionReport:
         self._ready.clear()
         self._failed.clear()
         self._awaiting_auth.clear()
+        self._sign_in_suspected.clear()
         self._failures.clear()
         self._reattempting = frozenset()
         self._reload_pending = ()
@@ -1178,6 +1191,28 @@ class McpSessionReport:
                 recorded.append(name)
         return recorded
 
+    def record_sign_in_asked(self, names: Any) -> list[str]:
+        """Note servers Crew's own credential-free probe found asking for a sign-in.
+
+        Advisory only: they go to ``sign_in_suspected`` in the payload, never to a
+        bucket or :meth:`not_ready`, because the host may already hold their
+        sign-in and no reader may then call them unusable. A server that reported
+        on its own is left out: its own frame is better evidence. Bounded at
+        :data:`BUCKET_CAP`. Announces the change. Returns the names noted.
+        """
+        before = tuple(self._sign_in_suspected)
+        fresh = (
+            sanitize_sink_text(raw, _NAME_CAP)
+            for raw in (names if isinstance(names, (list, tuple)) else ())
+            if isinstance(raw, str) and not self.has_reported(raw)
+        )
+        kept, _more = keep((n for n in (*before, *fresh) if n), _BUCKET_CAP)
+        self._sign_in_suspected = list(kept)
+        noted = [n for n in kept if n not in before]
+        if noted:
+            self._announce()
+        return noted
+
     def record_pruned_omitted(self, count: Any) -> bool:
         """Record how many pruned servers were past the cap and are not listed.
 
@@ -1266,6 +1301,9 @@ class McpSessionReport:
             said = (snapshot.dropped, snapshot.disabled, snapshot.pending)
             changed = said != (self.registry_dropped, self._host_disabled, self._host_pending)
             self.registry_dropped, self._host_disabled, self._host_pending = said
+            # Each name the host lists here is the host's to describe, not the probe's.
+            for listed in (*snapshot.dropped, *snapshot.disabled, *snapshot.pending):
+                self._forget_sign_in_suspected(listed)
             if snapshot.omitted > self._cut.get("snapshot", 0):
                 self._cut["snapshot"] = snapshot.omitted
             for name, status, needs_sign_in, error in snapshot.servers:
@@ -1276,6 +1314,8 @@ class McpSessionReport:
                 elif status == "connected":
                     action = _ACTION_INITIALIZED
                 else:
+                    # The host now speaks for this server: the probe's guess goes.
+                    self._forget_sign_in_suspected(name)
                     # A reconnect is pending, not the old connection or failure. A
                     # server awaiting sign-in stays: its consent link is still open.
                     for bucket in (self._ready, self._failed):
@@ -1367,8 +1407,14 @@ class McpSessionReport:
         self._host_pending.discard(name)
         return whole
 
+    def _forget_sign_in_suspected(self, name: str) -> None:
+        """Drop the probe's advisory for *name* once the host reports it itself."""
+        if name in self._sign_in_suspected:
+            self._sign_in_suspected.remove(name)
+
     def _record(self, action: str, name: str, error: str = "") -> bool:
         """Move ``name`` into the bucket ``action`` implies, evicting the others."""
+        self._forget_sign_in_suspected(name)
         target = {
             _ACTION_INITIALIZED: self._ready,
             _ACTION_INIT_FAILURE: self._failed,
@@ -1607,6 +1653,8 @@ class McpSessionReport:
             "ready": list(self._ready),
             "failed": list(self._failed),
             "awaiting_auth": list(self._awaiting_auth),
+            # Advisory: what Crew's own probe saw, never a bucket (record_sign_in_asked).
+            "sign_in_suspected": list(self._sign_in_suspected),
             "states": {state: list(names) for state, names in self.not_ready().items()},
             "states_omitted": self.left_out,
             "failures": dict(self._failures),

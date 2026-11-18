@@ -88,7 +88,7 @@ class TestDispatchTransportToolApproval:
             _action_payload(f"{TOOL_APPROVE_ACTION_PREFIX}rid1", f"sess1:rid1|{nonce}")
         )
         _decider.resolve_global.assert_called_once_with("sess1:rid1", True, nonce=nonce)
-        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Approved"
+        assert orch.slack.update_message.await_args.kwargs["text"] == "Approved"
         assert await await_until(waiter) is True
         assert _audit_ops(audit, "slack.transport_tool_approval") == [
             ("approved", "approval_key=sess1:rid1")
@@ -103,7 +103,7 @@ class TestDispatchTransportToolApproval:
         _, nonce, waiter = _prompt("sess1", "rid2")
         await ix.dispatch(_action_payload(f"{TOOL_DENY_ACTION_PREFIX}rid2", f"sess1:rid2|{nonce}"))
         _decider.resolve_global.assert_called_once_with("sess1:rid2", False, nonce=nonce)
-        assert orch.slack.update_message.await_args.kwargs["text"] == "🚫 Denied"
+        assert orch.slack.update_message.await_args.kwargs["text"] == "Denied"
         assert await await_until(waiter) is False
         assert _audit_ops(audit, "slack.transport_tool_approval") == [
             ("denied", "approval_key=sess1:rid2")
@@ -127,7 +127,7 @@ class TestDispatchTransportToolApproval:
         _decider.resolve_global.assert_called_once_with("sess1:rid3", True, nonce=nonce)
         assert is_session_trusted("sess1")
         assert await await_until(waiter) is True
-        assert orch.slack.update_message.await_args.kwargs["text"].startswith("🔓 Trusted")
+        assert orch.slack.update_message.await_args.kwargs["text"].startswith("Trusted")
 
     @pytest.mark.asyncio
     async def test_trust_denied_during_the_channels_check_approves_once(
@@ -151,7 +151,7 @@ class TestDispatchTransportToolApproval:
         await ix.dispatch(_action_payload(f"{TOOL_TRUST_ACTION_PREFIX}rid7", f"sess1:rid7|{nonce}"))
         assert is_session_trusted("sess1") is False
         assert await await_until(waiter) is True
-        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Approved"
+        assert orch.slack.update_message.await_args.kwargs["text"] == "Approved"
         assert _audit_ops(audit, "slack.transport_tool_approval") == [
             ("approved", "approval_key=sess1:rid7")
         ]
@@ -259,7 +259,7 @@ class TestAckHandlers:
         payload = _payload(message={"ts": "m1", "blocks": [], "text": "hello"})
         await ix._handle_cron_ack(payload, {"value": job.id}, "C1", "m1")
         orch.cron_svc.ack_job_async.assert_awaited_once_with(job.id, "hello")
-        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
+        assert orch.slack.update_message.await_args.kwargs["text"] == "Acknowledged"
         # The acknowledgement is stored on the job a fresh reader loads.
         assert CronService(base_dir=tmp_path / "cron").get_job(job.id).acked_items == ["hello"]
 
@@ -283,7 +283,7 @@ class TestAckHandlers:
         await ix._handle_cron_ack(_payload(), {"value": "job1"}, "C1", "m1")
         orch.cron_svc.ack_job_async.assert_awaited_once_with("job1", "")
         assert "cron ack skipped: CronStoreBusy (job job1)" in _ix_messages(ix_logs)
-        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
+        assert orch.slack.update_message.await_args.kwargs["text"] == "Acknowledged"
 
     @pytest.mark.asyncio
     async def test_cron_ack_marks_matching_notification(
@@ -337,4 +337,4 @@ class TestAckHandlers:
         # The visual ack happens before the early return.
         assert [
             (u.get("channel"), u.get("ts"), u.get("text")) for u in wire.sent("chat.update")
-        ] == [("C1", "m1", "✅ Acknowledged")]
+        ] == [("C1", "m1", "Acknowledged")]

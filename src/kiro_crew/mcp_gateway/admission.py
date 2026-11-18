@@ -458,8 +458,18 @@ class SpawnGate:
         process_exited: Callable[[], Awaitable[Any]],
         timeout: float,
     ) -> None:
+        # The process exiting is the other way the handshake provably never
+        # arrives: a private backend is shut down the moment its stub leaves, and a
+        # stub that left before ``initialize`` leaves ``init_done`` unset. The
+        # permit is freed then, not after the whole ``timeout`` (30 s at the
+        # cold-start floor), so abandoned spawns cannot hold every slot (default
+        # capacity four) while the session's real server starts queue behind them.
+        exited = asyncio.ensure_future(process_exited())
         try:
-            done = await self._wait_event(init_done, timeout)
+            done = await self._wait_event(init_done, timeout, exited)
+            if not done and exited.done():
+                permit.settle(OUTCOME_NEUTRAL)
+                return
             if not done and init_state() == "in_flight":
                 done = await self._wait_event(init_done, timeout + _INIT_WATCH_GRACE_SECS)
             state = init_state()
@@ -476,15 +486,28 @@ class SpawnGate:
                 return
             permit.settle(OUTCOME_NEUTRAL)
         finally:
+            exited.cancel()
             permit.release()
 
     @staticmethod
-    async def _wait_event(event: asyncio.Event, timeout: float) -> bool:
+    async def _wait_event(
+        event: asyncio.Event, timeout: float, exited: Optional["asyncio.Future[Any]"] = None
+    ) -> bool:
+        """Wait up to ``timeout`` for ``event``, or for ``exited`` when one is given.
+
+        Returns whether the event is set, so a process that exited with the event
+        already set still reads as done.
+        """
+        waiting: "asyncio.Future[Any]" = asyncio.ensure_future(event.wait())
         try:
-            await asyncio.wait_for(event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return False
-        return True
+            await asyncio.wait(
+                [waiting] if exited is None else [waiting, exited],
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            waiting.cancel()
+        return event.is_set()
 
     # -- drain ---------------------------------------------------------------
 
