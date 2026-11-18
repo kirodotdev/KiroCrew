@@ -1016,7 +1016,7 @@ async def execute_task(
                             event.tool_input,
                             parent_session_key=session_key or None,
                             agent_role=(agent or "kirocrew"),
-                            raw_tool_params=event.raw_tool_params,
+                            raw_tool_params=getattr(event, "raw_tool_params", None),
                         )
                 elif event.kind == EVENT_COMPLETE:
                     _complete_event = event
