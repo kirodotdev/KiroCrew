@@ -463,6 +463,9 @@ class BrowserLiveStore {
       this.evictRings(s)
       // A new turn starts with no card showing it; the unseen count is per turn.
       s.unseenFrames = 0
+      // The gateway may hold a fresh session for it (a chat reopened on the key, a
+      // restart), so the last visibility it heard is not this turn's: report again.
+      s.reportedVisible = null
     }
     this.notify()
   }
@@ -617,9 +620,10 @@ class BrowserLiveStore {
     if (s.reportedVisible === v) return
     s.reportedVisible = v
     // A write the gateway did not take was not heard: forget it, so the next report
-    // sends this value again instead of being skipped as already sent.
-    this.writes.visibility(sessionKey, v).catch(() => {
-      if (s.reportedVisible === v) s.reportedVisible = null
+    // sends this value again instead of being skipped as already sent. A closed
+    // chat's key is refused for good (`unknown_session`), so that one is not resent.
+    this.writes.visibility(sessionKey, v).catch((e: unknown) => {
+      if (s.reportedVisible === v && errorCode(e) !== 'unknown_session') s.reportedVisible = null
     })
   }
 
