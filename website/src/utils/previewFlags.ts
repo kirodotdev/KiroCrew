@@ -235,6 +235,14 @@ export const PREVIEW_CHAT_RUNTIME_SHARING = `${PREVIEW_FLAG_PREFIX}chat-runtime-
 export const PREVIEW_WORKER_GRILL = `${PREVIEW_FLAG_PREFIX}worker-grill`
 
 /**
+ * App browser SDK (rfc-app-sdk-browser.md): the `permissions.browser` verbs an app may use on
+ * the browser tabs of its own slots, and the backend's `ctx.browser`. Has SERVER
+ * behavior: off, the gateway builds no `ctx.browser` and an approved verb has no
+ * effect (`apps/browser_sdk.py`). The app page reads it only to say so. Default OFF.
+ */
+export const PREVIEW_APP_BROWSER_SDK = `${PREVIEW_FLAG_PREFIX}app-browser-sdk`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -257,6 +265,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_CHAT_RUNTIME_SHARING,
   PREVIEW_WORKER_GRILL,
+  PREVIEW_APP_BROWSER_SDK,
 ]
 
 /**

@@ -56,6 +56,7 @@ import {
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_WORKER_GRILL,
+  PREVIEW_APP_BROWSER_SDK,
   readPreviewFlag,
   setPreviewFlag,
 } from '../utils/previewFlags'
@@ -695,6 +696,14 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(grill.getAttribute('aria-checked')).toBe('false')
     await act(async () => { grill.click() })
     expect(localStorage.getItem(PREVIEW_WORKER_GRILL)).toBe('1')
+  })
+
+  it('offers the app browser access switch, off by default', async () => {
+    renderTab()
+    const browser = screen.getByRole('switch', { name: /^app browser access$/i })
+    expect(browser.getAttribute('aria-checked')).toBe('false')
+    await act(async () => { browser.click() })
+    expect(localStorage.getItem(PREVIEW_APP_BROWSER_SDK)).toBe('1')
   })
 
   it('reads the retired instance-sessions key as on, and clears it when turned off', async () => {

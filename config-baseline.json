@@ -10823,6 +10823,20 @@
       "defaultValue": {}
     },
     {
+      "path": "dashboard.feature_previews.app_browser_sdk",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: app_browser_sdk",
+      "help": "Turn on the 'app_browser_sdk' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.artifact_deploy",
       "kind": "core",
       "type": "boolean",

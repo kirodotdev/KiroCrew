@@ -12,12 +12,13 @@ export interface DisclosedPermissions {
   chatLaunch?: unknown
   reachableByUserSessions?: string[]
   desktopCapabilities?: string[]
+  browser?: string[]
   webhookSource?: boolean
 }
 
 type TrustGrants = Pick<
   TrustAppTarget,
-  'sessionApproval' | 'memberThreads' | 'workerAutoApprove' | 'chatSlots' | 'hiddenSessions' | 'chatLaunch' | 'reachableByUserSessions' | 'desktopCapabilities' | 'api' | 'webhookSource'
+  'sessionApproval' | 'memberThreads' | 'workerAutoApprove' | 'chatSlots' | 'hiddenSessions' | 'chatLaunch' | 'reachableByUserSessions' | 'desktopCapabilities' | 'browser' | 'api' | 'webhookSource'
 >
 
 /**
@@ -36,6 +37,7 @@ export function trustGrants(permissions: DisclosedPermissions | undefined): Trus
     chatLaunch: knownChatLaunch(permissions?.chatLaunch),
     reachableByUserSessions: permissions?.reachableByUserSessions,
     desktopCapabilities: permissions?.desktopCapabilities,
+    browser: permissions?.browser,
     api: permissions?.api,
     webhookSource: permissions?.webhookSource === true,
   }

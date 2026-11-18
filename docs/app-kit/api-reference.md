@@ -2031,6 +2031,30 @@ app named like a core source (`agent`) is always refused. The seam grants nothin
 the route, its gateway-token authentication, your signature check and your audit rows
 stay yours. The owner sees the declaration, with the source id, at the trust prompt.
 
+### Browser (`ctx.browser`)
+
+The browser tabs of your app's own chat slots (RFC #38322, step 1a). Present only
+when the manifest declares `permissions.browser` and the owner turned on **App
+browser access** (`dashboard.feature_previews.app_browser_sdk`) in Settings >
+Developer > Feature previews; `None` otherwise, so feature-detect it:
+
+```python
+browser = getattr(ctx, "browser", None)
+if browser is None or "read" not in browser.verbs():
+    ...  # the owner has not turned the preview on, or not approved "read" yet
+```
+
+| Member | Returns | Description |
+|--------|---------|-------------|
+| `verbs()` | `tuple[str, ...]` | The verbs your app holds now: declared, approved by the owner on your app's page, the app turned on, and the preview on. Blocking: call it from a worker thread. Empty when any of these is missing; turning the app off keeps the approvals, and they apply again when it is turned on. |
+
+Installing approves no verb: the owner approves them on your app's page, and an
+update that adds a verb holds that verb back while the ones already approved keep
+working. `ctx.browser` itself and the answer of `verbs()` are re-read at each use, so
+an approval, a removed verb or the preview turned on or off applies at once, with no
+restart. This step adds only the grant and the gate; the
+page operations (`page(slot)`, `slots()`) follow in step 1b of the RFC.
+
 ### App token (`ctx.app_token()`)
 
 `await ctx.app_token()` returns an app token for your app, the same token
