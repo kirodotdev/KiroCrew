@@ -1308,6 +1308,7 @@ async def _start_mint_row(
             parts.path,
             # The query-free url discovery used, never the configured one.
             mcp_url=sign_in._dcr.client.resource,
+            server_name=slug,
         )
     if await asyncio.to_thread(oauth_url_contains_credential, _vetted_link(vetted, sign_in._dcr)):
         await sign_in.shutdown()

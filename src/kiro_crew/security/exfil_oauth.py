@@ -546,7 +546,9 @@ def _log_operator_list_use(
         logger.debug("SEL audit failed for %s (allow stands)", event_type, exc_info=True)
 
 
-def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
+def _approved_oauth_authorization_endpoint(
+    host: str, path: str, server_name: str | None = None
+) -> bool:
     """Exact-match endpoint approval for the banner-only OAuth entropy carve-out.
 
     Union of the code-owned builtin set and the operator's keystone extension,
@@ -555,11 +557,19 @@ def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
     touch the disk; an approval that came from an operator entry is SEL-audited
     (deduped per process). Callers keep enforcing HTTPS-only / no-explicit-port
     — this helper only answers endpoint identity.
+
+    A discovery approval is bound to the servers that verified it: with a
+    *server_name* it holds only for those. shortcut: the banner gate and its
+    later renders carry no server name (``None`` accepts any verified server), so
+    this is enforced where the caller knows the server; plumb it through the gate
+    when a render path gains one.
     """
     key = (host.lower(), path)
     if key in _OAUTH_AUTHORIZATION_ENDPOINTS:
         return True
-    if _discovered_oauth_endpoint_approved(key):
+    if _discovered_oauth_endpoint_approved(key) and (
+        server_name is None or server_name in _OAUTH_DISCOVERED_SERVERS.get(key, frozenset())
+    ):
         return True
     if key in _load_operator_oauth_endpoints():
         _emit_oauth_extension_used_event(*key)
@@ -577,6 +587,9 @@ _OAUTH_DISCOVERED_CAP = 64
 _OAUTH_DISCOVERED_MCP_URL_MAX_LEN = 512
 # (host, path) -> monotonic expiry. Host and path are bounded by the validators.
 _OAUTH_DISCOVERED_ENDPOINTS: dict[tuple[str, str], float] = {}
+# (host, path) -> names of the servers whose discovery verified it; dropped with the entry.
+_OAUTH_DISCOVERED_SERVERS: dict[tuple[str, str], frozenset[str]] = {}
+_OAUTH_DISCOVERED_SERVER_NAME_MAX_LEN = 128
 
 
 def _discovered_oauth_endpoint_approved(key: tuple[str, str]) -> bool:
@@ -586,12 +599,18 @@ def _discovered_oauth_endpoint_approved(key: tuple[str, str]) -> bool:
         return False
     if expiry <= time.monotonic():
         _OAUTH_DISCOVERED_ENDPOINTS.pop(key, None)
+        _OAUTH_DISCOVERED_SERVERS.pop(key, None)
         return False
     return True
 
 
-def record_discovered_oauth_endpoint(host: str, path: str, *, mcp_url: str) -> bool:
+def record_discovered_oauth_endpoint(
+    host: str, path: str, *, mcp_url: str, server_name: str = ""
+) -> bool:
     """Approve an authorization endpoint verified by MCP OAuth discovery.
+
+    *server_name* binds the approval to the server whose discovery verified it;
+    :func:`_approved_oauth_authorization_endpoint` given another name refuses it.
 
     Called by ``kiro_crew.mcp_oauth_discovery`` and by ``connections.crew_oauth``'s
     sign-in for an owner-recorded server, each after its own discovery from the
@@ -604,11 +623,17 @@ def record_discovered_oauth_endpoint(host: str, path: str, *, mcp_url: str) -> b
         return False
     key = (host_norm, path)
     fresh = not _discovered_oauth_endpoint_approved(key)
+    servers = frozenset() if fresh else _OAUTH_DISCOVERED_SERVERS.get(key, frozenset())
     _OAUTH_DISCOVERED_ENDPOINTS.pop(key, None)
     while len(_OAUTH_DISCOVERED_ENDPOINTS) >= _OAUTH_DISCOVERED_CAP:
         # A default: a worker thread may expire the same key concurrently.
-        _OAUTH_DISCOVERED_ENDPOINTS.pop(next(iter(_OAUTH_DISCOVERED_ENDPOINTS)), None)
+        oldest = next(iter(_OAUTH_DISCOVERED_ENDPOINTS), None)
+        _OAUTH_DISCOVERED_ENDPOINTS.pop(oldest, None)
+        _OAUTH_DISCOVERED_SERVERS.pop(oldest, None)
     _OAUTH_DISCOVERED_ENDPOINTS[key] = time.monotonic() + _OAUTH_DISCOVERED_TTL_SECONDS
+    _OAUTH_DISCOVERED_SERVERS[key] = (
+        servers | {server_name[:_OAUTH_DISCOVERED_SERVER_NAME_MAX_LEN]} if server_name else servers
+    )
     if fresh:
         _emit_oauth_discovered_endpoint_event(host_norm, path, mcp_url)
     return True

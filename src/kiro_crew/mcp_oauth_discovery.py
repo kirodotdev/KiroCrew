@@ -301,7 +301,7 @@ async def approve_discovered_oauth_endpoint(server_name: str, oauth_url: str) ->
                 server_name,
             )
             return False
-        return record_discovered_oauth_endpoint(*consent, mcp_url=mcp_url)
+        return record_discovered_oauth_endpoint(*consent, mcp_url=mcp_url, server_name=server_name)
     except Exception:
         logger.info("OAuth endpoint discovery failed for %r", server_name, exc_info=True)
         return False
