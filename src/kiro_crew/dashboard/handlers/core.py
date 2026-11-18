@@ -1240,9 +1240,11 @@ async def api_app_token(request: web.Request) -> web.Response:
     Apps authenticate by presenting their per-app secret (stored on disk
     at install time) via the ``X-App-Secret`` header.  On success, returns
     an HMAC token with ``app=<name>`` in the payload so downstream
-    middleware can extract the verified app identity.
+    middleware can extract the verified app identity, and ``expires_in``,
+    the seconds a caller can present it before it must exchange again.
     """
     from kiro_crew.dashboard.token_auth import generate_token, validate_app_secret  # noqa: F811
+    from kiro_crew.dashboard.token_auth_tokens import LINK_WINDOW_SECS
     from kiro_crew.sel import sel
 
     app_name = request.match_info["name"]
@@ -1286,7 +1288,10 @@ async def api_app_token(request: web.Request) -> web.Response:
         outcome="granted",
         source="app_auth",
     )
-    return web.json_response({"token": token})
+    # The token authenticates as ``?token=`` until its ``exp`` (the link window) and
+    # as the session cookie until ``session_exp``. Report the shorter, so a caller
+    # renewing by it never presents an expired token on either path.
+    return web.json_response({"token": token, "expires_in": LINK_WINDOW_SECS})
 
 
 # The session sub-agent routes are owner surfaces under their own audit labels;
