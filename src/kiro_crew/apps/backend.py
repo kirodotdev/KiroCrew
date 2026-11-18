@@ -212,25 +212,45 @@ def _resolve_nvm_path(binary_name: str) -> str | None:
         return None
 
 
-def _find_node_binary() -> str | None:
-    """Find a usable node binary.
+def _find_node_tool(name: str) -> str | None:
+    """Find *name* (``node`` or ``npm``) for an app backend.
 
     Search order:
     1. nvm-managed node (via nvm.sh, :func:`_resolve_nvm_path`)
     2. System PATH
+    3. The Node.js install directories the MCP and build lookups already search
+       (:func:`kiro_crew.env.augmented_path`: Homebrew, ``/usr/local/bin``, mise,
+       asdf, fnm, Volta, n, nvm-windows). A gateway opened from the macOS Dock
+       inherits launchd's ``/usr/bin:/bin:/usr/sbin:/sbin``, which holds none of
+       them, so a Homebrew or nodejs.org Node read as "no node" (#39108). Last,
+       so a node that steps 1 and 2 find keeps winning. Each directory is probed
+       with ``which_within``, so on Windows a file in the working directory
+       cannot answer for it.
     """
-    nvm_path = _resolve_nvm_path("node")
+    nvm_path = _resolve_nvm_path(name)
     if nvm_path:
         return nvm_path
-    return shutil.which("node")
+    found = shutil.which(name)
+    if found:
+        return found
+    from kiro_crew import env, soffice_discovery
+
+    for directory in env.augmented_path("").split(os.pathsep):
+        if directory and os.path.isabs(directory):
+            hit = soffice_discovery.which_within(os.path.join(directory, name), directory)
+            if hit:
+                return hit
+    return None
+
+
+def _find_node_binary() -> str | None:
+    """Find a usable node binary; the search order is :func:`_find_node_tool`'s."""
+    return _find_node_tool("node")
 
 
 def _find_npm_binary() -> str | None:
     """Find npm binary, same search order as node."""
-    nvm_path = _resolve_nvm_path("npm")
-    if nvm_path:
-        return nvm_path
-    return shutil.which("npm")
+    return _find_node_tool("npm")
 
 
 def _is_asgi_entry(entry: Any) -> bool:
@@ -949,7 +969,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         if not node_bin:
             logger.error(
                 "App %s declares a Node.js backend but no node binary found. "
-                "Searched: nvm, PATH.",
+                "Searched: nvm, PATH, the Node.js install directories.",
                 app_name,
             )
             return None
