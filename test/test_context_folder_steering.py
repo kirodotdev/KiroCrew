@@ -608,7 +608,10 @@ def test_member_envelope_keeps_folder_bodies_when_host_declares_native_docs(memb
 # ── Folder steering is the only steering path on some harnesses: fit real trees ──
 
 
-@pytest.mark.parametrize("provider_type", ["codex", "acme-config-authored-harness"])
+# Not codex: on main codex is a crew-loads-spec-steering backend
+# (``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING``), so its guides arrive through the spec
+# steering load and its message carries no folder section.
+@pytest.mark.parametrize("provider_type", ["acme-config-authored-harness"])
 def test_global_steering_tree_of_two_guides_is_delivered_whole(tmp_path, home, provider_type):
     """Regression: a 3,445 + 1,368 byte ``~/.kiro/steering`` tree was cut at 3,300.
 
