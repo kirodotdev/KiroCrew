@@ -39,7 +39,7 @@ from kiro_crew import build_reuse
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew import session_head
 from kiro_crew.acp import kas_agents as kas_agents_mod
-from kiro_crew.acp import kas_build_default
+from kiro_crew.acp import kas_approve_for_me, kas_build_default
 from kiro_crew.acp import kas_route as kas_route_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -1174,6 +1174,9 @@ class KasHarness(MembershipHarness):
             env.setdefault("NODE_USE_SYSTEM_CA", "1")
         else:
             pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
+        # Off by default; the runtime spawn turns it on only for a session the
+        # person opted in (``kas_approve_for_me.apply_runtime_env``).
+        kas_approve_for_me.force_off(env)
         apply_child_env_defaults(env)
         env.setdefault("KIRO_DISABLE_SESSION_TITLE_LLM", "true")
         apply_node_compile_cache(env, engine_bundle=engine_bundle)

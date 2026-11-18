@@ -324,6 +324,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _isolate_advertised_model_cache,
     _isolate_context_store_caches,
     _isolate_display_verdicts,
+    _isolate_kas_approve_for_me,
     _isolate_kiro_window_cache,
     _isolate_member_identity_cache,
     _ledger_create_ignores_live_memory,

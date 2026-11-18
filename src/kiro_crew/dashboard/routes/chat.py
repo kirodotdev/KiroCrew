@@ -213,6 +213,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/chat/slots/{slot}/steering", api_chat_slot_steering)
     app.router.add_post("/api/chat/slots/{slot}/ultracode", chat.api_chat_slot_ultracode)
     app.router.add_post("/api/chat/slots/{slot}/fast", chat.api_chat_slot_fast_mode)
+    app.router.add_post("/api/chat/slots/{slot}/approve-for-me", chat.api_chat_slot_approve_for_me)
     app.router.add_put("/api/chat/slots/{slot}/steering", api_chat_slot_steering_switch)
     app.router.add_post("/api/chat/slots/{slot}/workspace", chat.api_chat_slot_workspace)
     app.router.add_post("/api/chat/slots/{slot}/reload", chat.api_chat_slot_reload)

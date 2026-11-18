@@ -865,7 +865,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // `mode` prop is always '' — the slot's own mode is the source of truth.
   const effectiveMode = currentSlot?.mode || mode
   const title = currentSlot?.title && !isUntitledSession(currentSlot) ? currentSlot.title : activeSlot || ''
-  const displayMode = slotApprovalMode(approvalMode, currentSlot)
+  const displayMode = slotApprovalMode(approvalMode, currentSlot, selectionCapabilitiesQ.data?.approve_for_me)
   // What the composer's model, effort and project chips show.
   const {
     shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride, effortAutoNote,
@@ -1299,7 +1299,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               defaultAgentFailed={defaultAgentFailed} effectiveAgents={effectiveAgents} filteredAgents={pickerAgents} installedAgents={installedAgents} setAgentDropdown={setAgentDropdown}
               setAgentFilter={setAgentFilter} toggleDefaultAgent={toggleDefaultAgent} codexPairModels={codexPairModels} filteredModels={filteredModels} hiddenModelsQ={hiddenModelsQ}
               ownModelsFailed={ownModelsFailed} ownModelsFetching={ownModelsQuery.isFetching} retryOwnModels={() => { void ownModelsQuery.refetch() }}
-              modelsBackend={selectionCapabilitiesQ.data?.models_backend} ultracode={selectionCapabilitiesQ.data?.ultracode} fastMode={selectionCapabilitiesQ.data?.fast} fastUnavailable={selectionCapabilitiesQ.data?.fast_unavailable}
+              modelsBackend={selectionCapabilitiesQ.data?.models_backend} ultracode={selectionCapabilitiesQ.data?.ultracode} fastMode={selectionCapabilitiesQ.data?.fast} fastUnavailable={selectionCapabilitiesQ.data?.fast_unavailable} approveForMe={selectionCapabilitiesQ.data?.approve_for_me}
               jevRouteOn={jevRouteOn} modelDropdown={modelDropdown} modelDropdownRef={modelDropdownRef} modelFilter={modelFilter} modelInputRef={modelInputRef}
               modelPickerConfigured={modelPickerConfigured} modelPickerReturnsFocusRef={modelPickerReturnsFocusRef} setModelDropdown={setModelDropdown} setModelFilter={setModelFilter}
               onAgentListKeyDown={onAgentListKeyDown} onModelListKeyDown={onModelListKeyDown} anchorModelBtn={anchorModelBtn} modelBtnRect={modelBtnRect} messageQuote={messageQuote} onJumpToQuote={handleJumpToQuote}

@@ -30,8 +30,17 @@ from kiro_crew.agent_discovery import (  # noqa: F401
     cached_project_agent_names,
     warm_project_agent_names,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS  # noqa: F401
+from kiro_crew.agent_sdk.backends import (  # noqa: F401
+    ACP_BACKENDS_APPROVE_FOR_ME,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+)
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of  # noqa: F401
+from kiro_crew.agent_sdk.kas_approve_for_me import (  # noqa: F401
+    engine_supported as approve_for_me_engine_supported,
+)
+from kiro_crew.agent_sdk.kas_approve_for_me import (  # noqa: F401
+    refresh_engine_support as approve_for_me_refresh_engine_support,
+)
 from kiro_crew.agent_sdk.kas_model_catalog import config_options_refuse_auto  # noqa: F401
 from kiro_crew.agent_sdk.provider_identity import is_claude_code  # noqa: F401
 from kiro_crew.agent_switch_command import switch_announcement  # noqa: F401
@@ -64,6 +73,19 @@ from kiro_crew.config.sections import (  # noqa: F401 -- read by chat_api.slot_s
 )
 from kiro_crew.dashboard import display_verdicts  # noqa: F401 -- read by chat_api.slot_detail
 from kiro_crew.dashboard.approval_posture import trust_reaches_subagents  # noqa: F401
+from kiro_crew.dashboard.approve_for_me import (  # noqa: F401 -- read by chat_api.slot_effort
+    APPROVE_FOR_ME_MODE,
+    approve_for_me_keys,
+    approve_for_me_permitted,
+)
+from kiro_crew.dashboard.approve_for_me import offered_on as approve_for_me_offered_on  # noqa: F401
+from kiro_crew.dashboard.approve_for_me import (  # noqa: F401
+    owner_allows as approve_for_me_owner_allows,
+)
+from kiro_crew.dashboard.approve_for_me import (  # noqa: F401
+    profile_binds as approve_for_me_profile_binds,
+)
+from kiro_crew.dashboard.approve_for_me import reads_on as approve_for_me_reads_on  # noqa: F401
 from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
 from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed  # noqa: F401
@@ -308,14 +330,18 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.slot_discard import api_chat_slot_discard  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
+    _approve_for_me_field,
     _configured_backend_for_slot,
     _own_models_field,
+    _restart_for_approve_for_me,
     _write_session_switch,
+    api_chat_slot_approve_for_me,
     api_chat_slot_fast_mode,
     api_chat_slot_reasoning_effort,
     api_chat_slot_selection_capabilities,
     api_chat_slot_ultracode,
     configured_backend_for_session,
+    end_approve_for_me,
 )
 from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
     _CommitToken,

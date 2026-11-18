@@ -6255,6 +6255,18 @@
       "title_wants_to_run": "<title/> 실행을 요청합니다"
     },
     "approvalModePicker": {
+      "approve_for_me_failed": "\"대신 승인\"을 켜지 못했습니다. 다시 시도하세요.",
+      "approve_for_me_busy": "현재 답변이 끝날 때까지 기다린 뒤 Approve for me를 다시 선택하세요.",
+      "approve_for_me_not_owners": "Approve for me는 여기서 직접 진행하는 채팅에서만 제공되며, 채널, 예약 또는 앱에 연결된 채팅에서는 제공되지 않습니다.",
+      "approve_for_me_label": "대신 승인",
+      "approve_for_me_desc": "이 채팅에서 KAS가 셸 명령과 파일 편집을 포함한 일상적인 작업을 대신 승인하고, 확실하지 않으면 물어봅니다",
+      "approve_for_me_details": "Approve for me 작동 방식",
+      "approve_for_me_detail_skip": "{{productName}}이(가) KAS가 대신 승인하려는 작업을 먼저 하나씩 확인합니다: 위험한 명령, 민감한 파일, 승인 규칙과 훅",
+      "approve_for_me_detail_direct": "직접 만든 항상 허용 규칙이나 프리셋이 허용하는 작업은 {{productName}}이(가) 묻지 않고 그대로 실행됩니다",
+      "approve_for_me_detail_kept": "확인에서 거부되면 평소의 승인 카드가 표시됩니다",
+      "approve_for_me_detail_blocked": "KAS가 직접 작업을 막을 수도 있으며, 그러면 해당 행에 “Blocked by KAS”가 표시됩니다",
+      "approve_for_me_detail_off": "채널, 일정 또는 본인이 아닌 사람의 메시지에서는 꺼지며, 관리자 프로필이 적용되는 동안에도 꺼집니다",
+      "approve_for_me_detail_logged": "이렇게 KAS가 승인하거나 막은 작업은 보안 로그에 기록됩니다",
       "nudge_body": "여기에서 {{productName}}의 승인 모드를 조정할 수 있습니다. 여기에서 '신뢰'를 선택하면 이 대화에서 먼저 묻지 않고 작업합니다. 언제든지 되돌릴 수 있습니다.",
       "nudge_dismiss": "확인",
       "nudge_title": "승인 요청을 줄이고 싶으신가요?",

@@ -594,6 +594,11 @@ def _resolve_spawn_env(env: dict[str, str], *, kiro_api_key: bool = False) -> di
     """
     _resolve_ssh_auth_sock(env)
     resolve_krb5_ccname(env)
+    # A direct-spawn client never sets an approve-for-me value, so the engine
+    # switch is held off whatever the gateway inherited.
+    from kiro_crew.acp import kas_approve_for_me
+
+    kas_approve_for_me.force_off(env)
     # Deferred import: this module keeps config.loader off its import graph
     # (in-file convention; see the _prompt_timeout lazy-import note).
     from kiro_crew.config.loader import inject_kiro_cli_api_key, strip_kiro_cli_api_key
