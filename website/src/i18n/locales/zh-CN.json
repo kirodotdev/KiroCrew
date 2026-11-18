@@ -18907,6 +18907,8 @@
         "side_panel_pin_summary": "在侧边栏中固定摘要",
         "side_panel_pin_summary_hint": "将摘要显示为侧边栏的第一个标签页，并在打开侧边栏时显示摘要。如果你打开文件或其他项目，仍会显示该项目。需要开启会话摘要。",
         "side_panel_pin_summary_needs_session_summaries": "会话摘要已关闭。在“设置 → 聊天 → 会话”中开启后即可固定摘要。",
+        "side_panel_trackpad_swipe": "滑动打开和关闭侧边栏",
+        "side_panel_trackpad_swipe_hint": "在触控板上双指左右滑动，可打开和关闭停靠在右侧的侧边栏。关闭此项可避免误触。侧边栏按钮和快捷键仍然可用。在手机上，此设置不生效。",
         "project_tags": "项目标签",
         "project_tags_desc": "在侧边栏为每个新会话打上其项目文件夹名称的标签，例如“my-app”。",
         "topic_tags": "主题标签",

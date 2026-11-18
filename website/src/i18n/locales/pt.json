@@ -19949,6 +19949,8 @@
         "side_panel_pin_summary": "Fixar o resumo no painel lateral",
         "side_panel_pin_summary_hint": "Mostra o resumo como a primeira aba do painel lateral. Quando o painel abre, ele mostra o resumo. Se você abrir um arquivo ou outro item, esse item continua aparecendo. Precisa dos resumos de sessão ativados.",
         "side_panel_pin_summary_needs_session_summaries": "Os resumos de sessão estão desativados. Ative-os em Configurações → Chat → Sessões para fixar o resumo.",
+        "side_panel_trackpad_swipe": "Deslizar para abrir e fechar o painel lateral",
+        "side_panel_trackpad_swipe_hint": "Deslizar dois dedos para o lado no trackpad abre e fecha o painel lateral fixado à direita. Desative para evitar deslizes acidentais. O botão do painel e o atalho continuam funcionando. No celular, esta configuração não se aplica.",
         "project_tags": "Etiquetas de projeto",
         "project_tags_desc": "Etiqueta cada nova sessão na barra lateral com o nome da pasta do projeto, como \"my-app\".",
         "topic_tags": "Etiquetas de tema",

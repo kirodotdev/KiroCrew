@@ -19428,6 +19428,8 @@
         "side_panel_pin_summary": "Zusammenfassung im Seitenpanel anheften",
         "side_panel_pin_summary_hint": "Zeigt die Zusammenfassung als ersten Tab im Seitenpanel. Wenn sich das Panel öffnet, zeigt es die Zusammenfassung. Öffnest du eine Datei oder ein anderes Element, wird weiterhin dieses angezeigt. Dafür müssen Sitzungszusammenfassungen eingeschaltet sein.",
         "side_panel_pin_summary_needs_session_summaries": "Sitzungszusammenfassungen sind ausgeschaltet. Schalte sie unter Einstellungen → Chat → Sitzungen ein, um die Zusammenfassung anzuheften.",
+        "side_panel_trackpad_swipe": "Seitenpanel per Wischen öffnen und schließen",
+        "side_panel_trackpad_swipe_hint": "Ein seitliches Wischen mit zwei Fingern auf dem Trackpad öffnet und schließt das rechts angedockte Seitenpanel. Schalte es aus, um versehentliches Wischen zu vermeiden. Die Panel-Schaltfläche und das Tastenkürzel funktionieren weiterhin. Auf dem Smartphone gilt diese Einstellung nicht.",
         "project_tags": "Projekt-Tags",
         "project_tags_desc": "Taggt jede neue Sitzung in der Seitenleiste mit dem Namen ihres Projektordners, etwa „my-app“.",
         "topic_tags": "Themen-Tags",
