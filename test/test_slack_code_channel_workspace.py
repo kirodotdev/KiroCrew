@@ -538,7 +538,7 @@ def test_an_open_pr_and_its_ci_join_the_context_bar(tmp_path, repo, audits):
     assert keys["pr"] == {
         "key": "pr",
         "label": "PR #42 is open · tests passing",
-        "icon": "hierarchy",
+        "icon": "link",
         "url": _PR_URL,
     }
     assert "ci" not in keys
