@@ -56,6 +56,7 @@ from dashboard_server_composition_contract_helpers import (
     _owner_runtime_edges,
     _owner_sources,
     _run_child,
+    _type_checking_nodes,
     _within,
 )
 
@@ -370,148 +371,98 @@ def test_the_shared_state_keeps_its_identity() -> None:
     assert all("_tailnet_awake_cache" not in vars(owner) for owner in _owners())
 
 
-#: Names the moved code imports in its own body, by the module it imports them from. A
-#: module-level import of any of them in an owner would put that module on the
-#: gateway's boot path or close an import cycle, so each stays where the one-module
-#: file had it: inside the function that needs it.
-_LAZY_IMPORTS = {
-    "kiro_crew": (
-        "_hist_mod _rs crew_pause crewmate_harness_notice mcp_listing_gateway model_registry stt"
-    ),
-    "kiro_crew.agent": "rebuild_agent_config rebuild_agent_config_reporting",
-    "kiro_crew.agent_sdk.chat_runtime_sharing": "chat_runtime_sharing_enabled",
-    "kiro_crew.change_card_catalog": "HOOKED_ROUTES",
-    "kiro_crew.apps.bridges": "reconcile_enabled_app_resources",
-    "kiro_crew.apps.builtin_adoption": (
-        "apply_builtin_adoptions released_builtin_packages stage_builtin_adoptions"
-    ),
-    "kiro_crew.apps.app_web_origin": "APP_WEB_ORIGIN_CSP_SOURCE build_app_web_origin_middleware",
-    "kiro_crew.apps.builtins": "BUILTIN_NAMES",
-    "kiro_crew.apps.manager": "sweep_interrupted_updates",
-    "kiro_crew.apps.builtin_adoption_gate": "publish_gate_app_trust",
-    "kiro_crew.apps.builtin_adoption_pins": "adoption_pin_names",
-    "kiro_crew.apps.default_installs": "reconcile_default_installs",
-    "kiro_crew.apps.dev_mode": "init_dev_mode_watcher stop_dev_mode_watcher",
-    "kiro_crew.apps.event_bus": "build_broadcast_fn",
-    "kiro_crew.apps.spawn_sdk": "build_spawn_impl",
-    "kiro_crew.browser_harness.supervisor": "get_supervisor",
-    "kiro_crew.config": "live",
-    "kiro_crew.config.paths": "data_home",
-    "kiro_crew.config.live": "ConfigChange",
-    "kiro_crew.config.loader": "KiroCrewAgentConfig",
-    "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
-    # The connected-computers preview: its switch-off and shutdown (``disable``,
-    # bound as ``connected_computers`` in the config-change hook).
-    "kiro_crew.connected_computers": "connected_computers",
-    "kiro_crew.connected_computers.disable": "connected_shutdown",
-    "kiro_crew.connections.endpoint_migration": "migrate_retired_endpoints",
-    "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
-    "kiro_crew.crew_log": "crew_log_emit _read_budget",
-    "kiro_crew.edition_locks": "local_enable_locked relay_selected",
-    "kiro_crew.dashboard": (
-        "chat_trust_restart crew_mode_migration display_verdicts handlers_instances stale_wake "
-        "tailnet_direct_listener"
-    ),
-    "kiro_crew.dashboard.card_send": "card_turn_arrival_middleware card_turn_delegation_middleware",
-    "kiro_crew.dashboard.chat": "_run_chat",
-    "kiro_crew.dashboard.chat_utils_injected_rows": "WORKFLOW_FOLLOWUP_KIND",
-    "kiro_crew.dashboard.kiro_relay.ingress": "RELAY_INGRESS_APP_KEY",
-    "kiro_crew.dashboard.redaction_audience": "redaction_audience_middleware",
-    "kiro_crew.relay_client.provider": "publish_gateway_ingress",
-    "kiro_crew.remote_control.guard": "_uninstall_guard install_for_relay",
-    "kiro_crew.dashboard.lts_gate_middleware": (
-        "lts_gate_middleware_for lts_login_source install_lts_gate"
-    ),
-    "kiro_crew.lts_boot": "require_kiro_login",
-    "kiro_crew.dashboard.handlers": "config_pending remote_puller wf_handlers work_ledger",
-    "kiro_crew.dashboard.handlers.agents": "_remove_member_leftovers",
-    "kiro_crew.dashboard.handlers.artifact_download": "register_artifact_download_routes",
-    "kiro_crew.dashboard.handlers.ask_question": (
-        "api_agent_ask_open api_agent_ask_wait api_agent_ask_withdraw "
-        "api_ask_question api_ask_question_answer api_ask_question_dismiss "
-        "api_ask_question_pending"
-    ),
-    "kiro_crew.dashboard.handlers.autonudge": (
-        "api_autonudge_delete api_autonudge_fire api_autonudge_get api_autonudge_list "
-        "api_autonudge_start api_autonudge_update api_monitor_clear api_monitor_contract "
-        "api_monitor_create api_monitor_restart api_monitor_slot_get api_monitor_stop "
-        "api_monitor_update api_monitors_list api_session_monitor_get"
-    ),
-    "kiro_crew.dashboard.handlers.browser_harness_status": "auto_setup_browser_harness",
-    "kiro_crew.dashboard.handlers.change_cards": "change_card_middleware",
-    "kiro_crew.dashboard.handlers.cron_board": "wire_app_cron_folder_creator",
-    "kiro_crew.dashboard.handlers.decisions": "resume_local_decision_model",
-    "kiro_crew.dashboard.handlers.sandbox_doc": "register_sandbox_doc_routes",
-    "kiro_crew.dashboard.handlers.terminal": "apply_terminal_enabled",
-    "kiro_crew.dashboard.handlers.updates": "apply_log_level_from_config",
-    "kiro_crew.dashboard.handlers.webapp_preview": "register_webapp_preview_routes",
-    "kiro_crew.dashboard.handlers.workflows": (
-        "api_workflow_author api_workflow_definition_get api_workflow_definition_remove "
-        "api_workflow_definition_run api_workflow_definition_update api_workflow_definitions "
-        "api_workflow_definitions_create api_workflow_run api_workflow_run_cancel "
-        "api_workflow_run_get api_workflow_run_intent api_workflow_run_promote "
-        "api_workflow_run_rerun api_workflow_run_update_definition "
-        "api_workflow_run_update_preview api_workflow_runs"
-    ),
-    "kiro_crew.dashboard.handlers_system": "_get_owner_hash _get_static_system_info",
-    "kiro_crew.dashboard.routes.system": "RELEASED_BUILTIN_PACKAGES",
-    "kiro_crew.dashboard.member_slot_retry": "schedule_member_slot_retry",
-    "kiro_crew.dashboard.slot_queue_repository": "drain_restored_parked_sends",
-    "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
-    "kiro_crew.dashboard.workflow_session_port": "WorkflowSessionPort",
-    "kiro_crew.decisions": "impl_systemone local_runtime",
-    "kiro_crew.diag.recorder": "_DiagRecorder get_recorder",
-    "kiro_crew.memory_startup": "memory_prepared memory_startup_preparing",
-    "kiro_crew.memory_startup_prebuild": "prebuild_startup_reads",
-    "kiro_crew.history_index_worker": "SessionIndexWorkerSupervisor",
-    "kiro_crew.kiro_prerequisite": "KiroPrerequisiteService register_turn_auth_service",
-    "kiro_crew.knowledge.entity_resolution": "merge_split_entities",
-    "kiro_crew.memory": "MemoryStore",
-    "kiro_crew.messaging.session_trust": "clear_trusted_sessions",
-    "kiro_crew.metrics": "_gauges",
-    "kiro_crew.metrics.chat_runtime_share": "record_toggled",
-    "kiro_crew.metrics.crew_log_export": "install_otel_crew_log_subscriber",
-    "kiro_crew.page_cache": "read_now",
-    "kiro_crew.security": "redact_credentials redact_exfiltration_urls",
-    "kiro_crew.sel": "sel",
-    "kiro_crew.slack.handler": "load_voice_reply_config",
-    "kiro_crew.stt": "engine stt_models",
-    "kiro_crew.shared_crew": "lifecycle",
-    "kiro_crew.shared_crew.preview": "no_maintenance preview_enabled",
-    "kiro_crew.shared_crew.wiring": "install prepare_gateway",
-    "kiro_crew.shared_crew.host_hooks": "mark_sessions_restored",
-    "kiro_crew.shared_crew.host_power": "shared_use_wants_awake",
-    "kiro_crew.subagent": "_available_memory_gb",
-    "kiro_crew.tracing": "trace_workflows",
-    "kiro_crew.transcribe": "_whisper_language",
-    "kiro_crew.workflows.service": "WorkflowService",
-}
+def _function_local_imports(tree: ast.Module) -> list[ast.Import | ast.ImportFrom]:
+    """Every import statement inside a function body of *tree*."""
+    return [
+        node
+        for function in ast.walk(tree)
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for node in ast.walk(function)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+    ]
+
+
+def _bound_names(node: ast.Import | ast.ImportFrom) -> set[str]:
+    """The names an import statement binds in the scope it runs in."""
+    if isinstance(node, ast.Import):
+        return {alias.asname or alias.name.split(".", 1)[0] for alias in node.names}
+    return {alias.asname or alias.name for alias in node.names}
+
+
+def _targets(node: ast.Import | ast.ImportFrom) -> set[str]:
+    """The dotted modules one import statement in an owner loads."""
+    return {
+        target
+        for _, target in _import_targets(ast.Module(body=[node], type_ignores=[]), _OWNER_PACKAGE)
+    }
+
+
+def _lazy_import_conflicts(sources: dict[str, str]) -> list[str]:
+    """``stem:line`` of every module-level import, outside ``TYPE_CHECKING``, in an
+    owner that loads a project module or binds a name some owner function imports
+    from a project module in its body."""
+    trees = {stem: ast.parse(source) for stem, source in sources.items()}
+    lazy_nodes = [
+        node
+        for tree in trees.values()
+        for node in _function_local_imports(tree)
+        if any(_within(target, "kiro_crew") for target in _targets(node))
+    ]
+    lazy_modules = {target for node in lazy_nodes for target in _targets(node)}
+    lazy_names = {name for node in lazy_nodes for name in _bound_names(node)}
+    conflicts: list[str] = []
+    for stem, tree in trees.items():
+        guarded = _type_checking_nodes(tree)
+        in_functions = {id(node) for node in _function_local_imports(tree)}
+        for node in ast.walk(tree):
+            if (
+                not isinstance(node, (ast.Import, ast.ImportFrom))
+                or id(node) in in_functions
+                or id(node) in guarded
+            ):
+                continue
+            if _targets(node) & lazy_modules or _bound_names(node) & lazy_names:
+                conflicts.append(f"{stem}:{node.lineno}")
+    return conflicts
 
 
 def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
-    """The scan must equal ``_LAZY_IMPORTS`` exactly. No total is pinned beside it: the
-    table is the record, one line per module, so two changes that each add an import
-    edit different lines. A hand-kept total is one line both would edit to the same
-    number, which merges cleanly and is wrong (testing-conventions § Merge-safe
-    ratchets)."""
-    listed = [name for names in _LAZY_IMPORTS.values() for name in names.split()]
-    assert sorted(name for name in set(listed) if listed.count(name) > 1) == []
-    expected = {name: module for module, names in _LAZY_IMPORTS.items() for name in names.split()}
+    """The owners import some modules inside the function that needs them: a
+    module-level import of one would put that module on the gateway's boot path or
+    close an import cycle. The set comes from scanning the owners' function bodies,
+    so a new function-local import needs no edit here; what fails is an owner that
+    also imports such a module, or binds such a name, at module level outside
+    ``TYPE_CHECKING``. Each lazily bound name comes from one module, so an owner
+    function reads the same object whichever function binds it."""
+    sources = _owner_sources()
     local: dict[str, set[str]] = {}
-    for source in _owner_sources().values():
-        tree = ast.parse(source)
-        for function in ast.walk(tree):
-            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            for node in ast.walk(function):
+    for source in sources.values():
+        for node in _function_local_imports(ast.parse(source)):
+            for alias in node.names:
                 if isinstance(node, ast.ImportFrom):
-                    for alias in node.names:
-                        local.setdefault(alias.asname or alias.name, set()).add(node.module or "")
-                elif isinstance(node, ast.Import):
-                    for alias in node.names:
-                        local.setdefault(alias.asname or alias.name, set()).add(alias.name)
-    assert expected, "the lazy-import table is empty -- the scan has nothing to match"
-    assert local == {name: {module} for name, module in expected.items()}
+                    name, module = alias.asname or alias.name, node.module or ""
+                else:
+                    name, module = alias.asname or alias.name.split(".", 1)[0], alias.name
+                local.setdefault(name, set()).add(module)
+    assert local, "no owner function imports anything -- the scan found nothing to check"
+    assert {name: modules for name, modules in local.items() if len(modules) > 1} == {}
+    assert _lazy_import_conflicts(sources) == []
+
+
+def test_the_lazy_import_check_flags_a_hoisted_import() -> None:
+    """The check flags an owner whose module level imports what a function imports
+    lazily, in either spelling, and leaves a ``TYPE_CHECKING`` import alone."""
+    lazy = "def f():\n    from kiro_crew.workflows.service import WorkflowService\n"
+    hoisted = "from kiro_crew.workflows.service import WorkflowService\n"
+    plain = "import kiro_crew.workflows.service\n"
+    typed = (
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n    from kiro_crew.workflows.service import WorkflowService\n"
+    )
+    assert _lazy_import_conflicts({"a": lazy}) == []
+    assert _lazy_import_conflicts({"a": lazy, "b": hoisted}) == ["b:1"]
+    assert _lazy_import_conflicts({"a": plain + lazy}) == ["a:1"]
+    assert _lazy_import_conflicts({"a": typed + lazy}) == []
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -519,7 +470,8 @@ def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
     assert not hasattr(server, "__all__")
     probe = tmp_path / "server_star_probe.py"
     probe.write_text(
-        "from kiro_crew.dashboard.server import *  # noqa: F401,F403\n", encoding="utf-8"
+        "from kiro_crew.dashboard.server import *  # noqa: F401,F403\n",
+        encoding="utf-8",
     )
     spec = importlib.util.spec_from_file_location("server_star_probe", probe)
     assert spec is not None and spec.loader is not None
@@ -605,7 +557,12 @@ def test_facade_state_stays_on_the_facade() -> None:
     only while no owner keeps a copy. The internal-path sets are defined in a
     pure-data module the server alone imports; their own test below pins that."""
     state = _module_assignments(_FACADE_PATH.read_text(encoding="utf-8"))
-    assert {"logger", "_tailnet_awake_cache", "_OWN_HOST_WARM_TASKS", "_BASE_CSP"} <= state
+    assert {
+        "logger",
+        "_tailnet_awake_cache",
+        "_OWN_HOST_WARM_TASKS",
+        "_BASE_CSP",
+    } <= state
     assert {"_STRICT_INTERNAL_API_PATHS", "_MIXED_INTERNAL_API_PATHS"} <= set(
         _DATA_MODULES["kiro_crew.dashboard.server_internal_paths"]
     )
@@ -871,9 +828,15 @@ def test_the_facade_composes_through_the_shared_helper() -> None:
         ("from .. import server\n", True),
         ("from kiro_crew.dashboard import server\n", True),
         ("import kiro_crew.dashboard.server as srv\n", True),
-        ("import importlib\nimportlib.import_module('kiro_crew.dashboard.server')\n", True),
+        (
+            "import importlib\nimportlib.import_module('kiro_crew.dashboard.server')\n",
+            True,
+        ),
         ("__import__('kiro_crew.dashboard.server_runtime.listener')\n", True),
-        ("if TYPE_CHECKING:\n    from kiro_crew.dashboard.server import logger\n", False),
+        (
+            "if TYPE_CHECKING:\n    from kiro_crew.dashboard.server import logger\n",
+            False,
+        ),
         ("def f():\n    from kiro_crew.config import live\n", False),
         ("import asyncio\nfrom aiohttp import web\n", False),
     ],

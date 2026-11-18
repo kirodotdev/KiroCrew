@@ -52,59 +52,10 @@ _OWNER_PACKAGE = chat_turn.__name__
 _OWNER_DIR = Path(chat_turn.__file__).resolve().parent
 _GLOBAL_OPS = frozenset({"LOAD_GLOBAL", "STORE_GLOBAL", "DELETE_GLOBAL"})
 
-#: The owners the runner composes. Adding or removing one changes the composition,
-#: so the set is spelled out rather than globbed.
+#: The owners the runner composes: every module of ``chat_turn``, read off the
+#: package directory rather than through the call the runner composes with.
 _OWNER_MODULES = frozenset(
-    {
-        "account_identity",
-        "acp_recovery",
-        "agent_started",
-        "app_agent_binding",
-        "builtin_tools_notice",
-        "context_cap",
-        "crew_log_attribution",
-        "decisions_hooks",
-        "deny_chokepoints",
-        "directives",
-        "eager_spawn",
-        "elicitation_prompt",
-        "file_change_shapes",
-        "file_changes",
-        "mcp_oauth_notice",
-        "mcp_session",
-        "model_fallback",
-        "native_cards",
-        "permission_prompt",
-        "prompt_assembly",
-        "queue_cycle",
-        "queue_drain",
-        "recipient",
-        "recovery",
-        "regenerate_swap",
-        "segment_flush",
-        "session_events",
-        "session_reset",
-        "slash_commands",
-        "steer_queue",
-        "stop_recovery",
-        "stream_chunks",
-        "superseded_steer",
-        "tool_approval",
-        "tool_results",
-        "tool_rows",
-        "turn_admission",
-        "turn_context",
-        "turn_dispatch_gates",
-        "turn_ending",
-        "turn_entry",
-        "turn_failures",
-        "turn_ledgers",
-        "turn_locals",
-        "turn_marker",
-        "turn_reply_seams",
-        "turn_spec_hooks",
-        "turn_stats",
-    }
+    info.name for info in pkgutil.iter_modules([str(_OWNER_DIR)]) if info.name.isidentifier()
 )
 
 #: Every module-level name ``chat_runner`` bound at the base the split was cut from:
@@ -903,6 +854,7 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 def test_a_fresh_runner_import_loads_every_owner(tmp_path: Path) -> None:
     """Importing the runner imports every owner with it: none loads lazily on a
     later call, so the import order stays the one the one-module file had."""
+    assert _OWNER_MODULES, "chat_turn holds no module -- the owner scan is blind"
     _run_child(
         tmp_path,
         """
