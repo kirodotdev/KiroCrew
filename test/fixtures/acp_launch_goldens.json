@@ -8,6 +8,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "PATH": "<augmented-path>"
     },
@@ -25,6 +27,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "PATH": "<augmented-path>"
     },
@@ -68,6 +72,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "PATH": "<augmented-path>"
     },
@@ -89,6 +95,8 @@
       "KIROCREW_SCRATCH": "<scratch>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "KIRO_CHAT_LOG_FILE": "<scratch-log>",
       "PATH": "<augmented-path>",
@@ -111,6 +119,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "PATH": "<augmented-path>"
     },
@@ -128,6 +138,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "PATH": "<augmented-path>"
     },
@@ -145,6 +157,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "KIRO_CLI_CLIENT_APPLICATION": "kirocrew",
       "PATH": "<augmented-path>"
@@ -161,6 +175,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "MIMOCODE_CODEX_MODE": "false",
       "MIMOCODE_CONFIG_CONTENT": "{\"permission\":\"ask\"}",
@@ -182,6 +198,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"ask\"}",
       "PATH": "<augmented-path>"
@@ -203,6 +221,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "PATH": "<augmented-path>",
       "PI_ACP_PI_COMMAND": "/opt/run/pi-launcher.sh"
@@ -222,6 +242,8 @@
       "KIROCREW_SCRATCH": "<scratch>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STRANDS_GATE_SESSION": "<nonce>",
       "KIROCREW_STRANDS_STATE_DIR": "<state-dir>",
       "KIROCREW_STRANDS_WITHHELD": "ANTHROPIC_API_KEY:AWS_ACCESS_KEY_ID:AWS_BEARER_TOKEN_BEDROCK:AWS_SECRET_ACCESS_KEY:AWS_SESSION_TOKEN:GEMINI_API_KEY:LITELLM_API_KEY:OPENAI_API_KEY",
