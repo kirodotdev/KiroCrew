@@ -55,12 +55,17 @@ from kiro_crew.dashboard.handlers._shared import (
     require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
+from kiro_crew.dashboard.slot_buffers import MAX_SLOT_KEY_CHARS
 from kiro_crew.dashboard.state import _normalize_slot_key
 
 logger = logging.getLogger(__name__)
 
-#: A session key is an opaque slot key; bounded so it cannot carry free text.
-_SESSION_KEY_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+#: A session key is an opaque slot key; bounded so it cannot carry free text. The
+#: bound is the slot key's own (``MAX_SLOT_KEY_CHARS``) plus the ``dashboard:``
+#: prefix ``_normalize_slot_key`` strips: a fixed 128 refused every owned slot whose
+#: key ran longer, as an unknown session (#38605).
+_SESSION_KEY_MAX_CHARS = len("dashboard:") + MAX_SLOT_KEY_CHARS
+_SESSION_KEY_RE = re.compile(rf"[A-Za-z0-9_.:-]{{1,{_SESSION_KEY_MAX_CHARS}}}")
 
 #: Largest input-event body; a real one is under 200 bytes.
 _MAX_BODY_BYTES = 4 * 1024
