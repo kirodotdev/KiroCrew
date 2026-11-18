@@ -553,6 +553,8 @@ function createGatewaySupervisor({
         getListenPids: winListenPids,
         getCommand: (p) => windowsProcessCommand(p, { execFileFn: execFile }),
         isKirocrew: isTrustedWindowsGatewayCommand,
+        isOwnChild: (pid) => Boolean(gatewayProcess) && gatewayProcess.exitCode === null
+          && gatewayProcess.pid === pid,
         log: glog,
         holders,
       });
