@@ -1560,6 +1560,7 @@ the routes still read that cache.
 | `event_ts` | string | optional | The store's stamp on that event. | |
 | `created_at` | string | optional | The item's committed creation stamp, carried by `create`. | |
 | `last_report_at` | string | optional | The item's committed last-report stamp, carried by `report`. | |
+| `received_at` | string | optional | On a report the hub ingested from a remote peer: the hub's clock when it filed it (`last_report_at` is then the peer's stamp). The quiet-window rules measure from it. A report without it clears the item's `received_at`. | |
 | `closed_at` | string | optional | The item's committed close stamp, carried by `close`. | |
 | `decided_at` | string | optional | The item's committed decide stamp, carried by `decide`. | |
 | `pending_since` | string | optional | When the item's run of `pending` verdicts began, carried by a `pending` `verdict`. Any other verdict, or an `accept`, clears it. | |

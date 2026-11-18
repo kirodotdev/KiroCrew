@@ -1105,6 +1105,7 @@ from kiro_crew.work_ledger_rules import (  # noqa: E402, F401
     _WARNED_DEPTH_FALLBACKS,
     _decided_after_report,
     _is_placeholder,
+    _report_clock,
     _require_acceptance,
     _require_artifacts,
     _require_choice,

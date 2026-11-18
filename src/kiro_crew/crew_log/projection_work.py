@@ -588,6 +588,13 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
             else:
                 item.pop(held, None)
         item["last_report_at"] = _work_stamp(data.get("last_report_at"), stamp_ms)
+        # The hub's clock at filing, carried only by a report ingested from a peer;
+        # every report replaces it, and it is held only while set.
+        received = data.get("received_at")
+        if isinstance(received, str) and received:
+            item["received_at"] = _work_stamp(received, stamp_ms)
+        else:
+            item.pop("received_at", None)
     else:
         allowed = _WORK_CONDUCTOR_FIELDS.get(action)
         if allowed is None:

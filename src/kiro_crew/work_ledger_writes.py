@@ -813,6 +813,8 @@ def apply_worker_report(
         if checked_pr is not None:
             item.pr = checked_pr
         item.last_report_at = _now_iso()
+        # Set only by a remote filing; a local report replaces it, as the fold does.
+        item.received_at = None
         event = _commit_item_locked(
             slot_key, item, "report", checked_summary, status=checked_status
         )

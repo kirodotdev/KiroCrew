@@ -438,7 +438,7 @@ def quiet_since(item: WorkItem, *, wake: bool = True) -> str:
     *wake* False skips ``wake_at`` (the worker's loop is held; see :func:`is_stale`).
     """
     handed_back = _decided_after_report(item) if item.status in WAITING_STATUSES else None
-    since = handed_back or item.last_report_at or item.created_at or ""
+    since = handed_back or _report_clock(item) or item.created_at or ""
     if wake and item.wake_at:
         due = parse_stamp(item.wake_at)
         start = parse_stamp(since) if since else None
@@ -463,6 +463,14 @@ def _worker_owns_next_move(item: WorkItem) -> bool:
     return item.status == "done" and item.verdict == "fail"
 
 
+def _report_clock(item: WorkItem) -> str | None:
+    """*item*'s last report on the HUB's clock: ``received_at`` for a report filed
+    from a remote peer, whose ``last_report_at`` is the peer's own stamp, else
+    ``last_report_at``. Only durations read this; ordering and dedup keep the stamp.
+    """
+    return item.received_at or item.last_report_at
+
+
 def _decided_after_report(item: WorkItem) -> str | None:
     """*item*'s ``decided_at`` when it is at or after its last report, else ``None``.
 
@@ -476,9 +484,10 @@ def _decided_after_report(item: WorkItem) -> str | None:
     decided = parse_stamp(item.decided_at)
     if decided is None:
         return None
-    if not item.last_report_at:
+    last = _report_clock(item)
+    if not last:
         return item.decided_at
-    reported = parse_stamp(item.last_report_at)
+    reported = parse_stamp(last)
     if reported is None:
         return None
     try:
