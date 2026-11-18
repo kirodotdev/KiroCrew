@@ -385,6 +385,9 @@ declare global {
     /** A plain quit and relaunch with no update command of its own; an armed
      *  update is applied by the quit it triggers. Absent on an older shell. */
     relaunch?: () => Promise<UpdateResult>
+    /** Whether `relaunch` would be accepted from this window: false where the
+     *  shell's local-dashboard gate refuses it. Absent on an older shell. */
+    canRelaunch?: () => Promise<boolean>
     getInfo?: () => Promise<(UpdateInfo & { lastState?: UpdateState | null }) | undefined>
     setChannel?: (channel: string) => Promise<UpdateResult>
     setAutoDownload?: (enabled: boolean) => Promise<UpdateResult>

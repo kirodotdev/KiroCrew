@@ -501,6 +501,9 @@ contextBridge.exposeInMainWorld("updateAPI", {
   // A plain quit and relaunch with no update command of its own. An armed
   // update is applied by the quit it triggers.
   relaunch: () => ipcRenderer.invoke("update:relaunch"),
+  // Whether this window's relaunch would be accepted; false on a window the
+  // relaunch gate refuses, so the dashboard does not offer Restart now there.
+  canRelaunch: () => ipcRenderer.invoke("update:can-relaunch"),
   getInfo: () => ipcRenderer.invoke("update:get-info"),
   // Channel switcher (Settings > About): "" follows the build stamp,
   // "insider"|"stable" opts the production app onto that lane.

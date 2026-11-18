@@ -1832,6 +1832,16 @@ function createIpcRegistrar({
       }
       return { ok: true };
     });
+    // Whether `update:relaunch` would accept this sender. The same check, as a
+    // bare boolean, so the dashboard offers Restart now only where it works.
+    ipcMain.handle("update:can-relaunch", async (event) => {
+      try {
+        await assertLocalDashboard(event, "update:can-relaunch");
+      } catch {
+        return false;
+      }
+      return true;
+    });
     ipcMain.handle("update:set-channel", (_event, channel) => {
       const next = typeof channel === "string" ? channel : "";
       if (next !== "" && next !== "insider" && next !== "stable") {

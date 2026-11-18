@@ -431,6 +431,23 @@ describe('armed update', () => {
     expect(await screen.findByTestId('update-modal-armed')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: i18nT('components.updateModal.restart_now') })).toBeNull()
   })
+
+  it('offers no Restart now on a window whose relaunch the shell would refuse', async () => {
+    const canRelaunch = vi.fn().mockResolvedValue(false)
+    ;(window as unknown as { updateAPI?: unknown }).updateAPI = { armsOnQuit: true, install, relaunch, canRelaunch }
+    await mount(armedState)
+    expect(await screen.findByTestId('update-modal-armed')).toBeInTheDocument()
+    await waitFor(() => expect(canRelaunch).toHaveBeenCalled())
+    await act(async () => {})
+    expect(screen.queryByRole('button', { name: i18nT('components.updateModal.restart_now') })).toBeNull()
+  })
+
+  it('offers Restart now once the shell confirms this window may relaunch', async () => {
+    const canRelaunch = vi.fn().mockResolvedValue(true)
+    ;(window as unknown as { updateAPI?: unknown }).updateAPI = { armsOnQuit: true, install, relaunch, canRelaunch }
+    await mount(armedState)
+    expect(await screen.findByRole('button', { name: i18nT('components.updateModal.restart_now') })).toBeEnabled()
+  })
 })
 
 describe('a shell that predates arming', () => {

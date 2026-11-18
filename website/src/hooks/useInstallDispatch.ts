@@ -47,6 +47,21 @@ export function useInstallDispatch(update: UpdateState | null | undefined) {
   const state = update?.state
   const stateVersion = update?.version
   const armed = state === 'downloaded' && update?.armed === true
+  // The shell refuses a relaunch from a window it does not count as the local
+  // dashboard, so ask it before offering Restart now. Asked when the update
+  // arms, the only time the action shows. An older shell without the question
+  // keeps offering it whenever `relaunch` exists.
+  const hasRelaunchCheck = typeof window !== 'undefined' && typeof window.updateAPI?.canRelaunch === 'function'
+  const [relaunchAccepted, setRelaunchAccepted] = useState(false)
+  useEffect(() => {
+    if (!armed || !hasRelaunchCheck) return
+    let live = true
+    window.updateAPI!.canRelaunch!().then(
+      ok => { if (live) setRelaunchAccepted(ok === true) },
+      () => { if (live) setRelaunchAccepted(false) },
+    )
+    return () => { live = false }
+  }, [armed, hasRelaunchCheck])
   useEffect(() => {
     if (!installMutation.isSuccess && !installMutation.isError) return
     const dispatchStillLive = state === 'installing'
@@ -72,8 +87,9 @@ export function useInstallDispatch(update: UpdateState | null | undefined) {
      * bridge advertises `armsOnQuit`.
      */
     canArmOnQuit: typeof window !== 'undefined' && window.updateAPI?.armsOnQuit === true,
-    /** Restart now is offered only when the shell exposes `relaunch`. */
-    canRestartNow: typeof window !== 'undefined' && typeof window.updateAPI?.relaunch === 'function',
+    /** Restart now is offered only when the shell exposes `relaunch` and would accept it here. */
+    canRestartNow: typeof window !== 'undefined' && typeof window.updateAPI?.relaunch === 'function'
+      && (!hasRelaunchCheck || relaunchAccepted),
     restartNow: () => relaunchMutation.mutate(),
     restartNowPending: relaunchMutation.isPending || relaunchMutation.isSuccess,
     restartNowFailed: relaunchMutation.isError,
