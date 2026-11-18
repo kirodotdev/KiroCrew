@@ -54,6 +54,13 @@ def _line(row: dict[str, Any]) -> str:
         f"bound_here {_number(row.get('bound_here'), '')}"
     )
     parts = [head]
+    tags = [t for t in row.get("tags") or [] if isinstance(t, str)]
+    if tags:
+        parts.append(f"  tags: {', '.join(tags)}")
+    logins = row.get("logins")
+    if isinstance(logins, dict):
+        shown = [f"{k} {v}" for k, v in logins.items() if isinstance(v, str)]
+        parts.append(f"  logins: {', '.join(shown) or 'none reported'}")
     agents = [a for a in row.get("agents") or [] if isinstance(a, str)]
     if agents:
         default = row.get("default_agent") or ""
@@ -70,8 +77,10 @@ def _line(row: dict[str, Any]) -> str:
 
 
 def run_crew_list(args: dict[str, Any], ctx: ToolContext) -> str:
+    # Opt-in: each crew then waits up to a few seconds on its login checks.
+    path = f"{ROUTE}?logins=1" if args.get("logins") is True else ROUTE
     try:
-        resp = ctx.client.get(ROUTE, session_key=ctx.caller_key, timeout=GET_TIMEOUT_S)
+        resp = ctx.client.get(path, session_key=ctx.caller_key, timeout=GET_TIMEOUT_S)
     except DashboardError as refused:
         return redact(f"Error: could not list crews: {refused.error}")
     rows = [r for r in resp.get("crews") or [] if isinstance(r, dict)]
@@ -97,12 +106,24 @@ def crew_list_tool() -> Tool:
         description=(
             "Preview. List the remote crews registered on this hub: id, name, connection "
             "state, version match, a headroom snapshot (free memory and disk, load, "
-            "open hub workers), and the crew's agent and model names. Read-only. "
-            "Before your first crew or work_item call, read "
+            "open hub workers), its tags, and the crew's agent and model names. "
+            "Read-only. Before your first crew or work_item call, read "
             "references/remote-dispatch.md in the goal-conductor skill's directory "
             "and follow it."
         ),
-        schema={"type": "object", "properties": {}},
+        schema={
+            "type": "object",
+            "properties": {
+                "logins": {
+                    "type": "boolean",
+                    "description": (
+                        "Also show each crew's login states (gh, glab, az: valid, "
+                        "expired or unknown), as requires.logins reads them. Slower: "
+                        "each crew checks its logins first."
+                    ),
+                }
+            },
+        },
         run=run_crew_list,
         identity="strict",
         routes=(f"GET {ROUTE}",),

@@ -695,7 +695,7 @@ SESSION_STATUS_SCHEMA = ToolSchema(
 
 CREW_LIST_SCHEMA = ToolSchema(
     tool_name="crew_list",
-    fields=[],
+    fields=[FieldSpec("logins", bool)],
 )
 
 SESSION_ADOPT_SCHEMA = ToolSchema(
