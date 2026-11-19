@@ -1049,4 +1049,13 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "because an operator can paste a token into the list. The login words "
         "beside them are fixed constants.",
     ),
+    (
+        "A lease refusal in the tunnel status and the gateway log",
+        "relay_client/lease.py",
+        "The lease service's own message, appended to a refused lease's text in "
+        "`/api/tunnel/status` (which teammates can read) and its log line. It is "
+        "kept only as plain ASCII words with no ARN or 12-digit number, passes "
+        "the credential redactor (`redact_via_context`) and is cut to 200 "
+        "characters; anything else leaves the text the gateway wrote itself.",
+    ),
 )

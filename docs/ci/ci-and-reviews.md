@@ -230,13 +230,30 @@ Three structural facts explain most of the rest:
   merge queue off, the push run of `CI` runs the whole matrix and a red Linux or
   Windows shard there reaches nobody. `main-red-watch.yml` runs on
   `workflow_run: completed` of `CI`; for a push to `main` that ended `failure` or
-  `timed_out`, it reads the log of each failed job and takes the node ids and
-  message prefixes (first 80 characters) from pytest's short test summary
-  (`.github/scripts/main_red_nodeids.py`). It opens or updates one issue,
+  `timed_out`, it reads the check-run annotations of each failed job (first 20,
+  one read per job) and takes the node ids and message prefixes (first 80
+  characters) of the failing tests the rootdir `conftest.py` annotated there
+  (`.github/scripts/main_red_nodeids.py`). Annotations, not the log: the Actions
+  token's read of a job log fails in this repository, which left every red main
+  run unfiled, so the log is read only for a job whose annotations cannot be
+  read or, on a backend test job, name no test. A failed read says why in a
+  notice and in the job summary; a read the API rate limit refused is named as
+  that, with the reset time, and ends the reading. The annotations name at most 10
+  failing tests per job. With no issue open it files one only when a test is red
+  in two failed jobs of the run (the Linux and the Windows shard that both carry
+  it), so a test that fails once on one leg, which is as often a flake as a
+  break, opens nothing; that run ends with a warning naming the tests it saw red
+  in one job. An open issue is updated by every red run that names a test. It
+  opens or updates one issue,
   `Main is red: <first node id>`, under the `main-red` label (found by title
   prefix if the label cannot be created), holding that set, the first-red SHA and
   the streak. A run that names no node id (a Fast Gate barrier timeout, a Coverage
-  Gate failure) writes nothing, and a cancelled run never reaches the job. The
+  Gate failure) writes nothing and says so in a warning with what it read, a run none of whose failed jobs could be read
+  fails the watcher, and a cancelled run never reaches the job. A cancelled push
+  run on `main` is a pending one that a later push replaced before its tests
+  started; the running one is never cancelled, so `main` gets a test verdict
+  from each run that finishes, about one every 50 minutes, and the issue opens
+  with the first of those that is red on a test. The
   body's `Fix in progress:` line is rewritten on every main run from the open pull
   requests that cross-reference the issue, so a second author sees that a fix
   exists and can put `Fixes #<issue>` in their own. A later push run, or a
@@ -245,11 +262,14 @@ Three structural facts explain most of the rest:
   which `ci.yml` skips on a frontend-only or leaf-only scope). It is warn only: it
   writes an issue, comments on no pull request, assigns and mentions no one but
   the author of a cross-referencing fix. It holds `actions: read`,
-  `contents: read` and `issues: write`, and `test/test_main_red_watch.py` pins the
-  name, the gate and the parsing, and runs the step with `gh` stubbed.
+  `checks: read`, `contents: read` and `issues: write`.
+  `test/test_main_red_watch.py` pins the name, the gate and the log parsing, and
+  runs the step with `gh` stubbed; `test/test_main_red_annotations.py` pins the
+  annotation parsing against rows the API returned for red shards on `main`.
 - **A failed pull request run names the tests that are red on main.** While a
   `Main is red:` issue is open, `main-red-pr-notice.yml` reads the failed jobs of
-  a same-repository pull request's `CI` run (target `main`). If one of its
+  a same-repository pull request's `CI` run (target `main`), from their
+  annotations as the watcher does. If one of its
   failing test ids is also in the issue's set, it writes one comment, found by a
   hidden marker and edited in place, listing which failures are the same as main
   and which are the author's. A failure counts as the same only when the message
@@ -258,7 +278,7 @@ Three structural facts explain most of the rest:
   cannot show is the
   author's, and a failing check that names no test is always the author's. It is
   a comment: no status, label, assignee or mention, `continue-on-error`, and the
-  same three permissions as `main-red-watch.yml`. It reads only an issue the
+  same four permissions as `main-red-watch.yml`. It reads only an issue the
   Actions token filed and only that issue's checked state record; the fix line is
   rebuilt from the issue timeline, not copied from the editable body.
   `test/test_main_red_pr_notice.py` runs the step with `gh` stubbed.

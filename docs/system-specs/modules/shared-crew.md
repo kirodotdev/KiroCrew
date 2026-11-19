@@ -679,7 +679,9 @@ the access card or switch the preview; the mobile setup (`tailnet_mobile`, whose
 hands back a credential in the owner's own name) asks
 `is_host_owner_dashboard_request`; turning Remote Control off (`PUT
 /api/remote-control`, `REMOTE_ACCESS_WRITES`) refuses a teammate, since only the host
-machine can turn it back on and a teammate would shut every person out; and `PATCH
+machine can turn it back on and a teammate would shut every person out (the handler
+refuses the owner too on a relayed request, 403 `relay_remote_control_refused`, for
+the same reason); and `PATCH
 /api/config/kirocrew` refuses a teammate 403 `owner_only` on an admission key
 (`is_admission_config_key`: the `dashboard.shared_crew`, `dashboard.tailscale`,
 `instances` and `tunnel` subtrees, and any key segment starting `allow` or equal to
@@ -1872,8 +1874,8 @@ that never learned a revision sends none and is not compared.
 | `GET /api/shared-crew/capabilities` | `Capabilities` |
 | `GET /api/auth/me` | gains `principal` (`Principal.to_public_dict`) |
 | `GET /api/shared-crew/sessions?creator=&q=&cursor=&limit=` | `SessionPage`; each item carries `attribution` |
-| `GET /api/shared-crew/people` | observed collaborators with usage (`is_owner` per row, `tailscale_share` rows), and the directory state |
-| `GET /api/shared-crew/mode` | the mode body (§2 People and setup modes), with `viewer_via` and `owner_label` |
+| `GET /api/shared-crew/people` | observed collaborators with usage (`is_owner` per row, `tailscale_share` rows), and the directory state. With the preview off it reads no session catalogue and no Tailscale daemon, so it lists no session creators and no sharees, only people this process saw; the dashboard does not request it then |
+| `GET /api/shared-crew/mode` | the mode body (§2 People and setup modes), with `viewer_via` and `owner_label`. With the preview off it reads no session catalogue, so no session creator makes the mode `network`; it is `network` then only through a set-up sharing path, a relay team Crew or another person seen on a request, which is what `sharedCrewInUse` reads from the cache the chat strip fills (the strip reads the mode with the preview off, once per chat) |
 | `GET` / `PUT /api/shared-crew/preview` `{enabled}` | owner only, registered with the preview off: `{enabled, active, env_override, restart_required}` (Release gate) |
 | `GET /api/shared-crew/capacity` | `CapacityResponse` for the viewer |
 | `GET /api/shared-crew/work?session_key=` | public `AcceptedWork` list |

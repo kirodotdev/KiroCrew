@@ -24,6 +24,7 @@ from kiro_crew.dashboard.cron_inject import (
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
     prefetch_cron_dismissed,
+    read_cron_tab_rows,
     restore_cron_turn_timeout,
     stored_cron_folder,
 )
@@ -140,10 +141,10 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
     jobs = state.crons.list_jobs(include_disabled=True)
     job = next((j for j in jobs if j.id == job_id), None)
     if job:
-        history = (
-            await asyncio.to_thread(state.conversation_log.read_messages, f"cron:{job.id}")
+        tab = (
+            await asyncio.to_thread(read_cron_tab_rows, state.conversation_log, f"cron:{job.id}")
             if state.conversation_log
-            else []
+            else None
         )
         # Re-surfacing a stored result, not delivering a fresh run: the prompt
         # that produced it is not recoverable from live config -- see
@@ -152,7 +153,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             state,
             job,
             job.last_result or "",
-            history=history,
+            history=tab,
             dismissed=await prefetch_cron_dismissed(state, job.id),
             stored_folder=await stored_cron_folder(state, job.id),
             include_prompt=False,
@@ -161,10 +162,10 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
     else:
         # Job deleted (one-shot with delete_after_run). Create slot from history or notification.
         session_key = f"cron:{job_id}"
-        history = (
-            await asyncio.to_thread(state.conversation_log.read_messages, session_key)
+        history, hidden = (
+            await asyncio.to_thread(read_cron_tab_rows, state.conversation_log, session_key)
             if state.conversation_log
-            else []
+            else ([], (0, 0))
         )
         if history:
             # Read before the mint, so the folder is on the tab before any await
@@ -183,7 +184,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                 )
 
                 bind_transcript(state, slot)
-                hydrate_slot_from_history(slot, history)
+                hydrate_slot_from_history(slot, history, hidden)
                 # Mark dismissed-UNHYDRATED before the off-loop read: the slot is
                 # now bound + dirty with an empty in-memory set, and a periodic
                 # flush during the await would otherwise serialize [] over the

@@ -145,6 +145,17 @@ async def api_models_kas_bundle(request: web.Request) -> web.Response:
     return await _serve_recording(request, start_probe=True)
 
 
+async def api_models_kas_workload(request: web.Request) -> web.Response:
+    """A workload-identity host's ``GET /api/models`` off the bundle: the recording.
+
+    kiro-cli is never signed in there, so its ``--list-models`` cannot answer.
+    The engine signs in with the Crew's JWT-SVID and records its own list, served
+    as :func:`api_models_kas_crew_relay` serves it: nothing is spawned, and a cold
+    read answers ``auto``.
+    """
+    return await _serve_recording(request, start_probe=False)
+
+
 def _crew_sign_in_starts_spawn() -> bool:
     """Blocking (vault, config and kiro-cli reads); call off the loop. Never raises."""
     from kiro_crew.agent_sdk import kas_bundle

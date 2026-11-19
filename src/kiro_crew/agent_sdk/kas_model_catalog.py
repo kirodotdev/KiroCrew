@@ -154,8 +154,13 @@ def vault_identity() -> str:
 
     Blocking (reads the vault); call off the loop. Never raises. The one read
     both the KAS harness's stamp (``acp/harness/kas.py``, ``SessionExtras.vault_identity``)
-    and the picker's match go through.
+    and the picker's match go through. On a workload-identity host it is the
+    workload's own key, and the vault is not read.
     """
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
+        return workload_identity.catalog_identity()
     # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must not
     # load on the session drivers' import path (see kiro_crew.acp.kas_host_auth).
     from kiro_crew.auth.bridge import vault_identity_fingerprint

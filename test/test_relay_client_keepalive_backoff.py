@@ -492,7 +492,9 @@ async def test_reconnecting_status_says_why_the_last_connection_ended() -> None:
 async def test_a_dial_that_keeps_failing_says_so_in_status() -> None:
     async with FakeRelay() as relay, FakeCrew() as crew:
         client, _, ingress = make_client(relay, crew, sleep=RecordingSleep())
-        await relay.__aexit__()
+        # Unreachable in place: the server keeps its port, so no other listener on
+        # the host can take it and answer a dial.
+        relay.reachable = False
         await client.start()
         try:
             await async_wait_until(lambda: len(client.delays) >= 2)

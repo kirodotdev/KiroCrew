@@ -1,16 +1,18 @@
 /**
- * The desktop app's list of remote Crews reachable through the Kiro relay.
+ * The list of remote Crews reachable through the Kiro relay, for every owner's
+ * dashboard, with no setting.
  *
- * Shown wherever the gateway's crews route answers: it 404s while
- * `tunnel.relay_viewer_enabled` is off, which hides the whole list, so the default
- * dashboard is unchanged. The desktop app opens a Crew as a tab in its main window
+ * Shown once a read answers. A route that 404s (a build that keeps the viewer
+ * off) and a refusal (signed out, remote access off, not granted) hide it
+ * quietly. A network or server failure, or a throttle, shows the list it had
+ * (none on a first read) and says the read failed (`failed`). The desktop app opens a Crew as a tab in its main window
  * through the `relayCrewAPI` bridge; a browser opens it in a new tab, which the
  * gateway serves on an origin of its own (`relay_viewer/browser_origin.py`).
  */
-import { useCallback, useState } from 'react'
+import { useCallback } from 'react'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api, ApiError, type RelayCrewEntry, type RelayViewerAccount } from '../api/client'
-import { parseErrorCode, parseErrorField } from '../utils/errorReport'
+import { parseErrorCode } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 import { timeAgo } from '../utils/timeAgo'
 import type { AppDispatch, RootState } from '../store'
@@ -115,25 +117,6 @@ export function relayRefusalText(code: string | undefined, generic?: string): st
   }
 }
 
-/** Codes where sending the same request again can work: a CPS server failure, a
- *  throttle, a network failure, a cut answer, a Crew that may come back, a busy
- *  bridge. A refusal about access, sign-in or setup fails the same way again. */
-const RETRYABLE = new Set(['SERVICE_ERROR', 'THROTTLED', 'UNREACHABLE', 'BAD_ANSWER', 'CREW_OFFLINE', 'UNAVAILABLE'])
-
-export function relayRetryable(code: string | undefined): boolean {
-  return RETRYABLE.has((code || '').toUpperCase())
-}
-
-/** A list read the gateway refused. `requestId` is CPS's request ID (not a secret),
- *  present only when CPS sent a usable one. `retryAt` is when Try again may send
- *  again (`Date.now()` ms) after a throttle with a Retry-After, else null. */
-export type RelayListRefusal = {
-  text: string
-  code?: string
-  requestId?: string
-  retryAt: number | null
-}
-
 /** The throttle's `retryAfter` seconds from a gateway error body, when it is a positive number. */
 function retryAfterSeconds(body: string | undefined): number | null {
   try {
@@ -205,30 +188,50 @@ export async function clearRelayCrewsUnseen(queryClient: QueryClient, endpointId
     old ? { ...old, crews: old.crews.map(c => (ids.has(c.endpointId) ? { ...c, unseen: false } : c)) } : old)
 }
 
-/** The answers that mean this page cannot use the viewer at all, so the list hides:
+/** The answers that mean this page cannot use the viewer at all, so reading stops:
  *  the viewer off (404), and a page reached through the relay or by someone who is
- *  not the owner (403 with those codes). Any other refusal is shown. */
+ *  not the owner (403 with those codes). */
 const HIDING_403 = new Set(['relay_local_credential', 'owner_only'])
 const isOffError = (err: unknown) =>
   err instanceof ApiError && (err.status === 404 || (err.status === 403 && HIDING_403.has(parseErrorCode(err.body) || '')))
 
+/** A refusal that a read soon would answer the same way: signed out, remote access
+ *  off, not granted (a 4xx other than a throttle). It hides even a loaded list, which
+ *  was read for a sign-in or access that no longer holds. A network or server failure,
+ *  a throttle, and `NOT_SET_UP` (a dev viewer setting that is wrong) are not one: they
+ *  show the failure notice. */
+const isRefusal = (err: unknown) =>
+  err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 429
+  && parseErrorCode(err.body) !== 'NOT_SET_UP'
+
 /** How often the list is re-read: sooner while a listed Crew is not online, so a host
- *  that just connected reads as online without a reload, and once a minute otherwise. */
+ *  that just connected reads as online without a reload, and once a minute otherwise.
+ *  After a refusal, every 15 minutes. A longer Retry-After wins over each. */
 export const RELAY_CREWS_POLL_OFFLINE_MS = 15_000
 export const RELAY_CREWS_POLL_MS = 60_000
+export const RELAY_CREWS_POLL_REFUSED_MS = 15 * 60_000
+
+/** The next read's delay for a query in *state*, or false to stop reading. */
+function relayCrewsPollMs(state: { error: unknown; data?: { crews: RelayCrewEntry[] } }): number | false {
+  const { error, data } = state
+  if (isOffError(error)) return false
+  let ms = isRefusal(error)
+    ? RELAY_CREWS_POLL_REFUSED_MS
+    : data?.crews.some(c => !isRelayCrewOnline(c)) ? RELAY_CREWS_POLL_OFFLINE_MS : RELAY_CREWS_POLL_MS
+  const wait = error instanceof ApiError ? retryAfterSeconds(error.body) : null
+  if (wait !== null) ms = Math.max(ms, wait * 1000)
+  return ms
+}
 /** Opening the switcher re-reads the list unless a successful read is this recent. */
 const OPEN_FRESH_MS = 5_000
 
 export function useRelayViewerCrews(): {
   hidden: boolean
   crews: RelayCrewEntry[]
-  /** The account the loaded list was read for; null on a refusal or when the gateway named none. */
+  /** The account the loaded list was read for; null when the gateway named none. */
   account: RelayViewerAccount | null
-  refusal: RelayListRefusal | null
-  /** Read the list again now (the notice's Try again). */
-  retry: () => void
-  /** A read is in flight, so Try again waits for it. */
-  retrying: boolean
+  /** The latest read failed (a network or server failure, or a throttle); the list shown is the last one loaded, if any. */
+  failed: boolean
   /** Read a loaded list again unless the last read is under OPEN_FRESH_MS old (the menu opened). */
   refreshOnOpen: () => void
 } {
@@ -241,49 +244,19 @@ export function useRelayViewerCrews(): {
       const answer = await api.relayViewerCrews()
       return { ...answer, crews: Array.isArray(answer?.crews) ? answer.crews : [] }
     },
-    // A 404 is the feature-off answer, not a blip to retry.
+    // The poll below is the retry, at its own pace.
     retry: false,
-    // Presence changes on the host's side, so re-read; stop once the route says the feature is off.
-    refetchInterval: query => {
-      if (isOffError(query.state.error)) return false
-      return query.state.data?.crews.some(c => !isRelayCrewOnline(c)) ? RELAY_CREWS_POLL_OFFLINE_MS : RELAY_CREWS_POLL_MS
-    },
+    refetchInterval: query => relayCrewsPollMs(query.state),
   })
-  // Stable, so the menu can call it once when it opens. Only a loaded list is read
-  // again: with none, a refetch puts a refusal back to pending, which is Try again's job.
+  // Stable, so the menu can call it once when it opens. Only a loaded list is read again.
   const refreshOnOpen = useCallback(() => {
     const s = queryClient.getQueryState(RELAY_VIEWER_CREWS_KEY)
     if (!s?.data || s.fetchStatus === 'fetching' || Date.now() - s.dataUpdatedAt < OPEN_FRESH_MS) return
     void queryClient.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY, exact: true })
   }, [queryClient])
-  // The refusal a Try again was clicked from. With no list yet, react-query puts
-  // a refetched error back to pending, which would hide the notice mid-read.
-  // `at` is the error's time when Try again was clicked. A newer error moves
-  // q.errorUpdatedAt on and retires it; a loaded list ends the pending state.
-  const [held, setHeld] = useState<{ refusal: RelayListRefusal; at: number } | null>(null)
-  const off = isOffError(q.error)
-  let refusal: RelayListRefusal | null = null
-  if (q.error) {
-    const body = q.error instanceof ApiError ? q.error.body : undefined
-    const code = parseErrorCode(body)
-    const wait = retryAfterSeconds(body)
-    refusal = {
-      // A load failure must not read as an Open failure, so the list has its own fallback.
-      text: relayRefusalText(code, i18nT('components.relayCrews.refusal_list_generic')),
-      code,
-      requestId: parseErrorField(body, 'requestId'),
-      retryAt: wait === null ? null : q.errorUpdatedAt + wait * 1000,
-    }
+  // A failed read keeps the list it had, unless it was a refusal or the route is off.
+  if (isOffError(q.error) || isRefusal(q.error) || (!q.data && !q.error)) {
+    return { hidden: true, crews: [], account: null, failed: false, refreshOnOpen }
   }
-  const retry = () => {
-    setHeld(refusal ? { refusal, at: q.errorUpdatedAt } : null)
-    void q.refetch()
-  }
-  if (!off && q.isPending && q.isFetching && held && held.at === q.errorUpdatedAt) {
-    // Try again is reading: keep its refusal up, with Try again off, until the answer.
-    return { hidden: false, crews: [], account: null, refusal: held.refusal, retry, retrying: true, refreshOnOpen }
-  }
-  if (off || q.isPending) return { hidden: true, crews: [], account: null, refusal: null, retry, retrying: false, refreshOnOpen }
-  if (refusal) return { hidden: false, crews: [], account: null, refusal, retry, retrying: q.isFetching, refreshOnOpen }
-  return { hidden: false, crews: q.data?.crews ?? [], account: q.data?.account ?? null, refusal: null, retry, retrying: q.isFetching, refreshOnOpen }
+  return { hidden: false, crews: q.data?.crews ?? [], account: q.data?.account ?? null, failed: !!q.error, refreshOnOpen }
 }

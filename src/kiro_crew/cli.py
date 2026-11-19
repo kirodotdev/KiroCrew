@@ -476,7 +476,8 @@ def main() -> None:
             "Seed $KIROCREW_HOME from the named fixture BEFORE starting the "
             "gateway (dev tool). Fixture must exist under "
             "src/kiro_crew/tests_fixtures/. The gateway then runs normally "
-            "against the populated $KIROCREW_HOME. Refuses when "
+            "against the populated $KIROCREW_HOME, with --no-tunnel forced "
+            "on. Refuses when "
             "$KIROCREW_HOME is the main gateway home (~/.kiro/crew) or "
             "when the target is non-empty (use --seed-replace to wipe + re-seed)."
         ),
@@ -539,10 +540,10 @@ def main() -> None:
         action="store_true",
         help=(
             "Convenience alias for --port auto --no-open --json-ready "
-            "--approval reads. An explicit --port or --approval value "
+            "--no-tunnel --approval reads. An explicit --port or --approval value "
             "overrides the bundle's default (e.g. --test-mode --approval "
-            "yolo uses yolo). The boolean flags --no-open and --json-ready "
-            "are forced on by --test-mode and cannot be opted out of."
+            "yolo uses yolo). The boolean flags --no-open, --json-ready and "
+            "--no-tunnel are forced on by --test-mode and cannot be opted out of."
         ),
     )
 

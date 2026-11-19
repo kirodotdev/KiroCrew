@@ -711,7 +711,11 @@ V2 member must retain its ID and store. No manifest, retirement registry, privat
 payload copy, OS admission gate, or memory provisioning feature flag is involved.
 
 `POST /api/agents` and `kirocrew agent create` allocate new stores automatically.
-A supplied named store is rejected. They also allocate the member's own workspace
+A supplied named store is rejected; the one exception is `POST /api/agents` naming
+a kept store no member owns in `adopt_memory_store`, which binds the new member to
+that store's recorded identity (owned by [memory-skills-hooks](memory-skills-hooks.md)).
+`MemoryStoreConfig.former_owner` is display-only: the name a deleted member showed,
+stamped by the delete and read at request time by the kept-store offer. They also allocate the member's own workspace
 (`member_workspace.provision_member_workspace`: `member-<slug>` bound in `agents`,
 `workspace-member-<slug>` under the data home declared in `workspaces`) unless a
 workspace is named; `persist_member_config(create=True, new_workspace=…)`
@@ -814,6 +818,12 @@ disk, including fields the operator never set -- and each field is resolved as
 `data.get(key, DEFAULT)`. A stored value therefore always beats the dataclass
 default, so **changing a shipped default reaches only installs created after the
 change**; a pre-existing install keeps whatever value was materialized last.
+`tunnel.relay_enabled` relies on that on purpose: its default moved from `false`
+to unset (`null`, where a team key or a workload identity hosts,
+`remote_control/hosting.py`), and an install that stores `false` keeps it, since a
+stored `false` cannot be told apart from a deliberate off. `config set` writes only
+the keys it names, so an older install may store nothing there; with a team key it
+hosts after the upgrade, the key being its choice. It has no registry row.
 
 `config/superseded_defaults.py` holds an append-only registry
 (`SUPERSEDED_DEFAULTS`) of default changes existing installs should be told about,

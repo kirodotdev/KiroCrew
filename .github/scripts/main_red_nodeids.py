@@ -5,16 +5,26 @@
 function takes text or plain data and returns plain data, so the tests need no
 network and a later workflow can import the same parsing.
 
-    extract LOGDIR           print {node id: first 80 characters of the message}
-                             read from every *.log file in LOGDIR
+    extract DIR              print {node id: first 80 characters of the message}
+                             read from every <job id>.json (the job's check-run
+                             annotations) and <job id>.log (its log) in DIR
+    names-test DIR JOB       exit 0 when job JOB's files in DIR name a failing test
+    confirmed DIR            exit 0 when a test is red in two or more jobs; else print
+                             the tests red in one job only and exit 1
     pick-issue ISSUES.json   print the number of the open main-red issue
     render                   write the issue title and body for this red run
     should-close             exit 0 when a green run ends the open streak
 
+The node ids come from the annotations the rootdir `conftest.py` writes, one per
+failing test, with the node id as the title and `<node id> - <reason>` as the
+message. The Actions token's read of a job log fails in this repository, so the
+log is only the fallback for a job whose annotations could not be read or name
+no test, and a job whose annotations name a test is read from them.
+
 A run that names no failing test (a Fast Gate barrier timeout, a cancelled run,
 a Coverage Gate failure) gives `{}`, and the workflow then writes nothing.
 
-Log text is untrusted. It is read from files, never placed in a shell command,
+Log and annotation text is untrusted. It is read from files, never placed in a shell command,
 and everything that reaches an issue is cut to printable ASCII, has its
 backticks removed and sits inside a code span, so it cannot @-mention anyone or
 break out of the issue body.
@@ -36,6 +46,7 @@ MESSAGE_CHARS = 80
 MAX_NODEIDS = 100
 MAX_LISTED = 50
 MAX_FIX_PRS = 3
+MAX_ONCE_SHOWN = 5
 STALE = 10
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -105,13 +116,78 @@ def parse_failures(log_text: str) -> dict[str, str]:
     return found
 
 
+def annotation_entry(row: Any) -> tuple[str, str] | None:
+    """``(node id, message)`` for one check-run annotation of a failing test, else ``None``.
+
+    The title is the node id as data, so nothing is split out of rendered text. An
+    annotation of another kind (the runner's `Process completed with exit code 1`,
+    a collection error titled by its file, a notice) has no ``path.py::name`` title.
+    """
+    if not isinstance(row, dict) or row.get("annotation_level") != "failure":
+        return None
+    title, message = row.get("title"), row.get("message")
+    if not isinstance(title, str) or not isinstance(message, str):
+        return None
+    path, sep, name = title.partition("::")
+    if not sep or not name or _PATH.fullmatch(path) is None:
+        return None
+    lead = title + " - "
+    reason = message[len(lead) :] if message.startswith(lead) else message
+    return clean(title.replace("\\", "/"), 200), clean(reason, MESSAGE_CHARS)
+
+
+def parse_annotations(rows: Any) -> dict[str, str]:
+    """``{node id: message prefix}`` from the annotations of one job's check run."""
+    found: dict[str, str] = {}
+    for row in rows if isinstance(rows, list) else []:
+        entry = annotation_entry(row)
+        if entry is not None:
+            found.setdefault(entry[0], entry[1])
+    return found
+
+
+def job_failures(annotations_text: str | None, log_text: str | None) -> dict[str, str]:
+    """One job's failing tests: from its annotations when they name one, else from its log.
+
+    A shard that died before the conftest wrote its annotations has readable
+    annotations that name no test, and its log may still hold a summary.
+    """
+    if annotations_text is not None:
+        try:
+            found = parse_annotations(json.loads(annotations_text))
+        except ValueError:
+            found = {}
+        if found:
+            return found
+    return parse_failures(log_text or "")
+
+
+def repeated(per_job: list[dict[str, str]]) -> list[str]:
+    """Node ids red in two or more jobs of one run, in first-seen order.
+
+    A test that fails on two legs of a run (a Linux and a Windows shard) is a
+    break; one that fails on a single leg is as often a flake, and a flake must
+    not open the issue.
+    """
+    seen: dict[str, int] = {}
+    for failures in per_job:
+        for nodeid in failures:
+            seen[nodeid] = seen.get(nodeid, 0) + 1
+    return [nodeid for nodeid, count in seen.items() if count >= 2]
+
+
 def merge_failures(per_job: list[dict[str, str]]) -> dict[str, str]:
-    """Union over jobs, first message wins, cut to ``MAX_NODEIDS``."""
+    """Union over jobs, first message wins, cut to ``MAX_NODEIDS``.
+
+    Node ids red in two or more jobs come first, so the issue is titled by one.
+    """
     merged: dict[str, str] = {}
     for failures in per_job:
         for nodeid, message in failures.items():
             merged.setdefault(nodeid, message)
-    return dict(list(merged.items())[:MAX_NODEIDS])
+    first = repeated(per_job)
+    ordered = first + [nodeid for nodeid in merged if nodeid not in set(first)]
+    return {nodeid: merged[nodeid] for nodeid in ordered[:MAX_NODEIDS]}
 
 
 def _count(value: Any) -> int | None:
@@ -321,11 +397,39 @@ def _read_text(path: str | None) -> str:
     return Path(path).read_text(encoding="utf-8", errors="replace")
 
 
+def _job(folder: Path, stem: str) -> dict[str, str]:
+    notes, log = folder / f"{stem}.json", folder / f"{stem}.log"
+    return job_failures(
+        _read_text(str(notes)) if notes.is_file() else None,
+        _read_text(str(log)) if log.is_file() else None,
+    )
+
+
+def _per_job(logdir: str) -> list[dict[str, str]]:
+    folder = Path(logdir)
+    stems = {path.stem for kind in ("*.json", "*.log") for path in folder.glob(kind)}
+    ordered = sorted(stems, key=lambda name: (len(name), name))
+    return [_job(folder, stem) for stem in ordered]
+
+
 def cmd_extract(args: argparse.Namespace) -> int:
-    logs = sorted(Path(args.logdir).glob("*.log"), key=lambda p: (len(p.stem), p.stem))
-    per_job = [parse_failures(_read_text(str(path))) for path in logs]
-    print(json.dumps(merge_failures(per_job)))
+    print(json.dumps(merge_failures(_per_job(args.logdir))))
     return 0
+
+
+def cmd_confirmed(args: argparse.Namespace) -> int:
+    per_job = _per_job(args.logdir)
+    if repeated(per_job):
+        return 0
+    once = list(merge_failures(per_job))
+    shown = ", ".join(once[:MAX_ONCE_SHOWN])
+    more = f" and {len(once) - MAX_ONCE_SHOWN} more" if len(once) > MAX_ONCE_SHOWN else ""
+    print(f"{len(once)} test(s) red in one job only ({shown}{more})")
+    return 1
+
+
+def cmd_names_test(args: argparse.Namespace) -> int:
+    return 0 if args.job.isdigit() and _job(Path(args.logdir), args.job) else 1
 
 
 def cmd_pick_issue(args: argparse.Namespace) -> int:
@@ -370,6 +474,13 @@ def build_parser() -> argparse.ArgumentParser:
     extract = sub.add_parser("extract")
     extract.add_argument("logdir")
     extract.set_defaults(run=cmd_extract)
+    sure = sub.add_parser("confirmed")
+    sure.add_argument("logdir")
+    sure.set_defaults(run=cmd_confirmed)
+    names = sub.add_parser("names-test")
+    names.add_argument("logdir")
+    names.add_argument("job")
+    names.set_defaults(run=cmd_names_test)
     pick = sub.add_parser("pick-issue")
     pick.add_argument("issues")
     pick.add_argument("--body-out")

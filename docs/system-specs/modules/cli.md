@@ -398,7 +398,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew snapshot --strict` | Exit 3 (not 0) when the written bundle omits entries it was asked to carry; see the retention note below |
 | `kirocrew snapshot --list` | List existing snapshots, newest first by the same order as `--keep` |
 | `kirocrew restore <file>` | Restore from a snapshot; with no `--mode` it asks on a terminal and refuses off one, and never defaults to replace |
-| `kirocrew restore <file> --mode replace\|merge` | Force restore mode; merge skips malformed incoming or local cron JSON with a file-specific warning, and never overwrites a `config` file the destination already has -- it names each settings file it kept (`↩️ <file>: kept the existing file ...`, pointing at `--mode replace --components config`) instead of printing `✅ config`, while host state (`session_map.json`, `project_dir`, `workspace_dir`) keeps this machine's copy silently; a bundle `ui-prefs.json` / `notification_settings.json` its own reader would refuse stops a replace before anything is installed, and stops a merge only where the destination has no such file (otherwise the destination's file is kept); a bundle's `config.local.json` is never installed even where the destination has none (`↩️ config.local.json: not applied ...`), since that overlay outranks `config.json` |
+| `kirocrew restore <file> --mode replace\|merge` | Force restore mode; merge skips malformed incoming or local cron JSON with a file-specific warning, and never overwrites a `config` file the destination already has -- it names each settings file it kept (`↩️ <file>: kept the existing file ...`, pointing at `--mode replace --components config`) instead of printing `✅ config`, while host state (`session_map.json`, `workspace_dir`) keeps this machine's copy silently; a restore never installs the archive's `project_dir` in either mode, and a replace says so (`↩ project_dir: not restored ...`); a bundle `ui-prefs.json` / `notification_settings.json` its own reader would refuse stops a replace before anything is installed, and stops a merge only where the destination has no such file (otherwise the destination's file is kept); a bundle's `config.local.json` is never installed even where the destination has none (`↩️ config.local.json: not applied ...`), since that overlay outranks `config.json` |
 | `kirocrew restore <file> --components X,Y` | Selective component restore |
 | `kirocrew restore <file> --dry-run` | Preview restore without writing |
 | `kirocrew restore --list-components` | Show available component names |
@@ -418,7 +418,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew kas install/status/remove` | Install, inspect or delete Kiro Crew's own KAS engine bundle (`<data home>/engines/kas/<version>/`: a sha256-pinned `@kiro/agent` build plus its Node runtime). `install` installs this release's pinned version (`acp/kas_pin.py`) and refuses a manifest that does not hash to the pin; it takes `--version` and `--unpinned` (another version, for testing), `--url` (an https base; default `agent.kas_bundle_url`), `--from DIR` (a local manifest and its artifacts, for offline installs) and `--force`. A version the data home already holds is a success with no fetch, so re-running an installer passes (`cli.sh` and `install.sh` run `kirocrew kas install` by default once Kiro Crew is installed, warn and print this command when it fails, and skip it with `--no-kas`; neither turns `agent.kas_bundle` on); `--force` replaces it. A host that cannot run the engine at all (no build for its OS or architecture, or glibc below the floor: `KasHostUnsupported`) exits 3 (`cli_kas.HOST_UNSUPPORTED_EXIT`) instead of 1, and both installers then say the host cannot run it without the retry advice (`cli.sh` also replaces its next steps with what that means for the default agent, and a first install exits 3; a re-run over an existing install keeps 0, because every released `kirocrew update` re-runs the live `cli.sh` on a pipx install and reads any non-zero as a failed update); an `--if-in-use` refresh still exits 4 there, printing that line in place of the retry. That check is by version name only: a copy an earlier `--unpinned` install laid down under the pin's name also counts, and `--force` is how to swap it for the pinned manifest's engine. `--if-in-use` installs when `agent.kas_bundle` is on, or an engine is on disk and KAS takes the bundle route on its own (a failure exits 1), or refreshes an engine version already on disk (a failure, or a refresh still running after 600 s, prints the retry and exits 4, which an update does not fail on), and is otherwise a success that fetches nothing; every update runs it from the new release (see [The release is the unit of install](#the-release-is-the-unit-of-install)). `status` shows the pin, the version that runs and every version on disk; `remove --version V` deletes one. Operator-facing like `doctor`: it runs outside the sandbox, which is the only place the `engines` leaf is writable. The route itself is `agent.kas_bundle` — see [acp-client.md](acp-client.md) § KAS bundle route. |
 | `kirocrew kas login/whoami/logout/route` | Crew's own Kiro sign-in from a shell (`cli_kas_login.py`), for a host with no browser and no dashboard session -- the remote crew signed in over SSM by `kirocrew cloud login`, a headless host reached by ssh. `login [--provider builder_id\|idc\|google\|github] [--start-url U] [--region R]` runs the device-code flow and prints `Open <URL>` + `code: XXXX-XXXX`, polling until approved (exit 0 once the vault holds the credential; `already signed in`, exit 0, over a usable stored identity). `whoami [--format json]` exits 0 with the identity (the `kiro-cli whoami --format json` document, never a token) or 1 when signed out. `logout` removes every stored identity; a gateway on the host retires its agent processes on its next turn. `route` prints `kas-bundle` when `agent.acp_backend` is `kas` AND `agent.kas_bundle` is on, `kiro-cli` otherwise -- the remote sign-in scripts read it on the box. Not an MCP tool: a sign-in moves a credential and the agent must never choose whose. [kas-auth.md](kas-auth.md) § Sign-in from a shell. |
 | `kirocrew tailnet status/up/down` | Publish the dashboard on your tailnet (Tailscale) and trust its origin, or stop publishing — see [remote-and-mobile](../../guides/remote-and-mobile.md). |
-| `kirocrew remote-control [status [--json] \| on \| off]` | The terminal side of the personal Remote Control setting (`remote_control/cli.py`); a bare `remote-control` is `status`. `off` writes an explicit `tunnel.relay_enabled: false`, and a running gateway stops the relay within a few seconds without a restart. `on` takes effect after Kiro Crew restarts, and on a build that locks the tunnel it is refused (exit 1, nothing written). Each `on`/`off` leaves a SEL `remote_control` event. |
+| `kirocrew remote-control [status [--json] \| on \| off]` | The terminal side of the personal Remote Control setting (`remote_control/cli.py`); a bare `remote-control` is `status`. `off` writes an explicit `tunnel.relay_enabled: false`, and a running gateway stops the relay within a few seconds without a restart. `on` takes effect after Kiro Crew restarts, and on a build that locks the tunnel it is refused (exit 1, nothing written). Each `on`/`off` leaves a SEL `remote_control` event. `status` adds a line when it is on only by default (unset, on a Crew with a team key or a workload identity), and `--json` carries `by_default`. |
 | `kirocrew telemetry status/disable/enable` | Inspect exactly what the anonymous beacon sends, or turn it off permanently — see [metrics.md](metrics.md) and [governance.md](governance.md). |
 
 ### Staging is descriptor-pinned, and refuses rather than degrading silently
@@ -2749,6 +2749,12 @@ pins the contract.
     the no-service fallback: keep `kirocrew gateway` running under tmux or
     screen, or ask an administrator for sudo access. `cli.sh`'s Next steps
     mark the `service install` line `needs sudo on Linux` for the same reason.
+    When `KIROCREW_HOME` is set, those Next steps (and `install.sh`'s, and
+    the ending that replaces them on a host that cannot run the KAS engine)
+    first name that data home as an absolute path and print the
+    `export KIROCREW_HOME="..."` line for the shell profile, since every
+    later command resolves the home from it. Both installers first expand
+    a leading `~` in `KIROCREW_HOME` against `$HOME`, as every command does.
   - The gateway runs as `User=<account> Group=$(id -gn <account>)`, the
     account being `$SUDO_USER` when it names a non-root account, else
     `$USER`, else `$LOGNAME`, else the passwd entry of the process's uid
@@ -3774,7 +3780,7 @@ Four composable flags let an integration test or eval harness boot a gateway
 deterministically, with no model and no developer-machine state:
 
 ```bash
-kirocrew gateway --test-mode          # bundle: ephemeral port + json-ready + reads approval
+kirocrew gateway --test-mode          # bundle: ephemeral port + json-ready + no tunnel + reads approval
 kirocrew gateway --port auto          # OS-assigned port, avoiding a collision with a real gateway
 kirocrew gateway --json-ready         # print KIROCREW_READY:{port,token,pid,home} once listening
 kirocrew gateway --approval reads     # auto-approve read-only tools
@@ -3784,6 +3790,11 @@ kirocrew gateway --approval yolo      # auto-approve ALL tools
 `--json-ready` is what makes the harness race-free: the caller waits for the
 `KIROCREW_READY` line instead of polling a port, and reads the token from it rather
 than minting one.
+
+**`--test-mode` and `--seed` imply `--no-tunnel`.** A test or seeded home may hold a
+real sign-in or a team key, and a Crew with a team key hosts through the Kiro relay
+by default, so without this every such gateway would register with the production
+relay. `cli_gateway_boot._resolve_gateway_args` forces `no_tunnel` for both.
 
 **`--approval yolo` refuses to start unless `KIROCREW_HOME` is explicitly set to a
 non-default path.** The flag disables every per-call approval, so pointing it at the

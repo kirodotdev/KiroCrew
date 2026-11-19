@@ -98,6 +98,8 @@ import { slotRowByKey } from '../store/slotIndex'
 import { useMarkTranscriptShown } from '../hooks/useAckCronNotesInView'
 
 export type { PaneLeading } from './ChatPaneProps'
+// Side Chat runs the same upload flow under a key of its own.
+export { useChatPaneUploads } from './useChatPaneUploads'
 
 /**
  * ChatPane — one live chat session in the native session grid.

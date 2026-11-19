@@ -19,7 +19,7 @@ import type {
   LaunchJob,
 } from '../api/client'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
-import { recentErrors, __resetErrorJournalForTests } from '../utils/errorReport'
+import { consumeChatHandoff, recentErrors, __resetErrorJournalForTests } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
 
 vi.mock('../api/client', () => {
@@ -670,9 +670,32 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetupTab(u)
 
+    // The CloudFormation call ran and was denied: an error, with its hand-off, in that row.
+    const missing = await screen.findByText(/needs permission for this service/)
+    expect(missing.closest('[role="alert"]')).not.toBeNull()
+    expect(within(missing.closest('li') as HTMLElement).getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+
     await u.click(await screen.findByRole('button', { name: /Copy policy JSON/ }))
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('{"Version":"2012-10-17"}'))
     expect(await screen.findByRole('button', { name: /Copied/ })).toBeInTheDocument()
+  })
+
+  it('hands the agent the failed service check, profile and Region', async () => {
+    // The three service rows share one sentence, so the hand-off must say which call failed.
+    vi.mocked(api.listInstances).mockResolvedValue(list([]))
+    vi.mocked(api.cloudPreflight).mockResolvedValue({ ...PREFLIGHT_OK, cloudformation_reachable: false })
+    const u = setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await openSetupTab(u)
+
+    const row = (await screen.findByText(/needs permission for this service/)).closest('li') as HTMLElement
+    await u.click(within(row).getByRole('button', { name: /Ask the agent/ }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('"cloudformation_reachable":false')
+    expect(prompt).toContain('"region":"us-east-1"')
+    expect(prompt).toContain('"profile":""')
+    expect(prompt).not.toContain('ec2_reachable')
+    expect(prompt).not.toContain('ssm_reachable')
   })
 
   it('names the second policy when the edition attaches host policies', async () => {
@@ -759,8 +782,26 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
 
     expect(await screen.findByText('Credentials for this profile have expired.')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Launch' })).toBeDisabled())
-    // Every row fails; the hint names the first one in checklist order.
+    // The hint names the first failing row in checklist order: the credentials.
     expect(screen.getByText('Fix “AWS credentials” above to enable this.')).toBeInTheDocument()
+    // The EC2, CloudFormation and SSM checks run with those credentials, so none
+    // of them ran: no row blames a permission, marks a failure, or offers a policy to copy.
+    const notChecked = screen.getAllByText('Not checked yet — needs working AWS credentials first.')
+    expect(notChecked).toHaveLength(3)
+    for (const el of notChecked) {
+      expect(el.closest('li')?.querySelector('.lucide-x')).toBeNull()
+      expect(el.closest('li')?.querySelector('.lucide-check')).toBeNull()
+    }
+    expect(screen.queryByText(/needs permission for this service/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Copy policy JSON/ })).toBeNull()
+    // Typing another profile greys every verdict, but a row that was never
+    // checked has none to grey: it keeps its hollow ring.
+    await u.type(screen.getByRole('textbox', { name: 'AWS profile' }), 'Admin')
+    for (const el of notChecked) {
+      const mark = el.closest('li')?.querySelector(':scope > span')
+      expect(mark).toHaveClass('border-border-strong')
+      expect(mark).not.toHaveClass('bg-border-strong')
+    }
   })
 
   it('offers a re-check when the preflight request itself fails', async () => {

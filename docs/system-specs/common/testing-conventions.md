@@ -599,6 +599,18 @@ that patches a store read and then inspects the index does it inside
 `_eager_folder_held()` (drain, then `eager.paused()`), the way the two unprovable-header
 tests in `test_issue_radar_crew_store_write_refusal.py` do.
 
+**Probe a crew log's write lease only after the eager folder settles.** The folder
+writes a fold's savepoint under this process's share of the unit's lease, on its own
+thread, and a `session/closed` always triggers one (the seal). `assert_drained()`
+waits for the WRITER only, so a test that probes the kernel lock from a second
+descriptor right after it can land inside that write and read "this process still
+owns the log" although the emitter let go. A slow runner widens the window: macOS
+reported `a torn-down session with no live turn kept the log` about once a day.
+Probe through `_owned_elsewhere` / `_can_take_ownership` in
+`test/crew_log_emit_helpers.py`, which call `eager.drain()` first -- the barrier the
+history-delete funnel waits on before it claims the lease sole -- or call it yourself
+before any other lock probe.
+
 **Hold the crew-log writer for a burst the test counts.** `CrewLogWriter` claims a
 unit's whole bucket after its batching pause (`WriterLimits.batch_deadline_seconds`,
 20 ms) and the claim takes those entries OUT of the pending count, so blocking

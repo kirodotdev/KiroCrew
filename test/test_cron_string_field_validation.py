@@ -334,6 +334,7 @@ class TestAntiDrift:
     # - last_posted_hash: set by dedup logic when a Slack post is delivered
     # - last_failure_hash: set by dedup logic when a failure notification fires
     # - approval_mode: validated by a separate finite-set check, not length
+    # - on_tab_close: the same, through validate_on_tab_close
     # - memory_store: resolved internally from trusted member/session identity;
     #   never accepted from a cron creation or update caller
     # - managed_by: caller-supplied, but create-only, so it must stay OUT of the
@@ -351,6 +352,7 @@ class TestAntiDrift:
             "last_posted_hash",
             "last_failure_hash",
             "approval_mode",
+            "on_tab_close",
             "memory_store",
             # Computed by ack_job / unack_job from acked_items; no caller sets it.
             "acked_item_ids_digest",
