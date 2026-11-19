@@ -575,17 +575,32 @@ export function useChatPageResourcesController({
   // still asks for the whole object because `close` is INVOKED, and a called
   // member is attributed to its receiver — not because anything here reads
   // `search` itself.
-  const revealDockAfterOpen = useCallback(() => {
+  /** The side panel is bound to activeSlot, and split view never moves
+   *  activeSlot with pane focus. So a document a split pane opens for a chat
+   *  the panel is not showing switches the panel to that chat, the way
+   *  `openCrewSession` does. A click on a listed session: it announces and is
+   *  a gesture. */
+  const showPaneChat = useCallback((slot: string) => {
+    dispatch(switchSlot({ key: slot, announceOnMissing: true, gesture: true }))
+  }, [dispatch])
+  // `slot` is the chat a split pane opened the tab for. The document actions
+  // pass it only for an explicit pane open, and only when the active chat did
+  // not change during the read, so this compares against the chat that was
+  // active at the click. An open the user walked away from never pulls them
+  // back. Switching only here, after the tab is open, means a failed read
+  // (offline, say) never switches the panel and blanks a pane until reconnect.
+  const revealDockAfterOpen = useCallback((slot?: string | null) => {
+    if (slot != null && slot !== activeSlotRef.current) showPaneChat(slot)
     dispatch(openActivityPanel())
     search.close()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `search.close` is a useCallback([]) in useMessageSearch, so the listed member already pins everything this body calls; depending on the enclosing object instead would churn the onFileOpen prop on every transcript row each render
-  }, [dispatch, search.close])
+  }, [dispatch, search.close, showPaneChat, activeSlotRef])
   // File open / artifact open / file save are the shared SidePanel host actions
   // (`usePanelDocumentActions`) — one implementation with the Members page, so
   // the 404-vs-error read contract, the artifact involvement breadcrumb and the
   // save-baseline reconcile cannot drift between hosts.
   const {
-    openFile: handleFileOpen,
+    openFile: openFileTab,
     openWorkingTreeDiff: handleOpenWorkingTreeDiff,
     openArtifact: handleArtifactOpen,
     saveFile: handleFileSave,
@@ -596,6 +611,19 @@ export function useChatPageResourcesController({
     showActionError,
     onOpened: revealDockAfterOpen,
   })
+
+  /** Open a file as a panel tab. `opts.slot` is the split-pane override
+   *  (#9921). The tab lands in the pane's own strip, and once it is open
+   *  `revealDockAfterOpen` switches the panel to that chat. Without the switch
+   *  the panel kept showing another chat's strip, so a file chip or a diff's
+   *  Open button in a split pane seemed to do nothing. Held, because the
+   *  pane's chat loads its history after the switch and a link found there
+   *  must not take the focus from the file. */
+  const handleFileOpen = useCallback((filePath: string, opts?: Parameters<typeof openFileTab>[1]) => {
+    const slot = opts?.slot
+    if (slot == null || slot === activeSlotRef.current) return openFileTab(filePath, opts)
+    return openFileTab(filePath, { ...opts, hold: true })
+  }, [openFileTab, activeSlotRef])
 
   /** Open a DIRECTORY as a panel tab.
    *
@@ -612,14 +640,14 @@ export function useChatPageResourcesController({
       // `openCrewSession` does: open held (its history loads after the
       // switch), then switch.
       tabsCtl.openFolder(dirPath, slot, { hold: true })
-      dispatch(switchSlot({ key: slot, announceOnMissing: true, gesture: true }))
+      showPaneChat(slot)
     } else {
       tabsCtl.openFolder(dirPath, slot)
     }
     dispatch(openActivityPanel())
     search.close()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- same as handleFileOpen above: `search.close` is a useCallback([]) and the enclosing `search` object is a fresh literal every render, so listing it would churn the onFolderOpen prop on every transcript row
-  }, [tabsCtl, dispatch, search.close])
+  }, [tabsCtl, dispatch, search.close, showPaneChat])
 
 
   /** Reveal the Crew (Workers) tab from the Crew Mode dispatch-notice button.
