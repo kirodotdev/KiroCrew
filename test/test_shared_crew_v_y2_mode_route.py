@@ -21,7 +21,8 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.dashboard import revocation_gen, token_auth
 from kiro_crew.dashboard.routes import register_all
-from kiro_crew.shared_crew import preview, routes_identity, tailscale_sharees
+from kiro_crew.shared_crew import people, preview, routes_identity, tailscale_sharees
+from kiro_crew.shared_crew.contracts import Principal, PrincipalKind, Provenance
 
 
 @pytest.fixture
@@ -116,3 +117,28 @@ async def test_with_the_preview_off_the_read_does_not_walk_the_catalog(state, mo
 async def test_with_the_preview_on_the_read_still_walks_the_catalog(state, monkeypatch, path):
     _body, reads = await _read_with_a_counted_walk(state, monkeypatch, path, preview_on=True)
     assert "catalog" in reads
+
+
+def test_a_teammate_seen_by_one_test_is_seen_by_this_process():
+    """Leave a teammate in the process-wide people registry, as a teammate request does.
+
+    The next test in this file proves the per-test reset forgets them.
+    """
+    people.observe(
+        Principal(
+            kind=PrincipalKind.HUMAN,
+            id="p_teammate_39456",
+            provenance=Provenance.KIRO_RELAY,
+        )
+    )
+    assert any(obs.principal.id == "p_teammate_39456" for obs in people.registry().snapshot())
+
+
+@pytest.mark.asyncio
+async def test_a_teammate_an_earlier_test_saw_does_not_make_this_crew_network(state, monkeypatch):
+    """Runs after the test above on the same worker; the Crew still reads as personal."""
+    assert people.registry().snapshot() == []
+    body, _reads = await _read_with_a_counted_walk(
+        state, monkeypatch, routes_identity.MODE_PATH, preview_on=False
+    )
+    assert body["mode"] == "personal"

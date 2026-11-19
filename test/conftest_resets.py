@@ -211,6 +211,29 @@ def _forget_tracing_switch():
 
 
 @pytest.fixture(autouse=True)
+def _forget_observed_people():
+    """Give every test an empty Shared Crew people registry.
+
+    Every authorized dashboard request records its principal in the
+    process-wide ``kiro_crew.shared_crew.people`` registry, and nothing in
+    production clears it: one gateway owns the process. A test that makes a
+    request as a teammate (relay, Tailscale, SSM invite) leaves that person
+    seen, so a later test on the same worker reads the Crew mode as
+    ``network``. Measured: ``test_shared_crew_teammate_redaction.py``'s
+    ``test_the_sse_stream_redacts_what_a_teammate_reads_with_redaction_off``
+    followed by ``test_shared_crew_v_y2_mode_route.py``'s
+    ``test_with_the_preview_off_the_read_does_not_walk_the_catalog``.
+
+    Reset at setup, so a test that installs its own clocked registry keeps it.
+    A test that never imported the module pays one dict lookup.
+    """
+    people = sys.modules.get("kiro_crew.shared_crew.people")
+    if people is not None:
+        people.reset_for_tests()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _forget_gatewayd_telemetry_override():
     """Give every test the platform-context telemetry provider, not gatewayd's.
 

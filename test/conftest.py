@@ -292,6 +292,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _forget_gatewayd_telemetry_override,
     _forget_legacy_auth_sweep_clean_roots,
     _forget_mount_source_sweep_pacing,
+    _forget_observed_people,
     _forget_sandbox_launch_mark,
     _forget_tracing_switch,
     _fresh_aws_bin_dir_trust,
