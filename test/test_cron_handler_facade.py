@@ -95,6 +95,7 @@ _ROUTES = frozenset(
         "api_cron_folders_create",
         "api_cron_folders_delete",
         "api_cron_folders_update",
+        "api_cron_get",
         "api_cron_history",
         "api_cron_history_all",
         "api_cron_history_detail",
