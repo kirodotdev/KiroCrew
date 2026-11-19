@@ -966,7 +966,6 @@ class TestSecurity:
         directory.type = tarfile.DIRTYPE
         assert _data_filter(directory) is not None
 
-    @requires_symlinks
     def test_symlink_filtered_out(self, env, monkeypatch):
         """TEST 30 — symlinks are silently dropped by _data_filter."""
         src, _, _, tmp_path = env
@@ -981,10 +980,14 @@ class TestSecurity:
         with tarfile.open(str(tarball)) as tar:
             tar.extractall(extract, filter=lambda t, _d="": t)
         snap = next(d for d in extract.iterdir() if d.name.startswith("kirocrew-snapshot-"))
-        os.symlink("/etc/passwd", str(snap / "evil_link"))
         evil_tar = tmp_path / "evil.tar.gz"
         with tarfile.open(str(evil_tar), "w:gz") as tar:
             tar.add(str(snap), arcname=snap.name)
+            # A tar symlink member needs no host symlink privilege.
+            link = tarfile.TarInfo(name=f"{snap.name}/evil_link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc/passwd"
+            tar.addfile(link)
 
         fresh = tmp_path / "fresh30"
         fresh.mkdir()
@@ -992,7 +995,7 @@ class TestSecurity:
         ret = restore_main([str(evil_tar), "--mode", "replace", "--force"] + unpinnable_argv())
         # Symlink is filtered out by _data_filter, restore succeeds
         assert ret == 0
-        assert not (fresh / "evil_link").exists()
+        assert not os.path.lexists(fresh / "evil_link")
 
     def test_mode_without_value(self, env, monkeypatch):
         """TEST 28"""
