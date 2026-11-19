@@ -435,6 +435,9 @@ export default [
           // components/chat/warmBriefWaiting.css (imported by WarmBriefWaiting.tsx,
           // outside index.css's @source graph): the catch-up's waiting cards.
           'wb-wait-*',
+          // components/laundry/laundry.css (imported by WaitGame.tsx, outside
+          // index.css's @source graph): the wait game's scope and its parts.
+          'laundry-*',
         ],
       }],
       'shadcn/require-static-classes': 'error',

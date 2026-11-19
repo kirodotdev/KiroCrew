@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import { RelayReconnectingView } from './RelayReconnectingView'
 import { renderWithProviders, createTestStore } from '../test/helpers'
 import { sseDisconnected } from '../store/dashboardSlice'
@@ -25,5 +25,11 @@ describe('RelayReconnectingView', () => {
     const text = mountWith(null)
     expect(text).toContain(en.app.relay_crew_dropped)
     expect(text).not.toContain(en.app.relay_remote_control_off)
+  })
+
+  it('offers no laundry game to a relay Crew window: the game is for the gateway on this machine', () => {
+    mountWith(null)
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })) })
+    expect(screen.queryByTestId('wait-game')).toBeNull()
   })
 })

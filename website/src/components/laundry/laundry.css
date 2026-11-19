@@ -1,0 +1,19 @@
+/* The laundry game (`./engine.ts`). Every rule is scoped to `.laundry-game` so nothing reaches the page around it.
+   `--paper` is the surface the game sits on (set inline by WaitGame: the page or a card), `--ink` the line colour. */
+.laundry-game{--ink:var(--text);position:relative;width:100%;height:100%;min-height:160px;overflow:hidden;background:var(--paper);color:var(--ink);font:12px/1.4 var(--mono, ui-monospace, monospace);-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;outline:none}
+.laundry-game canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block;touch-action:none}
+.laundry-game .laundry-count,.laundry-game .laundry-caption,.laundry-game .laundry-toast,.laundry-game .laundry-hint{position:absolute;margin:0;pointer-events:none}
+.laundry-game .laundry-count{top:6px;right:52px;height:36px;display:flex;align-items:center;color:var(--ink)}
+.laundry-game .laundry-count-text{font-size:20px;line-height:1}
+.laundry-game .laundry-count svg{display:block;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.laundry-game .laundry-restart{position:absolute;top:6px;right:8px}
+.laundry-game .laundry-caption{left:0;right:0;bottom:10px;padding:0 12px;text-align:center;color:var(--muted)}
+.laundry-game .laundry-hint{top:10px;left:14px;max-width:calc(100% - 170px);color:var(--muted);font-size:11px;display:none}
+.laundry-game .laundry-hint.laundry-on{display:block}
+.laundry-game .laundry-toast{left:0;right:0;top:16%;text-align:center;font-size:14px;opacity:0;transition:opacity .35s}
+.laundry-game .laundry-toast.laundry-on{opacity:1}
+.laundry-game .laundry-keys button{position:absolute;left:0;top:0;width:10px;height:10px;margin:0;padding:0;border:0;border-radius:6px;background:transparent;color:transparent;pointer-events:none}
+.laundry-game .laundry-keys button:focus{outline:none}
+.laundry-game .laundry-keys button:focus-visible{outline:2px dashed var(--ink);outline-offset:2px}
+.laundry-game .laundry-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}
+@media (prefers-reduced-motion:reduce){.laundry-game .laundry-toast{transition:none}}

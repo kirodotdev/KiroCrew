@@ -627,6 +627,10 @@ describe('UpdateFoundModal — gateway source', () => {
     )
     expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.update_when_i_restart') })).toBeNull()
 
+    // Nothing to wait for yet, so Space offers no game.
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })) })
+    expect(screen.queryByTestId('wait-game')).toBeNull()
+
     fireEvent.click(byName('components.updateFoundModal.restart_to_update'))
 
     await waitFor(() => expect(mockedApi.restartGateway).toHaveBeenCalledTimes(1))
@@ -634,6 +638,11 @@ describe('UpdateFoundModal — gateway source', () => {
     await waitFor(() => expect(
       screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
     ).toBeInTheDocument())
+    // The restart wait offers the laundry game below its line (after 30 s, or on Space). Space is pressed where
+    // focus really is, inside the dialog, whose key isolation must not hide it.
+    const focused = dialog().contains(document.activeElement) ? document.activeElement! : dialog()
+    act(() => { focused.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })) })
+    expect(within(dialog()).getByTestId('wait-game')).toBeInTheDocument()
   })
 
   it('a staged update on a gateway that cannot apply still offers the restart, not the copy-command path', async () => {

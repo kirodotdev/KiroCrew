@@ -16,7 +16,7 @@
  * the generic "Gateway offline" that points a screen-reader user at
  * reconnection when pasting a token is the fix (issue #9692).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import type { QueryClient } from '@tanstack/react-query'
 import { renderWithProviders } from './helpers'
@@ -27,6 +27,7 @@ import { relayPaneOpened, setActiveId } from '../store/instancesSlice'
 import App from '../App'
 import en from '../i18n/locales/en.manual.json'
 import { QUIET_RECONNECT_GRACE_MS } from '../utils/reconnectBackoff'
+import { WAIT_GAME_DELAY_MS } from '../components/laundry/WaitGame'
 
 // Match the App.test.tsx mock setup. Differ only in `isAuthBannerShown`
 // where each test controls it explicitly.
@@ -444,6 +445,35 @@ describe('App on this machine with the gateway gone — one calm view over every
     expect(screen.queryByTestId('host-offline')).toBeNull()
     expect(main).not.toHaveAttribute('inert')
     expect(screen.getByTestId('chat-page-layer')).toBeInTheDocument()
+    await shellSettled(queryClient)
+  })
+
+  it('offers the laundry game below the cover text after 30 s, or at once on Space', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    onTestFinished(() => { vi.useRealTimers() })
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseConnected()) })
+    act(() => { store.dispatch(sseDisconnected()) })
+    act(() => { vi.advanceTimersByTime(QUIET_RECONNECT_GRACE_MS) })
+    const view = screen.getByTestId('host-offline')
+    expect(screen.queryByTestId('wait-game')).toBeNull()
+    act(() => { vi.advanceTimersByTime(WAIT_GAME_DELAY_MS) })
+    const game = within(view).getByTestId('wait-game')
+    // The cover's own lines stay mounted above the game, and the cover itself is still no live region:
+    // the game's polite region speaks only game moves.
+    expect(view).toHaveTextContent("The gateway isn't running on this machine.")
+    expect(view).toHaveTextContent(en.app.host_offline_sessions_kept)
+    expect(view).not.toHaveAttribute('aria-live')
+    expect(game.compareDocumentPosition(within(view).getByText(en.app.host_offline_sessions_kept)) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+    act(() => { store.dispatch(sseConnected()) })
+    expect(screen.queryByTestId('wait-game')).toBeNull()
+    // Next outage: Space starts it before the 30 s are up.
+    act(() => { store.dispatch(sseDisconnected()) })
+    act(() => { vi.advanceTimersByTime(QUIET_RECONNECT_GRACE_MS) })
+    expect(screen.queryByTestId('wait-game')).toBeNull()
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })) })
+    expect(within(screen.getByTestId('host-offline')).getByTestId('wait-game')).toBeInTheDocument()
+    act(() => { store.dispatch(sseConnected()) })
     await shellSettled(queryClient)
   })
 
