@@ -349,8 +349,6 @@ from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importer
     _reset_options_control_state,
 )
 
-from kiro_crew.testing import synthetic_credentials as _synthetic_credentials  # noqa: E402
-
 # ``make_dir_link`` lives in kiro_crew.testing.links so the app-embedded test
 # packages, which never see this conftest, share the one copy. Re-exported so
 # ``from conftest import make_dir_link`` keeps working.
@@ -389,6 +387,7 @@ REDOS_SCALING_FLOOR_SECONDS = 0.25
 _PEM_DASHES = "-" * 5
 _PEM_TAIL_HALF = f"ATE KEY{_PEM_DASHES}\nMIIBOgIBAAJBAKJ2\n"
 
+
 #: Credential shapes a message cap can SEVER. Each half is clean on its own, so
 #: scrubbing the two pieces separately sees nothing, while a reader shown them one
 #: after the other sees the key -- the platform renders the markup away.
@@ -407,28 +406,50 @@ _PEM_TAIL_HALF = f"ATE KEY{_PEM_DASHES}\nMIIBOgIBAAJBAKJ2\n"
 #: published format (``AIza`` and 35 letters and digits, so no half carries markup of
 #: its own); a bare 40-character run and an AWS key ID stay visible and would prove
 #: nothing here.
-_STRADDLE_KEY = "AIza" + _synthetic_credentials.synth(35, seed=17)
-CREDENTIAL_STRADDLE_SHAPES = [
-    pytest.param(
-        f"[{_STRADDLE_KEY[:4]}](https://ex.test/a,b)", _STRADDLE_KEY[4:], id="link-target-comma"
-    ),
-    pytest.param(
-        "Authorization: Bearer",
-        " abcdefghijklmnopqrstuvwxyz0123456789",
-        id="header-whitespace",
-    ),
-    pytest.param(f"{_STRADDLE_KEY[:8]}_", f"_{_STRADDLE_KEY[8:]}", id="underscore-emphasis"),
-    pytest.param(f"{_STRADDLE_KEY[:8]}~", f"~{_STRADDLE_KEY[8:]}", id="tilde-emphasis"),
-    pytest.param(
-        f"https://evil.test/?q={_STRADDLE_KEY[:14]}", f"{_STRADDLE_KEY[14:]}.", id="url-punctuation"
-    ),
-    pytest.param(
-        f"[l](https://ex.test/x/{_STRADDLE_KEY[:8]}", f"{_STRADDLE_KEY[8:]})", id="cut-inside-a-url"
-    ),
-    pytest.param(f"{_PEM_DASHES}BEGIN RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor"),
-    pytest.param(f"{_PEM_DASHES}BEG**IN** RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor-markup-split"),
-    pytest.param(_STRADDLE_KEY[:8], _STRADDLE_KEY[8:], id="no-markup-at-all"),
-]
+#:
+#: Read as ``from conftest import CREDENTIAL_STRADDLE_SHAPES``. Built on first read
+#: by the module ``__getattr__`` below, so collecting a file that never asks for it
+#: does not import the redaction stack ``synthetic_credentials`` reaches
+#: (test/test_conftest_import_budget.py holds that line).
+def _credential_straddle_shapes() -> list:
+    from kiro_crew.testing import synthetic_credentials as _synthetic_credentials
+
+    _STRADDLE_KEY = "AIza" + _synthetic_credentials.synth(35, seed=17)
+    return [
+        pytest.param(
+            f"[{_STRADDLE_KEY[:4]}](https://ex.test/a,b)", _STRADDLE_KEY[4:], id="link-target-comma"
+        ),
+        pytest.param(
+            "Authorization: Bearer",
+            " abcdefghijklmnopqrstuvwxyz0123456789",
+            id="header-whitespace",
+        ),
+        pytest.param(f"{_STRADDLE_KEY[:8]}_", f"_{_STRADDLE_KEY[8:]}", id="underscore-emphasis"),
+        pytest.param(f"{_STRADDLE_KEY[:8]}~", f"~{_STRADDLE_KEY[8:]}", id="tilde-emphasis"),
+        pytest.param(
+            f"https://evil.test/?q={_STRADDLE_KEY[:14]}",
+            f"{_STRADDLE_KEY[14:]}.",
+            id="url-punctuation",
+        ),
+        pytest.param(
+            f"[l](https://ex.test/x/{_STRADDLE_KEY[:8]}",
+            f"{_STRADDLE_KEY[8:]})",
+            id="cut-inside-a-url",
+        ),
+        pytest.param(f"{_PEM_DASHES}BEGIN RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor"),
+        pytest.param(
+            f"{_PEM_DASHES}BEG**IN** RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor-markup-split"
+        ),
+        pytest.param(_STRADDLE_KEY[:8], _STRADDLE_KEY[8:], id="no-markup-at-all"),
+    ]
+
+
+def __getattr__(name: str):
+    if name == "CREDENTIAL_STRADDLE_SHAPES":
+        shapes = _credential_straddle_shapes()
+        globals()[name] = shapes
+        return shapes
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def assert_rejected_without_backtracking(
