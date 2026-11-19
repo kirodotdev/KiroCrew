@@ -147,6 +147,20 @@ pytest and CI, such as the GUI user test's `gateway --test-mode`; any value but
 empty/`0`/`false`/`no`/`off`); there is no config key. `KIROCREW_SKIP_MODEL_DOWNLOAD`
 does not skip it: a real cloud microVM gateway sets that.
 
+**Repair after an update.** The venv links to the interpreter that built it. A
+packaged runtime that keeps each release in its own directory can remove that
+interpreter while the gateway runs, after the startup check found the install
+whole, so the next status read would show Install with no reason. When a status
+read (`GET /api/browser/status`) or an agent's `browser` op finds the marker but
+no venv Python, `repair_browser_harness` starts the same install job unasked:
+once per gateway process, never over a job that is running or did not succeed,
+and under the same test/CI skip. It checks those conditions again right before
+it starts the job, after its last await, so two callers at once start one job.
+The op that started it, and any op while an install job runs (a repair another
+caller started, or an Install press), answers `browser_repairing` ("being
+installed; try again in a minute"), which the tool passes to the agent as
+written.
+
 The daemon starts with a scrubbed environment built by one function and pinned
 by one test:
 

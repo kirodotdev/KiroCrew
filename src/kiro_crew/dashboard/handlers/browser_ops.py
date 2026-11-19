@@ -18,7 +18,9 @@ Responses (always HTTP 200 once authorised, so the shim reads one shape):
 * ``{"ok": true, "result": {...}}`` -- the op ran;
 * ``{"ok": false, "code": str, "error": str}`` -- the op answered a refusal
   (``password_field``, ``ref_stale``, ...), or this handler's own:
-  ``not_installed`` (no Harness on this host), ``browser_error`` (the daemon or
+  ``not_installed`` (no Harness on this host), ``browser_repairing`` (an install
+  job is running, such as the reinstall of an install that broke after an update),
+  ``browser_error`` (the daemon or
   browser failed), ``timeout`` (the op ran past its budget), ``browser_busy``
   (another chat held the lock too long), ``user_in_control`` (the person held
   the browser for the whole ``HOLD_TIMEOUT_S``), ``interrupted`` (the person
@@ -1124,6 +1126,19 @@ async def run_browser_op(
         logger.warning("browser op: supervisor unavailable: %s", exc)
         return {"ok": False, "code": "browser_error", "error": _safe(exc)}, 200
     if supervisor is None:
+        from kiro_crew.dashboard.handlers.browser_harness_status import (
+            _install_active,
+            repair_browser_harness,
+        )
+
+        # A job already running (a repair an earlier op or Settings started, or an
+        # Install press) is a retry too, not "ask the user to install".
+        if state is not None and (await repair_browser_harness(state) or _install_active(state)):
+            return {
+                "ok": False,
+                "code": "browser_repairing",
+                "error": "the browser engine is being installed; try again in a minute",
+            }, 200
         return (
             {
                 "ok": False,

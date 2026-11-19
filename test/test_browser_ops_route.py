@@ -138,6 +138,66 @@ async def test_not_installed_is_a_refusal_the_shim_renders(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
+async def test_a_repair_it_starts_is_its_own_code_with_the_retry_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``not_installed`` is rendered by the shim as "ask the user to install"; a repair
+    already under way must reach the agent as "try again" instead."""
+    from aiohttp import web
+
+    from kiro_crew.dashboard.handlers import browser_harness_status
+
+    _install(monkeypatch, None)
+    started: list[Any] = []
+
+    async def _repair(state: Any) -> bool:
+        started.append(state)
+        return True
+
+    monkeypatch.setattr(browser_harness_status, "repair_browser_harness", _repair)
+    app = web.Application()
+    state = object()
+    app["state"] = state
+    req = make_mocked_request("POST", "/api/browser/op", app=app)
+    req["internal_auth"] = True
+    req._read_bytes = json.dumps({"op": "snapshot", "session_key": "k"}).encode()
+    body = json.loads((await mod.api_browser_op(req)).body)
+    assert started == [state]
+    assert body["ok"] is False and body["code"] == "browser_repairing"
+    assert "try again in a minute" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_an_op_while_an_install_job_runs_is_told_to_retry_not_to_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later op (the agent's retry, or after Settings started the repair) does not
+    start a repair itself; it must still read "try again", not "ask to install"."""
+    from aiohttp import web
+
+    from kiro_crew.dashboard.handlers import browser_harness_status
+
+    _install(monkeypatch, None)
+
+    async def _repair(state: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(browser_harness_status, "repair_browser_harness", _repair)
+
+    class _State:
+        _browser_harness_install_job = browser_harness_status.InstallJob.start(("harness",))
+
+    app = web.Application()
+    app["state"] = _State()
+    req = make_mocked_request("POST", "/api/browser/op", app=app)
+    req["internal_auth"] = True
+    req._read_bytes = json.dumps({"op": "snapshot", "session_key": "k"}).encode()
+    body = json.loads((await mod.api_browser_op(req)).body)
+    assert body["ok"] is False and body["code"] == "browser_repairing"
+    assert "try again in a minute" in body["error"]
+
+
+@pytest.mark.asyncio
 async def test_result_passes_through_and_the_context_is_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
