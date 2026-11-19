@@ -769,7 +769,8 @@ async def test_a_request_wait_in_the_hand_off_window_does_not_leave_the_turn_emp
 
     [reply] = _rows(slot, "assistant")
     assert "The background build finished." in reply["content"]
-    assert reply["meta"]["origin"] == _ORIGIN
+    # The reply is the turn's only row, so it is also its opener.
+    assert reply["meta"]["origin"] == _OPENER
     await async_wait_until(lambda: client._stdout_claims == 0)
     await client._stop_idle_reader()
 
