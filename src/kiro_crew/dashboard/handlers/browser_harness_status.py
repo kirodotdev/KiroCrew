@@ -23,8 +23,10 @@ worker thread and reports stages through a callback marshalled back with
 finished job cannot move a newer one.
 
 The gateway also starts that job by itself, once, at startup
-(:func:`auto_setup_browser_harness`): the owner should not have to press Install. That
-is not an agent route around the owner gate: the argv, the lock and the prefix are the
+(:func:`auto_setup_browser_harness`): the owner should not have to press Install. It
+starts it once more, later, when a status read or an agent's browser op finds an install
+that an update broke after that check (:func:`repair_browser_harness`). Neither
+is an agent route around the owner gate: the argv, the lock and the prefix are the
 same constants Install uses, and nothing a request or an agent supplies reaches them.
 """
 
@@ -46,7 +48,7 @@ from aiohttp import web
 from kiro_crew.browser_harness import install as harness_install
 from kiro_crew.browser_harness.governance import HOST_KEY, browse_denied_async
 from kiro_crew.browser_harness.supervisor import CONNECTED, HarnessSupervisor, get_supervisor
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, data_home
 from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
 
 logger = logging.getLogger(__name__)
@@ -222,6 +224,10 @@ async def api_browser_harness_status(request: web.Request) -> web.Response:
     denied = await browse_refusal(audit=False)
     if denied is not None:
         return denied
+    # An install that broke since startup is reinstalled here, so the page shows
+    # it installing instead of asking for a click.
+    sup = await asyncio.to_thread(_supervisor, request)
+    await repair_browser_harness(request.app["state"], supervisor=sup)
     return web.json_response(await asyncio.to_thread(_status_payload, request))
 
 
@@ -461,6 +467,12 @@ async def auto_setup_browser_harness(
     try:
         components = await asyncio.to_thread(_auto_components, sup)
         if components:
+            # A repair or an owner install can claim the slot during discovery.
+            if _install_active(state):
+                return AUTO_INSTALL_RUNNING
+            job = _job(state)
+            if job is not None and job.status != STATUS_SUCCEEDED:
+                return AUTO_INSTALL_FAILED
             logger.info("browser harness: installing %s at startup", ", ".join(components))
             _start_install_job(state, components)
             await asyncio.wait({state._browser_harness_install_task})
@@ -482,6 +494,65 @@ async def auto_setup_browser_harness(
         return AUTO_INSTALL_FAILED
 
 
+def _broke_after_install(sup: HarnessSupervisor) -> bool:
+    """A finished install whose interpreter is gone: the marker is there, the venv's Python is not.
+
+    The venv links to the interpreter that built it. A packaged runtime that keeps
+    each release in its own directory (an update installs the new one, then prunes
+    an old one) can remove that interpreter while this gateway runs, after the
+    startup check already found the install whole. Blocking (stats): off the loop.
+    """
+    state = harness_install.install_state(sup.home)
+    return state.version is not None and state.python is None
+
+
+async def repair_browser_harness(
+    state: Any,
+    *,
+    supervisor: HarnessSupervisor | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Reinstall, unasked, a Harness that broke after this gateway's startup check.
+
+    Called where the break is seen: Settings' status read and an agent's browser op.
+    The startup auto-install covers a break that is already there when the gateway
+    starts; this covers one that lands later. At most once per gateway process, and
+    never over a job that is running or that failed (its Retry is the person's).
+    Returns whether it started the install job; never raises.
+    """
+    env = os.environ if environ is None else environ
+    if _auto_skipped(env) or getattr(state, "_browser_harness_repair_attempted", False):
+        return False
+    job = _job(state)
+    if _install_active(state) or (job is not None and job.status != STATUS_SUCCEEDED):
+        return False
+    sup = supervisor if supervisor is not None else get_supervisor(data_home())
+    try:
+        if not await asyncio.to_thread(_broke_after_install, sup):
+            return False
+        if await browse_denied_async(HOST_KEY):
+            return False
+        components = await asyncio.to_thread(_auto_components, sup)
+    except Exception:  # noqa: BLE001 - an optional subsystem never fails the caller
+        logger.warning("browser harness: repair check failed", exc_info=True)
+        return False
+    # Checked again after the awaits, with none before the job starts: a second
+    # caller that passed the first checks meanwhile must not replace a job the
+    # first one started, even one that already failed.
+    job = _job(state)
+    if (
+        not components
+        or getattr(state, "_browser_harness_repair_attempted", False)
+        or _install_active(state)
+        or (job is not None and job.status != STATUS_SUCCEEDED)
+    ):
+        return False
+    state._browser_harness_repair_attempted = True
+    logger.info("browser harness: its interpreter is gone; reinstalling %s", ", ".join(components))
+    _start_install_job(state, components)
+    return True
+
+
 async def stop_browser_harness_install(state: Any) -> None:
     """Cancel a running install at gateway shutdown. Idempotent, never raises."""
     task = getattr(state, "_browser_harness_install_task", None)
@@ -500,5 +571,6 @@ __all__ = [
     "api_browser_harness_install",
     "api_browser_harness_status",
     "api_browser_harness_test",
+    "repair_browser_harness",
     "stop_browser_harness_install",
 ]
