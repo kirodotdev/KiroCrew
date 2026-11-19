@@ -80,7 +80,7 @@ from aiohttp import web
 from kiro_crew.apps import browser_sites
 from kiro_crew.apps.browser_sites import app_browser_sites, browser_call_url, url_matches
 from kiro_crew.browser_harness import ops as harness_ops
-from kiro_crew.browser_harness import session_contexts, url_gate
+from kiro_crew.browser_harness import run_budget, session_contexts, url_gate
 from kiro_crew.browser_harness.budgets import (
     CHANGE_REPORT_S,
     DECISION_HEADROOM_S,
@@ -208,6 +208,7 @@ async def _close_tabs_of(state: Any, key: str) -> None:
                 # under the key are its own now.
                 return
             await hub.stop_stream(key)
+            hub.reset_run(key)
             relay = _live_handlers()._current_relay()
             if relay is not None:
                 try:
@@ -357,6 +358,16 @@ def _report_changes() -> bool:
         return KiroCrewConfig.load().browser.report_changes is True
     except Exception:  # noqa: BLE001 - an unreadable setting leaves every result as it was
         return False
+
+
+def _run_limits() -> int:
+    """``browser.run.max_repeats``, read fresh for each op. Off (0) when it cannot be read."""
+    try:
+        from kiro_crew.config import KiroCrewConfig
+
+        return KiroCrewConfig.load().browser.run.max_repeats
+    except Exception:  # noqa: BLE001 - an unreadable setting leaves every op as it was
+        return 0
 
 
 def frame_ops(hub: LiveHub, key: str, *, caller_key: str | None = None) -> Any:
@@ -1039,6 +1050,14 @@ async def _bound_op(
                 return denied
             _audit(request, "allowed")
             return result
+        max_repeats = _run_limits()
+        if max_repeats:
+            sess = hub.get(key)
+            if sess is not None:
+                stopped = run_budget.check(sess.run, op, args, max_repeats=max_repeats)
+                if stopped is not None:
+                    _audit(request, "denied", run_budget.CODE)
+                    return stopped
         task = asyncio.ensure_future(harness_ops.run_op(op, args, ctx))
         hub.op_started(key, task)
         try:
