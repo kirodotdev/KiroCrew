@@ -20,7 +20,9 @@ one instead, by leaving out the ``leaseVersion`` it would otherwise send back,
 as it does on the first call after a start. A call that cannot reach the
 service, or gets an answer it cannot use, is retried on the reconnect steps with
 full jitter (section 11.2). A refusal is read from its error type (``__type``)
-and ``reason``: an access refusal is tried again after 15 minutes; an unknown
+and ``reason``, and its text ends with the service's own ``message`` when that
+passes :func:`service_message` (plain ASCII words, short, nothing an id or a
+credential could hide in): an access refusal is tried again after 15 minutes; an unknown
 Crew, or a request the service calls invalid, stops the source until Remote
 Control restarts, once a stored endpoint has been dropped and tried without. An
 invalid refusal of a call that left out the ``leaseVersion`` is first retried
@@ -45,7 +47,7 @@ and never logged or put in a ``repr``. It goes only to the configured lease
 service, or with none set to the built-in Kiro control plane URL for the sign-in's
 region: the session reads no netrc and follows no redirects. Logs carry refusal
 codes, HTTP statuses and delays, never a token, the credential or the answer's
-text.
+text beyond a refusal message that passed :func:`service_message`.
 """
 
 from __future__ import annotations
@@ -71,6 +73,7 @@ from urllib.parse import urlsplit, urlunsplit
 import aiohttp
 
 from kiro_crew.bounded_read import bounded_read
+from kiro_crew.external_text import redact_external_text
 from kiro_crew.relay_client.backoff import Backoff
 from kiro_crew.relay_client.connection import env_proxy_for
 from kiro_crew.relay_client.protocol import (
@@ -158,7 +161,7 @@ _ACCESS_DENIED_REASONS = {
     "crewaccessnotgranted": "this sign-in has no access to the Crew, or its identity is not active",
 }
 #: Covers a refusal with no reason, such as remote Crews not being enabled for the
-#: account: the refusal's message is never read, so the text names both causes.
+#: account: the service's message may be withheld, so the text names both causes.
 _ACCESS_DENIED_DEFAULT = (
     "this sign-in cannot host this Crew now, or remote access is turned off for this "
     "Crew's account or organization"
@@ -175,6 +178,13 @@ _VALIDATION_WHY = "the request does not fit the service's model; upgrade Crew"
 _IDENTITY_IN_USE = "IdentityInUseException"
 _ERROR_TYPE_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9]{0,127}\Z", re.ASCII)
 _REASON_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_]{0,63}\Z", re.ASCII)
+#: The longest refusal ``message`` a refusal's text carries, in characters.
+SERVICE_MESSAGE_MAX_CHARS = 120
+#: A refusal ``message`` the text may carry: ASCII words, spaces and light
+#: punctuation. No ``:``, ``/``, ``=`` or ``_``, so no ARN, URL, key=value or key.
+_SERVICE_MESSAGE_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9 ,.'()-]*\Z", re.ASCII)
+#: A word this long that holds a digit reads as an id or a key, not a word.
+_OPAQUE_WORD_CHARS = 8
 
 
 # ── settings ──
@@ -529,7 +539,7 @@ def refusal_of(body: Any, header_type: Optional[str] = None) -> Tuple[Optional[s
     """A refusal's error type and ``reason``, each or ``None``.
 
     The type comes from the body's ``__type``, or else the ``X-Amzn-ErrorType``
-    header. Neither the ``message`` nor any other text of the body is kept.
+    header. The ``message`` is read separately, by :func:`service_message`.
     """
     fields = body if isinstance(body, dict) else {}
     kind = error_type(fields.get("__type")) or error_type(header_type)
@@ -537,6 +547,37 @@ def refusal_of(body: Any, header_type: Optional[str] = None) -> Tuple[Optional[s
     if not isinstance(reason, str) or not _REASON_RE.match(reason):
         reason = None
     return kind, reason
+
+
+def service_message(body: Any) -> Optional[str]:
+    """A refusal's own ``message``, when it is safe to show, else ``None``.
+
+    The text lands in ``/api/tunnel/status``, which teammates can read over the
+    relay, so only plain ASCII words pass: at most ``SERVICE_MESSAGE_MAX_CHARS``,
+    no word holding a digit that could be an id or a key, and nothing the
+    credential redactor would change. A message that fails is dropped whole,
+    never shown cut or masked.
+    """
+    message = body.get("message") if isinstance(body, dict) else None
+    if not isinstance(message, str):
+        return None
+    message = message.strip()
+    if len(message) > SERVICE_MESSAGE_MAX_CHARS or not _SERVICE_MESSAGE_RE.match(message):
+        return None
+    if any(
+        len(word) >= _OPAQUE_WORD_CHARS and any(ch.isdigit() for ch in word)
+        for word in message.split()
+    ):
+        return None
+    if redact_external_text(message) != message:
+        return None
+    return message
+
+
+def _with_service_message(text: str, body: Any) -> str:
+    """*text* ending with the refusal's own message, when :func:`service_message` passes it."""
+    said = service_message(body)
+    return f'{text}. The service said: "{said}"' if said else text
 
 
 def takeover_wait(body: Any, date_header: Optional[str], jitter: float = 1.0) -> float:
@@ -885,16 +926,22 @@ class LeaseHostTokenSource:
             )
             self._hold(
                 arrived + RETRY_AFTER_MAX_SECONDS,
-                f"the lease service refused this Crew ({named}): {why}",
+                _with_service_message(
+                    f"the lease service refused this Crew ({named}): {why}", payload
+                ),
             )
             logger.warning(
-                "the lease service refused this Crew (%s); trying again in %.0fs",
-                named,
+                "%s; trying again in %.0fs",
+                _with_service_message(f"the lease service refused this Crew ({named})", payload),
                 RETRY_AFTER_MAX_SECONDS,
             )
             raise _Later(self._hold_reason)
         if kind == _NOT_FOUND:
-            self._stop(f"the lease service refused this Crew ({named}): {_NOT_FOUND_WHY}")
+            self._stop(
+                _with_service_message(
+                    f"the lease service refused this Crew ({named}): {_NOT_FOUND_WHY}", payload
+                )
+            )
         if kind == _VALIDATION:
             # Once per renewal: the endpoint retry below (endpoint_retry False) never
             # comes back here.
@@ -929,17 +976,34 @@ class LeaseHostTokenSource:
                     host_token_requested, endpoint_retry=False, sign_in_retry=sign_in_retry
                 )
                 return
-            self._stop(f"the lease service refused the renewal ({named}): {_VALIDATION_WHY}")
+            self._stop(
+                _with_service_message(
+                    f"the lease service refused the renewal ({named}): {_VALIDATION_WHY}", payload
+                )
+            )
         if kind == _IDENTITY_IN_USE:
             wait = takeover_wait(
                 payload, answered.date, self._rng.uniform(1.0, 1.0 + TAKEOVER_WAIT_JITTER)
             )
-            self._hold(arrived + wait, f"the lease service asked the Crew to wait ({named})")
-            logger.warning("the lease service refused the renewal (%s); waiting %.0fs", named, wait)
+            self._hold(
+                arrived + wait,
+                _with_service_message(
+                    f"the lease service asked the Crew to wait ({named})", payload
+                ),
+            )
+            logger.warning(
+                "%s; waiting %.0fs",
+                _with_service_message(f"the lease service refused the renewal ({named})", payload),
+                wait,
+            )
             raise _Later(self._hold_reason)
         cause = _BACK_OFF_WHY.get(kind or "")
         self._back_off(
-            f"the lease service refused the renewal ({named})" + (f": {cause}" if cause else "")
+            _with_service_message(
+                f"the lease service refused the renewal ({named})"
+                + (f": {cause}" if cause else ""),
+                payload,
+            )
         )
 
     async def _credential(self, rejected: Optional[str]) -> str:
