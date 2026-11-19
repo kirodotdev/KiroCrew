@@ -563,6 +563,50 @@ describe('AboutPanel gateway restart', () => {
     expect(screen.queryByTestId('gateway-restart-row')).toBeNull()
   })
 
+  // Every other update card draws no Restart of its own, and an armed update
+  // is applied by exactly a restart, so the standing row stays on screen.
+  it.each([
+    {
+      name: 'the in-app arm flow of a managed-venv install, command included',
+      status: {
+        update_can_arm: true,
+        update_managed_by: 'kirocrew',
+        update_command: 'curl -fsSL https://example.test/cli.sh | sh',
+      },
+      card: 'in-app-update',
+    },
+    {
+      name: 'an installer card with no command to show',
+      status: { update_can_arm: false },
+      card: 'manual-update-instructions',
+    },
+    {
+      name: 'a policy-managed update with no in-app apply',
+      status: { update_can_arm: false, update_managed_by: 'command' },
+      card: 'policy-managed-update-note',
+    },
+  ])('keeps the standing Restart beside $name', async ({ status, card }) => {
+    const posts = stubFetch()
+    seedStatus({
+      update_available: true,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
+      update_latest_version: '9.9.9',
+      update_channel: 'stable',
+      ...status,
+    })
+    mountWeb()
+
+    await screen.findByTestId(card)
+    expect(screen.getByTestId('gateway-restart-row')).toBeTruthy()
+    // Still one Restart on screen, never two.
+    expect(screen.queryByTestId('gateway-restart')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('gateway-restart-standing'))
+    fireEvent.click(screen.getByTestId('gateway-restart-standing'))
+    await waitFor(() => expect(posts.some(p => p.url.includes('/api/restart'))).toBe(true))
+  })
+
   it('treats the connection drop after a restart as success, not failure', async () => {
     // os.execv replaces the process image, so the POST's connection is reset by
     // the very thing it asked for. Reporting that as an error would tell the
