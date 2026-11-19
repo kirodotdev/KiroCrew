@@ -8911,7 +8911,11 @@
       "wont_survive_a_restart": "重启后会丢失",
       "restored_held": "重启后已恢复。不会自动发送。",
       "sub_agent_results_ready_other": "{{count}} 个子代理结果已就绪，将在当前轮次结束后处理",
-      "queued_count_other": "{{count}} 条已排队"
+      "queued_count_other": "{{count}} 条已排队",
+      "discard_all_queued_messages": "丢弃所有排队消息",
+      "discard_all_title_other": "丢弃 {{count}} 条排队消息？",
+      "discard_all_body": "这些消息不会发送，其文本也不会退回到输入框。",
+      "discard_all_confirm": "全部丢弃"
     },
     "readingWidthToggle": {
       "title_full": "全宽",

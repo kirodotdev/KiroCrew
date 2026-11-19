@@ -9598,7 +9598,14 @@
       "queued_count_one": "в очереди: {{count}}",
       "queued_count_few": "в очереди: {{count}}",
       "queued_count_many": "в очереди: {{count}}",
-      "queued_count_other": "в очереди: {{count}}"
+      "queued_count_other": "в очереди: {{count}}",
+      "discard_all_queued_messages": "Удалить все сообщения из очереди",
+      "discard_all_title_one": "Удалить {{count}} сообщение из очереди?",
+      "discard_all_title_few": "Удалить {{count}} сообщения из очереди?",
+      "discard_all_title_many": "Удалить {{count}} сообщений из очереди?",
+      "discard_all_title_other": "Удалить {{count}} сообщения из очереди?",
+      "discard_all_body": "Они не будут отправлены, а их текст не вернётся в поле ввода.",
+      "discard_all_confirm": "Удалить все"
     },
     "readingWidthToggle": {
       "title_full": "Полная ширина",

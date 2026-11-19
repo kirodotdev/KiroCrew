@@ -9140,7 +9140,12 @@
       "sub_agent_results_ready_one": "{{count}}টি সাবএজেন্ট ফলাফল প্রস্তুত — বর্তমান টার্নের পরে প্রক্রিয়া করা হবে",
       "sub_agent_results_ready_other": "{{count}}টি সাবএজেন্ট ফলাফল প্রস্তুত — বর্তমান টার্নের পরে প্রক্রিয়া করা হবে",
       "queued_count_one": "{{count}}টি সারিতে",
-      "queued_count_other": "{{count}}টি সারিতে"
+      "queued_count_other": "{{count}}টি সারিতে",
+      "discard_all_queued_messages": "সারিতে থাকা সব বার্তা বাদ দিন",
+      "discard_all_title_one": "সারিতে থাকা {{count}}টি বার্তা বাদ দেবেন?",
+      "discard_all_title_other": "সারিতে থাকা {{count}}টি বার্তা বাদ দেবেন?",
+      "discard_all_body": "এগুলো পাঠানো হবে না, এবং এগুলোর লেখা ইনপুট বক্সে ফিরে আসবে না।",
+      "discard_all_confirm": "সব বাদ দিন"
     },
     "readingWidthToggle": {
       "title_full": "পূর্ণ প্রস্থ",

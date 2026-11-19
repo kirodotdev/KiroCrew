@@ -9140,7 +9140,12 @@
       "sub_agent_results_ready_one": "{{count}} सब-एजेंट परिणाम तैयार — वर्तमान टर्न के बाद प्रोसेस होगा",
       "sub_agent_results_ready_other": "{{count}} सब-एजेंट परिणाम तैयार — वर्तमान टर्न के बाद प्रोसेस होंगे",
       "queued_count_one": "{{count}} कतार में",
-      "queued_count_other": "{{count}} कतार में"
+      "queued_count_other": "{{count}} कतार में",
+      "discard_all_queued_messages": "सभी कतारबद्ध संदेश हटाओ",
+      "discard_all_title_one": "{{count}} कतारबद्ध संदेश हटाओ?",
+      "discard_all_title_other": "{{count}} कतारबद्ध संदेश हटाओ?",
+      "discard_all_body": "ये संदेश नहीं भेजे जाएँगे, और इनका टेक्स्ट इनपुट बॉक्स में वापस नहीं आएगा।",
+      "discard_all_confirm": "सभी हटाओ"
     },
     "readingWidthToggle": {
       "title_full": "पूरी चौड़ाई",

@@ -583,5 +583,6 @@
   "components.promptStash.discarded",
   "pages.settings.slackSharedAccess.confirm_title",
   "pages.settings.slackSharedAccess.confirm_label",
-  "components.globalChatSearch.more_matches"
+  "components.globalChatSearch.more_matches",
+  "components.queueStack.discard_all_title"
 ]

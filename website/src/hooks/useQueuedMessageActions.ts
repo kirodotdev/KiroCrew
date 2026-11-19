@@ -52,6 +52,17 @@ export const queuedSendStash = new Map<string, QueuedSendRecord>()
  *  disables its controls from. */
 export interface QueuedMessageActions {
   onCancel: (queueId: string) => void
+  /** Cancel several cards at once (`QueueStack`'s Discard all). Each id goes
+   *  through the same per-entry cancel request as `onCancel`, so the server
+   *  sends each one's notice and releases each one's hold. Unlike `onCancel`
+   *  it restores nothing into the composer, and it removes a card only once
+   *  the server accepted its cancel: several messages merged into one draft
+   *  is not a draft anyone wrote, and with no draft to show at once there is
+   *  no reason to hide a card the server may still run. Ids that are no longer
+   *  a visible card, whose user row is already written (`meta.written`, which
+   *  the server refuses to cancel), or whose action is already in flight, are
+   *  skipped. */
+  onCancelAll: (queueIds: readonly string[]) => void
   onInterrupt: (queueId: string) => void
   /** `pastes`: the paste blocks the edit kept, when the card carried any
    *  (`QueueStack`'s `onEdit`); the optimistic row takes exactly that set. */
@@ -146,6 +157,8 @@ export function useQueuedMessageActions({
 }: QueuedMessageActionsOptions): QueuedMessageActions {
   const dispatch = useAppDispatch()
   const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(() => new Set())
+  const pendingIdsRef = useRef(pendingIds)
+  pendingIdsRef.current = pendingIds
 
   // Reads happen inside callbacks that must NOT be re-created when the queue
   // changes: `QueueStack` is memo-compared on callback identity, so a new
@@ -292,6 +305,34 @@ export function useQueuedMessageActions({
     run(queueId, api.cancelQueuedMessage(slot, queueId))
   }, [slot, dispatch, run])
 
+  const onCancelAll = useCallback((queueIds: readonly string[]) => {
+    if (!slot) return
+    // The list was read when the user pressed the button, and the dialog
+    // stayed open after that, so a card can have left the stack meanwhile or
+    // be in flight from its own button. Each of those is skipped: its request
+    // went out already, and a second one comes back 404. A card whose user row
+    // is already written (`meta.written`) is skipped too: the server refuses
+    // its cancel with a 409, and it will still run.
+    const visible = new Set(visibleQueuedRef.current
+      .filter(m => m.meta?.written !== true)
+      .map(queueIdOf)
+      .filter((id): id is string => !!id))
+    const pending = pendingIdsRef.current
+    for (const queueId of new Set(queueIds)) {
+      if (!visible.has(queueId) || pending.has(queueId)) continue
+      // Not optimistic, unlike a single cancel: that one moves the text into
+      // the composer at once, and this one restores nothing, so waiting costs
+      // the user nothing. A card leaves only once the server has dropped its
+      // entry; a refused or lost request leaves it shown, still queued and
+      // usable again, rather than hiding a message that will still run.
+      run(queueId, api.cancelQueuedMessage(slot, queueId).then(() => {
+        // Nothing is restored, so the send-time record has no reader left.
+        queuedSendStash.delete(queueId)
+        dispatch(cancelQueuedMessage({ slot, queue_id: queueId }))
+      }))
+    }
+  }, [slot, dispatch, run])
+
   const onInterrupt = useCallback((queueId: string) => {
     if (!slot) return
     markPending(queueId, true)
@@ -374,7 +415,7 @@ export function useQueuedMessageActions({
   }, [slot])
 
   return useMemo(
-    () => ({ onCancel, onInterrupt, onEdit, onEditOpen, onReorder, pendingIds }),
-    [onCancel, onInterrupt, onEdit, onEditOpen, onReorder, pendingIds],
+    () => ({ onCancel, onCancelAll, onInterrupt, onEdit, onEditOpen, onReorder, pendingIds }),
+    [onCancel, onCancelAll, onInterrupt, onEdit, onEditOpen, onReorder, pendingIds],
   )
 }

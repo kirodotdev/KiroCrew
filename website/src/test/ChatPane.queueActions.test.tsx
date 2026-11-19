@@ -224,6 +224,26 @@ describe('ChatPane queue actions (issue #5891)', () => {
     expect(paneInputValue).toContain('compare @a.txt')
   })
 
+  it('Discard all cancels every card in this pane and puts none of their text in its composer', async () => {
+    vi.mocked(api.chatSlotDetail).mockResolvedValueOnce({
+      messages: [
+        { role: 'queued', content: 'first queued', cls: 'msg msg-queued', ts: '', meta: { queueId: 'q-a' } },
+        { role: 'queued', content: 'second queued', cls: 'msg msg-queued', ts: '', meta: { queueId: 'q-b' } },
+      ],
+      running: true,
+      has_more: false,
+      total: 2,
+    } as unknown as Awaited<ReturnType<typeof api.chatSlotDetail>>)
+    const { store } = renderPane('pane-discard-all')
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard all' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Discard all' }))
+    await waitFor(() => expect(api.cancelQueuedMessage).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(api.cancelQueuedMessage).mock.calls).toEqual([['pane-discard-all', 'q-a'], ['pane-discard-all', 'q-b']])
+    const msgs = selectSlotMessages(store.getState() as RootState, 'pane-discard-all')
+    expect(msgs.filter((m) => m.role === 'queued')).toEqual([])
+    expect(paneInputValue ?? '').toBe('')
+  })
+
   it('spells a restored mention of a file in the pane project relative to that project (#14617)', async () => {
     // The pane hands the hook its slot's project, so a file at src/a.ts in
     // it comes back as the `@src/a.ts` its own picker would insert.

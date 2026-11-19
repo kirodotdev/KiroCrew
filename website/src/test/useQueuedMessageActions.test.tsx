@@ -413,6 +413,87 @@ describe('useQueuedMessageActions — edit', () => {
   })
 })
 
+describe('useQueuedMessageActions — cancel all', () => {
+  it('cancels every listed card once the server accepts it, one request per entry', async () => {
+    const restoreDraft = vi.fn()
+    const rows = [queued('q1', 'run the tests'), queued('q2', 'then deploy'), queued('q3', 'then tag')]
+    const { get, store } = renderActions({ rows, restoreDraft })
+    await act(async () => { get().onCancelAll(['q1', 'q3']) })
+    expect(apiMocks.cancelQueuedMessage.mock.calls).toEqual([['chat-1', 'q1'], ['chat-1', 'q3']])
+    expect(queueIdsIn(store)).toEqual(['q2'])
+    // Several messages merged into one draft is no draft anyone wrote.
+    expect(restoreDraft).not.toHaveBeenCalled()
+  })
+
+  it('keeps a card whose cancel the server refused, since that message will still run', async () => {
+    apiMocks.cancelQueuedMessage
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(new Error('409'))
+    queuedSendStash.set('q2', { raw: 'then deploy', files: [], sent: 'then deploy' })
+    const { get, store } = renderActions({})
+    await act(async () => { get().onCancelAll(['q1', 'q2']) })
+    await waitFor(() => expect(get().pendingIds.size).toBe(0))
+    expect(queueIdsIn(store)).toEqual(['q2'])
+    // Still queued, so a later single cancel can still restore it.
+    expect(queuedSendStash.has('q2')).toBe(true)
+  })
+
+  it('drops each cancelled entry\'s send-time record, since nothing restores it', async () => {
+    queuedSendStash.set('q1', { raw: 'run the tests', files: [], sent: 'run the tests' })
+    queuedSendStash.set('q2', { raw: 'then deploy', files: [], sent: 'then deploy' })
+    const { get } = renderActions({})
+    await act(async () => { get().onCancelAll(['q1', 'q2']) })
+    expect(queuedSendStash.size).toBe(0)
+  })
+
+  it('skips an id that is no longer a card, one already in flight, and a repeat', async () => {
+    const d = deferred()
+    apiMocks.cancelQueuedMessage.mockReturnValueOnce(d.promise)
+    const rows = [queued('q1', 'run the tests'), queued('q2', 'then deploy'), queued('q3', 'then tag')]
+    const { get } = renderActions({ rows })
+    act(() => { get().onCancel('q1') })
+    await waitFor(() => expect(get().pendingIds.has('q1')).toBe(true))
+    await act(async () => { get().onCancelAll(['q1', 'q2', 'q2', 'gone']) })
+    expect(apiMocks.cancelQueuedMessage.mock.calls).toEqual([['chat-1', 'q1'], ['chat-1', 'q2']])
+    await act(async () => { d.resolve({ ok: true }) })
+  })
+
+  it('cancels no hidden entry, even when its id is listed', async () => {
+    const rows = [queued('q1', 'run the tests'), queued('sys', 'a sub-agent result')]
+    const { get, store } = renderActions({ rows, visible: [rows[0]] })
+    await act(async () => { get().onCancelAll(['q1', 'sys']) })
+    expect(apiMocks.cancelQueuedMessage.mock.calls).toEqual([['chat-1', 'q1']])
+    expect(queueIdsIn(store)).toEqual(['sys'])
+  })
+
+  it('sends no cancel for a card already in the conversation, and leaves it', async () => {
+    const done = { ...queued('q1', 'run the tests'), meta: { queueId: 'q1', written: true } } as ChatMessage
+    const rows = [done, queued('q2', 'then deploy')]
+    const { get, store } = renderActions({ rows })
+    await act(async () => { get().onCancelAll(['q1', 'q2']) })
+    expect(apiMocks.cancelQueuedMessage.mock.calls).toEqual([['chat-1', 'q2']])
+    expect(queueIdsIn(store)).toEqual(['q1'])
+  })
+
+  it('latches each card for its own request, and shows it until the server answers', async () => {
+    const first = deferred()
+    const second = deferred()
+    apiMocks.cancelQueuedMessage.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const { get, store } = renderActions({})
+    act(() => { get().onCancelAll(['q1', 'q2']) })
+    await waitFor(() => expect(get().pendingIds.has('q1')).toBe(true))
+    expect(get().pendingIds.has('q2')).toBe(true)
+    expect(queueIdsIn(store)).toEqual(['q1', 'q2'])
+    await act(async () => { first.resolve({ ok: true }) })
+    await waitFor(() => expect(get().pendingIds.has('q1')).toBe(false))
+    expect(queueIdsIn(store)).toEqual(['q2'])
+    expect(get().pendingIds.has('q2')).toBe(true)
+    await act(async () => { second.reject(new Error('lost')) })
+    await waitFor(() => expect(get().pendingIds.has('q2')).toBe(false))
+    expect(queueIdsIn(store)).toEqual(['q2'])
+  })
+})
+
 describe('useQueuedMessageActions — interrupt', () => {
   it('asks the server to interrupt that entry only, with no optimistic store change', async () => {
     const { get, store } = renderActions({})
@@ -566,6 +647,7 @@ describe('useQueuedMessageActions — no active slot', () => {
     const { get, store } = renderActions({ slot: null })
     act(() => {
       get().onCancel('q1')
+      get().onCancelAll(['q1', 'q2'])
       get().onInterrupt('q1')
       get().onEdit('q1', 'changed')
       get().onReorder('q1', 'later')
@@ -585,6 +667,7 @@ describe('useQueuedMessageActions — callback identity', () => {
     // The queue contents changed; the callbacks must not have. QueueStack is
     // memo-compared on these, and a fresh identity repaints the stack mid-animation.
     expect(after.onCancel).toBe(before.onCancel)
+    expect(after.onCancelAll).toBe(before.onCancelAll)
     expect(after.onInterrupt).toBe(before.onInterrupt)
     expect(after.onEdit).toBe(before.onEdit)
     expect(after.onReorder).toBe(before.onReorder)
