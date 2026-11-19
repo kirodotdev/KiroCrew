@@ -13,9 +13,9 @@ import { useRailWidth, __resetRailWidth } from '../hooks/useRailWidth'
 vi.mock('../hooks/useTheme', () => ({
   useTheme: () => ({
     colorTheme: 'kiro', theme: 'dark', mode: 'dark',
-    onboarded: true, importOnboarded: true, privacyAcked: true, privacyAckVersion: null,
+    onboarded: true, importOnboarded: true,
     themeBootReady: true, themeBootRead: true, themes: [], allThemes: [],
-    markOnboarded: vi.fn(), markImportOnboarded: vi.fn(), markPrivacyAcked: vi.fn(),
+    markOnboarded: vi.fn(), markImportOnboarded: vi.fn(),
     setColorTheme: vi.fn(), setMode: vi.fn(),
   }),
   ThemeProvider: ({ children }: { children: ReactNode }) => children,

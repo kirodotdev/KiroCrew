@@ -46,7 +46,6 @@ import {
 } from './themeCss'
 
 import { i18nT } from '../i18n/t'
-import { PRIVACY_NOTICE_VERSION } from '../components/privacyNotice'
 import type { ThemeLoaderIconName } from '../themeLoaderIcons'
 
 export type ModePreference = 'dark' | 'light' | 'system'
@@ -578,31 +577,11 @@ export interface ThemeContextValue {
   themeVersion: number
   onboarded: boolean
   importOnboarded: boolean
-  /**
-   * Has the user seen the mandatory first-run Privacy chapter?
-   *
-   * Server-backed like `onboarded` / `importOnboarded`, because the GATEWAY reads
-   * it: the boot-time heartbeat withholds its first send until this is true, and
-   * the gateway cannot see localStorage. A browser-local-only flag would leave
-   * the beacon waiting forever on a signal that never reaches it.
-   *
-   * localStorage stays as the render cache so first run does not flash the
-   * chapter while the boot fetch is in flight.
-   */
-  privacyAcked: boolean
-  /**
-   * The Privacy notice version the user acknowledged, from the server only
-   * (`dashboard.privacy_ack_version`); `null` until theme boot answers. Compared
-   * with `PRIVACY_NOTICE_VERSION` to show a changed notice once to existing users.
-   */
-  privacyAckVersion: number | null
   themeBootReady: boolean
   /** The boot read answered. `themeBootReady` also turns true when it failed. */
   themeBootRead: boolean
   markOnboarded: () => void
   markImportOnboarded: () => void
-  /** Persists the ack (and the notice version unless told not to); rejects, marking nothing, when the write fails. */
-  markPrivacyAcked: (ack?: { noticeVersion?: boolean; kiroTelemetry?: boolean }) => Promise<void>
   addCustomTheme: (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => Promise<CustomThemeData>
   deleteCustomTheme: (slug: string) => Promise<void>
   /** Refetch the installed-theme catalog once; `true` when it now reflects the
@@ -931,17 +910,6 @@ function useThemeState(): ThemeContextValue {
   const [importOnboarded, setImportOnboarded] = useState(
     () => !!localStorage.getItem('mc-import-onboarded') || !!localStorage.getItem('mc-onboarded'),
   )
-  // Seeded from `mc-onboarded` as well as its own flag: a user who finished
-  // first run before this chapter existed (or on another machine) has no reason
-  // to be shown it now.
-  const [privacyAcked, setPrivacyAcked] = useState(
-    () => !!localStorage.getItem('mc-privacy-acked') || !!localStorage.getItem('mc-onboarded'),
-  )
-  // The notice version the user acknowledged, from the SERVER only. `null` until
-  // theme boot answers. Deliberately no localStorage seed: `mc-onboarded` and
-  // `mc-privacy-acked` describe an older notice, and counting them as this one
-  // would skip exactly the existing users the new text is for.
-  const [privacyAckVersion, setPrivacyAckVersion] = useState<number | null>(null)
   const legacyOnboardedRef = useRef(
     !!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-import-onboarded'),
   )
@@ -1131,9 +1099,6 @@ function useThemeState(): ThemeContextValue {
       translucent_panels?: TranslucentPanelsStored
       onboarded?: boolean
       import_onboarded?: boolean
-      privacy_acked?: boolean
-      privacy_ack_version?: number
-      kiro_telemetry_ack_version?: number
     }) => api.updateThemeConfig(body),
   })
 
@@ -1193,20 +1158,11 @@ function useThemeState(): ThemeContextValue {
       setResolved(resolveMode(bootData.mode as ModePreference))
     }
     if (colorChanged) setColorThemeState(bootData.color)
-    if (typeof bootData.privacy_ack_version === 'number') {
-      setPrivacyAckVersion(bootData.privacy_ack_version)
-    }
     if (onboarding === 'migrate') {
       setOnboarded(true)
       setImportOnboarded(true)
-      setPrivacyAcked(true)
     } else if (onboarding === 'adopt') {
-      if (typeof bootData.onboarded === 'boolean') {
-        setOnboarded(bootData.onboarded)
-        // A completed first run also covers the Privacy chapter (see the effect).
-        if (bootData.onboarded) setPrivacyAcked(true)
-      }
-      if (bootData.privacy_acked === true) setPrivacyAcked(true)
+      if (typeof bootData.onboarded === 'boolean') setOnboarded(bootData.onboarded)
       if (typeof bootData.import_onboarded === 'boolean') setImportOnboarded(bootData.import_onboarded)
     }
     if (!themeBootReady) setThemeBootReady(true)
@@ -1230,9 +1186,8 @@ function useThemeState(): ThemeContextValue {
     }
     if (onboarding === 'migrate') {
       legacyMigrationStartedRef.current = true
-      safeSetItem('mc-privacy-acked', '1')
       persistTheme(
-        { onboarded: true, import_onboarded: true, privacy_acked: true },
+        { onboarded: true, import_onboarded: true },
         {
           onSuccess: () => {
             safeSetItem('mc-import-onboarded', '1')
@@ -1244,17 +1199,10 @@ function useThemeState(): ThemeContextValue {
       if (typeof data.onboarded === 'boolean') {
         if (data.onboarded) {
           safeSetItem('mc-onboarded', '1')
-          // A completed first run passed through the Privacy chapter (or
-          // predates it) — the server flag is the durable record of both.
-          safeSetItem('mc-privacy-acked', '1')
         } else {
           localStorage.removeItem('mc-onboarded')
         }
       }
-      // Server value wins so a second machine does not re-show a chapter this
-      // user already passed. Only ever set forward from the server: clearing it
-      // locally would re-open the chapter mid-session on a stale read.
-      if (data.privacy_acked === true) safeSetItem('mc-privacy-acked', '1')
       if (typeof data.import_onboarded === 'boolean') {
         if (data.import_onboarded) {
           safeSetItem('mc-import-onboarded', '1')
@@ -1617,33 +1565,6 @@ function useThemeState(): ThemeContextValue {
     setImportOnboarded(true)
   }, [])
 
-  // Persisted server-side as well as locally: the gateway gates the first
-  // heartbeat on `dashboard.privacy_acked`, and the CLI notice and a later notice
-  // change read `dashboard.privacy_ack_version`, so a local-only mark would leave
-  // the server believing the user was never told. Resolves only once
-  // the server stored it, and marks nothing locally before that: the Privacy
-  // chapter stays open on a failed write instead of claiming the user was told.
-  // `noticeVersion: false` records only that the chapter was passed: the text
-  // shown did not say local recording is on, so the version stays where it was.
-  // `kiroTelemetry` records that the text shown named the build's Kiro telemetry
-  // destination: only that acknowledgement lets it export (`kiro_export.notice_shown`).
-  const markPrivacyAcked = useCallback(async (
-    { noticeVersion = true, kiroTelemetry = false }: { noticeVersion?: boolean; kiroTelemetry?: boolean } = {},
-  ) => {
-    await api.updateThemeConfig(
-      noticeVersion
-        ? {
-            privacy_acked: true,
-            privacy_ack_version: PRIVACY_NOTICE_VERSION,
-            ...(kiroTelemetry ? { kiro_telemetry_ack_version: PRIVACY_NOTICE_VERSION } : {}),
-          }
-        : { privacy_acked: true },
-    )
-    safeSetItem('mc-privacy-acked', '1')
-    setPrivacyAcked(true)
-    if (noticeVersion) setPrivacyAckVersion(PRIVACY_NOTICE_VERSION)
-  }, [])
-
   return {
     theme: resolved,
     preference: mode,
@@ -1667,13 +1588,10 @@ function useThemeState(): ThemeContextValue {
     themeVersion,
     onboarded,
     importOnboarded,
-    privacyAcked,
-    privacyAckVersion,
     themeBootReady,
     themeBootRead: !!bootData,
     markOnboarded,
     markImportOnboarded,
-    markPrivacyAcked,
     addCustomTheme,
     deleteCustomTheme,
     loadCustomThemes,

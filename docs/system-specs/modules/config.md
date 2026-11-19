@@ -147,7 +147,26 @@ regular file holding a JSON object stored as Kiro Crew writes one (no byte-order
 normalized read would never match). Any other file with no copy is not pending and is served as
 written until the gateway's first save of it endorses it or a later start adopts it (the known
 limit for such a file is in
-[security](../modules/security.md)). A file that differs from an existing copy is PENDING (`pending_changes`: leaf, on-disk signature,
+[security](../modules/security.md)). The second exception: a `config.json` that differs from its copy is adopted as the new copy
+when an older Kiro Crew release wrote it (`adopt_known_writer`, on a load, a save's pending
+check or the pending scan, never inside a sandbox, and never while another writer holds the
+config lock, which it tries without waiting; one WARNING naming the reason and a
+`security.config_pending.adopt_known_writer` security event): its `meta.lastTouchedVersion`
+names a release (`major.minor.patch`) OLDER than the running build (a release from before the
+endorsed copy saves the file without updating it: an upgrade, a downgrade, or the older build
+running beside this one), and every change is on a short allow list (`_OLDER_WRITER_KEYS`:
+`meta`, `telemetry.enabled` and `telemetry.beacon_enabled` turned off only, and dashboard
+look-and-feel keys such as `dashboard.theme_mode` and `dashboard.language`); any other change,
+a key added later included, stays pending. The third exception:
+a save notes the digest of the copy it replaces in `config-provenance/inflight/config.json.sha256`
+before it endorses and removes the note once it is done, so a gateway stopped in between (a
+crash, a kill, a restart or an update mid-save) leaves the version endorsed before plus that
+note; the next start (`adopt_unendorsed`, then `adopt_interrupted_save`) endorses the file again
+when its bytes match the note, and drops the note once decided; all under the config
+writers' lock taken without waiting, so a save running beside the start keeps its own note,
+and a recovery that cannot be written keeps it too. So no restart, update or crash
+leaves every save refused. Every other leaf and any other content stay pending (the accepted
+risk is in [security](../modules/security.md)). Any other file that differs from an existing copy is PENDING (`pending_changes`: leaf, on-disk signature,
 a changed-key diff with credential-bearing values withheld): it keeps loading as the endorsed
 copy until the owner applies or discards it in Settings > Security, or with `kirocrew config
 pending` where the gateway runs without the dashboard

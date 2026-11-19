@@ -261,11 +261,9 @@ Kiro Crew sends **one anonymous heartbeat per day** so maintainers can see how
 many copies are actively running and which releases, Python minors, and install
 paths still need support. After a successful install or update from the official
 app catalog, it also sends one anonymous per-app receipt. Both signals are
-enabled by default, but first egress waits until the first-run privacy disclosure
-has been shown; they use the same controls below.
+enabled by default and use the same controls below.
 
-To turn it off, click **Turn off** on the Privacy screen of first-run
-onboarding, or flip **Settings > Privacy > Send anonymous usage heartbeat** in
+To turn it off, flip **Settings > Privacy > Send anonymous usage heartbeat** in
 the dashboard. Or from a terminal:
 
 ```bash
@@ -275,23 +273,15 @@ export DO_NOT_TRACK=1             # everything: local metrics and the heartbeat
 kirocrew telemetry status         # print both switches and exactly what would be sent
 ```
 
-Turn off and `kirocrew telemetry disable` write the same settings, so either
-one sticks across restarts and upgrades. `KIROCREW_TELEMETRY_DISABLED` and
+The Settings switches and `kirocrew telemetry disable` write the same settings,
+so either one sticks across restarts and upgrades. `KIROCREW_TELEMETRY_DISABLED` and
 `DO_NOT_TRACK` override them: when one is set, the dashboard toggle is disabled
 and says so. An existing install that turned the heartbeat off, wrote
 `telemetry.enabled: false`, or sets `DO_NOT_TRACK` keeps local recording off
-after an upgrade and is not asked again, with one exception. Builds before
-recording was on by default wrote `telemetry.enabled: false` into every new
-config. The written value looks the same whether the old build or the person
-wrote it, so an install whose only reason for being off is a written
-`telemetry.enabled: false` sees the Privacy screen once, even if the person
-chose that value. It is an off form that names Kiro telemetry and offers Turn on
-performance metrics or Keep off. Until you turn them on, only the daily
-heartbeat and official app install receipts are sent, and no performance
-metrics are recorded. A
-terminal-only install gets one line pointing at `kirocrew telemetry enable`
-instead. When the Privacy screen's text changes, existing users see it once
-more at their next dashboard load while local recording is on.
+after an upgrade and is not asked again. That includes the written
+`telemetry.enabled: false` that builds before recording was on by default put
+into every new config: it stays off until you turn recording on in Settings >
+Privacy or with `kirocrew telemetry enable`.
 
 **Exactly these five fields are sent, at most once per day, and nothing else:**
 

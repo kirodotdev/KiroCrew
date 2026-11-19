@@ -58,7 +58,7 @@ def test_do_not_track_turns_both_switches_off(
     assert provider.pin_env_var() == "DO_NOT_TRACK"
     assert beacon.is_env_opted_out() is True
     assert beacon.opt_out_env_var() == "DO_NOT_TRACK"
-    verdict = beacon.telemetry_permitted(enabled=True, acked=True)
+    verdict = beacon.telemetry_permitted(enabled=True)
     assert (verdict.ok, verdict.code) == (False, "do_not_track")
 
 
@@ -94,36 +94,31 @@ _ACKED_OLD = {"onboarded": True, "privacy_acked": True, "privacy_ack_version": 1
 
 
 @pytest.mark.parametrize(
-    ("doc", "dnt", "recording", "reported_version"),
+    ("doc", "dnt", "recording"),
     [
-        # A new install: recording on, and the first-run chapter shows anyway.
-        ({}, False, True, 0),
-        # An existing user with the heartbeat on: on, and told once.
-        ({"dashboard": _ACKED_OLD, "telemetry": {"beacon_enabled": True}}, False, True, 1),
-        # Existing users who opted out stay off and are not asked again.
-        ({"dashboard": _ACKED_OLD, "telemetry": {"beacon_enabled": False}}, False, False, 3),
-        ({"dashboard": _ACKED_OLD, "telemetry": {"enabled": False}}, False, False, 3),
-        ({"dashboard": _ACKED_OLD, "telemetry": {"beacon_enabled": True}}, True, False, 3),
+        # A new install: recording on, nothing asked.
+        ({}, False, True),
+        # An existing user with the heartbeat on: on.
+        ({"dashboard": _ACKED_OLD, "telemetry": {"beacon_enabled": True}}, False, True),
+        # Existing users who opted out stay off.
+        ({"dashboard": _ACKED_OLD, "telemetry": {"beacon_enabled": False}}, False, False),
+        ({"dashboard": _ACKED_OLD, "telemetry": {"enabled": False}}, False, False),
+        ({"dashboard": _ACKED_OLD, "telemetry": {"beacon_enabled": True}}, True, False),
     ],
     ids=["new-install", "heartbeat-on", "heartbeat-off", "enabled-false", "do-not-track"],
 )
-def test_existing_opt_outs_stay_off_and_are_not_asked_again(
+def test_existing_opt_outs_stay_off(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
     doc: dict,
     dnt: bool,
     recording: bool,
-    reported_version: int,
 ) -> None:
-    from kiro_crew.dashboard.handlers import core as core_handlers
-
-    assert beacon.PRIVACY_NOTICE_VERSION == 3
     if dnt:
         monkeypatch.setenv("DO_NOT_TRACK", "1")
     _write_config(home, doc)
     cfg = KiroCrewConfig.load()
     assert provider._consent_enabled(cfg.telemetry) is recording
-    assert core_handlers._theme_payload(cfg)["privacy_ack_version"] == reported_version
 
 
 def test_heartbeat_off_and_enabled_unset_loads_as_off(home: Path) -> None:
@@ -276,7 +271,7 @@ def test_save_writes_a_non_bool_enabled_back_as_stored(home: Path) -> None:
 
 
 def test_ack_version_defaults_to_zero_without_falling_back(home: Path) -> None:
-    """An existing user (onboarded, acked) reads 0, so the new notice shows once."""
+    """Configs from builds that wrote these keys still load; nothing seeds the version."""
     _write_config(home, {"dashboard": {"onboarded": True, "privacy_acked": True}})
     dash = KiroCrewConfig.load().dashboard
     assert dash.privacy_acked is True
@@ -313,7 +308,7 @@ def _cfg(*, enabled: bool = True, ack: int = 0) -> KiroCrewConfig:
 
 
 def test_the_notice_ack_alone_does_not_permit_export(home: Path) -> None:
-    """The notice says recorded data stays here; agreeing to it is not agreeing to export."""
+    """A stored notice acknowledgement is not an opt-in to export."""
     assert provider.outbound_consented(_cfg(ack=beacon.PRIVACY_NOTICE_VERSION)) is False
 
 
@@ -454,9 +449,8 @@ def test_cli_disable_turns_both_off_and_survives_a_reload(
     cc._telemetry(_ns("disable"))
     stored = _read_config(home)
     assert stored["telemetry"] == {"enabled": False, "beacon_enabled": False}
-    assert stored["dashboard"]["privacy_acked"] is True
-    # Disable records that the user chose, not that they were told recording is on.
-    assert "privacy_ack_version" not in stored["dashboard"]
+    # The two switches are the whole write: no acknowledgement is recorded.
+    assert "dashboard" not in stored
     assert stored["agent"] == {"model": "auto"}
     loaded = KiroCrewConfig.load()
     assert (loaded.telemetry.enabled, loaded.telemetry.beacon_enabled) == (False, False)
@@ -469,7 +463,7 @@ def test_cli_enable_turns_both_on(home: Path, monkeypatch: pytest.MonkeyPatch) -
     cc._telemetry(_ns("enable"))
     loaded = KiroCrewConfig.load()
     assert (loaded.telemetry.enabled, loaded.telemetry.beacon_enabled) == (True, True)
-    assert loaded.dashboard.privacy_ack_version == beacon.PRIVACY_NOTICE_VERSION
+    assert "dashboard" not in _read_config(home)
 
 
 def test_cli_reports_an_overlay_that_keeps_recording_on(
@@ -537,16 +531,13 @@ def test_cli_warns_when_an_env_var_overrides_the_write(
     assert "DO_NOT_TRACK is set" in err
 
 
-# -- the two notice-version constants --
-
-
-def test_dashboard_notice_version_matches_the_backend() -> None:
-    """The chapter and the export gate must agree on which notice is current."""
+def test_the_dashboard_has_no_notice_version_to_keep_in_step() -> None:
+    """No dashboard screen records a notice version, so no second copy exists."""
     root = Path(__file__).resolve().parents[1]
     source = (root / "website" / "src" / "components" / "privacyNotice.ts").read_text(
         encoding="utf-8"
     )
-    assert f"PRIVACY_NOTICE_VERSION = {beacon.PRIVACY_NOTICE_VERSION}" in source
+    assert "PRIVACY_NOTICE_VERSION" not in source
 
 
 def test_cli_enable_leaves_recording_alone_when_it_would_start_export(
@@ -559,8 +550,7 @@ def test_cli_enable_leaves_recording_alone_when_it_would_start_export(
     cc._telemetry(_ns("enable"))
     stored = _read_config(home)
     assert stored["telemetry"] == {"enabled": False, "beacon_enabled": True}
-    # Recording stayed off, so nobody was told it is on.
-    assert "privacy_ack_version" not in stored["dashboard"]
+    assert "dashboard" not in stored
     assert "NOT turned on" in capsys.readouterr().out
 
 

@@ -356,7 +356,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
 | P2 | `onboarding-changelog-modal-after-update` | As a user, I want to see what's new after an update, so that I learn about new features. | `/chat` | minimal | nightly | 3 |
-| P2 | `onboarding-first-run-wizard` | As a first-time user, I want a guided setup covering import review, privacy, and customization, so that the dashboard is set up and I understand the product before my first chat. | `/` | onboarding-fresh | nightly | 6 |
+| P2 | `onboarding-first-run-wizard` | As a first-time user, I want a guided setup covering import review and customization, so that the dashboard is set up and I understand the product before my first chat. | `/` | onboarding-fresh | nightly | 6 |
 | P2 | `standalone-mobile-connect` | As a user, I want to pair my phone to this gateway via governed methods and a QR code, so that I can chat on the go. | `/chat` | minimal | nightly | 3 |
 | P2 | `standalone-startup-feature-video` | As a returning user, I want one short clip introducing a new feature on the first launch after it ships, so that I discover what changed. | `/chat` | minimal | nightly | 2 |
 

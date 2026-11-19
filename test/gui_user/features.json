@@ -5665,15 +5665,15 @@
     {
       "id": "onboarding-first-run-wizard",
       "feature": "onboarding",
-      "title": "First-run onboarding: Import, Privacy, Customize tour",
-      "user_story": "As a first-time user, I want a guided setup covering import review, privacy, and customization, so that the dashboard is set up and I understand the product before my first chat.",
+      "title": "First-run onboarding: Import, Customize tour",
+      "user_story": "As a first-time user, I want a guided setup covering import review and customization, so that the dashboard is set up and I understand the product before my first chat.",
       "start_url": "/",
-      "entry_path": "Open dashboard root on a fresh home with fresh localStorage (no mc-onboarded / mc-import-onboarded / mc-privacy-acked) > AgentImportFlow > PrivacyChapter (mandatory) > OnboardingFlow tour (theme, about you, Schedule, Apps, Sessions)",
+      "entry_path": "Open dashboard root on a fresh home with fresh localStorage (no mc-onboarded / mc-import-onboarded) > AgentImportFlow > OnboardingFlow tour (theme, about you, Schedule, Apps, Sessions)",
       "preconditions": {
         "seed": "onboarding-fresh",
         "members": [],
         "feature_flags": [],
-        "notes": "boot.sh's seed_home.py forces dashboard.onboarded=true and import_onboarded=true for every seed; the lane must skip that patch (or reset both via PUT /api/config/theme) to reach the wizard. The Kiro CLI prerequisite gate is satisfied by the fake backend's deterministic --version/whoami. OnboardingShellHost mounts chrome once; 'Skip all' still routes through Privacy; /onboarding slash command reopens the tour; the startup video is gated behind these."
+        "notes": "boot.sh's seed_home.py forces dashboard.onboarded=true and import_onboarded=true for every seed; the lane must skip that patch (or reset both via PUT /api/config/theme) to reach the wizard. The Kiro CLI prerequisite gate is satisfied by the fake backend's deterministic --version/whoami. OnboardingShellHost mounts chrome once; 'Skip all' ends first run; /onboarding slash command reopens the tour; the startup video is gated behind these."
       },
       "runnable": "nightly",
       "estimated_steps": 6,
@@ -5682,7 +5682,6 @@
         "website/src/App.tsx",
         "website/src/components/OnboardingFlow.tsx",
         "website/src/components/AgentImportFlow.tsx",
-        "website/src/components/PrivacyChapter.tsx",
         "src/kiro_crew/tests_fixtures/onboarding-fresh/fixture.yaml",
         "scripts/gui-user-test/seed_home.py",
         "docs/system-specs/modules/config.md",
@@ -6027,11 +6026,11 @@
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": "PrivacyPanel.tsx; same content as onboarding PrivacyChapter. | configKey telemetry.enabled; toggle disables itself when env var or config overlay pins the value; 409 = egress refusal."
+        "notes": "PrivacyPanel.tsx; the privacy disclosure. | configKey telemetry.enabled; toggle disables itself when env var or config overlay pins the value; 409 = egress refusal."
       },
       "runnable": "smoke",
       "estimated_steps": 2,
-      "rationale": "Static disclosure page (same content as onboarding PrivacyChapter) plus one Record-metrics toggle whose PATCH is stubbable; cheap and legally relevant to keep pixel-stable.",
+      "rationale": "Static disclosure page plus one Record-metrics toggle whose PATCH is stubbable; cheap and legally relevant to keep pixel-stable.",
       "source": [
         "docs/feature-map/README.md",
         "website/src/pages/settings/PrivacyPanel.tsx",
