@@ -1056,39 +1056,11 @@ describe('CrewProfileSettings dashboard card send', () => {
   })
 })
 
-describe('CrewProfileSettings show in my Sessions list', () => {
-  const SWITCH = 'Show in my Sessions list'
-
-  it('is off (hidden) when the roster row says nothing', async () => {
-    setup(member())
-    expect(await screen.findByRole('switch', { name: SWITCH })).toHaveAttribute('aria-checked', 'false')
-    expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent(
-      'Chats oncall opens also show in your Sessions list. Its Sessions tab always lists them.',
-    )
-  })
-
-  it('is on only when the record says true', async () => {
-    setup(member({ show_sessions_in_list: true }))
-    expect(await screen.findByRole('switch', { name: SWITCH })).toHaveAttribute('aria-checked', 'true')
-  })
-
-  it('writes the Bot record and updates the roster row', async () => {
-    mockApi.updateKirocrewAgent.mockResolvedValue({ ok: true })
-    setup(member())
-    fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
-    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { show_sessions_in_list: true }))
-    await waitFor(() => {
-      const rows = lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)
-      expect(rows?.[0].show_sessions_in_list).toBe(true)
-    })
-  })
-
-  it('says the setting did not change when the write fails', async () => {
-    mockApi.updateKirocrewAgent.mockRejectedValue(new Error('500'))
-    setup(member())
-    fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
-    expect(await screen.findByTestId('crew-profile-show-sessions-in-list-error')).toHaveTextContent("Couldn't save this setting.")
-    expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].show_sessions_in_list).toBeUndefined()
+describe('CrewProfileSettings sessions list', () => {
+  it('offers no switch for showing the Bot\'s sessions in the person\'s list', async () => {
+    setup(member({ show_sessions_in_list: true } as Partial<MemberRosterRow>))
+    await screen.findByTestId('crew-profile-settings')
+    expect(screen.queryByRole('switch', { name: 'Show in my Sessions list' })).toBeNull()
   })
 })
 

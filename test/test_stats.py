@@ -54,7 +54,7 @@ class TestStats(unittest.TestCase):
             s.inc_message_success()
         s.inc_message_failed()
         report = s.daily_report()
-        assert "🟢 healthy" in report
+        assert "Health: healthy" in report
         assert "90%" in report
 
     def test_daily_report_degraded(self) -> None:
@@ -66,7 +66,7 @@ class TestStats(unittest.TestCase):
         for _ in range(2):
             s.inc_message_failed()
         report = s.daily_report()
-        assert "🟡 degraded" in report
+        assert "Health: degraded" in report
         assert "80%" in report
 
     def test_daily_report_critical(self) -> None:
@@ -78,12 +78,12 @@ class TestStats(unittest.TestCase):
         for _ in range(5):
             s.inc_message_failed()
         report = s.daily_report()
-        assert "🔴 critical" in report
+        assert "Health: critical" in report
         assert "50%" in report
 
     def test_daily_report_no_messages(self) -> None:
         report = Stats().daily_report()
-        assert "🔇 no messages" in report
+        assert "Health: no messages" in report
 
     # -- reset --
 

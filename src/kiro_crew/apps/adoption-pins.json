@@ -234,6 +234,32 @@
         "route": "/ops-mission-control",
         "icon": "Radio"
       }
+    },
+    {
+      "name": "crew-companion",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-crew-companion",
+      "commit": "2eb2e98469149ea740d7f82b6df701dbf872c9a3",
+      "version": "1.0.1",
+      "treeSha256": "adc679f0cbaabed51d978a660303cb050076eb4ebb277f50600e644d854c5808",
+      "archiveSha256": "abfbd1a0b2729b10d51edb7ef23d88b194b63cf93638fb4d1fcf735845626f44",
+      "minAppSdkLevel": 7,
+      "legacyNav": {
+        "route": "/crew-companion",
+        "icon": "Ghost"
+      }
+    },
+    {
+      "name": "mochi",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-mochi",
+      "commit": "5db17b967894c411621ea6dcfba294da262d4173",
+      "version": "0.1.1",
+      "treeSha256": "86986e6822b953c9fa77b0427f4e899b536233863d935474fcf2aff3881af76f",
+      "archiveSha256": "4e1fd8798ca469d02f698ecedf79c56d5352a4a2b96d95686e0847d5efa99b63",
+      "minAppSdkLevel": 7,
+      "legacyNav": {
+        "route": "/mochi",
+        "icon": "Cat"
+      }
     }
   ]
 }

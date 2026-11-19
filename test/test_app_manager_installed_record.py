@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -661,9 +662,13 @@ class TestListingReusesTheWalk:
 
         walks: list[str] = []
         real = manager_records.os.scandir
+        # manager_records.os is the shared os module, so other callers' one-time
+        # scans of the apps folder (credential masks, orphaned built-ins, the
+        # grants import) reach this patch too; only the listing's own walk counts.
+        listing_walk = manager_records._recorded_app_names.__code__
 
         def counting(path=".", *args, **kwargs):
-            if not isinstance(path, int) and os.fspath(path) == os.fspath(app_home / "apps"):
+            if sys._getframe(1).f_code is listing_walk:
                 walks.append(os.fspath(path))
             return real(path, *args, **kwargs)
 
@@ -682,6 +687,18 @@ class TestListingReusesTheWalk:
 
         assert first == second == ["real-app"]
         assert len(walks) == 1
+
+    def test_a_changed_folder_is_walked_again(self, app_home, monkeypatch):
+        self._record(app_home, "real-app")
+        self._settle(app_home)
+        walks = self._count_walks(monkeypatch, app_home)
+
+        assert [r["name"] for r in list_apps()] == ["real-app"]
+        (app_home / "apps" / "stray" / "data").mkdir(parents=True)
+        self._settle(app_home, ns=self._SETTLED_NS + 1_000_000_000)
+        assert [r["name"] for r in list_apps()] == ["real-app"]
+
+        assert walks == [os.fspath(app_home / "apps")] * 2
 
     def test_an_in_place_record_edit_is_seen(self, app_home):
         self._record(app_home, "real-app", version="1.0.0")
@@ -714,9 +731,12 @@ class TestListingReusesTheWalk:
         clock = ManualClock(start=self._SETTLED_NS / 1e9 + 2)  # inside the 3 s window
         clock.install(monkeypatch, manager_records)
         real_scandir = manager_records.os.scandir
+        # manager_records.os is the shared os module: only the listing's own walk
+        # moves the clock, not another caller's scan of the apps folder.
+        listing_walk = manager_records._recorded_app_names.__code__
 
         def slow_walk(path=".", *args, **kwargs):
-            if not isinstance(path, int) and os.fspath(path) == os.fspath(apps_root):
+            if sys._getframe(1).f_code is listing_walk:
                 clock.advance(5)  # the walk ends past the window
             return real_scandir(path, *args, **kwargs)
 

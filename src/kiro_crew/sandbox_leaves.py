@@ -173,6 +173,12 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``apps/aws-control/``: a mask covers the leaf, not its ancestors, and an
     # agent-writable ancestor could be renamed out from under it mid-transfer.
     "aws-control-staging",
+    # Kiro Space store sign-ins (``apps.market_registries.MARKET_REGISTRIES_LEAF``):
+    # one folder per added store holding that store's CLI config and credential file,
+    # read by the gateway and the CLI child it runs, never by an agent. Masked so a
+    # same-UID agent cannot read the refresh token or swap in another person's
+    # sign-in, which the gateway would then send on the owner's behalf.
+    "market-registries",
     # Restart-surviving vouches (``kiro_crew._durable_vouch``). Each file is the
     # gateway's word that a session may reach its member's private store, so a
     # sandboxed writer could forge admission to a peer member's memory. Only the

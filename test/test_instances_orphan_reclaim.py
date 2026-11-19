@@ -9,9 +9,12 @@ import sys
 import threading
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 from instances_helpers import _FakeTunnel
 
 from kiro_crew.testing.wait import async_wait_until
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 
 def _forwarder_listener_gone(port: int) -> bool:

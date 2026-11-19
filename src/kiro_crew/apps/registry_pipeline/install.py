@@ -251,6 +251,28 @@ def _adoption_pending(name: str) -> str | None:
     return pending_install_refusal(pin)
 
 
+async def _clear_earlier_memory_consent(name: str) -> str:
+    """Remove memory consent an earlier app under *name* left, off the loop; the refusal.
+
+    Only for a new registration (no install record yet): an update keeps its consent.
+    A worker may wait for the consent lock, where the loop could only try it once;
+    ``register_external_app`` then finds nothing left to clear.
+    """
+
+    def clear() -> None:
+        from kiro_crew.apps.manager import _read_installed
+        from kiro_crew.memory_provider.consent import revoke_app
+
+        if _read_installed(name) is None:
+            revoke_app(name)
+
+    try:
+        await asyncio.to_thread(clear)
+    except (OSError, ValueError) as exc:
+        return f"could not clear earlier memory consent for {name!r}: {exc}"
+    return ""
+
+
 async def install_from_registry(
     name: str,
     log_lines: list[str] | None = None,
@@ -1442,6 +1464,12 @@ async def install_from_registry(
                 )
                 await _roll_back_refused()
                 outcome = {"ok": False, "name": name, "message": "", "error": version_refusal}
+                return outcome
+            consent_refusal = await _clear_earlier_memory_consent(name)
+            if consent_refusal:
+                log_lines.append(_refusal_line(verb, consent_refusal))
+                await _roll_back_refused()
+                outcome = {"ok": False, "name": name, "message": "", "error": consent_refusal}
                 return outcome
             reg_result = register_external_app(
                 name=name,

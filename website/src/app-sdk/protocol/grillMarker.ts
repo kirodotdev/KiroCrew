@@ -34,9 +34,11 @@ export interface ParsedGrill {
   grill: GrillProposal | null
 }
 
-/** Field caps, in characters (code points). */
+/** Field caps, in characters (code points). `text` caps what the marker
+ *  proposes; `edit` caps what the reader may write into a card field. */
 export const GRILL_LIMITS = Object.freeze({
   text: 200,
+  edit: 1000,
   name: 20,
   stance: 80,
   whoMin: 2,
@@ -132,6 +134,18 @@ export function stripPartialGrillMarker(content: string): string {
  */
 export function grillKey(mid: string | undefined, version: number): string | undefined {
   return mid ? `${mid}:${version}` : undefined
+}
+
+/** The continuation lines a card field adds after its labelled line. */
+export const GRILL_CONTINUATION = '  '
+
+/**
+ * A card field's text for its labelled line: each further line the reader
+ * wrote starts with two spaces, so the conductor still reads one labelled line
+ * per field, and no reader line can pass for a whole `key: <value>` line.
+ */
+export function grillFieldText(text: string): string {
+  return text.trim().split(/\r?\n/).map(l => l.trimEnd()).join('\n' + GRILL_CONTINUATION)
 }
 
 /** The line a Start / No thanks carries so a reload can tell this card was answered. */

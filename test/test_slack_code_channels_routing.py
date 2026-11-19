@@ -1061,6 +1061,25 @@ async def test_native_stop_when_idle_clears_the_status(
     assert env.slack.posts == []  # the button gets no "Nothing running." reply
 
 
+async def test_the_context_bar_stop_when_idle_settles_the_status(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bar's Stop runs the same stop as Slack's button: an idle channel settles."""
+    _bind(env)
+    monkeypatch.setattr("kiro_crew.slack.handler.is_allowed_user", lambda u: True)
+    event = {
+        "type": "agent_session_stopped",
+        "channel": "C0CODE",
+        "user": OWNER,
+        "event_ts": "code_channel_action:Ev1",
+    }
+    assert await routing.handle_session_stopped(env.orch, event, OWNER) == "stopped"
+    assert (
+        "agents.sessions.setStatus",
+        {"channel_id": "C0CODE", "status": "active"},
+    ) in env.api.calls
+
+
 async def test_native_stop_from_a_stranger_is_denied(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:

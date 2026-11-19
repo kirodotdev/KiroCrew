@@ -11,7 +11,11 @@ restart. The dashboard cannot turn Remote Control on: ``{"enabled": true}`` is
 refused with 400 and writes nothing; that is the terminal command's job
 (``kirocrew remote-control on``).
 
-Both verbs are owner-only.
+Both verbs are owner-only. ``PUT`` is also local-only: a request the Kiro relay
+delivered is refused with 403 (``relay_remote_control_refused``) and audited, even
+from the owner, because a Crew turned off over the relay can only be turned on again
+at its machine. ``GET`` still answers over the relay, with ``relayed: true``, so the
+card shows the state read-only there.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from aiohttp import web
 
 from kiro_crew.config import live
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.remote_control import guard as guard_mod
 from kiro_crew.remote_control import setting
 from kiro_crew.sel import sel
@@ -34,7 +39,7 @@ logger = logging.getLogger(__name__)
 _OPERATION = "remote_control"
 
 
-async def _view() -> dict[str, Any]:
+async def _view(request: web.Request) -> dict[str, Any]:
     requested = await asyncio.to_thread(setting.requested)
     guard = guard_mod.current_guard()
     connected = False
@@ -50,6 +55,8 @@ async def _view() -> dict[str, Any]:
         # Connected to the relay, so other devices can reach this Crew. A client
         # that ended in error is not.
         "running": connected,
+        # Delivered by the Kiro relay: the card shows the state but no Turn off.
+        "relayed": published_relay_caller(request) is not None,
     }
 
 
@@ -58,7 +65,7 @@ async def api_remote_control_get(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, _OPERATION)
     if denied is not None:
         return denied
-    return web.json_response(await _view())
+    return web.json_response(await _view(request))
 
 
 def _audit(request: web.Request, outcome: str, resources: str) -> None:
@@ -76,6 +83,15 @@ async def api_remote_control_put(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, _OPERATION)
     if denied is not None:
         return denied
+    if published_relay_caller(request) is not None:
+        _audit(request, "denied", "enabled=false reason=relay")
+        return web.json_response(
+            {
+                "error": "Remote Control can only be turned off on the machine running this Crew",
+                "code": "relay_remote_control_refused",
+            },
+            status=403,
+        )
     try:
         body = await request.json()
     except Exception:
@@ -103,7 +119,7 @@ async def api_remote_control_put(request: web.Request) -> web.Response:
     _audit(request, "allowed", "enabled=false")
 
     if not stopping:
-        return web.json_response(await _view())
+        return web.json_response(await _view(request))
     # The drain stops the relay within DRAIN_SECONDS, and this answer may be riding
     # it, so it waits on nothing the relay carries: the stored off, and the card
     # re-reads the live state with GET.
@@ -113,5 +129,6 @@ async def api_remote_control_put(request: web.Request) -> web.Response:
             "locked": setting.locked(),
             # The stop is committed and bounded.
             "running": False,
+            "relayed": False,
         }
     )

@@ -271,10 +271,12 @@ def approval_activity(state: Any, worker_key: str) -> model.Activity:
 def worker_live(state: Any, worker_key: str) -> tuple[str, str]:
     """``(word, approval kind)`` for a worker's session; the kind only while one is pending.
 
-    The word is :mod:`.model`'s ``LIVE_*``. Running and gone are the conductor
-    wake gate's own resolvers (``ledger_wake.worker_running`` /
-    ``worker_closed``), so the board and the gate cannot disagree about a worker;
-    a pending approval is the session-status verb's answer.
+    The word is :mod:`.model`'s ``LIVE_*``. Gone is the conductor wake gate's own
+    ``ledger_wake.worker_closed``. Running is ``ledger_wake.worker_running``, a
+    model turn in flight only: narrower than the gate's injected predicate, which
+    also counts sub-agents, workflows and other session-owned work, so a worker
+    the gate holds back from a stall can still read idle or queued here. A
+    pending approval is the session-status verb's answer.
     """
     if not worker_key:
         return model.LIVE_UNBOUND, ""
@@ -413,6 +415,7 @@ def project(
     tool_of: Callable[[str], str] | None = None,
     activity_of: Callable[[str], model.Activity] | None = None,
     approval_of: Callable[[str], model.Activity] | None = None,
+    stopped_of: Callable[[str], Any] | None = None,
 ) -> model.BoardSnapshot:
     """The published snapshot: EVERY ledger item reduced to a :class:`~.model.WorkerRow`.
 
@@ -464,6 +467,7 @@ def project(
             approval_key = model.approval_key(asked.approval_id)
         elif state == model.IDLE and item.status == "progress" and item.summary:
             step = model.safe_line(str(item.summary), first_line=True)
+        stop = stopped_of(worker) if stopped_of is not None and worker else None
         rows.append(
             model.WorkerRow(
                 item_id=str(item.item_id),
@@ -486,6 +490,8 @@ def project(
                 turn_started_at=turn_started_at,
                 approval_key=approval_key,
                 pr_number=pr if type(pr := getattr(item, "pr", None)) is int and pr > 0 else 0,
+                stopped_by=str(getattr(stop, "user", "") or ""),
+                stopped_at=str(getattr(stop, "at", "") or ""),
             )
         )
     goal = model.safe_line(
@@ -528,6 +534,8 @@ async def read_board(state: Any, binding: Binding) -> model.BoardSnapshot | None
     # The scrub's first host-name read is a reverse DNS lookup: warm its cache
     # off the event loop, since ``project`` runs inline.
     await asyncio.to_thread(model._host_names)
+    from kiro_crew.slack.code_channels.board import stops
+
     return project(
         record,
         list(items),
@@ -535,4 +543,5 @@ async def read_board(state: Any, binding: Binding) -> model.BoardSnapshot | None
         tool_of=lambda key: live(key)[1],
         activity_of=lambda key: worker_activity(state, key),
         approval_of=lambda key: approval_activity(state, key),
+        stopped_of=lambda key: stops.current(state, key),
     )

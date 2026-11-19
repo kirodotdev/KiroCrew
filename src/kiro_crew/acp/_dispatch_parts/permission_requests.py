@@ -612,6 +612,36 @@ def kas_consent_tool(params: object) -> tuple[str, str]:
     return crew_name, target.strip()
 
 
+#: The ``_meta.kiro.consent.scope`` values KAS gives a rule the organisation set
+#: (its ``alwaysAllowUnavailableReason`` reads them as ``managed_rule``).
+_KAS_MANAGED_SCOPES = frozenset({"organization", "administration"})
+
+
+def kas_managed_ask(params: object) -> bool:
+    """Whether a KAS permission request's ``_meta.kiro.consent`` names an organisation's ``ask``.
+
+    KAS stamps ``matchedRule`` (with its ``effect``) and ``scope`` on the consent block
+    only for an explicit ``ask`` rule (``buildConsentRequest``). True only when the
+    rule's effect is ``ask`` and its scope is one the organisation sets; any other or
+    missing shape is False, and the policy fetch's record still applies
+    (``web_ask_rule``).
+    """
+    if not isinstance(params, dict):
+        return False
+    meta = params.get("_meta")
+    kiro = meta.get("kiro") if isinstance(meta, dict) else None
+    consent = kiro.get("consent") if isinstance(kiro, dict) else None
+    if not isinstance(consent, dict):
+        return False
+    rule = consent.get("matchedRule")
+    return (
+        isinstance(rule, dict)
+        and rule.get("effect") == "ask"
+        and isinstance(consent.get("scope"), str)
+        and consent["scope"] in _KAS_MANAGED_SCOPES
+    )
+
+
 #: The ``mcpServer.source`` claude-agent-acp stamps on a server the client handed it
 #: on the ``session/new`` array. A user, project or plugin server of the harness's own
 #: config carries another source, so a name Crew placed cannot be claimed by one.
@@ -1463,6 +1493,11 @@ def build_permission_event(
         diff_path=_diff_path,
         spawn_target=_spawn_target,
         harness_tool_id=_harness_tool_id,
+        # Read beside the tool id, from the same engine-written block, and only on
+        # KAS (the store above is handed to no other harness).
+        kas_managed_ask=bool(
+            identity_unreadable_cache is not None and envelope is None and kas_managed_ask(params)
+        ),
         harness_builtin_tool=_harness_builtin_tool,
         deepseek_tool_name=_deepseek_tool_name,
         deepseek_read_only_issue=_deepseek_read_only_issue,

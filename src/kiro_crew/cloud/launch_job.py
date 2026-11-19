@@ -829,7 +829,7 @@ def mark_signed_in(job: "LaunchJob", detail: str = "Signed in.") -> None:
     s.detail = detail
     c = job.step(STEP_CONNECT)
     if c.state == STEP_DONE:
-        c.detail = "Added to Your crews."
+        c.detail = "Added to My Crews."
 
 
 def _abort_signin(handle: SigninHandle, job: "Optional[LaunchJob]" = None) -> bool:
@@ -1134,7 +1134,7 @@ def run_launch(
             except Exception:  # pragma: no cover - best effort
                 logger.info("sign-in handle close failed (non-fatal)", exc_info=True)
 
-        # 4) Register in the Instances hub so it appears under "Your crews"
+        # 4) Register in the Instances hub so it appears under "My Crews"
         _check_cancel()
         s = _activate(STEP_CONNECT)
         registration_error = ""
@@ -1160,9 +1160,9 @@ def run_launch(
             # when the sign-in did not confirm; the card's icon shows a waiting key in
             # that case and this is the sentence under it.
             s.detail = (
-                "Added to Your crews."
+                "Added to My Crews."
                 if job.signin_detected
-                else "Added to Your crews. Sign in to Kiro on the crew after you connect."
+                else "Added to My Crews. Sign in to Kiro on the crew after you connect."
             )
             store.save(job)
 

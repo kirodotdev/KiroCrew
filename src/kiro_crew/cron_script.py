@@ -50,6 +50,7 @@ from kiro_crew.cron_script_child_env import (
 from kiro_crew.cron_script_grants import (
     GRANT_REAPPROVAL_ERRORS,
     _filter_grant_env,
+    _overlay_job_env,
     _read_script_body,
     _scrub_grant_values,
     _secret_env_precheck,
@@ -112,6 +113,7 @@ def run_script_sandboxed(
     secret_env_pin: str = "",
     delivery: str = "",
     internal_secret_provider: Callable[[], str] | None = None,
+    job_env: dict[str, str] | None = None,
 ) -> dict:
     """Run a cron script in a sandboxed subprocess via wrap_argv().
 
@@ -170,7 +172,7 @@ def run_script_sandboxed(
             delivery=delivery,
         )
         if secret_err:
-            failure: dict[str, Any] = {"status": "error", "error": f"❌ {secret_err}"}
+            failure: dict[str, Any] = {"status": "error", "error": f"Error: {secret_err}"}
             if secret_err in GRANT_REAPPROVAL_ERRORS:
                 # Healed only by re-approving the grant over the current code;
                 # the scheduler resurfaces a pending request for exactly that.
@@ -439,7 +441,7 @@ def run_script_sandboxed(
             # what the operator approved, so refuse rather than degrade.
             return {
                 "status": "error",
-                "error": "❌ secret-bearing cron runs require an OS sandbox "
+                "error": "Error: secret-bearing cron runs require an OS sandbox "
                 "backend; this host runs scripts unsandboxed "
                 "(sandbox_allow_unsandboxed_exec), where a grant's isolation "
                 "cannot be enforced. Revoke the grant to run this script "
@@ -449,6 +451,7 @@ def run_script_sandboxed(
         # Build clean env: secrets (Slack tokens, owner id, internal secret)
         # are never inherited; the internal secret is passed via the 0600 file.
         clean_env = _clean_cron_env()
+        _overlay_job_env(clean_env, job_env, granted=stdin_payload is not None, job_id=job_id)
         if cron_scratch is not None:
             # The whole temp triple, not only the keys the gateway carried, so
             # a child under a unit with no TMPDIR stops defaulting to /tmp.
@@ -659,7 +662,7 @@ _MAX_COMMAND_OUTPUT = 65536  # 64KB cap
 # itself. The distinction matters to the reader: the job is fine, the host cannot
 # isolate it, and the remedy is a config opt-in — which the wrapped message
 # carries verbatim.
-_SANDBOX_UNAVAILABLE_PREFIX = "❌ Cron could not run in an OS sandbox: "
+_SANDBOX_UNAVAILABLE_PREFIX = "Error: Cron could not run in an OS sandbox: "
 
 
 def _resolve_command_shell() -> str | None:
@@ -839,6 +842,27 @@ def _probe_one_form(shell: str, brace_off: bool) -> bool:
     return result
 
 
+def _trim_blank_edges(text: str) -> str:
+    """*text* without its leading and trailing blank lines; inner lines are kept."""
+    lines = text.rstrip().splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    return "\n".join(lines)
+
+
+# A one-line failure reason leads with "Error: ". A result an older build
+# stored leads with "❌ " instead, so a reader strips either.
+_ERROR_LEADS = ("Error: ", "❌ ")  # emoji-ok: matches stored older results
+
+
+def _strip_error_lead(text: str) -> str:
+    """``text`` without its leading failure marker, in either form."""
+    for lead in _ERROR_LEADS:
+        if text.startswith(lead):
+            return text[len(lead) :]
+    return text
+
+
 def _no_command_shell_message() -> str:
     """The refusal a command cron gets when ``_resolve_command_shell`` finds nothing.
 
@@ -851,7 +875,7 @@ def _no_command_shell_message() -> str:
 
     if platform_compat.IS_WINDOWS:
         return (
-            "❌ No POSIX shell available to run this command cron. Command "
+            "Error: No POSIX shell available to run this command cron. Command "
             "crons execute with `sh -c` under POSIX-sh semantics (what the "
             "storage-time vet gate assumes); Windows ships no such shell "
             "(Git for Windows's sh.exe is bash and would widen the language "
@@ -859,7 +883,7 @@ def _no_command_shell_message() -> str:
             "this platform, or run the gateway under POSIX."
         )
     return (
-        "❌ No usable POSIX shell to run this command cron. Command crons run "
+        "Error: No usable POSIX shell to run this command cron. Command crons run "
         "only under /bin/sh or /usr/bin/sh (never $PATH), and the one used must "
         "pass a sandboxed probe proving it leaves `echo x.{a,a}` unexpanded when "
         "invoked as `sh -c` or `sh +B -c` (brace expansion would widen the "
@@ -878,6 +902,7 @@ def run_command_sandboxed(
     job_id: str | None = None,
     secret_env: dict[str, str] | None = None,
     secret_env_pin: str = "",
+    job_env: dict[str, str] | None = None,
 ) -> dict:
     """Run a shell command in a sandboxed subprocess via wrap_argv().
 
@@ -893,7 +918,7 @@ def run_command_sandboxed(
     if secret_env:
         return {
             "status": "error",
-            "output": "❌ secret grants apply only to script jobs; this "
+            "output": "Error: secret grants apply only to script jobs; this "
             "command job carries a grant the product could not have written — "
             "remove it from the cron store.",
             "exit_code": -1,
@@ -913,7 +938,7 @@ def run_command_sandboxed(
     if not _begin_spawn(job_id):
         return {
             "status": "skipped",
-            "output": "⏭️ Another run of this job is already starting or running",
+            "output": "Another run of this job is already starting or running",
             "exit_code": -1,
         }
     # True while the claim is still ours to release. _finish_spawn and
@@ -957,6 +982,7 @@ def run_command_sandboxed(
         )
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         clean_env = _clean_cron_env()
+        _overlay_job_env(clean_env, job_env, granted=False, job_id=job_id)
         if cron_scratch is not None:
             # The whole temp triple, not only the keys the gateway carried, so
             # a child under a unit with no TMPDIR stops defaulting to /tmp.
@@ -1028,7 +1054,7 @@ def run_command_sandboxed(
                 _drain_after_kill(proc, job_id)
                 return {
                     "status": "error",
-                    "output": f"❌ Command timed out after {timeout}s",
+                    "output": f"Error: Command timed out after {timeout}s",
                     "exit_code": -1,
                 }
         finally:
@@ -1043,20 +1069,30 @@ def run_command_sandboxed(
         if len(output) > _MAX_COMMAND_OUTPUT:
             output = output[:_MAX_COMMAND_OUTPUT] + "\n\n[truncated — output exceeded 64KB]"
         if proc.returncode != 0:
-            output = f"⚠️ Exit code {proc.returncode}\n\n{output}"
-            if stderr_out:
-                # A command that dies hard leaves its diagnosis last: report the
-                # stderr tail, not the head, so a chatty startup warning can't
-                # displace the terminal error. Redact the complete stderr BEFORE
-                # truncating: slicing first could cut off a credential's
-                # detectable prefix (e.g. the scheme of a token-bearing URL),
-                # letting the raw secret tail through redaction.
-                output += f"\n\nstderr:\n{redact(stderr_out.rstrip())[-1000:]}"
-        return {
-            "status": "ok" if proc.returncode == 0 else "error",
-            "output": output,
-            "exit_code": proc.returncode,
-        }
+            stdout_text = _trim_blank_edges(output)
+            # A command that dies hard leaves its diagnosis last: report the
+            # stderr tail, not the head, so a chatty startup warning can't
+            # displace the terminal error. Redact the complete stderr BEFORE
+            # truncating: slicing first could cut off a credential's
+            # detectable prefix (e.g. the scheme of a token-bearing URL),
+            # letting the raw secret tail through redaction.
+            stderr_text = (
+                _trim_blank_edges(redact(stderr_out.rstrip())[-1000:]) if stderr_out else ""
+            )
+            # An empty stream is left out, so a stderr-only failure does not
+            # read as a run of empty lines.
+            sections = [f"Warning: Exit code {proc.returncode}", stdout_text]
+            if stderr_text:
+                sections.append(f"stderr:\n{stderr_text}")
+            # The streams also travel apart, for the failure alert's layout.
+            return {
+                "status": "error",
+                "output": "\n\n".join(s for s in sections if s),
+                "exit_code": proc.returncode,
+                "stdout": stdout_text,
+                "stderr": stderr_text,
+            }
+        return {"status": "ok", "output": output, "exit_code": 0}
     except SandboxUnavailableError as exc:
         return {
             "status": "error",
@@ -1064,7 +1100,7 @@ def run_command_sandboxed(
             "exit_code": -1,
         }
     except Exception as exc:
-        return {"status": "error", "output": f"❌ Command failed: {exc}", "exit_code": -1}
+        return {"status": "error", "output": f"Error: Command failed: {exc}", "exit_code": -1}
     finally:
         if spawn_claimed:
             # Left this function without ever reaching _finish_spawn or
@@ -1104,6 +1140,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
     from kiro_crew.config.loader import CONFIG_DIR_NAME, read_local_secret  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_agents_dir  # noqa: F401
+    from kiro_crew.config.sections_agent_env import _agent_env_denied  # noqa: F401
     from kiro_crew.cron_script_child_env import (  # noqa: F401
         _CRON_ENV_DENY,
         _GRANTED_ENV_KEYS,

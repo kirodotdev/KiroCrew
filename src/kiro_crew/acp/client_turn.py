@@ -843,6 +843,7 @@ async def send_message_stream(
     # return point, so the lock would stay held past the turn (next _bg
     # caller blocks = the freeze). aclosing() runs aclose() deterministically
     # on block exit, firing the finally and releasing the lock immediately.
+    _pi_model_error: str | None = None  # as in _dispatch_events
     async with aclosing(self._prompt_loop(req_id, timeout)) as _loop:
         async for action, msg in _loop:
             if action == "complete":
@@ -851,6 +852,8 @@ async def send_message_stream(
                 if isinstance(result, dict):
                     reason = result.get("stopReason", "") or ""
                 self._track_prompt_usage(result)
+                if _pi_model_error is not None and reason == STOP_REASON_END_TURN:
+                    pi_steer_turn.raise_model_error(self, _pi_model_error)
                 # Close out an automatic claude compaction. The returned
                 # event is discarded — this API yields str — but the context
                 # counts it drops are what the meter reads next turn.
@@ -893,6 +896,9 @@ async def send_message_stream(
                 # permission frames, this text-only one included.
                 await self._tripwire_pi_gate(msg)
                 await self._tripwire_permission_state(msg)
+                if (_pi_failure := pi_steer_turn.model_error(self, msg)) is not None:
+                    _pi_model_error = _pi_failure
+                    continue
                 chunk, is_thinking, _ = harness_notices.text_chunk(self, msg)
                 if chunk and not is_thinking:
                     # A claude compaction notice is a control frame wearing
@@ -1103,6 +1109,9 @@ async def _dispatch_events(
         None if extract_agent_from_result or req_id == _AGENT_STARTED_REQUEST_ID else req_id
     )
 
+    # pi's report of a failed model call (``pi_steer_turn.model_error``); pi-acp
+    # still ends that turn ``end_turn``, which then fails with it.
+    _pi_model_error: str | None = None
     _prompt_events = self._prompt_loop(req_id, timeout)
     async for action, msg in _prompt_events:
         # What Claude Code's background work sent before this frame, drawn above it by the
@@ -1135,6 +1144,9 @@ async def _dispatch_events(
             if isinstance(result, dict):
                 reason = result.get("stopReason", "") or ""
             self._track_prompt_usage(result)
+            if _pi_model_error is not None and reason == STOP_REASON_END_TURN:
+                await _prompt_events.aclose()
+                pi_steer_turn.raise_model_error(self, _pi_model_error)
             if extract_agent_from_result and isinstance(result, dict):
                 # commands/execute returns output in result fields,
                 # not via session/update chunks — yield as text.
@@ -1268,6 +1280,9 @@ async def _dispatch_events(
                 continue
             self._track_usage_update(msg)
             self._note_background_launch(msg)
+            if (_pi_failure := pi_steer_turn.model_error(self, msg)) is not None:
+                _pi_model_error = _pi_failure
+                continue
             # pi's consumed notification for a steer is the gate extension's own
             # frame, never text of the turn (``acp.pi_steer_turn``).
             _pi_echo = pi_steer_turn.echo_event(self, msg)
@@ -1719,6 +1734,7 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
     self._between_turn_credits = 0.0
 
+    _pi_model_error: str | None = None  # as in _dispatch_events
     async for action, msg in self._prompt_loop(req_id, timeout):
         if action == "complete":
             reason = ""
@@ -1726,6 +1742,8 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
             if isinstance(result, dict):
                 reason = result.get("stopReason", "") or ""
             self._track_prompt_usage(result)
+            if _pi_model_error is not None and reason == STOP_REASON_END_TURN:
+                pi_steer_turn.raise_model_error(self, _pi_model_error)
             # See send_message_stream: settle for the context counts, drop
             # the event this API cannot yield.
             self._settle_harness_compaction(reason)
@@ -1772,6 +1790,9 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
             # See send_message_stream: settle the codex compaction for the
             # context counts, drop the event this API cannot return.
             self._codex_compaction_event(msg)
+            if (_pi_failure := pi_steer_turn.model_error(self, msg)) is not None:
+                _pi_model_error = _pi_failure
+                continue
             chunk, is_thinking, _ = harness_notices.text_chunk(self, msg)
             if chunk and not is_thinking:
                 # Apply the claude compaction state change, then KEEP the

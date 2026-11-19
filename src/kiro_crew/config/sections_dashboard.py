@@ -52,16 +52,21 @@ REMOTE_EDITOR_HOST_PATTERN = (
 # the browser's copy as a cache of this section, and
 # test_feature_previews_config.py pins the two lists equal.
 FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
+    # Has server behavior: kiro_crew.apps.browser_sdk.preview_on gates ctx.browser
+    # and every permissions.browser verb.
+    "app_browser_sdk",
     "artifact_deploy",
     "bridge_approvals",
     "chat_runtime_sharing",
+    # Has server behavior: kiro_crew.connected_computers.flag gates enrollment,
+    # the connector socket, the chat choice and every start on it.
+    "connected_computers",
     "crew_oauth",
     "dashboard_stale_fields",
     "dashboard_stale_wake",
     "explore",
     "folder_conductor",
     "remote_crew_chat",
-    "secrets_vault",
     "session_environments",
     "session_harness",
     "webhooks",
@@ -265,6 +270,15 @@ class DashboardConfig:
             "Repeat reads of one secret by one caller share a row per 10 minutes, which "
             "counts them. Off by default. Takes effect on the next read; no restart (within "
             "30 seconds in the MCP gateway process).",
+        ),
+    )
+    turn_cache_estimate: bool = field(
+        default=False,
+        metadata=_meta(
+            "Estimate cache rebuilds",
+            'Mark a reply in its footer as "Cache likely rebuilt" when the backend reports '
+            "no cache counts and the turn started after a pause longer than the model keeps "
+            "the conversation cached. Backends that report cache counts are unaffected.",
         ),
     )
     crewmate_threads: bool = field(
@@ -717,6 +731,18 @@ class DashboardConfig:
             "while session summaries are on.",
         ),
     )
+    auto_open_conductor_board: bool = field(
+        default=True,
+        metadata=_meta(
+            "Auto-open the Board in the side panel",
+            "Open the right side panel on the Board tab the first time you open a "
+            "conductor mode chat. With this off, a conductor mode chat opens like "
+            "any other chat: its panel stays closed unless Keep the side panel "
+            "open is on, and the Board is still the panel's first tab. Turning "
+            "conductor mode on in a chat still opens the Board. This setting "
+            "does not apply on a phone.",
+        ),
+    )
     # Default TRUE: the chip strip shipped unconditionally before this switch
     # existed, so a config that never mentions the key must render exactly what
     # it rendered before.
@@ -953,9 +979,29 @@ class DashboardConfig:
         default="",
         metadata=_meta(
             "Theme Mode",
-            "Dashboard color mode preference: 'dark', 'light', or 'system'. "
-            "Empty = unset (frontend falls back to localStorage or 'system').",
-            enum=["", "dark", "light", "system"],
+            "Dashboard color mode preference: 'dark', 'light', 'system', or "
+            "'schedule' (light from theme_schedule_light, dark from "
+            "theme_schedule_dark). Empty = unset (frontend falls back to "
+            "localStorage or 'system').",
+            enum=["", "dark", "light", "system", "schedule"],
+        ),
+    )
+    theme_schedule_light: str = field(
+        default="",
+        metadata=_meta(
+            "Theme Schedule Light",
+            "24-hour HH:MM at which the 'schedule' theme mode turns light, read in "
+            "the time zone of the device showing the dashboard. Empty = never set "
+            "(07:00).",
+        ),
+    )
+    theme_schedule_dark: str = field(
+        default="",
+        metadata=_meta(
+            "Theme Schedule Dark",
+            "24-hour HH:MM at which the 'schedule' theme mode turns dark, read in "
+            "the time zone of the device showing the dashboard. Empty = never set "
+            "(19:00).",
         ),
     )
     sso_login_flags: str = field(
@@ -1245,6 +1291,15 @@ class DashboardConfig:
         metadata=_meta(
             "Folder Suggestions Enabled",
             "Offer to file a newly-titled, unfiled chat session into a matching folder.",
+        ),
+    )
+    folder_suggestions_auto_apply: bool = field(
+        default=False,
+        metadata=_meta(
+            "Folder Suggestions Auto Apply",
+            "While folder suggestions are on, file the session into the suggested "
+            "folder instead of asking first; the card then says where it went, with "
+            "an undo. Ignored while folder suggestions are off.",
         ),
     )
     project_tags_enabled: bool = field(

@@ -731,6 +731,9 @@ _LIVE_MAX_TARGETS = 16
 #: How long ``find_ui`` waits for the gateway to say which language the user's
 #: dashboard shows (an in-memory read; no tab is asked).
 _UI_LANG_WAIT_SECONDS = 1.0
+#: How long ``get_member_capabilities`` waits for its route: past the route's
+#: own 20 s deadline on the read (``_bounded_read.GET_TIMEOUT_SECS``).
+_MEMBER_CAPABILITIES_WAIT_SECONDS = 30.0
 
 
 def _dashboard_ui_lang() -> str | None:
@@ -1003,7 +1006,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "get_member_capabilities":
         query = urllib.parse.urlencode({"member": args.get("member") or ""})
-        d = _get(f"/api/cards/agent/capabilities?{query}", session_key=sk)
+        # Past the route's own deadline on the read, so a slow Bot answers with
+        # the route's timed-out explanation instead of a bare transport timeout.
+        d = _get(
+            f"/api/cards/agent/capabilities?{query}",
+            session_key=sk,
+            timeout=_MEMBER_CAPABILITIES_WAIT_SECONDS,
+        )
         return _error_for(name, d) or _render(d)
 
     if name == "diagnose_settings":

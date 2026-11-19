@@ -18,7 +18,7 @@ Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_
 ``_spec_denied_tools``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``,
 ``_spec_write_cwd``, ``_spec_zero_tools``.
 
-Instance fields read: ``_agent``, ``_channel_id``, ``_child_env_names``,
+Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``, ``_child_env_names``,
 ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_mcp_json_names``,
 ``_mcp_notifications``, ``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
 ``_pi_gate_nonce``, ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``,
@@ -32,6 +32,7 @@ import asyncio
 import logging
 import time
 import weakref
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection
 
 from kiro_crew import acp_tool_gate
@@ -44,6 +45,7 @@ from kiro_crew.acp.mcp_ref_guard import (
     warn_unset_env_placeholders,
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
+from kiro_crew.acp.mcp_sign_in_probe import schedule_sign_in_probe
 from kiro_crew.acp.pi_mcp_registration import discard_registration
 from kiro_crew.acp.session_mcp import SessionMcpProjection, ToolsAllowlist, agent_spec_snapshot
 from kiro_crew.acp.spec_tools_allowlists import (
@@ -52,8 +54,10 @@ from kiro_crew.acp.spec_tools_allowlists import (
     spec_write_globs,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
@@ -148,6 +152,33 @@ def authored_agent_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:
     return spec_is_toolless(spec)
 
 
+def kas_lite_spec_is_toolless(agent: str, work_dir: Any = None) -> bool | None:
+    """Whether the ``kirocrew-lite`` spec KAS is sent mounts nothing, or ``None``.
+
+    ``None`` for any other agent, and when a checkout spec of that name exists (the
+    caller then judges the authored spec as before). Otherwise the user-level spec
+    as the KAS projection sends it (``service_agents.lite_view_without_registered_injection``):
+    the template when the file's only change is a registered injection, else the
+    file itself. Blocking; fails closed: an unreadable spec answers False.
+    """
+    from kiro_crew.acp import session_mcp
+    from kiro_crew.agent import lite_view_without_registered_injection
+    from kiro_crew.agent_files import LITE_AGENT_FILENAME
+
+    if agent != Path(LITE_AGENT_FILENAME).stem:
+        return None
+    try:
+        if work_dir and session_mcp._project_spec_path_for(agent, work_dir) is not None:
+            return None
+        spec = agent_spec_snapshot(agent, work_dir=work_dir)
+        if isinstance(spec, dict):
+            spec = lite_view_without_registered_injection(spec)
+    except Exception:
+        logger.warning("lite spec unreadable; not confirming zero tools", exc_info=True)
+        return False
+    return spec_is_toolless(spec)
+
+
 def authored_spec_declares_zero_tools(self: AcpClient) -> bool:
     """True when the authored spec this agent name resolves to mounts nothing.
 
@@ -219,6 +250,12 @@ def effective_spec_declares_zero_tools(
     """
     projection = getattr(self, "_native_skill_projection", None)
     if projection is None:
+        if getattr(self, "_acp_backend", "") == ACP_BACKEND_KAS:
+            # KAS is sent the spec Crew reads, and for the background helper that is
+            # the spec without a registered injection (``kas_lite_spec_is_toolless``).
+            sent = kas_lite_spec_is_toolless(self._agent, self._work_dir)
+            if sent is not None:
+                return authored_before_spawn and sent
         return authored_before_spawn and authored_agent_spec_is_toolless(
             self._agent, self._work_dir
         )
@@ -1382,10 +1419,20 @@ def _start_mount_check(self: AcpClient) -> None:
     Only for ``ACP_BACKENDS_SESSION_MCP_ARRAY``, after the session exists, as a
     background task (:mod:`kiro_crew.acp.mcp_mount_check`): it never blocks or
     fails the start, and the kiro path gains no call (harness-parity H13).
+
+    On opencode it also starts the credential-free sign-in probe of the same array's
+    remote servers (:mod:`kiro_crew.acp.mcp_sign_in_probe`): opencode sends no frame
+    when one asks for a sign-in, so the probe is what lists it as awaiting one.
     """
     if self.backend not in ACP_BACKENDS_SESSION_MCP_ARRAY or not self._session_id:
         return
     session_id = self._session_id
+    if self.backend == ACP_BACKEND_OPENCODE:
+        schedule_sign_in_probe(
+            self._mcp_report,
+            getattr(self, "_mcp_mount_servers", None) or [],
+            alive=lambda: self._session_id == session_id,
+        )
     schedule_mount_check(
         self._mcp_report,
         getattr(self, "_mcp_mount_servers", None) or [],

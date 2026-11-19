@@ -30,6 +30,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import re
 import secrets
 import time
 import urllib.parse
@@ -160,6 +161,20 @@ class CrewOAuthError(Exception):
         self.code = code
 
 
+_NOT_CODE_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def safe_error_code(value: Any, default: str) -> str:
+    """The vendor's ``error`` as a coarse code: ``[A-Za-z0-9_.-]``, at most 64 chars.
+
+    The vendor writes ``error``, so control characters, newlines and free text must
+    not reach a log line, an audit field, a mint row or the harness. Anything else
+    is dropped; *default* answers when nothing is left.
+    """
+    code = _NOT_CODE_CHARS.sub("", value)[:64] if isinstance(value, str) else ""
+    return code or default
+
+
 def enabled() -> bool:
     """Whether the preview (:data:`FLAG_KEY`) is ``true``. Blocking.
 
@@ -250,6 +265,19 @@ def custody_on(slug: str) -> bool:
     return _held_key(slug) and enabled()
 
 
+def _registry_url_key(url: str) -> str:
+    """The form two MCP urls are compared in to tell whether they name one endpoint.
+
+    The shared fetch canonicalizer (``platform.spec_denied_gate.canonical_url``):
+    scheme and host case, a default port and a trailing host dot do not matter;
+    the path stays case-sensitive (``/mcp`` and ``/mcp/readonly`` differ). A url
+    it refuses keeps the plain string, so it matches nothing new.
+    """
+    from kiro_crew.platform.spec_denied_gate import canonical_url
+
+    return (canonical_url(url) or url).rstrip("/")
+
+
 def _is_registry_url(url: Any) -> bool:
     """Whether *url* is the MCP endpoint of a card Crew signs in to. Blocking.
 
@@ -266,10 +294,10 @@ def _is_registry_url(url: Any) -> bool:
 
     if not isinstance(url, str):
         return False
-    wanted = url.rstrip("/")
+    wanted = _registry_url_key(url)
     return any(
         p["slug"] in SUPPORTED_SLUGS
-        and str(p["mcp_url"]).rstrip("/") == wanted
+        and _registry_url_key(str(p["mcp_url"])) == wanted
         and not card_yields(p)
         for p in get_all_registry_providers()
     )
@@ -294,11 +322,13 @@ def _card_claims(name: str, entry: Any) -> bool:
     url = entry.get("url") if isinstance(entry, dict) else None
     if not _is_registry_url(url):
         return False
-    wanted = str(url).rstrip("/")
+    # Same key as _is_registry_url: a variant that check claimed must find its
+    # card here too, or all([]) below would read as every card keeping its client.
+    wanted = _registry_url_key(str(url))
     cards = [
         str(p["slug"])
         for p in get_all_registry_providers()
-        if p["slug"] in SUPPORTED_SLUGS and str(p["mcp_url"]).rstrip("/") == wanted
+        if p["slug"] in SUPPORTED_SLUGS and _registry_url_key(str(p["mcp_url"])) == wanted
     ]
     if get_provider(name) is not None or not all(keeps_user_client(s) for s in cards):
         return True
@@ -545,7 +575,7 @@ def tokens_from_response(doc: dict[str, Any], now: float) -> Tokens:
     """A token-endpoint answer as :class:`Tokens`, or ``exchange_failed``."""
     access = doc.get("access_token")
     if not isinstance(access, str) or not access or doc.get("error"):
-        raise CrewOAuthError(str(doc.get("error") or "exchange_failed")[:64])
+        raise CrewOAuthError(safe_error_code(doc.get("error"), "exchange_failed"))
     expires_in = doc.get("expires_in")
     refresh = doc.get("refresh_token")
     return Tokens(
@@ -658,7 +688,7 @@ async def _post_token(slug: str, form: dict[str, str]) -> dict[str, Any]:
                         body = None
                     error = body.get("error") if isinstance(body, dict) else None
                     if isinstance(error, str) and error:
-                        raise CrewOAuthError(error[:64])
+                        raise CrewOAuthError(safe_error_code(error, f"token_http_{resp.status}"))
                     raise CrewOAuthError(f"token_http_{resp.status}")
                 try:
                     doc = await resp.json(content_type=None)
@@ -1151,6 +1181,7 @@ async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bo
 
 def _audit(operation: str, outcome: str, slug: str, detail: str = "") -> None:
     """One SEL record and one gateway.log line; a provider and a coarse code, never a value."""
+    detail = safe_error_code(detail, "")
     logger.info(
         "Crew OAuth %s for %s: %s%s", operation, slug, outcome, f" ({detail})" if detail else ""
     )

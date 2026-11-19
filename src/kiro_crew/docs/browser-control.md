@@ -33,6 +33,17 @@ The agent acts only on tabs it opened; it never touches the ones you have open.
 Kiro's own Chromium keeps its own profile (so a login you did during a takeover
 stays signed in next time), and the agent cannot read that profile's files.
 
+**One sign-in per chat.** By default every chat shares the browser's sign-ins. Set
+"Browser isolation" on Settings → Browser to "Isolated browser per chat"
+(`browser.isolation: per_session`) and each chat browses with its own private
+cookies and site storage instead, so two chats can be signed in to two accounts
+of the same site at once. A chat's set starts empty (on Kiro's own Chromium it
+gets the sign-in below), lives only in memory, and is thrown away with its tabs
+when the chat ends; sign in through a takeover in each chat that needs it. On a
+desktop each chat's tabs open in a separate browser window. Switching the setting
+takes effect at the chat's next browser step, which opens a new tab; the tabs
+(and window) from the other mode stay open until the chat ends.
+
 ## Signed in before the first page
 
 Kiro's own Chromium can start already signed in, so a headless or remote browser
@@ -160,6 +171,16 @@ frame whose password fields could not be located is not kept at all; what you
 type during a takeover is kept only as a character count. Deleting a chat
 deletes its recordings. `browser.recording.enabled`, `max_session_mb` and
 `max_total_mb` turn recording off or cap its size.
+
+**Stopping a task that runs on.** `browser.run.max_ops` (off by default) caps the
+browser steps one chat runs; past it the next step is not run and the agent is told to
+stop and say where it got to. `browser.run.max_repeats` (also off) caps how many times
+in a row the same step runs with the same details (the same click on the same element,
+the same scroll distance). Past it the next step is not run: the agent gets an
+`Error (run_budget)` answer and tries something else. Any different step, typing
+different text into one field, taking over the browser or starting a new chat counts
+again from zero. A step held while you hold the browser is not counted. Set them with
+`kirocrew config set browser.run.max_ops 100` or `browser.run.max_repeats 5`.
 
 **Fast mode.** When browser help is on (the **Browser steps: pick and check** row
 on the Decisions card, under Settings → Developer → Feature Previews), the agent

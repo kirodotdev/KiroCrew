@@ -14,14 +14,16 @@
  *                                         only: no agent hand-off
  *   02 refused, light, schedule page   -> ErrorNotice under its own title
  *   03 healthy, dark                   -> no notice
- *   04 click "Open sign-in settings"   -> lands on Settings > Agent Harness,
- *                                         where the notice is not shown
+ *   04 click "Sign in"                 -> the shared sign-in dialog opens in
+ *                                         place; the page is not left
  *   05/06 phone width (390px)          -> the full notice, text and button
  *   07 status read fails (HTTP 500)    -> ErrorNotice with the agent hand-off
  *                                         and the sign-in button
  *   08 320px, Spanish                  -> label wraps, dismiss stays in view
- *   09 refused and expired, light      -> says the agents cannot run, no
- *                                         agent hand-off
+ *   09 refused and expired, light      -> the same "Sign-in expired." copy as
+ *                                         01, no agent hand-off
+ *   15 signed out, Settings > Kiro account -> the sign-in choices in the card,
+ *                                         no notice, no dialog open
  *
  * `--before` captures the expired state against a build WITHOUT the notice
  * (pass that build with `--dist`) and asserts it is absent there.
@@ -55,7 +57,16 @@ const HEALTHY = {
 const EXPIRED = { ...HEALTHY, expires_at: '2000-01-01T00:00:00Z', expired: true, has_refresh_token: false, usable: false }
 const REFUSED = { ...HEALTHY, refresh_rejected: true }
 const REFUSED_EXPIRED = { ...REFUSED, expires_at: '2000-01-01T00:00:00Z', expired: true }
+const SIGNED_OUT = {
+  authenticated: false, provider: '', identity: '', transport: 'device',
+  expires_at: null, expired: false, has_refresh_token: false, refresh_rejected: false, usable: false,
+}
 const FAILED = Symbol('status read fails')
+// Every notice shape the app-level notice draws, by its test id.
+const NOTICE_IDS = [
+  'kiro-sign-in-notice', 'kiro-sign-in-refused', 'kiro-sign-in-status-error',
+  'kiro-sign-in-config-error', 'kiro-sign-in-schema-error', 'kiro-sign-in-notice-load-error',
+]
 const NOW_ISO = new Date(Date.now() - 60_000).toISOString()
 const SLOT = { key: 'chat-1', title: 'Release notes draft', messages: 4, running: false, agent: '', mode: '', tags: [], last_ts: NOW_ISO, last_turn_ts: NOW_ISO }
 const KAS_ROW = {
@@ -107,9 +118,14 @@ async function main() {
         await json(route, { running: false, has_more: false, total: 1, queue: [], messages: [{ role: 'user', ts: Date.now() / 1000 - 300, content: 'hello' }] })
         return true
       }
-      // Settings > Agent Harness, where the click lands: one KAS row, trimmed to
-      // what the picker reads, so the ringed sign-in card renders.
+      // Settings > Kiro account, where the click lands: a schema that offers KAS,
+      // so the tab and its ringed sign-in card render.
       if (path === '/api/acp-backends') { await json(route, { backends: [KAS_ROW] }); return true }
+      // Nothing stored anywhere, so the card's sources rows have nothing to name.
+      if (path === '/api/kas-login/sources') {
+        await json(route, { active: 'none', kiro_crew: { stored: false }, kiro_cli: { stored: false }, name_pending: false, name_unreadable: false, same_account: null, can_use_kiro_cli: false })
+        return true
+      }
       if (path === '/api/config/schema') {
         await json(route, { entries: [{ path: 'agent.acp_backend', type: 'enum', enumValues: ['', 'kas'] }] })
         return true
@@ -122,7 +138,7 @@ async function main() {
 
     const notice = page.getByTestId(want?.testId ?? 'kiro-sign-in-notice')
     let got = null
-    if (want) {
+    if (want && !want.card) {
       await notice.waitFor({ timeout: 20_000 }).catch(() => {})
       // Let the notice's rise-in animation finish so the frame is not mid-fade.
       await page.waitForTimeout(800)
@@ -143,29 +159,50 @@ async function main() {
         dismissInside: !!dismissBox && dismissBox.x >= 0 && dismissBox.x + dismissBox.width <= width,
       }
     }
-    const ok = !want
+    const ok = !want || want.card
       ? got === null
       : !!got && got.visible && got.text.startsWith(want.title) && got.buttons === want.buttons
         && got.open === want.open && got.dismissInside
         && (!want.detail || got.text.includes(want.detail))
     const row = { name, ok, notice: got }
 
-    if (!VERIFY_ONLY) {
+    if (!VERIFY_ONLY && !want?.card) {
       // The top of the window: the bar, and the notice under it when present.
       const box = got ? await notice.boundingBox() : await page.locator('header').first().boundingBox()
       await page.screenshot({ path: `${OUT}/${name}.png`, clip: { x: 0, y: 0, width, height: Math.ceil(box.y + box.height + 16) } })
       console.log('wrote', `${OUT}/${name}.png`)
     }
     if (click && got) {
+      const before = page.url()
       await notice.getByTestId('kiro-sign-in-notice-open').click()
-      await page.waitForURL(/\/settings\/agent/, { timeout: 10_000 }).catch(() => {})
-      row.landedOn = new URL(page.url()).pathname + new URL(page.url()).search
-      await page.waitForTimeout(1500)
-      row.noticeOnCardPage = await notice.count()
-      row.ok = row.ok && row.landedOn.startsWith('/settings/agent') && row.landedOn.includes('kiro-sign-in') && row.noticeOnCardPage === 0
+      const dialog = page.getByTestId('kiro-sign-in-dialog')
+      await dialog.waitFor({ timeout: 10_000 }).catch(() => {})
+      await page.waitForTimeout(800)
+      row.dialogOpen = await dialog.count() ? await dialog.isVisible() : false
+      row.stayedOn = page.url() === before
+      row.ok = row.ok && row.dialogOpen && row.stayedOn
       if (!VERIFY_ONLY) {
-        await page.screenshot({ path: `${OUT}/${name}-landed.png` })
-        console.log('wrote', `${OUT}/${name}-landed.png`)
+        await page.screenshot({ path: `${OUT}/${name}-dialog.png` })
+        console.log('wrote', `${OUT}/${name}-dialog.png`)
+      }
+    }
+    if (want?.card) {
+      // The signed-out card on Settings > Kiro account, its choices shown in place.
+      const card = page.getByTestId('kiro-sign-in-card')
+      await card.waitFor({ timeout: 20_000 }).catch(() => {})
+      await page.waitForTimeout(800)
+      const inline = card.getByTestId('kiro-sign-in-inline')
+      row.card = {
+        visible: await card.count() ? await card.isVisible() : false,
+        signIn: await inline.count(),
+        dialog: await page.getByTestId('kiro-sign-in-dialog').count(),
+      }
+      // No notice shape of any kind is drawn on the card's own page.
+      row.card.notices = await page.locator(NOTICE_IDS.map(id => `[data-testid="${id}"]`).join(', ')).count()
+      row.ok = row.card.visible && row.card.signIn === 1 && row.card.dialog === 0 && row.card.notices === 0 && got === null
+      if (!VERIFY_ONLY) {
+        await page.screenshot({ path: `${OUT}/${name}.png` })
+        console.log('wrote', `${OUT}/${name}.png`)
       }
     }
     results.push(row)
@@ -174,15 +211,16 @@ async function main() {
 
   // Every shape is an ErrorNotice: the hand-off (where shown) and dismiss on
   // its first row, the sign-in button on its own row below. The two expired
-  // shapes have no hand-off: on KAS the agent runs as the lapsed sign-in.
-  const expired = { title: 'Kiro sign-in expired', buttons: 2, open: true }
+  // shapes have no hand-off: on KAS the agent runs as the lapsed sign-in, and
+  // they say the same two lines whatever the cause.
+  const expired = { title: 'Sign-in expired.', buttons: 2, open: true, detail: 'Sign in again to resume sessions and agent work.' }
   const refused = { testId: 'kiro-sign-in-refused', title: 'Kiro refused to renew your sign-in', buttons: 3, open: true, detail: 'Agents will stop when this sign-in expires' }
-  const refusedExpired = { ...refused, buttons: 2, detail: 'Agents cannot run until you sign in again. This sign-in has already expired.' }
-  const failed = { testId: 'kiro-sign-in-status-error', title: 'We could not check sign-in status', buttons: 3, open: true, detail: 'Open sign-in settings to check your Kiro sign-in' }
+  const refusedExpired = { ...expired, testId: 'kiro-sign-in-refused' }
+  const failed = { testId: 'kiro-sign-in-status-error', title: 'We could not check sign-in status', buttons: 3, open: true, detail: 'Sign in again if your Kiro sign-in stopped working, or ask the agent to look into it.' }
   // No sign-in button: the backend is unknown, and kiro-cli or Claude has no sign-in.
   const configFailed = { testId: 'kiro-sign-in-config-error', title: 'Could not read the dashboard settings', buttons: 2, open: false, detail: 'Reload the page to try again' }
   const loadFailed = { testId: 'kiro-sign-in-notice-load-error', title: 'Part of the dashboard could not load', buttons: 2, open: false }
-  const expiredEs = { title: 'Inicio de sesión en Kiro caducado', buttons: 2, open: true, dismissName: 'Descartar' }
+  const expiredEs = { title: 'Inicio de sesión caducado.', buttons: 2, open: true, dismissName: 'Descartar' }
   if (BEFORE) {
     await frame('00-before-expired-dark', { status: EXPIRED, want: null })
   } else {
@@ -203,6 +241,7 @@ async function main() {
     await frame('12-320-refused-expired-dark', { status: REFUSED_EXPIRED, width: 320, want: refusedExpired })
     await frame('13-expired-light', { status: EXPIRED, theme: 'light', route: '/schedule', want: expired })
     await frame('14-notice-load-failed-dark', { status: EXPIRED, breakNotice: true, want: loadFailed })
+    await frame('15-settings-signed-out-dark', { status: SIGNED_OUT, route: '/settings/kiro-account', want: { card: true } })
   }
 
   await browser.close()

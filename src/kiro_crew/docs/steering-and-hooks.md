@@ -60,8 +60,12 @@ resolvable project the Steering files tab offers only the global root, and
 creating a workspace document is refused with `steering_workspace_unavailable`.
 
 The listing is bounded: at most 500 files, 256 KiB per document. Within the
-context Kiro Crew assembles, `_STEERING_CAP` gives steering resources 10% of
-the budget base.
+context Kiro Crew assembles, `_STEERING_CAP` bounds the folder steering section
+with a fixed, window-independent allowance rather than a share of the budget
+base: every document in it is an every-session rule, and on a harness that does
+not load `.kiro/steering` itself that section is the only path the global and
+project trees have to the model. Past the allowance the section still names
+what it cut or left out.
 
 ### What a document declares
 
@@ -400,6 +404,11 @@ compares the whole string: write `*added:<id>;*` to catch a session entering tha
 lane, `*removed:<id>;*` to catch it leaving, and `*:<id>;*` for either. Keep both
 the leading `:` and the trailing `;` — without them a selector also matches a lane
 whose id merely contains yours, and runs your hook on somebody else's session.
+
+The form helps with both halves. With `SessionLaneChanged` in `glob` mode it states
+the grammar under the matcher, and its **Insert a lane** menu lists the status tags
+(the lanes) by tag name and fills in `*added:<id>;*` with that tag's id, which no other
+screen shows.
 
 ### Creating, testing, enabling and deleting one
 

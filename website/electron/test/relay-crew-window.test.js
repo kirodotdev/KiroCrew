@@ -9,6 +9,7 @@ const {
   openRelayCrewWindow,
   openRelayCrewPane,
   paneChordIndex,
+  shownRelayPane,
 } = require("../relay-crew-window");
 
 const ENDPOINT = "abcdefghij0123456789";
@@ -508,6 +509,72 @@ test("window: a main-frame load the relay answers 5xx or that fails is reported 
   w.handle.close();
 });
 
+test("window: a reload the page's service worker answers with the relay's 503 is reported once", () => {
+  // The worker's own fetch never reaches the network hook as a main frame, so
+  // only did-navigate sees the status the document was served with.
+  const w = openWithClock();
+  const wc = w.crewView.webContents;
+  wc.emit("did-start-navigation", {}, `${ORIGIN}/chat`, false, true);
+  wc.emit("did-navigate", {}, `${ORIGIN}/chat`, 503);
+  assert.strictEqual(w.unreachable.length, 1);
+  assert.strictEqual(w.handle.showsError(), true, "opening it again reloads");
+  w.handle.close();
+
+  // Seen by both: one notice.
+  const both = openWithClock();
+  both.crewView.webContents.emit("did-start-navigation", {}, `${ORIGIN}/`, false, true);
+  both.completed("/", 503, "mainFrame", CREW_NOT_CONNECTED);
+  both.crewView.webContents.emit("did-navigate", {}, `${ORIGIN}/`, 503);
+  assert.strictEqual(both.unreachable.length, 1, "a load the hook already reported is not reported again");
+  both.handle.close();
+
+  // The other order: did-navigate commits before the hook sees the body end.
+  const navFirst = openWithClock();
+  navFirst.crewView.webContents.emit("did-start-navigation", {}, `${ORIGIN}/`, false, true);
+  navFirst.crewView.webContents.emit("did-navigate", {}, `${ORIGIN}/`, 503);
+  navFirst.completed("/", 503, "mainFrame", CREW_NOT_CONNECTED);
+  assert.strictEqual(navFirst.unreachable.length, 1, "did-navigate first, then the hook: one notice");
+  navFirst.handle.close();
+
+  // The notice's own about:blank load does not start a new report, so the
+  // 503 document's did-navigate after it is the same load.
+  const viaNotice = openWithClock();
+  const wcn = viaNotice.crewView.webContents;
+  viaNotice.handle.onUnreachable(() => {
+    viaNotice.handle.showNotice({ title: "t", body: "", check: "Check again", close: "Close window" });
+    wcn.emit("did-start-navigation", {}, "about:blank", false, true);
+  });
+  wcn.emit("did-start-navigation", {}, `${ORIGIN}/`, false, true);
+  viaNotice.completed("/", 503, "mainFrame", CREW_NOT_CONNECTED);
+  wcn.emit("did-navigate", {}, `${ORIGIN}/`, 503);
+  assert.strictEqual(viaNotice.unreachable.length, 1, "a notice raised by the first report is not raised again");
+  // A same-document navigation does not start a new load either.
+  wcn.emit("did-start-navigation", {}, `${ORIGIN}/#x`, true, true);
+  wcn.emit("did-navigate", {}, `${ORIGIN}/`, 503);
+  assert.strictEqual(viaNotice.unreachable.length, 1);
+  viaNotice.handle.close();
+
+  // Another origin, or a healthy page, reports nothing.
+  const ok = openWithClock();
+  ok.crewView.webContents.emit("did-navigate", {}, "https://elsewhere.example.test/", 503);
+  ok.crewView.webContents.emit("did-navigate", {}, `${ORIGIN}/`, 200);
+  assert.deepStrictEqual(ok.unreachable, []);
+  assert.strictEqual(ok.handle.showsError(), false);
+  ok.handle.close();
+});
+
+test("window: a page the relay answered 4xx reads as an error until the Crew loads again", () => {
+  const w = openWithClock();
+  w.completed("/", 403, "mainFrame");
+  assert.deepStrictEqual(w.unreachable, [], "a 4xx is not an outage");
+  assert.strictEqual(w.handle.showsError(), true);
+  w.handle.reload();
+  assert.strictEqual(w.handle.showsError(), false, "a reload starts the page over");
+  w.completed("/", 200, "mainFrame");
+  assert.strictEqual(w.handle.showsError(), false);
+  w.handle.close();
+});
+
 test("window: a notice unloads the Crew's page and shows a local, locked-down view", () => {
   const w = openWithClock();
   const text = { title: "Example Crew is currently unavailable", body: "", check: "Check again", close: "Close window" };
@@ -696,11 +763,34 @@ test("pane: leaving the screen while it holds the keyboard hands focus back to t
   await new Promise((r) => setImmediate(r));
   assert.strictEqual(p.dashboard.webContents.focused, 2, "focus taken while hidden goes back");
   p.handle.focus();
+  assert.strictEqual(p.view.visible, false, "focus shows nothing: the dashboard picks the tab in front");
+  assert.deepStrictEqual(p.parent.calls, [], "and raises no window");
+  p.handle.setInactive(false);
   assert.strictEqual(p.view.visible, true);
-  assert.strictEqual(wc.hasFocus, true);
-  assert.deepStrictEqual(p.parent.calls, ["show", "focus"]);
+  assert.strictEqual(wc.hasFocus, true, "a pane brought to the front takes the keyboard");
+  p.handle.showNotice(PANE_NOTICE);
+  p.handle.setInactive(true);
+  p.handle.setInactive(false);
+  assert.strictEqual(f.views[f.views.length - 1].webContents.hasFocus, true, "with a notice up, the notice takes it");
   p.handle.close();
-  assert.strictEqual(p.dashboard.webContents.focused, 3, "closing a focused pane hands focus back");
+  assert.strictEqual(p.dashboard.webContents.focused, 4, "closing a focused pane hands focus back");
+});
+
+test("pane: a notice holding the keyboard hands it back when the pane hides or closes", () => {
+  const f = fakeDeps();
+  const p = openPane(f);
+  p.handle.showNotice(PANE_NOTICE);
+  const notice = f.views[f.views.length - 1].webContents;
+  p.view.webContents.hasFocus = false;
+  notice.hasFocus = true;
+  p.handle.setInactive(true);
+  assert.strictEqual(p.dashboard.webContents.focused, 1, "hiding hands it back");
+  p.handle.setInactive(false);
+  p.view.webContents.hasFocus = false;
+  notice.hasFocus = true;
+  const before = p.dashboard.webContents.focused;
+  p.handle.close();
+  assert.strictEqual(p.dashboard.webContents.focused, before + 1, "closing hands it back");
 });
 
 test("pane: a dashboard reload or a gone renderer closes it, and a closed pane leaves no listener behind", () => {
@@ -721,6 +811,9 @@ test("pane: a dashboard reload or a gone renderer closes it, and a closed pane l
 test("pane: an overlay and an inactive tab each hide it; it shows once both are off, and focus keeps the overlay", () => {
   const f = fakeDeps();
   const p = openPane(f);
+  assert.strictEqual(p.view.visible, false, "a pane starts hidden, until the dashboard brings its tab forward");
+  p.handle.setInactive(false);
+  assert.strictEqual(p.view.visible, true);
   p.handle.setOverlay(true);
   assert.strictEqual(p.view.visible, false);
   p.handle.setInactive(true);
@@ -729,12 +822,30 @@ test("pane: an overlay and an inactive tab each hide it; it shows once both are 
   p.handle.setOverlay(true);
   p.handle.setInactive(false);
   assert.strictEqual(p.view.visible, false, "still under the overlay");
-  p.handle.setInactive(true);
-  p.handle.focus();
-  assert.strictEqual(p.view.visible, false, "focus brings its tab forward, and the overlay still hides it");
+  p.handle.setInactive(false);
+  assert.strictEqual(shownRelayPane(p.parent), p.handle, "the tab in front is Reload's target under an overlay too");
   p.handle.setOverlay(false);
   assert.strictEqual(p.view.visible, true);
+  p.handle.setInactive(true);
+  assert.strictEqual(shownRelayPane(p.parent), null, "no tab in front, no pane target");
+  assert.strictEqual(shownRelayPane(new f.deps.BaseWindow({})), null, "only panes of that window");
   p.handle.close();
+});
+
+test("pane: the menu's Reload goes to the opener's reload, which a closed pane no longer takes", () => {
+  const f = fakeDeps();
+  const asked = [];
+  const parent = new f.deps.BaseWindow({});
+  const dashboard = { webContents: Object.assign(new EventEmitter(), { focus() {}, isDestroyed: () => false }) };
+  const handle = openRelayCrewPane({
+    endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN,
+    parent, dashboard, bounds: PANE_RECT, platform: "linux", menuReload: (o) => asked.push(o),
+  }, f.deps);
+  handle.menuReload({ ignoreCache: true });
+  assert.deepStrictEqual(asked, [{ ignoreCache: true }]);
+  handle.close();
+  handle.menuReload({ ignoreCache: false });
+  assert.strictEqual(asked.length, 1);
 });
 
 test("pane: main reads the Crew-switch chord before the page and reports its tab index", () => {
@@ -755,6 +866,11 @@ test("pane: main reads the Crew-switch chord before the page and reports its tab
   assert.strictEqual(press({ meta: true, code: "Digit2" }), false, "Cmd is the macOS chord");
   assert.strictEqual(press({ control: true, code: "KeyR" }), false);
   assert.deepStrictEqual(chords, [0, 5]);
+  p.handle.showNotice(PANE_NOTICE);
+  let noticePrevented = false;
+  f.views[1].webContents.emit("before-input-event", { preventDefault: () => { noticePrevented = true; } }, { type: "keyDown", control: true, code: "Digit2" });
+  assert.strictEqual(noticePrevented, true, "the notice view, which holds the keyboard, reads the chord too");
+  assert.deepStrictEqual(chords, [0, 5, 1]);
   assert.strictEqual(paneChordIndex({ type: "keyDown", meta: true, code: "Digit3" }, "darwin"), 2);
   assert.strictEqual(paneChordIndex({ type: "keyDown", control: true, code: "Digit3" }, "darwin"), -1);
   assert.strictEqual(paneChordIndex({ type: "keyUp", control: true, code: "Digit3" }, "linux"), -1);
@@ -790,7 +906,7 @@ test("pane: close takes its views off the window, clears the partition, runs onc
   assert.strictEqual(again.handle.isClosed(), true);
 });
 
-test("pane: only main's IPC opens it, and from the dashboard only the key-gated pane helper calls it", () => {
+test("pane: only main's IPC opens it, and from the dashboard only the pane helper calls it", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const callers = [];
@@ -816,10 +932,9 @@ test("pane: only main's IPC opens it, and from the dashboard only the key-gated 
     && paneCalls.test(fs.readFileSync(path.join(dashboard, f), "utf8")));
   assert.ok(callers.length > 0, "the scan finds the dashboard's relayCrewAPI users");
   assert.deepStrictEqual(users, [path.join("lib", "relayCrewPanes.ts")]);
-  // That helper hands out the bridge only while the hidden key reads "1".
+  // No hidden key gates that helper any more: a shell with the pane calls gets tabs.
   const helper = fs.readFileSync(path.join(dashboard, "lib", "relayCrewPanes.ts"), "utf8");
-  assert.ok(helper.includes("RELAY_CREW_PANE_KEY = 'mc-relay-crew-pane'"));
-  assert.ok(helper.includes("if (safeGetItem(RELAY_CREW_PANE_KEY) !== '1') return null"));
+  assert.ok(!helper.includes("mc-relay-crew-pane"));
 });
 
 test("window and pane: the handle and the attached Crew's log lines name the Crew", () => {

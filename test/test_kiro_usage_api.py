@@ -458,6 +458,55 @@ class TestLoadBearerToken:
              patch.object(api, "_OTHER_SQLITE_DBS", ()):
             assert api._load_bearer_token() == "idp-tok"
 
+    @staticmethod
+    def _make_store(path: Path, token: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(str(path))
+        con.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        con.execute(
+            "INSERT INTO auth_kv VALUES (?, ?)",
+            ("kirocli:odic:token", json.dumps({"access_token": token, "expires_at": future})),
+        )
+        con.commit()
+        con.close()
+
+    def test_store_under_a_hash_folder_is_opened_read_only_without_stray_file(self, tmp_path):
+        # An unquoted '#' starts a URI fragment: SQLite drops everything from it
+        # on (including ?mode=ro), opens the truncated path read-write and creates
+        # an empty file beside the real folder.
+        db = tmp_path / "has#hash" / "kiro-cli" / "data.sqlite3"
+        self._make_store(db, "hash-tok")
+        before = sorted(p.name for p in tmp_path.iterdir())
+        with patch("kiro_crew.hooks.emit_internal_read_audit", return_value=True) as audit:
+            got = api._token_from_sqlite(db, datetime.now(timezone.utc))
+        assert got is not None and got.token == "hash-tok"
+        audit.assert_any_call(api._SQLITE_AUDIT_READ_ID, "success")
+        assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+    def test_percent_escape_in_path_never_reads_the_decoded_sibling(self, tmp_path):
+        # An unquoted '%41' is decoded to 'A', so the read lands on the sibling
+        # folder 'hasApct' instead of the file that exists() just checked.
+        own = tmp_path / "has%41pct" / "kiro-cli" / "data.sqlite3"
+        other = tmp_path / "hasApct" / "kiro-cli" / "data.sqlite3"
+        self._make_store(own, "own-tok")
+        self._make_store(other, "other-tok")
+        with patch("kiro_crew.hooks.emit_internal_read_audit", return_value=True):
+            got = api._token_from_sqlite(own, datetime.now(timezone.utc))
+        assert got is not None and got.token == "own-tok"
+
+    def test_percent_escape_path_with_no_store_does_not_fall_to_the_sibling(self, tmp_path):
+        # The checked file has no token; the decoded sibling does. Must stay None.
+        own = tmp_path / "has%41pct" / "kiro-cli" / "data.sqlite3"
+        own.parent.mkdir(parents=True)
+        con = sqlite3.connect(str(own))
+        con.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        con.commit()
+        con.close()
+        self._make_store(tmp_path / "hasApct" / "kiro-cli" / "data.sqlite3", "other-tok")
+        with patch("kiro_crew.hooks.emit_internal_read_audit", return_value=True):
+            assert api._token_from_sqlite(own, datetime.now(timezone.utc)) is None
+
 
 class TestWindowsCliStore:
     """kiro-cli on Windows keeps the same auth store under

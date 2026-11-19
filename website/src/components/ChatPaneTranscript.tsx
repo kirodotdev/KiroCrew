@@ -10,6 +10,7 @@ import { crewmateBrowserLiveRenderer } from './chat/crewmateBrowserLive'
 import type { ChatPaneProps } from './ChatPaneProps'
 import { useAppDispatch } from '../store'
 import { speakReply } from '../pages/chat/speakReply'
+import { usePersistedBool } from '../hooks/usePersistedBool'
 
 /**
  * `ChatPane`'s transcript content. `useChatPaneRenderers` builds the row set the
@@ -22,7 +23,7 @@ import { speakReply } from '../pages/chat/speakReply'
 
 type Messages = Parameters<typeof foldEarlierConversation>[0]
 
-export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, revealActions = false, resume: { continuable, interrupted, continuing, onContinue } }: {
+export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, revealActions = false, linkPreviews = false, resume: { continuable, interrupted, continuing, onContinue } }: {
   slotKey: string
   busyMode: ComposerBusyMode
   onFileOpen?: ChatPaneProps['onFileOpen']
@@ -40,6 +41,8 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
   /** The browser blocked this slot's playback: a crewmate reply shows its
    *  action row without hover, so the notice's More → Read aloud is reachable. */
   revealActions?: boolean
+  /** Settings -> Chat -> Link Previews (the gateway's `link_previews`). */
+  linkPreviews?: boolean
 }) {
   // Split-view panes draw the SAME transcript rows as the single-chat surface,
   // through the SDK's row registry: the live ToolCallLine (purpose / input /
@@ -62,6 +65,9 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
   const dispatch = useAppDispatch()
   const onSpeak = useCallback((content: string) => speakReply(dispatch, slotKey, content), [dispatch, slotKey])
   const foldOpen = !!foldBefore && openFold === foldBefore
+  // Settings -> Chat -> Copy on Select, the same device-only key the Sessions
+  // chat reads (transcriptRendering), so a reply here copies a selection too.
+  const [copyOnSelect] = usePersistedBool('mc-chat-copy-on-select', false)
   const listMessages = useMemo(
     () => foldEarlierConversation(messages, foldBefore, foldOpen),
     [messages, foldBefore, foldOpen],
@@ -99,8 +105,10 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
       // so a split pane keeps its menu as it is.
       onSpeak: crewmate ? onSpeak : undefined,
       revealActions: !!crewmate && revealActions,
+      copyOnSelect,
+      linkPreviews,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue, onSpeak, revealActions],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue, onSpeak, revealActions, copyOnSelect, linkPreviews],
   )
   const renderers = useMemo(() => {
     // A crewmate's chat keeps each turn's browser call as a card row (crewmateBrowserLive).

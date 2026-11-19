@@ -316,6 +316,12 @@ async def _fetch_linear_issue(ref: SourceRef) -> dict[str, Any]:
         key=lambda comment: comment["createdAt"],
     )
     assignee = _person_name(issue.get("assignee"))
+    if not closed:
+        state_reason = ""
+    elif canceled:
+        state_reason = "not_planned"
+    else:
+        state_reason = "completed"
     return {
         "provider": PROVIDER,
         "url": ref.url,
@@ -323,7 +329,7 @@ async def _fetch_linear_issue(ref: SourceRef) -> dict[str, Any]:
         "title": str(issue.get("title") or ""),
         "description": str(issue.get("description") or ""),
         "state": "closed" if closed else "open",
-        "stateReason": ("not_planned" if canceled else "completed") if closed else "",
+        "stateReason": state_reason,
         "author": _person_name(issue.get("creator")),
         "createdAt": str(issue.get("createdAt") or ""),
         "updatedAt": str(issue.get("updatedAt") or ""),
@@ -484,7 +490,7 @@ async def fetch_search(query: IssueQuery) -> dict[str, Any]:
 
 def _person(value: Any) -> dict[str, str] | None:
     person = projection._as_dict(value)
-    login = str(person.get("displayName") or person.get("name") or "")
+    login = _person_name(person)
     if not login:
         return None
     return {

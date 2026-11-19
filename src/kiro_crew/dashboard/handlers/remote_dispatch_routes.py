@@ -771,42 +771,123 @@ async def _send(mgr: Any, instance_id: str, slot: str, body: dict[str, Any]) -> 
     return {"target": slot, "crew": instance_id, "delivered": True, "steered": steered}
 
 
-async def _read(mgr: Any, instance_id: str, slot: str, limit: int) -> dict[str, Any]:
+def _int_field(payload: dict[str, Any], name: str) -> int | None:
+    value = payload.get(name)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+async def _read(
+    mgr: Any, instance_id: str, slot: str, limit: int, since: int | None = None
+) -> dict[str, Any]:
+    """Read a crew session's tail, or its rows from *since* on.
+
+    Positions are the peer's own: ``GET api/chat/slots/{s}?limit=L`` answers the
+    rows ``[next_before, total)`` of its collapsed wire rows, so row ``i`` of the
+    page sits at ``next_before + i``. The peer's ``from``/``since``/``digest``
+    cursor (``slot_detail_delta``) is not used: it needs a digest only the peer
+    can compute, and it always re-sends the page's last row. ``since=N`` is a
+    plain older-page read instead, ``before=N+L&limit=L``, which answers the rows
+    ``[N, N+L)`` (fewer at the end), so a since read is one peer GET like a tail
+    read. ``next_since`` stops before the first in-flight row (a streaming fold, a
+    pending approval): those rows are replaced when they land, and a cursor past
+    them would skip the finished reply, as the local read's cursor does.
+    """
+    from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES
+
+    params = {"limit": str(limit)}
+    if since is not None:
+        params["before"] = str(since + limit)
     status, payload = await peer_call(
-        mgr,
-        instance_id,
-        "GET",
-        f"api/chat/slots/{quote(slot, safe='')}",
-        params={"limit": str(limit)},
+        mgr, instance_id, "GET", f"api/chat/slots/{quote(slot, safe='')}", params=params
     )
     if not 200 <= status < 300:
         raise _peer_error(status, payload, "could not read the crew session")
     if not isinstance(payload, dict):
         raise CrewCallError(502, "crew_reply_malformed", "the crew's read reply is not an object")
     rows = payload.get("messages")
-    messages = []
-    for row in rows if isinstance(rows, list) else []:
+    rows = rows if isinstance(rows, list) else []
+    first, total = _int_field(payload, "next_before"), _int_field(payload, "total")
+    span = (first, total) if first is not None and total is not None and first <= total else None
+    if since is not None:
+        if span is None:
+            raise CrewCallError(
+                502, "crew_reply_malformed", "the crew's read reply carries no row positions"
+            )
+        first, total = span
+        if since > total:
+            # Same refusal as the local read: a rewind or regenerate shrank the
+            # transcript, so the held position points past its end.
+            raise CrewCallError(
+                409,
+                "cursor_unavailable",
+                "that crew session is shorter than your cursor (it was rewound or "
+                "regenerated); read without since to get the latest messages",
+            )
+        if first > since:
+            # shortcut: the crew cut its page by bytes (oldest rows first), so
+            # [since, first) did not fit; a smaller limit reaches them, and
+            # limit=1 always does (the newest row of a page is always sent).
+            raise CrewCallError(
+                409,
+                "crew_page_cut",
+                "the messages at your cursor are too large for one page; "
+                "read again with a smaller limit",
+            )
+    messages: list[dict[str, Any]] = []
+    cursor: int | None = None
+    for offset, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
         role = row.get("role")
+        role = role if isinstance(role, str) else ""
+        index = span[0] + offset if span is not None else None
+        if index is not None and since is not None and index < since:
+            continue
+        if role in _TRANSIENT_ROLES and cursor is None:
+            cursor = index
+        if since is not None and cursor is not None:
+            # A since read stops at the in-flight row: the next read starts there.
+            break
         content = row.get("content")
         if isinstance(content, list):
             content = "\n".join(
                 str(b.get("text", "")) for b in content if isinstance(b, dict) and b.get("text")
             )
-        messages.append(
-            {
-                "role": role if isinstance(role, str) else "",
-                "content": content if isinstance(content, str) else "",
-            }
-        )
-    return {
+        out: dict[str, Any] = {"role": role, "content": content if isinstance(content, str) else ""}
+        if index is not None:
+            out["index"] = index
+        messages.append(out)
+    if since is None:
+        messages = messages[-limit:]
+    result: dict[str, Any] = {
         "target": slot,
         "crew": instance_id,
         "title": payload.get("title") if isinstance(payload.get("title"), str) else "",
         "running": payload.get("running") is True,
-        "messages": messages[-limit:],
+        "messages": messages,
     }
+    if span is not None:
+        first, total = span
+        # A peer row that renders as nothing (an empty streaming fold) holds a
+        # position but is not sent, so the page is short of its span; positions
+        # after it then read low, which re-sends a row rather than skipping one.
+        end = first + len(rows) if since is None else min(since + limit, total, first + len(rows))
+        result["total"] = total
+        if cursor is not None:
+            result["streaming"] = True
+        if since is None and result["running"]:
+            # A tail read of a running session issues no cursor. An in-flight
+            # row can sit BEFORE the page: a segment cut deferred for an open
+            # construct keeps the chunk run in place while tool rows land after
+            # it, and the later cut deletes that run, so every row after it
+            # moves down one. No position this page sees is safe to resume
+            # from, so the caller reads the tail again. A since read can resume:
+            # its rows from since on are all on its page, and since itself came
+            # from an idle read or an earlier since read, so no in-flight row
+            # sits below it.
+            return result
+        result["next_since"] = cursor if cursor is not None else max(end, since or 0)
+    return result
 
 
 async def _stop(mgr: Any, instance_id: str, slot: str) -> dict[str, Any]:
@@ -859,6 +940,18 @@ async def _close(
     return {"target": slot, "crew": instance_id, "closed": True}
 
 
+def _read_since(raw: object) -> int | None:
+    if raw in (None, ""):
+        return None
+    try:
+        since = int(str(raw))
+    except ValueError:
+        raise CrewCallError(400, "invalid_pagination", "since must be an integer") from None
+    if since < 0:
+        raise CrewCallError(400, "invalid_since", "since must be >= 0")
+    return since
+
+
 def _read_limit(raw: object) -> int:
     if raw in (None, ""):
         return 20
@@ -897,7 +990,7 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
         )
     state: DashboardState = request.app["state"]
     crew_ref = clean_crew_ref(body.get("crew"))
-    slot, limit, name = "", 20, ""
+    slot, limit, since, name = "", 20, None, ""
     try:
         caller = await authorize_remote_dispatch(request, verb)
         if verb == "create" and not has_crew(body):
@@ -914,12 +1007,7 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
         mgr = _manager(state)
         if verb == "read":
             limit = _read_limit(body.get("limit"))
-            if body.get("since") not in (None, ""):
-                raise CrewCallError(
-                    400,
-                    "crew_field_unsupported",
-                    "session_read_message with crew= does not take since",
-                )
+            since = _read_since(body.get("since"))
         board = session_ledger.ledger_key(declared)
         if verb != "create":
             slot = await _fenced_target_or_item(
@@ -941,7 +1029,7 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
         elif verb == "send":
             result = await _send(mgr, instance_id, slot, body)
         elif verb == "read":
-            result = await _read(mgr, instance_id, slot, limit)
+            result = await _read(mgr, instance_id, slot, limit, since)
         elif verb == "stop":
             result = await _stop(mgr, instance_id, slot)
         elif verb == "close":

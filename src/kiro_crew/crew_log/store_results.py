@@ -10,9 +10,12 @@ only: the reads that produce them are ``CrewLog``'s.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.crew_log.schema import Entry, Ref
+
+if TYPE_CHECKING:
+    from kiro_crew.crew_log.store_segment_reads import ConsumedSpan
 
 #: Largest page a single read may materialize.
 MAX_PAGE_LIMIT = 500
@@ -94,6 +97,9 @@ class ReadCursor:
     """
 
     at: "ResumePoint | None" = None
+    #: When set, every record the walk frames is added to it (see
+    #: :class:`~kiro_crew.crew_log.store_segment_reads.ConsumedSpan`).
+    span: "ConsumedSpan | None" = None
 
 
 @dataclass(frozen=True)

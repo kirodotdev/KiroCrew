@@ -8,6 +8,13 @@ let navigateReadySent = false;
 // channels `assertLocalDashboard` refuses are then withheld, not exposed.
 // Asked of the shell on every load; only an explicit `false` exposes them.
 const REMOTE_GATEWAY = ipcRenderer.sendSync("dashboard:is-remote-gateway") !== false;
+// macOS Natural scrolling as main last reported it (scroll-touch.js): true,
+// false, or null until it says. Cached here so the page can read it
+// synchronously on the first wheel of a swipe.
+let naturalScrolling = null;
+ipcRenderer.on("scroll-direction", (_e, value) => {
+  if (typeof value === "boolean") naturalScrolling = value;
+});
 
 contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,
@@ -83,7 +90,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Report the user's dark/light mode PREFERENCE ("system" | "dark" | "light")
   // so main.js can set `nativeTheme.themeSource` to match. Must be the
   // preference, not the resolved mode: pinning themeSource to dark/light also
-  // pins `prefers-color-scheme`, which is what Auto resolves through.
+  // pins `prefers-color-scheme`, which is what Auto resolves through. Scheduled
+  // has no themeSource, so it sends the resolved mode (themes.md, *Mode preference*).
   setThemeMode: (pref) => ipcRenderer.send("theme-mode-changed", String(pref || "")),
   // Report the RESOLVED dark/light mode ("dark" | "light") so main.js can sync
   // the Windows titleBarOverlay colors. Separate from setThemeMode because that
@@ -184,6 +192,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("scroll-touch", handler);
     return () => ipcRenderer.removeListener("scroll-touch", handler);
   },
+  // macOS Natural scrolling: true on, false off, null not known yet. A wheel's
+  // deltaX flips sign with it, so the swipe reader needs it to follow the
+  // fingers (see scroll-touch.js).
+  getNaturalScrolling: () => naturalScrolling,
   // Second argument: whether the macOS menu bar can slide over the window.
   // Only an explicit `menuBarOverlap: false` from main turns it off, so a
   // missing or malformed payload keeps the renderer's menu-bar band.
@@ -363,8 +375,12 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("fileOpenAPI", {
 // they carry the endpoint ID, the pane's rect with this page's viewport size,
 // or whether a local overlay covers the pane or another tab is in front of it.
 // `onPaneEvent(cb)` hears a pane's switch chord or its close, as `{ type,
-// endpointId, index }` and nothing more, and returns its unsubscribe. Nothing
-// calls them yet.
+// endpointId, index }` and nothing more, and returns its unsubscribe. An
+// `openPane` from another dashboard window is handed to the main window's
+// dashboard, which hears it through `onOpenRequest(cb)` (the endpoint ID only)
+// while it is subscribed; one subscriber at a time, the newest.
+let openRequestHandler = null;
+let openRequestSeq = 0;
 if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
   open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),
   closeAll: () => ipcRenderer.invoke("relay-crew:close-all"),
@@ -381,6 +397,19 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
     });
     ipcRenderer.on("relay-crew:pane-event", handler);
     return () => ipcRenderer.removeListener("relay-crew:pane-event", handler);
+  },
+  onOpenRequest: (cb) => {
+    const handler = (_e, endpointId) => { if (typeof endpointId === "string") cb(endpointId); };
+    if (openRequestHandler) ipcRenderer.removeListener("relay-crew:open-request", openRequestHandler);
+    openRequestHandler = handler;
+    ipcRenderer.on("relay-crew:open-request", handler);
+    void ipcRenderer.invoke("relay-crew:open-requests", true, ++openRequestSeq).catch(() => {});
+    return () => {
+      if (openRequestHandler !== handler) return;
+      openRequestHandler = null;
+      ipcRenderer.removeListener("relay-crew:open-request", handler);
+      void ipcRenderer.invoke("relay-crew:open-requests", false, ++openRequestSeq).catch(() => {});
+    };
   },
 });
 
@@ -489,6 +518,9 @@ contextBridge.exposeInMainWorld("updateAPI", {
   // A plain quit and relaunch with no update command of its own. An armed
   // update is applied by the quit it triggers.
   relaunch: () => ipcRenderer.invoke("update:relaunch"),
+  // Whether this window's relaunch would be accepted; false on a window the
+  // relaunch gate refuses, so the dashboard does not offer Restart now there.
+  canRelaunch: () => ipcRenderer.invoke("update:can-relaunch"),
   getInfo: () => ipcRenderer.invoke("update:get-info"),
   // Channel switcher (Settings > About): "" follows the build stamp,
   // "insider"|"stable" opts the production app onto that lane.

@@ -565,6 +565,78 @@ def test_a_case_variant_of_a_card_that_never_keeps_a_users_client_stays_refused(
     assert rows[0]["ownerSignIn"] is False
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://mcp.notion.com/mcp",
+        "https://mcp.notion.com/mcp/",
+        "https://MCP.NOTION.COM/mcp",
+        "HTTPS://Mcp.Notion.Com/mcp",
+        "https://mcp.notion.com:443/mcp",
+        "https://mcp.notion.com./mcp",
+        "https://mcp.notion.com/%6Dcp",
+        "https://mcp.notion.com/x/../mcp",
+        "https://MCP.Linear.App/mcp/readonly",
+    ],
+)
+def test_a_scheme_or_host_spelling_of_a_card_url_is_the_cards(url):
+    """Scheme and host are case-blind, so a variant is still the card's endpoint."""
+    assert crew_oauth._is_registry_url(url)
+    assert crew_oauth._card_claims("my-notes", {"url": url})
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://mcp.linear.app/mcp",
+        "https://mcp.linear.app/MCP/readonly",
+        "https://mcp.notion.com:8443/mcp",
+        "http://mcp.notion.com/mcp",
+        "https://user@mcp.notion.com/mcp",
+        "https://mcp.internal.example.com/",
+        "not a url",
+    ],
+)
+def test_a_different_path_port_or_host_is_not_a_card_url(url):
+    """The path stays exact: ``/mcp`` is Linear's writable endpoint, not the read-only card."""
+    assert not crew_oauth._is_registry_url(url)
+    assert not crew_oauth._card_claims("my-notes", {"url": url})
+
+
+def test_an_owner_slack_entry_at_a_host_case_variant_stays_the_owners(monkeypatch):
+    """Both checks share one key, so the Slack exception still finds Slack's card."""
+    import kiro_crew.config.loader as loader
+    from kiro_crew.connections.owner_servers import CONFIG_ROOT_KEY, CONFIG_SERVERS_KEY
+
+    variant = "https://MCP.Slack.com/mcp"
+    root = {
+        CONFIG_SERVERS_KEY: {"work-slack": {"url": variant}},
+        "oauth_clients": {SLUG: {"client_id": "123.456"}},
+    }
+    monkeypatch.setenv("KIROCREW_CONNECTIONS_SLACK_CLIENT_SECRET", "sec")
+    monkeypatch.setattr(loader, "read_config_for_update", lambda: {CONFIG_ROOT_KEY: root})
+    monkeypatch.setattr(crew_oauth, "holds_grant", lambda slug: False)
+    entry = {"url": variant}
+
+    assert crew_oauth._is_registry_url(variant)
+    assert not crew_oauth._card_claims("work-slack", entry)
+    assert crew_oauth._card_claims("other-slack", entry)
+
+
+def test_an_owner_entry_at_a_host_case_variant_of_a_card_without_that_exception_is_the_cards(
+    monkeypatch,
+):
+    """Notion has no keeps-user-client exception, so even a recorded variant stays the card's."""
+    import kiro_crew.config.loader as loader
+    from kiro_crew.connections.owner_servers import CONFIG_ROOT_KEY, CONFIG_SERVERS_KEY
+
+    variant = "https://MCP.Notion.com/mcp"
+    config = {CONFIG_ROOT_KEY: {CONFIG_SERVERS_KEY: {"my-notion": {"url": variant}}}}
+    monkeypatch.setattr(loader, "read_config_for_update", lambda: config)
+
+    assert crew_oauth._card_claims("my-notion", {"url": variant})
+
+
 def test_a_card_that_never_keeps_a_users_client_never_yields(monkeypatch):
     """The rule is Slack's: GitHub's card, as unconfigured as Slack's, keeps its name."""
     import kiro_crew.config.loader as loader

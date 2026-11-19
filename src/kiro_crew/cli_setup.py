@@ -113,7 +113,8 @@ def _manifest(alias: str | None = None, output: str | None = None, url: bool = F
     command = slack_manifest.slash_command(alias)
     switches = ", ".join(f"slack.{f}" for f in slack_manifest.FEATURES if f in features)
     hint = (
-        f"   Slash command: /{command} — the gateway answers it once slack.command matches:\n"
+        f"   Slash command: /{command} — the gateway answers it as soon as the app is installed.\n"
+        f"   Save the name so help text and manifest updates keep it (applies live, no restart):\n"
         f"   kirocrew config set slack.command {command}\n"
         f"   Slack Code switches rendered: {switches or 'none'}\n"
     )
@@ -133,7 +134,7 @@ def _manifest(alias: str | None = None, output: str | None = None, url: bool = F
             reason = safe_terminal_line(str(exc.strerror or exc))
             print(f"❌ Could not write {shown}: {reason}", file=sys.stderr)
             sys.exit(1)
-        print(f"✅ Manifest written to {output} (name: KiroCrew-{alias})")
+        print(f"✅ Manifest written to {output} (name: KiroCrew-{alias})")  # brand-ok
         print(hint)
     else:
         print(rendered)
@@ -951,6 +952,11 @@ def _setup_slack_tokens() -> None:
         owner_rejected = True
     if owner_name:
         print(f"  ✅ Owner verified: {owner_name} ({owner_id})")
+    elif not owner_id:
+        print(
+            "  No member ID saved. Once the gateway runs, use 'Claim in Slack' under "
+            "Settings → Messaging channels → Slack to become the owner from a DM.\n"
+        )
 
     if not app_token or not bot_token:
         print("  ⚠️  Missing tokens — Slack integration will be disabled.\n")

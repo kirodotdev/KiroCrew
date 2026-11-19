@@ -959,7 +959,7 @@ class TestSandboxProfileControllerDispatch:
             rc = controller.install_launcher_profile("/x")
 
         assert rc == 1
-        assert "⚠️" in capsys.readouterr().out
+        assert "Warning:" in capsys.readouterr().out
 
     def test_status_exit_code_is_the_answer(self):
         from kiro_crew.service import apparmor, controller

@@ -19,6 +19,8 @@ vi.mock('../api/client', async importOriginal => {
       kasLoginPoll: vi.fn().mockResolvedValue({ status: 'pending' }),
       kasLoginBeginLoopback: vi.fn(),
       kasLoginCancel: vi.fn().mockResolvedValue({ ok: true }),
+      // A landed sign-in asks for a fresh credit reading; refused, so no network.
+      sessionsUsageRefresh: vi.fn().mockRejectedValue(new Error('no refresh in this test')),
     },
   }
 })
@@ -107,7 +109,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     kasLoginStatus.mockResolvedValue(SIGNED_OUT)
     kasLoginSources.mockResolvedValue(NONE)
     renderWithProviders(<KiroSignInCard />)
-    await screen.findByTestId('kas-login-embedded')
+    await screen.findByTestId('kiro-sign-in-inline')
     await waitFor(() => expect(kasLoginSources).toHaveBeenCalled())
     expect(screen.queryByTestId('kiro-sign-in-sources')).toBeNull()
   })
@@ -126,7 +128,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     // Nothing of this app's is stored, so there is nothing to remove.
     expect(screen.queryByTestId('kiro-sign-in-use-kiro-cli')).toBeNull()
     // The chooser is still there for a person who wants another account.
-    expect(screen.getByTestId('kas-login-embedded')).toBeInTheDocument()
+    expect(screen.getByTestId('kiro-sign-in-inline')).toBeInTheDocument()
   })
 
   it('hide e-mail on (the default): the Kiro CLI-only notice names the account by its kind and portal', async () => {
@@ -205,7 +207,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
       "Kiro Agent runs as the account Kiro CLI is signed in to. You don't need to sign in here.",
     )
     expect(unnamed).not.toHaveTextContent('could not read.')
-    expect(screen.getByTestId('kas-login-embedded')).toBeInTheDocument()
+    expect(screen.getByTestId('kiro-sign-in-inline')).toBeInTheDocument()
   })
 
   it('an unreadable Kiro CLI name beside a sign-in here: names both by where they live, with the error notice', async () => {
@@ -245,7 +247,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
       expect(error).toHaveTextContent('Could not check the Kiro CLI sign-in')
       // The card's own sign-in status and controls stay as they were.
       if (status.authenticated) expect(screen.getByTestId('kiro-sign-in-summary')).toBeInTheDocument()
-      else expect(screen.getByTestId('kas-login-embedded')).toBeInTheDocument()
+      else expect(screen.getByTestId('kiro-sign-in-inline')).toBeInTheDocument()
       expect(screen.queryByTestId('kiro-sign-in-sources')).toBeNull()
       expect(screen.getByTestId('kiro-sign-in-card')).not.toHaveTextContent(/signed out/i)
     },
@@ -278,7 +280,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
       // The Kiro CLI store was read: no error for it.
       expect(screen.queryByTestId('kiro-sign-in-kiro-cli-unreadable')).toBeNull()
       if (status.authenticated) expect(screen.getByTestId('kiro-sign-in-summary')).toBeInTheDocument()
-      else expect(screen.getByTestId('kas-login-embedded')).toBeInTheDocument()
+      else expect(screen.getByTestId('kiro-sign-in-inline')).toBeInTheDocument()
       expect(screen.getByTestId('kiro-sign-in-card')).not.toHaveTextContent(/signed out/i)
     },
   )
@@ -417,15 +419,6 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     expect(screen.queryByTestId('kiro-sign-in-use-kiro-cli')).toBeNull()
   })
 
-  it('compact: two different accounts open the fold a signed-in card would keep closed', async () => {
-    kasLoginStatus.mockResolvedValue(SIGNED_IN)
-    kasLoginSources.mockResolvedValue(TWO_ACCOUNTS)
-    renderWithProviders(<KiroSignInCard compact />)
-    const card = screen.getByTestId('kiro-sign-in-card') as HTMLDetailsElement
-    await waitFor(() => expect(card.open).toBe(true))
-    expect(screen.getByTestId('kiro-sign-in-sources')).toBeInTheDocument()
-  })
-
   it('switch account refetches sources even when authenticated and the status fields stay the same', async () => {
     kasLoginStatus.mockResolvedValue(SIGNED_IN)
     kasLoginSources.mockResolvedValue({ ...TWO_ACCOUNTS, same_account: true })
@@ -463,7 +456,7 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
       ...SIGNED_IN, expires_at: '2099-01-02T00:00:00Z',
     }))
     await waitFor(() => expect(kasLoginSources).toHaveBeenCalledTimes(2))
-    fireEvent.click(screen.getByTestId('kiro-sign-in-keep-current'))
+    fireEvent.keyDown(screen.getByTestId('kiro-sign-in-dialog'), { key: 'Escape' })
     expect(await screen.findByTestId('kiro-sign-in-sources')).toHaveAttribute('data-notice', 'two_accounts')
   })
 

@@ -275,7 +275,21 @@ async def api_kas_login_poll(request: web.Request) -> web.Response:
     # change worth an audit line; a pending tick is just a read.
     if result.get("status") == "authorized":
         await _audit(request, "kas_login_authorized", "success")
+        _close_browser_relay_crews()
     return web.json_response(result)
+
+
+def _close_browser_relay_crews() -> None:
+    """End every relay Crew open in a browser tab: they ran as the account that just left.
+
+    Loaded only if an open was ever made, so a gateway that never relayed one in a
+    browser imports nothing here.
+    """
+    import sys
+
+    module = sys.modules.get("kiro_crew.relay_viewer.browser_origin")
+    if module is not None:
+        module.close_all()
 
 
 async def api_kas_login_logout(request: web.Request) -> web.Response:
@@ -303,6 +317,7 @@ async def api_kas_login_logout(request: web.Request) -> web.Response:
             status=500,
         )
     await _audit(request, "kas_login_logout", "success")
+    _close_browser_relay_crews()
     await _retire_runtimes_after_sign_out(request)
     return web.json_response({"ok": True})
 

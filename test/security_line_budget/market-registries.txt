@@ -1,0 +1,2 @@
++4
+PR #38064: the `market-registries` leaf on `_CREW_SECRET_LEAVES` in `paths_lists`, one folder per added Kiro Space store holding its CLI config and sign-in, plus its three-line reason.

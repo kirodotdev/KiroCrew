@@ -94,7 +94,7 @@ def normalize_start_url(raw: str) -> str:
     if not value:
         raise LoginTargetError("start URL is required for an Identity Center sign-in")
     if _CONTROL_OR_SHELL_RE.search(value):
-        raise LoginTargetError("start URL contains characters that are not allowed")
+        raise LoginTargetError("the URL contains a space or a symbol that is not allowed")
     if "://" not in value:
         value = "https://" + value
     # urlsplit and its .port accessor raise bare ValueError on malformed input
@@ -104,18 +104,20 @@ def normalize_start_url(raw: str) -> str:
         parts = urlsplit(value)
         port = parts.port
     except ValueError as exc:
-        raise LoginTargetError("start URL is not a valid URL") from exc
+        raise LoginTargetError("that does not look like a web address") from exc
     if parts.scheme != "https":
-        raise LoginTargetError("start URL must use https")
+        raise LoginTargetError("the URL must begin with https://")
     if parts.username is not None or parts.password is not None:
-        raise LoginTargetError("start URL must not carry credentials")
+        raise LoginTargetError("the URL must not include a user name or password")
     if port is not None:
-        raise LoginTargetError("start URL must use the default https port")
+        raise LoginTargetError(
+            "the URL must not include a port number (a colon and digits after the site name)"
+        )
     if parts.query or parts.fragment:
-        raise LoginTargetError("start URL must not carry a query or fragment")
+        raise LoginTargetError("the URL must not include anything after a ? or #")
     host = (parts.hostname or "").lower()
     if not _HOSTNAME_RE.fullmatch(host):
-        raise LoginTargetError("start URL host must be a valid DNS hostname")
+        raise LoginTargetError("that does not look like a web address")
     path = parts.path.rstrip("/") or "/start"
     return f"https://{host}{path}"
 

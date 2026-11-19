@@ -53,25 +53,25 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Version, update channel, check for updates, and license"
   },
   {
-    "id": "agent.orchestrator-memory",
-    "label": "Orchestrator memory",
+    "id": "agent.kiro-memory",
+    "label": "Kiro Memory",
     "labelKey": "pages.developer.agentBackendTab.orchestrator_memory_label",
     "description": "Use existing Kiro memories in personal chats. Changes apply when an agent session starts; start a new chat to use the updated setting.",
-    "hint": "Uses memories saved in other Kiro clients alongside Kiro Crew's existing memory. Kiro memories are read-only here. Kiro Crew's learning behavior and each Bot's separate memory are unchanged. Kiro memories are available in Incognito chats, but excluded from Temporary chats.",
+    "hint": "Uses Kiro Memory alongside Kiro Crew’s existing memory to access memories saved by other Kiro clients. These memories are read-only here. Kiro Crew’s learning behavior and each Bot’s separate memory are unchanged.",
     "tab": "agent",
     "type": "toggle",
     "occurrence": 1,
     "configKey": "agent.orchestrator_memory"
   },
   {
-    "id": "agent.kiro-sign-in",
-    "labelKey": "pages.developer.kiroSignInCard.search_label",
-    "tab": "agent",
-    "type": "buttonGroup",
+    "id": "browser.browser-isolation",
+    "label": "Browser isolation",
+    "labelKey": "pages.settings.browserPanel.isolation_label",
+    "hint": "Isolated gives each chat its own browser container: separate cookies, site storage and cache, that no other chat can see, discarded when the chat ends. On a desktop its tabs open in their own window. Shared lets every chat use the one browser as it is.",
+    "tab": "browser",
+    "type": "select",
     "occurrence": 1,
-    "settingId": "kiro-sign-in",
-    "label": "Sign out or switch Kiro account",
-    "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
+    "configKey": "browser.isolation"
   },
   {
     "id": "browser.max-frame-rate",
@@ -843,6 +843,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.share-slack-access-slack",
+    "label": "Share Slack access (Slack)",
+    "labelKey": "pages.settings.slackSharedAccess.toggle_label",
+    "labelSuffix": "Slack",
+    "description": "Let the people listed below use this Crew from Slack.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.shared_access.enabled"
+  },
+  {
     "id": "channels.show-slack-conversations-in-the-session-list-slack",
     "label": "Show Slack conversations in the session list (Slack)",
     "labelKey": "pages.settings.slackPanel.show_in_session_list",
@@ -1083,6 +1097,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.apply-folder-suggestions-automatically",
+    "label": "Apply folder suggestions automatically",
+    "labelKey": "pages.settings.chatPanel.folder_suggestions_auto_apply",
+    "description": "File a new session into the matching folder without asking. A card says where it went, with an undo.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.folder_suggestions_auto_apply"
+  },
+  {
     "id": "chat.auto-compact-threshold",
     "label": "Auto-Compact Threshold",
     "labelKey": "pages.settings.chatPanel.auto_compact_threshold",
@@ -1094,6 +1121,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "advanced"
     },
     "configKey": "session.autocompact_pct"
+  },
+  {
+    "id": "chat.auto-open-board-in-side-panel",
+    "label": "Auto-Open Board in Side Panel",
+    "labelKey": "pages.settings.chatPanel.auto_open_conductor_board",
+    "hint": "Opens the side panel on the Board the first time you open a conductor mode chat. When this is off, the chat opens like any other chat, with its panel closed unless Keep Side Panel Open is on. Turning on conductor mode in a chat still opens the Board. This setting does not apply on a phone.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidepanel"
+    },
+    "configKey": "dashboard.auto_open_conductor_board"
   },
   {
     "id": "chat.auto-open-git-in-side-panel",
@@ -2238,6 +2278,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "One Google OAuth client for Gmail, Drive, Calendar, Sheets, Docs and Slides"
   },
   {
+    "id": "connections.remember-mcp-sign-ins-across-sessions",
+    "label": "Remember MCP sign-ins across sessions",
+    "labelKey": "pages.settings.connectionsPanel.remember_sign_ins",
+    "hint": "When on, new chats on the Kiro Agent backend reuse the MCP server sign-ins you already made. When off, each new chat asks you to sign in again; sign-ins already saved are not erased, only left unused, and new chats can use them again if you turn this back on. A saved sign-in works in every chat on this Kiro Crew, including those of people you share it with. Takes effect after Kiro Crew restarts; your chats and their history are kept.",
+    "tab": "connections",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "agent.kas_persist_mcp_sign_in",
+    "settingId": "connections.remember-mcp-sign-ins-across-sessions"
+  },
+  {
     "id": "developer.acp-runtime-sharing",
     "label": "ACP runtime sharing",
     "labelKey": "pages.developer.featurePreviewsTab.chat_runtime_sharing",
@@ -2313,6 +2364,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to the decision model, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
   },
   {
+    "id": "developer.app-browser-access",
+    "label": "App browser access",
+    "labelKey": "pages.developer.featurePreviewsTab.app_browser_sdk",
+    "description": "Apps can show, read and use the browser tabs of their own chats once you approve it.",
+    "hint": "An app that asks for browser access can show the live browser of its own chats on its page, read those pages, and click and type there. Each part waits for your approval on the app's page. While this is off, no app gets any of it, even one you approved.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.artifact-deploy",
     "label": "Artifact Deploy",
     "labelKey": "pages.developer.featurePreviewsTab.artifact_deploy",
@@ -2344,6 +2408,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",
     "description": "Starts chats on a connected remote crew.",
     "hint": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew — and shows each connected crew’s sessions in their own group in the Sessions list. Unfinished.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
+    "id": "developer.connected-computers",
+    "label": "Connected computers",
+    "labelKey": "connectedComputers.preview.label",
+    "description": "Chats on this server can work in a folder on your own computer. Nothing is shared until you approve it on that computer.",
+    "hint": "Your computer connects to this server and shares only the folder you approve. Turning this off stops sharing and never deletes files. Remote Crew is the reverse: it lets you use this server from another device.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2523,19 +2600,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.run-kas-on-kiro-crew-s-own-engine",
     "label": "Run KAS on Kiro Crew's own engine",
     "labelKey": "pages.developer.kasBundleCard.toggle_label",
-    "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
-    "id": "developer.secrets-vault-redesign",
-    "label": "Secrets vault redesign",
-    "labelKey": "pages.developer.featurePreviewsTab.secrets_vault",
-    "description": "Shows Secrets as a list beside the open item, and lets you save logins and notes.",
+    "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Kiro account. Takes effect when Kiro Crew restarts.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2643,6 +2708,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.ctrl-c-and-ctrl-v-copy-and-paste",
+    "label": "Ctrl+C and Ctrl+V copy and paste",
+    "labelKey": "pages.settings.displayPanel.terminal_ctrl_copy_paste",
+    "hint": "Ctrl+C copies the selected text; with nothing selected, it still stops the running command. Ctrl+V pastes instead of reaching the shell.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "terminal"
+    }
+  },
+  {
     "id": "display.cursor-style",
     "label": "Cursor style",
     "labelKey": "pages.settings.displayPanel.terminal_cursor_style",
@@ -2665,6 +2742,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "zoom"
     }
+  },
+  {
+    "id": "display.dark-from",
+    "label": "Dark from",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_dark_from",
+    "hint": "Scheduled mode switches to dark at this time, in this device's time zone.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    },
+    "configKey": "dashboard.theme_schedule_dark"
   },
   {
     "id": "display.default-for-new-sessions",
@@ -2852,6 +2942,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.light-from",
+    "label": "Light from",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_light_from",
+    "hint": "Scheduled mode switches to light at this time, in this device's time zone.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    },
+    "configKey": "dashboard.theme_schedule_light"
+  },
+  {
     "id": "display.minimize-to-tray",
     "label": "Minimize to tray",
     "labelKey": "pages.settings.displayPanel.minimize_to_tray",
@@ -2908,6 +3011,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "sub": "theme"
+    }
+  },
+  {
+    "id": "display.reopen-where-i-left-off",
+    "label": "Reopen where I left off",
+    "labelKey": "pages.settings.displayPanel.reopen_last_page",
+    "hint": "Opening the installed app from its icon returns to the last page you had open on this device, such as one crewmate's chat, instead of Sessions. A link or notification that names a page still opens that page.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
     }
   },
   {
@@ -3076,6 +3191,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "configKey": "instances.enabled",
     "label": "Enable remote crew management"
+  },
+  {
+    "id": "kiro-account.kiro-sign-in",
+    "labelKey": "pages.developer.kiroSignInCard.search_label",
+    "tab": "kiro-account",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "settingId": "kiro-sign-in",
+    "label": "Sign out or switch Kiro account",
+    "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
   },
   {
     "id": "notifications.sound-category-approval",
@@ -3328,7 +3453,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "privacy.send-anonymous-usage-heartbeat",
     "label": "Send anonymous usage heartbeat",
     "labelKey": "privacyDisclosure.toggleLabel",
-    "description": "Saved for future launches.",
+    "description": "One anonymous ping a day, plus a receipt when you install an official app. Off stops both.",
     "tab": "privacy",
     "type": "toggle",
     "occurrence": 1,

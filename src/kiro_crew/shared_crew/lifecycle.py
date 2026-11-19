@@ -109,6 +109,7 @@ def install_lifecycle(app: web.Application) -> Callable[[], None]:
     """
     maintenance: asyncio.Task[None] | None = None
     probes: asyncio.Task[None] | None = None
+    owner_login: asyncio.Task[None] | None = None
 
     async def _shared_crew_startup(app_: web.Application) -> None:
         # Defer admission imports until startup; registering hooks performs no I/O.
@@ -118,13 +119,16 @@ def install_lifecycle(app: web.Application) -> Callable[[], None]:
         await hold_until_startup_check()
 
     def start_maintenance() -> None:
-        nonlocal maintenance, probes
-        from kiro_crew.shared_crew import host_power
+        nonlocal maintenance, probes, owner_login
+        from kiro_crew.shared_crew import host_power, owner
         from kiro_crew.shared_crew.admission_gate import installed_service, startup_check
 
         if probes is None:
             # Informational host probes, after the bind and off the boot path.
             probes = asyncio.create_task(host_power.probe_after_start())
+        if owner_login is None:
+            # The owner's label: the signed-in Kiro account's e-mail (owner.owner_name).
+            owner_login = asyncio.create_task(owner.warm_login_email())
         if maintenance is not None:
             return
 
@@ -147,7 +151,7 @@ def install_lifecycle(app: web.Application) -> Callable[[], None]:
         # Cleanup is optional until startup has built an admission service.
         from kiro_crew.shared_crew.admission_gate import shutdown_cleanup
 
-        for task in (maintenance, probes):
+        for task in (maintenance, probes, owner_login):
             if task is not None:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)

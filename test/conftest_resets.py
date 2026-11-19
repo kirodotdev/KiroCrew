@@ -388,9 +388,19 @@ def forget_home_bound_caches() -> None:
     the test's ``monkeypatch`` included, so a stand-in a test patched in is
     already gone and only a real leftover is cleared. Never called before a
     test, so that pre-boot check still catches a leak this does not know about.
+
+    It also empties aiohttp's middleware cache, which no boot check reads.
     """
     import sys
 
+    # aiohttp memoizes each app's middleware chain in a module-level lru_cache keyed
+    # on the Application, so every app a test served stays alive, with its app state
+    # and every mock in it, for the life of the worker. The name is private to aiohttp,
+    # so a version without it is skipped rather than failed.
+    web_app = sys.modules.get("aiohttp.web_app")
+    cached = getattr(web_app, "_cached_build_middleware", None)
+    if callable(getattr(cached, "cache_clear", None)):
+        cached.cache_clear()
     governance = sys.modules.get("kiro_crew.platform.governance")
     if governance is not None:
         governance._CONFIRM_PATTERNS_MEMO = None
@@ -766,6 +776,46 @@ def _history_cleanup_throttle_closed(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_context_store_caches(_floor_monkeypatch):
+    """Keep the ``kiro_crew.context`` memory and lesson stores a test caches inside it.
+
+    ``ContextBuilder.__init__`` registers its own ``MemoryStore`` as the
+    process-wide default, and ``get_memory_for`` / ``get_lessons_for`` cache a
+    store per target. A test that builds a ``ContextBuilder`` (the eval runner
+    does, over a ``TemporaryDirectory`` it then deletes) therefore points every
+    later test's default-store writes at its own workspace: on a Windows shard a
+    change-card write re-created the deleted ``kirocrew_eval_*`` directory and
+    the temp-residue floor failed the run. Only a module already imported can
+    hold a cached store, so a run that never imports ``kiro_crew.context`` pays
+    nothing and is not made to import it.
+
+    Each test gets a COPY, so an entry a module- or class-scoped fixture made
+    before it is still there, and the undo puts the original back, dropping
+    whatever the test added.
+    """
+    context = sys.modules.get("kiro_crew.context")
+    if context is None:
+        return
+    _floor_monkeypatch.setattr(context, "_memory_stores", dict(context._memory_stores))
+    _floor_monkeypatch.setattr(context, "_lesson_stores", dict(context._lesson_stores))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_member_identity_cache(_floor_monkeypatch):
+    """Give each test an empty cache of passed member-database identity checks.
+
+    A kept answer is keyed on the file's path and stat, and tests reuse temporary
+    paths, so a passed check from one test must not answer for another's file.
+    Only an imported module can hold one, so a run that never imports it pays
+    nothing.
+    """
+    member_db = sys.modules.get("kiro_crew.vector_memory_member")
+    if member_db is None:
+        return
+    _floor_monkeypatch.setattr(member_db, "_IDENTITY_CACHE", {})
+
+
+@pytest.fixture(autouse=True)
 def _isolate_advertised_model_cache(_floor_monkeypatch):
     """Keep one session's advertised model spellings and labels inside its own test."""
     from kiro_crew import model_registry
@@ -900,6 +950,27 @@ def _reset_live_execution_records():
         if execution is not None:
             execution._vouched_overflow_reported = False
             execution._vouched_overflow_count = 0
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_subagent_not_due_memo():
+    """Start each test with no remembered not-yet-due runs from the tombstone sweep.
+
+    The memo is keyed by agent id and a tombstone's inode, size and mtime. Tests
+    reuse agent ids and temporary paths, so a verdict one test left could let the
+    next test's sweep skip a run it should evaluate.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.subagent_persistence")
+        if module is not None:
+            module._NOT_DUE_MEMO.clear()
 
     clear()
     try:

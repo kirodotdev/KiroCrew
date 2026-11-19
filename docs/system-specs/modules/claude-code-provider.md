@@ -1072,10 +1072,10 @@ chunks of each compaction in flight (`CompactionSummaries`, bounded by
 dropped), and the `completed` `EVENT_COMPACTION_STATUS` carries the update's summary,
 else the chunks, as its `title`, redacted and cut at a word, so a credential the cut
 would split is dropped. A `cancelled` or `failed` end drops the chunks. The dashboard
-writes `✅ Conversation compacted: <summary>`
+writes `Conversation compacted: <summary>`
 (`chat_utils._broadcast_compaction_result`), folded behind the compaction card's
-chevron as kiro-cli's summary is; with no summary the row stays `✅ Conversation
-compacted.`. The messaging channels show no summary. Frames:
+chevron as kiro-cli's summary is; with no summary the row stays `Conversation
+compacted.`. Saved rows that lead with U+2705 still draw the card. The messaging channels show no summary. Frames:
 `test/fixtures/acp_frames/claude/compaction-summary.jsonl`; contract tests:
 `test/test_claude_compaction_summary.py`.
 

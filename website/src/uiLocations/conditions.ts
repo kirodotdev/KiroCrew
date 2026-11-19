@@ -33,6 +33,7 @@ export const UI_CONDITIONS = {
   pointer_on_session_row: 'the pointer or keyboard focus is on a session row of this machine that is not being renamed (the control is drawn on that row)',
   // Shell and notifications
   terminal_enabled: 'the terminal is turned on in Settings',
+  not_macos: 'the dashboard is open on Windows or Linux, not on a Mac (where Cmd+C and Cmd+V already copy and paste)',
   topbar_search_shown: 'the Show search in the top bar setting is on (Settings → Display → View)',
   phone_connect_available: 'pairing a phone is available on this machine',
   kiro_account_entry: 'the menu offers a Kiro account row (always when this installation runs on Kiro; with another backend, only once an account usage reading has arrived)',

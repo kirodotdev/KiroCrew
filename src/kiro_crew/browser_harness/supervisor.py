@@ -60,6 +60,7 @@ from kiro_crew.browser_harness.relay import (
     RelayClosed,
     Upstream,
     pipe_upstream_from_fds,
+    request_browser_close,
 )
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -246,6 +247,10 @@ class HelperError(RuntimeError):
     """The helper raised in the worker; the message is Harness's own."""
 
 
+class BrowserRestarted(RuntimeError):
+    """The browser was restarted since the op bound: its context is gone with it."""
+
+
 @dataclass
 class HarnessHandle:
     """What ``ensure()`` hands back: the live pieces, for the stream and tool lanes."""
@@ -299,6 +304,10 @@ class HarnessSupervisor:
         #: a start that would launch it is refused instead of running from files the
         #: swap is about to move.
         self.replacing_chromium = False
+        #: The last start ran under ``auto`` and found the person's Chrome or Edge
+        #: not accepting debugging connections, so it used Kiro's Chromium instead.
+        #: Status reports that browser until a start finds the person's one usable.
+        self._auto_fallback = False
         self._request_ids = itertools.count(1)
         #: A helper round trip; tests shorten it.
         self.call_timeout = CALL_TIMEOUT_SECS
@@ -549,13 +558,19 @@ class HarnessSupervisor:
 
     # ── helpers ──
 
-    async def call(self, helper: str, **kwargs: Any) -> Any:
+    async def call(self, helper: str, *, relay: CdpRelay | None = None, **kwargs: Any) -> Any:
         """Run ONE allowlisted Harness helper through the worker; return its result.
 
         Every request carries its own id and the reply is matched to it; a reply the
         worker writes after its request was cancelled or timed out is never read as
         the answer to a later call, because the worker is stopped on either and the
         next call starts a fresh one.
+
+        *relay* pins the call to the browser an isolated op bound on: ``ensure()``
+        restarts a dead daemon onto a fresh relay that has none of the chat's
+        contexts, and a helper run there would open or drive a tab in the shared
+        default context with isolation on, so the call raises
+        :class:`BrowserRestarted` instead.
         """
         accepted = HELPERS.get(helper)
         if accepted is None:
@@ -569,6 +584,8 @@ class HarnessSupervisor:
             await asyncio.shield(self.stop_soon())
             raise browse_governance.BrowsingDenied()
         handle = await self.ensure()
+        if relay is not None and handle.relay is not relay:
+            raise BrowserRestarted("the browser restarted during the op; its context is gone")
         async with self._call_lock:
             if not _alive(handle.worker):
                 handle.worker = await self._start_worker(handle)
@@ -597,6 +614,11 @@ class HarnessSupervisor:
         self._detail = detail
 
     def _choose(self, state: install.InstallState) -> discover.BrowserChoice | None:
+        """The browser a start would use now.
+
+        Under ``auto``, after a start found the person's own browser not accepting
+        debugging connections (:meth:`_auto_falls_back`), that is Kiro's Chromium.
+        """
         try:
             cfg = self._config_reader()
         except Exception:  # noqa: BLE001 - a config read failure means defaults
@@ -610,6 +632,15 @@ class HarnessSupervisor:
         except Exception:  # noqa: BLE001 - a probe failure is "unknown", not a crash
             logger.debug("browser discovery failed", exc_info=True)
             return None
+        if (
+            self._auto_fallback
+            and choice.kind != "kiro_chromium"
+            and discover.configured_choice(cfg) == discover.CHOICE_AUTO
+        ):
+            # discover only picks the person's browser on a host with a display.
+            choice = discover.BrowserChoice(
+                "kiro_chromium", state.chromium.executable, False, self.profile_dir
+            )
         # The headless shell has no window: a windowed pin on a display host still
         # runs headless, and status, the live card and the startup warm must say so.
         if (
@@ -635,7 +666,17 @@ class HarnessSupervisor:
         except BrowserUnavailable as exc:
             self._set(ERROR, str(exc))
             raise
+        # The person's own browser is checked again at every start, so turning its
+        # remote debugging on takes effect at the next one.
+        self._auto_fallback = False
         choice = await asyncio.to_thread(self._choose, state)
+        if (
+            choice is not None
+            and choice.kind != "kiro_chromium"
+            and await self._auto_falls_back(choice)
+        ):
+            self._auto_fallback = True
+            choice = await asyncio.to_thread(self._choose, state)
         if choice is None:
             self._set(ERROR, "could not pick a browser")
             raise BrowserUnavailable(self._detail)
@@ -700,12 +741,62 @@ class HarnessSupervisor:
         # Read BEFORE the cookies, so a source that changes during the pull is seen
         # as changed at the next navigation rather than missed.
         key = await self._credential_key(provider)
+        # One pull for the default context and every open per-chat context: the
+        # whole apply runs under one navigation budget (``NAV_REFRESH_BUDGET_SECS``).
         self._credentials = await credentials.apply(
-            relay, provider=provider, target=target, settings=key[1]
+            relay,
+            provider=provider,
+            target=target,
+            settings=key[1],
+            contexts=("", *relay.session_context_ids()),
         )
         self._applied_key = key
         self._credentials_relay = relay
         _audit_injection(self._credentials, reason)
+
+    async def seed_context(self, relay: CdpRelay, browser_context_id: str) -> None:
+        """Fill one chat's new browser context from the edition provider.
+
+        The same cookies and settings the default context got, so a chat isolated by
+        ``browser.isolation`` still starts signed in where the edition signs it in.
+        Bounded by :data:`NAV_REFRESH_BUDGET_SECS`, as a re-pull before a navigation
+        is: past it the context is kept unseeded (it browses, signed out) rather than
+        let a hung provider eat the op's whole budget on every first op of the chat.
+        Never raises for a provider failure.
+        """
+        handle = self._handle
+        if handle is None or handle.relay is not relay:
+            logger.debug(
+                "browser: context %s is not on the connected browser; not seeded",
+                browser_context_id,
+            )
+            return
+        choice = handle.choice
+        target = credentials.Target(kind=choice.kind, headless=choice.headless, reason="context")
+        provider = self._provider()
+        try:
+            status = await asyncio.wait_for(
+                self._seed(relay, provider, target, browser_context_id), NAV_REFRESH_BUDGET_SECS
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "browser: seeding context %s timed out; it starts signed out",
+                browser_context_id,
+            )
+            return
+        _audit_injection(status, "context")
+
+    async def _seed(
+        self, relay: CdpRelay, provider: Any, target: credentials.Target, browser_context_id: str
+    ) -> credentials.CredentialStatus:
+        settings = await asyncio.to_thread(self._credential_settings, provider)
+        return await credentials.apply(
+            relay,
+            provider=provider,
+            target=target,
+            settings=settings,
+            contexts=(browser_context_id,),
+        )
 
     async def refresh_credentials_if_source_changed(self) -> bool:
         """Before an agent navigation: re-pull when the source or the settings moved.
@@ -758,8 +849,8 @@ class HarnessSupervisor:
             return False
         return True
 
-    @staticmethod
     async def _abandon_start(
+        self,
         relay: CdpRelay,
         browser_proc: asyncio.subprocess.Process | None,
         daemon: asyncio.subprocess.Process | None,
@@ -767,7 +858,7 @@ class HarnessSupervisor:
         """Undo a ``_start`` that did not reach a handle: nothing it spawned survives."""
         await relay.close()
         await _stop_process(daemon)
-        await _stop_process(browser_proc)
+        await _stop_browser(browser_proc, self.profile_dir)
 
     async def _teardown(self) -> None:
         # Never both: a start runs only after a teardown that finished.
@@ -792,7 +883,7 @@ class HarnessSupervisor:
             await _stop_process(handle.worker)
             await _stop_process(handle.daemon)
             await handle.relay.close()
-            await _stop_process(handle.browser)
+            await _stop_browser(handle.browser, self.profile_dir)
         except BaseException:
             # Cut before its last stop: the next teardown (the gateway's exit
             # path, the next stop or ensure) stops the children this one never
@@ -803,6 +894,27 @@ class HarnessSupervisor:
     async def _on_upstream_closed(self) -> None:
         if self._connection == CONNECTED:
             self._set(DISCONNECTED, "the browser closed the connection")
+
+    async def _auto_falls_back(self, choice: discover.BrowserChoice) -> bool:
+        """Under ``auto``: whether the person's browser *choice* cannot take a connection.
+
+        "Automatic" promises Chrome, then Edge, then Kiro's Chromium. A Chrome whose
+        remote debugging is off (no live ``DevToolsActivePort``) can never connect,
+        so the start moves on to Kiro's Chromium instead of failing. A hand pick of
+        Chrome keeps failing with the reason: the person chose that browser.
+        """
+        try:
+            cfg = await asyncio.to_thread(self._config_reader)
+        except Exception:  # noqa: BLE001 - a config read failure means defaults
+            cfg = {}
+        if discover.configured_choice(cfg) != discover.CHOICE_AUTO:
+            return False
+        if choice.user_data_dir is not None and await _devtools_ws_url(choice.user_data_dir):
+            return False
+        logger.info(
+            "browser: %s is not accepting debugging connections; using Kiro's Chromium", choice.kind
+        )
+        return True
 
     async def _user_browser_ws_url(self, choice: discover.BrowserChoice) -> str:
         profile = choice.user_data_dir
@@ -825,6 +937,12 @@ class HarnessSupervisor:
         """Start Kiro's Chromium; return it and the relay's upstream (pipe, or a URL on Windows)."""
         exe = state.chromium.executable
         if exe is None:
+            if self._auto_fallback:
+                raise BrowserUnavailable(
+                    "your browser is not accepting debugging connections, so Kiro switched "
+                    "to its own Chromium, which is not downloaded yet: click Install in "
+                    "Settings > Browser"
+                )
             raise BrowserUnavailable("Kiro's Chromium is not downloaded: install it in Settings")
         profile = self.profile_dir
         await asyncio.to_thread(platform_compat.make_owner_only_dir, profile)
@@ -908,7 +1026,7 @@ class HarnessSupervisor:
                 await asyncio.sleep(_POLL_SECS)
             raise BrowserUnavailable("Kiro's Chromium did not open its debugging port")
         except BaseException:
-            await _stop_unowned(proc)
+            await _stop_unowned(proc, profile)
             raise
 
     def _env(self) -> Mapping[str, str]:
@@ -1106,9 +1224,16 @@ _AUDIT_DOMAINS = 20
 
 
 def _audit_injection(status: credentials.CredentialStatus, reason: str) -> None:
-    """One SEL row per apply that set a cookie: provider, count, domains. Never a value."""
-    if not status.applied:
+    """One SEL row per apply that set a cookie: provider, count, domains. Never a value.
+
+    With per-chat contexts the row also carries each context's landed count, so a
+    chat's context the cookies missed is visible in the audit.
+    """
+    if not status.applied and not any(status.applied_per_context):
         return
+    contexts = ""
+    if len(status.applied_per_context) > 1:
+        contexts = " contexts=" + ",".join(str(n) for n in status.applied_per_context)
     domains = status.applied_domains
     shown = ",".join("".join(ch for ch in d if ch.isprintable()) for d in domains[:_AUDIT_DOMAINS])
     if len(domains) > _AUDIT_DOMAINS:
@@ -1123,7 +1248,7 @@ def _audit_injection(status: credentials.CredentialStatus, reason: str) -> None:
             source="browser_api",
             resources=(
                 f"provider={status.provider or '-'} reason={reason} cookies={status.applied} "
-                f"domains={shown}"
+                f"domains={shown}{contexts}"
             ),
         )
     except Exception:  # noqa: BLE001 - an audit failure never stops the browser
@@ -1276,8 +1401,45 @@ async def _stop_process(proc: asyncio.subprocess.Process | None) -> None:
         logger.debug("browser harness child did not stop cleanly", exc_info=True)
 
 
-async def _stop_unowned(proc: asyncio.subprocess.Process) -> None:
+async def _close_browser_first(proc: asyncio.subprocess.Process | None, profile: Path) -> None:
+    """Windows: ask Kiro's Chromium to close, and wait up to the grace for it to exit.
+
+    ``terminate_and_reap`` has no graceful step there, and a forced tree kill leaves
+    the profile marked ``Crashed`` and loses the cookies Chromium had not yet
+    committed. A browser that ignores the request, or whose debugging port is
+    gone, is left for the forced stop that follows.
+    """
+    if not platform_compat.IS_WINDOWS or proc is None or proc.returncode is not None:
+        return
+
+    async def _ask_and_wait() -> None:
+        url = await _devtools_ws_url(profile)
+        if url is not None:
+            await request_browser_close(url)
+            await proc.wait()
+
+    try:
+        await asyncio.wait_for(_ask_and_wait(), _STOP_GRACE_SECS)
+    except Exception:  # noqa: BLE001 - a browser that will not close is stopped by force next
+        logger.info("browser: Kiro's Chromium did not close on request", exc_info=True)
+
+
+async def _stop_browser(proc: asyncio.subprocess.Process | None, profile: Path) -> None:
+    """Stop Kiro's Chromium: a close request first on Windows, then the forced stop.
+
+    The forced stop runs even when a cancellation cuts the close request short, so
+    a restart's deadline cannot leave the browser running with its profile locked.
+    """
+    try:
+        await _close_browser_first(proc, profile)
+    finally:
+        await _stop_process(proc)
+
+
+async def _stop_unowned(proc: asyncio.subprocess.Process, profile: Path | None = None) -> None:
     """Stop a child its launcher spawned but never handed to its caller.
+
+    With *profile* the child is Kiro's Chromium and gets the close-first stop.
 
     Runs from an ``except BaseException`` while a cancellation (a disconnect, a
     gateway shutdown) may be unwinding the launcher, so the stop is shielded: a
@@ -1286,7 +1448,9 @@ async def _stop_unowned(proc: asyncio.subprocess.Process) -> None:
     end before this returns, and a cancellation that arrived meanwhile is raised
     afterwards rather than dropped.
     """
-    task = asyncio.ensure_future(_stop_process(proc))
+    task = asyncio.ensure_future(
+        _stop_process(proc) if profile is None else _stop_browser(proc, profile)
+    )
     cancelled = False
     while not task.done():
         try:

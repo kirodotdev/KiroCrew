@@ -1,6 +1,6 @@
 import { useEffect, useState, lazy, Suspense, type ReactNode } from 'react'
 import { TOPBAR_FOCUS_Z, TOPBAR_Z } from '../../lib/themeDecorLayer'
-import { kiroUsageSegment } from './kiroUsageReadout'
+import { kiroSignInSegment, kiroUsageSegment } from './kiroUsageReadout'
 import { metricsSegment, MetricsErrorNotice } from './metricsReadout'
 import { ResourcePostureChip } from './resourcePostureChip'
 import { Bell, Fullscreen, Loader2, Menu, Plug, Unplug } from 'lucide-react'
@@ -31,20 +31,19 @@ import MilestonesIndicator, { MilestonesPill } from '../../components/milestones
 import MilestonesSheet from '../../components/milestones/MilestonesSheet'
 import { useExplorePreviewSwitch } from '../../components/milestones/useMilestones'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
+import { isEmbeddedPane } from '../../lib/embedded'
 
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
 const UpdatePill = lazy(() => import('../../components/UpdatePill'))
 // The switcher with its Team Crews group, lazy so the relay list's code stays
-// out of the app core. Only the desktop app has the bridge it needs.
+// out of the app core. The group renders nothing while the relay viewer is off.
 const TeamCrewsSwitcher = lazy(() => import('../../components/TeamCrewsGroup'))
-const hasRelayCrewBridge = () =>
-  typeof (window as { relayCrewAPI?: { open?: unknown } }).relayCrewAPI?.open === 'function'
 
-/** The Crew switcher: with Team Crews in the desktop app (the plain one until its
- *  code loads), the plain one everywhere else. */
+/** The Crew switcher with Team Crews (the plain one until its code loads); an SSH
+ *  pane's own bar is the plain one, as it never lists Team Crews. */
 function CrewSwitcher() {
-  return hasRelayCrewBridge() ? (
+  return !isEmbeddedPane() ? (
     <Suspense fallback={<InstanceTabBar variant="inline" />}>
       <TeamCrewsSwitcher variant="inline" />
     </Suspense>
@@ -171,7 +170,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
   const {
     connected, gatewayConnecting, updateAvailable, authRequired, gatewayStatusMsg, gatewayStatusAnnounce, relayRetrying, focusModeChord, focusModeExitMsgVisible, focusChromeInert, dispatch, colorTheme, resolvedMode, branding, avatar, isMobile, focusMode,
     toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, quickSearchLauncher, commandPalette,
-    setKiroUsageOpen, kiroUsageState, usageSegmentHidden, metrics, capsuleCollapsed, setCapsuleCollapsed,
+    setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
     requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen, topbarSearch,
   } = shell
@@ -594,7 +593,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             }
             if (!capsuleCollapsed) {
             if (!isMobile) segments.push(metricsSegment(metrics, seg))
-            const usage = kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUsageOpen }, seg, isMobile)
+            const usage = kiroSignInPrompt
+              ? kiroSignInSegment(openKiroSignIn, seg, isMobile)
+              : kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUsageOpen }, seg, isMobile)
             if (usage) segments.push(usage)
             }
             // Extension slot: downstream-registered capsule segments (e.g. an

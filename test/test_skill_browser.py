@@ -845,6 +845,61 @@ class TestAgentMatchIndex:
         assert [_agents_loading_skill_indexed(row, index) for row in rows] == [[], [], []]
         assert seen.count(str(root)) == 1
 
+    def test_the_alias_rule_runs_once_per_glob_set_and_only_for_a_listed_leaf(
+        self, fake_home, monkeypatch
+    ):
+        """Agents made from one template share one alias check per row.
+
+        A host with many Bots carries many specs with the same ``skill://``
+        mappings, and the alias rule costs a path build and an ``lstat`` per
+        (row, agent). It runs once per distinct glob set, and not at all for a
+        row whose folder name no alias prefix holds.
+        """
+        import kiro_crew.skills as skills_module
+        from kiro_crew.skill_runtime import catalog as catalog_module
+
+        root = skills_module.skills_dir()
+        app_dir = root / "some-app"
+        # "twin" exists under the app too, but as a different skill: the alias
+        # rule must look, and must answer no.
+        _write_skill(app_dir, "twin")
+        rows = [_write_skill(root, "twin") / "SKILL.md", _write_skill(root, "plain") / "SKILL.md"]
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        pattern = f"skill://{app_dir}/*/SKILL.md"
+        parsed = [
+            (f"a{j}", {"resources": [pattern]}, agents_dir / f"a{j}.json") for j in range(5)
+        ]
+        index = _build_agent_match_index(_expand_agent_globs(parsed))
+        calls: list[Path] = []
+        real_hit = catalog_module._alias_hit
+
+        def counted(path, candidates):
+            calls.append(path)
+            return real_hit(path, candidates)
+
+        monkeypatch.setattr(catalog_module, "_alias_hit", counted)
+
+        assert [_agents_loading_skill_indexed(row, index) for row in rows] == [[], []]
+        # One check for "twin" across the five agents, none for "plain": no
+        # entry of that name under some-app.
+        assert calls == [rows[0]]
+
+    def test_an_alias_prefix_no_path_can_name_does_not_break_the_index(self, fake_home):
+        """A spec resource with an embedded NUL lists no skill and raises nothing."""
+        import kiro_crew.skills as skills_module
+
+        root = skills_module.skills_dir()
+        row = _write_skill(root, "plain") / "SKILL.md"
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        pattern = f"skill://{root}/bad\x00prefix/*/SKILL.md"
+        parsed = [("a", {"resources": [pattern]}, agents_dir / "a.json")]
+
+        index = _build_agent_match_index(_expand_agent_globs(parsed))
+
+        assert _agents_loading_skill_indexed(row, index) == []
+
 
 class TestProjectRelativeGlobAnchorsOnProjectDir:
     """The picker's agent filter must resolve a workspace-relative

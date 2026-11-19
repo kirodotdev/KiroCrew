@@ -84,7 +84,7 @@ PARTS: tuple[ModuleType, ...] = (
 
 #: The backend's module-level surface: every name the one-module ``backend.py`` bound,
 #: dunders excluded. A name leaves this list only when the symbol it names is
-#: deliberately deleted.
+#: deliberately deleted; a name added since needs no line here.
 FROZEN_NAMES: tuple[str, ...] = (
     "ActivationVerdict",
     "Any",
@@ -551,15 +551,23 @@ class TestTheSurfaceSurvivesTheSplit(composition_contract_checks.TheFrozenInvent
     def test_dir_lists_the_exported_names(self) -> None:
         assert set(FROZEN_NAMES) <= set(dir(backend))
 
-    def test_a_star_import_carries_exactly_the_public_names_of_the_inventory(
+    def test_a_star_import_carries_exactly_the_public_names_of_the_family(
         self, tmp_path: Path
     ) -> None:
         # ``__all__`` is derived, and a star import consults it and never the module
         # ``__getattr__``. The machinery binds only private names, so nothing it needs
         # leaks into a star importer's namespace and nothing public goes missing. The
-        # star import runs in a real module loaded from ``tmp_path``, the one place a
-        # star import is legal.
-        public = {name for name in FROZEN_NAMES if not name.startswith("_")}
+        # public names are read from the facade's and the owners' own namespaces, so a
+        # new public name needs no edit here, and every public name of the inventory is
+        # among them. The star import runs in a real module loaded from ``tmp_path``,
+        # the one place a star import is legal.
+        public = {
+            name
+            for module in (backend, *PARTS)
+            for name in vars(module)
+            if not name.startswith("_")
+        }
+        assert {name for name in FROZEN_NAMES if not name.startswith("_")} <= public
         assert set(backend.__all__) == public
         probe_path = tmp_path / "backend_star_probe.py"
         probe_path.write_text("from kiro_crew.apps.backend import *\n", encoding="utf-8")

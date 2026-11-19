@@ -4,8 +4,9 @@ The line pattern in :mod:`kiro_crew.constants` needs the line end, so it finds
 only a line's LAST marker. This walk decides the rest of that line without a
 regex: a marker inside a head that never closed is refused, and the sibling
 markers running up to the last one are read with it as one run. The web
-dashboard's parser walks a line the same way. Lines end at ``\\n`` only, as the
-line pattern's do.
+dashboard's parser walks a line the same way. A line ends at any of
+:data:`LINE_BREAKS`, the web parser's set; the matcher hands this walk and the
+line pattern text with each of them written as ``\\n`` (:func:`as_newlines`).
 
 The bracket tables and the sibling check are passed in, so this module imports
 nothing from the grammar it serves.
@@ -24,6 +25,26 @@ _HEAD_FRAME = -1
 #: Heads one message may carry before EVERY marker in it is refused, which
 #: bounds the per-message work. The same cap as the web parser's.
 HEAD_CAP = 256
+#: The characters that end a line: the web parser's ``isLineBreak`` set.
+LINE_BREAKS = "\n\r\u2028\u2029"
+_AS_NEWLINE = str.maketrans(dict.fromkeys(LINE_BREAKS[1:], "\n"))
+
+
+def as_newlines(text: str) -> str:
+    """*text* with every line break written as ``\\n``, so no offset moves."""
+    if any(br in text for br in LINE_BREAKS[1:]):
+        return text.translate(_AS_NEWLINE)
+    return text
+
+
+def line_start(text: str, end: int) -> int:
+    """Where the line holding *end* starts: just past the last break before it."""
+    return max(text.rfind(br, 0, end) for br in LINE_BREAKS) + 1
+
+
+def crosses_line(text: str) -> bool:
+    """Whether *text* holds a line break: a marker's labels never may, as on the web."""
+    return any(br in text for br in LINE_BREAKS)
 
 
 def head_at(text: str, i: int) -> int:
@@ -40,6 +61,16 @@ def head_count(text: str) -> int:
     """How many marker heads *text* holds, in any casing."""
     folded = text.lower()
     return sum(folded.count(head) for head in MARKER_HEADS)
+
+
+def option_labels(labels: str) -> list[str]:
+    """The choices a marker's label text offers, in order.
+
+    Split on ``|`` when the text holds one, else on ``,``: the web parser's
+    ``optionsOf`` rule, so a pipe keeps a comma inside a label whole.
+    """
+    sep = "|" if "|" in labels else ","
+    return [o.strip() for o in labels.split(sep) if o.strip()]
 
 
 def closer_continues(text: str, i: int, openers: str, closers: str) -> bool:
@@ -80,6 +111,43 @@ def after_link_close(text: str, j: int) -> int:
     return k + 1 if k < len(text) and text[k] == ")" else j
 
 
+def code_spans(text: str, start: int, end: int) -> dict[int, tuple[int, int]]:
+    """Each backtick run in ``text[start:end]``, by start: its length and its span's end.
+
+    A run of N backticks opens an inline code span that closes at the next run of
+    exactly N, as Markdown reads it. The span's end is the index past that closing
+    run, or -1 when no such run follows before *end*, so the run is plain text. A
+    backslash escapes only a run's first backtick: that backtick is plain text and
+    the N-1 after it may open a span. The whole run still closes one, because a
+    backslash inside code is literal.
+    """
+    runs: list[tuple[int, int, bool]] = []
+    slashes = 0
+    i = start
+    while i < end:
+        if text[i] != "`":
+            slashes = slashes + 1 if text[i] == "\\" else 0
+            i += 1
+            continue
+        j = i + 1
+        while j < end and text[j] == "`":
+            j += 1
+        runs.append((i, j - i, slashes % 2 == 1))
+        slashes = 0
+        i = j
+    spans: dict[int, tuple[int, int]] = {}
+    next_close: dict[int, int] = {}
+    for pos, width, escaped in reversed(runs):
+        if escaped:
+            spans[pos] = (1, -1)
+            if width > 1:
+                spans[pos + 1] = (width - 1, next_close.get(width - 1, -1))
+        else:
+            spans[pos] = (width, next_close.get(width, -1))
+        next_close[width] = pos + width
+    return spans
+
+
 def markers_before(
     text: str,
     end: int,
@@ -94,6 +162,9 @@ def markers_before(
     once, left to right, with a stack of brackets typed by *openers* and
     *closers* (index-aligned pairs):
 
+    * outside every head, an inline code span is skipped whole, so the head in
+      ``The `[OPTIONS:` line goes last. [OPTIONS: A | B]`` is code, not a head;
+      inside a head, backticks are label text, as the label grammar reads them;
     * a head opens a head frame; an opener opens its own frame;
     * a closer pops an opener frame only of its own type;
     * a closer pops a head frame unless the list goes on after it.
@@ -109,8 +180,13 @@ def markers_before(
     run: list[re.Match[str]] = []
     run_end = -1
     i = text.rfind("\n", 0, end) + 1
+    spans = code_spans(text, i, end)
     while i < end:
         ch = text[i]
+        if ch == "`" and depth == 0 and i in spans:
+            width, span_end = spans[i]
+            i = span_end if span_end >= 0 else i + width
+            continue
         width = head_at(text, i) if ch == "[" else 0
         if width:
             if depth > 0 or i != run_end:
@@ -159,17 +235,22 @@ class MarkerRun:
 
     It spans the first sibling to the last marker, and its groups are the last
     marker's, because the last marker is the one whose options a turn offers.
+    The matches may come from :func:`as_newlines`' copy; *string* is the text
+    the groups are read from, so a label keeps its own line breaks.
     """
 
-    __slots__ = ("_first", "_last")
+    __slots__ = ("_first", "_last", "_string")
 
-    def __init__(self, first: re.Match[str], last: re.Match[str]) -> None:
+    def __init__(
+        self, first: re.Match[str], last: re.Match[str], string: str | None = None
+    ) -> None:
         self._first = first
         self._last = last
+        self._string = last.string if string is None else string
 
     @property
     def string(self) -> str:
-        return self._last.string
+        return self._string
 
     def start(self) -> int:
         return self._first.start()
@@ -183,7 +264,8 @@ class MarkerRun:
     def group(self, name: str | int = 0) -> str | Any:
         if name == 0:
             return self.string[self.start() : self.end()]
-        return self._last.group(name)
+        start, end = self._last.span(name)
+        return None if start < 0 else self.string[start:end]
 
     def groupdict(self) -> dict[str, str | Any]:
-        return self._last.groupdict()
+        return {name: self.group(name) for name in self._last.groupdict()}

@@ -77,11 +77,15 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 again for all four: the ssh-to-self floor's substitution-body check lives in
 #: its own module, ``kiro_crew.security.argv_floor_ssh_bodies``, which the deny floor that
 #: every listing already loads imports.
+#: Raised by 1 for each server: ``edition_locks.relay_selected``, which the composition
+#: root asks, reads the relay switch through ``remote_control.hosting`` (a stdlib-only
+#: leaf), since an unset ``tunnel.relay_enabled`` hosts only with a team key or a
+#: workload identity; the module count rose by that one file and nothing else loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 490,
-    "mcp-cron": 360,
-    "mcp-guide": 354,
-    "mcp-mate": 355,
+    "mcp-core": 491,
+    "mcp-cron": 361,
+    "mcp-guide": 355,
+    "mcp-mate": 356,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest'
 import type { CrewWorker } from '../../../types'
 import type { WorkBoardItem } from '../../../api/crewBoard'
 import type { SessionSummary } from '../../../types/sessionSummary'
-import { CREW_BOARD_EXPANDED_KEY, crewAncestors, crewRowOpen, crewTree, doneWhen, goalDoneWhen, goalScope, goalSentence, latestChange, milestoneSentence, milestoneState, readCrewBoardExpanded, summaryRecap, visibleCrewRows, type CrewTreeNode } from './ConductorModeCrewPanel'
+import { CREW_BOARD_EXPANDED_KEY, conductorModeRecap, crewAncestors, crewRowOpen, crewTree, doneWhen, goalDoneWhen, goalScope, goalSentence, latestChange, milestoneSentence, milestoneState, personAsks, readCrewBoardExpanded, summaryRecap, visibleCrewRows, type CrewTreeNode } from './ConductorModeCrewPanel'
 
 const item = (over: Partial<WorkBoardItem>): WorkBoardItem => ({
   schema: 1, item_id: 'it_1', title: 'Menu', acceptance: { kind: 'human_approval' }, state: 'open', verdict: null,
@@ -97,6 +97,7 @@ describe('milestoneState', () => {
 
   it('needs you: a pending approval, even above an earlier done report', () => {
     expect(milestoneState(item({ status: 'done' }), true)).toBe('needs_you')
+    expect(milestoneState(item({ status: 'blocked', reason: 'needs_human', alive: 'running', awaits_person: false }), true)).toBe('needs_you')
   })
 
   it('needs you: a blocked or question report whose reason names a person', () => {
@@ -132,6 +133,30 @@ describe('milestoneState', () => {
 
   it('waiting: an idle session after progress or an answered report', () => {
     expect(milestoneState(item({ status: 'progress', ...R }), false)).toBe('waiting')
+  })
+
+  it('running: background work on a current board keeps a stale-looking worker moving', () => {
+    // The board's `alive` counts sub-agents, workflows and the turn alike.
+    expect(milestoneState(item({ status: 'progress', alive: 'running', awaits_person: false, ...R }), false)).toBe('running')
+  })
+
+  it("needs you: a current board's awaits_person decides the report, whatever alive says", () => {
+    const asks = { status: 'blocked' as const, reason: 'needs_human', ...R }
+    // Background work: `alive` running, but no model turn, so the board still asks the person.
+    expect(milestoneState(item({ ...asks, alive: 'running', awaits_person: true }), false)).toBe('needs_you')
+    expect(milestoneState(item({ ...asks, status: 'question', outstanding: true, alive: 'running', awaits_person: true }), false)).toBe('needs_you')
+    // A real model turn: the board read it and stopped asking.
+    expect(milestoneState(item({ ...asks, alive: 'running', awaits_person: false }), false)).toBe('running')
+    // Answered on the board: the conductor owns it again.
+    expect(milestoneState(item({ ...asks, ...ANSWERED, awaits_person: false }), false)).toBe('waiting')
+    // A tool approval of the item's member outranks the board.
+    expect(milestoneState(item({ ...asks, alive: 'running', awaits_person: false }), true)).toBe('needs_you')
+  })
+
+  it('needs you: an older board without awaits_person falls back to alive as the turn', () => {
+    const asks = { status: 'blocked' as const, reason: 'needs_human', ...R }
+    expect(milestoneState(item(asks), false)).toBe('needs_you')
+    expect(milestoneState(item({ ...asks, alive: 'running' }), false)).toBe('running')
   })
 
   it('running: an idle worker whose own loop will wake it (waiting on CI)', () => {
@@ -181,6 +206,40 @@ describe('milestoneState', () => {
     expect(milestoneState(item({ status: 'question', outstanding: false, terminal: true, state: 'abandoned' }), false)).toBe('not_done')
     expect(milestoneState(item({ status: 'done', terminal: true, state: 'rejected' }), true)).toBe('not_done')
   })
+
+  it('discussing: an open item whose worker hosts a discussion and is still there', () => {
+    const talk = { status: 'progress' as const, discussion: { phase: 'talking' as const, round: 1 }, ...R }
+    expect(milestoneState(item({ ...talk, alive: 'running' }), false)).toBe('discussing')
+    expect(milestoneState(item({ ...talk, alive: 'idle' }), false)).toBe('discussing')
+    // The person comes first.
+    expect(milestoneState(item(talk), true)).toBe('needs_you')
+  })
+
+  it('discussing ends when the item closes, and a stalled host falls back to its plain state', () => {
+    const talk = { status: 'progress' as const, discussion: { phase: 'talking' as const, round: 3 }, ...R }
+    expect(milestoneState(item({ ...talk, state: 'accepted', terminal: true, alive: 'closed' }), false)).toBe('done')
+    expect(milestoneState(item({ ...talk, state: 'abandoned', terminal: true }), false)).toBe('not_done')
+    expect(milestoneState(item({ ...talk, stale: true }), false)).toBe('quiet')
+    expect(milestoneState(item({ ...talk, alive: 'closed' }), false)).toBe('stuck')
+    expect(milestoneState(item({ ...talk, orphaned: true }), false)).toBe('stuck')
+    // No phase is no discussion.
+    expect(milestoneState(item({ ...talk, discussion: { phase: '' } as never }), false)).toBe('waiting')
+  })
+})
+
+describe('personAsks', () => {
+  const ask = item({ status: 'blocked', reason: 'needs_human', awaits_person: true })
+
+  it("is the board's awaits_person alone, whatever the worker's alive", () => {
+    const other = item({ ...ask, item_id: 'it_other', awaits_person: false, alive: 'running' })
+    expect(personAsks([{ ...ask, alive: 'running' }, other])).toEqual([{ ...ask, alive: 'running' }])
+    // An older board carries no awaits_person: no card, the milestone still says Needs you.
+    expect(personAsks([item({ ...ask, awaits_person: undefined })])).toEqual([])
+  })
+
+  it('keeps report asks out of the actual tool approval card stack', () => {
+    expect(personAsks([ask], new Set([ask.item_id]))).toEqual([])
+  })
 })
 
 describe('Recap', () => {
@@ -196,6 +255,13 @@ describe('Recap', () => {
     // A stale summary may name a state the milestones have moved past.
     expect(summaryRecap({ ...summary('The drinks menu is ready and the supplies list waits for a save.'), stale: true }, titles)).toBe('')
     expect(summaryRecap({ ...summary('The drinks menu is ready.'), enabled: false }, titles)).toBe('')
+  })
+
+  it('keeps real asks in the fallback Recap even before any workers exist', () => {
+    const counts = { total: 0, done: 0, running: 0, approvals: 0, questions: 0 }
+    expect(conductorModeRecap(counts, [], false)).toBe('The crew has not reported yet.')
+    expect(conductorModeRecap(counts, ['Main'], false)).toContain('Main is waiting on you')
+    expect(conductorModeRecap(counts, [], true)).toContain('a question for you is waiting on you')
   })
 
   it('builds the milestone sentence, counting the running ones instead of naming them', () => {

@@ -413,7 +413,9 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   }
   if (tab.kind === 'folder') {
     return (
+      // Keyed by chat: tab bodies are keyed by tab id only, so two chats' `folder:/x` tabs would share one Back list.
       <FolderPanel
+        key={slot}
         path={tab.path || ''}
         projectDir={projectDir}
         onClose={onClose}

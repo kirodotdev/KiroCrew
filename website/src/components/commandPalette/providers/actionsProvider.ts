@@ -31,7 +31,8 @@ import { slotRowByKey } from '../../../store/slotIndex'
  * as injected callbacks so it stays free of React hooks and is unit-testable
  * with plain spies. {@link useActionsProvider} wires the real implementations:
  * `New session` dispatches the `createSlot` chat thunk, `Toggle theme` calls
- * the theme context's `cycle()` (light → dark → system), and `Open Shortcuts`
+ * the theme context's `cycle()` (light → dark → system; from Scheduled, the
+ * appearance not on screen), and `Open Shortcuts`
  * is supplied by the palette host (the `ShortcutsModal` open state lives in the
  * app shell, mirroring `useKeyboardShortcuts`'s `onToggleShortcutsModal`).
  */

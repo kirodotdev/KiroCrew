@@ -45,6 +45,14 @@ OWNER = "u-0001.example-owner"
 CONTRACT = "Kiro Relay protocol v1"
 
 
+def drop_unanswered(request: web.Request) -> web.Response:
+    """Drop *request*'s connection with no response head; the server keeps its port."""
+    transport = request.transport
+    assert transport is not None
+    transport.abort()
+    return web.Response()
+
+
 class StaticHostTokenSource:
     """One fixed credential, replaced only through :meth:`publish`.
 
@@ -216,6 +224,8 @@ class FakeRelay:
         self.legs: asyncio.Queue[FakeHostLeg] = asyncio.Queue()
         self.refused: List[str] = []
         self.dials = 0
+        #: False drops every dial with no answer, while the server keeps its port.
+        self.reachable = True
         self._server: Optional[TestServer] = None
 
     @property
@@ -235,6 +245,8 @@ class FakeRelay:
             await self._server.close()
 
     async def _host(self, request: web.Request) -> web.StreamResponse:
+        if not self.reachable:
+            return drop_unanswered(request)
         self.dials += 1
         auth = request.headers.get("Authorization", "")
         token = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""

@@ -20,13 +20,20 @@ Tools
 
 ``code_channel_set_view``
     an ``html`` or ``block_kit`` tab. The Code tab's diff is the workspace's,
-    and the plan tab comes with the plan canvas. HTML is self-contained (no
+    the plan tab comes with the plan canvas, and the Workers tab and the pull
+    request tabs are the channel's own (:mod:`.tabs`); their keys are reserved,
+    and the agent's tabs are the first to make room at Slack's cap
+    (:mod:`.views`). HTML is self-contained (no
     ``csp`` resource domains are ever sent); Block Kit is display-only (no
     interactive elements, no remote media).
 ``code_channel_publish_plan_canvas``
     create the channel canvas, or replace its content; a create Slack refuses
     with ``channel_canvas_already_exists`` is never retried, and a canvas this
     gateway did not create is never written.
+``code_channel_read_plan_canvas``
+    the plan canvas as it is in Slack now (``getCanvas``) with its open comment
+    threads, redacted and framed as data; a read, so it needs no plan to exist
+    beyond the channel's own canvas id.
 ``code_channel_set_context_bar``
     the agent's own items, shown after the workspace's repo / branch / PR / CI
     items (five in all); informational and link items only.
@@ -62,6 +69,7 @@ from kiro_crew.slack.code_channels.models import (
     CodeChannelApiError,
     CodeChannelRequestError,
 )
+from kiro_crew.slack.code_channels.notices import CHANNEL_REFUSALS
 from kiro_crew.slack.code_channels.store import Binding
 from kiro_crew.slack.code_channels.surface_client import (
     CANVAS_ALREADY_EXISTS,
@@ -74,12 +82,13 @@ logger = logging.getLogger(__name__)
 
 SET_VIEW = "code_channel_set_view"
 PUBLISH_PLAN_CANVAS = "code_channel_publish_plan_canvas"
+READ_PLAN_CANVAS = "code_channel_read_plan_canvas"
 SET_CONTEXT_BAR = "code_channel_set_context_bar"
 RENAME = "code_channel_rename"
 SET_STATUS = "code_channel_set_status"
 WRAP_UP = "code_channel_wrap_up"
 TOOL_NAMES = frozenset(
-    {SET_VIEW, PUBLISH_PLAN_CANVAS, SET_CONTEXT_BAR, RENAME, SET_STATUS, WRAP_UP}
+    {SET_VIEW, PUBLISH_PLAN_CANVAS, READ_PLAN_CANVAS, SET_CONTEXT_BAR, RENAME, SET_STATUS, WRAP_UP}
 )
 
 #: The plan canvas's view key; the agent's own views may not take it.
@@ -134,6 +143,19 @@ CHANNEL_OFF_TEXT = (
     "Error: the bot is off (or in review mode) in this code channel or the channel it "
     "came from, so nothing was posted there."
 )
+TOO_MANY_VIEWS_TEXT = (
+    "Error: this channel already has Slack's maximum of five tabs and none of them is one "
+    "of your own views that could make room. Update one of your existing views (same "
+    "view_key) instead of adding a new one."
+)
+PLAN_TAB_FULL_TEXT = (
+    "The Plan tab could not be added: the channel already has five tabs and none of them "
+    "is one of your views. The canvas is still in the channel."
+)
+TOO_MANY_SECTIONS_TEXT = (
+    "Error: Slack could not update the plan canvas: it has too many sections to compare. "
+    "Use fewer paragraphs, headings and code blocks."
+)
 
 
 class ArgumentError(ValueError):
@@ -154,6 +176,15 @@ class ToolOutcome:
     ok: bool
     text: str
     code: str = ""
+
+
+def _admits(call: "Call") -> Callable[[], str]:
+    """run_tool's own gates (archive, Stop, Off / Review, a rebind), read live.
+
+    Synchronous: :mod:`.views` reads the policy first, and asks this again at
+    the client's commit point (``surface.send_fence``).
+    """
+    return lambda: surface.write_refusal_now(call.binding.channel_id, call.binding, activation=True)
 
 
 @dataclass(frozen=True)
@@ -243,7 +274,10 @@ async def _run_tool(state: Any, session_key: str, tool: str, args: Any) -> ToolO
         return ToolOutcome(False, NO_SLACK_TEXT, "no_client")
     call = Call(binding=binding, client=client, caller=session_key)
     try:
-        text = await _HANDLERS[tool](call, args)
+        # Every send the tool makes asks these gates again at the client's
+        # commit point: an Off, Review or rebind during its awaits sends nothing.
+        with surface.send_fence(_admits(call)):
+            text = await _HANDLERS[tool](call, args)
     except (ArgumentError, CodeChannelRequestError) as exc:
         surface.audit(
             session_key, operation, "denied", resources, f"invalid arguments: {str(exc)[:160]}"
@@ -277,6 +311,18 @@ def _api_error_text(tool: str, exc: CodeChannelApiError) -> str:
         )
     if exc.maybe_applied:
         return f"Error: the call to Slack did not complete ({exc.code}); it may have applied."
+    if exc.code == "too_many_sections":
+        return TOO_MANY_SECTIONS_TEXT
+    if exc.code == "content_too_large":
+        return f"Error: Slack refused {tool}: the content is larger than Slack accepts."
+    if exc.code == "channel_off":
+        return CHANNEL_OFF_TEXT
+    if exc.code == "channels_policy":
+        return GOVERNANCE_TEXT
+    if exc.code == "archived":
+        return ARCHIVED_TEXT
+    if exc.code in CHANNEL_REFUSALS:
+        return f"Error: {CHANNEL_REFUSALS[exc.code]}"
     return f"Error: Slack refused {tool} ({exc.code})."
 
 
@@ -671,9 +717,15 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
         SET_VIEW,
     )
     kind = _text(args, "type") or "html"
-    if kind in ("diff", "pull_request"):
+    if kind == "diff":
         raise ArgumentError(
-            f"{kind} views are published from the worktree automatically; use html, block_kit or canvas"
+            "the Code tab's diff is published from the worktree automatically; "
+            "use html or block_kit"
+        )
+    if kind == "pull_request":
+        raise ArgumentError(
+            "pull request tabs are opened automatically for the channel's newest open "
+            "pull requests (yours and your workers'); use html or block_kit"
         )
     if kind == "canvas":
         raise ArgumentError("the plan canvas tab comes with code_channel_publish_plan_canvas")
@@ -689,32 +741,52 @@ async def _set_view(call: Call, args: dict[str, Any]) -> str:
         )
     if view_key == PLAN_VIEW_KEY:
         raise ArgumentError(f"view_key {PLAN_VIEW_KEY!r} is the plan canvas's; choose another")
+    from kiro_crew.slack.code_channels import views
+
+    if views.reserved_key(view_key):
+        # An upsert under one of these keys would overwrite the channel's own
+        # Workers tab or a pull request tab.
+        raise ArgumentError(
+            f"view_key {view_key!r} belongs to the channel's own tabs "
+            f"({views.WORKERS_KEY!r}, {views.DIFF_KEY!r} and '{views.PR_KEY_PREFIX}<number>'); "
+            "choose another"
+        )
+
+    channel = call.binding.channel_id
     if kind == "html":
         content = args.get("content")
         if not isinstance(content, str) or not content.strip():
             raise ArgumentError("an html view needs content: a full, self-contained HTML document")
         _check_size(content, "content")
         # Up to MAX_CONTENT_BYTES through every display pass: off the event loop.
-        content = await asyncio.to_thread(_redact_html, content)
-        view_id = await call.client.set_view(
-            call.binding.channel_id,
-            type="html",
-            view_key=view_key,
-            content=content,
-            name=name,
-        )
+        safe = await asyncio.to_thread(_redact_html, content)
+        _check_size(safe, "content")
+
+        def _write() -> Any:
+            return call.client.set_view(
+                channel, type="html", view_key=view_key, content=safe, name=name
+            )
+
     else:
         # Up to MAX_CONTENT_BYTES of JSON through every display pass: off the loop.
         blocks = await asyncio.to_thread(_blocks, args)
-        view_id = await call.client.set_view(
-            call.binding.channel_id,
-            type="block_kit",
-            view_key=view_key,
-            blocks=blocks,
-            name=name,
+
+        def _write() -> Any:
+            return call.client.set_view(
+                channel, type="block_kit", view_key=view_key, blocks=blocks, name=name
+            )
+
+    try:
+        view_id, removed = await views.write_view(
+            call.client, channel, key=view_key, type=kind, write=_write, admits=_admits(call)
         )
+    except CodeChannelApiError as exc:
+        if exc.code != views.TOO_MANY_VIEWS:
+            raise
+        raise ToolRefusal(TOO_MANY_VIEWS_TEXT, exc.code) from None
     label = name or view_key
-    return f"Published the {kind} view {label!r} in this channel (view {view_id})."
+    note = f" To make room, your older view {removed!r} was removed." if removed else ""
+    return f"Published the {kind} view {label!r} in this channel (view {view_id}).{note}"
 
 
 async def _publish_plan_canvas(call: Call, args: dict[str, Any]) -> str:
@@ -884,17 +956,26 @@ async def _publish_canvas_locked(call: Call, channel: str, markdown: str, title:
         _unsaved_canvas[channel] = canvas_id
     if _unsaved_canvas.get(channel) == canvas_id:
         # Held in memory until stored: a failed write raises, and the next call
-        # stores it instead of creating a second canvas.
-        await surface_update(channel, plan_canvas_id=canvas_id, canvas_create_pending_since=0.0)
+        # stores it instead of creating a second canvas. A canvas this gateway
+        # created has its comments read from the first (its own baseline).
+        await surface_update(
+            channel,
+            plan_canvas_id=canvas_id,
+            canvas_create_pending_since=0.0,
+            canvas_baseline=canvas_id,
+        )
         _unsaved_canvas.pop(channel, None)
         _maybe_created.pop(channel, None)
+    unchanged = False
     if not created:
-        await call.client.set_canvas_content(channel, canvas_id, markdown)
+        unchanged = await call.client.set_canvas_content(channel, canvas_id, markdown) == 0
     view_note = ""
     record = await surface_get(channel)
     if record is None or not record.plan_view_id:
-        try:
-            view_id = await call.client.set_view(
+        from kiro_crew.slack.code_channels import views
+
+        def _attach() -> Any:
+            return call.client.set_view(
                 channel,
                 type="canvas",
                 view_key=PLAN_VIEW_KEY,
@@ -902,16 +983,82 @@ async def _publish_canvas_locked(call: Call, channel: str, markdown: str, title:
                 access_level="comment",
                 name="Plan",
             )
-            await surface_update(channel, plan_view_id=view_id)
+
+        try:
+            # write_view records the tab's id as plan_view_id too, under its lock.
+            _, removed = await views.write_view(
+                call.client,
+                channel,
+                key=PLAN_VIEW_KEY,
+                type="canvas",
+                write=_attach,
+                admits=_admits(call),
+            )
             view_note = " It is the Plan tab; people can comment, only you edit it."
+            if removed and views.is_pr_tab({"key": removed, "type": views.PR_VIEW_TYPE}):
+                view_note += (
+                    f" To make room, the pull request tab {removed!r} was removed; it comes "
+                    "back when a tab frees up."
+                )
+            elif removed:
+                view_note += f" To make room, your older view {removed!r} was removed."
         except CodeChannelApiError as exc:
             logger.info("code channel %s: plan tab not attached: %s", channel, exc.code)
+            if exc.code in {views.STOPPED, views.CHANNEL_OFF, "channels_policy", "archived"}:
+                # The write gate refused the tab (Slack's Stop, Off or Review, the
+                # channels policy, an archive): said as such (the canvas content
+                # itself is already saved).
+                raise
+            if exc.code == views.TOO_MANY_VIEWS:
+                view_note = " " + PLAN_TAB_FULL_TEXT
+    if unchanged:
+        return f"The plan canvas is unchanged: Slack already had this exact markdown.{view_note}"
     verb = "Created" if created else "Updated"
     return f"{verb} this channel's plan canvas.{view_note}"
 
 
+async def _read_plan_canvas(call: Call, args: dict[str, Any]) -> str:
+    _only(args, set(), READ_PLAN_CANVAS)
+    from kiro_crew.slack.code_channels import comments
+
+    channel = call.binding.channel_id
+    record = await surface_get(channel)
+    canvas_id = record.plan_canvas_id if record is not None else ""
+    if not canvas_id:
+        raise ToolRefusal(
+            "Error: this channel has no plan canvas yet. Create it with "
+            "code_channel_publish_plan_canvas.",
+            "no_plan_canvas",
+        )
+    from kiro_crew.slack.code_channels.routing import _self_user_id
+    from kiro_crew.slack.handler import is_allowed_user
+
+    try:
+        data = await call.client.get_canvas(channel, canvas_id)
+    except CodeChannelApiError as exc:
+        if exc.code != "canvas_not_found":
+            raise
+        raise ToolRefusal(
+            "Error: Slack cannot find this channel's plan canvas; it may have been deleted "
+            "in Slack.",
+            exc.code,
+        ) from None
+    # The same inbound gates and sender rule the delivery of these comments applies:
+    # what it refuses never reaches the model through this read either.
+    me = _self_user_id()
+    shown = await comments.inbound_admitted(call.binding)
+    # Up to 1 MB of markdown through every display pass: off the event loop.
+    return await asyncio.to_thread(
+        lambda: comments.plan_canvas_text(
+            data,
+            may_read=lambda user: bool(user) and (user == me or is_allowed_user(user)),
+            comments_shown=shown,
+        )
+    )
+
+
 def _bar_items(args: dict[str, Any]) -> list[dict[str, str]]:
-    from kiro_crew.slack.code_channels.agent_bar import MAX_ITEMS, RESERVED_KEYS
+    from kiro_crew.slack.code_channels.agent_bar import MAX_ITEMS, reserved
 
     raw = args.get("items")
     if not isinstance(raw, list):
@@ -926,8 +1073,8 @@ def _bar_items(args: dict[str, Any]) -> list[dict[str, str]]:
         extra = sorted(set(raw_item) - {"key", "label", "icon", "url"})
         if "item_type" in extra:
             raise ArgumentError(
-                "action items are not supported: Slack does not deliver their clicks to "
-                "Kiro Crew. Use a url item instead"
+                "action items are not supported: the context bar's actions are Kiro Crew's "
+                "own (Create PR, Stop). Use a url item instead"
             )
         if extra:
             raise ArgumentError(f"context bar items do not take {', '.join(extra)}")
@@ -936,7 +1083,7 @@ def _bar_items(args: dict[str, Any]) -> list[dict[str, str]]:
             raise ArgumentError("a key is 1-64 lowercase letters, digits, '_' or '-'")
         if refuses(key, _redact_payload):
             raise ArgumentError("that key carries data redaction would remove; choose a plain name")
-        if key in RESERVED_KEYS:
+        if reserved(key):
             raise ArgumentError(f"key {key!r} is the workspace's own item; choose another")
         if key in keys:
             raise ArgumentError(f"key {key!r} appears twice")
@@ -973,14 +1120,27 @@ async def _set_context_bar(call: Call, args: dict[str, Any]) -> str:
     # One read-update-publish-rollback at a time per channel: a slow call's
     # rollback can then never land on top of a newer call's items.
     async with _bar_locks.setdefault(channel, asyncio.Lock()):
-        await _publish_bar_locked(call, channel, items, agent_bar, workspace)
-    base_keys = await asyncio.to_thread(_workspace_keys, call.binding)
+        alone = await _publish_bar_locked(call, channel, items, agent_bar, workspace)
+        # The workspace's items as the bar was just built (its workers included),
+        # read inside the lock, so an agent item the workers pushed out is
+        # reported as not shown.
+        service = getattr(workspace, "_SERVICE", None)
+        built: list[str] | None
+        if alone:
+            built = []  # no workspace items were published beside the agent's
+        elif service is not None and hasattr(service, "bar_base_keys"):
+            built = service.bar_base_keys(call.binding.team_id, channel)
+        else:
+            built = None
+    # A bar the workspace just published always left its keys (_send_bar); a
+    # service without them published nothing beside the agent's items.
+    base_keys = built if built is not None else []
     _, dropped = agent_bar.merge([{"key": k} for k in base_keys], items)
     shown = [i["key"] for i in items if i["key"] not in dropped]
     if not items:
         return "Cleared your context-bar items; the workspace's items stay."
     note = (
-        f" Not shown (the bar holds five, the workspace's first): {', '.join(dropped)}."
+        f" Not shown (the bar holds five, the channel's own items first): {', '.join(dropped)}."
         if dropped
         else ""
     )
@@ -993,7 +1153,8 @@ _bar_locks: dict[str, asyncio.Lock] = {}
 
 async def _publish_bar_locked(
     call: Call, channel: str, items: list[dict[str, str]], agent_bar: Any, workspace: Any
-) -> None:
+) -> bool:
+    """Store and publish *items*; True when the bar holds the agent's items alone."""
     previous = await surface_get(channel)
     before = previous.context_bar if previous else ()
     # Not stored once stopped: a background republish would publish stored items.
@@ -1007,10 +1168,12 @@ async def _publish_bar_locked(
         raise asyncio.CancelledError
     stored = writing.result().context_bar  # raises the write's own error
     service = getattr(workspace, "_SERVICE", None)
+    alone = {"yes": False}
 
     async def publish() -> None:
         result = await service.republish_bar(call.binding) if service is not None else None
         if result is None:
+            alone["yes"] = True
             # No workspace record to publish from: the bar is the agent's items alone.
             merged, _ = agent_bar.merge([], items)
             await call.client.set_context_bar(channel, merged)
@@ -1027,6 +1190,7 @@ async def _publish_bar_locked(
             publishing.result()  # re-raises the publish's own error
     if cancelled:
         raise asyncio.CancelledError
+    return alone["yes"]
 
 
 async def _settle_future(coro: Any) -> tuple[asyncio.Future[Any], bool]:
@@ -1057,26 +1221,6 @@ async def _rollback_bar(channel: str, ours: tuple, before: tuple) -> None:
     current = await surface_get(channel)
     if current is not None and current.context_bar == ours:
         await surface_update(channel, context_bar=before)
-
-
-def _workspace_keys(binding: Binding) -> list[str]:
-    """The keys the workspace's own bar items take (best effort, for the reply)."""
-    try:
-        from kiro_crew.slack.code_channels.workspace.store import WorkspaceStore
-
-        record = WorkspaceStore().get(binding.team_id, binding.channel_id)
-    except Exception:
-        return []
-    if record is None:
-        return []
-    keys = ["repo" if record.repo_root else "folder"]
-    if record.branch:
-        keys.append("branch")
-    if record.pr_number:
-        keys.append("pr")
-        if record.pr_ci and record.pr_state in ("open", "draft"):
-            keys.append("ci")
-    return keys
 
 
 async def _rename(call: Call, args: dict[str, Any]) -> str:
@@ -1129,6 +1273,7 @@ async def _wrap_up(call: Call, args: dict[str, Any]) -> str:
 _HANDLERS: dict[str, Callable[[Call, dict[str, Any]], Awaitable[str]]] = {
     SET_VIEW: _set_view,
     PUBLISH_PLAN_CANVAS: _publish_plan_canvas,
+    READ_PLAN_CANVAS: _read_plan_canvas,
     SET_CONTEXT_BAR: _set_context_bar,
     RENAME: _rename,
     SET_STATUS: _set_status,

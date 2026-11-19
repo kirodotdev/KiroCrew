@@ -1,3 +1,5 @@
+import { APP_STATE_EVENT } from '../app-sdk/appState'
+import { isRelayCrewWindow } from '../utils/offlineReason'
 import { useEffect, useRef, useCallback } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
@@ -39,6 +41,7 @@ import {
   takeFoldedSlotProjection,
 } from './websocket/slotProjection'
 import { useSocketConnection } from './websocket/connection'
+import { markGatewayConnected } from './websocket/gatewayConnectivity'
 import { createFoldWatch, FOLD_HELLO_FRAME, type FoldWatch } from './websocket/foldWatch'
 import { applySlotFoldFrame, readSlotFoldFrame, resetWorkDeltaBases, SLOT_DELTA_FRAME, type SlotFoldFrame, type SlotFoldOutcome } from './websocket/workDelta'
 import { appWatchedSlots, noteAppSlotChanged, noteAppSlotFrame, onAppWatchedSlotsChange } from '../utils/appSlotPush'
@@ -48,6 +51,7 @@ import { decodeFrame } from './websocket/frames'
 import { useStreamBuffers } from './websocket/streamBuffers'
 import { useVoicePlayback } from './websocket/voicePlayback'
 import { useRowDeliveryWatchdog } from './websocket/rowDeliveryWatchdog'
+import { attachReturnResync } from './websocket/paneResync'
 import { useApprovalRegistry } from './websocket/approvals'
 import { useComposerCards } from './websocket/composerCards'
 import { useAutomationSeed } from './websocket/automationSeed'
@@ -278,7 +282,10 @@ export function useWebSocket() {
     ws.binaryType = 'arraybuffer'
 
     ws.onmessage = (e) => {
-      if (socket.wsRef.current === ws) silenceRef.current?.markFrame()
+      if (socket.wsRef.current === ws) {
+        silenceRef.current?.markFrame()
+        if (socket.noteFrame()) markGatewayConnected(dispatch)
+      }
       // The look-preview frame (utils/lookPreview.ts) is a still picture of the
       // product drawn from fixtures: no live frame may repaint it with the
       // user's real sessions, runs or notices. The socket stays open only so
@@ -760,6 +767,18 @@ export function useWebSocket() {
           case 'app_reload':
             emitAppReload(data as { app: string })
             break
+          case 'app_state': {
+            // An app was turned on or off (this tab, another tab, the gateway): the
+            // shell re-reads the app list (mc:apps-changed), and a mounted BrowserView
+            // of that app follows the frame itself (mc:app-state), because an app
+            // page reads its app once and does not re-read that list.
+            const d = data as { app?: unknown; enabled?: unknown; seq?: unknown; boot?: unknown }
+            if (typeof d?.app === 'string' && typeof d.enabled === 'boolean') {
+              window.dispatchEvent(new CustomEvent(APP_STATE_EVENT, { detail: { app: d.app, enabled: d.enabled, seq: d.seq, boot: d.boot } }))
+            }
+            window.dispatchEvent(new Event('mc:apps-changed'))
+            break
+          }
           case 'subagent_snapshot': {
             // Clear any buffered chunks for this agent — the snapshot's streaming
             // field is authoritative and already includes any in-flight text.
@@ -1215,14 +1234,20 @@ export function useWebSocket() {
     // stamps survive it.
     silenceHostRef.current = {
       isOpen: () => socket.wsRef.current?.readyState === WebSocket.OPEN,
-      onDead: forceReconnect,
+      // Through the relay a silent socket means the Crew's host stopped
+      // answering: the relay keeps the page's socket open and accepts the next
+      // upgrade without the host, so a plain replacement would read as
+      // connected. It goes offline until the host sends a frame again.
+      onDead: isRelayCrewWindow()
+        ? () => socket.noteHostSilent(dispatch, voice.releaseVoiceOnSocketLoss, connect)
+        : forceReconnect,
     }
     const watchdog = silenceRef.current
     watchdog?.start()
     return () => {
       watchdog?.stop()
     }
-  }, [socket, forceReconnect])
+  }, [dispatch, socket, forceReconnect, voice, connect])
 
   useEffect(() => {
     socket.resume()
@@ -1244,6 +1269,9 @@ export function useWebSocket() {
     })
     const detachAppWatch = onAppWatchedSlotsChange(chunkWatch.sync)
     document.addEventListener('visibilitychange', chunkWatch.sync)
+    // A page that comes back may hold a socket that died while it was frozen;
+    // re-read what is on screen over HTTP rather than wait for the watchdog.
+    const detachReturnResync = attachReturnResync(dispatch, queryClient)
     connect()
     const detachQuestionRetirements = store.subscribe(cards.onQuestionStateChange)
     const detachVoice = voice.attachWindowEvents()
@@ -1267,9 +1295,10 @@ export function useWebSocket() {
       detachAppWatch()
       document.removeEventListener('visibilitychange', chunkWatch.sync)
       chunkWatch.dispose()
+      detachReturnResync()
       if (chunkWatchRef.current === chunkWatch) chunkWatchRef.current = null
     }
-  }, [socket, connect, voice, buffers, cards, queryClient, reconnectSnapshot])
+  }, [socket, connect, voice, buffers, cards, queryClient, reconnectSnapshot, dispatch])
 
   return { subscribeLogs: socket.subscribeLogs, subscribeSubagents: socket.subscribeSubagents, forceReconnect }
 }

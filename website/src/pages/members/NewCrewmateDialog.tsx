@@ -27,7 +27,10 @@
  * one free-text field the record already carries for a human-readable
  * account of the crew, and the line the crewmate's first greeting is seeded
  * from (see MembersPage). Memory is provisioned by the server on create
- * (a private store per crewmate, never a choice here). The look follows the
+ * (a private store per crewmate). The one choice is in Advanced settings and
+ * only when there is something to offer: start from the memory a deleted
+ * crewmate left behind, which the server binds to this crewmate as it is
+ * (nothing is copied). The look follows the
  * name until the user picks an icon and colour in the avatar editor (icon
  * tier only); a pick is pinned on the record and survives a renamed draft,
  * and anything richer (a picture, a pack) is edited on the detail page
@@ -63,6 +66,7 @@ import { lookSeed, defaultLookFor } from '../../lib/avatarPoses'
 import CrewAvatarBuilder from '../../components/CrewAvatarBuilder'
 import ErrorNotice from '../../components/ErrorNotice'
 import { DataHomeOwnerHelp, dataHomeOwnerMessage } from '../../components/DataHomeOwnerNotice'
+import SimpleSelect from '../../components/SimpleSelect'
 import { InstantTip, useInstantTip } from '../../components/InstantTip'
 import { Btn, Input } from '../../components/ui'
 import { api } from '../../api/client'
@@ -71,7 +75,7 @@ import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
 // From the side-effect-free module, not `api/client`: test doubles of the
 // client mock only `api`, and an `instanceof` against an undefined import
 // throws instead of falling through to the generic message.
-import { ApiError } from '../../api/apiError'
+import { ApiError, isPermissionRefusal } from '../../api/apiError'
 import { parseErrorCode } from '../../utils/errorReport'
 import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { useGuideRequestHeaders, useGuideSaveLifecycle } from '../../guide/GuideContext'
@@ -294,6 +298,8 @@ interface CreateBody {
   model?: string
   avatar?: CrewAvatarOverride
   first_greeting?: true
+  /** A kept memory store to start from instead of a fresh one. */
+  adopt_memory_store?: string
 }
 
 /** A proposed name and goal an opening starts from. */
@@ -353,6 +359,9 @@ export default function NewCrewmateDialog({
   const [model, setModel] = useState(INHERIT_MODEL)
   const [triggers, setTriggers] = useState('')
   const [sessionColor, setSessionColor] = useState('')
+  // '' = a fresh, empty memory; a store name = the kept memory of a deleted
+  // crewmate, which this one starts from (`adopt_memory_store`).
+  const [memory, setMemory] = useState('')
   // The nested New workspace dialog: whether it is open, and the GENERATION
   // of that opening. `WorkspaceForm`'s create is an awaited POST whose
   // continuation calls `onCreated` when the answer lands — after Radix has
@@ -414,7 +423,7 @@ export default function NewCrewmateDialog({
     const draftGoal = initialDraft?.goal ?? ''
     setLook(null); setLookOpen(false)
     setName(draftName); setJob(draftGoal); setAdvanced(startExpanded || draftGoal.trim() !== '')
-    setWorkspace(OWN_WORKSPACE); setModel(INHERIT_MODEL); setTriggers(''); setSessionColor('')
+    setWorkspace(OWN_WORKSPACE); setModel(INHERIT_MODEL); setTriggers(''); setSessionColor(''); setMemory('')
     setHint(''); setError(''); setNameRefused(false); setUnconfirmed(false); setPendingWorkspace(null)
     // The nested workspace form too: a draft left in it belongs to the
     // dismissed open, and `atStake` must not count it against the next one.
@@ -454,7 +463,19 @@ export default function NewCrewmateDialog({
     enabled: open,
   })
   const { data: availableModels, error: modelsError } = useAvailableModelsQuery({ enabled: open })
-  const optionsError = workspacesError ?? modelsError
+  // Kept memory a deleted crewmate left behind. Re-read on every open, like the
+  // catalog. The field only shows when there is something to offer; a failed
+  // read is said in the same notice as the other lists, so it never passes for
+  // "nothing kept". The default (a fresh memory) is unaffected. The list is the
+  // owner's: a non-owner's refusal means nothing is kept for them, not a failure.
+  const { data: keptMemory, refetch: refetchKeptMemory, error: keptMemoryError } = useQuery({
+    queryKey: ['memory-ownerless-stores'],
+    queryFn: () => api.memoryOwnerlessStores(),
+    enabled: open,
+    staleTime: 0,
+  })
+  const keptStores = Array.isArray(keptMemory?.stores) ? keptMemory.stores : []
+  const optionsError = workspacesError ?? modelsError ?? (isPermissionRefusal(keptMemoryError) ? null : keptMemoryError)
 
   // The look shown and stored when the user has not picked one: a name-seeded
   // icon (pose + colour both follow the name). Never null, so the create flow
@@ -488,7 +509,7 @@ export default function NewCrewmateDialog({
   // not the user's work.
   const dirty = Boolean(
     name !== (initialDraft?.name ?? '') || job !== (initialDraft?.goal ?? '')
-    || workspace !== OWN_WORKSPACE || model !== INHERIT_MODEL || triggers || sessionColor
+    || workspace !== OWN_WORKSPACE || model !== INHERIT_MODEL || triggers || sessionColor || memory
     || look !== null || lookOpen,
   )
 
@@ -669,6 +690,18 @@ export default function NewCrewmateDialog({
           setNameRefused(true)
           return
         }
+        // The kept memory picked here could not be used (another crewmate took
+        // it meanwhile, or it no longer matches its record): nothing was
+        // created, the pick goes back to an empty memory where the user can see
+        // it, and the list is re-read so the stale row goes. A pick is always
+        // sent as picked, so a stale one is refused by the server rather than
+        // quietly becoming a fresh memory.
+        if (e.status === 409 && code === 'adopt_memory_unavailable' && body.adopt_memory_store) {
+          setMemory('')
+          void refetchKeptMemory()
+          fail(t('pages.membersPage.create_memory_unavailable'))
+          return
+        }
         // Every other answer is said in the product's words with its next
         // step, followed by the server's short reason. The server answered,
         // so nothing was created.
@@ -822,6 +855,7 @@ export default function NewCrewmateDialog({
       ...(model !== INHERIT_MODEL ? { model } : {}),
       avatar: effectiveLook,
       ...(firstGreeting ? { first_greeting: true as const } : {}),
+      ...(memory ? { adopt_memory_store: memory } : {}),
     })
   }
 
@@ -914,7 +948,9 @@ export default function NewCrewmateDialog({
               message={t('pages.membersPage.create_options_failed', {
                 list: workspacesError
                     ? t('pages.kiroCrewAgentsPage.workspace_2')
-                    : t('pages.kiroCrewAgentsPage.model'),
+                    : modelsError
+                      ? t('pages.kiroCrewAgentsPage.model')
+                      : t('pages.membersPage.create_memory'),
               })}
               variant="inline"
               testId="crewmate-create-options-error"
@@ -1015,6 +1051,21 @@ export default function NewCrewmateDialog({
                 />
                 <TriggersField value={triggers} onChange={setTriggers} subject="member" busy={busy} />
                 <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" busy={busy} />
+                {keptStores.length > 0 && (
+                  <Field label={t('pages.membersPage.create_memory')} hint={t('pages.membersPage.create_memory_hint')}>
+                    <SimpleSelect
+                      options={['', ...keptStores.map((s) => s.name)]}
+                      optionLabels={[
+                        t('pages.membersPage.create_memory_fresh'),
+                        ...keptStores.map((s) => t('pages.membersPage.create_memory_kept', { name: s.former_owner || s.name })),
+                      ]}
+                      value={memory}
+                      onChange={setMemory}
+                      disabled={busy}
+                      aria-label={t('pages.membersPage.create_memory')}
+                    />
+                  </Field>
+                )}
               </div>
             </motion.div>
           )}
@@ -1037,8 +1088,10 @@ export default function NewCrewmateDialog({
             refuses a second submit. The `aria-disabled:` classes mirror the
             `disabled:` look so the held button is pixel-for-pixel the same.
             `wsModalOpen` keeps its native lock: the panel is inert then and
-            focus is in the nested dialog, so nothing here is focused. */}
-        <Btn primary type="submit" disabled={wsModalOpen} aria-disabled={busy || undefined} aria-busy={busy || undefined} className="min-h-11 w-full justify-center sm:min-h-9 aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-bg-hover aria-disabled:hover:shadow-none aria-disabled:active:scale-100" data-testid="crewmate-create-submit" data-guide-anchor={guided ? GUIDE_ANCHORS.crewmateCreate : undefined}>
+            focus is in the nested dialog, so nothing here is focused. An
+            empty name holds it the same way: pressing it still says why
+            (`create_name_required`) instead of doing nothing. */}
+        <Btn primary type="submit" disabled={wsModalOpen} aria-disabled={busy || !name.trim() || undefined} aria-busy={busy || undefined} className="min-h-11 w-full justify-center sm:min-h-9 aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-bg-hover aria-disabled:hover:shadow-none aria-disabled:active:scale-100" data-testid="crewmate-create-submit" data-guide-anchor={guided ? GUIDE_ANCHORS.crewmateCreate : undefined}>
           {busy ? t('pages.membersPage.create_submitting') : t('pages.membersPage.create_submit')}
         </Btn>
       </div>

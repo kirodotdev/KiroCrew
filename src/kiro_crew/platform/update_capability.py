@@ -601,19 +601,23 @@ def _wheel_route() -> tuple[str | None, str]:
     from kiro_crew.platform.update_layout import cdn_bases, cdn_bases_are_safe
     from kiro_crew.platform_compat import trusted_system_bin
 
+    # The pin first, as that preflight runs it: it refuses `kirocrew update` on
+    # every wheel install too, so no other reason may stand in for it.
+    if any(update_blocked_reason(base) for base in cdn_bases()):
+        return None, _SOURCE_PIN_REASON
     if not _installer_runs_here():
-        return None, "the managed venv is a POSIX install"
+        return None, "the install script's self-updating environment is macOS and Linux only"
     if not trusted_system_bin("openssl"):
         # The engine verifies the signed manifest with a trusted openssl and
         # refuses rather than fall back to a bare name, so a host with none
         # cannot install unattended at all.
         return None, "no trusted openssl outside PATH to verify the signed release"
     if not _runs_from_managed_venv():
-        return None, "only the managed venv updates itself unattended"
+        return None, (
+            "only the install script's own environment updates itself, not a pip or pipx install"
+        )
     if not cdn_bases_are_safe():
         return None, "the CDN base is not a safe HTTPS URL"
-    if any(update_blocked_reason(base) for base in cdn_bases()):
-        return None, _SOURCE_PIN_REASON
     return AUTO_ROUTE_WHEEL, ""
 
 

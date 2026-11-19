@@ -48,7 +48,6 @@ if TYPE_CHECKING:
         EVENT_TOOL_CALL,
         EVENT_TOOL_RESULT,
         FALLBACK_CANDIDATE_ATTEMPTS,
-        FALLBACK_STORY_ATTR,
         HOOK_EVENT_POST_TOOL_USE,
         STOP_CLASS_CANCELLED,
         TERMINAL_TOOL_STATUSES,
@@ -68,10 +67,12 @@ if TYPE_CHECKING:
         _validate_agent,
         _vet_spawn_governance,
         acp_error_is_transient,
+        advance_fallback_after_activity,
         advance_fallback_candidate,
         agent_dir_for_display,
         annotate_model_fallback,
         apply_completion_keep,
+        attach_fallback_story,
         classify_stop_reason,
         configured_fallback_chain,
         evict_completed_agents,
@@ -643,10 +644,16 @@ async def _run_inner_impl(
 
     # The host's refusal in the current prompt attempt, as (title, reason,
     # cause), set by the permission branch below and read by the stream when
-    # the turn then ends cancelled; and how many such turns this run resumed.
+    # the turn then ends on it; and how many such turns this run resumed.
     _refused_call: list[tuple[str, str, str]] = []
     _person_rejected = [False]
     _refusal_resumes = [0]
+    # Whether the model wrote or called anything after the latest refusal.
+    # opencode answers ``reject_once`` by ending a clean turn ``end_turn`` on
+    # the refusal itself, which leaves it unanswered; other harnesses go on
+    # after a reject, so only opencode's clean ending is read as one.
+    _refusal_answered = [False]
+    _reject_ends_turn = getattr(client, "is_opencode_backend", False) is True
     # Set when the stream ends on a generate failure after real output.
     _kept_after_generate_failure = False
     # One run owns one immutable manager deadline. Capture a transport
@@ -738,7 +745,8 @@ async def _run_inner_impl(
         # ``_posttoken_retry_used`` rule (_on_acp_posttoken_transient, chat_turn/acp_recovery.py):
         # each continuation turn issued AFTER observed activity is an
         # independent opportunity for the model to repeat a side-effecting
-        # tool, so post-activity recovery gets exactly ONE attempt.
+        # tool, so post-activity recovery gets exactly ONE attempt per model (a
+        # capacity or throttle error after it moves to the next fallback).
         # TRANSIENT_RETRIES applies only while zero activity was observed
         # (replaying the bare prompt is side-effect-free by definition).
         # PARITY NOTE: this ladder and chat_runner's are two copies with
@@ -752,6 +760,22 @@ async def _run_inner_impl(
         # "a slot/session-scoped equivalent" — the sticky marker for the
         # session lives on the provider via TURN_FALLBACK_ATTR.
         _fb_state = FallbackState(configured_fallback_chain())
+
+        async def _record_fallback_model() -> None:
+            # The model chip and ``subagent_done`` read ``info.resolved_model``; the
+            # ending refreshes it only for an engine move, never for a swap made here.
+            # A swap onto a model the session cannot name (``auto``) records ``""``,
+            # unknown, rather than keep naming the model that refused.
+            _now = _resolved_model_of(client)
+            if _now != info.resolved_model:
+                info.resolved_model = _now
+                try:
+                    await self._manager._write_state_off_loop(
+                        info, "fallback model", resolved_model=_now
+                    )
+                except Exception:
+                    logger.debug("Failed to persist fallback model for %s", info.id, exc_info=True)
+
         # Every replay of the original prompt goes out through this, so a fallback
         # swap below is stated in its [ACTIVE MODEL] line rather than the model the
         # prompt was built on. A continuation prompt carries no such line.
@@ -767,6 +791,7 @@ async def _run_inner_impl(
             self._manager._clear_tool_dispatch(info)
             _refused_call.clear()
             _person_rejected[0] = False
+            _refusal_answered[0] = False
             try:
                 if not use_session_sharing:
                     # Publish the live dedicated PID before every prompt,
@@ -794,10 +819,12 @@ async def _run_inner_impl(
                 # by a continuation on the same session.
                 _withheld: LLMEvent | None = None
                 _infra: Any = None
-                # A completion CANCELLED right after the host refused a call:
-                # codex's only reject option for a shell command aborts the
-                # whole turn. It is withheld, and the turn resumes on the same
-                # session with the refusal as the next prompt.
+                # A completion that ends the turn ON the host's refusal: codex's
+                # only reject option for a shell command aborts the whole turn
+                # (``cancelled``), and opencode ends a clean turn on a reject
+                # with nothing after it. Where no steer carried the reason in,
+                # it is withheld, and the turn resumes on the same session with
+                # the refusal as the next prompt.
                 _refused_turn: LLMEvent | None = None
                 # The completion that ends this prompt, if the stream sent one.
                 _ended: LLMEvent | None = None
@@ -839,7 +866,14 @@ async def _run_inner_impl(
                             _withheld = _ev
                             continue
                         if (
-                            _stop_c.name == STOP_CLASS_CANCELLED
+                            (
+                                _stop_c.name == STOP_CLASS_CANCELLED
+                                or (
+                                    _stop_c.is_success
+                                    and _reject_ends_turn
+                                    and not _refusal_answered[0]
+                                )
+                            )
                             and _refused_call
                             and not _person_rejected[0]
                             and _refusal_resumes[0] < REFUSED_TURN_RESUME_MAX
@@ -869,6 +903,8 @@ async def _run_inner_impl(
                         # continuation prompt starts.
                         _ended = _ev
                         continue
+                    if _refused_call and _ev.kind in (EVENT_TEXT_CHUNK, EVENT_TOOL_CALL):
+                        _refusal_answered[0] = True
                     yield _ev
                 if _refused_turn is not None:
                     # Every prompt end fires Stop, a resumed one included.
@@ -881,7 +917,7 @@ async def _run_inner_impl(
                     usage.settle(_refused_turn)
                     _refusal_resumes[0] += 1
                     logger.info(
-                        "Subagent %s: turn cancelled after a host refusal; resuming (%d/%d)",
+                        "Subagent %s: turn ended on a host refusal; resuming (%d/%d)",
                         info.id,
                         _refusal_resumes[0],
                         REFUSED_TURN_RESUME_MAX,
@@ -954,6 +990,18 @@ async def _run_inner_impl(
                     _kept_after_generate_failure = True
                     logger.warning("Subagent %s: kept output after a transient error", info.id)
                     return
+                # The one continue is spent too: a capacity or throttle error moves the
+                # live session to the next fallback. Its continue takes the in-turn retry
+                # below (event, audit record), never the coordinator: this error's scope
+                # is the primary's, which the session has just left.
+                _swapped = _had_activity and post_activity_attempts >= 1
+                if _swapped:
+                    if not await advance_fallback_after_activity(
+                        client, _fb_state, exc, surface="subagent", log_suffix=f", id={info.id}"
+                    ):
+                        raise
+                    post_activity_attempts = 0
+                    await _record_fallback_model()
                 # A failure an adapter recognises as a DEPENDENCY condition
                 # (provider throttle, 5xx, connection loss: taskq.dependency)
                 # is not retried here: the run reports it to the per-scope
@@ -965,10 +1013,8 @@ async def _run_inner_impl(
                 # (``None``: nothing records its wait and nothing else owns
                 # its work). A row another owner holds, a row that ended,
                 # or a store that cannot say stops the run (``False``).
-                _signal = classify_exception(exc) if _dep_coordinator is not None else None
+                _signal = classify_exception(exc) if _dep_coordinator and not _swapped else None
                 if _signal is not None and not _signal.terminal:
-                    if _had_activity and post_activity_attempts >= 1:
-                        raise
                     _parked = await self._manager._yield_for_dependency(info, _signal)
                     if _parked is False:
                         raise
@@ -980,8 +1026,6 @@ async def _run_inner_impl(
                             msg = full_message
                         continue
                 if _had_activity:
-                    if post_activity_attempts >= 1:
-                        raise
                     post_activity_attempts += 1
                 elif attempts >= TRANSIENT_RETRIES:
                     # ── Throttle-exhaustion fallback chain ──
@@ -1001,21 +1045,9 @@ async def _run_inner_impl(
                             log_suffix=f", id={info.id}",
                         )
                         if _cand is None:
-                            _story = _fb_state.exhaustion_story()
-                            if _story:
-                                logger.warning(
-                                    "model fallback: chain exhausted (%s) for "
-                                    "subagent %s; surfacing original error",
-                                    _story,
-                                    info.id,
-                                )
-                                try:
-                                    setattr(exc, FALLBACK_STORY_ATTR, _story)
-                                except Exception:
-                                    # An exception type that refuses attributes cannot carry the
-                                    # story.
-                                    pass
+                            attach_fallback_story(exc, _fb_state, log_suffix=f", id={info.id}")
                             raise
+                        await _record_fallback_model()
                     _fb_delay = transient_retry_delay(1)
                     await self._manager._fire_event(
                         "subagent_retrying",
@@ -1326,6 +1358,7 @@ async def _run_inner_impl(
                 _person_rejected[0] = True
             elif settled.outcome == "refused" and settled.cause is not None:
                 _refused_call.append((event.title or "", settled.reason, settled.cause))
+                _refusal_answered[0] = False
             if settled.rung == "stopped":
                 # The ladder bailed this request for a stop that landed
                 # while it was being settled: the run ends here, as at the

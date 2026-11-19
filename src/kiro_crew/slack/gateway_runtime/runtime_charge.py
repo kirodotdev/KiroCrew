@@ -218,7 +218,9 @@ def _charge_failure(job: CronJob, _hand_over_streak: bool, *, auth_expiry: bool 
     reconcile them.
 
     ``auth_expiry`` is forwarded to :meth:`CronJob.record_failure`: the failure
-    counts like any other, but never auto-pauses the job.
+    counts like any other, but never auto-pauses the job. The pause this
+    charge can land is announced at the store-side merge, not here: the
+    stored limit decides it (``pause_at_current_limit``).
     """
     if _hand_over_streak:
         job.consecutive_failures = max(job.consecutive_failures, _AUTO_PAUSE_THRESHOLD - 1)

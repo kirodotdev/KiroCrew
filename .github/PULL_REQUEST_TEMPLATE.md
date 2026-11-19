@@ -96,6 +96,20 @@
      (integration paths, UI, external services). State "N/A — unit coverage
      sufficient" only when genuinely true, with a one-line why. -->
 
+## Real-machine verification
+
+<!-- Reviewers treat a PR as passed only when a real machine shows the bug on
+     the base, the fix on the head with the same command, and the machine
+     deleted. Procedure:
+     docs/system-specs/common/testing-conventions.md § Real-machine verification.
+     Never paste a credential here. A diff that runs nothing (docs, comments)
+     writes: N/A -- <what in the diff runs nothing>
+
+       Machine: <EC2 type or your computer>, <OS + version>, <arch>, <vCPU / memory>
+       Before (main <sha12>): `<command>` -> <failing output; a flaky test: the forced condition red, and the repeats>
+       After (head <sha12>): `<command>` -> <passing output; a flaky test: the forced condition green, and the repeats>
+       Cleanup: <instance terminated, security group and key pair deleted, tag search empty | own computer> -->
+
 ## Screenshots / video
 
 <!-- MANDATORY for any user-visible UI change (new/changed panels, components,
@@ -178,15 +192,7 @@
 
 ## Checklist
 
-- [ ] At most two commits (one is the norm), with a Conventional Commits title (`feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert: ...`)
-<!-- If your branch goes stale, REBASE it. Plain-clicking the "Update branch"
-     button on the PR page, or merging the base branch in, adds a merge commit,
-     which counts toward the limit above and will fail PR Hygiene on a PR that
-     was otherwise green. That button's dropdown carries an "Update with rebase"
-     option, which is safe. Pick that, or run:
-
-       git fetch origin && git rebase origin/<base branch>
-       git push --force-with-lease -->
+- [ ] A Conventional Commits title (`feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert: ...`); PR Hygiene does not count commits
 - [ ] Existing tests pass and new tests added for new functionality
 - [ ] Self-review completed; code follows project style guidelines
 - [ ] Documentation updated (if applicable)

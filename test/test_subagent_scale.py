@@ -169,7 +169,7 @@ class TestWaveDigest:
         # Chunk 2 (final): summary counts + release guidance, and ONLY the
         # remaining members' lines (chunk buffers reset between flushes).
         assert "Batch results 2/2" in final
-        assert "11 ✅" in final and "1 ❌" in final and "of 12 agents" in final
+        assert "11 completed" in final and "1 failed" in final and "of 12 agents" in final
         assert "before spawning any follow-up" in final
         assert "/tmp/w10/result.txt" in final and "/tmp/w11/result.txt" in final
         assert "/tmp/w0/result.txt" not in final  # already delivered in chunk 1
@@ -265,7 +265,7 @@ class TestWaveDigest:
             await _settle(lambda: len(injected) >= 1, what="the wave digest injected")
 
         lines = "\n".join(injected).splitlines()
-        tag = "✅ (partial: backend failed to generate the final response)"
+        tag = "completed (partial: backend failed to generate the final response)"
         assert any(f"`{m0.id}` {tag}" in line for line in lines)
         assert not any(f"`{m1.id}`" in line and "partial" in line for line in lines)
 
@@ -501,15 +501,15 @@ class TestWaveDigest:
             await _drain_injections(orch)
 
         body = "\n".join(injected)
-        assert "1 ✅ · 3 ❌ · 0 ⏹" in body
-        assert "1 of the ❌ never started" in body
+        assert "1 completed · 3 failed · 0 stopped" in body
+        assert "1 of the failed runs never started" in body
         # A member the spent episode ended is counted too, so the advice waits
         # for memory to ease rather than resubmitting into the same episode.
         assert "resubmit them once memory eases" in body
         if not nested_live:
             # The card's own parser still reads the tally line.
             assert re.search(
-                r"^Batch results \d+/\d+ — wave finished: 1 ✅ · 3 ❌ · 0 ⏹ of 4 agents\.",
+                r"^Batch results \d+/\d+ — wave finished: 1 completed · 3 failed · 0 stopped of 4 agents\.",
                 body,
                 re.M,
             )
@@ -1030,7 +1030,7 @@ class TestWaveDigest:
         digest = injected[0]
         assert digest.startswith("[Subagent batch completion event]")
         assert "Batch results 1/1" in digest
-        assert "3 ✅" in digest and "of 3 agents" in digest
+        assert "3 completed" in digest and "of 3 agents" in digest
         assert "before spawning any follow-up" in digest
 
     @pytest.mark.asyncio

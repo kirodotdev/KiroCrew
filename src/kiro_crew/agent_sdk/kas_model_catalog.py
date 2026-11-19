@@ -1,9 +1,11 @@
 """The KAS engine's model catalog, read off the ``model`` select it advertises.
 
-Measured on the bundled engine (KAS 0.66.33, run from Kiro Crew's own install
+Measured on the bundled engine (KAS 0.66.117, run from Kiro Crew's own install
 with no kiro-cli on the host; the frame is
-``test/fixtures/acp_frames/kas/bundle-session-live.jsonl``): a ``session/new``
-response carries NO ``models`` object. The model list is the ``configOptions``
+``test/fixtures/acp_frames/kas/bundle-session-live.jsonl``): neither the
+``session/new`` response nor the ``config_option_update`` that follows it carries
+a ``models`` object, and from 0.66.117 the ``model`` select comes only in that
+update, not in the response. The model list is the ``configOptions``
 ``model`` select alone, one option per served model --
 ``{value, name, description, _meta.kiro.{rateMultiplier, rateUnit, hasEffort,
 ...}}`` -- and no option carries a structured context-window field.
@@ -152,8 +154,13 @@ def vault_identity() -> str:
 
     Blocking (reads the vault); call off the loop. Never raises. The one read
     both the KAS harness's stamp (``acp/harness/kas.py``, ``SessionExtras.vault_identity``)
-    and the picker's match go through.
+    and the picker's match go through. On a workload-identity host it is the
+    workload's own key, and the vault is not read.
     """
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
+        return workload_identity.catalog_identity()
     # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must not
     # load on the session drivers' import path (see kiro_crew.acp.kas_host_auth).
     from kiro_crew.auth.bridge import vault_identity_fingerprint

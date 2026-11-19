@@ -34,6 +34,9 @@ export interface SessionMessageCardProps {
    *  text — a host that cannot navigate keeps a non-interactive card rather
    *  than a dead-looking link. */
   onOpenSession?: (key: string) => void
+  /** Opens an `/artifacts/<slug>` link in the body in the host's side panel;
+   *  absent, the link stays a plain new-tab anchor. */
+  onArtifactOpen?: (slug: string) => void
 }
 
 /** Placeholder passed as the name in the translated "Sent to {{name}}" and
@@ -84,7 +87,7 @@ function RecipientTag({ recipient, onOpenSession }: { recipient: SessionParty; o
   )
 }
 
-export function SessionMessageCard({ sender, recipient, body, time = null, onOpenSession }: SessionMessageCardProps) {
+export function SessionMessageCard({ sender, recipient, body, time = null, onOpenSession, onArtifactOpen }: SessionMessageCardProps) {
   const [open, setOpen] = useState(false)
   // Clamp a body that visibly runs past ~two lines; a short one never offers the
   // toggle.
@@ -119,7 +122,7 @@ export function SessionMessageCard({ sender, recipient, body, time = null, onOpe
         className={`text-[12.5px] text-text break-words [&_p]:m-0 ${long && !open ? 'line-clamp-2' : ''}`}
         data-testid="session-card-body"
       >
-        <MarkdownRenderer content={body} />
+        <MarkdownRenderer content={body} onArtifactOpen={onArtifactOpen} />
       </div>
 
       {long ? (

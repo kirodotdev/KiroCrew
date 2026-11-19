@@ -41,8 +41,12 @@ export default function ArtifactFolderDeleteDialog({
   return (
     <Modal open={!!folder} onClose={() => { if (!busy) onClose() }} title={i18nT('components.artifactFolderDeleteDialog.delete_folder', { name: folder?.name ?? '' })} maxWidth={480}>
       <p className="text-sm text-text m-0">
-        {i18nT('components.artifactFolderDeleteDialog.this_folder_contains')} {i18nT('components.artifactFolderDeleteDialog.artifact', { count: stats.artifactCount })}
-        {stats.subfolderCount > 0 ? ` across ${i18nT('components.artifactFolderDeleteDialog.subfolder', { count: stats.subfolderCount })}` : ''}.
+        {stats.subfolderCount > 0
+          ? i18nT('components.artifactFolderDeleteDialog.contains_artifacts_across', {
+              count: stats.artifactCount,
+              subfolders: i18nT('components.artifactFolderDeleteDialog.subfolder', { count: stats.subfolderCount }),
+            })
+          : i18nT('components.artifactFolderDeleteDialog.contains_artifacts', { count: stats.artifactCount })}
       </p>
       <div className="flex flex-col gap-2 mt-4">
         <Btn
@@ -68,7 +72,9 @@ export default function ArtifactFolderDeleteDialog({
           <span>
             <span className="block font-medium">{i18nT('components.artifactFolderDeleteDialog.delete_folder_only_keep_artifacts')}</span>
             <span className="block text-[12px] opacity-80">
-              {i18nT('components.artifactFolderDeleteDialog.contents_move_up_to')} {folder?.parent_id ? 'the parent folder' : 'the library root'}.
+              {folder?.parent_id
+                ? i18nT('components.artifactFolderDeleteDialog.contents_move_up_to_parent')
+                : i18nT('components.artifactFolderDeleteDialog.contents_move_up_to_root')}
             </span>
           </span>
         </Btn>

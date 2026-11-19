@@ -851,16 +851,17 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 ):
                     self._stage_init_frame(msg)
                 else:
-                    if (
+                    _replayed = (
                         session_id in self._load_replay_frames
                         and msg.method in _session_update
                         and _is_replayed_turn_frame(msg.params)
-                    ):
+                    )
+                    if _replayed:
                         self._load_replay_frames[session_id] += 1
                     # Counted, not logged per frame: this is the measured
                     # flood (transcript replay during session/load, plus any
                     # backend still streaming after teardown).
-                    self._note_dropped_frame(session_id, msg.method)
+                    self._note_dropped_frame(session_id, msg.method, replay=_replayed)
                 continue
 
             # No sessionId. An id-carrying frame that still has a method is

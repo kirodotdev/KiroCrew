@@ -526,6 +526,8 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.relay_archive import RELAY_ARCHIVE_CODE  # noqa: F401
     from kiro_crew.dashboard.relay_archive import RELAY_ARCHIVE_ERROR  # noqa: F401
     from kiro_crew.dashboard.relay_archive import is_relay_archive  # noqa: F401
+    from kiro_crew.dashboard.session_activity import session_activity  # noqa: F401
+    from kiro_crew.dashboard.session_activity import session_execution_active  # noqa: F401
     from kiro_crew.dashboard.slot_color import write_slot_color  # noqa: F401
     from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry  # noqa: F401
     from kiro_crew.dashboard.state import MAX_LIVE_SLOTS  # noqa: F401

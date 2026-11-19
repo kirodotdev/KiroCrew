@@ -149,7 +149,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     dispatch, moveSlotToFolder, navigate, navigationType, location, queryClient, provider, deleteTerminalSessionRef, searchParams, setSearchParams, isMobile, isTouch, topbarSlot, topbarTrailSlot,
     mobileNavRail, titleInTopbar, langGen, vv, keyboardInset, slots, switchSlotGone, filteredSlots, filteredSlotsRef, personSlots, surfaceUnreadSlots, catalogRefreshTrigger, connected, creatingSlot, foregroundCreateId,
     foregroundCreateIdRef, lastCreatedActivationRef, unresumableResume, undeletableHistory, activeSlot, boundStore, voiceRecoverySlot, setVoiceRecoverySlot, appToolCallIds, mcpAppPanel,
-    autoOpenGitPanel, autoOpenGitPanelKnown, sidePanelAlwaysOpen, sidePanelAlwaysOpenKnown, sidePanelPinSummary,
+    autoOpenGitPanel, autoOpenGitPanelKnown, sidePanelAlwaysOpen, sidePanelAlwaysOpenKnown, sidePanelPinSummary, autoOpenConductorBoard,
   } = useChatPageEnvironment({
     embedded, embedMode, popout,
   })
@@ -662,7 +662,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // active session away from the session the host panel is bound to.
   const forkUnavailable = !!embedded && !popout
   const {
-    send, restoreSentTurn,
+    send, restoreSentTurn, composerSend,
   } = useComposerSend({
     mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef, forkUnavailable,
     setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
@@ -723,7 +723,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // offer to turn Crew Mode off, since the server refuses that once a message was
   // sent (`crew_mode_locked`) and the loaded rows are the only way to know.
   const hasUserMessage = slotLoading || messages.some(m => m.role === 'user')
-  const { crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, crewModeMidChat, turnOffCrewMode, openTaskBoard } = useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView: tabsCtl.openView })
+  const { crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, crewModeMidChat, turnOffCrewMode, openTaskBoard } = useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView: tabsCtl.openView, autoOpenBoard: autoOpenConductorBoard })
   // A crew member's message box sends nothing while its conductor is closed
   // (ComposerDockView's gate); the voice auto-submit below honours it too.
   const currentCrewRoot = crewRootOf(currentSlot)
@@ -782,7 +782,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     announceAttachmentChange,
   })
   const {
-    followupTsRef, followupAddToSession, folderSuggestionAccept, folderSuggestionDecline, followupBranchFor,
+    followupTsRef, followupAddToSession, folderSuggestionAccept, folderSuggestionUndo, folderSuggestionDecline, followupBranchFor,
   } = useFollowupCardActions({
     dispatch, moveSlotToFolder, activeSlot, folderSuggestion, followupTsBySlot, inputRef,
   })
@@ -807,12 +807,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // isolated (no error row, no text back in the box: the card is where the
   // result shows) and `onOutcome` hears what it came to. A `false` with no
   // undelivered call (a send that stopped before the POST) did not go out.
-  const { composeSend } = useStableCallbackProps({ composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void): ComposeSendResult | null => {
+  const { composeSend } = useStableCallbackProps({ composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void, files: readonly string[] = []): ComposeSendResult | null => {
     // A split view draws a composer per cell (ChatPane takes its own cards).
     if ((splitMode && splitFeatureEnabled) || !slot || slot !== activeSlotRef.current || composerSlotRef.current !== slot) return null
     const stopState = currentSlot?.stop_state
     if (!connected || crewModeSwitching || crewRootClosed || stopState === 'killing') {
       dispatch(setPendingInput(mergeReplyIntoDraft(inputRef.current, text)))
+      // The card's own uploaded files join this composer's (it is the card's chat).
+      if (files.length) setPendingFiles(prev => [...new Set([...prev, ...files])])
       return 'staged'
     }
     // The composer's own busy reading (a turn, or only sub-agents running), so
@@ -821,7 +823,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // The refusal's framed reason too: an isolated send shows it nowhere else.
     let undelivered: 'refused' | 'indeterminate' | undefined
     let why: string | undefined
-    send(text, slot, flag, true, false, (kind, reason) => { undelivered = kind; why = reason }).then(
+    send(text, slot, flag, true, false, (kind, reason) => { undelivered = kind; why = reason }, undefined, files).then(
       ok => onOutcome(ok ? 'sent' : undelivered ?? 'refused', why),
       // send() is not meant to throw; if it does, the POST may already be out.
       () => onOutcome('indeterminate'),
@@ -916,8 +918,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = useMessageActions({
     dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, handleArtifactOpen, search,
     tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, setRegenerating,
-    // The same document test appShell's `isEmbed` makes: a companion chat renders on its host's route.
-    embedChatFrame: embedMode === 'chat' && location.pathname.startsWith('/embed/'),
+    // The same document test appShell's `isEmbed` makes, plus the pop-out session window: a companion chat renders on its host's route.
+    embedChatFrame: embedMode === 'chat' && (popout || location.pathname.startsWith('/embed/')),
   })
 
   // The rows the virtualizer draws (see transcriptRows).
@@ -1104,6 +1106,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     activeSlot,
     sidebarOnScreen,
     folderSuggestionAccept,
+    folderSuggestionUndo,
     folderSuggestionDecline,
     slotFolderId: currentSlot?.folder_id,
     slotProject: currentSlot?.project,
@@ -1203,7 +1206,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           <ChatEmptyState
             mode={mode} dispatch={dispatch} pendingAgent={pendingAgent} pendingAgentKindRef={pendingAgentKindRef} pendingModel={pendingModel} newSessionRef={newSessionRef}
             newSlotFailed={newSlotFailed} newSlotMutation={newSlotMutation} setNewSlotFailed={setNewSlotFailed} setSidError={setSidError}
-            closedElsewhere={!!popout && !!ownChatClosedElsewhere}
+            closedElsewhere={!!ownChatClosedElsewhere} inPopout={!!popout}
           />
         ) : (
           <SearchHighlightContext.Provider value={searchCtxValue}>
@@ -1257,7 +1260,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               uploadCount={uploadCount} sendHeld={sendHeld} composerBandRef={composerBandRef} scrollBottom={scrollBottom} handleResumeSession={handleResumeSession}
               composerRootChange={composerRootChange} composerUserEdit={composerUserEdit} followUpMulti={followUpMulti} followUpOptions={followUpOptions} followUpPicked={followUpPicked}
               followUpPickedRef={followUpPickedRef} followUpSourceKey={followUpSourceKey} toggleFollowUpOption={toggleFollowUpOption} dashCfg={dashCfg} jevAutoConsented={jevAutoConsented}
-              refusedPress={refusedPress} setRefusedPress={setRefusedPress} send={send} pickModel={pickModel} setProject={setProject} projectSwitching={projectSwitching} switchAgent={switchAgent} currentSlot={currentSlot}
+              refusedPress={refusedPress} setRefusedPress={setRefusedPress} send={send} composerSend={composerSend} pickModel={pickModel} setProject={setProject} projectSwitching={projectSwitching} switchAgent={switchAgent} currentSlot={currentSlot}
               activeFolderName={activeFolderName} anchorSessionControl={anchorSessionControl} openSessionControl={openSessionControl} refreshSessionControlStatuses={refreshSessionControlStatuses}
               sessionControlKey={sessionControlKey} sessionControlRect={sessionControlRect} sessionControls={sessionControls} setOpenSessionControl={setOpenSessionControl}
               activeAgentName={activeAgentName} attachmentAnnouncement={attachmentAnnouncement} clampOutOfTokens={clampOutOfTokens} handleAddToContext={handleAddToContext}

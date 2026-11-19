@@ -132,6 +132,19 @@ def run_crew_create(args: dict[str, Any], ctx: ToolContext) -> str:
             f" The hub picked this crew by headroom; pass crew=`{resp.get('crew')}` "
             "(its id) on every follow-up call."
         )
+    skipped = resp.get("skipped")
+    names = [
+        str(s.get("crew_name") or s.get("crew"))
+        for s in (skipped if isinstance(skipped, list) else [])
+        if isinstance(s, dict) and (s.get("crew_name") or s.get("crew"))
+    ]
+    if names:
+        # A crew skipped because it already holds a worker for this item, left
+        # running there (a create whose reply was lost).
+        note += (
+            f" Skipped {', '.join(f'`{n}`' for n in names)}: it already holds a "
+            "worker for this item, left running there."
+        )
     if "previous_branch" in resp:
         # Wave 8: a redispatch of a retired item. Two workers never share a branch.
         last = resp.get("previous_branch")
@@ -169,17 +182,19 @@ def run_crew_send(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def run_crew_read(args: dict[str, Any], ctx: ToolContext) -> str:
-    if args.get("since") is not None:
-        return "Error: session_read_message with crew does not take since."
     query = (
         f"target={quote(str(args['target']))}&crew={quote(str(args['crew']))}"
         f"&limit={int(args.get('limit', 20))}"
     )
+    if args.get("since") is not None:
+        query += f"&since={int(args['since'])}"
     try:
         resp = ctx.client.get(f"/api/session-control/read?{query}", session_key=ctx.caller_key)
     except DashboardError as refused:
         return redact(f"Error: could not read that crew session: {refused.error}")
     state = "still working" if resp.get("running") else "idle"
+    if "total" in resp:
+        state += f"; total={resp['total']}"
     lines = [
         f"\U0001f4d6 `{resp.get('target', '')}` {_on(resp)} — {resp.get('title', '')} ({state})"
     ]
@@ -187,7 +202,12 @@ def run_crew_read(args: dict[str, Any], ctx: ToolContext) -> str:
     if not rows:
         lines.append("No messages yet.")
     for row in rows:
-        lines.append(f"[{row.get('role') or '?'}] {row.get('content') or ''}")
+        at = f"[{row['index']}] " if "index" in row else ""
+        lines.append(f"{at}[{row.get('role') or '?'}] {row.get('content') or ''}")
+    if "next_since" in resp:
+        lines.append(f"Pass since={resp['next_since']} on your next read to see only what is new.")
+    elif "total" in resp and resp.get("running"):
+        lines.append("No cursor while it is still working: read again without since.")
     return redact("\n".join(lines))
 
 

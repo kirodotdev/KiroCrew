@@ -121,6 +121,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _HISTORY_PAGE_MAX,
         _ack_job,
         _history_page,
+        _run_target_missing,
         api_cron_ack,
         api_cron_cancel,
         api_cron_history,
@@ -205,7 +206,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         inject_cron_result_to_dashboard,
         move_cron_job_tab,
         prefetch_cron_dismissed,
+        read_cron_tab_rows,
         restore_cron_turn_timeout,
+        stored_cron_folder,
     )
     from kiro_crew.dashboard.cron_note_ack import (  # noqa: F401
         cron_item_already_recorded,

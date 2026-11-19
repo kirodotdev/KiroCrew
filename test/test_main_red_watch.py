@@ -6,18 +6,27 @@ issue. Four properties are pinned:
 
 * PARSING -- real-looking job logs (colour codes, timestamps, xdist progress,
   parametrised ids) give ``{node id: message prefix}``; a Fast Gate barrier
-  timeout, a cancelled job and a Coverage Gate failure give ``{}``.
+  timeout, a cancelled job and a Coverage Gate failure give ``{}``. The log is
+  the fallback source; ``test_main_red_annotations.py`` pins the first one, the
+  check-run annotations, against rows the API returned for real red shards.
 * STATE -- first-red SHA and streak survive a body round trip, a re-run does not
   add to the streak, a late older run changes nothing, and a green run closes only
   a streak it came after.
 * GATING -- the watched name is ``ci.yml``'s real ``name:``, the job takes push
   runs on main that failed, timed out or passed (never cancelled), the permissions
-  are the three it needs, and log text never reaches a ``${{ }}`` expression.
+  are the four it needs, and log text never reaches a ``${{ }}`` expression.
 * WRITING -- the step runs with ``gh`` stubbed: a red run with node ids files one
   issue, a barrier red files nothing, a repeat edits the open one, a green run
-  closes it, and shell text in a message is never executed.
+  closes it, and shell text in a message is never executed. A job is read from
+  its annotations, from its log when those cannot be read or, on a backend
+  test job, name no test. A red run with no readable failed job fails the step,
+  a rate-limited read ends the reading, and every failed read is in the output
+  and in the job summary. With no issue open, one is filed only when a test is
+  red in two jobs of the run; a run that does not open says which tests it saw.
 
-Skipped where the POSIX toolchain the step needs is unavailable.
+The step tests need a POSIX bash. They do not need the host to have `jq`: each
+runs with the stand-in of ``main_red_jq_stand_in.py``, and again with the host's
+`jq` when there is one.
 """
 
 from __future__ import annotations
@@ -32,6 +41,7 @@ from typing import Any
 
 import pytest
 import yaml
+from main_red_jq_stand_in import JQ_MODES, install_jq
 from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -277,11 +287,11 @@ BOT = {"login": "app/github-actions", "is_bot": True}
 
 def test_the_oldest_issue_with_the_marker_the_title_prefix_and_our_author_is_picked() -> None:
     marked = mod.render_body(_state(), [], 5)
-    title = "Main is red: test/a.py::t"
+    title = "ci: Main is red: test/a.py::t"
     issues = [
         {"number": 9, "title": title, "body": marked, "author": BOT},
         {"number": 5, "title": title, "body": marked, "author": BOT},
-        {"number": 2, "title": "Main is red: by hand", "body": "no record", "author": BOT},
+        {"number": 2, "title": "ci: Main is red: by hand", "body": "no record", "author": BOT},
         {"number": 1, "title": "Something else", "body": marked, "author": BOT},
     ]
     assert mod.pick_issue(issues)["number"] == 5
@@ -292,7 +302,7 @@ def test_the_oldest_issue_with_the_marker_the_title_prefix_and_our_author_is_pic
 def test_an_issue_a_person_wrote_is_never_ours_even_with_a_perfect_record() -> None:
     """The forged-issue attack: our title, a valid record, a huge last_run_id."""
     forged = mod.render_body(_state(99_999_999_999), [], 3)
-    title = "Main is red: x"
+    title = "ci: Main is red: x"
     people = [
         {"login": "octocat", "is_bot": False},
         {"login": "github-actions", "is_bot": False},
@@ -384,7 +394,7 @@ def test_the_body_carries_the_set_the_first_sha_the_streak_and_the_fix_line() ->
     assert "Streak: 1" in body
     assert "Fix in progress: #23933 (@buluoray, opened 2026-10-26 07:00Z)" in body
     assert "none yet" not in body
-    assert mod.title_for(state["failures"]) == "Main is red: test/a.py::t"
+    assert mod.title_for(state["failures"]) == "ci: Main is red: test/a.py::t"
 
 
 # ── Wiring and least privilege ───────────────────────────────────────────────
@@ -438,6 +448,7 @@ def test_the_job_takes_push_runs_on_main_that_failed_timed_out_or_passed() -> No
 def test_the_permissions_are_exactly_what_the_step_needs() -> None:
     assert _load(WATCHER)["permissions"] == {
         "actions": "read",
+        "checks": "read",
         "contents": "read",
         "issues": "write",
     }
@@ -483,10 +494,25 @@ def test_the_script_the_step_runs_exists_and_is_small_enough_to_import() -> None
 
 # ── The step, executed with gh stubbed ───────────────────────────────────────
 
-_needs_posix = pytest.mark.skipif(
-    os.name == "nt" or shutil.which("bash") is None or shutil.which("jq") is None,
-    reason="requires a POSIX bash and jq to execute the step script",
+_needs_bash = pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="requires a POSIX bash to execute the step script",
 )
+# Which `jq` the step under test finds; set per test by the fixture below.
+_JQ = {"mode": JQ_MODES[-1]}
+
+
+@pytest.fixture(params=JQ_MODES)
+def jq_instrument(request: pytest.FixtureRequest) -> Any:
+    """Run the step with the `jq` stand-in, and with the host's `jq` when it has one."""
+    _JQ["mode"] = request.param
+    yield request.param
+    _JQ["mode"] = JQ_MODES[-1]
+
+
+def _needs_posix(test: Any) -> Any:
+    return pytest.mark.usefixtures("jq_instrument")(_needs_bash(test))
+
 
 _GH_STUB = r"""#!/usr/bin/env bash
 d="$STUB_DIR"
@@ -494,7 +520,7 @@ printf '%s\n' "$*" >> "$d/gh.log"
 filter() { while [ "$#" -gt 0 ]; do [ "$1" = "--jq" ] && { printf '%s' "$2"; return; }; shift; done; }
 arg_after() { local k="$1"; shift; while [ "$#" -gt 0 ]; do [ "$1" = "$k" ] && { printf '%s' "$2"; return; }; shift; done; }
 case "$1 $2" in
-  "label create") [ -f "$d/label-refused" ] && exit 1; exit 0 ;;
+  "label create") [ "$3" = main-red ] && [ -f "$d/label-refused" ] && exit 1; exit 0 ;;
   "issue list")
     case " $* " in
       *" --label "*) cat "$d/labelled-issues.json" ;;
@@ -502,6 +528,7 @@ case "$1 $2" in
     esac
     exit 0 ;;
   "issue create")
+    case " $* " in *" --label "*) [ -f "$d/labelled-create-refused" ] && { echo "could not add label: 'area: ci' not found" >&2; exit 1; } ;; esac
     arg_after --title "$@" > "$d/created-title.txt"
     cp "$(arg_after --body-file "$@")" "$d/created-body.md"
     echo "https://github.com/example/repo/issues/77"; exit 0 ;;
@@ -512,7 +539,16 @@ esac
 if [ "$1" = "api" ]; then
   case "$2" in
     */actions/runs/1000/jobs*) jq -r "$(filter "$@")" < "$d/jobs.json" ;;
-    */actions/jobs/*/logs) id="${2#*/actions/jobs/}"; id="${id%%/*}"; cat "$d/logs-$id.log" ;;
+    rate_limit) echo 1795040400 ;;
+    */check-runs/*/annotations*)
+      id="${2#*/check-runs/}"; id="${id%%/*}"; id="${id%%\?*}"
+      [ -f "$d/rate-limited-$id" ] && { echo "gh: API rate limit exceeded for installation. (HTTP 403)" >&2; exit 1; }
+      [ -f "$d/annotations-$id.json" ] || { echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1; }
+      cat "$d/annotations-$id.json" ;;
+    */actions/jobs/*/logs)
+      id="${2#*/actions/jobs/}"; id="${id%%/*}"
+      [ -f "$d/logs-$id.log" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+      cat "$d/logs-$id.log" ;;
     */issues/*/timeline*) [ -f "$d/timeline-refused" ] && exit 1; jq -c "$(filter "$@")" < "$d/timeline.json" ;;
     *) echo "unexpected gh api $2" >&2; exit 9 ;;
   esac
@@ -534,9 +570,11 @@ def _jobs(*rows: tuple[int, str, str], coverage: str | None = None) -> str:
     return json.dumps({"jobs": jobs})
 
 
+# The same test is red on a Linux and on a Windows shard: the shape of a break.
 RED_JOBS = _jobs(
     (11, "Backend Tests (3.12, 3)", "failure"),
     (12, "Backend Tests (3.12, 4)", "success"),
+    (14, "Backend Tests (Windows) (3)", "failure"),
     (13, "Await Fast Gate", "success"),
 )
 BARRIER_JOBS = _jobs((21, "Await Fast Gate", "failure"), (22, "Backend Tests (3.12, 1)", "skipped"))
@@ -576,7 +614,7 @@ def _open_issue(number: int = 5, run_id: int = 900) -> dict:
     state = mod.next_state(None, {"test/old.py::t": "x"}, "a" * 40, run_id, RUN_URL)
     return {
         "number": number,
-        "title": "Main is red: test/old.py::t",
+        "title": "ci: Main is red: test/old.py::t",
         "body": mod.render_body(state, [], number),
         "author": BOT,
     }
@@ -587,10 +625,13 @@ def _run_step(
     *,
     jobs: str = RED_JOBS,
     logs: dict[int, str] | None = None,
+    annotations: dict[int, str] | None = None,
+    rate_limited: tuple[int, ...] = (),
     issues: list[dict] | None = None,
     conclusion: str = "failure",
     timeline: list[dict] | None = None,
     label_refused: bool = False,
+    labelled_create_refused: bool = False,
     timeline_refused: bool = False,
     labelled_issues: list[dict] | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
@@ -604,10 +645,18 @@ def _run_step(
     labelled = issues if labelled_issues is None else labelled_issues
     (stub / "labelled-issues.json").write_text(json.dumps(labelled or []), encoding="utf-8")
     (stub / "timeline.json").write_text(json.dumps(timeline or []), encoding="utf-8")
-    for job_id, text in (logs if logs is not None else {11: LINUX_SHARD_RED}).items():
+    both_legs = {11: LINUX_SHARD_RED, 14: WINDOWS_SHARD_RED}
+    for job_id, text in (logs if logs is not None else both_legs).items():
         (stub / f"logs-{job_id}.log").write_text(text, encoding="utf-8")
+    # A job with no annotations file is one whose annotations cannot be read.
+    for job_id, text in (annotations or {}).items():
+        (stub / f"annotations-{job_id}.json").write_text(text, encoding="utf-8")
+    for job_id in rate_limited:
+        (stub / f"rate-limited-{job_id}").write_text("", encoding="utf-8")
     if label_refused:
         (stub / "label-refused").write_text("", encoding="utf-8")
+    if labelled_create_refused:
+        (stub / "labelled-create-refused").write_text("", encoding="utf-8")
     if timeline_refused:
         (stub / "timeline-refused").write_text("", encoding="utf-8")
     bin_dir = tmp_path / "bin"
@@ -615,6 +664,7 @@ def _run_step(
     gh = bin_dir / "gh"
     gh.write_text(_GH_STUB, encoding="utf-8", newline="\n")
     gh.chmod(0o755)
+    install_jq(bin_dir, _JQ["mode"])
     env = dict(os.environ)
     env.update(
         {
@@ -622,6 +672,7 @@ def _run_step(
             "PYTHONDONTWRITEBYTECODE": "1",
             "STUB_DIR": str(stub),
             "RUNNER_TEMP": str(runner_temp),
+            "GITHUB_STEP_SUMMARY": str(stub / "summary.md"),
             "GH_TOKEN": "stub",
             "REPO": "example/repo",
             "RUN_ID": "1000",
@@ -662,7 +713,8 @@ def test_a_red_run_with_node_ids_files_one_labelled_issue_titled_by_the_first(
         (stub / "created-title.txt")
         .read_text(encoding="utf-8")
         .startswith(
-            "Main is red: test/test_memory_files_substitution.py::TestTheInjectedImplementationAnswers::"
+            "ci: Main is red: test/test_memory_files_substitution.py::"
+            "TestTheInjectedImplementationAnswers::"
         )
     )
     assert len(_wrote(stub, "create")) == 1
@@ -672,9 +724,16 @@ def test_a_red_run_with_node_ids_files_one_labelled_issue_titled_by_the_first(
     edited = (stub / "edit-77.md").read_text(encoding="utf-8")
     assert "put `Fixes #77` in its body" in edited
     assert mod.parse_state(edited)["first_sha"] == SHA[:12]
-    # Only the failed job's log was read; the passing shard was not.
-    assert any(c.endswith("actions/jobs/11/logs") for c in _calls(stub))
-    assert not any("actions/jobs/12/logs" in c for c in _calls(stub))
+    # Only the failed jobs were read: annotations, then the log, then the one
+    # reporting read of the log endpoint. The passing shard was not.
+    reads = [c for c in _calls(stub) if "/annotations" in c or "/logs" in c]
+    assert reads == [
+        "api repos/example/repo/check-runs/11/annotations?per_page=100",
+        "api repos/example/repo/actions/jobs/11/logs",
+        "api repos/example/repo/check-runs/14/annotations?per_page=100",
+        "api repos/example/repo/actions/jobs/14/logs",
+    ]
+    assert "Could not read the annotations of job 11 (gh: Resource not accessible" in out.stdout
     assert not any(" --assignee" in c or c.startswith("pr ") for c in _calls(stub))
 
 
@@ -697,11 +756,189 @@ def test_a_cancelled_job_log_and_a_coverage_gate_failure_write_nothing(tmp_path:
 @_needs_posix
 def test_a_failed_log_read_is_skipped_not_fatal(tmp_path: Path) -> None:
     jobs = _jobs(
-        (11, "Backend Tests (3.12, 3)", "failure"), (14, "Backend Tests (3.12, 5)", "failure")
+        (11, "Backend Tests (3.12, 3)", "failure"),
+        (14, "Backend Tests (3.12, 5)", "failure"),
+        (16, "Backend Tests (Windows) (3)", "failure"),
     )
-    out, stub = _run_step(tmp_path, jobs=jobs, logs={11: LINUX_SHARD_RED})
+    out, stub = _run_step(tmp_path, jobs=jobs, logs={11: LINUX_SHARD_RED, 16: WINDOWS_SHARD_RED})
     assert out.returncode == 0, out.stderr
     assert len(_wrote(stub, "create")) == 1
+
+
+def _fixture(name: str) -> str:
+    return (ROOT / "test" / "fixtures" / "main_red" / name).read_text(encoding="utf-8")
+
+
+@_needs_posix
+def test_a_red_run_whose_logs_cannot_be_read_is_filed_from_its_annotations(tmp_path: Path) -> None:
+    """The state every red main run was in: the log read fails, the annotations name the tests."""
+    jobs = _jobs(
+        (11, "Backend Tests (3.12, 2)", "failure"),
+        (14, "Backend Tests (Windows) (2)", "failure"),
+        (15, "Coverage Gate", "failure"),
+        (17, "Backend Tests (3.12, 7)", "failure"),
+    )
+    notes = {
+        11: _fixture("annotations_linux_shard.json"),
+        14: _fixture("annotations_windows_shard.json"),
+        15: _fixture("annotations_coverage_gate.json"),
+        17: _fixture("annotations_xdist_group.json"),
+    }
+    out, stub = _run_step(tmp_path, jobs=jobs, logs={}, annotations=notes)
+    assert out.returncode == 0, out.stderr
+    assert (stub / "created-title.txt").read_text(encoding="utf-8") == (
+        "ci: Main is red: test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::"
+        "test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response0]"
+    )
+    state = mod.parse_state((stub / "edit-77.md").read_text(encoding="utf-8"))
+    # Three tests red on both legs, listed once and first, then two red on one shard only.
+    assert len(state["failures"]) == 5
+    assert all("test_kas_orchestrator_memory" in nodeid for nodeid in list(state["failures"])[:3])
+    # One annotation read per failed job, and no log read.
+    assert [c for c in _calls(stub) if "/annotations" in c] == [
+        f"api repos/example/repo/check-runs/{job}/annotations?per_page=100"
+        for job in (11, 14, 15, 17)
+    ]
+    assert not any("/logs" in c for c in _calls(stub))
+    assert "Could not read" not in out.stdout
+
+
+@_needs_posix
+def test_a_red_run_with_no_readable_failed_job_fails_and_prints_the_errors(tmp_path: Path) -> None:
+    out, stub = _run_step(tmp_path, logs={})
+    assert out.returncode == 1
+    assert "::error::Could not read the annotations or the log of any of the 2 failed job(s)" in (
+        out.stdout
+    )
+    assert "Could not read the log of job 11 (gh: Not Found (HTTP 404)" in out.stdout
+    assert "writing nothing" not in out.stdout
+    summary = (stub / "summary.md").read_text(encoding="utf-8")
+    assert "Could not read the annotations of job 11 (gh: Resource not accessible" in summary
+    assert "Could not read the annotations or the log of any of the 2 failed job(s)" in summary
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+@_needs_posix
+def test_a_test_red_in_one_job_only_opens_no_issue_and_says_which(tmp_path: Path) -> None:
+    """A single red shard is as often a flake as a break: no issue, and never in silence."""
+    jobs = _jobs(
+        (11, "Backend Tests (3.12, 2)", "failure"), (17, "Backend Tests (3.12, 7)", "failure")
+    )
+    notes = {
+        11: _fixture("annotations_linux_shard.json"),
+        17: _fixture("annotations_xdist_group.json"),
+    }
+    out, stub = _run_step(tmp_path, jobs=jobs, logs={}, annotations=notes)
+    assert out.returncode == 0, out.stderr
+    said = "5 test(s) red in one job only (test/test_kas_orchestrator_memory.py::"
+    assert "::warning::https://github.com/example/repo/actions/runs/1000: " + said in out.stdout
+    assert "not opening an issue for a failure seen in one job." in out.stdout
+    summary = (stub / "summary.md").read_text(encoding="utf-8")
+    assert said in summary and "test_no_file_gains_a_short_fixed_wait" in summary
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+@_needs_posix
+def test_a_test_red_in_one_job_only_still_updates_an_open_issue(tmp_path: Path) -> None:
+    notes = {11: _fixture("annotations_linux_shard.json")}
+    jobs = _jobs((11, "Backend Tests (3.12, 2)", "failure"))
+    out, stub = _run_step(tmp_path, jobs=jobs, logs={}, annotations=notes, issues=[_open_issue()])
+    assert out.returncode == 0, out.stderr
+    assert _wrote(stub, "create") == []
+    state = mod.parse_state((stub / "edit-5.md").read_text(encoding="utf-8"))
+    assert state["streak"] == 2 and len(state["failures"]) == 3
+
+
+@_needs_posix
+def test_a_red_run_that_names_no_test_says_what_it_read_and_writes_nothing(tmp_path: Path) -> None:
+    jobs = _jobs((15, "Coverage Gate", "failure"))
+    notes = {15: _fixture("annotations_coverage_gate.json")}
+    out, stub = _run_step(tmp_path, jobs=jobs, logs={}, annotations=notes)
+    assert out.returncode == 0, out.stderr
+    said = (
+        "No failing pytest node id in https://github.com/example/repo/actions/runs/1000: "
+        "1 failed job(s), 1 annotation set(s) and 0 log(s) read, 0 node ids"
+    )
+    assert f"::warning::{said}" in out.stdout and "writing nothing" in out.stdout
+    assert said in (stub / "summary.md").read_text(encoding="utf-8")
+    # A job that is not a backend test job is not read a second time from its log.
+    assert not any("/logs" in c for c in _calls(stub))
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+@_needs_posix
+def test_a_backend_shard_whose_annotations_name_no_test_is_read_from_its_log(
+    tmp_path: Path,
+) -> None:
+    """A shard that died before the conftest annotated still has a summary in its log."""
+    notes = {11: _fixture("annotations_coverage_gate.json")}
+    out, stub = _run_step(tmp_path, annotations=notes)
+    assert out.returncode == 0, out.stderr
+    assert "The annotations of job 11 name no test; read its log too." in out.stdout
+    assert len(_wrote(stub, "create")) == 1
+    state = mod.parse_state((stub / "edit-77.md").read_text(encoding="utf-8"))
+    assert "test/test_no_message.py::test_bare" in state["failures"]
+
+
+@_needs_posix
+def test_a_backend_shard_with_no_test_in_annotations_or_log_writes_nothing(tmp_path: Path) -> None:
+    notes = {11: _fixture("annotations_coverage_gate.json")}
+    out, stub = _run_step(tmp_path, annotations=notes, logs={})
+    assert out.returncode == 0, out.stderr
+    assert (
+        "The annotations of job 11 name no test and its log could not be read (gh: Not Found"
+        in (out.stdout)
+    )
+    assert "1 annotation set(s) and 0 log(s) read, 0 node ids" in out.stdout
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+@_needs_posix
+def test_a_rate_limited_read_is_named_and_followed_by_no_log_read(tmp_path: Path) -> None:
+    out, stub = _run_step(tmp_path, rate_limited=(11,))
+    assert out.returncode == 1
+    # GNU date prints the reset as a time; a date without `-d @N` prints the epoch.
+    assert "::warning::The API rate limit of this token is used up (it resets at " in out.stdout
+    assert "at 22:20Z)" in out.stdout or "at epoch 1795040400)" in out.stdout
+    said = "Stopped at job 1 of 2 failed job(s) and read no log, which would fail the same way."
+    assert said in out.stdout
+    assert said in (stub / "summary.md").read_text(encoding="utf-8")
+    assert "::error::Could not read the annotations or the log of any of the 1 failed job(s)" in (
+        out.stdout
+    )
+    assert not any("/logs" in c or "check-runs/14/" in c for c in _calls(stub))
+    assert "trying its log" not in out.stdout
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+@_needs_posix
+def test_a_rate_limit_after_a_job_was_read_files_what_was_read(tmp_path: Path) -> None:
+    jobs = _jobs(
+        (11, "Backend Tests (3.12, 2)", "failure"),
+        (14, "Backend Tests (Windows) (2)", "failure"),
+        (17, "Backend Tests (3.12, 7)", "failure"),
+    )
+    notes = {
+        11: _fixture("annotations_linux_shard.json"),
+        14: _fixture("annotations_windows_shard.json"),
+    }
+    out, stub = _run_step(tmp_path, jobs=jobs, logs={}, annotations=notes, rate_limited=(17,))
+    assert out.returncode == 0, out.stderr
+    assert "Stopped at job 3 of 3 failed job(s)" in out.stdout
+    assert not any("/logs" in c for c in _calls(stub))
+    assert len(_wrote(stub, "create")) == 1
+    state = mod.parse_state((stub / "edit-77.md").read_text(encoding="utf-8"))
+    assert len(state["failures"]) == 3
+
+
+@_needs_posix
+def test_at_most_twenty_failed_jobs_are_read(tmp_path: Path) -> None:
+    jobs = _jobs(*[(100 + n, f"Backend Tests (3.12, {n})", "failure") for n in range(25)])
+    notes = {100 + n: _fixture("annotations_linux_shard.json") for n in range(25)}
+    out, stub = _run_step(tmp_path, jobs=jobs, logs={}, annotations=notes)
+    assert out.returncode == 0, out.stderr
+    assert len([c for c in _calls(stub) if "/annotations" in c]) == 20
+    assert "More than 20 failed jobs" in out.stdout
 
 
 @_needs_posix
@@ -762,10 +999,47 @@ def test_an_older_red_run_finishing_late_edits_nothing(tmp_path: Path) -> None:
 def test_without_the_label_the_issue_is_filed_and_found_by_title_prefix(tmp_path: Path) -> None:
     out, stub = _run_step(tmp_path, label_refused=True)
     assert out.returncode == 0, out.stderr
-    assert not any("--label" in c for c in _calls(stub))
+    # The label it could not create is left off; the form's own labels are not its to create.
+    assert not any("--label main-red" in c for c in _calls(stub))
+    assert any("--label bug --label area: ci" in c for c in _wrote(stub, "create"))
     out, stub = _run_step(tmp_path / "again", label_refused=True, issues=[_open_issue()])
     assert _wrote(stub, "create") == []
     assert any(c.startswith("issue list") and "--label" not in c for c in _calls(stub))
+
+
+@_needs_posix
+def test_the_form_labels_are_ensured_without_force_before_the_issue_is_filed(
+    tmp_path: Path,
+) -> None:
+    out, stub = _run_step(tmp_path)
+    assert out.returncode == 0, out.stderr
+    ensured = [c for c in _calls(stub) if c.startswith("label create")]
+    assert [c for c in ensured if "main-red" not in c] == [
+        "label create bug --repo example/repo",
+        "label create area: ci --repo example/repo",
+    ]
+    (create,) = _wrote(stub, "create")
+    assert create.endswith("--label bug --label area: ci --label main-red")
+
+
+@_needs_posix
+def test_a_label_that_cannot_be_added_never_costs_the_issue(tmp_path: Path) -> None:
+    out, stub = _run_step(tmp_path, labelled_create_refused=True)
+    assert out.returncode == 0, out.stderr
+    first, second = _wrote(stub, "create")
+    assert "--label" in first and "--label" not in second
+    said = "Could not file the issue with its labels (could not add label: 'area: ci' not found"
+    assert f"::warning::{said}" in out.stdout
+    assert said in (stub / "summary.md").read_text(encoding="utf-8")
+    assert (stub / "created-title.txt").read_text(encoding="utf-8").startswith("ci: Main is red: ")
+    assert _wrote(stub, "edit")[0].startswith("issue edit 77")
+
+
+@_needs_posix
+def test_neither_label_step_stops_an_unlabelled_issue(tmp_path: Path) -> None:
+    out, stub = _run_step(tmp_path, label_refused=True, labelled_create_refused=True)
+    assert out.returncode == 0, out.stderr
+    assert len(_wrote(stub, "create")) == 2 and "--label" not in _wrote(stub, "create")[1]
 
 
 @_needs_posix
@@ -849,7 +1123,7 @@ def test_shell_text_in_a_failure_message_is_never_executed(tmp_path: Path) -> No
         f"2026-10-26T07:20:01.0000000Z FAILED test/test_x.py::test_a - $(touch {marker}) "
         f"`touch {marker}` ; touch {marker} @octocat\n"
     )
-    out, stub = _run_step(tmp_path / "run", logs={11: hostile})
+    out, stub = _run_step(tmp_path / "run", logs={11: hostile, 14: hostile})
     assert out.returncode == 0, out.stderr
     assert not marker.exists()
     body = (stub / "created-body.md").read_text(encoding="utf-8")

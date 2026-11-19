@@ -15,7 +15,7 @@ import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registe
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
-import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Coins, Compass, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
+import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Coins, Compass, KeyRound, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
 import { MobileConnectDialog } from './components/mobileConnect'
@@ -81,7 +81,7 @@ import { REGISTERED_OVERLAYS_PACK, readExperience, subscribeExperience } from '.
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
 import { relayPaneBridge } from './lib/relayCrewPanes'
-// Only while the hidden relay pane key is on, so its code stays out of the first load.
+// Only in a desktop shell with the relay pane calls, so its code stays out of the first load elsewhere.
 const RelayCrewPaneHost = lazy(() => import('./components/RelayCrewPaneHost'))
 import RemoteUpdateOffer from './components/RemoteUpdateOffer'
 import KiroSignInNoticeFallback from './components/KiroSignInNoticeFallback'
@@ -95,9 +95,10 @@ import ReportProblemModal from './components/ReportProblemModal'
 import KiroAccountModal from './components/KiroAccountModal'
 
 import { i18nT } from './i18n/t'
+import { KIRO_SIGN_IN_PATH } from './pages/developer/kiroSignInLink'
 import { useLanguageGeneration } from './i18n/useLanguageGeneration'
 import { isAppNavId } from './appNotificationBadges'
-import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
+import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect, TerminalRoute } from './shell/routes'
 import { NAV_ITEMS } from './shell/nav/navItems'
 import { RailHeaderGlyph } from './shell/nav/railChrome'
 import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
@@ -147,7 +148,8 @@ const DeveloperPage = lazyPage(() => import('./pages/DeveloperPage'))
 const SchedulePage = lazyPage(() => import('./pages/SchedulePage'))
 const AppPage = lazyPage(() => import('./pages/AppPage'))
 const AppDetailPage = lazyPage(() => import('./pages/AppDetailRoute'))
-const MigrationPage = lazyPage(() => import('./pages/MigrationPage'))
+const MarketListingPage = lazyPage(() => import('./pages/apps/MarketListingPage'))
+const MigrationPage = lazyPage(() => import('./pages/MigrationRoute'))
 const HooksPage = lazyPage(() => import('./pages/HooksPage'))
 
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
@@ -376,6 +378,8 @@ const MainRoutes = memo(function MainRoutes() {
       <Route path="/apps/-/updates" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
       <Route path="/apps/library" element={<Suspense fallback={null}><LibraryPage /></Suspense>} />
       <Route path="/apps/detail/:name" element={<AppDetailPage />} />
+      {/* One Kiro Space store listing, keyed by store and ref, never by app name. */}
+      <Route path="/apps/-/market/:registry/:namespace/:name" element={<MarketListingPage />} />
       <Route path="/apps/migrate/:name" element={<MigrationPage />} />
       <Route path="/apps/:name" element={<AppPage />} />
       {/* Splat route: SettingsPage parses the trailing segments itself
@@ -398,6 +402,7 @@ const MainRoutes = memo(function MainRoutes() {
           so this one arm serves /aws-control and /aws-control/usage alike —
           an app carries sub-segments for its own path navigation, same
           shape as /settings/<tab>. */}
+      <Route path="/terminal" element={<TerminalRoute />} />
       <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
       <Route path="*" element={<ChatRedirect />} />
     </Routes>
@@ -409,14 +414,14 @@ export default function App() {
   const {
     isEmbed, isPopout, initialPopoutPath, appPopoutRoute, updateAvailable, settingsDotLabel, terminalEnabled, terminalPoppedOut,
     bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
-    colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
+    colorTheme, onboarded, markOnboarded, markImportOnboarded, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
     gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, offlineCoverKind, focusModeExitMsg, focusChromeInert,
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
     sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, kiroAccountEntry, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
+    kiroUsageState, kiroAccountEntry, kiroSignInPrompt, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
     updateFlow, updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, updateError,
     setUpdateError, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
@@ -598,6 +603,21 @@ export default function App() {
                 collapsed
                 touch
                 onClickOverride={() => { onActivate(); setKiroUsageOpen(true) }}
+              />
+            )}
+            {/* The capsule's quiet "Sign in to Kiro" segment, for the phone. A
+                plain guarded route with `replace`, like Settings below: closing
+                the drawer first would pop history after this push lands. */}
+            {kiroSignInPrompt && (
+              <NavItem
+                navId="kiro-sign-in"
+                path={KIRO_SIGN_IN_PATH}
+                label={i18nT('components.kasLogin.sign_in_to_kiro')}
+                icon={<KeyRound size={16} />}
+                active={false}
+                collapsed
+                touch
+                replace
               />
             )}
           </>}
@@ -909,7 +929,7 @@ export default function App() {
           <MobileConnectDialog mobileConnect={mobileConnect} />
           <RemoteUpdateOffer />
 
-          <FirstRunChapters firstRun={firstRun} onboarded={onboarded} privacyAcked={privacyAcked} markOnboarded={markOnboarded} markImportOnboarded={markImportOnboarded} markPrivacyAcked={markPrivacyAcked} />
+          <FirstRunChapters firstRun={firstRun} onboarded={onboarded} markOnboarded={markOnboarded} markImportOnboarded={markImportOnboarded} />
         </>
       )}
 

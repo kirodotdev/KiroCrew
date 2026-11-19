@@ -50,7 +50,10 @@ suspension: Continue's child probe, and Project's body read, workspace validatio
 and recent-project save. A refused save rolls back only its own project token
 and cannot arm a deferred reset or eager spawn for the replacement.
 
-Eager spawn loads its agent-binding configuration in a worker thread. Slot and
+Eager spawn loads its agent-binding configuration in a worker thread. A recorded
+connected-computer chat never prewarms locally, even with developer mode or its
+preview off; the first real turn reports the disabled placement (see
+[providers](providers.md#connected-computers-behaviors)). Slot and
 session state stay on the loop; existing binding and ownership checks before
 allocation discard work superseded while configuration or resolution awaits.
 Configuration migrations retain their fresh-document delta persistence and
@@ -299,12 +302,13 @@ state are composed behind that facade:
 
 - `session_allocation.py` — live registry, key folding, semaphore leases,
   cold-start allocation, claims, and companion runtimes. The class binds its
-  two largest member groups from the `session_allocation_parts/` owners:
+  largest member groups from the `session_allocation_parts/` owners:
   `get_or_create.py` (claiming the live session for a key, or cold-starting
-  one) and `companions.py` (companion and run runtimes, the parent-sharing
-  decision and the runtimes' process rows); `errors.py` holds the refusals
-  the class and `get_or_create.py` raise. New claim or cold-start behaviour
-  goes in `get_or_create.py`, new companion-runtime behaviour in
+  one), `eviction.py` (ending a registered session a claim cannot hand out,
+  `_evict_stale_session`) and `companions.py` (companion and run runtimes, the
+  parent-sharing decision and the runtimes' process rows); `errors.py` holds
+  the refusals the class and `get_or_create.py` raise. New claim or cold-start
+  behaviour goes in `get_or_create.py`, new companion-runtime behaviour in
   `companions.py`. Each moved member's body is a function there whose first
   parameter is `self`, bound on the class by name, so every member stays an
   attribute of the one class. A bound member's `__qualname__` and `__module__`
@@ -1132,7 +1136,9 @@ or idle, with `park_only=True` and the spawn-identity park grace
 `get_bg_session()` spawns a replacement that reads the new map. The persistent
 `_bg` session of a backend without a shared runtime, and `_hb`, are registered
 sessions (`_PERSISTENT_KEYS`) and keep the environment they started with, like
-any running session.
+any running session. A stricter `agent.sandbox` parks the runtime the same way,
+from `get_bg_session`'s reuse check (the fourth trigger; see
+[A stricter `agent.sandbox` recycles a session at its next turn](#a-stricter-agentsandbox-recycles-a-session-at-its-next-turn)).
 
 `close_all()` detaches both holders atomically under
 `_bg_runtime_lock` and kills the detached snapshot; its counterpart `_closing`
@@ -1743,7 +1749,8 @@ against sweep completeness, and are torn down at `close_all`.
   **The placeholder at a turn's start.** The model also repeats that
   placeholder as the FIRST text of a later turn (after a quiet end, a
   tool-only turn or an interrupted one), where no `ends_turn` signal exists.
-  There the dashboard runner keys on the wording (`dashboard/alternation_echo.py`):
+  There the dashboard runner keys on the wording (`messaging/alternation_echo.py`,
+  which the channel turn driver shares: [messaging](messaging.md), Layer 2):
   a segment that opens like `(No assistant response was recorded` is held off
   the wire and the window while it could still be that text. It is dropped
   when the segment ends (a tool call, the turn's end) as the whole placeholder,
@@ -2859,13 +2866,16 @@ document validates. Otherwise it does three things, in order:
   three because the warm pool captures its agent and cwd). `refresh_defaults` is the **live-session-preserving** path —
   it rebuilds the factory, re-derives the pool and drains the warm pool, but
   never touches a registered session, so in-flight turns keep running and only
-  NEW sessions see the new defaults. `reload_provider_factory` (which retires
-  sessions built by the old factory) is not on this path. Its `defer_busy`
-  form, which the dashboard's reset-all-sessions route (`_reset_all_sessions`)
-  uses, leaves a session a turn holds (a cron run, a chat reply) on its old
-  provider and resets it when that turn ends. Repeated reloads share one pending
-  reset per session instance; completion removes only that task's record, and
-  `close_all` cancels it with the other background tasks. The route's following
+  NEW sessions see the new defaults. The one value that does reach a running
+  session is a stricter `agent.sandbox`, and the claim does that, not this path
+  (see [A stricter `agent.sandbox` recycles a session at its next turn](#a-stricter-agentsandbox-recycles-a-session-at-its-next-turn)).
+  `reload_provider_factory` (which retires sessions built by the old factory) is
+  not on this path. Its `defer_busy` form, which the dashboard's
+  reset-all-sessions route (`_reset_all_sessions`) uses, leaves a session a turn
+  holds (a cron run, a chat reply) on its old provider and resets it when that
+  turn ends. Repeated reloads share one pending reset per session instance;
+  completion removes only that task's record, and `close_all` cancels it with
+  the other background tasks. The route's following
   `drain_all_providers(keep_busy=True)` skips the same sessions. A channel
   member's lifelong lease (`lifecycle_lease`) is not a turn, so that session is
   reset at once, as before. The provider-switch applier calls it without the flag.
@@ -2909,6 +2919,101 @@ Two more reads on this area follow config without a restart:
 (`_effective_prompt_timeout_async`), so `agent.chat_turn_timeout_secs` needed no
 applier — a raised turn budget is in force on the next prompt.
 
+### A stricter `agent.sandbox` recycles a session at its next turn
+
+A process keeps the `agent.sandbox` tier it was spawned under, so rebuilding the
+factory alone would leave every running session at the old tier. A tightening
+(`off`, then `auto`, then `strict`, ordered by the governance `sandbox` scale with
+`auto` read as `standard`) therefore recycles each holder of a looser process at
+its next turn boundary. A looser value changes nothing for a running session. The
+check compares configured values, so a tightening that changes nothing where
+Crew's own sandbox does not confine the spawn (Windows, a macOS spawn delegated to
+kiro-cli's sandbox) still costs one restart. Each provider reports the tier its
+process was spawned under (`LLMProvider.sandbox_mode`, harness-parity H14):
+`AcpClient` its own, `AcpSessionProvider` its runtime's, owned or shared, and the
+ABC default `None` (never recycled for its tier), so the check reads the provider
+and never the harness.
+
+- **A claim.** `_reacquire_and_validate` counts a session whose spawn tier is
+  looser than `_cfg.agent.sandbox` as not valid. It decides after it holds the
+  session's permit, so a turn already running finishes on the old process.
+  `_evict_stale_session` then pops it, parks its queued follow-ups for the
+  successor as `reset` does, and records `end_reason=retired`. As a hard Stop's
+  reset does, it stops the sub-agent runs that share the process
+  (`_select_shared_children`, `_stop_shared_children` with the origin "stopped by
+  a stricter agent.sandbox"), so each one's stopped report lands in the
+  conversation that resumes. It then releases the provider's lease and kills its
+  whole process tree with
+  `session_pid._sync_kill_provider` (awaited on the subprocess executor), and then
+  runs the ordinary shutdown. An incognito or temporary session skips that kill:
+  its ordinary shutdown deletes the harness record while the engine still answers
+  (KAS removes it only through that verb) and then ends the tree. A chat on a
+  shared runtime (the `chat_runtime_sharing` preview) skips the release and the
+  kill: its own shutdown evicts it and kills the process, through
+  `AcpRuntime.kill` and its cleanup, only when it held the last lease, as a failed
+  start's `_end_started_provider` does. After the
+  shutdown it releases the parent's companion runtime. The session map
+  keeps its entry, so the claim's cold
+  start under the new factory resumes the conversation as any process recycle
+  does (a stateless key starts a fresh one, as it always does). That cold start
+  fills each argument the claim leaves unset from the ended session's
+  `allocation_identity`, so an agentless claim (a subagent completion) does not
+  restart the conversation as the default agent, and a claim that names its own
+  model or agent keeps it. A turn that took
+  the permit between the refusal and the pop (`try_acquire` needs no claim) keeps
+  the session, and the claim's retry recycles it once that turn ends. That holder
+  is named (`turn_owner`); a permit locked with no named holder is one the refused
+  claim's own release just handed to the next parked claimant, which finds the
+  session gone and re-enters the claim, so the eviction does not wait for it. A
+  session the Kiro account check also flagged (`retire_on_identity_change`) keeps that
+  retirement's eviction (`end_reason=evicted`).
+- **A claim held for life.** A channel member and a workflow pool worker claim
+  once and reuse the session, so they never meet that check. The member's
+  listening loop calls `SessionManager.recycle_if_sandbox_tightened` before each
+  message and its provider-identity check re-acquires the key; the worker calls it
+  in `reset()` before a reuse and cold-starts when it returns True.
+- **The background helpers.** The provider-backed `_bg` session takes its permit
+  directly, so `recycle_background` claims it with `refuse_looser_tier=False` and
+  replaces it in place, a looser spawn tier being its first recycle reason.
+  `_provider_backed_bg_session` runs that recycle before it hands out a handle on
+  a looser entry, so a running turn finishes on the old process and the next one
+  streams on the replacement. An entry the recycle cannot replace (a dead process
+  no claim validates, or a failed start) is evicted and started afresh. A handle
+  can outlive a tightening, so each turn through it checks once it holds the
+  permit and, while the entry is still looser, refuses as `background session
+  unavailable` before streaming; the caller's post-turn `recycle_background`
+  replaces the entry. The shared background
+  runtime is claimed by nothing, so `get_bg_session` checks its spawn tier under
+  `_bg_runtime_lock` at each reuse and parks a looser one, busy or idle
+  (`park_only=True`, `mark_identity_parked`); its in-flight sessions finish first
+  and the slot respawns at the configured tier. A tightening that lands while the
+  runtime is spawning is met at the next reuse.
+- **A shared chat.** A chat on a runtime it shares (the `chat_runtime_sharing`
+  preview) is recycled by its claim like any other; the release leaves the runtime
+  to the chats still leasing it. Its successor's placement keys on the raw spawn
+  tier as well as the effective one (`ChatRuntimeKey.spawn_sandbox_mode`), so it
+  founds a process of its own instead of rejoining the looser one, even where a
+  governance floor or the LTS floor makes both tiers effectively equal. Each chat
+  on the old runtime moves with one restart, and the next to recycle joins the
+  successor.
+- **A shared runtime.** `get_subagent_runtime` does not reuse a live companion
+  runtime spawned looser than a fresh one would be, and
+  `_get_or_bootstrap_run_runtime` does not reuse a run runtime looser than
+  `agent.sandbox`; each is killed and replaced. A companion with no parent tier to
+  mirror spawns at a configured tier stricter than the default. Before the
+  companion's kill, the runs on it are stopped through the same stop step and
+  origin as a claim's recycle. A task step mid-turn on the old run runtime holds a
+  tenancy, so that kill is refused until the turn ends, and the last tenant to
+  leave completes it (`runtime_ownership`).
+  A task step's registered session reports its run runtime's tier, so its next
+  claim refuses it and the eviction ends that one session: it holds no lease and
+  no pid of its own, so the tree kill signals nothing and its shutdown destroys
+  only its handle. `open_task_session` then reaches `_get_or_bootstrap_run_runtime`,
+  which replaces the runtime.
+
+A session that takes no further turn keeps its process until it does, or until the
+idle sweep expires it. `test_sandbox_tier_recycle.py` pins each case.
+
 ## Stop Orchestration
 
 `stop_turn()` is the shared orchestration layer for every stop surface (dashboard Stop button, Slack `/kirocrew stop`, transport stop verbs). Sequence:
@@ -2939,7 +3044,10 @@ applier — a raised turn budget is in force on the next prompt.
 4. Send `session/cancel` via `provider.cancel(wait_ack_timeout=budget)`:
    - `"acked"` → set `session.prev_turn_cancelled = True`, call `on_soft` callback, return `"soft"`.
    - `"no_turn"` → return `"idle"`.
-   - `"timeout"` or `"error"` → fall through to hard kill.
+   - `"timeout"` or `"error"` → fall through to hard kill. A shared-runtime turn
+     that ended on the session handle's own synthesized unacked-cancel terminal
+     (`STOP_REASON_CANCEL_UNACKED`, `cancel_went_unacked`) is a `"timeout"`, not
+     an ack: the agent never answered the cancel and may still be running it.
 5. Hard kill: `reset(key, stop_shared_children=True)` (stops the sub-agent runs that share the parent's process first) → fire-and-forget `_eager_respawn(key)` task → call `on_hard` callback → return `"hard"`.
 
 ### Session-scoped Stop record
@@ -2964,6 +3072,39 @@ beside the sibling per-key dicts. `cancel_current()` does NOT record a stop: it
 is the host's own best-effort abort (queue drain, injection retry, run
 teardown), not a person pressing Stop, and must not suppress a continuation
 the way a Stop does.
+
+### A Stop during turn preparation
+
+A dashboard turn can wait a long time before it opens its provider stream: in
+fair admission, a cold session start, its context build. A Stop or Interrupt
+pressed then gets `"idle"` from `stop_turn()` because no provider turn exists
+yet. The handler then ends that runner itself
+(`turn_stop._cancel_preparing_runner`). The exit guard names its `_TurnExit`
+on the slot (`slot._preparing_turn`) for the runner's whole turn, with the
+task running the guard (`_TurnExit.runner`), and compare-and-clears it; it
+leaves it unset for an agent-started turn, whose native cycle only its own
+stream can cancel. The handler reads `slot._preparing_turn` before it awaits
+`stop_turn()`, and cancels the record's own runner task only if that record is
+still the slot's, the task is not done, and the record has not opened its
+stream (`reached_provider`), recorded no outcome, is not handed off, and runs
+no local command (Stop leaves a local command as it was). It cancels
+`_TurnExit.runner`, not `slot.task`: a bounded turn
+(`turn_dispatch._bounded_turn`) runs the guard in an inner task under
+`asyncio.shield`, and cancelling that task also ends fair admission's own inner
+task below it, so the outer `slot.task` ends with it. The handler clears
+`slot._preparing_turn` before the cancel, so a second press cannot cancel a
+runner already unwinding and cut short its admission settle or its
+partial-reply write. The cancelled runner's exit guard runs its tail, which
+hands the queue off as at the end of any stopped turn, so a send queued during
+preparation, or the card an Interrupt chose, starts once. Without the cancel a
+second press found the posture back at idle and could not escalate, and the
+slot kept reading running until preparation finished. The dispatch gate's
+`_stop_pressed()` check stays as the backstop for a Stop that lands at the
+stream edge. An `"idle"` answer for a runner that has already opened its stream
+(the provider finished, the slot has not settled) cancels nothing and answers
+`{"ok": true, "info": "no active turn"}`. A dashboard send still waiting in
+fair admission before its runner starts has no record yet and is not covered
+(#36433). Tests: `test/test_stop_during_turn_preparation.py`.
 
 ### Cancelled-turn context restore
 
@@ -5396,8 +5537,8 @@ are the live provider's `cwd` and `work_scratch_dir`, peeked with
 `sessions.get_provider`. Each extracted image goes out through the channel's own
 picture send (`send_outbound_image(conversation_id, file, *, thread_id) -> bool`),
 the call its renderer uses. Every reference that is not sent, because a gate did
-not admit it, extraction refused it, or the upload failed, becomes `🖼 <name>` in
-the text, and a refusal or failure adds one `⚠ <name> …` line in a separate
+not admit it, extraction refused it, or the upload failed, becomes `Image: <name>` in
+the text, and a refusal or failure adds one `Warning: <name> …` line in a separate
 message after the answer, so an `[OPTIONS:]` trailer still ends the answer.
 Refusals and uploads are SEL-audited as `<channel>_mirror.upload_files` with reason
 codes and counts only.
@@ -5416,7 +5557,7 @@ their mirror names every picture.
 Both user-message echoes (Slack's `> *Sent from Kiro Crew:*` quote and the plain
 channel-neutral `Sent from Kiro Crew:` line, one `MIRROR_ECHO_LABEL`) send
 no bytes: a pasted `![image](<path>)` and an `[attached_file N] <path>` marker
-become `🖼 <name>` / `📎 <name>` (`_mirror_echo_text`, reading the turn's own
+become `Image: <name>` / `File: <name>` (`_mirror_echo_text`, reading the turn's own
 `meta.files`), because the dashboard uploads store is not a root any channel
 upload admits.
 
@@ -6680,7 +6821,7 @@ continuations -- so each arm re-reads for itself.
 |---|---|---|
 | L1 gateway-capacity (CONTINUATION, `_turn_ending_chain`) | suppress, `_stop_pressed()`, queued user follow-up, `_pending_steers` | the counted `_infra_retries`; the ladder run is `forget`-ed, not recorded as recovered |
 | same-model transient 5xx (VERBATIM REPLAY) | suppress, `_stop_pressed()` **only** | all four per-turn budgets (`_transient_5xx_retries`, `_infra_retries`, `_fallback_candidate_idx`, `_fallback_walked`), byte-identical to the throttle-exhaustion drop arm |
-| post-token one-shot (CONTINUATION) | suppress, `_stop_pressed()`, queued user follow-up, `_pending_steers` | nothing: `_posttoken_retry_used` is consumed BELOW the wait, so a dropped retry never spends the allowance |
+| post-token one-shot (CONTINUATION) | suppress, `_stop_pressed()`, queued user follow-up, `_pending_steers` | nothing: `_posttoken_retry_used` is consumed BELOW the wait, so a dropped retry never spends the allowance; when the continue was a fallback candidate's (the walk moved the session after the one continue hit a capacity or throttle error), the walk state (`_fallback_candidate_idx`, `_fallback_walked`, `_fallback_walk_refused`, `_fallback_walk_server_error`) is reset on the drop, and the sticky `_active_fallback_model` stays |
 
 The replay arm's two exclusions are deliberate, not an omission. It runs on
 `not _turn_emitted`: no token and no tool call landed, so a mid-turn correction has

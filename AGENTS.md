@@ -279,7 +279,8 @@ seams: [app-kit-platform](docs/system-specs/modules/app-kit-platform.md).
 
 Types the PR-title gate in `pr-hygiene.yml` accepts: `feat`, `fix`, `docs`,
 `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `build`, `revert`. **One
-logical change per commit**, and at most two commits per PR.
+logical change per commit**. PRs are squash-merged by default (auto-merge uses
+`--squash`), and PR Hygiene does not count a branch's commits.
 
 ### PR description
 
@@ -288,6 +289,20 @@ body from `.github/PULL_REQUEST_TEMPLATE.md` yourself: keep every heading
 verbatim and fill in the `**Goal:**` line. PR Hygiene fails a body missing the
 required sections; check it before opening with
 `out="$(mktemp)"; PR_BODY="$(cat <file>)" GITHUB_OUTPUT="$out" bash .github/scripts/pr-description-check.sh; cat "$out"`.
+
+### Real-machine verification
+
+A PR passes only after a real machine shows the bug is real, the fix fixes it, and
+the machine is cleaned up. MUST reproduce on the base before writing the fix, verify
+the PR head on the same machine with the same command while CI runs, then delete the
+machine. A bug you cannot reproduce is not confirmed: keep diagnosing. For a feature, the
+base run shows the missing behaviour. The body
+carries `## Real-machine verification` (machine, before, after, cleanup), or
+`N/A -- <why>` when the diff runs nothing. Outside contributors provide a role in
+their own AWS account or verify on their own computer. The machine has no inbound
+rules, self-terminates, is tagged and capped, and no credential ever lands in a file,
+log or PR. Full procedure:
+[testing-conventions § Real-machine verification](docs/system-specs/common/testing-conventions.md#real-machine-verification).
 
 ### PR goal is frozen
 

@@ -315,7 +315,7 @@ def test_notification_only_fallback_warns_that_discord_missed(cron_caller) -> No
     with patch("kiro_crew.mcp_core._post") as post:
         post.return_value = {"ok": True, "delivered_to": "notification"}
         result = _call_tool("send_message", {"text": "hi", "session": "discord"})
-    assert "⚠️" in result
+    assert "Warning:" in result
     assert "discord" in result
 
 

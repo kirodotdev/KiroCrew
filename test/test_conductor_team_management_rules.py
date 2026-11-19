@@ -1,10 +1,10 @@
 """The conductor skills carry five general team-management rules.
 
-A conductor that queues a message to a busy worker, waits on its manager for a
-routine incident, dispatches a remote worker it cannot see, acts on a wake before
-reading the item it names, or repeats a slip it never wrote down, gets slow or
-wrong results. These tests pin that the shared procedure (goal-conductor) says
-each rule once, and that the team-lead skill and prompt carry only their delta.
+A conductor that queues a direct message behind a busy worker's turn, waits on its
+manager for a routine incident, dispatches a remote worker it cannot see, acts on a
+wake before reading the item it names, or repeats a slip it never wrote down, gets
+slow or wrong results. These tests pin that the shared procedure (goal-conductor)
+says each rule once, and that the team-lead skill and prompt carry only their delta.
 """
 
 from __future__ import annotations
@@ -36,11 +36,8 @@ def _goal() -> str:
 def test_goal_conductor_steers_a_working_fleet_like_one_worker():
     section = _section(_goal(), "### Goal changes mid-flight", "## When a conductor dispatched you")
     # The fleet case points at the existing rule rather than restating it.
-    assert "**Steer corrections, queue everything else.**" in section
-    assert (
-        "send a correction to several workers with `session_broadcast` with `mode: steer`"
-        in section
-    )
+    assert "**Steer every direct follow-up; never queue it.**" in section
+    assert "use `session_broadcast` with `mode: steer`" in section
 
 
 def test_goal_conductor_handles_routine_incidents_itself():

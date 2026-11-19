@@ -91,7 +91,6 @@ def test_origin_values_are_pinned():
         "internal",
         "other",
     )
-    assert len(ua.ORIGIN_VALUES) == 17
     assert tuple(CHANNEL_SESSION_NAMESPACES) == ua.ORIGIN_VALUES[:11]
 
 

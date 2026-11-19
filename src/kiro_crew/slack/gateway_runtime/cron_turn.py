@@ -293,6 +293,20 @@ async def _cron_run_sequence(
                         "Cron '%s': step session replaced during re-projection; abandoning",
                         job.name,
                     )
+                    if step is steps[0]:
+                        # Nothing was sent on this fire, so it is retained like
+                        # every other undispatched exit, not recorded as a success.
+                        _defer_cron_before_dispatch(
+                            job, "the session was replaced by a Stop before this run started"
+                        )
+                    else:
+                        # Earlier steps already ran: a retry would replay them, so
+                        # the fire is not kept as never started, nor a success.
+                        job.last_status = "error"
+                        job.last_error = (
+                            f"the session of sequence step {step.alias!r} was replaced "
+                            "by a Stop; the steps before it ran, the rest did not"
+                        )
                     return None
                 # Publish this turn's session identity so managed MCP
                 # tools resolve their parent session. The cron path was
@@ -419,7 +433,7 @@ async def _cron_run_sequence(
                 )
                 _seq_missing = declared_mcp_not_ready_note(client)
                 if _seq_missing:
-                    _seq_mcp_notes.append(f"⚠ {agent}: {_seq_missing}.")
+                    _seq_mcp_notes.append(f"Warning: {agent}: {_seq_missing}.")
                 # The spec notices for this step's session, once per agent.
                 _seq_notices = _seq_hooks.notices()
                 if _seq_notices and _seq_notices not in _seq_mcp_notes:
@@ -854,6 +868,9 @@ async def _cron_run_single(
             # owns during the staleness probe: abandon this run, do not stream
             # on the popped session. The finally releases and closes the gap.
             logger.info("Cron '%s': session replaced during re-projection; abandoning", job.name)
+            _defer_cron_before_dispatch(
+                job, "the session was replaced by a Stop before this run started"
+            )
             return None
         # The job's tab reads this lease as running, and with surface_channel_sessions
         # off no reconcile pass pushes the start.
@@ -994,7 +1011,7 @@ async def _cron_run_single(
         )
         _missing = declared_mcp_not_ready_note(client)
         if _missing:
-            result_text = f"⚠ {_missing}.\n\n{result_text}"
+            result_text = f"Warning: {_missing}.\n\n{result_text}"
         if _directive_refusals:
             result_text = "\n\n".join([*_directive_refusals, result_text])
         # Before set_run_result and the dedup hash below, so the stored

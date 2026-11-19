@@ -33,8 +33,10 @@ from kiro_crew.apps.registry_pipeline.caches import (
     _read_external_registry_cache,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _communicate_with_timeout
+from kiro_crew.apps.registry_pipeline.gh_credential import _github_https_repo
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _FETCH_CAUSE_OTHER,
+    _GH_FETCH_CAUSES,
     _entry_git_url,
     _git_target_is_unsupported,
     _git_url_host,
@@ -153,6 +155,8 @@ def _enrich_with_install_status(
     *detected* is a set of app names that were found via ``detectInstalled``
     shell commands (installed outside Kiro Crew's app manager).
     """
+    from kiro_crew.apps.market_source import is_market_source  # facade star import stays
+
     detected = detected or set()
     for entry in entries:
         name = entry.get("name", "")
@@ -174,7 +178,12 @@ def _enrich_with_install_status(
                 entry["origin"] = existing.get("origin", "registry")
             entry["resources"] = existing.get("resources", "gateway")
             entry["lifecycle"] = existing.get("lifecycle", "gateway")
-            entry["updateAvailable"] = _version_newer(
+            # A Kiro Space install is matched to this row by NAME only, so the row
+            # must not offer an update that would reinstall it from git.
+            from_market = is_market_source(existing.get("source"))
+            if from_market:
+                entry["installedFrom"] = "market"
+            entry["updateAvailable"] = not from_market and _version_newer(
                 entry.get("version", ""),
                 existing.get("version", ""),
             )
@@ -540,6 +549,9 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
                 host = _git_url_host(reg.repo)
                 if host:
                     row["host"] = host
+                github_repo = _github_https_repo(reg.repo)
+                if cause in _GH_FETCH_CAUSES and github_repo:
+                    row["repo"] = github_repo
             results.append(row)
             continue
         # Expire per-app manifest caches so fresh display info is refetched

@@ -12,9 +12,10 @@ reports costs one ``chat.update``.
 
 * **First publish** posts the board and pins it (``pins.add``; ``already_pinned``
   counts as pinned). The message ts, a digest of what it shows, and the pin
-  are kept on the channel's surface record. The pin needs :data:`PIN_SCOPE`,
-  which the manifest's code-channels group asks for; a pin Slack refuses (an
-  install that has not re-approved it yet) is tried again every
+  are kept on the channel's surface record, with the message's permalink (read
+  once per message) that the context bar's Workers item links to. The pin needs
+  :data:`PIN_SCOPE`, which the manifest's code-channels group asks for; a pin
+  Slack refuses (an install that has not re-approved it yet) is tried again every
   :data:`REPIN_SECS`, not on each publish, and at once once the scope is granted.
 * **Later publishes** edit that message with ``chat.update`` only when the digest
   moved. A message Slack does not have any more (``message_not_found``,
@@ -58,6 +59,8 @@ _GONE = frozenset({"message_not_found", "cant_update_message", "edit_window_clos
 _PLAN_REFUSED = frozenset({"invalid_blocks", "invalid_blocks_format", "feature_disabled"})
 #: Channels whose Slack refused the plan block (in this process; retried after a restart).
 _plan_refused: set[str] = set()
+#: Channels whose Slack refused the board's tab links (in this process).
+_tabs_refused: set[str] = set()
 
 
 def _code(exc: BaseException) -> str:
@@ -68,12 +71,17 @@ def _code(exc: BaseException) -> str:
         return ""
 
 
-def digest(snapshot: model.BoardSnapshot, links: dict[str, str], look: str = "plan") -> str:
+def digest(
+    snapshot: model.BoardSnapshot,
+    links: dict[str, str],
+    look: str = "plan",
+    tabs: render.Tabs | None = None,
+) -> str:
     """What the board SHOWS, hashed: its rendered blocks, without the "Updated" stamp.
 
     Hashing the render rather than the snapshot keeps the digest honest for any
     look: a row field the current renderer does not show never forces an edit,
-    and one it does always does.
+    and one it does always does -- a tab link appearing included.
     """
     blocks = render.board_blocks(
         snapshot,
@@ -81,6 +89,7 @@ def digest(snapshot: model.BoardSnapshot, links: dict[str, str], look: str = "pl
         conductor_link=links.get("@conductor", ""),
         updated="",
         look=look,
+        tabs=tabs,
     )
     payload = {"blocks": blocks, "text": render.fallback_text(snapshot)}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
@@ -109,6 +118,8 @@ async def publish(
     *,
     link_for: Callable[[str], str],
     owner_id: str = "",
+    tabs: render.Tabs | None = None,
+    urgent: bool = False,
     admits: Callable[[], bool] | None = None,
 ) -> str:
     """Bring the channel's board up to *snapshot*; returns what it did (for tests/logs).
@@ -119,6 +130,9 @@ async def publish(
 
     ``""`` nothing to do, ``posted`` / ``updated`` / ``reposted``, or a refusal
     word (``no_slack``, ``denied``, ``archived``, ``stopped``, ``failed``).
+    *tabs* deep-links the channel's own tabs from the board; a board Slack refuses
+    with them is sent again without them (and stays without them in this process)
+    before the plan block itself is given up.
     """
     if snapshot is None:
         return ""
@@ -143,6 +157,11 @@ async def publish(
         return links.get(key, "")
 
     record = await get_async(channel)
+    from kiro_crew.slack.code_channels.board import stops
+
+    # The last await before rendering: a worker that moved to a newer turn
+    # meanwhile is not shown as stopped.
+    snapshot = stops.reconcile(snapshot)
     ts = _unsaved_ts.get(channel) or (record.board_ts if record else "")
     pinned = bool(record.board_pinned) if record else False
     done = ""
@@ -154,19 +173,28 @@ async def publish(
         _retry_at[channel] = max(_retry_at.get(channel, 0.0), hold)
         return "deferred"
     look = "rows" if channel in _plan_refused else "plan"
-    new_digest = digest(snapshot, links, look)
+    if channel in _tabs_refused:
+        tabs = None
+    new_digest = digest(snapshot, links, look, tabs)
     changed = not ts or record is None or record.board_digest != new_digest
     active = any(row.state in model.ACTIVE_STATES for row in snapshot.rows)
     last = _last_edit.get(channel)
     # A live board whose "Updated" stamp went stale is edited even unchanged.
     stale = bool(ts) and active and (last is None or now - last >= STALE_SECS)
-    if ts and (changed or stale) and last is not None and now - last < MIN_EDIT_GAP_SECS:
+    if (
+        ts
+        and (changed or stale)
+        and not urgent
+        and last is not None
+        and now - last < MIN_EDIT_GAP_SECS
+    ):
         # A busy board is edited at most once per gap: the latest state then.
         _retry_at[channel] = MIN_EDIT_GAP_SECS - (now - last)
         changed = stale = False
         done = "deferred"
     if changed or stale:
         text = render.fallback_text(snapshot)
+        dropped_tabs = False
         while True:
             if not _still(admits):
                 return "out_of_scope"
@@ -178,6 +206,7 @@ async def publish(
                 updated=_stamp(),
                 look=look,
                 block_seed=uuid.uuid4().hex[:12],
+                tabs=tabs,
             )
             try:
                 sent = await _send(slack, channel, ts, text, blocks, admits)
@@ -191,6 +220,21 @@ async def publish(
                 break
             except Exception as exc:
                 code = _code(exc)
+                if look == "plan" and code in _PLAN_REFUSED and tabs is not None and tabs.any:
+                    # The tab links first: the board itself must never go stale
+                    # for want of a deep link. Remembered only once the plan
+                    # without them lands, so a refusal of the plan block itself
+                    # is not blamed on the links.
+                    dropped_tabs = True
+                    logger.warning(
+                        "code channel %s: Slack refused the board with tab links (%s); "
+                        "sending it without them",
+                        channel,
+                        code,
+                    )
+                    tabs = None
+                    new_digest = digest(snapshot, links, look, tabs)
+                    continue
                 if look == "plan" and code in _PLAN_REFUSED:
                     # This client or workspace takes no plan block: the mrkdwn
                     # rows from now on, sent at once, so the board never goes stale.
@@ -204,12 +248,14 @@ async def publish(
                         code,
                     )
                     look = "rows"
-                    new_digest = digest(snapshot, links, look)
+                    new_digest = digest(snapshot, links, look, tabs)
                     continue
                 if ts and code in _GONE:
                     ts, pinned = "", False
                     continue
                 return _failed(channel, "update" if ts else "post", exc)
+        if dropped_tabs and look == "plan":
+            _tabs_refused.add(channel)
         if not ts or done != "updated":
             if not ts:
                 return _failed(channel, "post", None)
@@ -218,6 +264,11 @@ async def publish(
                 "slack", "slack.code_channel.board", "allowed", f"channel={channel} ts={ts}"
             )
         _succeeded(channel, now)
+        if stops.reconcile(snapshot) != snapshot and surface.commit_if_not_stopped(channel):
+            # A stopped worker started its next turn while the board went out, so
+            # it still says "Stopped by": the pass armed here edits it again.
+            new_digest = ""
+            _retry_at[channel] = max(_retry_at.get(channel, 0.0), MIN_EDIT_GAP_SECS)
         try:
             await update_async(channel, board_ts=ts, board_digest=new_digest, board_pinned=pinned)
             _unsaved_ts.pop(channel, None)
@@ -255,6 +306,8 @@ async def publish(
             except Exception:
                 logger.debug("code channel %s: pin flag not stored", channel, exc_info=True)
     if ts:
+        await _record_link(slack, channel, ts)
+        await _record_summary(binding, ts, admits)
         await _alert(slack, channel, ts, snapshot, _link, owner_id, admits, now=now)
     if ts and active:
         # The stamp's own deadline, from the last EDIT: the caller re-arms the
@@ -423,6 +476,7 @@ def forget(channel: str) -> None:
     _plan_refused.discard(channel)
     _refused.discard(channel)
     _pin_refused_unscoped.discard(channel)
+    _tabs_refused.discard(channel)
 
 
 def _pin_scope_granted() -> bool:
@@ -443,6 +497,95 @@ def _note_pin(channel: str, pinned: bool) -> None:
 def _pin_newly_granted(channel: str) -> bool:
     """The pin failed without the scope, and the install has re-approved it since."""
     return channel in _pin_refused_unscoped and _pin_scope_granted()
+
+
+async def _record_link(slack: Any, channel: str, board_ts: str) -> None:
+    """Cache the board message's permalink: the context bar's Workers item links to it.
+
+    Read with ``chat.getPermalink`` once per board message (an edit keeps the
+    ts, so the link holds); a failed or unusable read is retried on the next publish.
+    """
+    record = await get_async(channel)
+    if record is not None and record.board_link_ts == board_ts:
+        return
+    try:
+        link = str(await slack.get_permalink(channel, board_ts) or "")
+    except Exception as exc:
+        logger.info("code channel %s: board permalink not read: %s", channel, _code(exc) or exc)
+        return
+    if not link.startswith("https://"):
+        return  # nothing usable: asked again on the next publish
+    try:
+        await update_async(channel, board_link=link, board_link_ts=board_ts)
+    except Exception:
+        logger.debug("code channel %s: board permalink not stored", channel, exc_info=True)
+
+
+async def _record_summary(
+    binding: Binding, board_ts: str, admits: Callable[[], bool] | None = None
+) -> None:
+    """Make the board the channel's ``summary_message`` while the session runs.
+
+    The board IS the conductor's running summary, so Slack can show it live
+    (`code channel properties`_), not only after the archive. A current wrap-up
+    (posted for this same session) is the summary instead and is never
+    displaced; it is recorded by :func:`..wrapup.post_wrap_up`, and stays the
+    summary for the rest of that session even as the board keeps changing. Sent
+    once per board message: an edit keeps the ts, so it stays the summary.
+
+    .. _code channel properties: https://docs.slack.dev/ai/slack-code/code-channel-properties#summary-message
+    """
+    from kiro_crew.slack.code_channels import wrapup
+
+    # The wrap-up's own per-channel lock, held across the read, the choice, the
+    # write and the pointer: a wrap-up recorded meanwhile is seen here and never
+    # displaced (its own summary write follows its lock, so it lands last).
+    async with wrapup._lock(binding.channel_id):
+        await _record_summary_locked(binding, board_ts, admits)
+
+
+async def _record_summary_locked(
+    binding: Binding, board_ts: str, admits: Callable[[], bool] | None
+) -> None:
+    channel = binding.channel_id
+    record = await get_async(channel)
+    if record is not None and record.summary_message_ts == board_ts:
+        return
+    if (
+        record is not None
+        and record.summary_ts
+        and record.summary_session_key == binding.session_key
+    ):
+        return
+    client = surface.client()
+    if client is None:
+        return
+    from kiro_crew.slack.code_channels.models import CodeChannelApiError
+
+    # A setProperties write: the package's write gate (policy, archive, Slack's
+    # Stop) and the board's scope are asked right before it, no await between,
+    # and again at the client's commit point.
+    def refusal() -> str:
+        return surface.write_refusal_now(channel, scope=lambda: _still(admits))
+
+    if await surface.write_refusal(channel, scope=lambda: _still(admits)):
+        return
+    try:
+        with surface.send_fence(refusal):
+            await client.set_summary_message(channel, board_ts)
+    except CodeChannelApiError as exc:
+        logger.info("code channel %s: live summary not recorded: %s", channel, exc.code)
+        from kiro_crew.slack.code_channels.notices import NOTIFIED, notify_refusal
+
+        if exc.code in NOTIFIED:
+            # Slack will refuse it again: not asked once more for this message.
+            await notify_refusal(channel, exc.code, session_key=binding.session_key)
+            await update_async(channel, summary_message_ts=board_ts)
+        return
+    try:
+        await update_async(channel, summary_message_ts=board_ts)
+    except Exception:
+        logger.debug("code channel %s: summary pointer not stored", channel, exc_info=True)
 
 
 def _writable(

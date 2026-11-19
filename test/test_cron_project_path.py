@@ -26,6 +26,8 @@ from kiro_crew.cli_commands import _cron
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, WorkspaceConfig
 from kiro_crew.cron import CronService, build_job
 from kiro_crew.cron_service.fields import cron_session_cwd, resolve_project_path
+from kiro_crew.cron_service.store import CronStoreBusy, cron_store_lock
+from kiro_crew.dashboard import chat_folders
 from kiro_crew.testing.links import make_dir_link
 
 # A record exactly as a build before this field wrote it: no "project_path" key.
@@ -149,6 +151,30 @@ def test_update_sets_and_clears_it_and_a_refusal_leaves_the_job_untouched(tmp_pa
     kept = svc.get_job(job.id)
     assert (kept.name, kept.project_path) == ("r", repo)
     assert svc.update_job(job.id, project_path="").project_path == ""
+
+
+def test_an_update_checks_the_directory_before_it_takes_the_store_lock(
+    tmp_path, monkeypatch
+) -> None:
+    """A slow directory probe must not hold every other cron write behind it."""
+    repo = _repo(tmp_path)
+    svc = CronService(base_dir=tmp_path / "home")
+    job = svc.add_job("r", "go", every_secs=3600)
+    real_validate = chat_folders._validate_project_dir
+    held_during_probe: list[bool] = []
+
+    def _validate_noting_the_lock(raw: str):
+        # One try: CronStoreBusy means the update is holding the lock.
+        try:
+            with cron_store_lock(svc._dir, timeout=0):
+                held_during_probe.append(False)
+        except CronStoreBusy:
+            held_during_probe.append(True)
+        return real_validate(raw)
+
+    monkeypatch.setattr(chat_folders, "_validate_project_dir", _validate_noting_the_lock)
+    assert svc.update_job(job.id, project_path=repo).project_path == repo
+    assert held_during_probe == [False]
 
 
 # ── Fire: the session runs in the project directory ─────────────────────────

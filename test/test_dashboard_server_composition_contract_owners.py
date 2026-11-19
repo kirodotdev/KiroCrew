@@ -563,7 +563,7 @@ async def test_a_prior_crash_dump_is_reported_once_with_its_stacks(
     ]
     state.notify.assert_called_once_with(
         "heartbeat",
-        "⚠️ Gateway restarted after an event-loop stall",
+        "Warning: Gateway restarted after an event-loop stall",
         "The previous gateway stopped responding and exited 2.0h ago, then restarted. "
         "Work in flight at that moment was interrupted and not saved. "
         f"It was running cron nightly. Thread stacks: {dump}",

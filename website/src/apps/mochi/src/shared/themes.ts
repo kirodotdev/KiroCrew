@@ -28,6 +28,7 @@
  * remains as the no-stylesheet escape hatch (jsdom, future standalone use).
  */
 import coreCss from '../../../../index.css?inline'
+import { THEME_SCHEDULE_STORAGE_KEY, readStoredThemeSchedule, scheduledMode } from '../../../../utils/themeSchedule'
 
 export const FALLBACK_PALETTE: Record<string, string> = {
   '--bg': '#19161d',
@@ -101,7 +102,9 @@ function computeDatasetTheme(): { theme: string; mode: string } {
       ? window.matchMedia?.('(prefers-color-scheme: light)').matches
         ? 'light'
         : 'dark'
-      : modePref
+      : modePref === 'schedule'
+        ? scheduledMode(readStoredThemeSchedule())
+        : modePref
   const theme = colorTheme === 'emerald' ? mode : `${colorTheme}-${mode}`
   return { theme, mode }
 }
@@ -182,7 +185,7 @@ function installLiveTheme(): void {
   // Live follow: the dashboard writes mc-theme / mc-color-theme on switch and
   // same-origin windows get the storage event; system mode flips via the OS.
   window.addEventListener('storage', (e) => {
-    if (e.key === 'mc-theme' || e.key === 'mc-color-theme' || e.key === null) syncDatasetTheme()
+    if (e.key === 'mc-theme' || e.key === 'mc-color-theme' || e.key === THEME_SCHEDULE_STORAGE_KEY || e.key === null) syncDatasetTheme()
   })
   window.matchMedia?.('(prefers-color-scheme: light)').addEventListener?.('change', syncDatasetTheme)
 }

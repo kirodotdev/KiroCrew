@@ -162,14 +162,20 @@ class TestLtsReleaseLegs:
         for name in ("build-desktop.yml", "build-windows.yml"):
             assert _workflow(name)["env"]["KIROCREW_BUILD_EDITION"] == _EDITION_ENV, name
 
-    def test_the_candidate_tests_run_the_remote_ceiling_proof(self) -> None:
-        # The tagged commit must pass the end-to-end proof that no local tier widens
+    @pytest.mark.parametrize(
+        "module",
+        [
+            "test/test_lts_remote_ceiling_outranks_local.py",
+            "test/test_lts_batch1_ceiling_outranks_local.py",
+        ],
+    )
+    def test_the_candidate_tests_run_the_remote_ceiling_proof(self, module: str) -> None:
+        # The tagged commit must pass the end-to-end proofs that no local tier widens
         # the organisation's remote policy. The step runs the whole suite split by
-        # file, so the module runs as long as its shard is in the matrix and nothing
+        # file, so each module runs as long as its shard is in the matrix and nothing
         # filters it out.
         from scripts.ci_file_shards import hash_shard
 
-        module = "test/test_lts_remote_ceiling_outranks_local.py"
         assert (ROOT / module).is_file()
         cfg = configparser.ConfigParser()
         cfg.read(ROOT / "setup.cfg", encoding="utf-8")

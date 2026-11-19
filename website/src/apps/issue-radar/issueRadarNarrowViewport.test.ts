@@ -217,10 +217,11 @@ describe('Issue Radar at narrow widths', () => {
 
   it('drops the pointer-only drag handles while narrow', async () => {
     const s = await shell()
-    // Four render sites for three columns: the `list` handle is rendered once in
-    // the issues view and again in the pulls view. All cost width a phone has
-    // none of, and a drag handle does nothing on touch.
-    expect((s.match(/\{!listDetail\.isMobile && \(/g) ?? []).length).toBe(4)
+    // Every ResizeHandle render site is gated: all cost width a phone has none
+    // of, and a drag handle does nothing on touch.
+    const handles = (s.match(/<ResizeHandle\b/g) ?? []).length
+    expect(handles).toBeGreaterThan(0)
+    expect((s.match(/\{!listDetail\.isMobile && \(\s*<ResizeHandle\b/g) ?? []).length).toBe(handles)
   })
 
   it('lays the collapsed rail ACROSS THE TOP while narrow, not down the side', async () => {

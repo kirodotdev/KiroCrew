@@ -574,8 +574,8 @@ class TestFenceSafeSplitting:
 
         posts = [kw["text"] for m, kw in slack.calls if m == "post_message"]
         thinking = [t for t in posts if "reasoning step." in t]
-        assert len(thinking) > 1, "an over-limit 💭 reply is rejected whole by Slack"
-        assert thinking[0].startswith("💭")
+        assert len(thinking) > 1, "an over-limit Thinking reply is rejected whole by Slack"
+        assert thinking[0].startswith("*Thinking*")
         for text in thinking:
             assert len(text) <= SLACK_MSG_LIMIT, len(text)
 
@@ -932,7 +932,7 @@ class TestEveryRendererEgressMeetsTheDisplayFloor:
         renderer = _renderer(slack)
         renderer._show_thinking = True
         await renderer.on_thinking(f"thinking about {self._COLLAPSING}")
-        await renderer._maybe_post_thinking()
+        await renderer._settle_thinking()
         assert slack.texts(), "premise: the thinking block was posted"
         assert not self._leaked(slack), slack.calls
 

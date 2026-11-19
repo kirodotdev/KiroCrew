@@ -146,7 +146,11 @@ def coerce_dispatch_tags(raw: object) -> tuple[str, ...]:
     for tag in raw:
         if isinstance(tag, str) and DISPATCH_TAG_RE.fullmatch(tag) and tag not in out:
             out.append(tag)
-    return tuple(out[:MAX_DISPATCH_TAGS])
+            # A peer's headroom feeds this list too: stop at the cap so a long
+            # one costs one pass, not a quadratic scan of the tail.
+            if len(out) == MAX_DISPATCH_TAGS:
+                break
+    return tuple(out)
 
 
 #: Fields a conductor action may set on an item. What the write route logs from

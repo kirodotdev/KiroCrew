@@ -43,7 +43,13 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from kiro_crew.connections.crew_oauth import CrewOAuthError, Tokens, TokenStore, _refresh_locks
+from kiro_crew.connections.crew_oauth import (
+    CrewOAuthError,
+    Tokens,
+    TokenStore,
+    _refresh_locks,
+    safe_error_code,
+)
 from kiro_crew.connections.registry import CALLBACK_PATH, DCR_CALLBACK_PORT, get_provider
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery_probe_state import MCP_CLIENT_PROTOCOL_VERSION
@@ -695,9 +701,7 @@ async def _token(client: Client, form: dict[str, str]) -> dict[str, Any]:
     status, doc, _ = await _post(client.token, form=form, auth=auth)
     error = doc.get("error")
     if status >= 400 or error:
-        raise CrewOAuthError(
-            str(error)[:64] if isinstance(error, str) and error else f"token_http_{status}"
-        )
+        raise CrewOAuthError(safe_error_code(error, f"token_http_{status}"))
     return doc
 
 
@@ -730,13 +734,22 @@ async def revoke(slug: str, tokens: Tokens, store: ClientStore | None = None) ->
         client, _ = await asyncio.to_thread((store or ClientStore()).read, slug)
         if client is None or not client.revoke:
             return False
-        form = {
-            "token": tokens.refresh or tokens.access,
-            "token_type_hint": "refresh_token" if tokens.refresh else "access_token",
-        }
-        auth = _client_auth(client, form)
-        status, _, _ = await _post(client.revoke, form=form, auth=auth)
-        return status == 200
+        # RFC 7009 lets a vendor skip the cascade from a refresh token to its access
+        # token, so each live token is revoked in its own call.
+        pairs = [(tokens.access, "access_token")]
+        if tokens.refresh:
+            pairs.append((tokens.refresh, "refresh_token"))
+        done = True
+        for token, hint in pairs:
+            form = {"token": token, "token_type_hint": hint}
+            auth = _client_auth(client, form)
+            try:
+                status, _, _ = await _post(client.revoke, form=form, auth=auth)
+            except Exception:  # noqa: BLE001 -- one failed call never spares the other token
+                done = False
+                continue
+            done = done and status == 200
+        return done
     except Exception:  # noqa: BLE001 -- best effort, as the pre-registered revoke
         return False
 

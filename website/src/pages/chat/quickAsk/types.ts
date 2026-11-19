@@ -56,10 +56,10 @@ export interface QuickAsk {
    */
   steps?: { username: QuickAskUsername }
   /**
-   * credentials under the Secrets vault preview: the NAMES of the vault logins
+   * credentials: the NAMES of the vault logins
    * whose URL is exactly `origin`. The person picks one and the gateway fills it
    * (never this page). Empty: none match, and the sheet offers to save what is
-   * typed. Absent: the sheet is as without the preview.
+   * typed. Absent: the plain sheet, with no vault part.
    */
   vault?: { items: QuickAskVaultLogin[]; more?: number }
   /** Epoch ms after which the gateway answers `stale`. */

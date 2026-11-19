@@ -323,6 +323,7 @@ from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.memory_admin import (  # noqa: E402, F401
     api_memory_backup,
     api_memory_backups,
+    api_memory_ownerless_stores,
     api_memory_restore,
     api_memory_restore_cancel,
     api_memory_retired,
@@ -401,6 +402,10 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_slack_history,
     api_slack_manifest,
     api_slack_manifest_status,
+    api_slack_owner_claim_cancel,
+    api_slack_owner_claim_confirm,
+    api_slack_owner_claim_get,
+    api_slack_owner_claim_start,
     api_slack_pins,
     api_slack_profile,
     api_slack_reactions,

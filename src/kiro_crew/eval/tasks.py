@@ -274,7 +274,15 @@ def apply_reference(case: Case, repo: Path) -> None:
     for cmd in (
         ["git", "add", "-A"],
         ["git", "commit", "-q", "--allow-empty", "-m", "reference"],
-        ["git", "push", "-q", "origin", TASK_BRANCH],
+        # Local transport drops GIT_CONFIG_* before receive-pack, so name the setting here.
+        [
+            "git",
+            "push",
+            "--receive-pack=git -c maintenance.auto=false receive-pack",
+            "-q",
+            "origin",
+            TASK_BRANCH,
+        ],
     ):
         subprocess.run(
             cmd, cwd=repo, check=True, capture_output=True, env=env, timeout=BUILD_TIMEOUT_SECS
@@ -346,8 +354,10 @@ def _home_refusals() -> list[str]:
             or entry.pw_dir in ("", "/", me.pw_dir)
         ):
             continue
-        if entry.pw_shell.endswith(("nologin", "false")):
-            continue  # a service account, not a person who could hold credentials
+        if os.path.basename(entry.pw_shell) in ("nologin", "false", "true"):
+            # A service account (nologin, false or true as its shell), not a
+            # person who could log in and hold credentials.
+            continue
         try:
             os.listdir(entry.pw_dir)
         except OSError:
@@ -666,11 +676,12 @@ def run_one(
         if arm.needs_gateway:
             _copy_transcript(ran.stdout, dirs)
         verdict, why = score(outcome, check, ran.wall_s, caps, audit_run(dirs, suite_dir))
-        first_pass = (
-            ran.first_pass_s
-            if ran.first_pass_s is not None
-            else (ran.wall_s if check["pass"] else None)
-        )
+        if ran.first_pass_s is not None:
+            first_pass = ran.first_pass_s
+        elif check["pass"]:
+            first_pass = ran.wall_s
+        else:
+            first_pass = None
         record.update(
             verdict=verdict,
             reason=why,
@@ -757,7 +768,18 @@ def _write_record(out_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _base_env() -> dict[str, str]:
-    return {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "TZ") if os.environ.get(k)}
+    """The environment for the suite's own build, check and reference git work.
+
+    Git's auto-maintenance is off: after a commit or push, git starts a DETACHED
+    ``git maintenance run --auto``, which holds ``objects/maintenance.lock`` while a
+    local clone of that repository copies ``objects/``; the lock is removed mid-copy
+    and the clone dies with ENOENT. These repositories are throwaway, so nothing is lost.
+    """
+    env = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "TZ") if os.environ.get(k)}
+    env.update(
+        GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="maintenance.auto", GIT_CONFIG_VALUE_0="false"
+    )
+    return env
 
 
 # ---------- the batch ----------

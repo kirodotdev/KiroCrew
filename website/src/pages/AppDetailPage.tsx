@@ -28,7 +28,7 @@ import TrustAppModal, {
   APP_EXECUTION_DENIED, DESKTOP_BUILD_STEP_UNSUPPORTED, isSessionApprovalConsentRequiredError,
   isTrustDeniedError, localOnlyTrustRepository, SESSION_APPROVAL_CONSENT_REQUIRED, useTrustGate,
 } from '../components/appstore/TrustAppModal'
-import { isRegistrySourced } from '../components/appstore/types'
+import { isMarketSourced, isRegistrySourced } from '../components/appstore/types'
 import { desktopRequestOf } from '../components/appstore/desktopRequest'
 import { REGISTRY_STALE_MS, registryQueryFn } from './apps/useAppsData'
 import AppSource from '../components/appstore/AppSource'
@@ -67,7 +67,7 @@ import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetai
 import { actionGrant } from '../composerActions/composerActionRegistry'
 import { memoryAccessLabel, memoryRequested } from '../components/appstore/memoryAccessLabel'
 import { managerLabel, originLabel } from './appDetailPageLabels'
-import { ChatLaunchBox, ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, HiddenSessionsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
+import { BrowserVerbsBox, BrowserVerbsStaged, ChatLaunchBox, ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, HiddenSessionsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, browserVerbLine, knownBrowserVerbs, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
 import { trustGrants } from '../components/appstore/trustGrants'
 import { stagedGrantsOf } from './appDetailPageStagedGrants'
 // The page's parts live in sibling owners that never import this module:
@@ -115,7 +115,7 @@ export default function AppDetailPage() {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
     stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
-    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, hasStagedGrants: hasOtherStagedGrants,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedBrowser, hasStagedGrants: hasOtherStagedGrants,
   } = stagedGrantsOf(app)
   // Bot scopes the owner has not approved wait the same way (`AppDetailBotGrants.tsx`).
   const stagedBots = stagedBotScopes(app)
@@ -352,6 +352,7 @@ export default function AppDetailPage() {
             desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
             frameSourcesGrant: installed.frameSourcesGrant,
             browserSitesGrant: installed.browserSitesGrant,
+            browserGrant: installed.browserGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -480,6 +481,7 @@ export default function AppDetailPage() {
             desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
             frameSourcesGrant: installed.frameSourcesGrant,
             browserSitesGrant: installed.browserSitesGrant,
+            browserGrant: installed.browserGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -540,6 +542,7 @@ export default function AppDetailPage() {
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
     // A directory install with no registry update pending is this page's Sync (a
     // re-copy). Everything else runs the streaming registry install, as Update does.
+    if (stateAction === 'update' && isMarketSourced(app)) return
     if (stateAction === 'update' && app.installed && !isRegistrySourced(app) && !app.updateAvailable) {
       handleAction('update')
       return
@@ -927,7 +930,8 @@ export default function AppDetailPage() {
   // UX gate only: the marker is client-side, so nothing security-relevant may
   // rest on it (see PlatformConfig.requiresDesktopApp in manifest.py).
   const desktopOnly = needsDesktopApp(app)
-  const canUpdate = app.lifecycle === 'gateway'
+  // A Kiro Space install has no update path yet: no Sync, no Update.
+  const canUpdate = app.lifecycle === 'gateway' && !isMarketSourced(app)
   const canUninstall = app.lifecycle !== 'locked'
   // Resource lists, derived once. `manifest` is absent for a registry-only app,
   // and `normalizeInstalledApp` fills the lists for an installed one — so the
@@ -1040,6 +1044,8 @@ export default function AppDetailPage() {
         dismiss: i18nT('pages.appDetailPage.dismiss_to_install_again'),
         disabledTitle: i18nT('pages.appDetailPage.dismiss_notice_to_install_again'),
       }
+  // Hidden under the local-only notice: it reruns the refusal, and disabled it still read as ready to press.
+  const updateHidden = Boolean(localOnlyRepo)
   const installDisabledTitle = refusalCopy?.disabledTitle
   // An enable refused for a `memberThreads` scope the dialog did not name shows
   // the catalog's sentence, picked by the journal entry's code like the build
@@ -1240,6 +1246,7 @@ export default function AppDetailPage() {
               {stagedWorkerAutoApprove && <WorkerAutoApproveStaged />}
               <UserSessionReachStaged staged={stagedUserSessionReach} />
               <DesktopCapabilitiesStaged staged={stagedDesktopCapabilities} />
+              <BrowserVerbsStaged staged={stagedBrowser} />
               {app.enabled && (
                 <span className="text-[13px] text-muted">{i18nT('pages.appDetailPage.grants_reconsent_undo', { name: appDisplayName(app) })}</span>
               )}
@@ -1252,7 +1259,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources, ...stagedBrowserSites], { style: 'narrow' })
+                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources, ...stagedBrowserSites, ...stagedBrowser.map(v => browserVerbLine(v).replace(/\.$/, ''))], { style: 'narrow' })
                 try {
                   const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1271,6 +1278,7 @@ export default function AppDetailPage() {
                     desktopCapabilities: stagedDesktopCapabilities,
                     frameSources: stagedFrameSources,
                     browserSites: stagedBrowserSites,
+                    browser: stagedBrowser,
                   })
                   setBackendRefusedMsg(appActionNotice(appDisplayName(app), result, 'enable'))
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
@@ -1484,7 +1492,7 @@ export default function AppDetailPage() {
                   <div className="text-[13px] text-ok flex items-center gap-1.5"><Check size={14} /> {i18nT('pages.appDetailPage.installed_version', { version: app.installedVersion })}</div>
                   {app.enabled ? (
                     <>
-                      {app.updateAvailable && <Btn onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                      {app.updateAvailable && !updateHidden && <Btn onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
                       {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionBusy} title={i18nT('pages.appDetailPage.removes_kirocrew_metadata_only_the_app_itself_is')}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                     </>
                   ) : (
@@ -1497,13 +1505,13 @@ export default function AppDetailPage() {
                        menu so the row stays at two controls. */
                     <>
                       <Btn onClick={() => handleAction('enable')} disabled={actionBusy}><Power size={14} /> {enableLabel}</Btn>
-                      {(app.updateAvailable || canUninstall) && (
+                      {((app.updateAvailable && !updateHidden) || canUninstall) && (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Btn ref={overflowTriggerRef} aria-label={i18nT('pages.appDetailPage.more_actions', { name: appDisplayName(app) })} disabled={actionBusy}><MoreHorizontal size={14} aria-hidden /></Btn>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start" onCloseAutoFocus={overflowMenu.onCloseAutoFocus}>
-                            {app.updateAvailable && (
+                            {app.updateAvailable && !updateHidden && (
                               <DropdownMenuItem disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} onSelect={() => { void handleInstall() }}>
                                 <ArrowUp size={12} aria-hidden /> {i18nT('pages.appDetailPage.update')}
                               </DropdownMenuItem>
@@ -1553,7 +1561,7 @@ export default function AppDetailPage() {
                   )}
                     </>
                   )}
-                  {canUpdate && app.updateAvailable && <Btn {...uiLocation('apps.detail.update')} onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                  {canUpdate && app.updateAvailable && !updateHidden && <Btn {...uiLocation('apps.detail.update')} onClick={handleInstall} disabled={actionBusy || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-info-fg hover:!opacity-80">{isActionRunning('install') ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
                   {canUpdate && !app.updateAvailable && <Btn {...uiLocation('apps.detail.sync')} onClick={() => { if (!actionBusy) void handleAction('update') }} aria-disabled={isActionRunning('update') || undefined} disabled={actionBusy && !isActionRunning('update')} className="aria-disabled:cursor-not-allowed aria-disabled:opacity-30" title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
                   {canUninstall && <Btn {...uiLocation('apps.detail.uninstall')} danger onClick={() => handleAction('uninstall')} disabled={actionBusy}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                 </>
@@ -1822,6 +1830,7 @@ export default function AppDetailPage() {
                 <ChatLaunchBox declared={app.manifest.permissions.chatLaunch} />
                 <UserSessionReachBox declared={reachVerbs(app.manifest.permissions.reachableByUserSessions)} staged={stagedUserSessionReach} />
                 <DesktopCapabilitiesBox declared={knownDesktopCapabilities(app.manifest.permissions.desktopCapabilities)} staged={stagedDesktopCapabilities} />
+                <BrowserVerbsBox declared={knownBrowserVerbs(app.manifest.permissions.browser)} staged={stagedBrowser} preview={app.browserGrant?.preview} />
                 {app.manifest.permissions.webhookSource === true && <WebhookSourceBox source={app.name} />}
                 <div className="flex flex-wrap gap-3 text-[12px] text-muted mt-1">
                   {app.manifest.permissions.storage && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.storage_yes')}</span>}

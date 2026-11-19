@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
+import { applyStatusDelta, applyStatusDeltaToLinks, parseStatusDelta } from '../utils/pullRequestStatusDelta'
 import type { PullRequestStatusBatch } from '../types'
 
 const URL_A = 'https://github.com/acme/repo/pull/7'
@@ -123,5 +123,39 @@ describe('ciPending — a failed rollup with checks still in flight', () => {
     // CI is still moving when the delta says otherwise.
     expect(parseStatusDelta({ url: URL_A, ci: 'passed', ciPending: '1' })).toEqual({ url: URL_A, ci: 'passed' })
     expect(parseStatusDelta({ url: URL_A, ci: 'failed', ciPending: true })).toEqual({ url: URL_A, ci: 'failed' })
+  })
+})
+
+describe('applyStatusDeltaToLinks', () => {
+  const link = (url: string, extra: object = {}) => ({ provider: 'github' as const, number: 1, url, ...extra })
+
+  it('patches only the link the delta names and keeps untouched fields', () => {
+    const links = [link(URL_A, { state: 'open' as const, ci: 'running' as const }), link(URL_B)]
+    const next = applyStatusDeltaToLinks(links, { url: URL_B, ci: 'passed' })
+    expect(next?.[1]).toMatchObject({ url: URL_B, ci: 'passed' })
+    expect(next?.[0]).toBe(links[0])
+  })
+
+  it('returns the same array when the delta names no link in it', () => {
+    const links = [link(URL_A)]
+    expect(applyStatusDeltaToLinks(links, { url: URL_B, state: 'merged' })).toBe(links)
+    expect(applyStatusDeltaToLinks(undefined, { url: URL_B, state: 'merged' })).toBeUndefined()
+  })
+
+  it('sets the pending marker with a failed rollup and clears it otherwise', () => {
+    const failed = applyStatusDeltaToLinks([link(URL_A)], { url: URL_A, ci: 'failed', ciPending: '1' })
+    expect(failed?.[0].ciPending).toBe('1')
+    const passed = applyStatusDeltaToLinks(failed, { url: URL_A, ci: 'passed' })
+    expect(passed?.[0]).toMatchObject({ ci: 'passed' })
+    expect(passed?.[0]).not.toHaveProperty('ciPending')
+  })
+
+  it('clears ci when the delta carries none, and ignores a delta with no usable field', () => {
+    const links = [link(URL_A, { state: 'open' as const, ci: 'failed' as const, ciPending: '1' })]
+    const cleared = applyStatusDeltaToLinks(links, { url: URL_A, state: 'open' })
+    expect(cleared?.[0]).toMatchObject({ state: 'open' })
+    expect(cleared?.[0]).not.toHaveProperty('ci')
+    expect(cleared?.[0]).not.toHaveProperty('ciPending')
+    expect(applyStatusDeltaToLinks(links, { url: URL_A })).toBe(links)
   })
 })

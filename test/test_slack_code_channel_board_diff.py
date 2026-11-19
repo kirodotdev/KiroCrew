@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +16,7 @@ import pytest
 import test_slack_code_channel_board as suite
 import test_slack_code_channel_board_live as live
 import test_slack_code_channel_board_review_rounds as rounds
+from push_guard_helpers import _fixture_git_env
 
 from kiro_crew.slack.code_channels import board as board_pkg
 from kiro_crew.slack.code_channels import surface, wrapup
@@ -36,7 +39,6 @@ _surface_store = suite._surface_store
 _pinned_identity = suite._pinned_identity
 publisher_clock = suite.publisher_clock
 slack = suite.slack
-repo = suite.repo
 lineage = live.lineage
 _Harness = suite._Harness
 _FakeBinding = suite._FakeBinding
@@ -48,6 +50,44 @@ _Slots = live._Slots
 _live_slot = live._live_slot
 
 _URL = "https://github.com/acme/widgets/pull/"
+
+
+@pytest.fixture(scope="module")
+def _repo_template(tmp_path_factory) -> Path:
+    """``suite.repo``'s bare remote and clone, built once per module.
+
+    It runs before the per-test git floor applies, so its git calls use the scrubbed
+    fixture env: no host config, templates, hooks or maintenance reach it.
+    """
+    base = tmp_path_factory.mktemp("board-diff-repo")
+    env = _fixture_git_env()
+
+    def git(*args: str, cwd: Path) -> None:
+        subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True)
+
+    remote = base / "remote.git"
+    git("init", "-q", "--bare", "-b", "main", str(remote), cwd=base)
+    root = base / "proj"
+    root.mkdir()
+    git("init", "-q", "-b", "main", cwd=root)
+    for key, value in (("user.email", "t@example.com"), ("user.name", "T"), ("gc.auto", "0")):
+        git("config", key, value, cwd=root)
+    (root / "README.md").write_text("hello\n")
+    git("add", ".", cwd=root)
+    git("commit", "-q", "-m", "init", cwd=root)
+    git("remote", "add", "origin", "https://github.com/acme/widgets.git", cwd=root)
+    git("push", "-q", str(remote), "main:main", cwd=root)
+    git("fetch", "-q", str(remote), "+refs/heads/*:refs/remotes/origin/*", cwd=root)
+    git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=root)
+    return base
+
+
+@pytest.fixture
+def repo(tmp_path, _repo_template) -> Path:
+    """A private copy of :func:`_repo_template`, laid out as ``suite.repo`` lays it out."""
+    for name in ("remote.git", "proj"):
+        shutil.copytree(_repo_template / name, tmp_path / name, symlinks=True)
+    return tmp_path / "proj"
 
 
 def _groups(cwd: str, board, channel_branch: str, trees: dict) -> list[DiffGroup]:
@@ -461,6 +501,29 @@ def test_a_tab_refused_at_its_send_goes_again_as_the_channels_own(tmp_path, repo
     [content] = [kw["content"] for m, kw in h.client.calls if m == "set_diff_view"]
     assert "README.md" in content and "secret_plan.txt" not in content
     assert h.published == []
+
+
+def test_a_tab_fenced_by_an_off_at_its_send_sends_no_channel_only_tab(tmp_path, repo, monkeypatch):
+    """Set to Off or Review during the refresh: the combined tab is fenced at the
+    send, and the channel-only fallback asks the same fence (no tab goes out)."""
+    h = _Harness(tmp_path, snapshot=_secret_worker(tmp_path, repo, monkeypatch))
+    binding = _FakeBinding(project_dir=str(repo))
+    rec = asyncio.run(h.svc.ensure(binding))
+    (Path(rec.worktree) / "README.md").write_text("channel change\n")
+    on = {"now": True}
+    monkeypatch.setattr(service, "_activation_admits", lambda b: on["now"])
+    real_call = h.svc._call
+
+    async def call(method, record, *args, **kwargs):
+        if method == "set_diff_view" and kwargs.get("gate") is not None:
+            on["now"] = False  # the operator sets the channel Off during the refresh
+        return await real_call(method, record, *args, **kwargs)
+
+    monkeypatch.setattr(h.svc, "_call", call)
+    source.set_scope_predicate(lambda state, b: on["now"])
+    board = model.BoardSnapshot(rows=(_row(title="Fix login"),))
+    assert not asyncio.run(h.svc._publish_diff(rec, binding, board))
+    assert [m for m, _kw in h.client.calls if m == "set_diff_view"] == []
 
 
 def test_a_failed_channel_only_rebuild_takes_the_worker_tab_down(tmp_path, repo, monkeypatch):
@@ -1571,7 +1634,7 @@ def test_the_sidebar_summary_comes_from_the_pr_filled_board(monkeypatch):
     monkeypatch.setattr(links, "link_builder", lambda: _link)
     source.set_scope_predicate(lambda st, b: True)
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         return "updated"
 
     monkeypatch.setattr(publisher, "publish", fake_publish)

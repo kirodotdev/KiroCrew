@@ -261,6 +261,19 @@ class SessionConfig:
             "100..100000. Read at each search, so a change needs no restart.",
         ),
     )
+    semantic_search: bool = field(
+        default=False,
+        metadata=_meta(
+            "Session Search by Meaning",
+            "Build a chunk store of session text in the background so session "
+            "search can later find a conversation by describing it. Off by "
+            "default. While on, the session index worker cuts each quiet session "
+            "into chunks with the embedding model's tokenizer, and the gateway embeds "
+            "them with the local embedding model at background priority (nothing is "
+            "embedded with the ollama_http provider); incognito and temporary "
+            "sessions are never read. Search does not read the store.",
+        ),
+    )
     watchdog_rss_max_mb: int = field(
         default=DEFAULT_WATCHDOG_RSS_MAX_MB,
         metadata=_meta(
@@ -502,19 +515,6 @@ class KiroCrewAgentConfig:
             "every card did before. A card-sent turn is tagged '[Dashboard "
             "card]', is never an approval, and is refused while the thread has an "
             "open approval or question.",
-        ),
-    )
-    # Off by default: the sessions this crewmate's thread opens are listed on its
-    # profile's Sessions tab and left out of the person's own session list
-    # (``crew_mode.list_view`` and the dashboard's ``crewModeView``). On puts them
-    # back in that list too; the Sessions tab lists them either way.
-    show_sessions_in_list: bool = field(
-        default=False,
-        metadata=_meta(
-            "Show in my Sessions list",
-            "Off by default. The chats this crewmate opens are listed on its "
-            "profile's Sessions tab and left out of your Sessions list. Turn it "
-            "on to list them in your Sessions list too.",
         ),
     )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``

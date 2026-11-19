@@ -95,6 +95,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         DISPATCH_FIELD,
         RECORD_ACTIONS,
         _bootstrap,
+        _close_remote_item,
         _close_warning,
         _count_crew_mode_run,
         _count_recorded,
@@ -107,7 +108,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _refuse_dispatch_without_ledger,
         _refuse_dispatched_worker,
         _refuse_unowned_worker,
-        _revoke_closed_remote_trust,
         _set_pair_field,
         _widest_retired_bindings,
         _worker_slot,
@@ -147,7 +147,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _slot_loop_held,
         _slot_looping,
         _slot_open,
+        _slot_pending,
         _slot_running,
+        _slot_turn_running,
         _tail_events,
         api_work_ledger_accept_eval,
         api_work_ledger_get,
@@ -247,6 +249,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.handlers.office_slides import (  # noqa: F401
         _KeyedLocks,
+    )
+    from kiro_crew.dashboard.session_activity import (  # noqa: F401
+        session_activity_for_key,
+        session_known_execution_active,
+        session_work_pending,
     )
     from kiro_crew.dashboard.state import (  # noqa: F401
         DashboardState,

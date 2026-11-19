@@ -206,6 +206,33 @@ def schedule_idle_check_refresh(
     return refreshing
 
 
+def schedule_expanded_check_refresh(
+    urls: list[str], on_update: _CheckUpdateCallback | None = None
+) -> list[str]:
+    """Read the chips behind a card's expanded "+N" list, never past the free capacity.
+
+    Same fire-and-forget contract and return value as ``schedule_check_refresh``.
+    Only due URLs are submitted, never-read first and then longest-unread, and only
+    as many as the pending cap has room for. Handing the whole list over would make
+    the cap stamp every overflow URL "backed off", so the same first URLs would win
+    on every expand and the tail would stay blank.
+
+    shortcut: a list with more due URLs than free capacity fills in over successive
+    expands, one capacity's worth each; upgrade if a card ever needs all of them at once.
+    """
+    now = time.monotonic()
+    due: list[tuple[float, str]] = []
+    for url in dict.fromkeys(urls):
+        if url in chip_status._check_inflight:
+            continue
+        entry = chip_status._check_cache.get(url)
+        if _chip_refresh_due(entry, now, force=False):
+            due.append((entry[0] if entry else float("-inf"), url))
+    free = max(_CHECK_PENDING_MAX - len(chip_status._check_inflight), 0)
+    oldest_first = sorted(due, key=lambda item: item[0])
+    return schedule_check_refresh([url for _, url in oldest_first[:free]], on_update)
+
+
 def schedule_tiered_check_refresh(
     urls: list[str], idle: set[str], on_update: _CheckUpdateCallback | None = None
 ) -> None:

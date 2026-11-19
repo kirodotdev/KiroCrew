@@ -140,13 +140,11 @@ class AcpError(Exception):
             self.rejected_model: str | None = None
         if not hasattr(self, "advertised"):
             self.advertised: list[str] = []
-        # Sign-in failure tags, set by :func:`_raise_acp_error` when the raw frame
-        # is a session-expiry / rejected-credential answer. ``sign_in_needed`` is
-        # set for every harness, so the task queue fails the row as auth without
-        # reading the prose; ``auth_required`` only for a harness that signs in
-        # through Crew, so the dashboard's error row offers the Kiro sign-in card.
-        self.sign_in_needed: bool = False
-        self.auth_required: bool = False
+        # Sign-in failure tags, set by :func:`_raise_acp_error` from a session-expiry or
+        # rejected-credential frame: ``sign_in_needed`` (every harness) fails the task
+        # row as auth unread; ``auth_required`` (signs in through Crew) offers the Kiro
+        # card, ``kiro_cli_sign_in`` (the Kiro CLI harness) kiro-cli's sign-in commands.
+        self.sign_in_needed = self.auth_required = self.kiro_cli_sign_in = False
         # Spent-allowance tag, set by :func:`_raise_acp_error` when the raw
         # frame is a usage-limit answer ("The monthly usage limit has been
         # reached"), so the dashboard's error row can offer a route that needs
@@ -272,16 +270,17 @@ class AcpAuthRequired(AcpError):  # noqa: N818
     surface the actionable message and skip the retry ladder rather than
     reset-and-requeue the turn.
 
-    ``backend`` decides whose sign-in fixes it. Only a harness that authenticates
-    through Crew's own identity (``ACP_BACKENDS_HOST_AUTH_CALLBACK``, harness
-    parity H6) is tagged ``auth_required`` so the dashboard offers the Kiro
-    sign-in card; for every other harness that card would sign in the wrong
-    thing, so the row stays a plain error carrying that harness's own remedy.
+    ``backend`` decides whose sign-in fixes it. A harness that authenticates through
+    Crew's identity (``ACP_BACKENDS_HOST_AUTH_CALLBACK``, harness parity H6) is tagged
+    ``auth_required``, so the dashboard offers the Kiro sign-in card; the Kiro CLI
+    harness ``kiro_cli_sign_in``, so the row shows kiro-cli's sign-in commands; any
+    other keeps a plain error carrying that harness's own remedy.
     """
 
     def __init__(self, message: str = "", *, backend: str = "") -> None:
         super().__init__(message)
         self.auth_required = backend in ACP_BACKENDS_HOST_AUTH_CALLBACK
+        self.kiro_cli_sign_in = backend == ACP_BACKEND_KIRO
 
 
 class AcpSandboxInitFailed(AcpError):  # noqa: N818
@@ -695,14 +694,15 @@ _RE_5XX_HINT = re.compile(r"(please try again|try your request again)", re.IGNOR
 # models, neither of which can succeed against an expired login. Status is the
 # primary signal because the rejection carries no explanatory wording.
 _RE_AUTH_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:401|403)\b", re.IGNORECASE)
-# Session expiry, by wording. Complements the status match for backends that
-# describe the expiry in prose without a machine-readable code. Deliberately
-# excludes Bedrock's named exceptions, which _RE_AUTH already owns.
+# Session expiry by wording, KAS's ``SignInRequiredError`` errorType (no sign-in at
+# all), and KAS's fixed AccessDeniedError text for a refused credential (no status);
+# Bedrock's named exceptions belong to _RE_AUTH.
 _RE_SESSION_EXPIRED = re.compile(
-    r"\b(?:session\s+(?:has\s+)?expired|session\s+timed?\s*out"
+    r"\b(?:session\s+(?:has\s+)?expired|session\s+timed?\s*out|SignInRequiredError"
     r"|login\s+(?:has\s+)?expired|authentication\s+(?:has\s+)?expired"
     r"|not\s+logged\s+in|not\s+authenticated|not\s+signed\s+in"
-    r"|re-?authenticate|login\s+required|auth(?:entication)?\s+required)\b",
+    r"|re-?authenticate|login\s+required|auth(?:entication)?\s+required"
+    r"|access\s+denied\.\s+please\s+check\s+your\s+authentication)\b",
     re.IGNORECASE,
 )
 # Credential REJECTED rather than expired. Switching the active Kiro account
@@ -1968,10 +1968,9 @@ def _raise_acp_error(
     # wall. Decided from the raw frame, never from the prose, and only when the
     # formatter would have reached its sign-in branch: a Bedrock-named credential
     # exception (`_RE_AUTH`, a different remedy) or a usage-limit answer that
-    # happens to carry a 401/403 is not a Kiro sign-in problem. Gated on the
-    # harness signing in through Crew's own identity (harness parity H6): for a
-    # harness with its own credential store the card would sign in the wrong
-    # thing, so its 401 carries only ``sign_in_needed`` and that harness's remedy.
+    # happens to carry a 401/403 is not a Kiro sign-in problem. The card is gated on
+    # a harness signing in through Crew (harness parity H6); the Kiro CLI harness
+    # gets kiro-cli's commands, any other only ``sign_in_needed`` and its own remedy.
     err.sign_in_needed = (
         not rejected
         and _is_session_expired(raw_data)
@@ -1979,6 +1978,7 @@ def _raise_acp_error(
         and not _RE_USAGE_LIMIT.search(raw_data)
     )
     err.auth_required = err.sign_in_needed and backend in ACP_BACKENDS_HOST_AUTH_CALLBACK
+    err.kiro_cli_sign_in = err.sign_in_needed and backend == ACP_BACKEND_KIRO
     # Tag a spent plan allowance the same way: from the raw frame, and only when
     # the formatter reached its usage-limit branch -- an entitlement rejection
     # that happens to carry limit wording keeps its own (served-model) remedy.

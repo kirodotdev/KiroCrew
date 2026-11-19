@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -110,10 +111,20 @@ def _enter(repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return repo
 
 
+@pytest.fixture(scope="module")
+def _repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """:func:`_make_repo` built once per module; each test gets its own copy."""
+    return _make_repo(tmp_path_factory.mktemp("pre-push-gate-template"), "repo")
+
+
+def _copy_repo(template: Path, parent: Path, name: str) -> Path:
+    return Path(shutil.copytree(template, parent / name, symlinks=True))
+
+
 @pytest.fixture
-def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _repo_template: Path) -> Path:
     """A branch one commit past a synthetic ``origin/main``, with the cwd set to it."""
-    return _enter(_make_repo(tmp_path, "repo"), monkeypatch)
+    return _enter(_copy_repo(_repo_template, tmp_path, "repo"), monkeypatch)
 
 
 @pytest.fixture
@@ -463,11 +474,11 @@ def test_a_git_that_fails_is_an_error_not_a_clean_tree(repo, use_gates, capsys) 
 
 
 def test_a_repository_directory_with_spaces_and_non_ascii_gets_its_proof(
-    tmp_path, monkeypatch, use_gates
+    tmp_path, monkeypatch, use_gates, _repo_template
 ) -> None:
     # Windows drops a trailing space from a directory name, so the space is only added elsewhere.
     name = "r\u00e9po with spaces" + ("" if sys.platform == "win32" else " ")
-    odd = _enter(_make_repo(tmp_path, name), monkeypatch)
+    odd = _enter(_copy_repo(_repo_template, tmp_path, name), monkeypatch)
     use_gates(OK_GATE)
     assert gate.main(["pre_push_gate.py"]) == 0
     assert (odd / ".git" / gate.PROOF_FILENAME).is_file()

@@ -138,6 +138,7 @@ from kiro_crew.dashboard.chat_turn.acp_recovery import (  # noqa: F401
     _binding_rebuild_allowed,
     _on_acp_binding_mismatch,
     _on_acp_image_unsupported,
+    _on_acp_posttoken_fallback,
     _on_acp_posttoken_transient,
     _on_acp_retryable,
     _on_acp_session_not_found,
@@ -181,6 +182,7 @@ from kiro_crew.dashboard.chat_turn.mcp_session import (  # noqa: F401
     notice_mcp_restart_to_load,
 )
 from kiro_crew.dashboard.chat_turn.model_fallback import (  # noqa: F401
+    _agent_fallback_chain,
     _clear_fallback_sticky_state,
     _fallback_swap_for_turn,
     _on_acp_model_access,
@@ -427,6 +429,7 @@ from kiro_crew.image_artifacts import register_images_off_loop
 from kiro_crew.llm_helpers import (  # noqa: F401
     TRANSIENT_RETRIES,
     PromptBusyExhaustedError,
+    acp_error_is_capacity_or_throttle,
     acp_error_is_pipe_death,
     acp_error_is_session_not_found,
     acp_error_is_transient,
@@ -498,6 +501,7 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
     restore_agent_selection,
     session_agent_selection_kind,
 )
+from kiro_crew.session_idle_compaction import provider_prompt_cache_lifetime  # noqa: F401
 from kiro_crew.slack.code_channels.approval_picker import keep_card as keep_code_channel_card
 from kiro_crew.slack.code_channels.binding import mirror_post_thread as code_channel_post_thread
 from kiro_crew.slack.code_channels.binding import notify_turn_end as notify_code_channel_turn_end
@@ -753,6 +757,13 @@ def _hands_off_queue_on_exit(
         )
         if card_mark is not None:
             card_mark.__enter__()
+        # A Stop pressed while fair admission or the turn's preparation waits
+        # finds this runner here and ends it (``_preparing_turn``). An
+        # agent-started turn is left out: its cycle already runs natively, and
+        # only its own stream can cancel it.
+        turn_exit.runner = asyncio.current_task()
+        if kwargs.get("_agent_started") is not True:
+            slot._preparing_turn = turn_exit
         try:
             # Shared Crew fair admission for a turn no admitted work started
             # (shared_crew.turn_gate); a pass-through when admission is off.
@@ -785,6 +796,8 @@ def _hands_off_queue_on_exit(
             # over, and a cancel the tail below defers and re-raises must not skip it.
             if card_mark is not None:
                 card_mark.__exit__(None, None, None)
+            if getattr(slot, "_preparing_turn", None) is turn_exit:
+                slot._preparing_turn = None
             if not closing and not turn_exit.handed_off:
                 try:
                     # A cancel landing inside the tail is deferred until the
@@ -1433,6 +1446,16 @@ async def _run_chat(
             await _on_acp_transient_exhausted(turn, exc, _fb_candidate)
         elif turn._turn_emitted and acp_error_is_transient(exc) and not slot._posttoken_retry_used:
             await _on_acp_posttoken_transient(turn, exc)
+        elif (
+            turn._turn_emitted
+            and acp_error_is_capacity_or_throttle(exc)
+            and _prompt_depth == 0
+            and not _should_suppress_requeue(slot)
+            # A pure check: the swap runs in the handler, after the partial is
+            # persisted under the model that wrote it.
+            and _agent_fallback_chain()
+        ):
+            await _on_acp_posttoken_fallback(turn, exc)
         elif (
             not turn._turn_emitted
             and not slot._model_access_fallback_used

@@ -837,10 +837,10 @@ class OrphanStallMonitor(ManagerComponent):
 
         if result_is_whole(state):
             # A run that finished before the restart, caught before delivery:
-            # completed (ok, and the ✅ the prose carries is derived from that),
+            # completed (ok, and the word the prose carries is derived from that),
             # as its tombstone and task row record it. The note says why it
             # arrives late.
-            glyph, note, outcome = "✅", "finished before gateway restart", OUTCOME_OK
+            word, note, outcome = "completed", "finished before gateway restart", OUTCOME_OK
             lines = (
                 [f"Result saved at: `{result_path}`", "Use the read tool to retrieve it."]
                 if has_result
@@ -850,14 +850,18 @@ class OrphanStallMonitor(ManagerComponent):
             # Interrupted, and the note has to carry it: the wording is all that
             # stops a parent from acting on an opening sentence as though it
             # were a finding.
-            glyph, note, outcome = "⚠️", "cut off mid-turn by gateway restart", OUTCOME_INTERRUPTED
+            word, note, outcome = (
+                "interrupted",
+                "cut off mid-turn by gateway restart",
+                OUTCOME_INTERRUPTED,
+            )
             lines = [
                 f"Partial output saved at: `{result_path}`",
                 "It stops wherever the restart landed — read it as an unfinished "
                 "fragment, not as the agent's answer.",
             ]
         else:
-            glyph, note, outcome = "❌", "lost to gateway restart", OUTCOME_FAILED
+            word, note, outcome = "failed", "lost to gateway restart", OUTCOME_FAILED
             lines = ["No result was captured before the restart."]
         if not result_is_whole(state):
             # An unfinished run is not no work, whether or not it streamed any
@@ -880,7 +884,7 @@ class OrphanStallMonitor(ManagerComponent):
         msg = "\n".join(
             [
                 SUBAGENT_COMPLETION_PREFIX,
-                f"Agent `{agent_id}` {glyph} {note}",
+                f"Agent `{agent_id}` {word}: {note}",
                 f"Task: {task_preview}",
                 *worktree,
                 *lines,

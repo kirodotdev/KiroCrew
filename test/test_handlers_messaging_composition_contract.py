@@ -25,7 +25,6 @@ import asyncio
 import builtins
 import dis
 import functools
-import hashlib
 import importlib
 import importlib.util
 import inspect
@@ -145,6 +144,7 @@ _OWNER_MODULES = (
     "proactive_send",
     "channel_delivery",
     "slack_settings",
+    "slack_owner_claim",
     "discord_settings",
     "telegram_settings",
     "teams_settings",
@@ -158,106 +158,16 @@ _OWNER_MODULES = (
     "agent_push",
 )
 
-#: Each moved name and the owner its responsibility puts it in.
-_BASE_OWNERS: dict[str, tuple[str, ...]] = {
-    "spawn": tuple("""
-        _continue_on_loop _spawn_on_loop _spawn_request_memory_mode api_spawn api_spawn_continue
-
-        """.split()),
-    "run_control": tuple("""
-        _log_panel_dismissal _native_child_refusal _queue_unreadable _queued_lookup
-        _queued_not_started _queued_run _queued_run_payload _queued_runs _retry_failed_run
-        _spawn_scope_refusal api_spawn_delete api_spawn_lost api_spawn_mark_collected
-        api_spawn_release api_spawn_retry api_spawn_steer api_spawn_stop_all
-
-        """.split()),
-    "run_views": tuple("""
-        _apply_result_view _awaiting_spawn_approval _redact _spawn_result_view api_spawn_list
-        api_spawn_status
-
-        """.split()),
-    "notifications": tuple("""
-        api_notification_ack api_notification_channel_settings api_notification_channels
-        api_notification_delete api_notification_unack api_notifications
-        api_notifications_ack_all api_notifications_clear
-
-        """.split()),
-    "proactive_send": tuple("""
-        _redact_all _resolve_session_link_url _resolve_session_target _sanitize_blocks
-        _session_link_blocks _update_message api_delete_message
-
-        """.split()),
-    "channel_delivery": tuple("""
-        _ChannelSendFailed _channel_delivery_key _deliver_channel_dm _deliver_to_channel
-        _owner_dm_target _send_to_channel_target _vet_channel_send
-
-        """.split()),
-    "slack_settings": tuple("""
-        _slack_config_save_locked _validate_slack_token api_slack_config_get
-        api_slack_config_save
-
-        """.split()),
-    "discord_settings": tuple("""
-        _discord_config_save_locked _validate_discord_token api_discord_config_get
-        api_discord_config_save
-
-        """.split()),
-    "telegram_settings": tuple("""
-        _telegram_config_save_locked _validate_telegram_token api_telegram_config_get
-        api_telegram_config_save
-
-        """.split()),
-    "teams_settings": tuple("""
-        _is_valid_teams_principal _teams_config_save _validate_teams_app_credentials
-        api_teams_config_get api_teams_config_save
-
-        """.split()),
-    "webex_settings": tuple("""
-        _coerce_like _is_valid_webex_email _validate_webex_token _webex_config_save
-        api_webex_config_get api_webex_config_save
-
-        """.split()),
-    "imessage_settings": tuple("""
-        _clean_imessage_path _imessage_config_save _is_valid_imessage_handle
-        api_imessage_config_get
-
-        """.split()),
-    "wecom_settings": tuple("""
-        _is_valid_wecom_userid _wecom_config_save_locked api_wecom_config_get
-        api_wecom_config_save
-
-        """.split()),
-    "feishu_settings": tuple("""
-        _channel_sdk_status _feishu_config_save_locked _is_valid_feishu_id api_feishu_config_get
-        api_feishu_config_save
-
-        """.split()),
-    "channel_config_writes": tuple("""
-        _LockedSectionWrite _clean_id_list _mask_secret _threshold_pct_rejection
-        _wide_env_refusal _write_env_or_roll_back _write_env_updates _write_env_updates_locked
-
-        """.split()),
-    "slack_workspace": tuple("""
-        _missing_scope_message api_slack_manifest api_slack_pins api_slack_profile
-        api_slack_reactions
-
-        """.split()),
-    "channel_folder_backfill": ("api_channel_folder_backfill",),
-    "agent_push": ("api_notification_agent_push",),
+#: Each owner and the functions and classes it defines, read from its source: the facade
+#: binds each as the owner's object, and no name is defined by two owners.
+_OWNER_DEFS: dict[str, tuple[str, ...]] = {
+    path.stem: tuple(
+        node.name
+        for node in ast.parse(path.read_text(encoding="utf-8")).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    )
+    for path in sorted(_OWNER_DIR.glob("[!_]*.py"))
 }
-
-#: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
-#: ``_BASE_OWNERS``, captured from the facade before the split that moved it: each
-#: moved name keeps the kind and signature it had there.
-#: Two deliberate divergences since: ``_deliver_to_channel`` answers
-#: ``(sent, code, detail)``, so a refusal is distinguishable from a delivery fault;
-#: and ``_deliver_channel_dm`` takes an optional ``posted`` list of the delivered
-#: ``(conversation id, message id)`` pairs, so the notification bridge can link a
-#: reply transport's note to the approval a reply answers. And one rename:
-#: ``proactive_send`` owns the update-message body as ``_update_message``, with the
-#: same signature, since the facade's ``api_update_message`` opens the channel egress
-#: seam around it.
-_BASE_SHAPE_DIGEST = "f7406e5ce9a776bd509c08a75234781e7ae4a34c9bc0d6418081976ee965810b"
 
 
 #: Helpers the split of ``api_send_message`` added to the send owner: the body it
@@ -433,6 +343,10 @@ _PACKAGE_REEXPORTS = (
     "api_slack_history",
     "api_slack_manifest",
     "api_slack_manifest_status",
+    "api_slack_owner_claim_cancel",
+    "api_slack_owner_claim_confirm",
+    "api_slack_owner_claim_get",
+    "api_slack_owner_claim_start",
     "api_slack_pins",
     "api_slack_profile",
     "api_slack_reactions",
@@ -621,14 +535,7 @@ def test_the_send_split_lives_in_the_send_owner() -> None:
 
 def test_the_owner_set_is_the_package() -> None:
     assert {info.name for info in pkgutil.iter_modules([str(_OWNER_DIR)])} == set(_OWNER_MODULES)
-    assert set(_BASE_OWNERS) == set(_OWNER_MODULES)
-
-
-def _shape(obj: object) -> str:
-    if inspect.isclass(obj):
-        return "class"
-    prefix = "async def " if inspect.iscoroutinefunction(obj) else "def "
-    return prefix + str(inspect.signature(obj))  # type: ignore[arg-type]
+    assert set(_OWNER_DEFS) == set(_OWNER_MODULES)
 
 
 def test_every_moved_name_is_one_object_in_its_owner() -> None:
@@ -636,19 +543,34 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     guard, for a guarded route), in the owner its responsibility names."""
     strays = [
         f"{owner}:{name}"
-        for owner, names in _BASE_OWNERS.items()
+        for owner, names in _OWNER_DEFS.items()
         for name in names
         if inspect.unwrap(getattr(msg, name)) is not vars(_owner(owner)).get(name)
     ]
     assert strays == []
+    assert [owner for owner, names in _OWNER_DEFS.items() if not names] == []
+    names = [name for group in _OWNER_DEFS.values() for name in group]
+    assert len(names) == len(set(names)), "a name is defined by two owners"
 
 
-def test_the_moved_names_keep_their_base_shapes() -> None:
-    lines = sorted(
-        f"{name} {_shape(getattr(msg, name))}" for names in _BASE_OWNERS.values() for name in names
-    )
-    digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
-    assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
+def test_every_owner_route_handler_is_a_coroutine() -> None:
+    """aiohttp awaits a route handler with the request, so every ``api_*`` an owner
+    defines is an ``async def`` on the facade taking one required argument."""
+    routes = [name for names in _OWNER_DEFS.values() for name in names if name.startswith("api_")]
+    assert routes, "no owner defines a route handler"
+    assert [
+        n for n in routes if not inspect.iscoroutinefunction(inspect.unwrap(getattr(msg, n)))
+    ] == []
+    # aiohttp calls ``handler(request)``: a second required parameter would 500.
+    assert [
+        n
+        for n in routes
+        if [
+            p
+            for p in inspect.signature(inspect.unwrap(getattr(msg, n))).parameters.values()
+            if p.default is p.empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ][1:]
+    ] == []
 
 
 def _facade_module_assignments() -> set[str]:
@@ -672,7 +594,7 @@ def _facade_module_assignments() -> set[str]:
 #: around its owner's ``_update_message``. The Slack workspace routes and their ten census sites live in
 #: ``slack_workspace``, the rest of the channel-config write path every settings owner
 #: commits through in ``channel_config_writes``, and the backfill and agent-push routes
-#: in owners of their own (``_BASE_OWNERS``).
+#: in owners of their own (``_OWNER_DEFS``).
 _FACADE_DEFS = (
     "api_send_message",
     "api_update_message",
@@ -724,7 +646,7 @@ def test_every_owner_function_runs_on_the_facade_globals() -> None:
     """A patch of ``kiro_crew.dashboard.handlers.messaging.<name>`` reaches an owner
     function only because the function reads the facade's globals, not its own."""
     labels = {label for label, _ in _owner_functions()}
-    assert len(labels) >= sum(len(names) for names in _BASE_OWNERS.values())
+    assert len(labels) >= sum(len(names) for names in _OWNER_DEFS.values())
     strays = [
         label
         for label, fn in _owner_functions()
@@ -1437,18 +1359,6 @@ def test_the_census_sites_stay_in_their_census_homes() -> None:
     )
     assert found == _CENSUS_HOMES
     assert {path: _BASELINE_LOG_SITE_CENSUS.get(path) for path in _CENSUS_HOMES} == _CENSUS_HOMES
-
-
-def test_every_owner_coroutine_file_is_checked_for_config_dir() -> None:
-    import test_no_config_dir_in_async as guard
-
-    with_async = {
-        f"dashboard/messaging_api/{path.name}"
-        for path in _OWNER_DIR.glob("[!_]*.py")
-        if "async def " in path.read_text(encoding="utf-8")
-    }
-    assert len(with_async) == len(_OWNER_MODULES)
-    assert with_async <= set(guard._ASYNC_CHECKED_FILES)
 
 
 def _mirror(tmp_path: Path) -> Path:

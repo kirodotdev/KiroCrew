@@ -15,6 +15,7 @@ import dataclasses
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field, replace
@@ -23,6 +24,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from push_guard_helpers import _fixture_git_env
 from slack_sdk.errors import SlackApiError
 
 from kiro_crew.dashboard.handlers import worktree as wt
@@ -332,6 +334,10 @@ def test_read_board_projects_only_the_published_set_with_liveness():
         "pr_state",
         "pr_ci",
         "pr_checks",
+        # Who stopped the worker from the Workers tab, and when (model's
+        # published set; cleared by the worker's next turn).
+        "stopped_by",
+        "stopped_at",
     }
 
 
@@ -508,6 +514,14 @@ def test_needs_you_text_mentions_the_owner_and_links():
     assert text.startswith("<@U0OWNER> *Pick an icon* is waiting on you: Which of the two?")
     assert "Open in dashboard" in text
     assert not render.needs_you_text(row, "", _link).startswith("<@")
+
+
+def test_the_bar_label_counts_every_worker_in_short_words():
+    snap = model.BoardSnapshot(
+        rows=tuple(_row(f"it_0000000{i}", branch=f"b{i}") for i in range(1, 6))
+    )
+    assert model.bar_label(snap) == "5 working"
+    assert model.bar_label(model.BoardSnapshot()) == ""
 
 
 # ── publisher ───────────────────────────────────────────────────────────────
@@ -700,23 +714,42 @@ def test_publisher_respects_policy_archive_and_stop(slack, monkeypatch):
 # ── workspace integration: debounce, combined diff, bar, PRs ────────────────
 
 
-@pytest.fixture
-def repo(tmp_path) -> Path:
-    remote = tmp_path / "remote.git"
-    _git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
-    root = tmp_path / "proj"
+@pytest.fixture(scope="module")
+def _repo_template(tmp_path_factory) -> Path:
+    """A bare ``remote.git`` and a clone ``proj`` on ``main``, built once per module.
+
+    It runs before the per-test git floor applies, so its git calls use the scrubbed
+    fixture env: no host config, templates, hooks or maintenance reach it.
+    """
+    base = tmp_path_factory.mktemp("board-repo")
+    env = _fixture_git_env()
+
+    def git(*args: str, cwd: Path) -> None:
+        subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True)
+
+    remote = base / "remote.git"
+    git("init", "-q", "--bare", "-b", "main", str(remote), cwd=base)
+    root = base / "proj"
     root.mkdir()
-    _git("init", "-q", "-b", "main", cwd=root)
+    git("init", "-q", "-b", "main", cwd=root)
     for key, value in (("user.email", "t@example.com"), ("user.name", "T"), ("gc.auto", "0")):
-        _git("config", key, value, cwd=root)
+        git("config", key, value, cwd=root)
     (root / "README.md").write_text("hello\n")
-    _git("add", ".", cwd=root)
-    _git("commit", "-q", "-m", "init", cwd=root)
-    _git("remote", "add", "origin", "https://github.com/acme/widgets.git", cwd=root)
-    _git("push", "-q", str(remote), "main:main", cwd=root)
-    _git("fetch", "-q", str(remote), "+refs/heads/*:refs/remotes/origin/*", cwd=root)
-    _git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=root)
-    return root
+    git("add", ".", cwd=root)
+    git("commit", "-q", "-m", "init", cwd=root)
+    git("remote", "add", "origin", "https://github.com/acme/widgets.git", cwd=root)
+    git("push", "-q", str(remote), "main:main", cwd=root)
+    git("fetch", "-q", str(remote), "+refs/heads/*:refs/remotes/origin/*", cwd=root)
+    git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=root)
+    return base
+
+
+@pytest.fixture
+def repo(tmp_path, _repo_template) -> Path:
+    """A private copy of :func:`_repo_template` under *tmp_path*; returns the clone."""
+    for name in ("remote.git", "proj"):
+        shutil.copytree(_repo_template / name, tmp_path / name, symlinks=True)
+    return tmp_path / "proj"
 
 
 @dataclass
@@ -1397,8 +1430,9 @@ def test_the_approval_command_is_shown_redacted_and_only_on_the_board(monkeypatc
     call = _approval_call(snap)
     assert call.startswith("deploy --key ") and key not in call
     assert home not in call and call.endswith(f" {model._home_token()}/…/x.txt")
-    # The page never carries the command.
+    # The page and the bar never carry the command.
     assert "deploy" not in render.needs_you_text(first, "U1", _link)
+    assert "deploy" not in " ".join(i["label"] for i in _bar_of(snap))
 
 
 def test_a_windows_home_in_the_approval_command_is_shown_as_the_token(monkeypatch):
@@ -1412,6 +1446,12 @@ def test_a_windows_home_in_the_approval_command_is_shown_as_the_token(monkeypatc
         monkeypatch, "execute", title=f"Running: deploy {win_home}/secrets/x.txt {win_home}\\a.txt"
     )
     assert _approval_call(snap) == "deploy %USERPROFILE%/…/x.txt %USERPROFILE%\\…\\a.txt"
+
+
+def _bar_of(snap):
+    from kiro_crew.slack.code_channels.workspace.context_bar import BarState, build_items
+
+    return build_items(BarState(board=snap))
 
 
 @pytest.mark.parametrize(

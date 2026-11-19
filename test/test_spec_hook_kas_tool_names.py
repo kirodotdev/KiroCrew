@@ -30,6 +30,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+    ACP_BACKENDS_KNOWN,
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard.chat import _run_chat
@@ -79,9 +80,13 @@ def test_every_backend_crew_fires_spec_hooks_for_has_a_translation_table():
     # antigravity's file reads never ask, so its table, like codex's, names a call
     # for the observer events only.
     assert ACP_BACKEND_ANTIGRAVITY not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
-    assert frozenset(HARNESS_TOOL_TABLES) == (
-        ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS - {ACP_BACKEND_KAS}
-    ) | {ACP_BACKEND_ANTIGRAVITY, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_MIMOCODE}
+    # Every firing backend but KAS has a table; a table outside that set is allowed
+    # (hook matching only) as long as it belongs to a known harness other than KAS.
+    tables = frozenset(HARNESS_TOOL_TABLES)
+    firing = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS - {ACP_BACKEND_KAS}
+    assert firing, "no backend other than KAS fires spec hooks"
+    assert sorted(firing - tables) == []
+    assert sorted(tables - (ACP_BACKENDS_KNOWN - {ACP_BACKEND_KAS, ACP_BACKEND_KIRO})) == []
 
 
 def test_a_kas_shell_call_answers_to_its_kiro_cli_name():

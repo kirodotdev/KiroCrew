@@ -22,8 +22,8 @@ import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 import { RadioChipGroup, radioChip } from './RadioChipGroup'
 /**
  * First-run onboarding flow (5 steps) — the Customize chapter plus the feature
- * tour. It is the LAST of the three first-run chapters: Import setup runs first,
- * then the mandatory Privacy chapter (`PrivacyChapter`), then this.
+ * tour. It is the LAST of the two first-run chapters: Import setup runs first,
+ * then this.
  *   1. Pick your look   — centered modal, reuses the real theme picker.
  *   2. About you        — centered modal: role + technical comfort. Persisted
  *                         to dashboard.user_role / dashboard.user_technical_level
@@ -91,8 +91,9 @@ const POP_BODY_KEY: Record<string, string> = {
   chat: 'components.onboardingFlow.pop_chat_body',
 }
 
-/** Catalog key for each button of the look step's mode switch. */
-const MODE_LABEL_KEYS: Record<ModePreference, string> = {
+/** Catalog key for each button of the look step's mode switch. Scheduled is
+ *  offered in Settings only: it needs two times, which first run does not ask for. */
+const MODE_LABEL_KEYS: Record<Exclude<ModePreference, 'schedule'>, string> = {
   system: 'components.onboardingFlow.mode_system',
   light: 'components.onboardingFlow.mode_light',
   dark: 'components.onboardingFlow.mode_dark',
@@ -224,9 +225,7 @@ export default function OnboardingFlow({
   initialOpen: boolean
   onComplete: () => void
   // Abandoning the tour early — "Skip all", a popover's "Skip", or Escape. Kept
-  // SEPARATE from onComplete because a skip must still pass through the mandatory
-  // Privacy chapter if that has not happened yet, while finishing the tour with
-  // "Done" cannot possibly need to (Privacy precedes this chapter). Falls back to
+  // apart from onComplete so a host can tell the two exits apart. Falls back to
   // onComplete when the host does not distinguish the two.
   onSkipAll?: () => void
 }) {
@@ -380,8 +379,8 @@ export default function OnboardingFlow({
     }
   }, [initialOpen])
 
-  // Once the user is onboarded by any path (this flow's finish, the Privacy
-  // chapter's "Skip all", or the server saying so on this or another machine),
+  // Once the user is onboarded by any path (this flow's finish, Import setup's
+  // "Skip all", or the server saying so on this or another machine),
   // the first run is over: a saved step must not resume a later first run.
   useEffect(() => {
     if (onboarded) safeRemoveItem(TOUR_STEP_KEY)
@@ -414,8 +413,8 @@ export default function OnboardingFlow({
   // informed dismissal, never a trap. Succeeding or no-op saves close in one
   // press (the await is a local loopback call, imperceptible).
   //
-  // `skipped` routes the exit: an abandoned tour goes to onSkipAll (which may
-  // still owe the user the Privacy chapter), a finished one to onComplete.
+  // `skipped` routes the exit: an abandoned tour goes to onSkipAll, a finished
+  // one to onComplete.
   const finish = useCallback(async (skipped: boolean) => {
     if (!skipDiscardArmed.current) {
       // Freeze inputs for this await too (same race as Next's save): the
@@ -640,7 +639,7 @@ export default function OnboardingFlow({
         <LookPreview className="w-full shrink-0 sm:w-[52%]" />
         <div className="min-w-0 flex-1">
         <RadioChipGroup className="flex gap-1 border border-border rounded-[10px] p-1" style={{ background: 'var(--panel-strong)' }} ariaLabel={i18nT('components.onboardingFlow.mode_switch_label')}>
-          {(['system', 'light', 'dark'] as ModePreference[]).map(m => (
+          {(['system', 'light', 'dark'] as const).map(m => (
             <button
               key={m}
               type="button"

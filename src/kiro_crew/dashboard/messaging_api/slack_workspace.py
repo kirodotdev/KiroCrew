@@ -477,9 +477,10 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     Slack app creation without the CLI: the bundled template gets the user's
     alias substituted, and the comment-stripped YAML is URL-encoded into
     Slack's new-app deep link. ``command`` is the slash command that manifest
-    registers. The gateway answers only ``/{slack.command}`` and this endpoint
-    writes no config, so a caller that passes ``?alias=`` gets the value its
-    ``kirocrew config set slack.command`` step needs. With no alias, the
+    registers. The gateway answers it as it is and this endpoint writes no
+    config, so a caller that passes ``?alias=`` saves it as ``slack.command``
+    (applied live, no restart) for later manifest updates to keep it. With no
+    alias, the
     endpoint renders for this install: the alias the saved ``slack.command`` was
     generated from, and that command, so a manifest copied to update an existing
     app keeps its slash command. Serves only the public template — no secrets.

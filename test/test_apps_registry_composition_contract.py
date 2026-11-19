@@ -43,22 +43,7 @@ import pytest
 
 from kiro_crew.apps import registry
 from kiro_crew.apps.manifest import AppManifest
-from kiro_crew.apps.registry_pipeline import (
-    caches,
-    catalog,
-    checkout,
-    git_targets,
-    indexes,
-    install,
-    install_clone,
-    install_desktop_gate,
-    install_rollback,
-    manifests,
-    recovery,
-    sources,
-    store_art,
-    subprocess_env,
-)
+from kiro_crew.apps.registry_pipeline import caches, sources, subprocess_env
 
 # One group per file, the shape every tree-scan file takes: the cases below parse
 # the facade's and every owner's source.
@@ -68,27 +53,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PIPELINE_DIR = _REPO_ROOT / "src/kiro_crew/apps/registry_pipeline"
 _PIPELINE_PACKAGE = "kiro_crew.apps.registry_pipeline"
 
-#: The owners in the facade's declared layer order, lowest first.
-PARTS: tuple[ModuleType, ...] = (
-    subprocess_env,
-    git_targets,
-    caches,
-    sources,
-    recovery,
-    checkout,
-    store_art,
-    indexes,
-    manifests,
-    catalog,
-    install_desktop_gate,
-    install_rollback,
-    install_clone,
-    install,
+#: The owners in the facade's declared layer order, lowest first. Read from the
+#: facade, so adding an owner needs no edit here; the package-membership check below
+#: still fails when an owner on disk is missing from that order.
+PARTS: tuple[ModuleType, ...] = tuple(
+    importlib.import_module(name) for name in registry._PART_MODULES
 )
 
 #: The registry's module-level surface: every name the one-module ``registry.py``
 #: bound, dunders excluded. A name leaves this list only when the symbol it names is
-#: deliberately deleted.
+#: deliberately deleted; a name added since needs no line here.
 FROZEN_NAMES: tuple[str, ...] = (
     "Any",
     "AppManifest",
@@ -461,7 +435,8 @@ class TestTheSurfaceSurvivesTheSplit(composition_contract_checks.TheFrozenInvent
     def test_the_part_order_is_the_facades_and_covers_the_package(self) -> None:
         # The facade resolves a read from the first owner in this order that holds the
         # name, so an owner missing from it is one whose names the facade cannot reach.
-        assert registry._PART_MODULES == tuple(part.__name__ for part in PARTS)
+        assert PARTS, "the facade declares no owners"
+        assert len(set(registry._PART_MODULES)) == len(registry._PART_MODULES)
         on_disk = {path.stem for path in _PIPELINE_DIR.glob("*.py") if path.stem != "__init__"}
         assert on_disk == {part.__name__.rpartition(".")[2] for part in PARTS}
 
@@ -496,15 +471,23 @@ class TestTheSurfaceSurvivesTheSplit(composition_contract_checks.TheFrozenInvent
     def test_dir_lists_the_exported_names(self) -> None:
         assert set(FROZEN_NAMES) <= set(dir(registry))
 
-    def test_a_star_import_carries_exactly_the_public_names_of_the_inventory(
+    def test_a_star_import_carries_exactly_the_public_names_of_the_family(
         self, tmp_path: Path
     ) -> None:
         # ``__all__`` is derived, and a star import consults it and never the module
         # ``__getattr__``. The machinery binds only private names, so nothing it needs
         # leaks into a star importer's namespace and nothing public goes missing. The
-        # star import runs in a real module loaded from ``tmp_path``, the one place a
-        # star import is legal.
-        public = {name for name in FROZEN_NAMES if not name.startswith("_")}
+        # public names are read from the facade's and the owners' own namespaces, so a
+        # new public name needs no edit here, and every public name of the inventory is
+        # among them. The star import runs in a real module loaded from ``tmp_path``,
+        # the one place a star import is legal.
+        public = {
+            name
+            for module in (registry, *PARTS)
+            for name in vars(module)
+            if not name.startswith("_")
+        }
+        assert {name for name in FROZEN_NAMES if not name.startswith("_")} <= public
         assert set(registry.__all__) == public
         probe_path = tmp_path / "registry_star_probe.py"
         probe_path.write_text("from kiro_crew.apps.registry import *\n", encoding="utf-8")

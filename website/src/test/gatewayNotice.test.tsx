@@ -694,14 +694,14 @@ describe('the KAS signed-out row', () => {
       meta: { kind: 'auth_required', notice: 'kas_signed_out', ...(args ? { notice_args: args } : {}) },
     } as Partial<ChatMessage>)
 
-  it('names the route and points at the sign-in button when the card has one', () => {
-    renderWith(mergeRenderers(createTranscriptRenderers({ slot: 's1', onOpenSignIn: () => undefined })), row({ route: 'relay' }))
+  it('shows one line and a Sign in button when the card has one', () => {
+    renderWith(mergeRenderers(createTranscriptRenderers({ slot: 's1', onOpenSignIn: () => undefined })), row({ route: 'bundle' }))
     const card = screen.getByTestId('error-card')
     expect(card).toHaveAttribute('data-auth-required', 'true')
-    expect(card).toHaveTextContent(lead(RELAY, GN.kas_signed_out_sign_in_below))
-    // Plain words: no engine jargon reaches the reader.
-    expect(card).not.toHaveTextContent(/relay|KAS/)
-    expect(screen.getByTestId('error-card-sign-in')).toBeInTheDocument()
+    expect(card).toHaveTextContent('Sign in to Kiro to keep chatting')
+    // Plain words: no engine jargon or Settings path reaches the reader.
+    expect(card).not.toHaveTextContent(/relay|KAS|Settings/)
+    expect(screen.getByTestId('kiro-sign-in-open')).toBeInTheDocument()
     cleanup()
   })
 
@@ -710,7 +710,7 @@ describe('the KAS signed-out row', () => {
     expect(resolveGatewayNotice(r, [r], 0)).toEqual({ text: lead(BUNDLE, GN.kas_signed_out), card: 'error' })
     renderWith(defaultMessageRenderers, r)
     expect(screen.getByTestId('error-card')).toHaveTextContent(lead(BUNDLE, GN.kas_signed_out))
-    expect(screen.queryByTestId('error-card-sign-in')).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-open')).toBeNull()
     cleanup()
   })
 
@@ -734,6 +734,7 @@ describe('the KAS signed-out row', () => {
   })
 
   it.each([
+    'Settings → Kiro account',
     'Settings → Agent Harness → Kiro Agent → Kiro sign-in',
     'Settings → Agent Harness → Kiro sign-in',
   ])('recognises the current "send your message again" ending on a token-less row naming %s, as the side panel writes it', card => {

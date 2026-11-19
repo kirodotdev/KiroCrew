@@ -114,6 +114,67 @@ class CodeChannelDefaultsConfig:
     )
 
 
+def is_slack_user_id(value: object) -> bool:
+    """A Slack member id: ``U`` or ``W`` then 1 to 19 upper-case letters or digits.
+
+    Validated by ``USER_ID_RE``, the pattern the messaging schemas use. A bot id
+    (``B...``) and a workspace id (``T...``) never match.
+    """
+    # Here, not at the top: a module-level name would be a facade owner name the
+    # config.sections facade must bind, and not the kiro_crew.validation facade
+    # either, which imports config.sections, which imports this module.
+    from kiro_crew.validation_parts.input_bounds import USER_ID_RE
+
+    return isinstance(value, str) and USER_ID_RE.fullmatch(value) is not None
+
+
+def shared_user_ids(raw: object) -> list[str]:
+    """``slack.shared_access.user_ids`` as stored ids: trimmed, well-formed, deduped.
+
+    A non-list reads as empty and a malformed entry is dropped, so a hand edit can
+    never admit an id the gateway would not have accepted.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        value = item.strip() if isinstance(item, str) else ""
+        if is_slack_user_id(value) and value not in out:
+            out.append(value)
+    return out
+
+
+@dataclass
+class SlackSharedAccessConfig:
+    """The owner's opt-in to let named Slack users drive this Crew as the owner.
+
+    Read on every Slack event, so a removal or a switch-off applies to the next one.
+    Separate from ``allowed_users``, which stays inert: turning this on never admits
+    a stale allowlist entry.
+    """
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Share Slack Access",
+            "Let the Slack users listed in user_ids use this Crew's Slack bot. They act "
+            "as you: with your files, git and cloud credentials and connected tools. "
+            "Off by default; applies to the next Slack event.",
+            tags=["slack"],
+        ),
+    )
+    user_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Shared Slack Users",
+            "Slack member IDs (U... or W...) allowed to use the bot while shared access "
+            "is on. Each is checked with Slack before it is used: same workspace as the "
+            "bot, a person, not deactivated, not the owner.",
+            tags=["slack"],
+        ),
+    )
+
+
 @dataclass
 class SlackConfig:
     allowed_users: list[dict] = field(
@@ -142,12 +203,12 @@ class SlackConfig:
         default="kirocrew",
         metadata=_meta(
             "Command",
-            "Slack slash command trigger word.",
-            # Boot-read: the trigger is registered in the Slack app MANIFEST, so
-            # a local reload cannot make Slack route a new word. Applying it
-            # in-process would only change the help text and report success for a
-            # command that still does not exist on Slack's side.
-            restart=True,
+            "Slash command name shown in Slack help. The gateway also answers "
+            "/kirocrew and any /kirocrew-<alias> the app registers.",
+            # Live: Slack routes only commands the app MANIFEST registers, and the
+            # gateway answers every manifest-shaped name (``/kirocrew`` and
+            # ``/kirocrew-<alias>``) whatever this says. This adds a custom name
+            # and is the name help text shows; the Slack applier refreshes it.
         ),
     )
     forward_to_agent_callback: str = field(
@@ -375,6 +436,14 @@ class SlackConfig:
             "Folder, agent, model, reasoning effort and approval mode a new "
             "code-channel session starts with. Takes effect on the next new code "
             "channel; no restart.",
+            tags=["slack"],
+        ),
+    )
+    shared_access: SlackSharedAccessConfig = field(
+        default_factory=SlackSharedAccessConfig,
+        metadata=_meta(
+            "Shared Access",
+            "Let other Slack users drive this Crew as you. Off by default.",
             tags=["slack"],
         ),
     )

@@ -2,9 +2,9 @@
  * The hardened executor for an EXTERNALLY-MANAGED marker's own commands.
  *
  * Shared by the managed lane (check, quit-time apply) and the start-time apply
- * of an armed update, which runs in Electron main before any window opens. The
- * marker already passed readExternallyManaged's provenance test before this is
- * built; what this owns is the ENVIRONMENT the commands run in.
+ * of an armed update, which runs in Electron main before the main window opens.
+ * The marker already passed readExternallyManaged's provenance test before this
+ * is built; what this owns is the ENVIRONMENT the commands run in.
  */
 function createManagedExec({ managed, managedPath, log }) {
   // Bound retained output so a chatty command cannot exhaust memory (we keep

@@ -20,8 +20,8 @@ import type { DashboardState } from './dashboard/state'
 /** A dashboard socket that the Kiro relay ended for a reason a reconnect cannot
  *  fix on its own: its token could not be renewed (`session_ended`), or the
  *  relay refused it with a code from its own block (`refused`). */
-export type OfflineCause = 'session_ended' | 'refused'
-export { selectMateThreadsHidingSessions, selectPersonSlots } from './personSlots'
+export type OfflineCause = 'session_ended' | 'refused' | 'remote_off'
+export { selectFoldersHoldingSessions, selectMateThreadsHidingSessions, selectPersonSlots } from './personSlots'
 
 /** The two user-owned mute flags on a slot. */
 export type MuteFlag = 'mutes_opened' | 'muted'

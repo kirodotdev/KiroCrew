@@ -64,6 +64,44 @@ def test_every_shipped_case_bites_on_its_base_and_passes_on_its_reference():
     assert tasks.check_cases(tasks.find_cases(SUITE, "all", [])) == []
 
 
+def test_a_build_commit_starts_no_background_git_maintenance(tmp_path):
+    # A detached `git maintenance run --auto` holds objects/maintenance.lock while the
+    # build's local clone copies objects/, and removes it mid-copy.
+    repo, trace = tmp_path / "repo", tmp_path / "trace.log"
+    env = {**tasks._base_env(), "GIT_TRACE": str(trace)}
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    for cmd in (
+        ["git", "init", "-q", str(repo)],
+        ["git", "-C", str(repo), *ident, "commit", "-q", "--allow-empty", "-m", "base"],
+    ):
+        subprocess.run(cmd, check=True, env=env, timeout=default_timeout())
+    assert "maintenance run" not in trace.read_text()
+
+
+def test_a_reference_push_starts_no_background_git_maintenance(tmp_path, monkeypatch):
+    origin, repo, trace = tmp_path / "origin.git", tmp_path / "repo", tmp_path / "trace.log"
+    case = SimpleNamespace(path=tmp_path / "case")
+    (case.path / "ref").mkdir(parents=True)
+    env = tasks._base_env()
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    for cmd in (
+        ["git", "init", "-q", "--bare", f"--initial-branch={tasks.TASK_BRANCH}", str(origin)],
+        ["git", "clone", "-q", str(origin), str(repo)],
+        ["git", "-C", str(repo), *ident, "commit", "-q", "--allow-empty", "-m", "base"],
+    ):
+        subprocess.run(cmd, cwd=tmp_path, check=True, env=env, timeout=default_timeout())
+    env.update(
+        GIT_TRACE=str(trace),
+        GIT_AUTHOR_NAME="t",
+        GIT_AUTHOR_EMAIL="t@example.invalid",
+        GIT_COMMITTER_NAME="t",
+        GIT_COMMITTER_EMAIL="t@example.invalid",
+    )
+    monkeypatch.setattr(tasks, "_base_env", lambda: env)
+    tasks.apply_reference(case, repo)
+    assert "maintenance run" not in trace.read_text(encoding="utf-8")
+
+
 def test_check_names_a_case_whose_base_already_passes(tmp_path):
     case_dir = _case_copy(tmp_path)
     shutil.copy(case_dir / "ref" / "attach_names.py", case_dir / "base" / "attach_names.py")
@@ -134,6 +172,26 @@ def test_preflight_refuses_credential_dirs_and_a_readable_person_home(monkeypatc
         f"{mine}/.netrc exists: run the eval as a dedicated user with no credentials",
         f"alice's home {theirs} is readable by the eval user",
         f"mac's home {theirs} is readable by the eval user",
+    ]
+
+
+def test_preflight_skips_a_true_shell_service_account_but_not_a_real_shell(monkeypatch, tmp_path):
+    mine, home = tmp_path / "eval", tmp_path / "svc"
+    mine.mkdir()
+    home.mkdir()
+    _fake_users(
+        monkeypatch,
+        _pw("eval", 4000, mine),
+        [
+            _pw("snitch", 43318, home, "/bin/true"),
+            _pw("usr-true", 43319, home, "/usr/bin/true"),
+            _pw("untrue", 43320, home, "/usr/bin/untrue"),  # basename, not a substring
+            _pw("carol", 43321, home, "/bin/zsh"),
+        ],
+    )
+    assert tasks.preflight([], {}) == [
+        f"untrue's home {home} is readable by the eval user",
+        f"carol's home {home} is readable by the eval user",
     ]
 
 

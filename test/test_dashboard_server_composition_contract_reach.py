@@ -673,6 +673,7 @@ _DASHBOARD_CHAIN = (
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
     ("app_web_origin_middleware", "build_app_web_origin_middleware.<locals>."),
+    ("relay_origin", "_relay_origin_middleware.<locals>."),
     ("host_canonical_redirect", "build_host_canonical_redirect.<locals>."),
     ("host_validation_middleware", "_make_host_validation_middleware.<locals>."),
     ("reject_compressed_body_middleware", "reject_compressed_body_middleware"),
@@ -791,7 +792,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred
+    _deferred _deferred _deferred _deferred
     _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
     _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
@@ -808,7 +809,7 @@ _DASHBOARD_BOOT = tuple("""
     _make_csrf_middleware
     _make_deny_audit_middleware resolve_dashboard_host build_host_canonical_redirect
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
-    relay_ingress_middleware
+    relay_ingress_middleware _relay_origin_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_lts_gate _register_prevent_sleep_shutdown _register_listener_guard_shutdown
     _register_stt_hooks _register_own_host_warm _register_config_watch
@@ -879,7 +880,7 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred
+    _deferred _deferred _deferred _deferred
     _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
     _deferred _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
@@ -1124,7 +1125,10 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 
 
 #: The MCP route table's ``"<method> <path> <handler>"`` rows in registration order,
-#: one per line. The table is shared by both entrypoints, so a route added to it on
+#: one per line. These rows are the gateway's HTTP API contract: the MCP server
+#: processes, the dashboard page and the strict-internal path list call these paths, so a
+#: route dropped, renamed, rebound or reordered is a defect even when no caller's test
+#: names it. The table is shared by both entrypoints, so a route added to it on
 #: purpose edits its own row there; a stored count or digest of the whole table would
 #: make every such change rewrite one shared line (see testing-conventions.md
 #: § Merge-safe ratchets and counts).

@@ -888,20 +888,20 @@ def run_command(*, purge: bool, older_than_days: float | None, purge_unreadable:
     # once. Infinity is refused alongside it -- it is not a window, and taking it
     # as "collect nothing" would make a typo look like a working command.
     if not math.isfinite(window) or window < 0:
-        print("  ❌ --older-than-days must be a finite number of days, and not negative")
+        print("  Error: --older-than-days must be a finite number of days, and not negative")
         sys.exit(2)
     # ``--purge-unreadable`` is a modifier of ``--purge``. Run alone it would be
     # the hazard this command exists to remove: a modifier parsed without its
     # mode, a dry run that exits 0 and reads like a purge that found nothing.
     if purge_unreadable and not purge:
-        print("  ❌ --purge-unreadable only works with --purge", file=sys.stderr)
+        print("  Error: --purge-unreadable only works with --purge", file=sys.stderr)
         sys.exit(2)
     header = "Ledger Sweep" + ("" if purge else " (dry run — nothing is deleted)")
     print(f"{header}\n")
     try:
         report = scan(older_than_days=window)
     except OSError as exc:
-        print(f"  ❌ could not read the ledger stores: {exc}")
+        print(f"  Error: could not read the ledger stores: {exc}")
         sys.exit(1)
     result = _purge(report, include_unreadable=purge_unreadable) if purge else None
     for line in render(report, purged=result):
@@ -922,7 +922,7 @@ def run_command(*, purge: bool, older_than_days: float | None, purge_unreadable:
         for candidate in result.failed:
             key = _safe(candidate.key) if candidate.key else "(no breadcrumb)"
             print(
-                f"  ❌ could not delete {candidate.kind} {_safe(candidate.store)}  key={key}",
+                f"  Error: could not delete {candidate.kind} {_safe(candidate.store)}  key={key}",
                 file=sys.stderr,
             )
         sys.exit(1)

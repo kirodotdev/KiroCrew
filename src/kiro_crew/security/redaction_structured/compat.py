@@ -113,20 +113,44 @@ def old_rule(rule_id: str) -> str:
 #: rather than one per call; every plan then fails closed.
 _LOAD_FAILED = False
 
+#: Serializes the first load. Redaction's first call can come from two threads
+#: at once (the SEL writer thread redacts rows while the loop thread redacts
+#: an alert), and the fail-closed flag must never be set by that race.
+_LOAD_LOCK = threading.Lock()
+
 
 def _load() -> None:
-    """Import the detectors and build their table; raises if that ever failed."""
+    """Import the detectors and build their table; raises if that ever failed.
+
+    Race-safe by construction, in two parts. The modules come through
+    ``importlib.import_module``, which waits on the per-module import lock
+    until a module another thread is mid-importing has finished — a
+    ``from package import engine`` would instead resolve the PARENT'S
+    attribute, which can name a partially-initialized module while that
+    import is in flight, and ``engine.scan`` then raises on a module that is
+    fine. And the whole load holds ``_LOAD_LOCK``, so two first-callers
+    cannot interleave and ``_LOAD_FAILED`` is only ever set by a load that
+    genuinely failed (a bad table), never by concurrency — once set it
+    poisons every later plan fail-closed for the life of the process, which
+    is exactly right for a broken table and exactly wrong for a lost race.
+    """
     global _LOAD_FAILED
     if _LOAD_FAILED:
         raise RuntimeError("structured credential detectors unavailable")
-    try:
-        from kiro_crew.security.redaction_structured import engine, table
+    with _LOAD_LOCK:
+        if _LOAD_FAILED:
+            raise RuntimeError("structured credential detectors unavailable")
+        try:
+            import importlib
 
-        table.TABLE  # noqa: B018 - built at import; a bad row raises there
-        engine.scan  # noqa: B018
-    except Exception:
-        _LOAD_FAILED = True
-        raise
+            engine = importlib.import_module("kiro_crew.security.redaction_structured.engine")
+            table = importlib.import_module("kiro_crew.security.redaction_structured.table")
+
+            table.TABLE  # noqa: B018 - built at import; a bad row raises there
+            engine.scan  # noqa: B018
+        except Exception:
+            _LOAD_FAILED = True
+            raise
 
 
 #: ``(context, window)`` a stream sets while it redacts one committed window.

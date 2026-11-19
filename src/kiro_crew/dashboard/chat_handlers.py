@@ -377,6 +377,7 @@ from kiro_crew.dashboard.chat_api.slot_repair import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.slot_settings import (  # noqa: F401
     _autocompact_txn_lock,
+    _save_dropping_commit_on_cancel,
     _slot_agent_autocompact_fields,
     _slot_harness_managed_backend,
     _slot_next_agent_autocompact_default,
@@ -401,6 +402,7 @@ from kiro_crew.dashboard.chat_api.source_links import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.sse_write import write_sse_or_abort  # noqa: F401
 from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _cancel_cron_run,
+    _cancel_preparing_runner,
     _cancel_target,
     _compaction_in_flight,
     _decline_compacting_interrupt,

@@ -8,10 +8,11 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_awaiting_permission``, ``_codex_compaction_pending``,
-``_compaction_failed_at``, ``_drained_child_events``, ``_input_wait_emitted``, ``_last_stop_reason``,
-``_mcp_sign_in_completed``, ``_oauth_emitted_servers``, ``_prompt_or_tool_seen``,
-``_stale_eligible``, ``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
+Instance fields written: ``_awaiting_permission``, ``_cancel_unacked``,
+``_codex_compaction_pending``, ``_compaction_failed_at``, ``_drained_child_events``,
+``_input_wait_emitted``, ``_last_stop_reason``, ``_mcp_sign_in_completed``,
+``_oauth_emitted_servers``, ``_prompt_or_tool_seen``, ``_stale_eligible``, ``_stale_probe``,
+``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
 
 Instance fields read: ``_awaited_responses``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``chat_shared``, ``_engine_fallback``, ``_ingress_seq``, ``_kas_compact_turn``,
@@ -266,6 +267,7 @@ async def _dispatch_events(
                         usage=self.last_prompt_stats.to_turn_usage(),
                     )
                     return
+                self._cancel_unacked = True
                 logger.warning(
                     "Cancel unacked after %.1fs on session %s — unblocking caller "
                     "(runtime kept alive for co-tenants)",
@@ -1014,7 +1016,7 @@ async def _dispatch_events(
                         # and cap the display, consistent with the drain
                         # notice and the [:4096] pre-redaction bounds.
                         text=(
-                            "⛔ permission auto-rejected (missing security "
+                            "Blocked: permission auto-rejected (missing security "
                             "context): "
                             f"{redact_text(str(_perm_event.title or '<unknown tool>')[:4096])[:120]}"
                         ),

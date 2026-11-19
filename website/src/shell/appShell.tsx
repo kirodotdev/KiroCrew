@@ -437,13 +437,10 @@ export function useAppShell() {
     themeVersion,
     onboarded,
     importOnboarded,
-    privacyAcked,
-    privacyAckVersion,
     themeBootReady,
     themeBootRead,
     markOnboarded,
     markImportOnboarded,
-    markPrivacyAcked,
   } = useTheme()
   // First run's chapters write the host's flags, so they wait for the host's own
   // answer. A failed boot read leaves only this browser's flags, which a new
@@ -458,10 +455,10 @@ export function useAppShell() {
   const ownerCheck = useViewerIsNotOwner()
   const hostFlagsReady = themeBootReady && (themeBootRead || onboarded)
   const firstRun = useFirstRunChapters({
-    onboarded, importOnboarded, privacyAcked, privacyAckVersion,
+    onboarded, importOnboarded,
     themeBootReady: hostFlagsReady && ownerCheck.owner,
     hostStateUnread: (themeBootReady && !themeBootRead && !onboarded) || !ownerCheck.owner,
-    ownerCheckFailed: ownerCheck.failed && hostFlagsReady && (!importOnboarded || !privacyAcked || !onboarded),
+    ownerCheckFailed: ownerCheck.failed && hostFlagsReady && (!importOnboarded || !onboarded),
     retryOwnerCheck: ownerCheck.retry,
     markOnboarded,
   })
@@ -837,6 +834,10 @@ export function useAppShell() {
       // otherwise a just-installed registry app keeps rendering a "Get"
       // button until the cache expires.
       queryClient.invalidateQueries({ queryKey: ['registry'] })
+      // Kiro Space rows carry the same server-computed `installed` and
+      // `nameTaken` flags, so an install or uninstall anywhere re-reads them.
+      queryClient.invalidateQueries({ queryKey: ['market-listings'] })
+      queryClient.invalidateQueries({ queryKey: ['market-listing'] })
     }
     window.addEventListener('mc:apps-changed', handler)
     return () => window.removeEventListener('mc:apps-changed', handler)
@@ -897,7 +898,7 @@ export function useAppShell() {
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
   })
 
-  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroAccountEntry } = useKiroUsageReadout()
+  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroAccountEntry, kiroSignInPrompt, openKiroSignIn } = useKiroUsageReadout()
   // Feature previews live on the gateway; this keeps the browser cache of them in
   // step. Called beside the credit readout, which already reads ['kirocrewConfig'].
   usePreviewFlagServerSync()
@@ -1072,10 +1073,10 @@ export function useAppShell() {
   // space actually left for content — ChatPage's activity panel decides
   // beside-vs-fill from it. Kept in sync with the gridTemplateColumns value
   // in App's shell grid; railWidthFor is the single source for both. An embed
-  // document draws no rail, so it publishes none (#37165).
+  // document and every pop-out window draw no rail, so they publish none.
   useEffect(() => {
-    setRailWidth(focusActive || isEmbed ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
-  }, [isMobile, effectiveCollapsed, focusActive, isEmbed])
+    setRailWidth(focusActive || isEmbed || isPopout ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
+  }, [isMobile, effectiveCollapsed, focusActive, isEmbed, isPopout])
   // The header's three grid tracks (see `.topbar` in index.css) size themselves:
   // the search width is a function of the window and the two side groups split
   // the remainder. Each group re-lays-out its own contents with container
@@ -1147,7 +1148,7 @@ export function useAppShell() {
     focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
-    colorTheme, resolvedMode, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked,
+    colorTheme, resolvedMode, onboarded, markOnboarded, markImportOnboarded,
     firstRun, lookPreviewFrame, branding, botName, avatar, isMobile, bottomDock, activeInstanceId,
     macFullscreen, macInset, topReservePx, focusMode, toggleFocusMode, focusActive, topPeek, railPeek,
     topPeekTrigger, topPeekSurface, railPeekTrigger, railPeekSurface, topChromeShown, localHeaderDragGaps,
@@ -1156,7 +1157,7 @@ export function useAppShell() {
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
     toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, usageSegmentHidden, kiroAccountEntry, metrics, capsuleCollapsed, setCapsuleCollapsed,
+    kiroUsageState, usageSegmentHidden, kiroAccountEntry, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,
     subscribeLogs, subscribeSubagents, forceReconnect, updateFlow, updating, setUpdating, showUpdateModal,
     setShowUpdateModal, showChangelog, updateError, setUpdateError, reportProblemOpen,

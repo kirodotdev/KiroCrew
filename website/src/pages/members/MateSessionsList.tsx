@@ -7,15 +7,16 @@
  * `GET .../crew-workers` answer, which adds closed sessions, the ledger line and
  * the server's own group. A 404 from an older gateway is no data, not a failure.
  *
- * A click expands the row IN PLACE and shows its recap: no navigation, no side
- * panel, no drawer (rfc-mate-sessions-folder-or-lineage.md, "Owner decision: a
- * click shows the recap in place"). The recap is read from records only, with no
- * model call (`GET .../crew-workers/{worker}/recap`).
+ * One list, two hosts: the Profile card's Sessions tab and the Bot page side
+ * panel's Sessions tab. A row click is the host's `onOpen`; both hosts open the
+ * session in the side panel's Sessions tab, where the recap is one toggle away.
+ * The recap is read from records only, with no model call
+ * (`GET .../crew-workers/{worker}/recap`).
  */
-import { useId, useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
 import { api } from '../../api/client'
 import { apiErrorCode, isNotFoundError } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -88,10 +89,15 @@ export interface MateSessionsListProps {
   slotsLoaded: boolean
   /** What the tab shows when the mate has no session at all. */
   empty: ReactNode
+  /** A row click: the host opens that session. */
+  onOpen: (worker: CrewWorker) => void
+  /** Shown above the groups (a failed reopen, say). */
+  notice?: ReactNode
 }
 
-export default function MateSessionsList({ root, mateName, liveSlots, slotsLoaded, empty }: MateSessionsListProps) {
-  const { t } = useTranslation()
+/** The mate's sessions: its `GET .../crew-workers` answer merged with the open
+ *  slots the store carries. One query key, so every reader shares one poll. */
+export function useMateSessionWorkers(root: string, liveSlots: readonly ChatSlot[]) {
   const listed = useQuery({
     queryKey: crewWorkersQueryKey(root),
     queryFn: () => readCrewWorkers(root),
@@ -100,8 +106,13 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
   })
   const live = useMemo(() => liveMateWorkers(liveSlots, root), [liveSlots, root])
   const workers = useMemo(() => mergeCrewWorkers(listed.data?.workers, live), [listed.data?.workers, live])
+  return { listed, workers }
+}
+
+export default function MateSessionsList({ root, mateName, liveSlots, slotsLoaded, empty, onOpen, notice }: MateSessionsListProps) {
+  const { t } = useTranslation()
+  const { listed, workers } = useMateSessionWorkers(root, liveSlots)
   const groups = useMemo(() => groupCrewWorkers(workers), [workers])
-  const [expanded, setExpanded] = useState<string | null>(null)
   const [finishedOpen, setFinishedOpen] = useState(false)
   const failed = listed.isError && !crewRouteNotServed(listed.error)
 
@@ -124,7 +135,6 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
       </>
     )
   }
-  const toggle = (key: string) => setExpanded(prev => (prev === key ? null : key))
   const label = (group: CrewWorkerGroup) =>
     group === 'with_conductor' ? t('pages.membersPage.sessions_group_waiting_on_mate', { name: mateName }) : t(CREW_GROUP_LABEL_KEY[group])
   return (
@@ -132,12 +142,13 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
       {/* No hand-off: the Members page holds unsaved Profile, schedule and
           crew-editor drafts, and Ask the agent navigates away from them. */}
       {failed && <ErrorNotice variant="inline" message={t('pages.membersPage.sessions_read_failed')} />}
+      {notice}
       {groups.map(({ group, workers: rows }) => {
         const finished = group === CREW_FINISHED_GROUP
         const list = (
           <ul className="list-none m-0 p-0 rounded-2xl border border-border bg-bg overflow-hidden">
             {rows.map(w => (
-              <MateSessionRow key={w.key} root={root} worker={w} open={expanded === w.key} onToggle={() => toggle(w.key)} />
+              <MateSessionRow key={w.key} worker={w} onOpen={() => onOpen(w)} />
             ))}
           </ul>
         )
@@ -167,16 +178,14 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
   )
 }
 
-function MateSessionRow({ root, worker, open, onToggle }: { root: string; worker: CrewWorker; open: boolean; onToggle: () => void }) {
-  const { t } = useTranslation()
-  const regionId = useId()
+function MateSessionRow({ worker, onOpen }: { worker: CrewWorker; onOpen: () => void }) {
   const title = sessionDisplayTitle({ key: worker.key, title: worker.title })
   const ts = worker.last_activity ? Date.parse(worker.last_activity) : 0
   return (
     <li className="border-t border-border first:border-t-0" data-testid="mate-session-row" data-group={worker.group}>
-      <button type="button" onClick={onToggle} aria-expanded={open} aria-controls={regionId}
+      <button type="button" onClick={onOpen}
         className="w-full flex items-center gap-3 px-3.5 py-3 text-left hover:bg-bg-hover transition-colors cursor-pointer"
-        data-testid="mate-session-toggle">
+        data-testid="mate-session-open">
         <span className="flex-1 min-w-0 leading-tight">
           <span className="block text-[13px] font-semibold truncate">{title}</span>
           {(worker.summary || ts > 0) && (
@@ -185,21 +194,13 @@ function MateSessionRow({ root, worker, open, onToggle }: { root: string; worker
             </span>
           )}
         </span>
-        <span className="shrink-0 flex items-center gap-1 text-[11.5px] text-muted">
-          {open ? t('pages.membersPage.recap_hide') : t('pages.membersPage.recap_show')}
-          <ChevronDown size={15} className={`transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
-        </span>
+        <ChevronRight size={15} className="shrink-0 text-muted" aria-hidden="true" />
       </button>
-      {open && (
-        <div id={regionId} role="region" aria-label={title} className="px-3.5 pt-2 pb-3">
-          <MateSessionRecap root={root} worker={worker.key} rowTitle={title} />
-        </div>
-      )}
     </li>
   )
 }
 
-function MateSessionRecap({ root, worker, rowTitle }: { root: string; worker: string; rowTitle: string }) {
+export function MateSessionRecap({ root, worker, rowTitle }: { root: string; worker: string; rowTitle: string }) {
   const { t } = useTranslation()
   const recap = useQuery({
     queryKey: mateRecapQueryKey(root, worker),

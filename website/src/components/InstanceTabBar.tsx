@@ -35,6 +35,7 @@ import { useRelayTabs } from '../lib/relayCrewPanes'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
 import { hasDashboardPane } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
+import { isRelayHostOffline } from '../utils/relayHostOffline'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { safeSetItem } from '../utils/safeStorage'
@@ -495,6 +496,9 @@ export interface SwitcherEntry {
   pathParent?: string
   /** A relay Crew tab's close, shown in place of the pin: relay tabs are not pinned. */
   close?: () => void
+  /** Named in the bar when it is in front, but no row of its own in the menu: an
+   *  open relay Crew is reached through its row in the Remote Crews group. */
+  menuHidden?: boolean
 }
 
 /** More menu groups after the Crews (the Team Crews group). They are not
@@ -744,7 +748,7 @@ function SwitcherMenu({
         onCloseAutoFocus={onCloseAutoFocus}
       >
         <DropdownMenuRadioGroup value={activeId ?? LOCAL_VALUE}>
-          {entries.map((entry, i) => (
+          {entries.filter(entry => !entry.menuHidden).map((entry, i) => (
             <Fragment key={entry.id ?? LOCAL_VALUE}>
               {/* Local is the user's own machine, not a crew: a rule separates it
                   from the remote list so the two never read as one flat set. */}
@@ -1356,6 +1360,7 @@ export default function InstanceTabBar({
   extraGroups,
   extraNew = false,
   extraNotice,
+  listedRelayCrews,
 }: {
   variant?: 'strip' | 'inline'
   style?: CSSProperties
@@ -1366,6 +1371,9 @@ export default function InstanceTabBar({
   /** A notice about those groups, shown where the bar shows its own list failure,
    *  so the top bar sizes it the same way. */
   extraNotice?: ReactNode
+  /** Relay Crews those groups show a row for, with its own × while open: an open one
+   *  gets no second row here. Any other open one keeps its row, so it stays reachable. */
+  listedRelayCrews?: ReadonlySet<string>
 } = {}) {
   const activeId = useAppSelector(s => s.instances.activeId)
   const warm = useAppSelector(s => s.instances.warm)
@@ -1452,12 +1460,12 @@ export default function InstanceTabBar({
         }
       }),
       ...relayTabs.map(t => ({
-        id: `${RELAY_PREFIX}${t.id}`, name: t.name, detail: '', title: t.name, unread: 0, close: () => closeRelay(t.id),
+        id: `${RELAY_PREFIX}${t.id}`, name: t.name, detail: '', title: t.name, unread: 0, close: () => closeRelay(t.id), menuHidden: listedRelayCrews?.has(t.id) ?? false,
       })),
     ],
     // `tabInstances` is derived per render; depending on it directly is what
     // keeps the menu in step with a status poll.
-    [tabInstances, instances, unread, connectMutation.isPending, connectMutation.variables, relayTabs, closeRelay],
+    [tabInstances, instances, unread, connectMutation.isPending, connectMutation.variables, relayTabs, closeRelay, listedRelayCrews],
   )
 
   // Embedded panes render the parent-relayed switcher. Hooks above
@@ -1469,7 +1477,8 @@ export default function InstanceTabBar({
   // connected or remembered — unless the list itself could not be read, in
   // which case the bar exists to say so (an empty bar and a failed read used to
   // look identical).
-  const listFailure = !disabled && instancesQuery.error
+  // The relay's host-offline answer is the offline cover's to say, not this bar's.
+  const listFailure = !disabled && instancesQuery.error && !isRelayHostOffline(instancesQuery.error)
     ? (errMessage(instancesQuery.error) || i18nT('components.instanceTabBar.instances_load_failed'))
     : null
   // Team Crews keep the bar up on their own, even with the instances feature off.

@@ -42,7 +42,11 @@ from security_conductor_verify_fix_helpers import (  # noqa: F401 -- fixtures ar
     staged_fixture,
     worktree_fixture,
 )
-from test_security_conductor_fix_contract import build_repo
+from test_security_conductor_fix_contract import (  # noqa: F401 -- fixtures by name
+    _base_repo_template,
+    _use_base_template,
+    build_repo,
+)
 
 #: A behaviour row's target: a test module in the worktree under review. Written at
 #: the call site rather than fixtured, because which of the three bodies a case wants

@@ -6,7 +6,10 @@ import asyncio
 import os
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 from instances_helpers import _FakeTunnel, _patch_port_probe
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 
 class TestSsmValidation:
@@ -1437,6 +1440,24 @@ class TestSsmDiagnostics:
 
         monkeypatch.setattr(ssm, "managed_node_ping_status", boom)
         assert await diag._probe_ssm_managed("i-0123456789abcdef0") == diag._NODE_UNREACHABLE
+
+    @pytest.mark.asyncio
+    async def test_local_sandbox_refusal_is_not_blamed_on_ssm(self, monkeypatch):
+        """A hub whose own sandbox refuses ``aws`` gets that reason, not SSM/IAM advice."""
+        import kiro_crew.instances.diagnostics as diag
+        from kiro_crew.cloud import aws
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        msg = "Sandbox backend unavailable and allow_unsandboxed_exec is not set."
+
+        def refuse(*a, **k):
+            raise SandboxUnavailableError(msg, "no_backend", "unshare failed")
+
+        monkeypatch.setattr(aws, "run_aws", refuse)
+        res = await diag.diagnose_instance_ssm("i-0123456789abcdef0", 7777, 7777)
+        assert res.code == diag.UNKNOWN
+        assert res.reason == msg
+        assert res.probes == [{"name": "ssm_managed_node", "ok": False}]
 
     @pytest.mark.asyncio
     async def test_remote_down_then_not_connected_then_ok(self, monkeypatch):

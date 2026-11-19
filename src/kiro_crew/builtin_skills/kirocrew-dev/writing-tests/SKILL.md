@@ -337,6 +337,10 @@ its neighbours, and a shuffled order. A FIX to a flaky test also shows the force
 condition (a coarse clock, a late executor, a delay at the named seam) red on the parent
 commit and green on the fix (testing-conventions § Proving a determinism fix).
 
+Run that proof on a real machine of the OS the test fails on, the parent first, and put
+it in the PR's `## Real-machine verification` (testing-conventions § Real-machine
+verification).
+
 The sixth class has a tell of its own: **the run ends early, not red.** On Windows a test that
 blocks past `--timeout` is not failed, its xdist worker is killed, and with
 `--max-worker-restart=0` the run aborts with every uncollected result missing. If a full run
@@ -633,6 +637,10 @@ naming the shape; the contract line holds the detail and its numbers. The helper
 - [ ] A collection-time probe that can construct a process singleton (`sel()`, a config
       loader) RETIRES it before its temp home is removed — the session floor only resets
       singletons at the first test's setup, and a live one re-creates the deleted path
+- [ ] A constructor-less `AcpSessionHandle` comes from `bare_session_handle()`
+      (`test/session_handle_helpers.py`), never `AcpSessionHandle.__new__` — a bare
+      handle built by hand breaks on merge when a handle method starts reading a new
+      runtime attribute (`test_bare_session_handle_guard.py` enforces it)
 - [ ] Every `MagicMock` attribute the code under test converts or compares (`int()`,
       `len()`, `bool()`, `<`) is set explicitly in the mock helper — `int(MagicMock())`
       is 1, and a drain loop reads that as "one still pending" until its deadline. A
@@ -670,6 +678,10 @@ naming the shape; the contract line holds the detail and its numbers. The helper
       change's own delta, not the amount over (testing-conventions § Merge-safe
       ratchets and counts; the flake-pattern ratchet's K21 refuses a new count pinned
       `==` a literal or a `_BASELINE`/`_TOTAL`-style constant in a tree-scanning test)
+- [ ] No change detector: a test never hand-copies a registry's size or members, a
+      workflow's steps or a module's imports and compares the copy; it derives the
+      set from source, asserts each member's property and that the set is non-empty
+      (testing-conventions § No change-detector tests; K22 / J7 refuse a new pin)
 - [ ] A test whose contract IS a real symlink is listed in `test/requires-real-symlinks.txt`;
       one that needs a directory that resolves elsewhere uses `make_dir_link`
 - [ ] No `AsyncMock` standing in for a synchronous method; every `cancel()` awaited. A

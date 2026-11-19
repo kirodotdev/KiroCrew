@@ -19,8 +19,9 @@ import { safeSetItem } from '../utils/safeStorage'
  * blinking block — which obscures the character it sits on — for a thin bar or
  * underline, matching most text editors.
  *
- * Copy on select rides the same store: it acts on THIS client's clipboard, so
- * it is per-device for the same reason the font is. */
+ * Copy on select and Ctrl+C / Ctrl+V copy and paste ride the same store: they
+ * act on THIS client's clipboard and keyboard, so they are per-device for the
+ * same reason the font is. */
 
 /**
  * Default terminal font, shaped as a `fontFamily` style value (the historical
@@ -68,6 +69,8 @@ export interface TerminalFontState {
   cursorStyle: TerminalCursorStyle
   /** Copy a mouse selection to the clipboard as the drag ends. Off by default. */
   copyOnSelect: boolean
+  /** Ctrl+C copies a selection and Ctrl+V pastes (not offered on macOS). Off by default. */
+  ctrlCopyPaste: boolean
 }
 
 const STORAGE_KEY = 'mc-terminal-font'
@@ -81,6 +84,7 @@ function loadPersisted(): TerminalFontState {
     fontSize: DEFAULT_TERMINAL_FONT_SIZE,
     cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE,
     copyOnSelect: false,
+    ctrlCopyPaste: false,
   }
   if (typeof localStorage === 'undefined') return base
   try {
@@ -93,6 +97,7 @@ function loadPersisted(): TerminalFontState {
       fontSize: typeof p.fontSize === 'number' ? clampSize(p.fontSize) : DEFAULT_TERMINAL_FONT_SIZE,
       cursorStyle: isCursorStyle(p.cursorStyle) ? p.cursorStyle : DEFAULT_TERMINAL_CURSOR_STYLE,
       copyOnSelect: p.copyOnSelect === true,
+      ctrlCopyPaste: p.ctrlCopyPaste === true,
     }
   } catch {
     return base
@@ -109,7 +114,8 @@ function set(next: TerminalFontState): void {
     next.fontFamily === state.fontFamily &&
     next.fontSize === state.fontSize &&
     next.cursorStyle === state.cursorStyle &&
-    next.copyOnSelect === state.copyOnSelect
+    next.copyOnSelect === state.copyOnSelect &&
+    next.ctrlCopyPaste === state.ctrlCopyPaste
   ) return
   state = next
   emit()
@@ -135,8 +141,12 @@ export function setTerminalCopyOnSelect(copyOnSelect: boolean): void {
   set({ ...state, copyOnSelect })
 }
 
+export function setTerminalCtrlCopyPaste(ctrlCopyPaste: boolean): void {
+  set({ ...state, ctrlCopyPaste })
+}
+
 export function resetTerminalFont(): void {
-  set({ fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE, cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE, copyOnSelect: false })
+  set({ fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE, cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE, copyOnSelect: false, ctrlCopyPaste: false })
 }
 
 /** Current preference — for non-React callers (xterm construction in CliPanel). */
@@ -189,7 +199,7 @@ export function subscribeTerminalFont(cb: () => void): () => void {
 
 /** Test-only: reset the module store and its persisted copy. */
 export function __resetTerminalFontStore(): void {
-  state = { fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE, cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE, copyOnSelect: false }
+  state = { fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE, cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE, copyOnSelect: false, ctrlCopyPaste: false }
   emit()
   if (typeof localStorage !== 'undefined') {
     try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }

@@ -10,7 +10,15 @@
  *   (2) with only mate folders, the picker is absent rather than empty;
  *   (3) a board column's copy of a mate home renders no ⋯ menu, no header
  *       new-chat button and no empty-folder new-chat row, while an ordinary
- *       folder in the same column keeps all three.
+ *       folder in the same column keeps all three;
+ *   (4) an EMPTY folder inside a mate home opens a menu holding Delete folder
+ *       and nothing else, and its row shows the `0` count an ordinary empty
+ *       folder shows, while the home, and a child that holds an archived
+ *       session, open none;
+ *   (5) a board column's copy of that empty child gives the same Delete-only
+ *       menu and no new-chat control;
+ *   (6) a child holding a live Bot thread's session, which the person's list
+ *       leaves out, opens no menu.
  *
  * Radix DropdownMenu cannot be opened by mouse in jsdom (needs PointerEvent),
  * so the create menu is opened by keyboard. The phone branch lists folder rows
@@ -107,10 +115,10 @@ const plain: ChatFolder = { id: PLAIN, name: 'Research', order: 1 }
 const tags: ChatTag[] = [{ id: TAG, name: 'Review', color: '#1a1', order: 0, status: true }]
 const columns: TagColumn[] = [{ id: COL, name: 'Review', tag_ids: [TAG], mode: 'any', order: 0 }]
 
-function renderSidebar(folders: ChatFolder[]) {
+function renderSidebar(folders: ChatFolder[], slots: RootState['dashboard']['slots'] = []) {
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: true, slots: [], approvalMode: 'normal',
+      status: {}, connected: true, slots, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -128,7 +136,7 @@ function renderSidebar(folders: ChatFolder[]) {
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={[]} activeSlot={null} unreadSlots={[]}
+              slots={slots} activeSlot={null} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
             />
           </MemoryRouter>
@@ -185,5 +193,54 @@ describe('mate-managed folders offer no person writes', () => {
     expect(q(`col-${COL}-folder-${HOME}-menu`)).toBeNull()
     expect(q(`col-${COL}-folder-${HOME}-new-chat`)).toBeNull()
     expect(q(`col-${COL}-folder-${HOME}-empty-new-chat`)).toBeNull()
+  })
+
+  it('a board column gives an empty folder inside a mate home a Delete-only menu', async () => {
+    cfg.value = { ...cfg.value, tagColumnsEnabled: true }
+    const { container } = renderSidebar([mateHome, mateChild, plain])
+    const q = (id: string) => container.querySelector(`[data-testid="${id}"]`)
+    expect(q(`col-${COL}-folder-${HOME_CHILD}`)).not.toBeNull()
+    expect(q(`col-${COL}-folder-${HOME}-menu`)).toBeNull()
+    expect(q(`col-${COL}-folder-${HOME_CHILD}-new-chat`)).toBeNull()
+    expect(q(`col-${COL}-folder-${HOME_CHILD}-empty-new-chat`)).toBeNull()
+    fireEvent.keyDown(q(`col-${COL}-folder-${HOME_CHILD}-menu`) as Element, { key: 'Enter' })
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getAllByRole('menuitem')).toHaveLength(1)
+    expect(within(menu).getByRole('menuitem').textContent).toMatch(/delete/i)
+  })
+
+  it('an empty folder inside a mate home offers Delete folder and nothing else', async () => {
+    const { container } = renderSidebar([mateHome, mateChild, plain])
+    const q = (id: string) => container.querySelector(`[data-testid="${id}"]`)
+    await screen.findByTestId(`folder-menu-${HOME_CHILD}`)
+    expect(q(`folder-menu-${HOME}`)).toBeNull()
+    expect(q(`folder-new-chat-${HOME_CHILD}`)).toBeNull()
+    // Its row says it is empty: the same `0` an ordinary empty folder shows.
+    const countOf = (id: string) => [...container.querySelectorAll(`[data-folder-row="${id}"] span`)]
+      .find(s => s.children.length === 0 && /^\d+$/.test(s.textContent ?? ''))?.textContent
+    expect(countOf(PLAIN)).toBe('0')
+    expect(countOf(HOME_CHILD)).toBe('0')
+    fireEvent.keyDown(screen.getByTestId(`folder-menu-${HOME_CHILD}`), { key: 'Enter' })
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByTestId(`folder-delete-${HOME_CHILD}`)).toBeTruthy()
+    expect(within(menu).getAllByRole('menuitem')).toHaveLength(1)
+  })
+
+  it('a folder inside a mate home that holds a live Bot thread\'s session offers no menu', async () => {
+    // The person's list drops a live mate thread's sessions, but the folder
+    // still holds one, so the server would refuse the delete.
+    const slots = [
+      { key: 'mate-1', mode: 'member', title: 'Radar', agent: '' },
+      { key: 'work-1', mate_root: 'mate-1', folder_id: HOME_CHILD, title: 'Inbox run', agent: '' },
+    ] as unknown as RootState['dashboard']['slots']
+    const { container } = renderSidebar([mateHome, mateChild, plain], slots)
+    await screen.findByTestId(`folder-menu-${PLAIN}`)
+    expect(container.querySelector(`[data-testid="folder-menu-${HOME_CHILD}"]`)).toBeNull()
+  })
+
+  it('a folder inside a mate home that holds an archived session offers no menu', async () => {
+    const { container } = renderSidebar([mateHome, { ...mateChild, history_count: 1 }, plain])
+    await screen.findByTestId(`folder-menu-${PLAIN}`)
+    expect(container.querySelector(`[data-testid="folder-menu-${HOME_CHILD}"]`)).toBeNull()
   })
 })

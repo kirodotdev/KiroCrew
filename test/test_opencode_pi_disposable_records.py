@@ -245,6 +245,7 @@ def test_the_store_follows_the_spawn_environment(tmp_path: Path, monkeypatch) ->
 
 def _provider(backend: str, memory_mode: str, client: object, **extra: object) -> SimpleNamespace:
     provider = SimpleNamespace(
+        is_kas_backend=False,
         is_claude_backend=False,
         is_codex_backend=False,
         is_opencode_backend=backend == "opencode",

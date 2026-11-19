@@ -1,0 +1,26 @@
+[
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/kirodotdev/KiroCrew/blob/09e5482863328e68e00d2bb487f700efe10c85b3/.github",
+    "start_line": 108,
+    "start_column": null,
+    "end_line": 108,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "Process completed with exit code 1.",
+    "raw_details": ""
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/kirodotdev/KiroCrew/blob/09e5482863328e68e00d2bb487f700efe10c85b3/.github",
+    "start_line": 107,
+    "start_column": null,
+    "end_line": 107,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "backend-test=failure -- failing closed.",
+    "raw_details": ""
+  }
+]

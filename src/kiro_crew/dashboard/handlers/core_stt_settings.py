@@ -584,7 +584,9 @@ def _ffmpeg_install_commands() -> list[str]:
     if system == "Darwin":
         return ["brew install ffmpeg"]
     if system == "Windows":
-        return ["winget install --id Gyan.FFmpeg"]
+        # No command: winget installs Gyan.FFmpeg under WinGet\Packages, which
+        # `_find_ffmpeg` never searches, so the page's decoder fetch is the remedy.
+        return []
     if shutil.which("apt-get"):
         return ["sudo apt-get install -y ffmpeg"]
     # Amazon Linux: no ffmpeg in the distro repos. A source build is the only

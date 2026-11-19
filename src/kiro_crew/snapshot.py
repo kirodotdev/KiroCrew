@@ -213,6 +213,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _rmtree_or_raise,
     _save_locked_document_to,
     _trees_absent_from_bundle,
+    host_local_installable,
 )
 
 if TYPE_CHECKING:

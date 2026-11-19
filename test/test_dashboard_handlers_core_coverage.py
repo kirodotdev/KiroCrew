@@ -230,10 +230,12 @@ class TestFfmpegInstallCommands:
         monkeypatch.setattr(core_mod, "_find_ffmpeg", lambda: None)
         assert core_mod._ffmpeg_install_commands() == ["brew install ffmpeg"]
 
-    def test_windows_uses_winget(self, monkeypatch) -> None:
+    def test_windows_offers_no_command(self, monkeypatch) -> None:
+        # winget's Gyan.FFmpeg lands under WinGet\Packages, which the resolver never
+        # searches, so a command here would install a decoder nothing finds.
         monkeypatch.setattr(platform, "system", lambda: "Windows")
         monkeypatch.setattr(core_mod, "_find_ffmpeg", lambda: None)
-        assert core_mod._ffmpeg_install_commands() == ["winget install --id Gyan.FFmpeg"]
+        assert core_mod._ffmpeg_install_commands() == []
 
     def test_debian_uses_apt_get(self, monkeypatch) -> None:
         monkeypatch.setattr(platform, "system", lambda: "Linux")

@@ -1256,6 +1256,26 @@ class TestSyncFileLock:
         with mcp_mod._get_mcp_lock_sync():
             pass
 
+    @pytest.mark.asyncio
+    async def test_async_lock_opens_its_file_off_the_event_loop(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The lock file is opened in a worker thread, so a slow mount cannot stall the loop."""
+        loop_thread = threading.get_ident()
+        opened_on: list[int] = []
+        real_open = open
+
+        def recording_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+            if Path(path) == mcp_mod._MCP_LOCK_PATH:
+                opened_on.append(threading.get_ident())
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(mcp_mod, "open", recording_open, raising=False)
+        async with mcp_mod._get_mcp_lock():
+            pass
+        assert len(opened_on) == 1
+        assert opened_on[0] != loop_thread
+
 
 # ── the set-stub eligibility rule ───────────────────────────────────────
 

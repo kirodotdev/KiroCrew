@@ -205,7 +205,7 @@ async def _extract_lesson(self: TaskRunner, task: Task, run: Project | None = No
         logger.info("Lesson extracted from task %d: %s", task.index, rule)
         if run:
             run.lessons_learned.append(rule)
-        await self._notify("\U0001f4dd Lesson learned", rule)
+        await self._notify("Lesson learned", rule)
     except Exception:
         logger.debug("Lesson extraction failed", exc_info=True)
 

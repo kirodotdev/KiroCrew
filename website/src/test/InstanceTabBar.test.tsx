@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { act, screen, waitFor, within } from '@testing-library/react'
+import { relayPaneOpened } from '../store/instancesSlice'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstanceTabBar, {
@@ -567,6 +568,19 @@ describe('InstanceTabBar', () => {
     expect(msg.className).not.toMatch(/break-all/)
   })
 
+  it("stays quiet when the relay answers that the Crew's host is offline", async () => {
+    // The relay window's reconnecting cover says it; the bar must not add the
+    // relay's raw sentence in red beside the crew pill.
+    const offline = Object.assign(new Error('The Crew is not connected to the relay.'), {
+      status: 503, body: '{"reason":"crew_not_connected","message":"The Crew is not connected to the relay."}',
+    })
+    vi.mocked(api.listInstances).mockRejectedValue(offline)
+    renderWithProviders(<InstanceTabBar variant="inline" />)
+    await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
+    await new Promise(r => setTimeout(r, 0))
+    expect(screen.queryByTestId('instance-tab-bar-list-error')).toBeNull()
+  })
+
   it('marks the list-failure notice so the desktop top bar gives it only spare room', async () => {
     // The desktop top bar's identity ladder measures the group's content width.
     // The notice (up to 320px) would raise that width and collapse the rest of
@@ -686,7 +700,6 @@ describe('InstanceTabBar — relay Crew tabs', () => {
     },
   })
   const installBridge = () => {
-    localStorage.setItem('mc-relay-crew-pane', '1')
     const api = {
       openPane: vi.fn(async () => ({ ok: true })),
       closePane: vi.fn(async () => undefined),
@@ -697,29 +710,35 @@ describe('InstanceTabBar — relay Crew tabs', () => {
     return api
   }
 
-  it('shows a relay tab after the SSH tabs, with a close in place of the pin, and picking it keeps the local shell', async () => {
+  it('gives an open relay Crew no row of its own while the Remote Crews group lists it', async () => {
     installBridge()
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
-    const store = relayStore()
-    renderWithProviders(<InstanceTabBar />, { store })
+    renderWithProviders(<InstanceTabBar listedRelayCrews={new Set(['r1'])} />, { store: relayStore() })
     const u = userEvent.setup()
-    const row = await openSwitcher(u, /Team One/)
+    await openSwitcher(u, /Cloud One/)
     const rows = screen.getAllByRole('menuitemradio').map(r => r.textContent ?? '')
-    expect(rows.findIndex(t => t.includes('Team One'))).toBeGreaterThan(rows.findIndex(t => t.includes('Cloud One')))
-    expect(screen.queryByTestId('crew-pin-relay:r1')).toBeNull()
-    expect(screen.getByTestId('crew-close-relay:r1')).toHaveAccessibleName(/Close Team One/)
-    await u.click(row)
-    expect(store.getState().instances.relayActive).toBe('r1')
-    expect(store.getState().instances.activeId).toBeNull()
+    expect(rows.some(t => t.includes('Team One'))).toBe(false)
+    expect(screen.queryByTestId('crew-close-relay:r1')).toBeNull()
   })
 
-  it('keeps the bar up for a relay tab alone, and its close goes through main', async () => {
+  it('keeps an open relay Crew its own row and × while no group lists it (a failed list read)', async () => {
     const bridge = installBridge()
-    vi.mocked(api.listInstances).mockResolvedValue(listResp([]))
-    renderWithProviders(<InstanceTabBar />, { store: relayStore() })
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    renderWithProviders(<InstanceTabBar listedRelayCrews={new Set()} />, { store: relayStore() })
     const u = userEvent.setup()
-    await openSwitcher(u, /Team One/)
+    await openSwitcher(u, /Cloud One/)
+    const rows = screen.getAllByRole('menuitemradio').map(r => r.textContent ?? '')
+    expect(rows.some(t => t.includes('Team One'))).toBe(true)
     await u.click(screen.getByTestId('crew-close-relay:r1'))
     expect(bridge.closePane).toHaveBeenCalledWith('r1')
+  })
+
+  it('names the relay Crew in front in the bar', async () => {
+    installBridge()
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([]))
+    const store = relayStore()
+    act(() => { store.dispatch(relayPaneOpened({ id: 'r1', name: 'Team One' })) })
+    renderWithProviders(<InstanceTabBar />, { store })
+    expect((await screen.findAllByText('Team One')).length).toBeGreaterThan(0)
   })
 })

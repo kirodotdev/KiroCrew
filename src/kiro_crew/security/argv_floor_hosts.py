@@ -113,6 +113,21 @@ _HOST_VERDICT_PENDING: "set[str]" = set()
 _HOST_VERDICT_LOCK = threading.Lock()
 
 
+# Signalled under the lock each time a resolver worker clears its host from
+# ``_HOST_VERDICT_PENDING``, so a check off the event loop can wait for it.
+_HOST_VERDICT_SETTLED = threading.Condition(_HOST_VERDICT_LOCK)
+
+
+# How long, in total, one check off the event loop waits for the lookups of
+# new dotted names before it answers.  A lookup still running after this is
+# refused, as before; the event loop itself never waits.
+_HOST_VERDICT_WAIT_SECS = 0.5
+
+
+# Key of one check's wait deadline in that check's ``_CALL_VIEWS`` memo.
+_HOST_VERDICT_WAIT_KEY = ("host_verdict_wait_deadline",)
+
+
 # ponytail: unbounded per-host growth is capped by evicting the oldest entry;
 # an LRU adds bookkeeping the floor does not need.
 _HOST_VERDICT_CACHE_CAP = 4096
@@ -186,6 +201,7 @@ def _resolve_host_verdict_into_cache(host: str) -> None:
             _HOST_VERDICT_CACHE.pop(host, None)
             _HOST_VERDICT_STAMP.pop(host, None)
         _HOST_VERDICT_PENDING.discard(host)
+        _HOST_VERDICT_SETTLED.notify_all()
 
 
 def _hosts_file_paths() -> "tuple[str, ...]":
@@ -552,6 +568,11 @@ def _resolved_host_verdict(host: str, *, fail_closed: bool = True) -> bool:
     everyday ``ssh dev-dsk <cmd>`` shape) — and a later call reads the
     published verdict.  A worker that cannot start keeps this call's answer
     and clears the latch so a later call retries.
+
+    Off the event loop, a fail-closed miss first waits for that worker, up to
+    ``_HOST_VERDICT_WAIT_SECS`` in total per check, and answers from what it
+    published.  A loopback answer, a failed lookup, or a worker still running
+    when the wait ends all stay refused.
     """
     with _HOST_VERDICT_LOCK:
         if host in _HOST_VERDICT_CACHE:
@@ -584,7 +605,38 @@ def _resolved_host_verdict(host: str, *, fail_closed: bool = True) -> bool:
                 ).start()
             except Exception:
                 _HOST_VERDICT_PENDING.discard(host)
-    return fail_closed
+        if not fail_closed or host not in _HOST_VERDICT_PENDING:
+            return fail_closed
+    # The lock is released here: the loop check may import, and the waiter
+    # takes it again through the condition.
+    if _event_loop_running():
+        return fail_closed
+    remaining = _host_verdict_wait_left()
+    if remaining <= 0:
+        return fail_closed
+    with _HOST_VERDICT_SETTLED:
+        _HOST_VERDICT_SETTLED.wait_for(lambda: host not in _HOST_VERDICT_PENDING, remaining)
+        if host in _HOST_VERDICT_PENDING or host not in _HOST_VERDICT_CACHE:
+            return fail_closed
+        verdict = _HOST_VERDICT_CACHE[host]
+    return False if verdict == "route" else bool(verdict)
+
+
+def _host_verdict_wait_left() -> float:
+    """Seconds this check may still wait for a lookup; starts its clock on first use.
+
+    One gate call shares one deadline through its ``_CALL_VIEWS`` memo, so a
+    line naming many new hosts waits ``_HOST_VERDICT_WAIT_SECS`` at most in
+    all.  A call outside a gate call gets the whole budget.
+    """
+    from .call_views import _CALL_VIEWS  # local: a leaf, kept off this module's import line
+
+    now = time.monotonic()
+    memo = _CALL_VIEWS.get()
+    if memo is None:
+        return _HOST_VERDICT_WAIT_SECS
+    deadline = memo.setdefault(_HOST_VERDICT_WAIT_KEY, now + _HOST_VERDICT_WAIT_SECS)
+    return float(deadline) - now
 
 
 # This machine's own names/addresses, lowered.  Seeded SYNCHRONOUSLY from

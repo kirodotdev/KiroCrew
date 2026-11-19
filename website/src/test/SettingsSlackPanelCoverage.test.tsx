@@ -294,6 +294,26 @@ describe('SlackPanel read-only session', () => {
   })
 })
 
+/* ── placeholder tone ─────────────────────────────────────────────────────── */
+
+describe('SlackPanel placeholder tone', () => {
+  // The colour itself is measured per palette in SlackPanel.placeholderTone.test.ts;
+  // this pins that every placeholder the panel renders sits under the class.
+  it('puts every field with a placeholder under the faded-placeholder class', async () => {
+    const { container } = seed({ session_folder: 'Slack' })
+    await hydrated()
+
+    const fields = [...container.querySelectorAll<HTMLElement>('input[placeholder], textarea[placeholder]')]
+    expect(fields.map(f => f.getAttribute('placeholder'))).toEqual(expect.arrayContaining([
+      'U0123ABC456', 'E0123ABC456', 'kirocrew',
+    ]))
+    const bare = fields
+      .filter(f => !f.closest('[class*="[&_:is(input,textarea)::placeholder]:text-muted/"]'))
+      .map(f => f.getAttribute('placeholder'))
+    expect(bare).toEqual([])
+  })
+})
+
 /* ── TagListEditor ────────────────────────────────────────────────────────── */
 
 describe('SlackPanel enterprise allowlist editor', () => {
@@ -384,6 +404,17 @@ describe('SlackPanel save payload', () => {
       show_in_session_list: true,
     })
     expect(await screen.findByText('Saved.', undefined, { timeout: 5_000 })).toBeInTheDocument()
+  })
+
+  it('leaves the owner out of a save that did not edit it, so a claim confirmed meanwhile stays', async () => {
+    const { save } = seed()
+    await hydrated()
+
+    fireEvent.change(screen.getByPlaceholderText('kirocrew'), { target: { value: 'crew' } })
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).not.toHaveProperty('owner_id')
   })
 
   it('lists Slack conversations by default and saves the switch turned off', async () => {

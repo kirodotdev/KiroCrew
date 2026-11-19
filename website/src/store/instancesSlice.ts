@@ -81,6 +81,10 @@ export interface HostModel {
    *  embedded header must inset its RIGHT side clear of the native caption
    *  buttons (the transparent titleBarOverlay's min/max/close cluster). */
   winInset: boolean
+  /** True when the parent is a frameless Linux Electron window, so the
+   *  embedded header must inset its RIGHT side clear of the caption buttons
+   *  the shell injects there (#electron-linux-controls). */
+  linuxInset: boolean
   /** The host window's live, zoom-aware caption reserve (e.g. `178px`), read
    *  from the `--mc-win-caption-reserve` the main process sets on the HOST
    *  <html>. The pane is a separate document, so it never inherits that value,
@@ -229,6 +233,10 @@ interface InstancesState {
   relayLive?: string[]
   /** The relay Crew filling <main>, or null. */
   relayActive?: string | null
+  /** Bumped by every choice of what fills <main> (Local, an SSH Crew, a relay tab, the start of
+   *  a relay open). A relay open's answer makes its Crew active only while this still holds the
+   *  value its start returned, so a late answer never overrides a newer choice. */
+  pickSeq?: number
 }
 
 /** A relay Crew tab: its endpoint ID and the name it was opened under. */
@@ -304,16 +312,30 @@ const instancesSlice = createSlice({
     setActiveId(state, action: PayloadAction<string | null>) {
       activate(state, action.payload)
       state.relayActive = null
+      state.pickSeq = (state.pickSeq ?? 0) + 1
     },
-    /** A relay Crew's pane opened, or came forward from another tab: it fills
-     *  <main> under the local top bar, so no instance is active. */
-    relayPaneOpened(state, action: PayloadAction<RelayTab>) {
-      const { id } = action.payload
+    /** A relay open was asked for: a choice, so it retires every open still waiting. Its
+     *  answer carries the value this leaves in `pickSeq`. */
+    relayOpenStarted(state) {
+      state.pickSeq = (state.pickSeq ?? 0) + 1
+    },
+    /** A relay Crew's pane opened, or came forward from another tab: it fills <main> under
+     *  the local top bar, so no instance is active. With `gen` (an open's answer) it does so
+     *  only while no newer choice was made; otherwise the pane stays a hidden tab, least
+     *  recent, and nothing on screen changes. */
+    relayPaneOpened(state, action: PayloadAction<RelayTab & { gen?: number }>) {
+      const { id, name, gen } = action.payload
       const tabs = state.relayTabs ?? []
-      if (!tabs.some(t => t.id === id)) state.relayTabs = [...tabs, action.payload]
-      state.relayLive = [id, ...(state.relayLive ?? []).filter(x => x !== id)]
+      if (!tabs.some(t => t.id === id)) state.relayTabs = [...tabs, { id, name }]
+      const live = (state.relayLive ?? []).filter(x => x !== id)
+      if (gen !== undefined && gen !== (state.pickSeq ?? 0) && state.relayActive !== id) {
+        if (!(state.relayLive ?? []).includes(id)) state.relayLive = [...live, id]
+        return
+      }
+      state.relayLive = [id, ...live]
       activate(state, null)
       state.relayActive = id
+      if (gen === undefined) state.pickSeq = (state.pickSeq ?? 0) + 1
     },
     /** A pane closed, by main, its tab's close or the warm cap: its tab goes with it. */
     relayPaneClosed(state, action: PayloadAction<string>) {
@@ -413,6 +435,7 @@ export const {
   setWarm,
   setConnectError,
   setActiveId,
+  relayOpenStarted,
   relayPaneOpened,
   relayPaneClosed,
   removeWarm,

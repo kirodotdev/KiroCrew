@@ -9,7 +9,7 @@ import { useAppSelector } from '../../store'
 import { codeBrowserBranchUrl, codeBrowserCommitUrl } from '../../lib/codeBrowser'
 import SegmentedControl from '../../components/SegmentedControl'
 import ReportProblemCard from './ReportProblemCard'
-import { ARM_POLL_FAILURE_THRESHOLD, AGENT_REQUEST_POLL_MS, AgentUpdateRequestCard, copyCommand } from './AboutPanelUpdateFlow'
+import { AGENT_REQUEST_POLL_MS, AgentUpdateRequestCard, copyCommand, useArmPollFailing } from './AboutPanelUpdateFlow'
 import { AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, useAboutPanelGatewayUpdate } from './AboutPanelGatewayUpdate'
 import { DesktopGatewayRestartRow, useDesktopGatewayRestart } from './DesktopGatewayRestartRow'
 import { AppAutoDownloadSwitch, GatewayAutoUpdateSwitch } from './AboutPanelUpdateSwitches'
@@ -250,6 +250,7 @@ export function AboutPanel() {
     enabled: isDesktop,
     refetchInterval: AGENT_REQUEST_POLL_MS.value,
   })
+  const agentRequestPollFailing = useArmPollFailing(agentRequest)
   const pendingAgentRequest = agentRequest.data?.armed === true && agentRequest.data.managed_by === 'electron'
     ? agentRequest.data
     : null
@@ -298,7 +299,7 @@ export function AboutPanel() {
   // the click did nothing. The poll uses the same consecutive-failure threshold
   // InAppUpdateFlow uses for the same reason — one blip is left to the next
   // interval.
-  const agentRequestPanelError = agentRequest.failureCount >= ARM_POLL_FAILURE_THRESHOLD
+  const agentRequestPanelError = agentRequestPollFailing
     ? i18nT('pages.settings.aboutPanel.arm_status_poll_failing')
     : agentDownloadFailed
       ? i18nT('pages.settings.aboutPanel.download_failed_reason', { reason: updateState?.state === 'error' ? updateErrorText(updateState) : i18nT(UPDATE_ERROR_KEYS.unknown) })

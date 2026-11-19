@@ -46,7 +46,7 @@ export function launchGuardKey(body: { provider_id?: string }): string {
 const TERMINAL: LaunchJob['status'][] = ['done', 'failed', 'cancelled']
 export const isTerminal = (j: LaunchJob) => TERMINAL.includes(j.status)
 
-/** The connect (register) step ran — the crew exists under Your crews, so a
+/** The connect (register) step ran — the crew exists under My Crews, so a
  *  sign-in can be re-run against it rather than provisioning anything. */
 export const isRegistered = (j: LaunchJob) => j.steps.some(st => st.key === 'connect' && st.state === 'done')
 

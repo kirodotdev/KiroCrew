@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     import asyncio
 
     from kiro_crew.slack.gateway import (
+        _CRON_FAILURE_DETAIL_CAP,
         CronClaimTimeDenied,
         CronJob,
         CronQueueTimeout,
@@ -156,6 +157,7 @@ async def _cron_run_command(self: GatewayOrchestrator, job: CronJob) -> str | No
             job.id,
             job.secret_env,
             job.secret_env_pin,
+            job.env,
             timeout=_claim_backstop(job, cmd_timeout),
         )
         if result.get("status") == "cancelled":
@@ -237,8 +239,27 @@ async def _cron_run_command(self: GatewayOrchestrator, job: CronJob) -> str | No
             logger.debug("SEL logging failed in cron command result path", exc_info=True)
         if job.last_status == "error":
             # A non-zero exit DOES produce output, and that output is
-            # the reason — carry it, not just the exit code.
-            await self._alert_cron_failure(job, f"{job.last_error}\n{output}")
+            # the reason — carry it. The exit code goes in the alert's
+            # header, once; the body leads with the stderr tail, where a
+            # dying command writes its cause. A run with no process (a
+            # timeout, a spawn error) reports -1 and a one-line reason
+            # whose failure lead the header already shows.
+            from kiro_crew.cron_script import _strip_error_lead
+
+            code = result.get("exit_code")
+            reason = _strip_error_lead(output)
+            if "stderr" in result:
+                # The streams come only from a process that exited, so its
+                # code is real even when it is -1 (killed by SIGHUP).
+                # The alert keeps the head of its body: hand it stderr's tail.
+                err = result["stderr"][-_CRON_FAILURE_DETAIL_CAP:]
+                out = result["stdout"]
+                reason = f"{err}\n\nstdout:\n{out}" if err and out else err or out or "no output"
+            elif code == -1:
+                code = None
+            await self._alert_cron_failure(
+                job, reason, exit_code=code if isinstance(code, int) else None
+            )
         return job.last_result
     except CronQueueTimeout as exc:
         # Pool starvation, not a broken command: every worker was
@@ -485,12 +506,12 @@ async def _deliver_script_result(
                     # Nothing in the full queue could give way, or the session
                     # closed meanwhile: the result goes out as a notification,
                     # as it does when the session is gone.
-                    self.dashboard_state.notify("cron", f"⚡ {label}", message, meta=note_meta)
+                    self.dashboard_state.notify("cron", f"{label}", message, meta=note_meta)
             else:
-                self.dashboard_state.notify("cron", f"⚡ {label}", message, meta=note_meta)
+                self.dashboard_state.notify("cron", f"{label}", message, meta=note_meta)
         elif message and not job.silent and self.dashboard_state:
             label = redact(job.name)
-            self.dashboard_state.notify("cron", f"⚡ {label}", message, meta=note_meta)
+            self.dashboard_state.notify("cron", f"{label}", message, meta=note_meta)
         delivered = True
     except Exception as notify_exc:
         logger.warning("Cron '%s' delivery failed: %s", job.name, notify_exc)
@@ -622,6 +643,7 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
                 job.thread_ts or "",
             ),
             self._live_internal_secret,
+            job.env,
             timeout=_claim_backstop(job, script_timeout),
         )
         status = result.get("status", "error")

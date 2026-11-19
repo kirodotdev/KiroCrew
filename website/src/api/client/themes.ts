@@ -53,14 +53,11 @@ export function createThemesEndpoints({ post, put, del, j, jfetch: fetch, sessio
       language?: string
       /** The Translucent panels switch; '' means never chosen on this workspace. */
       translucent_panels?: TranslucentPanelsStored
+      /** Scheduled mode's switch times, 24-hour `HH:MM`; '' means never saved. */
+      schedule_light?: string
+      schedule_dark?: string
       onboarded?: boolean
       import_onboarded?: boolean
-      /** Gates the gateway's first heartbeat; see `beacon.telemetry_permitted`. */
-      privacy_acked?: boolean
-      /** Which Privacy chapter notice text the user acknowledged. */
-      privacy_ack_version?: number
-      /** That notice version, when the text shown named the Kiro telemetry destination. */
-      kiro_telemetry_ack_version?: number
     }) =>
       put('/api/config/theme', body).then(j),
   }

@@ -41,6 +41,7 @@ from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manager import app_dir, approved_manifest_permissions, list_apps
 from kiro_crew.apps.module_loader import clear_all_shutdown_callables
 from kiro_crew.apps.route_registry import RouteRegistry
+from kiro_crew.apps.sel_routes import register_sel_routes
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.dashboard.token_auth import replace_legacy_app_secret
 from kiro_crew.executors import subprocess_executor
@@ -303,6 +304,7 @@ def init_hooks_system(
     # /api/apps/{app_name}/{path:.*} would otherwise swallow every _jobs request
     # and answer it from the app's own dispatch table.
     register_job_routes(app)
+    register_sel_routes(app)
 
     _route_registry = RouteRegistry(app)
     _route_registry.ensure_catch_all()

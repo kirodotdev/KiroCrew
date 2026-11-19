@@ -179,6 +179,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _UTF8_PROCESS_ENV _ensure_utf8_process_environment _KEPT_FOR_REEXEC keep_for_reexec
         kept_for_reexec _WHEEL_APPLY_MODULE cancel_wheel_applies_in_flight hard_exit
         _disarm_process_alarm_before_exec _rearm_process_alarm_after_failed_exec
+        REEXEC_CHILDREN_ENV _publish_children_for_successor _withdraw_children_for_successor
         reexec_launcher reexec_python_module
         execv_target_available _POST_DRAIN_EXEC_FAILURE_EXIT _EXIT_FLUSH_DEADLINE_SECS
         exit_after_failed_restart_exec _drain_event_log_for_exit _WINDOWS_ARM_MACHINES
@@ -214,7 +215,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         tcc_protected_dirs_for_walk tcc_prune_walk_dirs fchmod_safe dup_fd_at_or_above
         chmod_safe
         claude_code_managed_settings_dir
-        _clear_readonly_and_retry rmtree_force _WIN_FILE_SHARE_READ_WRITE_DELETE
+        _clear_readonly_and_retry _retry_within_root _open_root rmtree_force
+        _WIN_FILE_SHARE_READ_WRITE_DELETE
         _SHARING_VIOLATION_WINERRORS _RMTREE_MAX_ATTEMPTS _RMTREE_BACKOFF_SECONDS
         remove_with_retry
         open_file_for_shared_read open_lock_file_for_sweep path_volume_is_remote
@@ -358,7 +360,9 @@ _BOUND_HERE: frozenset[str] = frozenset("""
 #: the graph has no cycle) or to a lock or owner-only module.
 _CARVED_IMPORTS: dict[str, frozenset[str]] = {
     "kiro_crew.platform_compat_proctable": frozenset({"kiro_crew.platform_compat_native"}),
-    "kiro_crew.platform_compat_runtime": frozenset({"kiro_crew.platform_compat_native"}),
+    "kiro_crew.platform_compat_runtime": frozenset(
+        {"kiro_crew.platform_compat_native", "kiro_crew.platform_compat_proctable"}
+    ),
     "kiro_crew.platform_compat_links": frozenset(
         {
             "kiro_crew.platform_compat_native",

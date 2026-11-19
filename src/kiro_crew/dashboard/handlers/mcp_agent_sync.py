@@ -1,7 +1,9 @@
 """Copying MCP servers into the Kiro Crew agent spec.
 
 ``_sync_mcp_to_agent`` and its batch form, the refusal when the agent home is not ours to
-write, and whether live sessions pick a change up by hot reload.
+write, the refusal to switch off or remove one of Kiro Crew's own servers (one route's
+name, an apply batch, the toggle-all skip), and whether live sessions pick a change up by
+hot reload.
 
 Part of the ``kiro_crew.dashboard.handlers.mcp`` family: callers and tests reach every
 name here as ``kiro_crew.dashboard.handlers.mcp.<name>``, and a patch there reaches this
@@ -10,8 +12,10 @@ module too (:mod:`kiro_crew._facade_mirror`). This module never imports the faca
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -20,9 +24,11 @@ from kiro_crew.agent import (
     SharedAgentHomeRefused,
     _atomic_json_write,
     _declined_foreign_spec_write,
+    emission_eligible_mcp_servers,
     entry_as_enabled,
     kiro_agents_dir_path,
 )
+from kiro_crew.dashboard.handlers.mcp_config_entries import _kirocrew_entry_is_muted
 from kiro_crew.dashboard.handlers.mcp_config_files import _GLOBAL_MCP_JSON
 from kiro_crew.mcp_hot_reload import live_sessions_apply_mcp_live, mark_reinjecting_providers
 from kiro_crew.mcp_provenance import WITHHELD_KEY
@@ -30,6 +36,10 @@ from kiro_crew.mcp_utils import mcp_server_alias, without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.sel import sel
 from kiro_crew.user_json import loads_mcp_config
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+    from contextlib import AbstractAsyncContextManager
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.mcp")
 
@@ -89,6 +99,116 @@ def _agent_home_not_owned(name: str) -> web.Response | None:
     if not _shared_agent_home_declined():
         return None
     return _agent_home_not_owned_response(name)
+
+
+def _builtin_mcp_server_names() -> frozenset[str]:
+    """The MCP servers no route may switch off or remove: what a fresh spec build would
+    emit right now (:func:`emission_eligible_mcp_servers`), so every ``opt_in`` set is
+    left out and the lock and the rebuild read one predicate.
+
+    Blocking, because the edition seam it reads may compose the platform context, so a
+    caller on the event loop offloads it. A host whose context cannot compose (where
+    the agent rebuild refuses too) answers with no names: every route then answers as
+    it does without this rule, rather than a 500.
+    """
+    try:
+        return emission_eligible_mcp_servers()
+    except Exception:
+        logger.warning("MCP server set unreadable; no built-in server is locked", exc_info=True)
+        return frozenset()
+
+
+async def _is_builtin_mcp_server(name: str) -> bool:
+    """Whether *name*, or the alias it is listed under, is one of Kiro Crew's own servers.
+
+    A raw key such as ``@kirocrew/core`` is listed as its alias ``kirocrew-core``, so
+    both spellings are tested against :func:`_builtin_mcp_server_names`, read off the
+    loop on each call (it is not cached, so an edition change is seen at once).
+    """
+    names = {name, mcp_server_alias(name)}
+    return bool(names & await asyncio.to_thread(_builtin_mcp_server_names))
+
+
+async def _builtin_server_refusal(name: str) -> web.Response | None:
+    """A 409 when *name* is one of Kiro Crew's own MCP servers, else ``None``.
+
+    Those servers (``kirocrew-core``, ``kirocrew-cron``, ``kirocrew-guide`` and the
+    rest) carry the tools Kiro Crew itself runs on, so no route may switch one off or
+    remove it. Callers ask only for the off and remove directions: turning one back on
+    stays accepted, so a built-in server that is already off can be restored. The
+    name test is :func:`_is_builtin_mcp_server`.
+    """
+    if not await _is_builtin_mcp_server(name):
+        return None
+    sel().log_api_access(
+        caller="dashboard",
+        operation="mcp_builtin_disable_refused",
+        outcome="denied",
+        resources=name[:64],
+    )
+    return web.json_response(
+        {
+            "error": f"{name!r} is built into Kiro Crew and cannot be turned off or removed",
+            "code": "mcp_server_builtin",
+        },
+        status=409,
+    )
+
+
+async def _toggle_all_skip(enabled: bool) -> Callable[[str], bool]:
+    """Which raw keys a toggle-all leaves alone.
+
+    Disabling all never reaches Kiro Crew's own servers, by name or by the alias the
+    key is listed under; enabling all still lifts a flag one of them already carries.
+    """
+    if enabled:
+        return lambda _name: False
+    builtin = await asyncio.to_thread(_builtin_mcp_server_names)
+    return lambda name: name in builtin or mcp_server_alias(name) in builtin
+
+
+async def _builtin_apply_refusal(
+    changes: Iterable[Any], lock: Callable[[], AbstractAsyncContextManager[Any]]
+) -> web.Response | None:
+    """The 409 for an apply batch that turns off or uninstalls a built-in, else ``None``.
+
+    Taken for the whole request before the apply's Phase 1, which uninstalls companion
+    packages ahead of every scope write. The off test is the one Phase 2 applies (an
+    absent ``kirocrew`` means on), and it counts only a change that turns the server
+    off: the table sends a row's current presence with every edit, so a built-in the
+    store already mutes keeps its tool and Globals edits. That store read is taken only
+    for a built-in name, under *lock*, the MCP config file lock the caller holds for its
+    writes; a third-party change never takes it.
+    """
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        name = str(change.get("name", "")).strip()
+        uninstall = bool(change.get("uninstall"))
+        if not uninstall and bool(change.get("kirocrew", True)):
+            continue
+        if not await _is_builtin_mcp_server(name):
+            continue
+        if not uninstall:
+            async with lock():
+                if await asyncio.to_thread(_kirocrew_entry_is_muted, name):
+                    continue
+        refused = await _builtin_server_refusal(name)
+        if refused is not None:
+            return refused
+    return None
+
+
+async def _builtin_stays_on(name: str) -> bool:
+    """Whether an apply that asks to turn *name* off must keep it on.
+
+    True for a built-in the store does not mute now: another apply lifted the mute after
+    :func:`_builtin_apply_refusal` read it. Called under the MCP config file lock, so
+    the read and the apply's write see the same file.
+    """
+    return await _is_builtin_mcp_server(name) and not await asyncio.to_thread(
+        _kirocrew_entry_is_muted, name
+    )
 
 
 def _sync_mcp_to_agent(name: str, enabled: bool, *, remove: bool = False) -> None:

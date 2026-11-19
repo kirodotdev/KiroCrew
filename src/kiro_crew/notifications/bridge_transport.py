@@ -46,7 +46,7 @@ TRANSPORT_SINKS: tuple[str, ...] = ("discord", "telegram", "webex", "feishu")
 REPLY_TRANSPORTS: tuple[str, ...] = ("discord", "telegram", "webex")
 
 #: The marker a critical note's first line carries.
-_CRITICAL_MARKER = "🚨"
+_CRITICAL_MARKER = "Critical:"
 
 #: The ``user:`` prefix of a configured direct target.
 _DM_PREFIX = "user:"

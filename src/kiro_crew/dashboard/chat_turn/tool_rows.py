@@ -20,6 +20,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.engine_fallback import hook_session_model
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.tool_call_title import derive_tool_call_title
+from kiro_crew.tool_row_prefix import tool_row, tool_row_kind
 from kiro_crew.wakatime.heartbeats import is_coding_event
 
 if TYPE_CHECKING:
@@ -86,19 +87,20 @@ def _refined_tool_row_content(existing: str, new_title: str) -> str | None:
 
     kiro-cli sends the resolved title after a permission is answered, and the row
     is re-rendered as ``"<icon> <title>"``, preserving whichever leading icon the
-    row already carries (🔧 running / ✅ done / 🚫 refused).
+    row already carries (``Tool:`` running / ``Approved:`` approved / ``Refused:``
+    refused, or the glyph an older gateway wrote in its place).
 
     Returns None for a REFUSAL row, which must be left alone: it is terminal (the
     tool will not run, so a better title adds nothing) and its content is
-    ``"🚫 <title> — <reason>"``, so re-rendering from the title alone deletes the
+    ``"Refused: <title> — <reason>"``, so re-rendering from the title alone deletes the
     reason. That tail is the user's only visible explanation, and the model has
     already been told the reason in-band — dropping it leaves the human looking at
     a blocked row with no cause while the agent acts on one they cannot see.
     """
-    prefix = existing[:1] if existing[:1] in ("🔧", "✅", "🚫") else "🔧"
-    if prefix == "🚫":
+    kind = tool_row_kind(existing) or "call"
+    if kind == "refused":
         return None
-    return f"{prefix} {new_title}"
+    return tool_row(kind, new_title)
 
 
 # Distinct redacted tool_call_ids one turn tracks a source digest for. The ids
@@ -320,7 +322,13 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     state = turn.state
     _turn_tool_calls += 1
     turn._turn_tool_calls = _turn_tool_calls
-    _repeat_loop.note_call(event.tool_call_id, event.tool_name or "", event.tool_input, event.title)
+    _repeat_loop.note_call(
+        event.tool_call_id,
+        event.tool_name or "",
+        event.tool_input,
+        event.title,
+        wire_title=event.wire_title or "",
+    )
     if turn._terminal_directive_applied:
         _activity_after_terminal += 1
         turn._activity_after_terminal = _activity_after_terminal
@@ -446,7 +454,9 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     )
     if _risk_meta:
         _tool_row_meta = {**(_tool_row_meta or {}), **_risk_meta}
-    slot.append("tool", f"🔧 {_tool_payload['tool']}", "msg msg-tool", meta=_tool_row_meta)
+    slot.append(
+        "tool", tool_row("call", str(_tool_payload["tool"])), "msg msg-tool", meta=_tool_row_meta
+    )
     _sel_title = _redact_display_text(event.title)
     sel().log_tool_invocation(
         session_key=session_key,
@@ -650,7 +660,11 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
         return None
     if event.tool_input:
         _repeat_loop.note_call(
-            event.tool_call_id, event.tool_name or "", event.tool_input, event.title
+            event.tool_call_id,
+            event.tool_name or "",
+            event.tool_input,
+            event.title,
+            wire_title=event.wire_title or "",
         )
     _dir_refresh = _pending_dir_for_digest.get(event.tool_call_id, "")
     if not _dir_refresh:
@@ -764,10 +778,10 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
         # Patch the persisted tool message in place so its content
         # shows the refined title and meta carries the populated
         # input.  Walk in reverse and break on the first match —
-        # auto-approved tools may have a later "✅ {title}" entry
+        # auto-approved tools may have a later "Approved: {title}" entry
         # with the same tool_call_id, and we don't want to
         # overwrite that post-approval marker. Preserve whatever
-        # leading icon (🔧/✅/🚫) the existing message has.
+        # lead (Tool:/Approved:/Refused:) the existing message has.
         _meta_patch: dict[str, str] = {}
         if _input_upd:
             _meta_patch["input"] = _input_upd

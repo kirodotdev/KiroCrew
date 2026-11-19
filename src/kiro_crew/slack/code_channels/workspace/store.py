@@ -77,6 +77,9 @@ class WorkspaceRecord:
     #: Whose PR the ``pr_*`` fields are: ``host/owner/name@branch`` of the
     #: checkout when it was found. Shown and kept only while that still matches.
     pr_for: str = ""
+    pr_title: str = ""
+    #: Digest of the ``agent_resource`` last sent for the channel's PR.
+    resource_hash: str = ""
     #: A channel-specific Slack error that turned this channel's views off.
     slack_off: str = ""
     updated_at: float = field(default_factory=time.time)

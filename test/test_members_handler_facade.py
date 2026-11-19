@@ -112,6 +112,7 @@ def _test_tree_files() -> list[Path]:
 
 
 @functools.lru_cache(maxsize=1)
+@source_corpus.untraced()
 def _corpus_patched_names() -> frozenset[str]:
     """Every name the test trees patch through the facade, scanned once per worker."""
     found: set[str] = set()
@@ -162,27 +163,12 @@ def test_a_shared_seam_is_held_by_every_owner_that_reads_it() -> None:
     ]
 
 
-#: The owner modules, one per line, so two changes that each add an owner edit
-#: different lines (testing-conventions.md § Merge-safe ratchets and counts).
-_OWNER_MODULES = (
-    "kiro_crew.dashboard.handlers.members_access",
-    "kiro_crew.dashboard.handlers.members_app",
-    "kiro_crew.dashboard.handlers.members_drawer",
-    "kiro_crew.dashboard.handlers.members_roster",
-    "kiro_crew.dashboard.handlers.members_rules",
-    "kiro_crew.dashboard.handlers.members_thread",
-    "kiro_crew.dashboard.handlers.members_thread_turns",
-)
-
-
 def test_the_owners_are_every_members_sibling_in_layer_order() -> None:
     """``_OWNERS`` lists every ``members_*.py`` sibling, and each owner imports only owners
     listed before it -- the order the facade loads them and a read resolves in."""
     owners = list(_index().owners)
+    assert owners, "the facade composes no owner"
     assert sorted(owners) == sorted(_owner_paths())
-    assert sorted(owners) == list(
-        _OWNER_MODULES
-    ), f"the owner modules changed; write one line per module in _OWNER_MODULES: {sorted(owners)}"
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):
         tree = ast.parse(_owner_paths()[owner].read_text(encoding="utf-8"))

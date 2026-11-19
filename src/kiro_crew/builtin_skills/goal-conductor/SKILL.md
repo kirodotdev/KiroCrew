@@ -266,6 +266,8 @@ instruction to report through `work_report`. Without `work_dispatch`, or to
 bind an existing session to a new item (Patrol step 4), read
 `<this skill's dir>/references/manual-dispatch.md` and follow its four steps in order.
 
+**A file the person gave you travels as its path, as your prompt's send-files rule says.** A pasted screenshot shows up as `[image: <name>] <absolute path>`; copy that path into the seed or `session_send` message.
+
 **A `pr_checks` seed says how the pull request is opened.** Tell the worker to open it non-draft — `gh pr create` without `--draft` — or to run `gh pr ready` before it reports done. A completion claim that arrives on a draft whose checks have not finished costs a whole verify cycle that answers `refused`, which you surface to the user rather than retry.
 
 **A `pr_checks` seed may name the PR procedure.** The worker gets no per-message
@@ -417,8 +419,8 @@ Each cycle:
    |---|---|---|
    | `progress` | informational | nothing |
    | `done` | the worker CLAIMS acceptance is met | verify (step 3) |
-   | `blocked` | an external dependency stopped the work | clear it or re-plan around it; when you answer the worker, `session_send` it, then `work_ledger_record` `action=decide` |
-   | `question` | your own decision is needed | `session_send` the answer, then `work_ledger_record` `action=decide`; `session_read_message` the reply |
+   | `blocked` | an external dependency stopped the work | clear it or re-plan around it; when you answer the worker, `session_send` it with `steer: true`, then `work_ledger_record` `action=decide` |
+   | `question` | your own decision is needed | `session_send` the answer with `steer: true`, then `work_ledger_record` `action=decide`; `session_read_message` the reply |
 
    **A person's steer outranks your decision.** When the person types into a
    worker from the Crew panel, its item gets a `steer` event (`kind: steer`, the
@@ -440,7 +442,8 @@ Each cycle:
    needed only for (a)-(e) in your rules; the conductor tail in your prompt
    sets the check. If none applies, decide it yourself: take the
    worker's recommendation (or the safest reversible default when it names
-   none), record `action=decide`, `session_send` it to the worker, and tell the
+   none), record `action=decide`, `session_send` it to the worker with
+   `steer: true`, and tell the
    person in one line what you decided. For example, a plain design choice
    (which of two layouts, which file holds a helper) is yours; a choice that
    deletes another contributor's branch is (c); a choice that needs a token
@@ -542,8 +545,8 @@ Each cycle:
    worker's session is still open. Whether that session takes the next item or
    a fresh one does is your prompt's worker-reuse rule. To reuse it, `create`
    the new item, `bind` it to that session, then `session_send` it the new
-   item's goal; its `work_brief` and `work_report` resolve to the
-   new item. A session holds one open item at a time, so binding one whose
+   item's goal with `steer: true`; its `work_brief` and `work_report` resolve
+   to the new item. A session holds one open item at a time, so binding one whose
    item is still open is refused `worker_already_dispatched`. `action=decide` records an
    instruction you want the worker to read out of `work_brief`; it is the ONE
    field the worker treats as an instruction, so keep it to a decision.
@@ -572,8 +575,8 @@ Each cycle:
    **When the lines show the item itself is wrong** (already done on main,
    mis-scoped, needing a split, a bar that cannot be met), re-plan that item now
    (Close the round).
-6. **A patrol wake gets one line**, as your prompt's patrol-reply rule says,
-   and more only in the cases it names. Never stop bare after your tool
+6. **Reply to a patrol wake as your prompt's patrol-reply rule says**, and
+   write more only in the cases it names. Never stop bare after your tool
    calls: that keeps the empty-response recovery.
 
 ### Close the round
@@ -683,17 +686,10 @@ running, deal with that item now — `session_stop` it and `close` its ledger it
 or `session_send` the correction straight into it with `steer: true`. Do not
 tear down the whole round for one item.
 
-**Steer corrections, queue everything else.** A plain `session_send` to a busy
-worker waits for its current turn to end. Pass `steer: true` for a correction, a
-changed direction, or "stop, that is already done": it lands in the running
-turn, and on an idle worker it starts or queues a turn like a plain send. Leave `steer` off for answers
-to a `question`, seeds, and anything that can wait for the turn boundary.
-A steer does not withdraw what is already queued: if `session_read_message`
-reports a non-zero `queue_depth`, those messages still run after the turn, so
-say in the steered message which earlier instruction it supersedes.
-
-The same rule holds for a fleet: send a correction to several workers with
-`session_broadcast` with `mode: steer`.
+**Steer every direct follow-up; never queue it.** Follow your prompt's direct-worker
+communication rule after the seed. For a fleet, use `session_broadcast` with
+`mode: steer`. If `session_read_message` reports a non-zero `queue_depth`, name
+which earlier instruction the steer supersedes.
 
 ## When a conductor dispatched you
 

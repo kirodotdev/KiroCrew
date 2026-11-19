@@ -503,9 +503,7 @@ def _broadcast_compaction_result(
         from kiro_crew.security import redact
 
         summary = redact(event.title)
-        msg_text = (
-            f"✅ Conversation compacted: {summary}" if summary else "✅ Conversation compacted."
-        )
+        msg_text = f"Conversation compacted: {summary}" if summary else "Conversation compacted."
         # Reset the context meter — the provider dropped its stale counts when
         # the completed status arrived (AcpPromptStats.reset_after_compaction),
         # and `reset` tells the frontend to delete its stored token counts too
@@ -527,12 +525,12 @@ def _broadcast_compaction_result(
 
         error = redact(event.title or "unknown error")
         if streak <= _COMPACTION_NOTICE_SHOW_FIRST_N:
-            msg_text = f"❌ Compaction failed: {error}"
+            msg_text = f"Error: Compaction failed: {error}"
         else:
             # Cooldown just elapsed after 1+ suppressed repeats — collapse
             # into one message instead of resuming per-turn spam.
             msg_text = (
-                f"❌ Compaction has failed {streak}x in a row "
+                f"Error: Compaction has failed {streak}x in a row "
                 f"({error}) — this conversation may be too large to "
                 "auto-compact. Consider `/compact` manually or starting a "
                 "new chat if this persists."
@@ -750,6 +748,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         HEARTBEAT_PROMPT_KIND,
         IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
+        KIRO_CLI_SIGN_IN_KIND,
         MCP_APP_MESSAGE_KIND,
         MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
         MODEL_UNAVAILABLE_KIND,

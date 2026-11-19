@@ -77,6 +77,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `pending_apply_error`. It emits nothing itself; the dashboard status route
         # that serves that stored text is the egress.
         "update_boot_apply.py",
+        # Gate-side log line: `_log_rule` redacts a lesson rule only for the store's
+        # own INFO lines. The stored rule is unchanged and nothing else is emitted.
+        "learn.py",
+        # The Claude child tool title on the parent session, redacted as the event is
+        # built, like acp/session_handle_dispatch.py above. The event reaches the
+        # browser through the runner's native cards, which are registered sinks.
+        "acp/session_handle_claude_children.py",
+        # The no-tools notice row's agent name, redacted before the row is handed to
+        # `append_and_surface`; the transcript broadcast is the registered sink.
+        "dashboard/agent_no_tools_notice.py",
         # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
         # only caller is `notifications/bridge.py`, the registered sink that hands
         # the copy to a transport.
@@ -189,6 +199,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Capture-side as well: redacts thread replies as they are READ from
         # Slack, for the model's fenced thread-replies block. No output of its own.
         "slack/thread_replies.py",
+        # Capture-side as well: redacts plan-canvas comments as they are READ from
+        # Slack (getCanvas), before they reach the session. No output of its own.
+        "slack/code_channels/comments.py",
         # Seam grading only: `_redact_all` is the grader `render_chunks` hands the
         # shared splitter, so a cut cannot leave a key's halves in two adjacent
         # messages. The Weixin answer's display redaction happens before it, at

@@ -61,9 +61,11 @@ Put a half-width space between a Latin run and adjacent Japanese
 (`Kiro Crew を起動`, `MCP サーバー`), except where a Latin run that is NOT a
 do-not-translate term is the head of a compound the language has absorbed
 (`APIキー`). A do-not-translate term always takes the space: `i18n-translate.mjs
-verify` reads `MCPサーバー` as a dropped `MCP` and refuses the shard. Beyond that,
-this one is **review-only**: the boundary is a judgement call and a mechanical
-rule would fire on every absorbed compound.
+verify` reads `MCPサーバー` as a dropped `MCP` and refuses the shard.
+`jaStyle.test.ts` checks the space on both sides of `Kiro CLI` and
+`{{productName}}`. Beyond those two terms, this one is **review-only**: the
+boundary is a judgement call and a mechanical rule would fire on every absorbed
+compound.
 
 ---
 
@@ -168,6 +170,7 @@ copy must not add fragments: one key per sentence.
 | em dash kept where the English has one | `jaStyle.test.ts` |
 | interpolated values quoted with 「」 | `jaStyle.test.ts` |
 | no ideographic space | `jaStyle.test.ts` |
+| a space between `Kiro CLI` / `{{productName}}` and Japanese | `jaStyle.test.ts` |
 | no space inside a katakana compound | `jaStyle.test.ts` |
 | trailing long-vowel mark kept | `jaStyle.test.ts` |
 | `write access` and `present` use their context-specific terms | `jaStyle.test.ts` |
@@ -179,5 +182,5 @@ copy must not add fragments: one key per sentence.
 | correct CLDR plural categories (1: other) | `catalogParity.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 
-Everything in §1.1, the `open` row of §2.1, §3 and the rest of §4 is review-only —
-the judgements a human has to make.
+Everything in the rest of §1.1, the `open` row of §2.1, §3 and the rest of §4 is
+review-only — the judgements a human has to make.

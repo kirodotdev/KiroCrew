@@ -262,7 +262,10 @@ version directory. A universal macOS build stages the engine once: its tarball
 is already `darwin-universal`, and `kas_bundle.make_universal_node` fetches the
 other architecture's pinned Node build and `lipo -create`s both into one Mach-O
 at the record's `node_bin` path, probing each slice through `arch -arm64` /
-`arch -x86_64`. The universal build then runs `kas_bundle.trim_for_shipping`:
+`arch -x86_64`. A slice probe that times out is rerun once: the slice that is
+not the host's runs under Rosetta, whose first translation of the new binary
+can outlast the 30-second probe on a loaded runner, and the rerun starts from
+Rosetta's cache. The universal build then runs `kas_bundle.trim_for_shipping`:
 the Node distribution keeps only its binary and `LICENSE` (the engine never
 spawns the distribution's npm, npx or corepack), and the engine loses its C/C++
 sources, headers, source maps and web-tree-sitter's debug build. No reader
@@ -1266,7 +1269,11 @@ control `kirocrew restart` names when it refuses a gateway the app supervises.
 
 When this launch ends with no usable gateway, the shell shows one dialog
 (`gateway-wait.js` renders it; the supervisor's start-failure record decides
-the state). It always offers **Retry**, plus the actions the state allows:
+the state). It always offers **Retry**, plus the actions the state allows. While
+the app waits for the gateway, the splash counts toward the deadline ("Waiting for gateway… 12s of
+120s"). A timeout on a gateway this app spawned and whose process is still
+running is titled "gateway is not answering" and points at the launch log;
+its Retry keeps that process and waits again. The actions:
 
 - **Add Remote Crew** / **Edit Remote Crew** opens the remote-crew form
   (`runtime/gateway/remote-crew-prompt.js`) to save or correct the crew this
@@ -2086,10 +2093,18 @@ the 2026-11-10 decision "updates never restart a running gateway"):
 - **An apply the quit left behind is finished at the next app start.** If the
   quit-time apply was interrupted or failed, the arm stays. The next start runs
   it in Electron main (`startup-apply.js`) before the gateway spawns and before
-  any window opens, clears the arm, and relaunches once into the new bundle.
-  First it checks governance: the last recorded verdict, and the policy file
-  read again now (`policy-source.js`: a pinned `updates` check or apply command
-  governs), so a provider installed since the last run is not bypassed. A
+  the main window opens, clears the arm, and relaunches once into the new bundle.
+  While the update command runs, the boot splash shows in its own window
+  (`install-splash.js`) with an "Installing update <version>" line. Closing it
+  only hides it (a quit of the app still quits), and launching the app again
+  (on macOS, reopening it) brings it forward and logs
+  `[update] a launch arrived during the start-time apply`. It is hidden when
+  the apply finishes, before the relaunch or the start of the installed
+  version, and destroyed once the main window opens.
+  First the start-time apply checks governance: the last recorded verdict, and
+  the policy file read again now (`policy-source.js`: a pinned `updates` check
+  or apply command governs), so a provider installed since the last run is not
+  bypassed. A
   provider-governed install, or a policy file that cannot be read, runs no
   marker command at start either; the arm stays and the outcome is `governed`.
   Then it probes whether a gateway is still running (a gateway that outlived the

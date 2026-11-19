@@ -13,6 +13,7 @@ import asyncio
 import logging
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp import runtime_session_load
 from kiro_crew.acp.mcp_session_report import McpSessionReport
@@ -43,7 +44,7 @@ def _status(**states: str) -> JsonRpcMessage:
 
 
 def _handle(*frames: JsonRpcMessage | None) -> AcpSessionHandle:
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle(runtime=None)
     handle._session_id = _SID
     handle._mcp_report = McpSessionReport()
     handle._mcp_report.begin_session([])

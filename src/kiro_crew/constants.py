@@ -659,7 +659,7 @@ _RAW_OPTIONS_RE_LINE = re.compile(
 
 # TRAILER (``re.DOTALL``, ``\Z`` anchor) — for the Discord/Telegram/WeCom
 # renderers, which match the marker only at the very END of the message and
-# allow it to span newlines (the body's negated class admits ``\n``). Trailing
+# admit ``\n`` in the body, though the matcher refuses labels holding a break. Trailing
 # ``\s*`` before ``\Z``. Same optional markdown-link close as LINE (same
 # ``[^\s()]`` inner class, disjoint from the trailing ``\s*``, so ReDoS-safe).
 # ``re.MULTILINE`` is there ONLY so the optional leading-wrapper group can anchor
@@ -799,13 +799,23 @@ class _MarkerMatcher:
         candidate, and :func:`markers_before` decides the rest of that line: a
         candidate inside an unclosed head is refused, and the sibling markers
         before it are yielded with it as one :class:`MarkerRun`. Siblings join
-        only when the final marker offers a label. The web parser joins them
-        anyway and then keeps a row whose pills render nothing; a channel has no
-        such row rule, so joining here would empty ``[OPTIONS: A] [OPTIONS:]``.
+        only when the final marker offers a label, as the web parser's
+        ``findOptionMarkers`` does, so ``[OPTIONS: A] [OPTIONS:]`` keeps
+        ``[OPTIONS: A]`` as text instead of emptying the message.
         """
         # Imported here so a server that only lists its tools never loads the walk.
-        from kiro_crew.option_marker_scan import HEAD_CAP, MarkerRun, head_count, markers_before
+        from kiro_crew.option_marker_scan import (
+            HEAD_CAP,
+            MarkerRun,
+            as_newlines,
+            crosses_line,
+            head_count,
+            markers_before,
+            option_labels,
+        )
 
+        source = text
+        text = as_newlines(source)
         if head_count(text) > HEAD_CAP:
             return
         if self._pattern is _RAW_OPTIONS_RE_LINE:
@@ -813,7 +823,8 @@ class _MarkerMatcher:
         else:
             candidates = self._pattern.finditer(text)
         for match in candidates:
-            if _marker_labels_have_unmatched_opener(match.group("labels")):
+            labels = match.group("labels")
+            if crosses_line(labels) or _marker_labels_have_unmatched_opener(labels):
                 continue
             before = markers_before(
                 text,
@@ -824,8 +835,10 @@ class _MarkerMatcher:
             )
             if before is None:
                 continue
-            if before and match.group("labels").replace("|", "").strip():
-                yield MarkerRun(before[0], match)
+            if before and option_labels(match.group("labels")):
+                yield MarkerRun(before[0], match, source)
+            elif text is not source:
+                yield MarkerRun(match, match, source)
             else:
                 yield match
 
@@ -918,6 +931,9 @@ def _glued_marker_candidates(text: str) -> Iterator[tuple[re.Match[str], str]]:
     The candidate rules shared by the dashboard reflow and the channel relocation;
     see :func:`reflow_and_label_glued_option_marker` for why each rule exists.
     """
+    from kiro_crew.option_marker_scan import as_newlines
+
+    text = as_newlines(text)
     # One fence walker for the whole text, advanced to each candidate in turn.
     # Every candidate starts at a line start (``^`` under MULTILINE), so the slice
     # fed between two candidates always ends on a line boundary and the walker's
@@ -1037,6 +1053,8 @@ def relocate_glued_tail_marker(text: str) -> str:
     """
     if "[OPTIONS:" not in text:
         return text
+    from kiro_crew.option_marker_scan import as_newlines
+
     last = None
     for last in _glued_marker_candidates(text):
         pass
@@ -1048,7 +1066,7 @@ def relocate_glued_tail_marker(text: str) -> str:
         return text
     moved = text[: m.start()] + remainder + "\n" + m.group(0) + rest
     # Moved prose that opens a fence (``~~~py``) would swallow the marker.
-    if _in_open_fence(moved, m.start() + len(remainder) + 1):
+    if _in_open_fence(as_newlines(moved), m.start() + len(remainder) + 1):
         return text
     return moved if OPTIONS_RE_TRAILER.search(moved) else text
 
@@ -1430,6 +1448,10 @@ def _rightmost_unfinished_marker(text: str) -> int:
     diverging byte, so an adversarial buffer repeating failing sentinels
     walks linearly. Returns ``-1`` when no admissible occurrence exists.
     """
+    from kiro_crew.option_marker_scan import line_start
+
+    # An ``[OPTIONS`` tail that holds a line break can never close: labels never cross one.
+    last_line = line_start(text, len(text))
     last_close = text.rfind("]")
     cursors = []
     for sentinel, prefix_re in _MARKER_SENTINELS:
@@ -1445,7 +1467,7 @@ def _rightmost_unfinished_marker(text: str) -> int:
             # occurrence means the tail is not still-streaming -- and every
             # remaining occurrence sits further left of that closer too.
             break
-        if prefix_re.match(text, pos) is not None:
+        if (sentinel != "[OPTIONS" or pos >= last_line) and prefix_re.match(text, pos) is not None:
             return pos
         nxt = text.rfind(sentinel, 0, pos)
         if nxt != -1:
@@ -1469,8 +1491,10 @@ def _leading_wrapper_start(text: str, idx: int) -> int:
         run -= 1
     if run == idx:
         return idx
-    line_start = text.rfind("\n", 0, run) + 1
-    if text[line_start:run].strip(" \t") == "":
+    from kiro_crew.option_marker_scan import line_start
+
+    start = line_start(text, run)
+    if text[start:run].strip(" \t") == "":
         return run
     return idx
 
@@ -1848,7 +1872,7 @@ BANNER = r"""
   | ' <| | '_/ _ \ | (__| '_/ -_) V  V /
   |_|\_\_|_| \___/  \___|_| \___|\_/\_/
 
-  👻 Your personal AI agent
+  Your personal AI agent
 """
 
 # Max length of an auto-nudge loop's ``banner`` -- the SHORT transcript row shown

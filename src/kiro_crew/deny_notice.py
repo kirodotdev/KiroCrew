@@ -375,7 +375,7 @@ async def steer_notice_into_refused_turn(
 
 #: How many times one sub-agent run resumes a turn its backend ended because the
 #: host refused a call. Each resume is a fresh model turn that may hit the gate
-#: again, so the count is bounded; past it the cancelled ending stands.
+#: again, so the count is bounded; past it the backend's ending stands.
 REFUSED_TURN_RESUME_MAX = 3
 
 
@@ -385,8 +385,11 @@ def build_refused_turn_resume_prompt(title: str, reason: str, *, cause: str) -> 
     Codex answers its only reject option for a shell command (``cancel``,
     ``ReviewDecision::Abort``) by aborting the WHOLE turn, so the steered notice
     never reaches a model inference and the model is left with ``aborted by
-    user``. The sub-agent run sends this as the next prompt on the same session
-    instead: the same notice, plus the fact that the turn was stopped. *title*
+    user``. opencode answers a reject by closing the call with its stock "user
+    rejected permission" text and ending the turn ``end_turn``, so the model
+    never reads the reason either. The sub-agent run sends this as the next
+    prompt on the same session instead: the same notice, plus the fact that the
+    turn was stopped. *title*
     and *reason* are redacted here, as :func:`steer_refusal_notice` does.
     Returns ``""`` when there is nothing to say.
     """

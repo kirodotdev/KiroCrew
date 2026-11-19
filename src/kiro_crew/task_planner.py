@@ -416,6 +416,32 @@ async def decompose(
                     )
                     await client.reject_tool(event.request_id)
                     continue
+                # An organisation's ``ask`` on a KAS web call (``web_ask_rule``):
+                # this phase has nobody to ask, so it is refused, never approved.
+                from kiro_crew.web_ask_rule import held_phrases
+
+                _web_held = held_phrases(event)
+                if _web_held:
+                    sel().log_tool_invocation(
+                        session_key=session_key,
+                        agent=agent or "kirocrew",
+                        source="taskrunner",
+                        tool_name=event.title,
+                        tool_kind=event.tool_kind,
+                        outcome="denied",
+                        request_id=event.request_id,
+                        error="web_ask_rule",
+                        metadata={"phase": "decomposition"},
+                    )
+                    await _steer_host_deny(
+                        client,
+                        event,
+                        "; ".join(_web_held)
+                        + ", so a person must approve it, and this phase has no approver",
+                        cause=DENY_CAUSE_SURFACE_POLICY,
+                    )
+                    await client.reject_tool(event.request_id)
+                    continue
                 approval_sent = await client.approve_tool(event.request_id)
                 sel().log_tool_invocation(
                     session_key=session_key,
@@ -712,8 +738,10 @@ def decompose_yaml(yaml_content: str) -> list[Task]:
 # Matches the "Agent: ...\nTimeout: ...\n\n<prompt>" preamble that decompose_yaml
 # packs into Task.description on import, so export can round-trip it back out into
 # the dedicated `agent`/`timeout`/`prompt` YAML keys instead of double-wrapping.
+# The prompt part is optional: an agent with no prompt or shell is stripped down
+# to the bare "Agent: ...\nTimeout: ..." pair on import.
 _YAML_PREAMBLE_RE = re.compile(
-    r"^Agent:\s*(?P<agent>[^\n]*)\nTimeout:\s*(?P<timeout>[^\n]*)\n\n(?P<prompt>.*)$",
+    r"^Agent:[ \t]*(?P<agent>[^\n]*)\nTimeout:[ \t]*(?P<timeout>[^\n]*)(?:\n\n(?P<prompt>.*))?$",
     re.DOTALL,
 )
 
@@ -767,7 +795,7 @@ def plan_to_yaml(tasks: list[Task]) -> str:
                 spec["agent"] = agent_val
             if timeout_val:
                 spec["timeout"] = timeout_val
-            prompt = m.group("prompt")
+            prompt = m.group("prompt") or ""
         else:
             prompt = t.description or ""
         spec["prompt"] = prompt

@@ -180,6 +180,7 @@ from kiro_crew.agent_parts.spec_lookup import (
     session_agent_spec_path,
 )
 from kiro_crew.agent_parts.spec_prompts import (
+    _CONDUCTOR_PATROL_REPLY,
     _CONDUCTOR_PROMPT_SECTIONS,
     _CONDUCTOR_SYSTEM_PROMPT,
     _CONDUCTOR_WORK_LEDGER_PROTOCOL,
@@ -499,6 +500,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _install_team_lead_agent,
         knowledge_agent_model,
         knowledge_view_without_registered_injection,
+        lite_view_without_registered_injection,
         repair_guest_agent_spec,
         repair_knowledge_agent_spec,
         repair_lite_agent_spec,
@@ -1116,6 +1118,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "repair_lite_agent_spec",
         "reset_after_spec_repair",
         "knowledge_view_without_registered_injection",
+        "lite_view_without_registered_injection",
         "_DASHBOARD_MANAGER_AGENT_FILENAME",
         "_GUEST_AGENT_FILENAME",
         "_KNOWLEDGE_AGENT_FILENAME",

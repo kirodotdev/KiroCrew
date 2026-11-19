@@ -103,6 +103,7 @@ def test_the_refresh_after_a_stopped_turn_sends_nothing(env: Any, monkeypatch: A
     svc = object.__new__(WorkspaceService)
     monkeypatch.setattr(svc, "_forget_worker_status", lambda b: None, raising=False)
     monkeypatch.setattr(svc, "schedule_refresh", ran.append, raising=False)
+    monkeypatch.setattr(svc, "_turning", set(), raising=False)
     asyncio.run(WorkspaceService.on_turn_end(svc, binding))
     assert ran == []
 

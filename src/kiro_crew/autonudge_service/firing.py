@@ -197,7 +197,10 @@ async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
     # never armed, so the stale file can kill nothing in between. No
     # ``expired`` here: that event says the loop stopped SHORT of its goal, and
     # this stop is the agent reporting the goal reached.
-    if loop.stop_sentinel_path and Path(loop.stop_sentinel_path).exists():
+    sentinel_found = False
+    if loop.stop_sentinel_path:
+        sentinel_found = await asyncio.to_thread(Path(loop.stop_sentinel_path).exists)
+    if sentinel_found:
         logger.info("AutoNudge: stop sentinel found for %s — deactivating loop", loop.id)
         await _tick_update(self, loop.id, active=False, stopped_reason=STOP_SENTINEL_REASON)
         return

@@ -31,7 +31,8 @@ import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from functools import partial
+from typing import Any
 
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.sel import sel
@@ -58,6 +59,7 @@ from kiro_crew.slack.code_channels.creation import (
 )
 from kiro_crew.slack.code_channels.models import ChannelInfo, CodeChannelApiError, CreateRequest
 from kiro_crew.slack.code_channels.recognition import ChannelKind
+from kiro_crew.slack.code_channels.route_gate import Admit, _route_to_slot, admitted
 from kiro_crew.slack.code_channels.store import (
     ROUTE_CODE_CHANNEL,
     Binding,
@@ -65,9 +67,6 @@ from kiro_crew.slack.code_channels.store import (
     StoreWriteError,
     store,
 )
-
-if TYPE_CHECKING:
-    from kiro_crew.slack.handler import LinkedRoute
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +349,8 @@ async def _inbound_gate(
 ) -> InboundResult:
     cfg = live_config(orch)
     channel = str(event.get("channel") or "")
+    if not from_trusted_bot and await shared_sender_dropped(sender_id, channel):
+        return DROP
     if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
         return PASS
     binding = store().get_binding(channel)
@@ -989,91 +990,6 @@ async def answer_unroutable(orch: Any, channel: str, user_id: str = "") -> bool:
     return True
 
 
-def options_answer_permitted(channel: str, sender: str = "") -> bool:
-    """A button or selection answered in *channel* may reach its session.
-
-    True when *channel* is not a bound code channel (or code channels are
-    off): the ordinary path's own rules apply there. In a bound code channel
-    an answer is a turn like a typed message, so it obeys the same rule as
-    :func:`inbound_gate`: the channel and its origin must both still admit
-    the channel's turns. A control posted before the channel or its origin
-    went to ``review`` or ``off`` is refused (SEL-audited), never dispatched.
-    So is an answer in a channel this gateway unbound because Slack stopped
-    listing us there (:meth:`CodeChannelStore.was_revoked`). A failed lookup
-    refuses too, since it cannot show the channel is unbound.
-    """
-    try:
-        cfg = live_config(None)
-        if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
-            return True
-        binding = store().get_binding(channel)
-        if binding is None and store().is_quarantined(channel):
-            # Its binding row does not read back whole: the channel is fenced, so
-            # nothing in it -- a kickoff-thread control included -- reaches a session.
-            origin, error = "", "code channel binding row unreadable"
-        elif binding is None:
-            if not store().was_revoked(channel):
-                return True
-            # Unbound because Slack does not list us here: a control its
-            # session posted earlier must not run a turn in that session.
-            origin, error = "", "code channel no longer bound"
-        else:
-            origin = _origin_of(channel, binding, None)
-            if channel_and_origin_permit(cfg, channel, origin):
-                return True
-            error = "origin activation does not admit a code channel"
-    except Exception:
-        logger.warning("code channel: options permit lookup failed", exc_info=True)
-        origin, error = "", "permit lookup failed"
-    _audit(
-        sender, "slack.code_channel.options", "denied", f"channel={channel} origin={origin}", error
-    )
-    return False
-
-
-async def _route_to_slot(
-    orch: Any,
-    binding: Binding,
-    text: str,
-    sender_id: str,
-    *,
-    sender: dict[str, str] | None = None,
-    request_id: str = "",
-) -> LinkedRoute:
-    """Deliver *text* to the bound session as a person's message.
-
-    *sender* is the message's Slack sender (:func:`creation.slack_sender`),
-    stored on the session's user row as ``meta["slack_sender"]`` for
-    attribution; None leaves the key off. *request_id* names the Slack message
-    a first turn delivers (:func:`_request_id`), stored as
-    ``meta["slack_request"]`` on the row or its queued entry so a re-delivered
-    event can tell this request reached the session.
-
-    Only :attr:`LinkedRoute.ROUTED` means the session has the message. A
-    REFUSED one was answered in the channel and appended nowhere, so it is
-    never recorded as delivered.
-    """
-    from kiro_crew.slack.handler import LinkedRoute, route_linked_thread
-
-    meta: dict[str, Any] = {}
-    if sender:
-        meta["slack_sender"] = dict(sender)
-    if request_id:
-        meta[REQUEST_META_KEY] = request_id
-    routed = await route_linked_thread(
-        text,
-        binding.session_key,
-        sender_id,
-        binding.channel_id,
-        _slack(orch),
-        binding.anchor_ts,
-        user_meta=meta or None,
-    )
-    if routed is LinkedRoute.ROUTED:
-        _adopt_temps(binding.session_key)
-    return routed
-
-
 UNROUTED_TEXT = (
     "I could not reach this channel's session just now. Open it in your dashboard, "
     "or try again in a moment."
@@ -1136,13 +1052,21 @@ async def _dispatch_directed(
 
 
 async def deliver_directed(
-    orch: Any, result: InboundResult, event: dict[str, Any], clean_text: str, sender_id: str
+    orch: Any,
+    result: InboundResult,
+    event: dict[str, Any],
+    clean_text: str,
+    sender_id: str,
+    *,
+    admit: Admit | None = None,
 ) -> bool:
     """Deliver a DIRECTED message to the channel's session; True when it reached it.
 
     A message the gate admitted is never handed back to the normal path, which
     would answer it in a thread session the channel does not belong to; when it
-    cannot be delivered, the sender is told so in the channel.
+    cannot be delivered, the sender is told so in the channel. *admit* (a
+    channel command's live fences) is asked right before the route, after the
+    awaits here; a refusal returns False with nothing posted (the caller says why).
     """
     channel = str(event.get("channel") or "")
     if _asks_for_privacy(clean_text):
@@ -1181,6 +1105,13 @@ async def deliver_directed(
             refused = bool(
                 surface.channel_policy_refusal(channel, operation=operation, caller=sender_id)
             )
+            needs_bind = not (archived or refused) and (
+                binding is None or bound_slot(_dashboard_state(), binding) is None
+            )
+            if needs_bind and admit is not None and await admit(binding):
+                # A bind posts the kickoff and makes a session: a command's own
+                # fences are asked right before it, after the lock's wait.
+                return False
             if archived or refused:
                 pass  # nothing is adopted, rebound or prepared for these
             elif binding is None:
@@ -1239,6 +1170,8 @@ async def deliver_directed(
     # spend the bind budget twice on one message.
     from kiro_crew.slack.handler import LinkedRoute
 
+    if admit is not None and not await admitted(binding, admit):
+        return False  # a command's own fences, asked last before the sync checks below
     if surface.channel_policy_refusal(channel, operation=operation, caller=sender_id):
         return False  # again after the bind's awaits, right before the turn (and its worktree)
     current = store().get_binding(channel)
@@ -1248,10 +1181,14 @@ async def deliver_directed(
         _audit(sender_id, "slack.code_channel.message", "denied", f"channel={channel}", "archived")
         await _post(orch, channel, ARCHIVED_TEXT, None)
         return False
-    routed = await _route_to_slot(orch, binding, clean_text, sender_id, sender=slack_sender(event))
+    # The command's fences again at the route's commit point, after its own awaits.
+    gate = None if admit is None else partial(admitted, binding, admit)
+    routed = await _route_to_slot(
+        orch, binding, clean_text, sender_id, sender=slack_sender(event), admit=gate
+    )
     if routed is LinkedRoute.UNROUTED:
         await _post(orch, channel, UNSUPPORTED_COMMAND_TEXT, None)
-    # REFUSED: the refusal itself was the reply. Only ROUTED reached the session.
+    # REFUSED: the refusal was the reply; HELD: the command's gate (its caller says why).
     return routed is LinkedRoute.ROUTED
 
 
@@ -1913,6 +1850,7 @@ async def stop_from_channel(orch: Any, event: dict[str, Any], user: str) -> str 
         return None
     from kiro_crew.slack.handler import is_allowed_user
 
+    # Code channels are the owner's: a shared user (slack.shared_access) stops none.
     if not is_allowed_user(user):
         _audit(
             user, "slack.code_channel.stop", "denied", f"channel={channel}", "unauthorized sender"
@@ -1933,3 +1871,13 @@ async def stop_from_channel(orch: Any, event: dict[str, Any], user: str) -> str 
         orch, binding, user, channel, source="slack.code_channel.stop", say_idle=False
     )
     return CHANNEL_STOP_STOPPED
+
+
+from kiro_crew.slack.code_channels.shared_refusal import (  # noqa: E402,F401 - see the module
+    options_answer_permitted,
+    shared_sender_dropped,
+    shared_user_refused_for_slot,
+    shared_user_refused_here,
+    shared_user_refused_in,
+    shared_user_refused_unbound,
+)

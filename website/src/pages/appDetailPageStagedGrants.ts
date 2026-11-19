@@ -7,6 +7,7 @@
  */
 import type { AppInfo } from './appDetailPageTypes'
 import { knownDesktopCapabilities } from '../components/appstore/desktopCapabilities'
+import { knownBrowserVerbs } from '../components/appstore/browserVerbs'
 
 export function stagedGrantsOf(app: AppInfo | null) {
   // Declared api/events entries outside the approved set (`approvedGrants`) are
@@ -40,11 +41,13 @@ export function stagedGrantsOf(app: AppInfo | null) {
   const stagedFrameSources = app?.frameSourcesGrant?.staged || []
   // Pages the app's own agent may browse unasked: an install never approves them.
   const stagedBrowserSites = app?.browserSitesGrant?.staged || []
-  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length + stagedBrowserSites.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
+  // `permissions.browser` verbs: an install never approves them either.
+  const stagedBrowser = knownBrowserVerbs(app?.browserGrant?.staged)
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length + stagedBrowserSites.length + stagedBrowser.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
   return {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
     stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
-    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, hasStagedGrants,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedBrowser, hasStagedGrants,
   }
 }

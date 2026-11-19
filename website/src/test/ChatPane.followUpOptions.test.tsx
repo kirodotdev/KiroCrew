@@ -432,8 +432,8 @@ describe('ChatPane plan-shaped follow-ups', () => {
 })
 
 /** A discussion card's Start / No thanks, as GrillCard dispatches it. */
-function cardSend(text: string, slot: string) {
-  const detail: { text: string; slot: string; result: string | null; onOutcome: (o: string, reason?: string) => void } = { text, slot, result: null, onOutcome: (o, reason) => { cardOutcomes.push(o); cardReasons.push(reason) } }
+function cardSend(text: string, slot: string, files?: string[]) {
+  const detail: { text: string; slot: string; files?: string[]; result: string | null; onOutcome: (o: string, reason?: string) => void } = { text, slot, ...(files ? { files } : {}), result: null, onOutcome: (o, reason) => { cardOutcomes.push(o); cardReasons.push(reason) } }
   act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
   return detail.result
 }
@@ -486,6 +486,16 @@ describe('ChatPane discussion-card sends (a deliberate press: sent whatever Quic
     expect(cardSend('不用讨论了', 'pane-g1')).toBe('pending')
     await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'pane-g1']]))
     await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+    expect(composer().value).toBe('')
+  })
+
+  it('sends the card\'s own pictures with its text', async () => {
+    await renderPane('pane-f1')
+    expect(cardSend('Start the discussion\nQuestion: x', 'pane-f1', ['/up/a.png'])).toBe('pending')
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+    const wire = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(wire).toContain('![image](/up/a.png)')
+    expect(wire).toContain('Start the discussion\nQuestion: x')
     expect(composer().value).toBe('')
   })
 

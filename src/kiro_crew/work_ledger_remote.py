@@ -12,7 +12,8 @@ fetches and calls these.
   the conductor's read. It is a worker-owned write like
   :func:`~kiro_crew.work_ledger_writes.apply_worker_report`, with one difference:
   ``last_report_at`` is the PEER's stamp, which is what keys the ingest so a
-  repeat read adds nothing.
+  repeat read adds nothing, and ``received_at`` is the hub's clock at filing,
+  which the quiet-window rules measure from.
 * The remote state record (``work-ledger/remote/<board>/<item>.json``) holds what
   the hub last learnt about the peer slot: ``running``, ``closed``,
   ``pending_approval``, the crew's connection state and since when it is down. It
@@ -44,13 +45,13 @@ from kiro_crew.work_ledger_records import (
     WorkLedgerError,
     _now_iso,
     logger,
+    parse_stamp,
 )
 from kiro_crew.work_ledger_rules import (
     _require_artifacts,
     _require_choice,
     _require_pr,
     _require_text,
-    parse_stamp,
 )
 from kiro_crew.work_ledger_store import (
     _CONDUCTOR_FILE,
@@ -469,6 +470,13 @@ CODE_RETIRED_HISTORY_FULL = "retired_history_full"
 #: reason the owning conductor gives on ``work_ledger_record action=retire``.
 RETIRE_REASONS: frozenset[str] = frozenset({"crew_unreachable", *WORK_CONDUCTOR_RETIRE_REASONS})
 
+#: The hub's own retire of a CLOSED item's binding, which leaves its peer slot to
+#: close (rfc §5c): ``owner_closed`` when the close came in a turn the owner sent,
+#: so the slot is closed as soon as its crew is connected; ``item_closed`` from any
+#: other turn, so the slot is closed only once it is idle and its worker reported
+#: ``done``. These, and only these, are admitted on a closed item.
+CLOSE_RETIRE_REASONS: frozenset[str] = frozenset({"owner_closed", "item_closed"})
+
 
 def apply_remote_retire(
     slot_key: str,
@@ -482,8 +490,9 @@ def apply_remote_retire(
 
     Reached only through ``remote_ingest._record_retire``: the hub's own ingest
     (``crew_unreachable``) and the owning conductor's ``work_ledger_record
-    action=retire`` (``login_blocked``, ``wrong_crew``). Needs the item open and
-    still bound to exactly this pair; moves the pair into ``retired_bindings`` and leaves the item
+    action=retire`` (``login_blocked``, ``wrong_crew``), and the hub's close of a
+    remote item (:data:`CLOSE_RETIRE_REASONS`, the only reasons a CLOSED item
+    takes). Needs the item still bound to exactly this pair; moves the pair into ``retired_bindings`` and leaves the item
     unbound, so the next ingest reads nothing from that slot and a placement may
     bind it again. Marking an entry ``destroyed`` once its slot is closed belongs to
     the peer half (wave 8b).
@@ -491,14 +500,18 @@ def apply_remote_retire(
     checked_id = _require_item_id(item_id)
     slot = _require_peer_text(worker_session_key, MAX_PEER_SLOT_CHARS, "worker_session_key")
     crew = _require_peer_text(worker_instance_id, MAX_INSTANCE_ID_CHARS, "worker_instance_id")
-    checked_reason = _require_choice(reason, RETIRE_REASONS, "reason", CODE_INVALID_VALUE)
+    checked_reason = _require_choice(
+        reason, RETIRE_REASONS | CLOSE_RETIRE_REASONS, "reason", CODE_INVALID_VALUE
+    )
     with item_lock(slot_key, checked_id, create=False):
         item = read_work_item(slot_key, checked_id)
         if item is None:
             raise WorkLedgerError(
                 f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
             )
-        if item.is_terminal:
+        # A close reason retires a closed item's binding and nothing else; every
+        # other reason needs the item open.
+        if item.is_terminal != (checked_reason in CLOSE_RETIRE_REASONS):
             raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
         if item.worker_session_key != slot or item.worker_instance_id != crew:
             raise WorkLedgerError(
@@ -603,8 +616,10 @@ def apply_remote_report(
 
     The same checks as a local report, and the item must be remote. *reported_at*
     is the peer's stamp, kept as ``last_report_at`` so the next ingest compares
-    against it. *peer_event_id*, the peer's own id for the report, is the hub
-    event's id verbatim, so filing the same peer event again adds no line.
+    against it; ``received_at`` is the hub's own clock at filing, which the
+    quiet-window rules measure from. *peer_event_id*, the peer's own id for the
+    report, is the hub event's id verbatim, so filing the same peer event again
+    adds no line.
     """
     checked_status = _require_choice(status, WORKER_STATUSES, "status", CODE_INVALID_STATUS)
     checked_summary = _require_text(summary, MAX_SUMMARY_CHARS, "summary", required=False)
@@ -653,6 +668,9 @@ def apply_remote_report(
         if checked_pr is not None:
             item.pr = checked_pr
         item.last_report_at = stamp
+        # The hub's own clock, for the quiet-window rules: the peer's stamp above
+        # is on another machine's clock and stays only as the ingest key.
+        item.received_at = _now_iso()
         # The peer report's own identity rides into the hub event id, so two peer
         # reports filed in one second with the same text stay two events.
         event = _commit_item_locked(

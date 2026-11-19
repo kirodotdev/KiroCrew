@@ -431,6 +431,11 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     on_corrupt="reset",
                     stamp_meta=not use_local,
                 )
+            except ConfigReadError as e:
+                # The file cannot be read, so its bytes cannot be kept before the
+                # reset replaces them: nothing was written.
+                print(f"Error: {fp}: {e}", file=sys.stderr)
+                sys.exit(1)
             except ConfigWriteRefused as e:
                 # Third writer behind the publish floor, same report as the keyed
                 # paths: nothing was written. The message names an env-var key
@@ -610,6 +615,11 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     update_config_locked(
                         p, mutate=_mutate_local_overlay, stamp_meta=False, on_corrupt="reset"
                     )
+                except ConfigReadError as e:
+                    # The overlay cannot be read, so its bytes cannot be kept before
+                    # the reset replaces them: nothing was written.
+                    print(f"Error: {key}: {e}", file=sys.stderr)
+                    sys.exit(1)
                 except ConfigWriteRefused as e:
                     # The publish floor refused the document before writing it; the
                     # message names the offending env-var key and never its value.
@@ -798,7 +808,7 @@ def _edit_config_endorsed(editor: str) -> None:
 
         try:
             update_config_locked(config_path(), mutate=_mutate, on_corrupt="reset")
-        except ConfigWriteRefused as e:
+        except (ConfigReadError, ConfigWriteRefused) as e:
             print(f"❌ {e}{kept}", file=sys.stderr)
             sys.exit(1)
         keep = False

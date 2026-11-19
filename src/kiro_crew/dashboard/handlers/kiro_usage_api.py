@@ -115,6 +115,7 @@ from kiro_crew.identity_stores import (
     parse_token_expiry,
     sqlite_dbs,
 )
+from kiro_crew.sqlite_uri import read_only_uri
 
 logger = logging.getLogger(__name__)
 
@@ -465,7 +466,7 @@ def _token_from_sqlite(db: Path, now: datetime) -> _StoreToken | None:
     try:
         if db.is_symlink() or not db.exists():
             return None
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con = sqlite3.connect(read_only_uri(db), uri=True)
     except (sqlite3.Error, OSError):
         # OSError covers db.exists() on a permission-denied path — the
         # fail-closed contract must hold for it too.

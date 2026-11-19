@@ -979,6 +979,9 @@ def invalidate_orphan_cache() -> None:
     """Called when apps change (install/uninstall/cleanup)."""
     global _orphaned_builtins_cache
     _orphaned_builtins_cache = None
+    from kiro_crew.apps import execution  # module, not name: the facade serves names
+
+    execution.invalidate_shipped_builtin_apps()
 
 
 # ---------------------------------------------------------------------------

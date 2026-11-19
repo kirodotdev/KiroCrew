@@ -5,11 +5,12 @@
 ``entry_types_ledgers``, ``entry_types_surfaces``) written over one leaf,
 ``entry_types_fields``, and stays the module callers, tests and documents import from.
 
-The registry is a schema: what each declaration says and the order the tables render
-in are its contract. So the first tests here hold the composed tables, every lookup and
-the rendered reference tables equal to the registry as it stood when it was split into
-owners, by digest. A declaration changed on purpose changes its row; the failure prints
-the rows to paste. The rest pin the composition: each type and prefix has one owner,
+The registry is a schema. The first tests here hold the session table to its owners'
+``TYPES`` in owner order, each kind's table to the types its reference page under
+``docs/reference/crew-log/`` documents, every lookup to the table's own declaration,
+and the rendered reference to one section per declaration in table order. What each
+declaration states (fields, required flags, JSON types, enums) is the persisted wire
+schema, pinned per type in ``_SCHEMA_DIGESTS``. The rest pin the composition: each type and prefix has one owner,
 every sibling declaring ``TYPES`` is composed, an owner never imports the facade, every
 public name an owner defines other than its ``TYPES`` is the facade's own object, and
 every name the test trees
@@ -26,6 +27,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import subprocess
 import sys
 from collections import Counter
@@ -47,104 +49,122 @@ FACADE = "kiro_crew.crew_log.entry_types"
 LEAF = "kiro_crew.crew_log.entry_types_fields"
 CREW_LOG_DIR = Path(entry_types.__file__).resolve().parent
 
-#: Each kind's declarations when the registry was split into owners: type, then the
-#: first 32 hex digits of the SHA-256 of ``_canonical(declaration)``, in table order.
-_GOLDEN_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
+#: The published reference pages for each kind: the declared types are the documented
+#: ones, so a type dropped or renamed in the registry is one the reference still names.
+_REFERENCE = source_corpus.repo_root() / "docs" / "reference" / "crew-log"
+_DOCUMENTED = {
     KIND_SESSION: (
-        ("session/opened", "04ef8a56827e9c9078a86c3d509e96db"),
-        ("session/class", "7524b2522063f07a57b88f8e09af6293"),
-        ("session/closed", "a71c964802e62a75e05ac609e252f45e"),
-        ("session/unrestored", "8e9b3dfe651250654e3a55429d30c595"),
-        ("session/adopted", "525b48ab9bf5d674f4398dcf207417b1"),
-        ("session/released", "f1a9ee739bac4c27677df8d0170d2feb"),
-        ("session/spawned", "7386772d486639f42c99e15c5e0b2a48"),
-        ("turn/started", "2c5cb2c6ff71256f1d43927b6fd6106c"),
-        ("turn/refused", "8933c84e395514b4e49208e44a4545a9"),
-        ("turn/completed", "111392f95544c1173c3bc341bd4db8e0"),
-        ("write/dropped", "b8b88e298f6dc4bd990b0d3faf1b865e"),
-        ("message/received", "cf669c725721589588e02b62e7832828"),
-        ("message/sent", "af47be8f0467c00041545fc6be928627"),
-        ("message/chunk", "c73c95c95944935a63a56f660df57444"),
-        ("message/queued", "6180274d3d30cd59a97b4d0c201a1aed"),
-        ("request/configured", "994852b3f44c8bbf3a64e1dd89d1298d"),
-        ("context/composed", "62ed63072024699617c932b98cfe6cc7"),
-        ("context/measured", "e45ef38bb8c2fb8f5a20289daba2f7e2"),
-        ("step/started", "fab7519e4fc65ffab0a6b4206e48b580"),
-        ("step/completed", "36a041f74224ac4dcfadcc5a861aa0ef"),
-        ("tool/called", "065b59afb41bbc227a40882367dfb6f5"),
-        ("tool/completed", "5b49060395c2e7ff544a9861fd97f035"),
-        ("approval/requested", "69ade2dd5394a25d578f8205938b4179"),
-        ("approval/decided", "ef3d9661321ce2f3c680864495c31f1b"),
-        ("approval/bridged", "5e63753192118e89cdcf0a25a9dbb778"),
-        ("model/selected", "3b6f12f703b6d53c5e20d98c3afccc27"),
-        ("compaction/applied", "59e1ed367b9351f74b6789c68ddec2f6"),
-        ("plan/updated", "7cd018ea037a3ceb9a538bf75dc79821"),
-        ("subagent/spawned", "9a8a6655c888333f1432e016097898e0"),
-        ("subagent/steered", "cbc89e1578be381a9422777246b13456"),
-        ("subagent/dismissed", "cf8c93120ff10fc62430e1d01ff85877"),
-        ("subagent/completed", "2b16183f2a82b7687657477dfaa65398"),
-        ("subagent/failed", "e6a1b015742b2baa6733c7071dc4696e"),
-        ("background/completed", "c2baf07274afb461f17f4254c09cf3a6"),
-        ("ledger/recorded", "ce8a9e0246ca5f62f01fe4d9edaad4b9"),
-        ("object/observed", "3aa509be5a56048bafed2769c376e08f"),
-        ("radar/recorded", "f5da674a52d214bb4b0e46b717ff3042"),
-        ("work/recorded", "8145d3a633c76eb0f78ea83e11aee7e5"),
-        ("work/charged", "dfafeefd53bcb426be1351ea831bb481"),
-        ("panel/published", "3bed4520ab9f3b183255124dfa140c1e"),
-        ("dashboard/instance_changed", "e89026634b8f99bc617fc02e0839cecc"),
-        ("dashboard/agentic_value", "9ba35f808be9aa3cd45712079b8a9403"),
-        ("dashboard/agentic_refused", "84c3b73827ca0cc5c8d2125efa82e869"),
-        ("card/proposed", "3aa4b12a8444db31ec2704d9b4206cf1"),
-        ("card/finished", "7b65b135a4f6c271df8f31f42152632b"),
-        ("guide/offered", "721d8590a703806a77e0e40a10ef2048"),
-        ("guide/started", "ebf18278dee992c5eea17a2d0b0341d6"),
-        ("guide/finished", "613fdb310da277c35eea97f7911d901b"),
-        ("dashboard/goal_recorded", "efb93c3415691b9494f59daee2952a64"),
-        ("dashboard/waiting_changed", "c66ee05089867149eb2c7cdfa2e2d8a5"),
-        ("dashboard/custom_value", "081599d743b2ec9d384eb75653350287"),
-        ("dashboard/custom_failed", "144633a23583fc8f2eca57e14a8120b6"),
-        ("dashboard/stale_wake", "f41890e0a445d918431855c7c6f7c123"),
+        _REFERENCE / "session-types.md",
+        re.compile(r"^### `([a-z]+/[a-z_]+)`\s*$", re.M),
     ),
-    KIND_CREW: (
-        ("crew/dispatch", "5820b02abe6583c997f2cf40fb1465ff"),
-        ("crew/report", "46b293a4663ad9dc56da3afe016b8844"),
-    ),
-}
-
-#: SHA-256 of ``render_markdown(kind)`` when the registry was split into owners. The
-#: member kind declares nothing here, so its digest is of the heading alone.
-_GOLDEN_RENDER: dict[str, str] = {
-    KIND_SESSION: "2e9b9e03f5710e2d614eeb262c643584c1eb2e3ccd3a3c903594a81f4e8aae53",
-    KIND_CREW: "b6938d4f70730ae5ffce4ec6983a609443976a9fca7b013c04152e426dd8be8e",
-    "member": "5cb4ea02ed8121eb6b285806b4723251aed568df0aa54b9ac8505c9ad389fa8d",
+    KIND_CREW: (_REFERENCE / "crew-types.md", re.compile(r"^## `([a-z]+/[a-z_]+)`\s*$", re.M)),
 }
 
 
-def _canonical(spec: entry_types.EntryType) -> str:
-    """Everything a declaration states, as one stable string."""
-    return json.dumps(dataclasses.asdict(spec), sort_keys=True, separators=(",", ":"))
+#: Contract: the persisted crew-log wire schema. Each declared type, then the first 32
+#: hex digits of the SHA-256 of everything its declaration states (fields, required
+#: flags, JSON types, enums). Changing a declaration changes what readers of old and
+#: new logs accept, so it edits its own line on purpose; a new type adds a line.
+_SCHEMA_DIGESTS: dict[str, str] = {
+    "crew/dispatch": "5820b02abe6583c997f2cf40fb1465ff",
+    "crew/report": "46b293a4663ad9dc56da3afe016b8844",
+    "session/opened": "04ef8a56827e9c9078a86c3d509e96db",
+    "session/class": "7524b2522063f07a57b88f8e09af6293",
+    "session/closed": "a71c964802e62a75e05ac609e252f45e",
+    "session/unrestored": "8e9b3dfe651250654e3a55429d30c595",
+    "session/adopted": "525b48ab9bf5d674f4398dcf207417b1",
+    "session/released": "f1a9ee739bac4c27677df8d0170d2feb",
+    "session/spawned": "7386772d486639f42c99e15c5e0b2a48",
+    "turn/started": "2c5cb2c6ff71256f1d43927b6fd6106c",
+    "turn/refused": "8933c84e395514b4e49208e44a4545a9",
+    "turn/completed": "111392f95544c1173c3bc341bd4db8e0",
+    "write/dropped": "b8b88e298f6dc4bd990b0d3faf1b865e",
+    "message/received": "cf669c725721589588e02b62e7832828",
+    "message/sent": "af47be8f0467c00041545fc6be928627",
+    "message/chunk": "c73c95c95944935a63a56f660df57444",
+    "message/queued": "6180274d3d30cd59a97b4d0c201a1aed",
+    "request/configured": "994852b3f44c8bbf3a64e1dd89d1298d",
+    "context/composed": "62ed63072024699617c932b98cfe6cc7",
+    "context/measured": "e45ef38bb8c2fb8f5a20289daba2f7e2",
+    "step/started": "fab7519e4fc65ffab0a6b4206e48b580",
+    "step/completed": "36a041f74224ac4dcfadcc5a861aa0ef",
+    "tool/called": "065b59afb41bbc227a40882367dfb6f5",
+    "tool/completed": "5b49060395c2e7ff544a9861fd97f035",
+    "approval/requested": "69ade2dd5394a25d578f8205938b4179",
+    "approval/decided": "ef3d9661321ce2f3c680864495c31f1b",
+    "approval/bridged": "5e63753192118e89cdcf0a25a9dbb778",
+    "model/selected": "3b6f12f703b6d53c5e20d98c3afccc27",
+    "compaction/applied": "59e1ed367b9351f74b6789c68ddec2f6",
+    "plan/updated": "7cd018ea037a3ceb9a538bf75dc79821",
+    "subagent/spawned": "9a8a6655c888333f1432e016097898e0",
+    "subagent/steered": "cbc89e1578be381a9422777246b13456",
+    "subagent/dismissed": "cf8c93120ff10fc62430e1d01ff85877",
+    "subagent/completed": "2b16183f2a82b7687657477dfaa65398",
+    "subagent/failed": "e6a1b015742b2baa6733c7071dc4696e",
+    "background/completed": "c2baf07274afb461f17f4254c09cf3a6",
+    "ledger/recorded": "ce8a9e0246ca5f62f01fe4d9edaad4b9",
+    "object/observed": "3aa509be5a56048bafed2769c376e08f",
+    "radar/recorded": "f5da674a52d214bb4b0e46b717ff3042",
+    "work/recorded": "fc59f6c109d9eec633bbf769a91fae9a",
+    "work/charged": "dfafeefd53bcb426be1351ea831bb481",
+    "panel/published": "3bed4520ab9f3b183255124dfa140c1e",
+    "dashboard/instance_changed": "e89026634b8f99bc617fc02e0839cecc",
+    "dashboard/agentic_value": "9ba35f808be9aa3cd45712079b8a9403",
+    "dashboard/agentic_refused": "84c3b73827ca0cc5c8d2125efa82e869",
+    "card/proposed": "3aa4b12a8444db31ec2704d9b4206cf1",
+    "card/finished": "7b65b135a4f6c271df8f31f42152632b",
+    "guide/offered": "721d8590a703806a77e0e40a10ef2048",
+    "guide/started": "ebf18278dee992c5eea17a2d0b0341d6",
+    "guide/finished": "613fdb310da277c35eea97f7911d901b",
+    "dashboard/goal_recorded": "efb93c3415691b9494f59daee2952a64",
+    "dashboard/waiting_changed": "c66ee05089867149eb2c7cdfa2e2d8a5",
+    "dashboard/custom_value": "081599d743b2ec9d384eb75653350287",
+    "dashboard/custom_failed": "144633a23583fc8f2eca57e14a8120b6",
+    "dashboard/stale_wake": "f41890e0a445d918431855c7c6f7c123",
+}
 
 
-def _digest(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def _schema_digest(spec: entry_types.EntryType) -> str:
+    text = json.dumps(dataclasses.asdict(spec), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 
-def _rows(specs) -> tuple[tuple[str, str], ...]:
-    return tuple((spec.type, _digest(_canonical(spec))[:32]) for spec in specs)
+def test_each_declaration_keeps_its_recorded_wire_schema() -> None:
+    declared = {
+        entry_type: _schema_digest(spec)
+        for table in entry_types.ENTRY_TYPES.values()
+        for entry_type, spec in table.items()
+    }
+    assert declared, "the registry declares no type"
+    changed = sorted(
+        t for t in declared.keys() & _SCHEMA_DIGESTS.keys() if declared[t] != _SCHEMA_DIGESTS[t]
+    )
+    assert changed == [], f"these declarations changed their wire schema: {changed}"
+    assert sorted(declared.keys() - _SCHEMA_DIGESTS.keys()) == [], "record each new type's digest"
+    assert sorted(_SCHEMA_DIGESTS.keys() - declared.keys()) == [], "a recorded type is gone"
 
 
-def _golden_mismatches(kind: str, specs) -> list[str]:
-    """Where *specs* differ from the golden table for *kind*, row by row."""
-    got = _rows(specs)
-    want = _GOLDEN_TABLES[kind]
-    out = [f"{i}: {g} != {w}" for i, (g, w) in enumerate(zip(got, want)) if g != w]
-    if len(got) != len(want):
-        out.append(f"length {len(got)} != {len(want)}")
+def _documented_types(kind: str) -> list[str]:
+    path, heading = _DOCUMENTED[kind]
+    return heading.findall(path.read_text(encoding="utf-8"))
+
+
+def _render_mismatches(kind: str, rendered: str) -> list[str]:
+    """Where *rendered* is not one ``## `type``` section per declaration of *kind*, in
+    table order, each opening with the declaration's summary."""
+    table = entry_types.ENTRY_TYPES.get(kind, {})
+    out: list[str] = []
+    if not rendered.startswith(f"# Declared `{kind}` crew log entry types\n"):
+        out.append("the heading names another kind")
+    sections = re.findall(r"^## `([^`]+)`\n\n(.*)$", rendered, re.M)
+    if [name for name, _ in sections] != list(table):
+        out.append(f"sections {[name for name, _ in sections]} != {list(table)}")
+    out.extend(
+        f"{name}: summary {summary!r}"
+        for name, summary in sections
+        if name in table and summary != table[name].summary.splitlines()[0]
+    )
     return out
-
-
-def _paste(kind: str, specs) -> str:
-    return "\n".join(f'        ("{t}", "{h}"),' for t, h in _rows(specs)) + f"\n  ({kind})"
 
 
 def _owner_paths() -> dict[str, Path]:
@@ -172,7 +192,7 @@ def _parsed(path: Path) -> ast.Module:
 
 
 # --------------------------------------------------------------------------- #
-# The tables equal the registry at the split
+# The tables are the composed owners, the documented types and the rendered reference
 # --------------------------------------------------------------------------- #
 
 
@@ -194,12 +214,13 @@ def test_the_session_table_is_its_owners_types_in_owner_order() -> None:
 
 
 @pytest.mark.parametrize("kind", [KIND_SESSION, KIND_CREW])
-def test_each_table_equals_the_registry_at_the_split(kind: str) -> None:
-    table = entry_types.ENTRY_TYPES[kind]
-    assert _golden_mismatches(kind, table.values()) == [], (
-        "a declaration differs from the registry at the split; if the change is meant, "
-        "replace the rows with:\n" + _paste(kind, table.values())
-    )
+def test_each_table_declares_exactly_the_documented_types(kind: str) -> None:
+    """The reference page is the published contract for what a log may hold: a type the
+    registry drops or renames is one the page still names, and a new type is declared
+    and documented together."""
+    documented = _documented_types(kind)
+    assert documented, f"no type heading parsed from {_DOCUMENTED[kind][0].name}"
+    assert sorted(entry_types.ENTRY_TYPES[kind]) == sorted(documented)
 
 
 def test_every_lookup_answers_with_the_tables_own_declaration() -> None:
@@ -212,25 +233,23 @@ def test_every_lookup_answers_with_the_tables_own_declaration() -> None:
     assert entry_types.declaration_for("member", "session/opened") is None
 
 
-@pytest.mark.parametrize("kind", sorted(_GOLDEN_RENDER))
-def test_the_reference_tables_render_as_they_did_at_the_split(kind: str) -> None:
-    assert _digest(entry_types.render_markdown(kind)) == _GOLDEN_RENDER[kind]
+@pytest.mark.parametrize("kind", [KIND_SESSION, KIND_CREW, "member"])
+def test_the_reference_tables_render_one_section_per_declaration(kind: str) -> None:
+    assert _render_mismatches(kind, entry_types.render_markdown(kind)) == []
     if kind == KIND_SESSION:
         assert entry_types.render_markdown() == entry_types.render_markdown(KIND_SESSION)
 
 
-def test_the_golden_check_refuses_a_reordered_or_edited_table() -> None:
+def test_the_render_check_refuses_a_reordered_dropped_or_edited_section() -> None:
     """The comparison above is what fails, not a check that could pass anything."""
-    owners = list(entry_types._SESSION_OWNERS)
-    owners[1], owners[3] = owners[3], owners[1]
-    swapped = [spec for owner in owners for spec in owner.TYPES]
-    assert _golden_mismatches(KIND_SESSION, swapped)
-    edited = list(entry_types._SESSION_TYPES)
-    edited[0] = dataclasses.replace(edited[0], summary=edited[0].summary + " ")
-    assert _golden_mismatches(KIND_SESSION, edited) == [
-        f"0: {_rows(edited[:1])[0]} != {_GOLDEN_TABLES[KIND_SESSION][0]}"
-    ]
-    assert _golden_mismatches(KIND_SESSION, entry_types._SESSION_TYPES[:-1])
+    rendered = entry_types.render_markdown(KIND_SESSION)
+    sections = rendered.split("\n## ")
+    swapped = "\n## ".join([sections[0], sections[2], sections[1], *sections[3:]])
+    assert _render_mismatches(KIND_SESSION, swapped)
+    assert _render_mismatches(KIND_SESSION, "\n## ".join(sections[:-1]))
+    first = entry_types._SESSION_TYPES[0]
+    assert _render_mismatches(KIND_SESSION, rendered.replace(first.summary, "changed", 1))
+    assert _render_mismatches(KIND_CREW, rendered)
 
 
 # --------------------------------------------------------------------------- #

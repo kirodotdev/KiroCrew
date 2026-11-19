@@ -395,13 +395,13 @@ async def _gateway(
         print(f"👻 Created default config: {config_path()}")
 
     cfg = KiroCrewConfig.load()
-    # Local recording is on by default; a host with no dashboard open is told in
-    # one stderr line, once per install. On a daemon thread, so it neither runs on
+    # Local recording is on by default; the start says so in one stderr line,
+    # once per notice version. On a daemon thread, so it neither runs on
     # the loop nor holds the boot back. Imported here: this module's import list
     # is a frozen facade inventory.
     from kiro_crew.metrics import notice as usage_notice
 
-    usage_notice.print_notice_in_background(cfg, headless=no_dashboard)
+    usage_notice.print_notice_in_background(cfg)
     await run_gateway(
         cfg,
         no_dashboard=no_dashboard,
@@ -432,7 +432,7 @@ async def _run_task(args: argparse.Namespace) -> None:
     cfg = KiroCrewConfig.load()
     from kiro_crew.metrics import notice as usage_notice
 
-    usage_notice.print_notice_in_background(cfg, headless=True)
+    usage_notice.print_notice_in_background(cfg)
     factory = build_provider_factory(cfg)
     sessions = SessionManager(cfg, provider_factory=factory)  # type: ignore[arg-type]
 
@@ -968,6 +968,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _detached_upstream_branch,
         _gateway_holds_update_lock,
         _refresh_agent_config,
+        _report_already_latest,
         _revalidate_gateway_update_check,
         _snapshot_memory_or_exit,
         _untracked_collisions,

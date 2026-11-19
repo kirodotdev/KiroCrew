@@ -173,9 +173,12 @@ class ClaudeCodeArm(Arm):
                 result = obj
             elif obj.get("type") == "assistant":
                 for block in (obj.get("message") or {}).get("content") or []:
-                    if isinstance(block, dict) and block.get("type") == "tool_use":
-                        if block.get("name") in _CLAUDE_ASK_TOOLS:
-                            events.append({"kind": "question", "text": str(block.get("name"))})
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_use"
+                        and block.get("name") in _CLAUDE_ASK_TOOLS
+                    ):
+                        events.append({"kind": "question", "text": str(block.get("name"))})
         if result is None:
             return ArmOutcome(
                 "error",

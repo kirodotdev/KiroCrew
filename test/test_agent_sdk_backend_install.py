@@ -1019,20 +1019,13 @@ class TestEndpointPayloadShape:
         assert response.status == 200
 
         rows = json.loads(response.text or "{}")["backends"]
-        assert [r["policy_id"] for r in rows] == [
-            "antigravity",
-            "claude",
-            "codex",
-            "copilot",
-            "deepseek",
-            "goose",
-            "kas",
-            "kiro",
-            "mimocode",
-            "opencode",
-            "pi",
-            "strands",
-        ]
+        from kiro_crew.agent_sdk.backends import ACP_BACKENDS_KNOWN, POLICY_ID_BY_BACKEND
+
+        # One row per known backend, sorted, under its policy spelling: the kiro
+        # backend's ``""`` id never reaches the wire.
+        policy_ids = [r["policy_id"] for r in rows]
+        assert policy_ids == sorted(POLICY_ID_BY_BACKEND.get(b, b) for b in ACP_BACKENDS_KNOWN)
+        assert "kiro" in policy_ids and "" not in policy_ids
         for row in rows:
             assert set(row) == {
                 "id",

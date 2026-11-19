@@ -486,9 +486,11 @@ export function useMembersPageThreadView({
       window.removeEventListener('blur', onVis)
     }
   }, [])
-  // The New crewmate card hides the chat while it
-  // stays mounted: hidden is not viewed, so it neither reads nor suppresses.
-  const threadShown = pageVisible && !createOpen
+  // The New crewmate card hides the chat while it stays mounted, and a relay
+  // Crew tab covers the whole page: hidden is not viewed, so it neither reads
+  // nor suppresses.
+  const relayCovered = useAppSelector(s => s.instances?.relayActive != null)
+  const threadShown = pageVisible && !createOpen && !relayCovered
   // What the PANE may count as seen: the thread is shown AND nothing floats
   // over the chat. An overlay side panel (a phone sheet, a desktop overlay
   // under its scrim), a floating Profile card and the phone roster drawer all
@@ -1121,13 +1123,14 @@ export function MembersPageThreadColumn({
                         composerInput={CrewComposer}
                         frameless
                         followContentWidth
-                        // The DM is this page's only composer, so it owns the
+                        // The DM is this page's main composer, so it owns the
                         // "Start Dictation with a Key" binding (#24967) — but
                         // only while nothing covers it: the key listens on the
                         // whole document, so under the New crewmate form or an
                         // overlay it would dictate into (and maybe send to)
                         // the hidden chat.
-                        pushToTalk={threadView.chatUncovered}
+                        // ...and gives it up while the side panel's open session holds focus.
+                        pushToTalk={threadView.chatUncovered && !sidePanel.panelSessionFocused}
                         // The failure notice above owns the verdict on this thread
                         // while a repair has failed; the pane's own "Session
                         // ready" would contradict it one line down.

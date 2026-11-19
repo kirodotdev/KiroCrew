@@ -566,7 +566,7 @@ export function MembersPageProfileCard({
   const { isRunning, activeView } = rosterView
   const { activeSlot, freshStart, askFreshStart, confirmedSlot } = thread
   const {
-    profileCardW, openCrewView, activeMemberKey, drivingSessions,
+    profileCardW, openCrewView, activeMemberKey, drivingSessions, openSessionInPanel,
   } = sidePanel
   const {
     schedAgentField, profileGoalsQuery, schedulesCountQuery, schedulesForActive, setSchedDraftDirty,
@@ -670,8 +670,8 @@ export function MembersPageProfileCard({
     </div>
   ) : null
   // The card's Sessions tab: every session this crewmate dispatched, at any
-  // depth, in the Crew panel's groups. A click expands the row in place and
-  // shows its recap from records only; it never leaves the page.
+  // depth, in the Crew panel's groups. A click opens that session in the side
+  // panel's Sessions tab, so the two lists lead to one place.
   const sessionsEmpty = (
     // A first-time reader has no model for why a crewmate would open
     // sessions at all, so the empty box explains the mechanism in plain
@@ -699,6 +699,7 @@ export function MembersPageProfileCard({
         liveSlots={drivingSessions}
         slotsLoaded={slotsLoaded}
         empty={sessionsEmpty}
+        onOpen={(w) => openSessionInPanel(w.key)}
       />
     </div>
   )

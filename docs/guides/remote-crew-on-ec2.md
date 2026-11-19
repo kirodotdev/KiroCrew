@@ -227,7 +227,7 @@ port into the CSRF allowlist — see
 
 ### Set-up pre-flight: credential helper not found, or plugin refused
 
-The **Set up a new one** pre-flight runs the AWS CLI from the gateway, and a
+The **Add Crew → Set up a new Crew** pre-flight runs the AWS CLI from the gateway, and a
 gateway started from the Dock or Finder has a minimal `PATH`.
 
 - **"The AWS CLI could not find `<name>` on the gateway's PATH."** Your profile's

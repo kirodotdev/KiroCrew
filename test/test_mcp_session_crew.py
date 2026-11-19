@@ -153,10 +153,28 @@ def test_read_renders_an_empty_transcript():
     assert "idle" in out and "No messages yet." in out
 
 
-def test_read_refuses_since_before_sending():
-    client = _Client()
-    out = tools.run_crew_read({"crew": "lab", "target": "t", "since": 3}, _ctx(client))
-    assert out.startswith("Error:") and client.calls == []
+def test_read_passes_since_through_and_renders_the_cursor():
+    client = _Client(
+        {
+            "target": "chat-77",
+            "crew_name": "lab",
+            "total": 5,
+            "next_since": 5,
+            "messages": [{"index": 4, "role": "assistant", "content": "hi"}],
+        }
+    )
+    out = tools.run_crew_read({"crew": "lab", "target": "chat-77", "since": 3}, _ctx(client))
+    assert client.calls == [
+        ("GET", "/api/session-control/read?target=chat-77&crew=lab&limit=20&since=3", None)
+    ]
+    assert "[4] [assistant] hi" in out and "total=5" in out
+    assert "Pass since=5 on your next read" in out
+
+
+def test_read_says_why_a_running_tail_has_no_cursor():
+    client = _Client({"target": "chat-77", "running": True, "total": 3, "messages": []})
+    out = tools.run_crew_read({"crew": "lab", "target": "chat-77"}, _ctx(client))
+    assert "No cursor while it is still working" in out and "Pass since" not in out
 
 
 def test_read_renders_a_refusal():

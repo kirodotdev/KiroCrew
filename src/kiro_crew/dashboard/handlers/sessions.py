@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         _safe_float,
         _safe_int,
         _usage_scrape_argv,
+        _whoami_says_signed_out,
         _wrap_argv_at_configured_tier,
         _wrap_argv_whoami,
     )
@@ -261,6 +262,7 @@ from aiohttp import web
 
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
+from kiro_crew.agent_sdk import kas_bundle as _kas_bundle
 from kiro_crew.dashboard.handlers import kiro_usage_api, plan_credit_alerts
 from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
@@ -627,6 +629,9 @@ def _publish_usage(
     _usage_cache_vault_fp = vault_fp
     _usage_cache_user_id = user_id
     _vault_signin_marker = None
+    from kiro_crew.shared_crew.owner import set_login_email  # owner_name follows it
+
+    set_login_email(payload.get("email"))
 
 
 def _cache_vault_failure(
@@ -699,11 +704,16 @@ def _vault_owns_usage_sync() -> bool:
     must show and whose identity the dashboard names (:func:`fetch_local_identity`).
     Two shapes, both on the KAS harness:
 
-    * the bundle route (``agent.kas_bundle``): the engine runs without kiro-cli
-      and its access-token callback reaches Crew alone, so the vault is the only
-      credential there is -- signed in or not. A signed-out vault then reports
-      ``signin_required`` from the vault path rather than consulting a kiro-cli
-      readiness gate that has nothing to say about this route;
+    * the bundle route (``agent.kas_bundle``, or the automatic switch when
+      kiro-cli's relay cannot run here, ``kas_spawn_takes_bundle``): the engine
+      runs without kiro-cli and its access-token callback reaches Crew alone, so
+      the vault is the only credential there is -- signed in or not. A signed-out
+      vault then reports ``signin_required`` from the vault path rather than
+      consulting a kiro-cli readiness gate that has nothing to say about this
+      route. A host with no Kiro sign-in at all takes that switch (no kiro-cli,
+      or one proven signed out); judged on the flag alone, its poll would reach
+      the gate, whose 503 the dashboard can only show as a failed balance read
+      rather than the sign-in notice;
     * the relay route: the vault owns the spawn only when it holds a usable
       identity (the KAS spawn asks the same :func:`vault_holds_identity`
       question); otherwise kiro-cli owns the login and the kiro-cli path applies.
@@ -726,7 +736,11 @@ def _vault_owns_usage_sync() -> bool:
             # The spawn's own predicate, with its diagnostics at DEBUG: an unusable
             # entry is a spawn-time WARNING, and this runs on every 30s poll of
             # every open tab.
-            return vault_holds_identity(warn=False)
+            if vault_holds_identity(warn=False):
+                return True
+            # No Crew sign-in: the vault still owns usage when the spawn takes the
+            # bundle route anyway, because kiro-cli's relay cannot run here.
+            return _kas_bundle.kas_spawn_takes_bundle(agent)
         return False
     except Exception as exc:  # noqa: BLE001 - an unreadable answer keeps the gated kiro-cli path
         logger.debug("Kiro usage: vault ownership probe failed (%s)", type(exc).__name__)
@@ -812,9 +826,10 @@ async def _refresh_from_vault() -> None:
 
     Called only on a :func:`_vault_owns_usage` verdict, so the vault is
     authoritative: every failure -- including the identity vanishing between that
-    verdict and this read -- reports unavailable (``signin_required`` when
-    auth-class) instead of falling back to kiro-cli, whose readiness gate was
-    skipped and whose login may be a different account.
+    verdict and this read -- reports unavailable, never falling back to kiro-cli.
+    ``signin_required`` is the vault's own verdict only (no identity, a refresh
+    refused or impossible); a ``GetUsageLimits`` refusal of the token it just
+    served is a failed read (learn-cron-dashboard.md, Sessions).
 
     Identity invariant, mirroring the whoami bracketing on the kiro-cli path: the
     vault identity fingerprint is read immediately before the credential and
@@ -922,7 +937,8 @@ async def _refresh_from_vault() -> None:
             usage.get("credits_plan", "?"),
         )
         return
-    _cache_vault_failure(before, _unavailable_reason(result), stamp=stamp)
+    no_credential = result.auth_state == kiro_usage_api.AUTH_NO_CREDENTIAL
+    _cache_vault_failure(before, _REASON_SIGNIN_REQUIRED if no_credential else None, stamp=stamp)
 
 
 def _publish_account_unproven(

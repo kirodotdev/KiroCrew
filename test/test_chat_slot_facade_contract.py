@@ -16,6 +16,9 @@ from kiro_crew.dashboard.chat_utils import chunk_generation
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
 from kiro_crew.dashboard.state import _ChatSlot
 
+#: Contract: the wire keys of the ``to_dict`` projection, in order, that the REST and
+#: WebSocket snapshots send and the dashboard reads. Adding, dropping or moving a
+#: key changes what every client receives, so the record changes with it.
 _TO_DICT_KEYS = (
     "key",
     "title",
@@ -74,6 +77,7 @@ _TO_DICT_KEYS = (
     "needs_input",
     "interrupted",
     "interrupted_stale",
+    "interrupted_by_sign_in",
     "stop_state",
     "wait_state",
     "created",

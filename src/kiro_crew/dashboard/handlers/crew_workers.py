@@ -45,6 +45,11 @@ from kiro_crew import crew_mode
 from kiro_crew.dashboard.conditional_get import conditional_json_response
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.members import _deny_app_caller
+from kiro_crew.dashboard.session_activity import (
+    SessionActivity,
+    session_activity,
+    session_execution_active,
+)
 from kiro_crew.dashboard.slot_projection import summary_rows
 
 logger = logging.getLogger(__name__)
@@ -75,8 +80,12 @@ async def _stamped_rows(state: Any) -> list[dict[str, Any]]:
 
     Yielding pass: with a few hundred open sessions a synchronous pass holds the
     loop past the stall budget, and the stall alarm restarts the gateway.
+
+    The bare audience: these routes are owner-only and send no source link, so
+    the pass decides no chip status for anyone. The dashboard-user audience would
+    write a public-status SEL row per link for a non-owner who never asked.
     """
-    return list(await state.serialize_slots_yielding(dashboard_user=True))
+    return list(await state.serialize_slots_yielding())
 
 
 #: The two kinds of root these routes answer: a Crew Mode conductor, and a crewmate
@@ -139,12 +148,12 @@ def _not_root() -> web.Response:
     )
 
 
-def _status(row: Mapping[str, Any]) -> str:
+def _status(row: Mapping[str, Any], activity: tuple[SessionActivity, ...] = ()) -> str:
     if row.get("pending_approval"):
         return STATUS_NEEDS_APPROVAL
     if row.get("needs_input"):
         return STATUS_ASKING
-    if row.get("running"):
+    if row.get("running") or row.get("subagents_running") or session_execution_active(activity):
         return STATUS_WORKING
     return STATUS_IDLE
 
@@ -187,8 +196,9 @@ NO_LEDGER = LedgerFacts()
 def _group(status: str, progress: str = "", looping: bool = False) -> str:
     """The side panel group from real signals only.
 
-    A tool approval is ``approval``; a running turn is ``working``; a closed tab, a
-    closed ledger item, or a worker that reported ``done`` is ``done``; a worker
+    A tool approval is ``approval``; a running turn or attached sub-agent is
+    ``working``; a closed tab, a closed ledger item, or a worker that reported
+    ``done`` is ``done``; a worker
     that reported ``blocked`` or ``question`` (whatever its ``reason``), or one with
     an open question card, waits on its conductor: ``with_conductor``. An idle
     worker whose own loop will wake it (*looping*, ``ledger_wake.worker_looping``:
@@ -813,7 +823,9 @@ async def api_crew_workers(request: web.Request) -> web.Response:
     get_slot = getattr(state, "get_slot", None)
     for row in live:
         key = str(row.get("key"))
-        status = _status(row)
+        live_slot = get_slot(key) if callable(get_slot) else None
+        activity = session_activity(state, live_slot) if live_slot is not None else ()
+        status = _status(row, activity)
         facts = items.get(key, NO_LEDGER)
         item, line = facts.item, facts.line
         workers.append(
@@ -825,7 +837,7 @@ async def api_crew_workers(request: web.Request) -> web.Response:
                 "group": _group(status, facts.progress, status == STATUS_IDLE and _looping(key)),
                 "last_activity": _last_activity(row),
                 "ledger_item": item,
-                "summary": _worker_line(row, line, get_slot(key) if callable(get_slot) else None),
+                "summary": _worker_line(row, line, live_slot),
                 "created_by": str(row.get("created_by") or ""),
                 "dispatched_by": _dispatcher_of(row),
                 "approval": _approval_of(row),

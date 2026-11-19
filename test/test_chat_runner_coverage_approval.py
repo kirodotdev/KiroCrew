@@ -173,7 +173,7 @@ class TestRunChatAutoApproveRungs:
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
         assert _card_outcomes(slot) == []
-        assert _tool_rows(slot) == ["🔧 Looking up the record"]
+        assert _tool_rows(slot) == ["Tool: Looking up the record"]
 
     @pytest.mark.asyncio
     async def test_trusted_pattern_append_persists_tool_meta_untruncated(self, tmp_path):
@@ -405,7 +405,8 @@ class TestRunChatAutoApproveRungs:
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
         assert any(
-            m.get("role") == "tool" and m.get("content", "").startswith("🔧") for m in slot.messages
+            m.get("role") == "tool" and m.get("content", "").startswith("Tool:")
+            for m in slot.messages
         )
 
     @pytest.mark.asyncio
@@ -571,7 +572,7 @@ class TestRunChatAutoApproveRungs:
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
         assert _card_outcomes(slot) == []
-        assert _tool_rows(slot) == ["🔧 Running: gh pr view 42 2>/dev/null"]
+        assert _tool_rows(slot) == ["Tool: Running: gh pr view 42 2>/dev/null"]
 
     @pytest.mark.asyncio
     async def test_trusted_pattern_rejects_an_invalid_tool_name(self, tmp_path):
@@ -625,7 +626,7 @@ class TestRunChatAutoApproveRungs:
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
         assert _card_outcomes(slot) == []
-        assert _tool_rows(slot) == ["🔧 Running: ls -la"]
+        assert _tool_rows(slot) == ["Tool: Running: ls -la"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -808,7 +809,7 @@ class TestRunChatAutoApproveRungs:
 
         assert client.approve_tool.await_args_list == [call("req-cov-1")]
         assert _card_outcomes(slot) == []
-        assert _tool_rows(slot) == ["🔧 Running: ls -la"]
+        assert _tool_rows(slot) == ["Tool: Running: ls -la"]
 
     @pytest.mark.asyncio
     async def test_timed_grant_ending_before_the_send_prompts_and_sends_nothing(
@@ -1035,7 +1036,7 @@ class TestRunChatAutoApproveRungs:
         ]
         client.reject_tool.assert_not_awaited()
         assert _card_outcomes(slot) == []
-        assert _tool_rows(slot) == ["🔧 Running: echo hi > out.txt"] * 2
+        assert _tool_rows(slot) == ["Tool: Running: echo hi > out.txt"] * 2
 
 
 class TestRunChatApprovalWindow:
@@ -1091,7 +1092,7 @@ class TestRunChatApprovalWindow:
         client.approve_tool.assert_awaited_once_with("req-cov-1")
         client.reject_tool.assert_not_awaited()
         assert _card_outcomes(slot) == ["approved"]
-        assert _tool_rows(slot) == ["✅ Running: ls -la"]
+        assert _tool_rows(slot) == ["Approved: Running: ls -la"]
 
     @pytest.mark.asyncio
     async def test_redacted_command_is_allow_once_only(self, tmp_path):

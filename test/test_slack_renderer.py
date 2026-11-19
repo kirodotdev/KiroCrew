@@ -1060,7 +1060,7 @@ class TestNoStreamOptionsFiltering:
 
 
 class TestShowThinking:
-    """slack.show_thinking gates surfacing the model's reasoning as a 💭 thread
+    """slack.show_thinking gates surfacing the model's reasoning as a Thinking thread
     reply above the answer (matches native). Off => reasoning stays private."""
 
     def _events(self):
@@ -1076,14 +1076,16 @@ class TestShowThinking:
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, show_thinking=True)
         asyncio.run(TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi"))
         posts = [kw["text"] for m, kw in rec.calls if m == "post_message"]
-        assert any(p.startswith("💭") and "let me think about it" in p for p in posts), posts
+        assert any(
+            p.startswith("*Thinking*") and "let me think about it" in p for p in posts
+        ), posts
 
     def test_show_thinking_off_suppresses_reasoning(self):
         rec = _RecSlack()
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, show_thinking=False)
         asyncio.run(TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi"))
         posts = [kw["text"] for m, kw in rec.calls if m == "post_message"]
-        assert not any(p.startswith("💭") for p in posts), posts
+        assert not any(p.startswith("*Thinking*") for p in posts), posts
 
     def test_thinking_reply_is_redacted(self):
         rec = _RecSlack()
@@ -1096,7 +1098,9 @@ class TestShowThinking:
         ]
         asyncio.run(TurnDriver(_Provider(events), renderer, approval_mode="auto").run("hi"))
         thinking = [
-            kw["text"] for m, kw in rec.calls if m == "post_message" and kw["text"].startswith("💭")
+            kw["text"]
+            for m, kw in rec.calls
+            if m == "post_message" and kw["text"].startswith("*Thinking*")
         ]
         assert thinking, rec.calls
         assert secret not in thinking[0]
@@ -1603,7 +1607,7 @@ class TestTransportRedactionNotice:
     """The DEFAULT Slack path posts a redaction notice below a rewritten answer.
 
     Driven through the real TurnDriver so the StreamRedactor writes the placeholder.
-    The tally counts the final body plus the posted 💭 reasoning; shared wording is
+    The tally counts the final body plus the posted Thinking reasoning; shared wording is
     pinned in ``test_credential_redaction_notice.py``.
     """
 

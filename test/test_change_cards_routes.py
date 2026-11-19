@@ -899,13 +899,59 @@ def test_crewmate_delete_memory_line_uses_the_display_name():
 
 
 def test_shim_routes_get_member_capabilities(monkeypatch):
-    sent: list[str] = []
+    from kiro_crew.dashboard.handlers import _bounded_read
+
+    sent: list[tuple[str, float]] = []
     monkeypatch.setattr(mcp_guide, "_strict_session_key", lambda: (SK, ""))
     monkeypatch.setattr(
-        mcp_guide, "_get", lambda path, session_key: sent.append(path) or {"rows": []}
+        mcp_guide,
+        "_get",
+        lambda path, session_key, timeout: sent.append((path, timeout)) or {"rows": []},
     )
     json.loads(mcp_guide._call_tool_inner("get_member_capabilities", {"member": "mate"}))
-    assert sent == ["/api/cards/agent/capabilities?member=mate"]
+    assert [path for path, _ in sent] == ["/api/cards/agent/capabilities?member=mate"]
+    # Waits past the route's own deadline, so a slow read reaches the model as the
+    # route's explanation rather than a bare transport timeout.
+    assert sent[0][1] > _bounded_read.GET_TIMEOUT_SECS
+
+
+def test_a_timed_out_capabilities_read_tells_the_model_what_to_say(world, tmp_path, monkeypatch):
+    import threading
+
+    from kiro_crew.dashboard.handlers import _bounded_read
+    from kiro_crew.testing.wait import finished
+
+    release = threading.Event()
+
+    def blocked(app, member):
+        release.wait()
+        return {}
+
+    monkeypatch.setattr(cards, "member_capabilities_view", blocked)
+    monkeypatch.setattr(
+        _bounded_read, "GET_TIMEOUT_SECS", 0.05
+    )  # flake-ok: the read blocks until released, so the deadline always expires first
+
+    async def go(client):
+        try:
+            response = await finished(
+                client.get("/api/cards/agent/capabilities?member=Radar", headers=AGENT),
+                "GET /api/cards/agent/capabilities with its read blocked",
+            )
+            return response.status, await response.json()
+        finally:
+            release.set()
+
+    status, body = _run(world, CardStore(tmp_path / "c.json"), go)
+    assert status == 503
+    assert body["code"] == "capabilities_unavailable"
+    assert body["reason"] == "timed_out"
+    assert "'Radar'" in body["error"]
+    assert "Do not retry" in body["error"]
+    assert "gateway log" in body["error"]
+    assert mcp_guide._error_for("get_member_capabilities", body).startswith(
+        "Error: capabilities_unavailable: reading the abilities of Bot 'Radar'"
+    )
 
 
 # ── manual saves the hook forwards, preview shapes and the card read routes ──

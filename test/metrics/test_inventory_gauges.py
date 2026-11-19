@@ -437,6 +437,30 @@ def test_knowledge_probe_never_creates_the_database(tmp_path):
         ig.reset_for_testing()
 
 
+def test_knowledge_probe_reads_the_exact_file_when_the_path_has_uri_characters(tmp_path):
+    """'#' and '%41' in the path must reach SQLite quoted, not as URI syntax.
+
+    '?' is left out because Windows forbids it in a file name.
+
+    Unquoted, '#' truncates the path (and ``mode=ro`` with it), so SQLite creates an
+    empty file beside the folder, and '%41' is decoded onto the sibling 'hasApct'.
+    """
+    ig.reset_for_testing()
+    try:
+        for name, sibling in (("has#hash", None), ("has%41pct", "hasApct")):
+            root = tmp_path / name
+            _make_knowledge_db(root, 3)
+            if sibling:
+                _make_knowledge_db(tmp_path / sibling, 7)
+            before = sorted(p.name for p in tmp_path.iterdir())
+            ig.reset_for_testing()
+            with patch("kiro_crew.config.paths.config_dir", return_value=root):
+                assert ig.read_knowledge_documents() == 3, name
+            assert sorted(p.name for p in tmp_path.iterdir()) == before, name
+    finally:
+        ig.reset_for_testing()
+
+
 def test_knowledge_probe_opens_read_only(tmp_path):
     """A write through THE PROBE'S OWN connection must be refused.
 

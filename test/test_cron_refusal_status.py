@@ -77,6 +77,8 @@ def _run_cron_runs(
         # counted. This is the reachable shape of the double count.
         ds = MagicMock()
         ds.has_slot = MagicMock(return_value=True)
+        # No tab bound yet: prefetch_cron_history skips the read for a bound one.
+        ds.get_slot = MagicMock(return_value=None)
         ds.conversation_log.read_messages = MagicMock(
             side_effect=RuntimeError("history read failed")
         )
@@ -390,11 +392,11 @@ class TestPartialBlock:
 
         assert ds.notify.call_count == 1
         _kind, _title, body = ds.notify.call_args.args[:3]
-        assert body.startswith("⛔ 1 of 2 tool call(s) blocked by the security gate")
+        assert body.startswith("Blocked: 1 of 2 tool call(s) blocked by the security gate")
         assert "Write /vault/daily/2026-08-28.md" in body
         assert "I was unable to complete" in body, "the model's own prose was dropped"
         assert job.last_result is not None
-        assert job.last_result.startswith("⛔"), "the stored result lost the banner"
+        assert job.last_result.startswith("Blocked: "), "the stored result lost the banner"
 
     def test_an_all_approved_run_is_unchanged(self) -> None:
         """The control: a clean run stays ``ok``, records a success, and its
@@ -406,7 +408,7 @@ class TestPartialBlock:
         assert job.last_error is None
         assert job.consecutive_failures == 0
         body = ds.notify.call_args.args[2]
-        assert not body.startswith("⛔")
+        assert not body.startswith("Blocked: ")
         assert "blocked by the security gate" not in body
 
     def test_an_all_blocked_run_keeps_the_failure_path(self) -> None:
@@ -421,7 +423,7 @@ class TestPartialBlock:
         assert job.last_error is not None
         assert job.last_error.startswith("all 2 tool call(s) blocked")
         body = ds.notify.call_args.args[2]
-        assert not body.startswith("⛔")
+        assert not body.startswith("Blocked: ")
 
     def test_a_partial_block_reaches_the_sequential_path(self) -> None:
         """Both agent paths share the verdict AND the banner."""
@@ -435,7 +437,7 @@ class TestPartialBlock:
         assert job.last_error is not None
         assert "1 of 2 tool call(s) blocked" in job.last_error
         assert job.last_result is not None
-        assert job.last_result.startswith("⛔ 1 of 2 tool call(s) blocked")
+        assert job.last_result.startswith("Blocked: 1 of 2 tool call(s) blocked")
         assert job.consecutive_failures == 0
 
     def test_the_reason_is_capped_and_names_at_most_three(self) -> None:

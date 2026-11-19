@@ -16,6 +16,8 @@ import { subscribeRouteChange } from '../../lib/routeChange'
 import { isMemberThreadSlot } from '../unreadOnAttention'
 import { crewRootOf } from '../../lib/crewMode'
 import { slotLastTsOf } from '../../store/slotLastTs'
+import { markSlotRead } from '../../store/dashboardSlice'
+import { localCovered } from '../../store/instancesSlice'
 import type { SocketConnection } from './connection'
 import { appPathname } from '@/lib/basePath'
 import { bindSubagentReplaySender } from '../../lib/subagentReplayScope'
@@ -92,7 +94,10 @@ const hideMayArmWarmBrief = (announced: string | null): boolean => {
  *  then cleared by the page's read effect one render later -- a badge that
  *  lit and vanished on the parent dashboard's crew tab for each message. */
 export const isSlotOnScreen = (slot: string): boolean =>
-  slot === store.getState().chat.activeSlot || slot === getViewedThreadSlot()
+  !relayTabCovers() && (slot === store.getState().chat.activeSlot || slot === getViewedThreadSlot())
+
+/** A relay Crew tab fills <main> with its native pane, so nothing local under it is on screen. */
+const relayTabCovers = (): boolean => store.getState().instances?.relayActive != null
 /** The read-relay twin of `isSlotOnScreen`: true when THIS window is rendering
  *  *slot* on a surface the user can see -- a chat route showing the active
  *  slot, or the registered viewed thread (registration already implies a
@@ -102,7 +107,7 @@ export const isSlotOnScreen = (slot: string): boolean =>
  *  it stays lit -- and `chat_done` moves no `last_ts`, so nothing else on the
  *  Members page would ever relay that completion. */
 const isSlotRenderedVisibly = (slot: string): boolean =>
-  isChatSurfaceVisible() || slot === getViewedThreadSlot()
+  !relayTabCovers() && (isChatSurfaceVisible() || slot === getViewedThreadSlot())
 
 /** The arrival rule `chat_message` and `chat_done` share: a transcript event
  *  in a slot the user is not looking at goes to `onOffScreen` (the badge);
@@ -273,12 +278,31 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
       // shouldn't. Dropped during reconnect catch-up, mirroring the
       // arrival branches.
       flushSlotActivity()
-      const active = store.getState().chat.activeSlot
-      if (active && !socket.reconnectingRef.current && document.hasFocus() && isChatSurfaceVisible()) {
-        emitSlotRead(active, slotLastTsOf(store.getState().dashboard, active))
-      }
+      readActiveSlotIfShown(false)
     }
   }
+  // The active chat on screen in a focused window is read: on a reveal, and when
+  // a relay Crew tab that covered it goes away with nothing else (an SSH Crew)
+  // in front. Only the latter clears this window's badge, which a reply landing
+  // under the tab lit.
+  const readActiveSlotIfShown = (clearBadge: boolean) => {
+    const active = store.getState().chat.activeSlot
+    if (!active || socket.reconnectingRef.current || !document.hasFocus() || !isChatSurfaceVisible() || relayTabCovers()) return
+    // Leaving a relay tab for an SSH Crew leaves the local chat covered.
+    if (clearBadge && localCovered(store.getState())) return
+    if (clearBadge && store.getState().dashboard.unreadSlots?.includes(active)) store.dispatch(markSlotRead(active))
+    emitSlotRead(active, slotLastTsOf(store.getState().dashboard, active))
+  }
+  let covered = relayTabCovers()
+  const unsubCover = store.subscribe(() => {
+    const now = relayTabCovers()
+    if (now === covered) return
+    covered = now
+    // Covered is the chat leaving the screen, as on going hidden: no pending
+    // trailing read may fire under the tab and clear a later reply's badge.
+    if (now) flushSlotRead()
+    else if (!document.hidden) readActiveSlotIfShown(true)
+  })
   document.addEventListener('visibilitychange', onVisibility)
   // Also on window focus: the passive-relay gate requires hasFocus(), and
   // a focus-only change (window occluded -> foreground) fires NO
@@ -293,6 +317,7 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
     document.removeEventListener('visibilitychange', onVisibility)
     window.removeEventListener('focus', onVisibility)
     unsubFocus()
+    unsubCover()
     unsubMemberThread()
     sendSlotFocusedImpl = () => {}
     reannounceFocusImpl = () => {}

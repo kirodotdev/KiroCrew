@@ -434,7 +434,12 @@ def _set_tool_overrides(name: str, tool_overrides: dict[str, bool]) -> list[str]
     The entry is the one key :func:`_resolve_key_from_read` resolves from this
     call's own read, so the ``playwright-mcp`` row edits a raw
     ``npm:@playwright/mcp`` entry in place; a name that is the alias of several
-    entries changes nothing.
+    entries changes nothing. The raw entry is edited only while it is what the
+    rebuild mounts under the row's name: when the Kiro global or a provider global
+    declares ``playwright-mcp`` itself, that declaration is the mounted server and
+    the raw key mounts beside it as ``playwright-mcp-2``, so the overrides go on a
+    ``playwright-mcp`` store entry, seeded from that declaration, which the rebuild
+    merges onto that mount.
 
     Returns a list of tool names whose state changed. A store that exists but is
     not a readable MCP config changes nothing and is not written, since writing
@@ -451,10 +456,25 @@ def _set_tool_overrides(name: str, tool_overrides: dict[str, bool]) -> list[str]
         key = _resolve_key_from_read(servers, name)
     except AmbiguousServerKey:
         return []
+    declared: Any = None
+    if key is not None and key != name:
+        # The rebuild projects a raw key's list onto its alias only when no scope
+        # declares the alias itself (``mcp_aliases.raw_tools_project_onto_alias``).
+        shared = (_GLOBAL_MCP_JSON, *[s.global_json for s in _extra_mcp_scopes()])
+        scopes = (_load_json_or_empty(path).get("mcpServers") for path in shared)
+        declaring = [scope[name] for scope in scopes if isinstance(scope, dict) and name in scope]
+        if declaring:
+            key, declared = None, declaring[0]
     entry = servers.get(key) if key is not None else None
     if not isinstance(entry, dict):
-        # Seed from the best-available spec so the server keeps its config.
-        base = _find_server_spec_anywhere(name) or {}
+        # Seed from the best-available spec so the server keeps its config. A
+        # declaration the redirect above found is read from its own scope: until
+        # the next rebuild the rendered spec may still mount the raw key's program
+        # under the alias, and a store copy of that would outrank the declaration.
+        if isinstance(declared, dict) and (declared.get("command") or declared.get("url")):
+            base = declared
+        else:
+            base = _find_server_spec_anywhere(name) or {}
         entry = {k: v for k, v in base.items() if k != "disabled"}
         servers[name] = entry
 

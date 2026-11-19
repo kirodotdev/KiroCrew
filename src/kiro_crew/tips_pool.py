@@ -84,6 +84,12 @@ class TipsPool:
     # a doc outside this catalog is dropped at parse time.  It does not police the
     # model's PROSE: a tip could cite a doc here while naming something absent.
     catalog: Tuple[CatalogEntry, ...] = field(default_factory=tuple)
+    # Ids of this pool's own curated tips that ``kirocrew.tips.feedback`` may name
+    # in its ``feature`` attribute. Empty by default, so an edition tip counts as
+    # ``other`` unless the edition lists it here. The tips runtime keeps only ids
+    # that are plain slugs and belong to a curated tip of this pool, so the
+    # attribute stays a fixed list the edition ships, never user text.
+    metric_tip_ids: Tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         """Validate the pool's shape at CONSTRUCTION, in the composition root.
@@ -113,7 +119,7 @@ class TipsPool:
         # Frozen dataclass: normal assignment is refused, so freeze the coerced
         # containers in via object.__setattr__ (the documented pattern, same as
         # PlatformContext.__post_init__).
-        for name in ("curated", "catalog"):
+        for name in ("curated", "catalog", "metric_tip_ids"):
             value = getattr(self, name)
             if isinstance(value, tuple):
                 continue

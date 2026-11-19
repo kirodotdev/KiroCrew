@@ -342,6 +342,13 @@ METHOD_MCP_SERVER_INIT_FAILURE = "_kiro.dev/mcp/server_init_failure"
 MCP_ROSTER_COMPLETE_NOTE = "the stall is later in session startup, not in those servers"
 METHOD_KAS_MCP_STATUS = "_kiro/mcp/status"
 METHOD_KAS_TOOLS_CHANGED = "_kiro/tools/didChange"
+#: Engine -> client notification: the host fail-closed this session's MCP on its
+#: governance verdict. ``params`` carries ``sessionId`` and ``reason``;
+#: ``api_failure`` means the governance READ itself failed (transient -- an
+#: undeclared readiness wait ends the start early if the host then names none
+#: of the managed servers), ``admin_disabled`` is a real policy verdict and
+#: keeps the ordinary path.
+METHOD_KAS_MCP_GOVERNANCE_DISABLED = "_kiro/mcp/governance_disabled"
 #: The client-side reset KAS runs an explicit MCP sign-in through. With
 #: ``startOAuth`` true the engine keeps its OAuth callback listener open for the
 #: whole connect attempt; the ``authorizationUrl`` on a failed ``_kiro/mcp/status``
@@ -1290,6 +1297,11 @@ class AcpEvent:
     #: on a permission event, and only from that engine-written field, never from
     #: the title or the model's arguments. Empty when the frame carries none.
     harness_tool_id: str = ""
+    #: KAS said this request is an organisation's ``ask``: its ``_meta.kiro.consent``
+    #: names a ``matchedRule`` of effect ``ask`` under scope ``organization`` or
+    #: ``administration`` (``permission_requests.kas_managed_ask``). Engine-written,
+    #: like ``harness_tool_id``; False on every other harness.
+    kas_managed_ask: bool = False
     #: The kiro-cli read built-in (``fs_read``, ``web_fetch``, ...) a claude
     #: permission request is for, mapped from the ``_meta.claudeCode.toolName``
     #: claude-agent-acp stamped on the preceding ``tool_call`` frame. Set only on

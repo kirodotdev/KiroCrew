@@ -32,7 +32,10 @@ from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 #: :func:`_describe` describes it now. A value is compared by the digest of its JSON
 #: rendering; a name whose value depends on the host (a home-derived path, the logger)
 #: is compared by type only, and process state the module keeps across calls (a
-#: warned-once set, a pending count) by name only, because earlier tests set it.
+#: warned-once set, a pending count) by name only, because earlier tests set it. A
+#: prompt (:data:`_PROMPT_NAME`) is compared by type only: its wording is edited with
+#: features, and which prompt each spec carries is pinned by
+#: ``test_agent_refactor_spec_bytes.py``.
 BASE_SURFACE: dict[str, str] = {
     "AGENT_FILENAME": "value str a05e57cdc5411e1d",
     "AmbiguousAgentSpecError": "class AmbiguousAgentSpecError",
@@ -44,7 +47,7 @@ BASE_SURFACE: dict[str, str] = {
     "FileTooLargeError": "class FileTooLargeError",
     "ForeignAgentSpec": "class ForeignAgentSpec",
     "ForkGovernanceUnresolved": "class ForkGovernanceUnresolved",
-    "GUEST_AGENT_PROMPT": "value str 9f07b9e7c179fff5",
+    "GUEST_AGENT_PROMPT": "value str prompt",
     "KIRO_AGENTS_DIR": "value host",
     "MCP_PATH_HINT": "value str 2c0b855124e13185",
     "OWNED_KIRO_AGENT_FILES": "value tuple dd392f80c6781ad5",
@@ -57,7 +60,7 @@ BASE_SURFACE: dict[str, str] = {
     "_CONDUCTOR_AGENT_FILENAME": "value str 923f5ca0627d569f",
     "_CONDUCTOR_CORE_GRANTS": "value tuple 7152a6eb169c7c40",
     "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 41cf09029e05ee1b",
-    "_CONDUCTOR_SYSTEM_PROMPT": "value str d2980dc3951db359",
+    "_CONDUCTOR_SYSTEM_PROMPT": "value str prompt",
     "_CREW_ONLY_HOOK_EVENTS": "value frozenset 9d900cfb866f983a",
     "_DEFAULT_KIRO_HOOKS_DIR": "value host",
     "_DEFAULT_SPEC_OBSERVATION_ATTEMPTS": "value int 4e07408562bedb8b",
@@ -65,7 +68,7 @@ BASE_SURFACE: dict[str, str] = {
     "_FORK_REFRESH_WAIT_SECS": "value float db58b6c40698d737",
     "_GUEST_AGENT_FILENAME": "value str b1766e070226dc68",
     "_HEARTBEAT_AGENT_FILENAME": "value str 42387f9e3eabbf0e",
-    "_HEARTBEAT_SYSTEM_PROMPT": "value str 63259f9ea08bdf5e",
+    "_HEARTBEAT_SYSTEM_PROMPT": "value str prompt",
     "_HOME_DERIVING_ENV_KEYS": "value frozenset 816c277fc333b3e0",
     "_HOOK_EVENT_CANONICAL": "value dict a09f334fa63b1a4f",
     "_HOOK_HEADER_RE": "value Pattern 905320879920c153",
@@ -82,7 +85,7 @@ BASE_SURFACE: dict[str, str] = {
     "_KIROCREW_BIN": "value host",
     "_KIRO_MCP_JSON": "value host",
     "_KNOWLEDGE_AGENT_FILENAME": "value str 85e4346dff762496",
-    "_KNOWLEDGE_SYSTEM_PROMPT": "value str 23af593eebd8222f",
+    "_KNOWLEDGE_SYSTEM_PROMPT": "value str prompt",
     "_LAUNCHER_EXEC_ENV_KEYS": "value frozenset 8c69b5e74a77bb5d",
     "_LEDGER_CONDUCTOR_AGENT_FILENAME": "value str a87e496fff7c15e0",
     "_LEDGER_CONDUCTOR_WORK_GRANTS": "value tuple 8f58b9d3ddee8cd1",
@@ -107,29 +110,29 @@ BASE_SURFACE: dict[str, str] = {
     # ``test_the_member_grants_extend_the_conductor_grants_in_order``, which spells the
     # whole set out; this digest is the byte-level half and moves with it.
     "_MEMBER_PANEL_GRANTS": "value tuple 5d490a048710e572",
-    "_NATIVE_PROMPT_STUB": "value str cf6d81ff1d0b3797",
+    "_NATIVE_PROMPT_STUB": "value str prompt",
     "_PIPELINE_CONDUCTOR_AGENT_FILENAME": "value str 3b5e111de6d1d305",
     "_PIPELINE_CONDUCTOR_CORE_GRANTS": "value tuple 1ad9ce711e266082",
     "_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 41cf09029e05ee1b",
-    "_PIPELINE_CONDUCTOR_SYSTEM_PROMPT": "value str f6ed0825b297136e",
+    "_PIPELINE_CONDUCTOR_SYSTEM_PROMPT": "value str prompt",
     "_PROVENANCE_SPEC_CAP_BYTES": "value int 54faea9b3eeffce2",
     "_PROVENANCE_TOTAL_BUDGET_BYTES": "value int 107f41ed92e01eb5",
     "_RESEARCH_AGENT_FILENAME": "value str 5cec351bc572af00",
-    "_RESEARCH_SYSTEM_PROMPT": "value str b99ba1f3e040be31",
+    "_RESEARCH_SYSTEM_PROMPT": "value str prompt",
     "_SAFE_MATCHER_RE": "value Pattern ac8a0d6bfee13169",
     "_SAFE_PATH_RE": "value platform",
     "_SECURITY_CONDUCTOR_AGENT_FILENAME": "value str ea0f45466289114a",
     "_SECURITY_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 41cf09029e05ee1b",
-    "_SECURITY_CONDUCTOR_SYSTEM_PROMPT": "value str 0253a5a3d1212112",
+    "_SECURITY_CONDUCTOR_SYSTEM_PROMPT": "value str prompt",
     "_TEAM_LEAD_AGENT_FILENAME": "value str ef870cb7d4ed6640",
-    "_TEAM_LEAD_SYSTEM_PROMPT": "value str 28798cec0fc1b3eb",
+    "_TEAM_LEAD_SYSTEM_PROMPT": "value str prompt",
     "_SOURCE_OWNED_MCP_KEYS": "value tuple b13c0a56645cc511",
     "_VALID_HOOK_EVENTS": "value frozenset 2b7aa96bff704c33",
     "_WORKER_AGENT_FILENAME": "value str e6d5cee102d8cbdf",
     "_WORKER_EXCLUDED_GRANTS": "value frozenset 1a2756dd420ed333",
     "_WORKER_MIRRORED_KEYS": "value tuple 27234a2a963813c9",
     "_WORKER_MIRRORED_SHAPES": "value dict 245618c04df2519f",
-    "_WORKER_SYSTEM_PROMPT": "value str be88b6c26fd1602a",
+    "_WORKER_SYSTEM_PROMPT": "value str prompt",
     "_WORKER_WORK_GRANTS": "value tuple 2617544a8ba41753",
     "_agent_identity_enabled": "callable _agent_identity_enabled() -> 'bool'",
     "_agentcore_capability_permitted": "callable _agentcore_capability_permitted() -> 'bool'",
@@ -520,6 +523,9 @@ def _platform() -> str:
 
 _ADDRESS = re.compile(r"at 0x[0-9a-fA-F]+")
 
+#: A name that holds prompt text: ``*_SYSTEM_PROMPT``, ``GUEST_AGENT_PROMPT``, the stub.
+_PROMPT_NAME = re.compile(r"_PROMPT(?:_STUB)?$")
+
 
 def _digest(value: Any) -> str:
     try:
@@ -549,6 +555,8 @@ def _describe(name: str, value: Any) -> str:
         return "value state"
     if name in _PER_PLATFORM:
         return "value platform"
+    if _PROMPT_NAME.search(name) and isinstance(value, str):
+        return "value str prompt"
     if name == "_MANAGED_MCP_SERVERS":
         shape = {
             "gates": {k: getattr(s.get("spec_gate"), "__name__", None) for k, s in value.items()},
@@ -579,6 +587,10 @@ def test_every_pre_split_name_resolves_with_its_pre_split_shape() -> None:
         if actual != expected:
             drifted[name] = (expected, actual)
     assert drifted == {}, f"names whose shape changed across the split: {drifted}"
+    prompts = {name: getattr(agent, name) for name in BASE_SURFACE if _PROMPT_NAME.search(name)}
+    assert prompts, "no prompt name in the surface"
+    assert all(prompts.values()), "a prompt is empty"
+    assert len(set(prompts.values())) == len(prompts), "two prompt names hold the same text"
 
 
 def _describe_value(value: Any) -> str:

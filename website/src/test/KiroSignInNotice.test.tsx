@@ -8,7 +8,6 @@ import KiroSignInNotice, { KIRO_SIGN_IN_NOTICE_POLL_MS } from '../components/Kir
 import KiroSignInNoticeFallback from '../components/KiroSignInNoticeFallback'
 import ErrorBoundary from '../components/ErrorBoundary'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
-import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
 import { api, type KasLoginStatus } from '../api/client'
 import { __resetGatewayConnectedForTests, setGatewayConnected } from '../utils/errorReport'
 
@@ -29,6 +28,14 @@ vi.mock('../api/client', async importOriginal => {
     },
   }
 })
+
+// Whether the build offers Kiro sign-in (`useKiroSignInOffered`): unanswered by
+// default, as before the schema read lands.
+const signInOffered = vi.hoisted(() => ({ value: undefined as boolean | undefined, error: null as Error | null }))
+vi.mock('../pages/developer/useKiroSignInOffered', () => ({
+  useKiroSignInOffered: () => signInOffered.value,
+  useKiroSignInOfferedQuery: () => ({ offered: signInOffered.value, error: signInOffered.error }),
+}))
 
 const kasLoginStatus = vi.mocked(api.kasLoginStatus)
 const kirocrewConfig = vi.mocked(api.kirocrewConfig)
@@ -55,6 +62,8 @@ const REFUSED: KasLoginStatus = { ...HEALTHY, refresh_rejected: true }
  * reads true, because a refresh token is stored.
  */
 const REFUSED_EXPIRED: KasLoginStatus = { ...REFUSED, expires_at: '2000-01-01T00:00:00Z', expired: true }
+/** The one body every expired shape shows, whatever the cause or audience. */
+const EXPIRED_BODY = 'Sign in again to resume sessions and agent work.'
 const SIGNED_OUT: KasLoginStatus = { ...HEALTHY, authenticated: false, provider: '', identity: '', expires_at: null, has_refresh_token: false, usable: false }
 
 const notice = () => screen.queryByTestId('kiro-sign-in-notice')
@@ -82,6 +91,8 @@ function NavigationVeto({ guard }: { guard: () => boolean }) {
 const settle = () => act(async () => { await Promise.resolve() })
 
 beforeEach(() => {
+  signInOffered.value = undefined
+  signInOffered.error = null
   navigate.mockReset()
   kasLoginStatus.mockReset()
   kirocrewConfig.mockReset()
@@ -102,11 +113,11 @@ describe('KiroSignInNotice', () => {
     const el = await findNotice()
     // The agents cannot run: not a quieter warning beside a red refusal.
     expect(el).toHaveAttribute('role', 'alert')
-    expect(el).toHaveTextContent(/^Kiro sign-in expired/)
-    expect(el).toHaveTextContent('Agents cannot run until you sign in again')
+    expect(el).toHaveTextContent(/^Sign-in expired\./)
+    expect(el).toHaveTextContent(EXPIRED_BODY)
     // The agent the hand-off would open runs as this same lapsed sign-in.
     expect(within(el).queryByRole('button', { name: /Ask the agent/i })).not.toBeInTheDocument()
-    expect(within(el).getByRole('button', { name: 'Open sign-in settings' })).toBeInTheDocument()
+    expect(within(el).getByTestId('kiro-sign-in-notice-open')).toBeInTheDocument()
     expect(refused()).not.toBeInTheDocument()
   })
 
@@ -118,25 +129,27 @@ describe('KiroSignInNotice', () => {
     expect(el).toHaveAttribute('role', 'alert')
     // Not "expired": the sign-in still works until its access token runs out.
     expect(el).toHaveTextContent(/^Kiro refused to renew your sign-in/)
-    expect(el).not.toHaveTextContent('Kiro sign-in expired')
+    expect(el).not.toHaveTextContent('Sign-in expired.')
     expect(el).toHaveTextContent('Agents will stop when this sign-in expires')
     expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
-    fireEvent.click(within(el).getByRole('button', { name: 'Open sign-in settings' }))
-    expect(navigate).toHaveBeenCalledWith(KIRO_SIGN_IN_PATH)
+    fireEvent.click(within(el).getByTestId('kiro-sign-in-notice-open'))
+    expect(await screen.findByTestId('kiro-sign-in-dialog')).toBeInTheDocument()
+    expect(navigate).not.toHaveBeenCalled()
     expect(notice()).not.toBeInTheDocument()
   })
 
-  it('says the agents cannot run once a refused sign-in has also expired, not that they will stop', async () => {
+  it('says only "Sign-in expired." once a refused sign-in has also expired, not that agents will stop', async () => {
     backend('kas')
     kasLoginStatus.mockResolvedValue(REFUSED_EXPIRED)
     renderWithProviders(<KiroSignInNotice />)
     const el = await findRefused()
     expect(el).toHaveAttribute('role', 'alert')
-    expect(el).toHaveTextContent(/^Kiro refused to renew your sign-in/)
-    expect(el).toHaveTextContent('Agents cannot run until you sign in again. This sign-in has already expired.')
+    expect(el).toHaveTextContent(/^Sign-in expired\./)
+    expect(el).toHaveTextContent(EXPIRED_BODY)
+    expect(el).not.toHaveTextContent('refused')
     expect(el).not.toHaveTextContent('Agents will stop')
     expect(within(el).queryByRole('button', { name: /Ask the agent/i })).not.toBeInTheDocument()
-    expect(within(el).getByRole('button', { name: 'Open sign-in settings' })).toBeInTheDocument()
+    expect(within(el).getByTestId('kiro-sign-in-notice-open')).toBeInTheDocument()
   })
 
   it('shows a dismissed refusal again once it has expired, since the agents have now stopped', async () => {
@@ -148,19 +161,10 @@ describe('KiroSignInNotice', () => {
 
     kasLoginStatus.mockResolvedValue(REFUSED_EXPIRED)
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ['kas-login'] }) })
-    expect(await findRefused()).toHaveTextContent('This sign-in has already expired.')
+    expect(await findRefused()).toHaveTextContent(EXPIRED_BODY)
   })
 
-  it('names where its button goes, and opens the sign-in card instead of starting a sign-in', async () => {
-    backend('kas')
-    kasLoginStatus.mockResolvedValue(EXPIRED)
-    renderWithProviders(<KiroSignInNotice />)
-    const el = await findNotice()
-    fireEvent.click(within(el).getByRole('button', { name: 'Open sign-in settings' }))
-    expect(navigate).toHaveBeenCalledWith(KIRO_SIGN_IN_PATH)
-  })
-
-  it('asks the page it sits above before leaving it, so an unsaved draft there is not discarded', async () => {
+  it('opens the shared sign-in dialog in place, with the choices, never starting a sign-in itself', async () => {
     backend('kas')
     kasLoginStatus.mockResolvedValue(EXPIRED)
     const guard = vi.fn().mockReturnValue(false)
@@ -170,14 +174,12 @@ describe('KiroSignInNotice', () => {
         <KiroSignInNotice />
       </NavigationLeaveGuardProvider>,
     )
-    const open = within(await findNotice()).getByRole('button', { name: 'Open sign-in settings' })
-    fireEvent.click(open)
-    expect(guard).toHaveBeenCalledTimes(1)
+    fireEvent.click(within(await findNotice()).getByTestId('kiro-sign-in-notice-open'))
+    const dialog = await screen.findByTestId('kiro-sign-in-dialog')
+    // The page below is not left, so its leave guard is not asked and nothing navigates.
+    expect(guard).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
-
-    guard.mockReturnValue(true)
-    fireEvent.click(open)
-    expect(navigate).toHaveBeenCalledWith(KIRO_SIGN_IN_PATH)
+    expect(within(dialog).getByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
   })
 
   it('renders a failed status read as an error with the agent hand-off, not as nothing', async () => {
@@ -189,14 +191,16 @@ describe('KiroSignInNotice', () => {
     expect(el).toHaveTextContent(/^We could not check sign-in status/)
     // What to do, in words. The server's code means nothing to the reader;
     // the hand-off still gets it from the report pinned to the rejection.
-    expect(el).toHaveTextContent('Open sign-in settings to check your Kiro sign-in, or ask the agent to look into it.')
+    expect(el).toHaveTextContent('Sign in again if your Kiro sign-in stopped working, or ask the agent to look into it.')
     expect(el).not.toHaveTextContent('token_store_failed')
     expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
     expect(notice()).not.toBeInTheDocument()
 
-    // The way to fix it without the agent: the card, which this notice yields to.
-    fireEvent.click(within(el).getByRole('button', { name: 'Open sign-in settings' }))
-    expect(navigate).toHaveBeenCalledWith(KIRO_SIGN_IN_PATH)
+    // The way to fix it without the agent: the shared sign-in dialog, in place.
+    fireEvent.click(within(el).getByTestId('kiro-sign-in-notice-open'))
+    expect(await screen.findByTestId('kiro-sign-in-dialog')).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByTestId('kiro-sign-in-dialog'), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('kiro-sign-in-dialog')).toBeNull())
 
     fireEvent.click(within(el).getByRole('button', { name: 'Dismiss' }))
     expect(failure()).not.toBeInTheDocument()
@@ -229,7 +233,7 @@ describe('KiroSignInNotice', () => {
     expect(el).toHaveTextContent('Reload the page to try again, or ask the agent to look into it.')
     // kiro-cli and Claude have no Kiro sign-in: nothing here may claim one.
     expect(el).not.toHaveTextContent(/sign-in/i)
-    expect(within(el).queryByRole('button', { name: 'Open sign-in settings' })).not.toBeInTheDocument()
+    expect(within(el).queryByTestId('kiro-sign-in-notice-open')).not.toBeInTheDocument()
     expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
     expect(failure()).not.toBeInTheDocument()
     expect(notice()).not.toBeInTheDocument()
@@ -334,7 +338,7 @@ describe('KiroSignInNotice', () => {
     // The access token still works, so the agent the hand-off opens can run.
     expect(within(el).getAllByRole('button')).toHaveLength(3)
     expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
-    expect(within(el).getByRole('button', { name: 'Open sign-in settings' })).toBeInTheDocument()
+    expect(within(el).getByTestId('kiro-sign-in-notice-open')).toBeInTheDocument()
     expect(within(el).getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
   })
 
@@ -348,7 +352,7 @@ describe('KiroSignInNotice', () => {
     const el = await find()
     expect(within(el).getAllByRole('button')).toHaveLength(2)
     expect(within(el).queryByRole('button', { name: /Ask the agent/i })).not.toBeInTheDocument()
-    expect(within(el).getByRole('button', { name: 'Open sign-in settings' })).toBeInTheDocument()
+    expect(within(el).getByTestId('kiro-sign-in-notice-open')).toBeInTheDocument()
     expect(within(el).getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
   })
 
@@ -370,10 +374,10 @@ describe('KiroSignInNotice', () => {
     expect(await findNotice()).toBeInTheDocument()
   })
 
-  it('is absent on Settings > Agent Harness, where the sign-in card itself shows the state', async () => {
+  it('is absent on Settings > Kiro account, where the sign-in card itself shows the state', async () => {
     backend('kas')
     kasLoginStatus.mockResolvedValue(REFUSED)
-    renderWithProviders(<KiroSignInNotice />, { route: '/settings/agent?highlight=key%3Akiro-sign-in' })
+    renderWithProviders(<KiroSignInNotice />, { route: '/settings/kiro-account?highlight=key%3Akiro-sign-in' })
     await waitFor(() => expect(kasLoginStatus).toHaveBeenCalled(), chain())
     await settle()
     expect(refused()).not.toBeInTheDocument()
@@ -402,7 +406,8 @@ describe('KiroSignInNotice', () => {
   it.each([
     ['kiro-cli', 'kiro'],
     ['Claude', 'claude'],
-  ])('never reads the sign-in on the %s backend, where it concerns no agent', async (_name, id) => {
+  ])('never reads the sign-in on the %s backend of a build that offers no Kiro sign-in', async (_name, id) => {
+    signInOffered.value = false
     backend(id)
     kasLoginStatus.mockResolvedValue(EXPIRED)
     renderWithProviders(<KiroSignInNotice />)
@@ -419,17 +424,18 @@ describe('KiroSignInNotice', () => {
     kasLoginStatus.mockResolvedValue(EXPIRED)
     renderWithProviders(<KiroSignInNotice />)
     const el = await findNotice()
-    expect(el).toHaveTextContent('Bots cannot run until you sign in again')
-    expect(el).not.toHaveTextContent('Agents cannot run')
+    // Expired says the same two lines whoever runs as the sign-in.
+    expect(el).toHaveTextContent(/^Sign-in expired\./)
+    expect(el).toHaveTextContent(EXPIRED_BODY)
     // The main agent runs on another credential, so its hand-off still works.
     expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
-    expect(within(el).getByRole('button', { name: 'Open sign-in settings' })).toBeInTheDocument()
+    expect(within(el).getByTestId('kiro-sign-in-notice-open')).toBeInTheDocument()
   })
 
   it.each([
     [REFUSED, 'Bots will stop when this sign-in expires'],
-    [REFUSED_EXPIRED, 'Bots cannot run until you sign in again. This sign-in has already expired.'],
-  ])('names the Bots in a refused renewal where only Bots run on KAS', async (status, text) => {
+    [REFUSED_EXPIRED, EXPIRED_BODY],
+  ])('a refused renewal where only Bots run on KAS: Bots while it works, the expired copy once it lapses', async (status, text) => {
     kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kiro' }, kas_in_use: true } as Awaited<ReturnType<typeof api.kirocrewConfig>>)
     kasLoginStatus.mockResolvedValue(status)
     renderWithProviders(<KiroSignInNotice />)
@@ -438,7 +444,68 @@ describe('KiroSignInNotice', () => {
     expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
   })
 
+  it.each(['kiro', 'claude'])('shows a STORED lapsed sign-in on the %s backend of a build that offers Kiro sign-in, naming the account features', async id => {
+    signInOffered.value = true
+    backend(id)
+    kasLoginStatus.mockResolvedValue(EXPIRED)
+    renderWithProviders(<KiroSignInNotice />)
+    const el = await findNotice()
+    expect(el).toHaveTextContent(/^Sign-in expired\./)
+    // The agents keep running on another credential: only account features stop.
+    expect(el).toHaveTextContent('Sign in again to use features that need your Kiro account.')
+    expect(el).not.toHaveTextContent(/sessions|agent work/i)
+    // The main agent runs on another credential, so its hand-off still works.
+    expect(within(el).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('never asks someone who never signed in, off KAS: no stored sign-in, no notice', async () => {
+    signInOffered.value = true
+    backend('claude')
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    renderWithProviders(<KiroSignInNotice />)
+    await waitFor(() => expect(kasLoginStatus).toHaveBeenCalled(), chain())
+    await settle()
+    expect(notice()).not.toBeInTheDocument()
+    expect(refused()).not.toBeInTheDocument()
+  })
+
+  it('reports a failed status read off KAS too, as an error with its way to the card', async () => {
+    signInOffered.value = true
+    backend('claude')
+    kasLoginStatus.mockRejectedValue(new Error('token_store_failed: the sign-in store could not be read'))
+    renderWithProviders(<KiroSignInNotice />)
+    const el = await findFailure()
+    // Its way in is the shared sign-in dialog's button.
+    expect(within(el).getByTestId('kiro-sign-in-notice-open')).toBeInTheDocument()
+  })
+
+  it('says so off KAS when the settings schema read fails, instead of leaving the sign-in unchecked', async () => {
+    signInOffered.error = new Error('Config schema fetch failed: 500')
+    backend('claude')
+    const store = createTestStore()
+    store.dispatch(sseConnected())
+    renderWithProviders(<KiroSignInNotice />, { store })
+    const el = await screen.findByTestId('kiro-sign-in-schema-error', {}, chain())
+    expect(el).toHaveTextContent('Could not read the dashboard settings')
+    expect(kasLoginStatus).not.toHaveBeenCalled()
+    fireEvent.click(within(el).getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByTestId('kiro-sign-in-schema-error')).not.toBeInTheDocument()
+  })
+
+  it('leaves a failed schema read alone on KAS, where the status read runs anyway', async () => {
+    signInOffered.error = new Error('Config schema fetch failed: 500')
+    backend('kas')
+    kasLoginStatus.mockResolvedValue(HEALTHY)
+    const store = createTestStore()
+    store.dispatch(sseConnected())
+    renderWithProviders(<KiroSignInNotice />, { store })
+    await waitFor(() => expect(kasLoginStatus).toHaveBeenCalled(), chain())
+    await settle()
+    expect(screen.queryByTestId('kiro-sign-in-schema-error')).not.toBeInTheDocument()
+  })
+
   it('never reads the sign-in on a KAS-named backend the gateway says nothing runs on', async () => {
+    signInOffered.value = false
     kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kas' }, kas_in_use: false } as Awaited<ReturnType<typeof api.kirocrewConfig>>)
     kasLoginStatus.mockResolvedValue(EXPIRED)
     renderWithProviders(<KiroSignInNotice />)

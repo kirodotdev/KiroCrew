@@ -40,6 +40,7 @@ from kiro_crew.acp.harness.base import (
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.types import METHOD_SESSION_CLOSE, METHOD_SESSION_UPDATE, UPDATE_CURRENT_MODE
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_GOOSE
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 __all__ = [
     "GooseHarness",
@@ -144,7 +145,8 @@ def _build_side_goose_root(source_config_dir: Path, parent: Path) -> Path:
     elif root.exists():
         shutil.rmtree(root)
     config_dir = root / "config"
-    config_dir.mkdir(parents=True, mode=0o700)
+    mkdirs_owner_only(root)
+    config_dir.mkdir(mode=0o700)
     if source_config_dir.is_dir():
         for entry in sorted(source_config_dir.iterdir()):
             # Case-folded: on case-insensitive storage ``Permission.yaml`` is the

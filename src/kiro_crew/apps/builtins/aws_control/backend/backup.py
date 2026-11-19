@@ -1474,6 +1474,7 @@ if _typing.TYPE_CHECKING:
         atomic_write,
         errno,
         file_lock,
+        loads_user_json,
         open_lock_file,
         read_state,
         threading,

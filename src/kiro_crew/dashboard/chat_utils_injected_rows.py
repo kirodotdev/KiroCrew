@@ -306,10 +306,15 @@ MODEL_UNAVAILABLE_KIND = "model_unavailable"
 #: produces (the agent process reported it is not signed in). Like
 #: MODEL_UNENTITLED_KIND, no recovery is queued -- a retry hits the same wall --
 #: and the frontend uses the kind to offer the fix that does end it: a deep link
-#: to the dashboard's Kiro sign-in card (Settings > Agent Harness), where the
+#: to the dashboard's Kiro sign-in card (Settings > Kiro account), where the
 #: user signs in to Kiro Crew's own identity again. The prose stays as the
 #: backend formatted it.
 AUTH_REQUIRED_KIND = "auth_required"
+
+#: Row-level kind for the same signed-out turn on the Kiro CLI harness, which
+#: runs on kiro-cli's own sign-in: the frontend shows the setup gate's two kiro-cli
+#: sign-in commands, read from the prerequisite status, instead of Crew's card.
+KIRO_CLI_SIGN_IN_KIND = "kiro_cli_sign_in"
 
 #: Row-level kind for the terminal `error` row a SPENT PLAN ALLOWANCE produces
 #: ("The monthly usage limit has been reached"). Like the two above, no

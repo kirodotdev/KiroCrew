@@ -30,6 +30,7 @@ Every reader here takes ``toolsSettings`` with one key per kiro-cli alias group
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterator
 from typing import Any
 
@@ -39,6 +40,8 @@ from kiro_crew.acp.kas_spec_grants import (
     WRITE_SETTINGS_KEYS,
 )
 from kiro_crew.platform import allowed_commands, allowed_paths
+
+logger = logging.getLogger(__name__)
 
 #: Most unreadable entries one projected allowlist carries for its refusal to name.
 _MAX_CARRIED = 64
@@ -317,16 +320,30 @@ WEB_FETCH_REFUSED_MARK = "; every web fetch is refused until this entry is fixed
 def fails_closed_on_uncarried_blocked() -> bool:
     """Whether ``agent.kas_fail_closed_web_fetch_blocked`` is a JSON ``true``.
 
-    Off by default, and off when the config cannot be loaded, so an entry KAS
-    cannot carry is named and refuses nothing, as before.
+    Off by default and when absent. Read from the gateway's last applied config when
+    there is one, else from disk. On when that read cannot establish the owner's choice
+    (``config.json`` or ``config.local.json`` present but unreadable, or the ``agent``
+    section discarded), so a broken config never drops an opted-in fence.
     """
     try:
         # Call-time: the config loader pulls in the config plane this leaf stays off.
+        from kiro_crew.config import live
         from kiro_crew.config.loader import KiroCrewConfig
 
-        return KiroCrewConfig.load().agent.kas_fail_closed_web_fetch_blocked is True
+        cfg = live.snapshot() or KiroCrewConfig.load()
+        if cfg._base_unreadable or cfg._overlay_unreadable or "agent" in cfg.degraded_sections:
+            logger.warning(
+                "could not establish agent.kas_fail_closed_web_fetch_blocked from degraded "
+                "config; fencing"
+            )
+            return True
+        return cfg.agent.kas_fail_closed_web_fetch_blocked is True
     except Exception:
-        return False
+        # An unreadable config must not drop an opted-in fence.
+        logger.warning(
+            "could not read agent.kas_fail_closed_web_fetch_blocked; fencing", exc_info=True
+        )
+        return True
 
 
 #: What follows ``<key>`` in the one session-start notice item that names the

@@ -62,6 +62,7 @@ export function offlineCover(s: {
 export function offlineReason(cause: OfflineCause | null, relayCrewWindow: boolean = isRelayCrewWindow()): string {
   if (cause === 'session_ended') return i18nT('app.relay_session_ended')
   if (cause === 'refused') return i18nT('app.relay_access_refused')
+  if (cause === 'remote_off') return i18nT('app.relay_remote_control_off')
   if (relayCrewWindow) return i18nT('app.relay_crew_reconnecting')
   return i18nT('app.gateway_offline_reconnecting')
 }

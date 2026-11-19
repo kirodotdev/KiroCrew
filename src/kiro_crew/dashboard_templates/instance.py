@@ -203,6 +203,10 @@ class InstanceRefused(InstanceError):
     """A write was refused, with the reason a user can be told."""
 
 
+class PinUnsupported(InstanceRefused):
+    """This platform cannot walk a directory chain without following links."""
+
+
 class NothingStaged(InstanceRefused):
     """An apply found no staged page: it was kept, discarded or expired."""
 
@@ -697,7 +701,9 @@ def _write(directory: Path, name: str, body: str) -> None:
 
 
 @contextmanager
-def _locked(directory: Path, *, lock_file: str = _LOCK_FILE) -> Iterator[None]:
+def _locked(
+    directory: Path, *, lock_file: str = _LOCK_FILE, pinned_dir: int | None = None
+) -> Iterator[None]:
     """Exclusive lock over one instance directory, bounded against a live holder.
 
     The same shape the session ledger's lock has, and for the same reasons: a dedicated
@@ -706,10 +712,13 @@ def _locked(directory: Path, *, lock_file: str = _LOCK_FILE) -> Iterator[None]:
     must not interleave -- each reads the current version to compute the next, so an
     interleaving produces two writes claiming the same ``instance_version`` and one of
     the two pages is lost with nothing recorded.
+
+    *pinned_dir* is a descriptor of *directory* the caller already opened with no link
+    followed; the lock file is then made relative to it and nothing is created by name.
     """
-    pinned: int | None = None
+    pinned: int | None = os.dup(pinned_dir) if pinned_dir is not None else None
     page = _is_page_dir(directory)
-    if page:
+    if page and pinned is None:
         if directory.parent == data_home() / _SESSION_DASHBOARDS_DIR:
             _refuse_linked_session_dir(directory)
         else:

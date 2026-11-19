@@ -239,7 +239,7 @@ def _with_edition_agents(disk_agents: list[AgentInfo]) -> list[AgentInfo]:
 def _global_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
     """Build an :class:`AgentInfo` for a user-level (``~/.kiro/agents``) config."""
     # Coerced BEFORE the package-detection below, which does
-    # ``stem.endswith(agent_name)``: a non-string name raised TypeError there, and
+    # ``stem.endswith(...)``: a non-string name raised TypeError there, and
     # the broad ``except`` around the caller's loop turned that into a silently
     # DROPPED agent rather than a degraded one. Falling back to the filename stem
     # keeps the row selectable under the name its file already implies.
@@ -249,8 +249,11 @@ def _global_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
     package = ""
     # Package-installed agents follow the "{package}-{name}.json" filename
     # convention (a generic package-manager convention, not tied to any specific
-    # tool). A plain "{name}.json" is built-in.
-    is_package_filename = agent_name and stem.endswith(agent_name) and stem != agent_name
+    # tool). A plain "{name}.json" is built-in, and so is a stem that merely
+    # ends with the name ("my_atlas", "myreviewer"): only a non-empty package
+    # followed by "-" and the name counts.
+    suffix = f"-{agent_name}"
+    is_package_filename = bool(agent_name) and stem.endswith(suffix) and len(stem) > len(suffix)
     if is_package_filename:
         pkg_stem = f.stem
         if pkg_stem.startswith("local-"):

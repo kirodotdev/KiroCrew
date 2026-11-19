@@ -25,6 +25,8 @@ checkout to exercise the contract step through the gate that calls this one.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -80,6 +82,55 @@ def write_contract(worktree: Path, contract: dict) -> Path:
     return path
 
 
+#: The base checkout every ``build_repo`` call without ``base_files`` starts from, built
+#: once per session by ``_base_repo_template``. Empty outside a test that requested it.
+_BASE_TEMPLATE: dict[str, Path] = {}
+
+
+def _init_base(worktree: Path, base_files: tuple[str, ...] = ()) -> None:
+    git(worktree, "init", "-q", "-b", "work")
+    git(worktree, "config", "user.email", "harness@example.invalid")
+    git(worktree, "config", "user.name", "harness")
+    (worktree / "README.md").write_text("base\n", encoding="utf-8")
+    for relative in base_files:
+        target = worktree / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("already on main\n", encoding="utf-8")
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "-q", "-m", "base")
+    git(
+        worktree,
+        "update-ref",
+        "refs/remotes/origin/main",
+        git(worktree, "rev-parse", "HEAD").strip(),
+    )
+
+
+@pytest.fixture(scope="session")
+def _base_repo_template(tmp_path_factory: pytest.TempPathFactory, _git_global_config: Path) -> Path:
+    """The plain base checkout, built once: seven git children per case add up on Windows.
+
+    A session fixture runs before the per-test ``_git_identity``, so it applies the same
+    hermetic identity and config itself; host settings such as ``commit.gpgsign`` would
+    otherwise reach the base commit.
+    """
+    template = tmp_path_factory.mktemp("security-conductor-base") / "base"
+    template.mkdir()
+    with pytest.MonkeyPatch.context() as patch:
+        for role in ("AUTHOR", "COMMITTER"):
+            patch.setenv(f"GIT_{role}_NAME", "Test")
+            patch.setenv(f"GIT_{role}_EMAIL", "test@example.com")
+        patch.setenv("GIT_CONFIG_GLOBAL", str(_git_global_config))
+        patch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+        _init_base(template)
+    return template
+
+
+@pytest.fixture(autouse=True)
+def _use_base_template(_base_repo_template: Path, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    _floor_monkeypatch.setitem(_BASE_TEMPLATE, "base", _base_repo_template)
+
+
 def build_repo(
     root: Path,
     name: str,
@@ -104,23 +155,14 @@ def build_repo(
     about, and a second copy of this would be a second thing to keep correct.
     """
     worktree = root / name
-    worktree.mkdir(parents=True)
-    git(worktree, "init", "-q", "-b", "work")
-    git(worktree, "config", "user.email", "harness@example.invalid")
-    git(worktree, "config", "user.name", "harness")
-    (worktree / "README.md").write_text("base\n", encoding="utf-8")
-    for relative in base_files:
-        target = worktree / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("already on main\n", encoding="utf-8")
-    git(worktree, "add", "-A")
-    git(worktree, "commit", "-q", "-m", "base")
-    git(
-        worktree,
-        "update-ref",
-        "refs/remotes/origin/main",
-        git(worktree, "rev-parse", "HEAD").strip(),
-    )
+    template = _BASE_TEMPLATE.get("base")
+    if template is not None and not base_files:
+        # Each case gets its own copy, so nothing one case writes reaches another.
+        root.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(template, worktree)
+    else:
+        worktree.mkdir(parents=True)
+        _init_base(worktree, base_files)
     if contract is not None and contract_committed:
         write_contract(worktree, contract)
     for relative in committed:

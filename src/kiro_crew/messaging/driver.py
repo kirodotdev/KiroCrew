@@ -57,6 +57,7 @@ from kiro_crew.constants import (
 )
 from kiro_crew.deny_notice import steer_refusal_notice
 from kiro_crew.executors import run_in_tool_gate_pool
+from kiro_crew.messaging.alternation_echo import could_be_echo, echo_prefix_len, is_echo
 from kiro_crew.messaging.directive_tracker import DirectiveTracker
 from kiro_crew.messaging.driver_quoted_markers import QuotedDirectiveFilter
 from kiro_crew.messaging.empty_turn_copy import (
@@ -294,12 +295,14 @@ _STEER_TAIL_PREFIX_RE = re.compile(_STEERING_TAIL_PREFIX_RE.pattern, re.IGNORECA
 # still knows the destination is external, so reserve the prefixes and replace
 # the internal summary with a terse user-safe status. The dashboard does not use
 # TurnDriver and retains its authoritative transcript/audit record.
+# Current writers lead with no glyph; the U+2705 forms are what saved
+# transcripts and older gateways carry, so both stay reserved.
 _COMPACTION_NOTICE_PREFIXES = (
-    "✅ Conversation compacted:",
+    "\u2705 Conversation compacted:",  # emoji-ok: old saved lead
     "Conversation compacted:",
-    "✅ Compacted:",
+    "\u2705 Compacted:",  # emoji-ok: old saved lead
 )
-_COMPACTION_NOTICE_REPLACEMENT = "✅ Context compacted."
+_COMPACTION_NOTICE_REPLACEMENT = "Context compacted."
 _COMPACTION_PROBE_MAX = max(map(len, _COMPACTION_NOTICE_PREFIXES)) + 64
 
 
@@ -786,6 +789,11 @@ class TurnDriver:
         # accumulated — then reported once at turn end. Counts only, by
         # contract: no text in the log line.
         text_after_terminal = 0
+        # The turn's first text, held while it could still be the backend's
+        # alternation placeholder (``alternation_echo``): the model repeats it at
+        # the start of a turn after one that ended on a tool result. It is
+        # dropped when it is that text and released when it stops matching.
+        echo_held = ""
         # The turn's session-directive bookkeeping (forgery gate, sub-agent
         # isolation, single-consume). Only built when a directive consumer is
         # injected, so a consumer-less turn does no extra work.
@@ -896,6 +904,17 @@ class TurnDriver:
                 self.partial_text = accumulated
                 await self.renderer.dispatch(OutputEvent(kind=TEXT_CHUNK, text=safe))
 
+        async def settle_echo_hold() -> None:
+            """End the placeholder hold: drop the whole placeholder, emit anything else.
+
+            Called where the held segment ends: a tool call, a steer boundary,
+            the turn's end.
+            """
+            nonlocal echo_held
+            held, echo_held = echo_held, ""
+            if not is_echo(held):
+                await emit_text(held)
+
         def steer_entered_turn() -> bool:
             try:
                 stamp = float(getattr(self.provider, "last_steer_monotonic", 0.0) or 0.0)
@@ -905,7 +924,7 @@ class TurnDriver:
 
         async def dispatch_frames(frames: list[tuple[str, str]]) -> None:
             nonlocal pending_steer_events, unmatched_marker_events
-            nonlocal steered_this_turn, text_after_terminal
+            nonlocal steered_this_turn, text_after_terminal, echo_held
             for frame_kind, payload in frames:
                 if frame_kind == "text":
                     if self.terminal_directive_applied and not steered_this_turn:
@@ -921,8 +940,18 @@ class TurnDriver:
                             # tool-result tail. Counted, never rendered.
                             text_after_terminal += 1
                             continue
+                    if not fed_raw:
+                        held = echo_held + payload
+                        if could_be_echo(held):
+                            echo_held = held
+                            continue
+                        echo_held = ""
+                        # The placeholder, then the model's own words after it.
+                        cut = echo_prefix_len(held)
+                        payload = held[cut:].lstrip() if cut else held
                     await emit_text(payload)
                     continue
+                await settle_echo_hold()
                 # An inline steer marker is a consumption echo: a steer is in
                 # this turn, so the text that follows it is kept.
                 steered_this_turn = True
@@ -1041,6 +1070,7 @@ class TurnDriver:
                 held_line = quoted_marker_filter.flush()
                 if held_line:
                     await dispatch_frames(steering_filter.feed(held_line))
+                await settle_echo_hold()
                 tool_gap = True
                 if segment_tail is not None and len(fed_raw) != tail_fed_at:
                     # Text came since the pending run without ending it (it
@@ -1227,11 +1257,16 @@ class TurnDriver:
                     await self.provider.reject_tool(event.request_id)
                     continue
                 from kiro_crew.mate_held_rules import held_for
+                from kiro_crew.web_ask_rule import held_phrases
 
-                # A held Bot limit (``mate_held_rules``): only a person approves it.
-                _held = await asyncio.to_thread(
-                    held_for, event, session_key=self.audit_session_key, agent=self.audit_agent
-                )
+                # A held Bot limit (``mate_held_rules``), or an organisation's
+                # ``ask`` on a KAS web call (``web_ask_rule``): only a person
+                # approves it; with no decider ``_approve`` refuses it.
+                _held = list(
+                    await asyncio.to_thread(
+                        held_for, event, session_key=self.audit_session_key, agent=self.audit_agent
+                    )
+                ) + held_phrases(event)
                 if _gate == "auto_approve" and not _held:
                     # The gate's hook granted this by NAME (the
                     # `auto_approve_tools` globs, or the read-only
@@ -1419,6 +1454,7 @@ class TurnDriver:
                 if pending:
                     await dispatch_frames(steering_filter.feed(pending))
                 await dispatch_frames(steering_filter.flush())
+                await settle_echo_hold()
                 await flush_redactor()
                 for _ in range(pending_steer_events):
                     await self.renderer.dispatch(OutputEvent(kind=STEER_CONSUMED))
@@ -1484,6 +1520,7 @@ class TurnDriver:
             if pending:
                 await dispatch_frames(steering_filter.feed(pending))
             await dispatch_frames(steering_filter.flush())
+            await settle_echo_hold()
             await flush_redactor()
             for _ in range(pending_steer_events):
                 await self.renderer.dispatch(OutputEvent(kind=STEER_CONSUMED))

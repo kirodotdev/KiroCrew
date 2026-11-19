@@ -471,11 +471,12 @@ class TestTurnDriverTranslation:
         assert out == text
         assert "[OPTIONS: Continue | Stop]" in out
 
-    def test_compaction_summary_body_becomes_terse_notice(self):
+    @pytest.mark.parametrize("lead", ["\u2705 ", ""], ids=["saved-glyph", "plain"])
+    def test_compaction_summary_body_becomes_terse_notice(self, lead):
         r = _RecordingRenderer()
         p = _ScriptedProvider(
             [
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="✅ Conversation comp"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=lead + "Conversation comp"),
                 AcpEvent(
                     kind=EVENT_TEXT_CHUNK,
                     text="acted: ## OBJECTIVE\ninternal operating instructions",
@@ -485,7 +486,7 @@ class TestTurnDriverTranslation:
         )
         out = _run(p, r)
         emitted = "".join(e[1] for e in r.events if e[0] == "text_chunk")
-        assert out == emitted == "✅ Context compacted."
+        assert out == emitted == "Context compacted."
         assert "OBJECTIVE" not in emitted
         assert "operating instructions" not in emitted
 
@@ -670,6 +671,59 @@ class TestApprovalLadder:
             assert seen == [True]
         else:
             assert asked == [] and p.approved == ["rq1"]
+
+    @pytest.mark.parametrize(
+        "rung",
+        [
+            {"approval_mode": APPROVAL_AUTO},
+            {"approval_mode": APPROVAL_INTERACTIVE, "auto_approve_tool": lambda ev: True},
+            {"approval_mode": APPROVAL_INTERACTIVE, "auto_approve_session": lambda: True},
+        ],
+        ids=["auto", "auto-approve-tool", "session-trust"],
+    )
+    @pytest.mark.parametrize("decided", [True, False], ids=["decider", "no-decider"])
+    @pytest.mark.parametrize("edition", ["lts", "oss"])
+    def test_an_org_ask_on_a_kas_web_call_is_never_auto_approved(
+        self, monkeypatch, rung, decided, edition
+    ):
+        """``web_ask_rule``: in LTS no auto rung answers KAS's ask on an organisation's
+        web rule. A decider is asked as a person's; with none the call is refused. An
+        ``oss`` build approves it on that rung as before."""
+        from types import SimpleNamespace
+
+        from kiro_crew import mate_held_rules, web_ask_rule
+
+        monkeypatch.setattr(mate_held_rules, "held_for", lambda *a, **k: [])
+        monkeypatch.setattr(
+            web_ask_rule, "edition", SimpleNamespace(is_lts=lambda: edition == "lts")
+        )
+        asked: list = []
+        seen: list = []
+
+        async def decider(event):
+            asked.append(event.request_id)
+            seen.append(mate_held_rules.call_is_held())
+            return False
+
+        script = [
+            AcpEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                request_id="rq1",
+                options=[{"id": "approve"}],
+                harness_tool_id="web_fetch",
+                kas_builtin_ids=True,
+                kas_managed_ask=True,
+            ),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+        p = _ScriptedProvider(script)
+        _run(p, _RecordingRenderer(), decider=decider if decided else None, **rung)
+        if edition == "oss":
+            assert asked == [] and p.approved == ["rq1"]
+        elif decided:
+            assert asked == ["rq1"] and seen == [True] and p.approved == []
+        else:
+            assert p.approved == [] and p.rejected == ["rq1"]
 
 
 class _SteerRecordingProvider(_ScriptedProvider):
@@ -1311,6 +1365,59 @@ class TestHeldRunEndsThePreCallText:
         # The default continuation hook joins the run back in place.
         joined, _ = _turn_across_tool(["I looked around that time."], ["No logs."])
         assert joined == "I looked around that time.\n\nNo logs."
+
+
+_PLACEHOLDER = (
+    "(No assistant response was recorded for the preceding turn. This "
+    "placeholder was inserted automatically to preserve message "
+    "alternation \u2014 it is not a reply the assistant produced.)"
+)
+
+
+def _placeholder_turn(events: list[AcpEvent]) -> tuple[str, list[tuple], TurnDriver]:
+    r = _RecordingRenderer()
+    d = TurnDriver(
+        _ScriptedProvider([*events, AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")]), r
+    )
+    out = asyncio.run(d.run("hello"))
+    assert "".join(e[1] for e in r.events if e[0] == "text_chunk") == out
+    return out, r.events, d
+
+
+class TestAlternationPlaceholderAtTurnStart:
+    """The backend's alternation placeholder a turn opens with is never posted.
+
+    A turn that ended on a tool result leaves the backend's history with no
+    assistant message after it, and the backend fills the gap with a placeholder
+    the model then repeats as the first text of a later turn. A channel posted
+    it as the reply; the dashboard runner already held and dropped it.
+    """
+
+    def test_the_placeholder_split_across_chunks_is_dropped_and_the_reply_kept(self):
+        out, _, _ = _placeholder_turn(
+            [_text(_PLACEHOLDER[:20]), _text(_PLACEHOLDER[20:]), _text("\n\nDone.")]
+        )
+        assert out == "Done."
+
+    def test_a_turn_that_is_only_the_placeholder_takes_the_empty_reply_notice(self):
+        out, events, d = _placeholder_turn([_text(_PLACEHOLDER[:50]), _text(_PLACEHOLDER[50:])])
+        assert out == ""
+        assert [e for e in events if e[0] == "text_chunk"] == []
+        assert d.empty_turn_notice == driver.EMPTY_TURN_NOTICE
+
+    def test_a_tool_call_ends_the_placeholder_segment(self):
+        out, events, _ = _placeholder_turn([_text(_PLACEHOLDER), _tool("a"), _text("Found it.")])
+        assert out == "Found it."
+        assert [e[0] for e in events][:2] == ["tool_call", "text_chunk"]
+
+    @pytest.mark.parametrize(
+        "chunks",
+        [["(No assistant", " here, but the build passed."], ["(No assistant"]],
+        ids=["diverges", "turn-ends-on-a-prefix"],
+    )
+    def test_text_that_only_opens_like_the_placeholder_is_delivered_whole(self, chunks):
+        out, _, _ = _placeholder_turn([_text(c) for c in chunks])
+        assert out == "".join(chunks)
 
 
 class TestToolGateEnforcement:

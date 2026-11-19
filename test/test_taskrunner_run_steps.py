@@ -253,7 +253,7 @@ class TestWatchdog:
         await _run_watchdog(monkeypatch, runner, run, ticks=1)
 
         assert runner._stall_cancelled_ids == {"plan_123"}
-        assert [t for t, _ in notifications] == ["[t] \U0001f527 Watchdog: cancelling stalled task"]
+        assert [t for t, _ in notifications] == ["[t] Watchdog: cancelling stalled task"]
         sessions.reset.assert_called_with("taskrunner:plan_123:task3")
 
     @pytest.mark.asyncio

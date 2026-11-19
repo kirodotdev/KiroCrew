@@ -79,6 +79,14 @@ function createTokenHolder() {
   };
 }
 
+// endpointId -> the wipe of its partition still running after a close. The
+// next page for that Crew, perhaps as another account, waits for it
+// (`partitionCleared`), so it never starts on what the last one stored.
+const clearing = new Map();
+function partitionCleared(endpointId) {
+  return clearing.get(endpointId) || Promise.resolve();
+}
+
 function relayPartitionName(endpointId) {
   return `relay-crew-${endpointId}`; // no "persist:" prefix: in memory only
 }
@@ -281,11 +289,22 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
   // `origin` passed crewOrigin(), so it always starts with https:.
   const wssOrigin = "wss:" + origin.slice("https:".length);
   const watched = { urls: [`${origin}/*`, `${wssOrigin}/*`] };
+  // Whether the current main-frame load was already reported, so a load seen by
+  // both the network hook and `did-navigate`, in either order, raises one notice.
+  let mainFrameReported = false;
+  const reportMainFrame = (code) => {
+    if (mainFrameReported) return;
+    mainFrameReported = true;
+    unreachable(`main frame ${code}`);
+  };
+  // The status the page on screen was served with: 0 before the first answer.
+  let lastMainFrameStatus = 0;
   ses.webRequest.onCompleted(watched, (details) => {
     if (details.resourceType === "mainFrame") {
+      lastMainFrameStatus = details.statusCode;
       if (details.statusCode >= 400) log(`main frame ${details.statusCode}`);
       notify(statusListeners, details.statusCode);
-      if (details.statusCode >= 500) unreachable(`main frame ${details.statusCode}`);
+      if (details.statusCode >= 500) reportMainFrame(details.statusCode);
       return;
     }
     if (!retryPath(origin, details.url)) {
@@ -298,6 +317,21 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
     if (details.statusCode === 101) return;
     if (details.statusCode >= 400) failedAttempt(relayError(details.responseHeaders) === CREW_NOT_CONNECTED);
     else watch.ok();
+  });
+  // A reload the page's service worker answers never reaches the network hook as a
+  // main-frame request, so the relay's 503 would render as its bare JSON body.
+  // `did-navigate` reports the status the document was served with either way.
+  // Only a new document from the Crew starts a new load: the notice's own
+  // about:blank, and a same-document navigation, keep the current report.
+  view.webContents.on("did-start-navigation", (_event, url, inPlace, isMainFrame) => {
+    if (isMainFrame !== false && !inPlace && String(url || "").startsWith(origin)) mainFrameReported = false;
+  });
+  view.webContents.on("did-navigate", (_event, url, code) => {
+    if (!String(url || "").startsWith(origin)) return;
+    if (code > 0) lastMainFrameStatus = code;
+    if (!(code >= 500)) return;
+    log(`main frame ${code}`);
+    reportMainFrame(code);
   });
   ses.webRequest.onErrorOccurred(watched, (details) => {
     if (details.error === ABORTED) return;
@@ -326,9 +360,11 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
     } catch {
       /* mid-teardown */
     }
-    Promise.resolve()
+    const cleared = Promise.resolve()
       .then(() => Promise.all([ses.clearStorageData(), ses.clearCache()]))
-      .catch(() => log("could not clear the partition"));
+      .catch(() => log("could not clear the partition"))
+      .then(() => { if (clearing.get(endpointId) === cleared) clearing.delete(endpointId); });
+    clearing.set(endpointId, cleared);
     log(`${what} closed`);
     notify(closedListeners);
   };
@@ -337,11 +373,16 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
     endpointId,
     origin,
     // With a notice up the Crew's page is blank, so this loads the Crew again
-    // rather than reloading the blank page.
-    reload: () => {
+    // rather than reloading the blank page. `ignoreCache` is Force Reload's.
+    reload: ({ ignoreCache = false } = {}) => {
       if (closed) return;
       watch.reset();
-      if (!noticeView) { view.webContents.reload(); return; }
+      lastMainFrameStatus = 0;
+      if (!noticeView) {
+        if (ignoreCache) view.webContents.reloadIgnoringCache();
+        else view.webContents.reload();
+        return;
+      }
       removeNotice();
       Promise.resolve(view.webContents.loadURL(`${origin}/`)).catch(() => log("load failed"));
     },
@@ -360,6 +401,9 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
         .catch(() => log("notice failed to load"));
     },
     isClosed: () => closed,
+    // Whether the page on screen is an error the relay answered rather than the
+    // Crew (a 4xx or 5xx document, or a notice), so opening it again reloads.
+    showsError: () => noticeView !== null || lastMainFrameStatus >= 400,
     onMainFrameStatus: (cb) => { statusListeners.push(cb); },
     onClosed: (cb) => { closedListeners.push(cb); },
     onVisibilityChange: (cb) => { visibilityListeners.push(cb); },
@@ -447,8 +491,10 @@ const openPanes = new Map();
 // The window's Crew view, as a child of the main window instead. `parent` is
 // the main BaseWindow and `dashboard` its dashboard view, which gets the
 // keyboard back whenever the pane leaves the screen holding it. The caller owns
-// the rect, when the pane shows and how many stay warm. Not wired in yet.
-function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent, dashboard, bounds, platform = process.platform }, deps) {
+// the rect, when the pane shows and how many stay warm: a pane starts hidden,
+// and only `setInactive(false)` from the dashboard shows it, so an answer that
+// lands after the person chose something else never paints over it.
+function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent, dashboard, bounds, menuReload, platform = process.platform }, deps) {
   const existing = openPanes.get(endpointId);
   if (existing && !existing.isClosed()) return existing;
   const inWindow = openWindows.get(endpointId);
@@ -460,21 +506,32 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   // its own header. Layout only, for this page alone; not a credential.
   wc.setUserAgent(`${parts.session.getUserAgent()} ${RELAY_PANE_UA_MARKER}`);
   let rect = null;
-  let shown = true;
+  let shown = false;
   // A local menu or dialog over the pane, and another tab in front of it: either
   // one hides it, as the Preview panel's computeVisible decides.
   let overlay = false;
-  let inactive = false;
+  let inactive = true;
   let parentAway = false;
   let reportedHidden = false;
+  view.setVisible(false);
   parent.contentView.addChildView(view);
+  const chordListeners = [];
+  // The notice view (which focuses its own button) reads the chord too, so
+  // the keyboard can leave a tab that shows one.
+  const readChord = (event, input) => {
+    const index = paneChordIndex(input, platform);
+    if (index < 0) return;
+    event.preventDefault();
+    crew.notify(chordListeners, index);
+  };
   const crew = attachRelayCrew({ endpointId, ...parts }, {
-    add: (v) => { parent.contentView.addChildView(v); v.setVisible(shown); },
+    add: (v) => { parent.contentView.addChildView(v); v.setVisible(shown); v.webContents.on("before-input-event", readChord); },
     remove: (v) => parent.contentView.removeChildView(v),
     place: (v) => { if (rect) v.setBounds(rect); },
   }, deps);
   const isClosed = crew.handle.isClosed;
-  const chordListeners = [];
+  // The Crew's page or its notice, whichever is up, may hold the keyboard.
+  const holdsFocus = () => crew.views().some(viewHoldsFocus);
   const handBack = () => {
     try { if (!dashboard.webContents.isDestroyed()) dashboard.webContents.focus(); } catch { /* mid-teardown */ }
   };
@@ -487,10 +544,14 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   // As for the Preview panel (browser-view.js): decide the hand-back before
   // the hide, and make it after.
   const sync = () => {
+    const was = shown;
     shown = computeVisible({ open: true, overlayActive: overlay, inactive, bounds: rect });
-    const reclaim = !shown && viewHoldsFocus(view);
+    const reclaim = !shown && holdsFocus();
     for (const v of crew.views()) v.setVisible(shown);
     if (reclaim) handBack();
+    // A pane that comes to the front takes the keyboard, as its window did, so
+    // typing cannot reach the local dashboard underneath; a notice up takes it.
+    if (shown && !was && parent.isFocused()) crew.views().at(-1).webContents.focus();
     // Renewal parks while the pane is hidden or the main window is.
     const hidden = !shown || parentAway;
     if (hidden !== reportedHidden) { reportedHidden = hidden; crew.setHidden(hidden); }
@@ -503,7 +564,7 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   const dashboardEvents = ["did-navigate", "render-process-gone"];
   const close = () => {
     if (isClosed()) return;
-    const reclaim = viewHoldsFocus(view);
+    const reclaim = holdsFocus();
     for (const [event, fn] of parentEvents) parent.removeListener(event, fn);
     parent.removeListener("closed", close);
     for (const event of dashboardEvents) dashboard.webContents.removeListener(event, close);
@@ -519,25 +580,23 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   wc.on("focus", () => setImmediate(() => {
     if (!isClosed() && !shown && parent.isFocused()) handBack();
   }));
-  wc.on("before-input-event", (event, input) => {
-    const index = paneChordIndex(input, platform);
-    if (index < 0) return;
-    event.preventDefault();
-    crew.notify(chordListeners, index);
-  });
+  wc.on("before-input-event", readChord);
   setBounds(bounds);
 
   const handle = {
     ...crew.handle,
-    focus: () => {
+    // The dashboard decides which tab is in front, and a window comes forward
+    // only in the click that asked for it, so this raises and shows nothing.
+    focus: () => {},
+    parent,
+    // The tab in front, also while a local menu or dialog hides it for a moment.
+    isFront: () => !isClosed() && !inactive,
+    // The app menu's Reload and Force Reload while this pane is on screen: the
+    // opener's, which mints first when renewal stopped. Plain reload otherwise.
+    menuReload: (opts) => {
       if (isClosed()) return;
-      if (parent.isMinimized()) parent.restore();
-      parent.show();
-      parent.focus();
-      // Brings its tab to the front; a local overlay still up keeps it hidden.
-      inactive = false;
-      sync();
-      wc.focus();
+      if (typeof menuReload === "function") menuReload(opts);
+      else crew.handle.reload(opts);
     },
     close,
     setBounds: (next) => { if (!isClosed()) setBounds(next); },
@@ -551,8 +610,19 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   return handle;
 }
 
+// The relay tab in front in `win`, or null: the app menu's Reload target.
+function shownRelayPane(win) {
+  if (!win) return null;
+  for (const pane of openPanes.values()) {
+    if (pane.parent === win && pane.isFront()) return pane;
+  }
+  return null;
+}
+
 module.exports = {
   isEndpointId,
+  partitionCleared,
+  shownRelayPane,
   createTokenHolder,
   relayPartitionName,
   installRelayHeaderRule,

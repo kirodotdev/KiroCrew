@@ -681,7 +681,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
                 onChange={v => upd({ allow_all_users: v })}
                 disabled={ro}
               />
-              <div className="border-t border-border mt-4 pt-4" />
+              <div className="border-t border-border mt-3 pt-3" />
             </>
           )}
           <TagListEditor
@@ -697,7 +697,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             <p className="text-[12px] text-muted mt-2 mb-0">{spec.allowAll.bypassNote}</p>
           )}
           {spec.threadAllowlist && (
-            <div className="border-t border-border mt-4 pt-4">
+            <div className="border-t border-border mt-3 pt-3">
               <TagListEditor
                 label={spec.threadAllowlist.label}
                 description={spec.threadAllowlist.description}
@@ -739,7 +739,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               <AlertTriangle size={13} className="flex-none mt-0.5" />
               <span>{spec.sharedChannels.warning}</span>
             </p>
-            <div className="border-t border-border mt-4 pt-4">
+            <div className="border-t border-border mt-3 pt-3">
               <SettingsToggle
                 label={spec.sharedChannels.autoThreadLabel}
                 hint={spec.sharedChannels.autoThreadDescription}
@@ -770,7 +770,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               onChange={v => upd({ allow_forum: v })}
               disabled={ro}
             />
-            <div className="border-t border-border mt-4 pt-4">
+            <div className="border-t border-border mt-3 pt-3">
               <TagListEditor
                 label={spec.forum.allowlistLabel}
                 description={spec.forum.allowlistDescription}
@@ -790,7 +790,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               )}
             </div>
             {spec.forum.activation && (
-              <div className="border-t border-border mt-4 pt-4">
+              <div className="border-t border-border mt-3 pt-3">
                 <SettingsSelect
                   label={spec.forum.activation.label}
                   description={spec.forum.activation.description}
@@ -818,7 +818,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               onChange={v => upd({ allow_group: v })}
               disabled={ro}
             />
-            <div className="border-t border-border mt-4 pt-4">
+            <div className="border-t border-border mt-3 pt-3">
               <TagListEditor
                 label={spec.groupChats.allowlistLabel}
                 description={spec.groupChats.allowlistDescription}
@@ -872,7 +872,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             </>
           )}
           {spec.showThinking && (
-            <div className="border-t border-border mt-4 pt-4">
+            <div className="border-t border-border mt-3 pt-3">
               <SettingsToggle
                 label={spec.showThinking.label}
                 description={spec.showThinking.summary}
@@ -884,7 +884,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             </div>
           )}
           {spec.voiceReplies && (
-            <div className="border-t border-border mt-4 pt-4">
+            <div className="border-t border-border mt-3 pt-3">
               <SettingsToggle
                 label={spec.voiceReplies.label}
                 description={spec.voiceReplies.summary}
@@ -897,7 +897,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
           )}
           {/* Optional per-channel session filing. Off by default: sessions from
               this channel stay unfiled in the sidebar, as before. */}
-          <div className="border-t border-border mt-4 pt-4">
+          <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
               hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: spec.name })}
@@ -930,7 +930,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       </SettingsSection>
 
       {/* ── Save (hidden on read-only remote sessions) ── */}
-      {!ro && <div className="flex items-center gap-3 mt-1 mb-4">
+      {!ro && <div className="flex flex-row-reverse flex-wrap items-center gap-3 mt-3 mb-4 max-w-[720px]">
         <Btn primary onClick={handleSave} disabled={saveMut.isPending}>
           {saveMut.isPending ? i18nT('pages.settings.botChannelPanel.saving') : i18nT('pages.settings.botChannelPanel.save_channel_settings', { channel: spec.name })}
         </Btn>

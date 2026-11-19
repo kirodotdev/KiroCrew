@@ -494,6 +494,9 @@ class DashboardState:
         # /api/slack/reconnect). Set by the gateway that owns the Slack socket;
         # None on a server with no socket owner.
         self.slack_reconnect: Callable[[], Awaitable[dict[str, Any]]] | None = None
+        # The Slack owner-claim window (``kiro_crew.slack.owner_claim.OwnerClaim``,
+        # /api/slack/owner-claim). Set beside ``slack_reconnect``; None otherwise.
+        self.slack_owner_claim: Any = None
         # True once the Discord channel's Gateway WebSocket transport started
         # this session (set by maybe_start_discord). Read by the Discord
         # settings status badge.
@@ -1103,13 +1106,13 @@ class DashboardState:
     _QUESTION_TIMEOUT_DEFAULT = 300  # 5 minutes
 
     # Hard ceiling set by the ACP tool-stall watchdog, NOT by the `wait` tool.
-    # `acp/client_timeouts.py::_TOOL_STALL_TIMEOUT` is 600s and is armed once a tool call
+    # `acp/client_timeouts.py::_TOOL_STALL_TIMEOUT` is 720s and is armed once a tool call
     # is dispatched; a blocked ask_question emits no progress frames, so a window
-    # at or beyond 600s lets the watchdog declare the turn dead and kill it —
-    # after which an answer has no turn left to return to. 540s keeps a 60s
-    # margin below the watchdog. `wait` can afford 1800s because it is a
+    # at or beyond 720s lets the watchdog declare the turn dead and kill it —
+    # after which an answer has no turn left to return to. 540s stays well
+    # below the watchdog. `wait` can afford 1800s because it is a
     # different mechanism; copying that number here was the bug.
-    _QUESTION_TIMEOUT_MAX = 540  # 9 minutes — 60s under the 600s tool-stall watchdog
+    _QUESTION_TIMEOUT_MAX = 540  # 9 minutes — under the 720s tool-stall watchdog
 
     # The blocking MCP ``ask_question`` is not bound by the cap above: its tool
     # call waits in short slices and pings /api/session-keepalive between them,
@@ -1339,6 +1342,7 @@ class DashboardState:
     running_session_keys = _slot_directory.running_session_keys
     spend_slot_by_session = _slot_directory.spend_slot_by_session
     native_subagent_snapshots = _slot_directory.native_subagent_snapshots
+    dismiss_native_subagent = _slot_directory.dismiss_native_subagent
     has_slot = _slot_directory.has_slot
     slot_exists = _slot_directory.slot_exists
     session_still_loading = _slot_directory.session_still_loading

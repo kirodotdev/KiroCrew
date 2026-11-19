@@ -38,6 +38,12 @@ _QUOTE = {
 }
 
 
+def _sans_author(meta):
+    """*meta* without the server-stamped Shared Crew author, which every person's
+    send now carries (``shared_crew.attribution``); these tests pin the rest."""
+    return {k: v for k, v in (meta or {}).items() if k != "author"}
+
+
 def _make_state() -> DashboardState:
     state = DashboardState.__new__(DashboardState)
     state._slots = {}
@@ -239,7 +245,7 @@ class TestQuoteThroughTheHandler:
             steer=True,
         )
         assert body.get("steered") is True
-        assert slot._steer_attachment_meta["> q\n\nwhy?"] == {
+        assert _sans_author(slot._steer_attachment_meta["> q\n\nwhy?"]) == {
             "files": ["/tmp/a.pdf"],
             "quote": _QUOTE,
         }
@@ -269,7 +275,10 @@ class TestQuoteThroughTheHandler:
             if c.args and c.args[0] == "queue_pop"
         ]
         pop = next(p for p in pops if p.get("content") == "> q\n\nwhy?")
-        assert pop["meta"] == {"files": ["/tmp/a.pdf"], "quote": _QUOTE}
+        assert {k: v for k, v in pop["meta"].items() if k != "author"} == {
+            "files": ["/tmp/a.pdf"],
+            "quote": _QUOTE,
+        }
 
     @pytest.mark.asyncio
     async def test_the_drained_row_s_quote_follows_the_row_s_redaction_rule(

@@ -15,7 +15,8 @@
         ],
         "frame": { "w": 1280, "h": 800 },
         "expires_at": 1893456000000,
-        "phase": "waiting"
+        "phase": "waiting",
+        "vault": { "items": [] }
       }
     },
     "text": {
@@ -94,7 +95,8 @@
         "frame": { "w": 1280, "h": 800 },
         "expires_at": 1893456000000,
         "phase": "waiting",
-        "steps": { "username": "optional" }
+        "steps": { "username": "optional" },
+        "vault": { "items": [] }
       }
     }
   },

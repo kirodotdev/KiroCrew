@@ -31,7 +31,7 @@ on:
       - Fast Gate
       - Build
       - Code Review
-      # Blocking: the title, body and commit-count checks. Runs on
+      # Blocking: the title and body checks. Runs on
       # `pull_request` with `edited`, so a description edit re-judges it.
       - PR Hygiene
       # Blocking: a PR that declares no triaged issue reds it. Runs on

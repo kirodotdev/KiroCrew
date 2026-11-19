@@ -508,8 +508,11 @@ class ToolGateLeaves(NamedTuple):
     unreadable: tuple[str, ...]
 
 
-def tool_gate_crew_leaves() -> ToolGateLeaves:
+def tool_gate_crew_leaves(kind: DeclarationKind = CREDENTIAL_MASKS) -> ToolGateLeaves:
     """The crew-home leaves the agent tool gate adds for the INSTALLED apps' masks.
+
+    *kind* picks the declaration read, ``credentialMasks`` by default; the
+    ``agentReadOnlyDirs`` write fence reads its own key the same way.
 
     Every installed tree's and retained record's ``credentialMasks`` (an adopted former
     built-in is one of them), each at both places its app's data can be, as
@@ -527,11 +530,11 @@ def tool_gate_crew_leaves() -> ToolGateLeaves:
     it, nor a publish artifact outside them, so the gate gains refusals and loses none.
     """
     try:
-        sources = _installed_manifests(CREDENTIAL_MASKS, strict=True)
+        sources = _installed_manifests(kind, strict=True)
     except Exception:
         logger.warning(
             "could not list the installed apps for their %s; the tool gate fences %s/",
-            MANIFEST_KEY,
+            kind.key,
             APPS_LEAF,
             exc_info=True,
         )
@@ -539,7 +542,7 @@ def tool_gate_crew_leaves() -> ToolGateLeaves:
     declared: set[str] = set()
     unreadable: set[str] = set()
     for name, path in sources:
-        entries, clean = _read_declaration(path, name)
+        entries, clean = _read_declaration(path, name, kind)
         if not clean:
             unreadable.add(f"{APPS_LEAF}/{name}/{DATA_LEAF}")
             unreadable.add(f"{APPS_LEAF}/.{name}{STAGED_DATA_SUFFIX}")

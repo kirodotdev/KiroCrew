@@ -136,6 +136,24 @@ switch after the parent started never sends the child's reads or writes to anoth
 provider. A child already frozen keeps its own choice. Detail:
 [memory-skills-hooks](memory-skills-hooks.md), "Memory providers".
 
+## Parent execution activity
+
+`SubagentManager.has_current_execution_for(parent_session_key)` is the loop-safe,
+in-memory execution predicate for session activity. It includes unfinished run
+records except parked spawn approvals, live outer run tasks, live follow-up watchers
+and unfinished owned terminal reports. Each actual `_run` outer asyncio task
+registers its `(run id, parent)` ownership after the approval wait, and a task
+completion callback removes it. Task-keyed ownership survives completed-record
+eviction and removal from the run-id task index, covering both the inner
+done-to-report gap and remote or late cleanup after report settlement; overlapping
+attempts of the same run id retain independent owners. The report and watcher
+ownership maps also survive completed-record eviction. Completed tasks do not
+count even while their done callbacks have not removed them. Queue entries alone
+are not execution: `published_queued_depths()` supplies the independent queued
+activity from the producer's latest published frame. Neither probe reads the store.
+The synthesis arm's `has_in_memory_pending_work_for` retains its own broader terms;
+it is not a queued-only predicate.
+
 ## Composition
 
 `kiro_crew/subagent.py` is the facade and the one namespace of the subagent family:
@@ -395,7 +413,9 @@ unlearned price and any local bucket's learned settled figure, never under
 `subagent_cost_gb`), a lower bound since the warming reserve lives in the
 gateway's manager. When that bar is not met the tool says
 new top-level subagents cannot start and that they wait in the queue, in place
-of the AMPLE guidance. For a session bound to a remote workspace no reading is
+of the AMPLE guidance. Both numbers print at two decimals; a blocked line
+rounds the figure down and the bar up, so the figure shown is always below the
+bar shown. For a session bound to a remote workspace no reading is
 taken and nothing is reported blocked, since the gate prices that session's
 children without the floor.
 
@@ -2005,6 +2025,20 @@ the subagent runs and in which order live in `_permission_policy`, and what read
 or moves this run's own state (the approval prompt's wait flag and crew-log
 pair, the log lines, the counter, `tool_count`) lives beside it in `run.py`.
 
+**A turn that ends on a host refusal resumes.** Two backends end the turn on the
+reject itself, so no steer reaches the model: codex aborts it (`cancelled`), and
+opencode closes the call with its stock "user rejected permission" text and ends
+it `end_turn` with nothing after it. The run then withholds that ending and sends
+`deny_notice.build_refused_turn_resume_prompt` (the redacted notice, plus the fact
+that the turn was stopped) as the next prompt on the same session, at most
+`REFUSED_TURN_RESUME_MAX` times per run (`subagent_manager/run_turn.py`). The clean
+ending resumes only on opencode (the provider's `is_opencode_backend`; other
+harnesses go on after a reject, so their clean ending is the model's own), and
+only when the model wrote no text and made no new tool call after the latest
+refusal; a
+turn the model went on with, a person's no in the same attempt, and a stop, reap
+or shutdown end as they ended. Pinned by `test_subagent_refused_turn_resume.py`.
+
 The `is_yolo()` read happens once, when `parent_policy` is resolved at
 `_run_inner` start — a YOLO toggle mid-execution takes effect on the next
 subagent run, not on the current run's remaining tools.
@@ -2779,7 +2813,7 @@ The MECHANISM that delivers that invariant is the write channel, not luck. `ensu
 
 `_run_inner` streams through `_stream_with_transient_retry`. A transient backend error (the `-32603` class, per `acp_error_is_transient`) is first shown to the dependency adapters (`taskq.dependency.classify_exception`, [taskq.md](taskq.md) § Dependency waits). When the manager has a durable store and an adapter recognises the error — a provider throttle (`rate_limited`, `concurrency_exceeded`), a 5xx / connection loss (`dependency_unavailable`) — the run does NOT retry in the turn: `_yield_for_dependency` calls `coordinator.report(id, signal, generation)` (ONE store write: `running -> waiting_dependency` with the scope's `retry_at`), releases its lane slot through `admission.yield_slot(persist=False)`, reports a typed throttle to `AdaptiveController.record_provider_throttle(scope)`, arms the pump and parks on `_await_lane_resume(request=False)`. The coordinator wakes the scope by capacity — one probe, then `wake_per_tick` per `wake_spacing_secs` — and a live run's wake comes back through admission (`monitoring.taskq_wake_through` → `request_resume`; admission's `resume_grant` writes the `wake_wait` under the run's generation, so one wake is one write). After the grant the run replays the original prompt (zero activity) or sends `_TRANSIENT_CONTINUE_MSG` (any activity, one-shot, same rule as below). A scope the coordinator fails (attempts cap, wall-clock deadline) releases the parked run through `on_fail` (`SubagentInfo._wait_failed`) and the run ends `failed` with the provider error; a terminal signal (`auth_failed`, `permanent_param_error`, quota with no reset) propagates at once. Two runs throttled by the same provider therefore share one schedule and never two timers; the main chat reads the same schedule (`chat_runner._shared_dependency_delay`) without joining it.
 
-The in-turn ladder below handles what no adapter classifies (and every transient when the durable queue is off — `agent.task_queue_enabled=false` — or when the run has no task row at all: `coordinator.report` re-reads the row after both wait writes are refused and answers `no_row` for a run whose memory mode keeps none, so `_yield_for_dependency` returns None and the error is handled as with no coordinator; a row held by a newer owner or already ended, or a store that cannot say, answers `unpersisted`, which, like a give-up, returns False and fails the run): errors are retried with exponential backoff on the same live session; each retry fires a `subagent_retrying` WS event (chip shows `⟳ retrying`) and a SEL audit record. **Replay-safety**: if ANY activity was observed (text chunk, approved tool turn, or auto-allowed tool call), the retry sends `_TRANSIENT_CONTINUE_MSG` instead of the original prompt — a mutating tool may have executed before the first text chunk, and replaying the full prompt would re-run it. **Budget**: `TRANSIENT_RETRIES` applies only while ZERO activity was observed (replaying the bare prompt is side-effect-free); after any activity, recovery is ONE-SHOT — exactly one continuation turn, matching the main path's `_posttoken_retry_used` rule, since each post-activity continuation is an independent opportunity to repeat a side effect. The two ladders (this one and the dashboard's: the `except AcpError` chain in `dashboard/chat_runner.py` and its arms in `dashboard/chat_turn/acp_recovery.py`) are intentionally-identical copies cross-referenced in both sources; a change to either's predicate or budget must be mirrored. Non-transient errors and exhausted budgets propagate to the generic error arm, with ONE deliberate divergence: the sub-agent ladder has a terminal keep-output branch that `chat_runner`'s ladder does not. When the one post-activity continue is spent, the streamed output is non-empty and the transient error says "failed to generate a response", the stream ends and the run is kept: the warning "_Warning: the backend failed to generate a final response; this is the output streamed before that._" is added to the delivered result after the `completion_keep` cap and to `result.txt`, `partial` is set, and `result_complete` stays false (no complete event). The kept run still counts as a success for `record_success` and `inc_subagent_completed`; that is intended, because the parent got the output. The sibling "failed to process the request" is scoped out and still fails. The interactive chat has its own recovery for this error, so it does not mirror the branch.
+The in-turn ladder below handles what no adapter classifies (and every transient when the durable queue is off — `agent.task_queue_enabled=false` — or when the run has no task row at all: `coordinator.report` re-reads the row after both wait writes are refused and answers `no_row` for a run whose memory mode keeps none, so `_yield_for_dependency` returns None and the error is handled as with no coordinator; a row held by a newer owner or already ended, or a store that cannot say, answers `unpersisted`, which, like a give-up, returns False and fails the run): errors are retried with exponential backoff on the same live session; each retry fires a `subagent_retrying` WS event (chip shows `⟳ retrying`) and a SEL audit record. **Replay-safety**: if ANY activity was observed (text chunk, approved tool turn, or auto-allowed tool call), the retry sends `_TRANSIENT_CONTINUE_MSG` instead of the original prompt — a mutating tool may have executed before the first text chunk, and replaying the full prompt would re-run it. **Budget**: `TRANSIENT_RETRIES` applies only while ZERO activity was observed (replaying the bare prompt is side-effect-free); after any activity, recovery is ONE-SHOT per model — exactly one continuation turn on each, matching the main path's `_posttoken_retry_used` rule, since each post-activity continuation is an independent opportunity to repeat a side effect. When that continue also fails with a capacity or throttle error (`llm_helpers.advance_fallback_after_activity`), the live session moves to the next `agent.fallback_model` candidate, whose own continue takes the in-turn retry with its event and audit record, never the dependency coordinator (the error's scope is the primary's, which the session has just left); any other error, or a spent or empty chain, propagates. The two ladders (this one and the dashboard's: the `except AcpError` chain in `dashboard/chat_runner.py` and its arms in `dashboard/chat_turn/acp_recovery.py`) are intentionally-identical copies cross-referenced in both sources; a change to either's predicate or budget must be mirrored. Non-transient errors and exhausted budgets propagate to the generic error arm, with ONE deliberate divergence: the sub-agent ladder has a terminal keep-output branch that `chat_runner`'s ladder does not. When the one post-activity continue is spent, the streamed output is non-empty and the transient error says "failed to generate a response", the stream ends and the run is kept: the warning "_Warning: the backend failed to generate a final response; this is the output streamed before that._" is added to the delivered result after the `completion_keep` cap and to `result.txt`, `partial` is set, and `result_complete` stays false (no complete event). The kept run still counts as a success for `record_success` and `inc_subagent_completed`; that is intended, because the parent got the output. The sibling "failed to process the request" is scoped out and still fails. The interactive chat has its own recovery for this error, so it does not mirror the branch.
 
 ## First-Turn Context Overflow Recovery
 
@@ -3020,9 +3054,11 @@ subagent model), resolved once at spawn; `"auto"` when completely unpinned (no
 per-spawn model, no role pin) — and `resolved_model`, the id the live
 session actually served, read via the provider's public `served_model` accessor
 (`_resolved_model_of`, which normalizes the `DEFAULT_MODEL` "auto" sentinel to `""`
-= unknown). `resolved_model` is captured at spawn (ACP reports it immediately) and
-refreshed on the first text chunk (covers the CC path); a known value is never
-clobbered back to `""`.
+= unknown). `resolved_model` is captured at spawn (ACP reports it immediately),
+refreshed on a text chunk while it is still `""` (covers the CC path), and rewritten
+when Crew's own fallback ladder swaps the session's model (`_record_fallback_model`).
+Only that swap sets a known value back to `""`: one onto a model the session cannot
+name (`auto`).
 
 The resolved id rides the wire as a `model` field on the `subagent_spawn`,
 `subagent_done`, and reconnect `subagent_snapshot` payloads, and the requested pin
@@ -3145,7 +3181,7 @@ The REST listing's app bound gates on the presence of the caller's app CLAIM, ne
 
 The record lives in its own top-level `panel-dismissals/` leaf of the data home, OUTSIDE the run folder, and deliberately NOT under `trust/`. A dismissal is an OWNER decision about what the panel hides, which makes it the same class of record as `crew-panels`, `crew-teams` and `tag-grants` — and each of those is its own top-level leaf precisely because `trust/` is a declared sandbox READ-WRITE exception (in-sandbox `verify_session_pid` reads `trust/sel_hmac.key` and the in-sandbox MCP servers append to the audit log). A record under `trust/` stays writable by a sandboxed command that builds the path at runtime, which command matching cannot catch because it has no literal path to match; the cleanup identities that live there are not a precedent for adding records to it. So the leaf is registered in four places, and because nothing in the code fails when one is missing, each is pinned by name in `TestTheDismissalStoreIsRegisteredEverywhereItMustBe`: `paths._CREW_SECRET_LEAVES` for the file gate, `sandbox._CREW_HIDDEN_LEAVES` for the bind mask, `_CREW_PRECREATE_HIDDEN_DIR_LEAVES` because the directory is created on the first dismissal and the mask loop SKIPS a name that does not exist, and `_CREW_NO_ALIAS_LEAVES` because a symlink would attach the mask to the target and leave the name writable. `state.json` and `tombstone.json`, by contrast, are agent-writable, so a marker kept in there would let a run hide its own card from every later rebuild. The write goes through `atomic_write(..., restrict_to_owner=True)` so the lockdown lands on the temp file before the payload and before the rename. The run FOLDER is deliberately left in place rather than deleted — `spawn_continue` reseeds its session map from that folder's `state.json`, so removing it to hide a card would also destroy a conversation the user can still continue, and would take the result text and the prune bookkeeping with it. The reader fails OPEN: an unreadable record yields no id, so a filesystem fault resurrects a dismissed card, which the user can dismiss again, rather than hiding a run nobody dismissed. Records are reclaimed with their folder at both removal sites (`delete_agent_folder` and `prune_stale_tombstones`), and `prune_orphan_panel_dismissals` sweeps once per prune cycle for a folder that left by some other route.
 
-Native subagents (kiro-cli's, KAS's, Claude Code's Agent tool on the claude backend, and Codex's native subagents on the codex harness) run inside the parent ACP turn and are owned by the parent dashboard slot. `DashboardState.native_subagent_snapshots()` replays running native cards as `subagent_snapshot` and recent terminal cards as `subagent_done`. A native `subagent_done` payload may include optional `task`, `agent`, and `result` fields. `result` is a redacted output tail bounded to 8,000 characters, with an explicit truncation marker when earlier output was dropped. Running output retained for replay is bounded to 40,000 characters, with an 80,000-character hard accumulation ceiling. Terminal native records are retained globally up to 50 cards for at most one hour. The client treats `done`, `error` and `stopped` as monotonic terminal states, so a stale running snapshot interleaved after a live completion or stop cannot demote the card. The one exception is a `stopped` card that approval reconciliation retired because no process was found: a snapshot naming that run proves it launched, so it may revive the card.
+Native subagents (kiro-cli's, KAS's, Claude Code's Agent tool on the claude backend, and Codex's native subagents on the codex harness) run inside the parent ACP turn and are owned by the parent dashboard slot. `DashboardState.native_subagent_snapshots()` replays running native cards as `subagent_snapshot` and recent terminal cards as `subagent_done`. A native `subagent_done` payload may include optional `task`, `agent`, and `result` fields. `result` is a redacted output tail bounded to 8,000 characters, with an explicit truncation marker when earlier output was dropped. Running output retained for replay is bounded to 40,000 characters, with an 80,000-character hard accumulation ceiling. Terminal native records are retained globally up to 50 cards for at most one hour. `DELETE /api/spawn/native:<id>` stops a running card, which is still in `_native_cards`; every completion path unregisters a card from there, so a finished one is dismissed instead: `DashboardState.dismiss_native_subagent` marks its slot's terminal record `dismissed`, the replay skips it, the dismissal is audited under `spawn.dismiss`, and the answer is `{"ok": true, "cancelled": false, "dismissed": true}`. Like the persisted-run dismissal, it refuses an app token, or a request with no app claim, with `403 app_token_forbidden`. The record is marked rather than removed because while the parent turn runs the tracker is the roster reconciler's own dict, and a removed session id that a later `list_update` still lists would be drawn as a new card. An id no slot holds as a finished card answers 404, and a native card from an earlier turn is one: the next turn's start drops that turn's records. Nothing can draw such a card again, so the Subagents panel's "Dismiss done" treats a 404 as already cleared and shows its warning only for any other refusal, such as the `503 dismissal_unwritable` of a persisted run whose dismissal did not land. The client treats `done`, `error` and `stopped` as monotonic terminal states, so a stale running snapshot interleaved after a live completion or stop cannot demote the card. The one exception is a `stopped` card that approval reconciliation retired because no process was found: a snapshot naming that run proves it launched, so it may revive the card.
 
 Claude Code's Workflow agents are native subagents too; a Workflow agent's card outlives the turn while its run lasts (below, under *MCP Tool: `spawn_sub_agents`*).
 
@@ -3276,7 +3312,8 @@ per-sub-agent completion note. Dashboard chat only.
   already have taken effect, so the outcome stays `completed`, nothing is
   re-issued, and a failed or stopped run is not flagged.
 - **An unverified model pin** — a completed run whose effective pin
-  (`requested_model`) is set, not `auto`, while `resolved_model` is still `""`
+  (`requested_model`) is set, not `auto`, while `resolved_model` ends `""` (never
+  reported, or a fallback swap onto `auto`)
   (`SubagentInfo.served_model_unverified`) gets one ``⚠ Agent `<id>` has its
   served model unverified…`` line on the lone completion event and under its
   digest entry, a `served_model_unverified` field on the `spawn_sub_agents`
@@ -4823,9 +4860,18 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   the run costs three stats; a change to any of them, or the window ending,
   evaluates it in full. A failure on a provider that has a route is not
   remembered and is tried on every sweep. The table (`_UNRECLAIMABLE_MEMO`) is
-  process memory only, so a restarted gateway evaluates every run once. A legacy SID present
-  only in agent-folder state/tombstone likewise preserves the folder inside that
-  window: it cannot authorize deletion, but the lookup gives a later trusted
+  process memory only, so a restarted gateway evaluates every run once. A run a
+  full evaluation found still inside its window is skipped the same way
+  (`_NOT_DUE_MEMO`): the sweep keeps the tombstone's inode, size and modification
+  time, sampled before that read, with the death time and whether the cause is
+  `delivered`, and skips the run while the tombstone is unchanged and the death
+  time is later than THIS sweep's cutoff for that cause. The cutoff is recomputed
+  every sweep, so a shortened window applies on the next one; a rewritten
+  tombstone evaluates the run in full and a missing one drops its entry; that
+  table is process memory too, and the first sweep after a restart reads every
+  tombstone. A legacy SID present
+  only in agent-folder state/tombstone likewise preserves the folder inside the
+  90-day window: it cannot authorize deletion, but the lookup gives a later trusted
   migration time to reclaim the transcript. At the hard ceiling, only the run
   folder and protected metadata are reaped; untrusted identity is never used for
   provider-file deletion. Restart registry rebuild likewise accepts only literal

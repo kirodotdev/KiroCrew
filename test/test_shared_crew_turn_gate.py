@@ -266,8 +266,14 @@ def test_wiring_with_admission_off_claims_no_queueing_or_containment(monkeypatch
         assert caps.queueing is CapabilityState.DISABLED
         assert caps.containment is CapabilityState.DISABLED
         assert caps.containment_level is EnforcementLevel.NONE
-        with pytest.raises(LookupError):
+        with pytest.raises(people.UsageOff):
             wiring.admission_usage()
+        # The People page reads it as a setting, not as a failed count.
+        view = people.people_view(
+            local_operator_principal("local-app"), [], reg=people.ObservedPeople()
+        )
+        assert view["usage_off"] is True
+        assert view["usage_available"] is False
     finally:
         wiring.uninstall()
 

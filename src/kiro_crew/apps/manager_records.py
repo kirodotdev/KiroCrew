@@ -774,6 +774,9 @@ def _write_installed(
         # here go stale but keep their names (see _recorded_app_names).
         for key, (_, kept) in list(_recorded_names_cache.items()):
             _recorded_names_cache[key] = (_STALE_SIGNATURE, kept)
+        from kiro_crew.apps import execution  # module, not name: the facade serves names
+
+        execution.invalidate_shipped_builtin_apps()  # an install, update or re-registration
         try:
             os.utime(meta_path.parent.parent)
         except OSError:
@@ -1045,14 +1048,14 @@ def _freeze_declared(
     declared = _declared_grant_entries(grant_source(manifest))
     # An explicit-only family is approved only by entries a stored set names, so a
     # set that defers to the manifest approves nothing in it (``point_grants``).
-    frozen = {
-        family: (
-            base[family]
-            if family in base
-            else [] if family in _EXPLICIT_ONLY_FAMILIES else declared[family]
-        )
-        for family in STAGED_GRANT_FAMILIES
-    }
+    frozen = {}
+    for family in STAGED_GRANT_FAMILIES:
+        if family in base:
+            frozen[family] = base[family]
+        elif family in _EXPLICIT_ONLY_FAMILIES:
+            frozen[family] = []
+        else:
+            frozen[family] = declared[family]
     try:
         # The app's write lock, which every write of its set holds (``write_grants_text``),
         # in any thread or process: nothing an owner stores, and no uninstall's
@@ -1142,7 +1145,8 @@ def _declared_grant_entries(permissions: Any) -> dict[str, list[str]]:
 #: prompt does not show them, so they wait for the owner on the app's page like an
 #: update's new entries. ``bots``: the owner decides which Bots an app reaches.
 #: ``browserSites``: the pages the app's own agent drives the browser on unasked.
-_OWNER_APPROVED_FAMILIES = (BOT_GRANT_FAMILY, "browserSites")
+#: ``browser``: the verbs ``ctx.browser`` and ``BrowserView`` use on its own slots' tabs.
+_OWNER_APPROVED_FAMILIES = (BOT_GRANT_FAMILY, "browserSites", "browser")
 
 
 def _consented_grant_entries(permissions: Any) -> dict[str, list[str]]:

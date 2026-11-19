@@ -18,6 +18,34 @@ import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredB
 import { SlackCodeSection, slackCodeDraftFrom, slackCodePayload, type SlackCodeDraft } from './SlackCodePanel'
 import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
 import { forgetSlackInstallReading } from './SlackManifestUpdate'
+import { lazyRetry } from '../../components/lazyRetry'
+import type { SlackOwnerClaimProps } from './SlackOwnerClaim'
+// Its own chunk, for the same budget reason as SlackSharedAccess below. A failed
+// load shows an inline notice with Try again; the manual member-ID field beside
+// it still works. No hand-off: this form holds unsaved fields.
+const SlackOwnerClaim = lazyRetry<SlackOwnerClaimProps>(
+  () => import('./SlackOwnerClaim').then(m => ({ default: m.SlackOwnerClaim })),
+  {
+    layout: 'inline',
+    title: () => i18nT('pages.settings.slackOwnerClaim.load_failed'),
+    scope: 'slack-owner-claim',
+    askAgent: false,
+  },
+)
+// Its own chunk: only the Slack panel draws this section, and inside the Settings
+// page chunk it put that chunk over its size budget. A failed load shows a notice
+// with Try again in its place and leaves the rest of the form mounted. `inline`:
+// one line whose raw chunk error is read out and shown on hover, never printed.
+// No hand-off: the Slack settings form around this section holds unsaved fields.
+const SlackSharedAccess = lazyRetry<object>(
+  () => import('./SlackSharedAccess').then(m => ({ default: m.SlackSharedAccess })),
+  {
+    layout: 'inline',
+    title: () => i18nT('pages.settings.slackSharedAccess.load_failed'),
+    scope: 'slack-shared-access',
+    askAgent: false,
+  },
+)
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Slack"
 const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/slack-integration.md'
@@ -297,11 +325,16 @@ export function SlackPanel() {
   // refetch that picks up a CLI edit leaves the draft as it was, so comparing
   // against the refreshed data would send the stale draft value and undo it.
   const codeBaseline = useRef<SlackCodeDraft | null>(null)
+  // The owner ID the draft was seeded from, for the same reason: the save
+  // sends the owner only when the field was edited, so a save that lands
+  // while "Claim in Slack" confirms cannot write the old value back.
+  const ownerBaseline = useRef('')
   useEffect(() => {
     if (data && syncArmed.current) {
       syncArmed.current = false
       const seeded = draftFrom(data)
       codeBaseline.current = seeded.code
+      ownerBaseline.current = seeded.owner_id.trim()
       setDraft(seeded)
       setBotToken(''); setAppToken(''); setBotClear(false); setAppClear(false)
     }
@@ -388,8 +421,9 @@ export function SlackPanel() {
   const handleSave = useCallback(() => {
     if (!draft) return
     setError('')
+    const owner = draft.owner_id.trim()
     const payload: Partial<SlackConfigSave> = {
-      owner_id: draft.owner_id.trim(),
+      ...(owner !== ownerBaseline.current ? { owner_id: owner } : {}),
       command: draft.command.trim(),
       allowed_enterprise_ids: draft.allowed_enterprise_ids,
       reactions_enabled: draft.reactions_enabled,
@@ -434,7 +468,13 @@ export function SlackPanel() {
   )
 
   return (
-    <>
+    // Placeholders here are sample IDs (U0123ABC456, E0123ABC456) that look
+    // like real values. The app-wide placeholder colour is --muted, the
+    // secondary-text token, which in light themes sits close to typed text, so
+    // a sample read as a saved ID. 75% of --muted keeps 3:1 on the field in
+    // every built-in palette (SlackPanel.placeholderTone.test.ts) and is clearly
+    // lighter than typed text. `contents` keeps the layout identical.
+    <div className="contents [&_:is(input,textarea)::placeholder]:text-muted/75">
       {/* ── Header ── */}
       <div className="flex items-start gap-3 mb-1 mt-1">
         <div className="w-9 h-9 rounded-lg bg-bg-elevated border border-border flex items-center justify-center flex-none">
@@ -569,6 +609,7 @@ export function SlackPanel() {
       {/* ── Identity & access ── */}
       <SettingsSection title={i18nT('pages.settings.slackPanel.identity_access')}>
         <SettingsCard index={3}>
+          <SlackOwnerClaim config={data} onOwnerChange={id => { ownerBaseline.current = id; upd({ owner_id: id }) }} />
           <SettingsInput
             label={i18nT('pages.settings.slackPanel.owner_slack_member_id')}
             description={i18nT('pages.settings.slackPanel.the_one_member_who_can_always_interact_with_the')}
@@ -586,6 +627,11 @@ export function SlackPanel() {
             validate={v => /^[ET][A-Z0-9]+$/.test(v)}
             readOnly={ro}
           />
+          {/* Off by default: lets the people listed here drive this Crew as the
+              owner. Applies on its own, outside the Save below. Its own row of the
+              card, so a failed load's one-line notice sits in a padded row; hidden
+              while the section renders nothing. */}
+          <div className="empty:hidden"><SlackSharedAccess /></div>
         </SettingsCard>
       </SettingsSection>
 
@@ -621,7 +667,7 @@ export function SlackPanel() {
           {/* Optional auto-connect of every new dashboard session, always into
               the owner's bot DM. Off by default: the thread carries the
               session's title and first prompt into Slack. */}
-          <div className="border-t border-border mt-4 pt-4">
+          <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.slackPanel.auto_link_sessions')}
               description={i18nT('pages.settings.slackPanel.auto_link_sessions_desc_summary')}
@@ -634,7 +680,7 @@ export function SlackPanel() {
           </div>
           {/* Whether conversations that start in Slack are listed in the session
               list. On by default; off leaves them out of the list only. */}
-          <div className="border-t border-border mt-4 pt-4">
+          <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.slackPanel.show_in_session_list')}
               description={i18nT('pages.settings.slackPanel.show_in_session_list_desc_summary')}
@@ -647,7 +693,7 @@ export function SlackPanel() {
           </div>
           {/* Optional per-channel session filing. Off by default: Slack
               conversations stay unfiled in the sidebar, as before. */}
-          <div className="border-t border-border mt-4 pt-4">
+          <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
               hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
@@ -680,7 +726,7 @@ export function SlackPanel() {
       </SettingsSection>
 
       {/* ── Save (hidden on read-only remote sessions) ── */}
-      {!ro && <div className="flex flex-wrap items-center gap-3 mt-1 mb-4">
+      {!ro && <div className="flex flex-row-reverse flex-wrap items-center gap-3 mt-3 mb-4 max-w-[720px]">
         <Btn primary onClick={handleSave} disabled={saveMut.isPending}>
           {saveMut.isPending ? i18nT('pages.settings.slackPanel.saving') : i18nT('pages.settings.slackPanel.save_slack_settings')}
         </Btn>
@@ -710,6 +756,6 @@ export function SlackPanel() {
             hand-off unmounts this panel and would lose them. */}
         <ErrorNotice message={error} variant="inline" />
       </div>}
-    </>
+    </div>
   )
 }

@@ -112,6 +112,7 @@ if TYPE_CHECKING:
         session_stop_generation,
         session_store_for_turn,
         settle_turn,
+        shared_user_refused_for_session,
         slack_script_hooks,
         stop_reason_landed,
         turn_ceiling,
@@ -167,6 +168,7 @@ class _SlackTurn:
     # session's channel link (``test_crew_log_class_recorder`` reads it as one).
     _acquired: "bool"
     _agent: "str | None"
+    spec_agent: "str | None"
     answer: "_AnswerStream"
     client: "LLMProvider | None"
     _had_error: "bool"
@@ -680,6 +682,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             if memory_error is not None:
                 raise memory_error
             break
+        # The owner may have linked this thread to a code channel's session since the
+        # linked-thread check ran: a shared user's turn never runs there.
+        if await shared_user_refused_for_session(user_id, session_key, reply_ts, channel):
+            await turn.clear_working_indicators()
+            return False
         # Re-resolve _agent against (possibly linked) session_key for the main
         # LLM path — linked dashboard sessions may carry a different thread agent.
         _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
@@ -918,9 +925,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
 
         # The permission ladder reads the routed conversation, its agent and this
         # turn's presentation off the turn (``_answer_permission_request``); none of
-        # them is rebound past this point.
+        # them is rebound past this point. Its spec hooks are the template's, so a
+        # channel bound to a Crew record is gated by the agent the record runs.
         turn.session_key = session_key
         turn._agent = _agent
+        turn.spec_agent = _context_agent
         turn.answer = answer
         turn.task = task
 

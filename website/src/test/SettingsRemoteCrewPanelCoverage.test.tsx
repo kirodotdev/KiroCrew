@@ -19,7 +19,7 @@ import type {
   LaunchJob,
 } from '../api/client'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
-import { recentErrors, __resetErrorJournalForTests } from '../utils/errorReport'
+import { consumeChatHandoff, recentErrors, __resetErrorJournalForTests } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
 
 vi.mock('../api/client', () => {
@@ -42,6 +42,8 @@ vi.mock('../api/client', () => {
     isAuthExpiredError: (e: unknown) =>
       e instanceof ApiError && (e as { authRequired?: boolean }).authRequired === true,
     api: {
+      // The relay viewer is off here (its route 404s), so its list stays hidden.
+      relayViewerCrews: vi.fn(async () => { throw new ApiError(404, 'off', JSON.stringify({ code: 'RELAY_VIEWER_OFF' })) }),
       listInstances: vi.fn(),
       addInstance: vi.fn(),
       connectInstance: vi.fn(),
@@ -180,9 +182,9 @@ function storeWithWarm(id: string) {
 
 const setup = () => userEvent.setup({ advanceTimers: (ms: number) => { vi.advanceTimersByTime(ms) } })
 
-/** Open the "Set up a new one" tab. */
+/** Open Add Crew, then its "Set up a new Crew" form. */
 async function openSetupTab(u: ReturnType<typeof setup>) {
-  await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+  await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 }
 
 beforeEach(() => {
@@ -226,13 +228,19 @@ afterEach(() => {
 
 
 /** Open a crew row's overflow menu — Edit / Stop / Start / Delete / Remove live there. */
-async function openRowMenu(u: ReturnType<typeof setup>, name: RegExp = /More actions/i) {
+async function openRowMenu(u: ReturnType<typeof setup>, name: RegExp = /details for/i) {
   // An open menu takes focus in an effect, inside React's own flush, which blurs a field the test typed in. user-event
   // answers that blur with a `change` event through a nested act(), and that nested act ends the flush's act scope early:
   // every update after it in the same flush warns. Blur the field first, in an act() of its own, as pressing the trigger does.
   const typing = document.activeElement
   if (typing instanceof HTMLInputElement) act(() => typing.blur())
-  await u.click(await screen.findByRole('button', { name }))
+  const toggle = await screen.findByRole('button', { name })
+  if (toggle.getAttribute('aria-expanded') !== 'true') await u.click(toggle)
+}
+
+/** A crew's row, found by its name. */
+function crewRow(name: string): HTMLElement {
+  return screen.getByRole('button', { name: new RegExp(`details for ${name}$`) }).closest('[data-crew-id]') as HTMLElement
 }
 
 describe('RemoteCrewPanel — instance actions', () => {
@@ -277,6 +285,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     const store = storeWithWarm('m1')
     renderWithProviders(<RemoteCrewPanel />, { store })
 
+    await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: 'Disconnect' }))
     await waitFor(() => expect(api.disconnectInstance).toHaveBeenCalledWith('m1'))
     await waitFor(() => expect(store.getState().instances.warm).not.toHaveProperty('m1'))
@@ -289,6 +298,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
+    await openRowMenu(u)
     await u.click(await screen.findByRole('button', { name: 'Disconnect' }))
     expect(await screen.findByText(/Disconnect of m1 failed: socket already gone/, undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
@@ -304,7 +314,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />, { store })
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: 'Remove dev-box-1' }))
+    await u.click(await screen.findByRole('button', { name: 'Remove dev-box-1' }))
     // Every remove is confirm-gated: the menu label ends in an ellipsis because a
     // second step follows, and the record has no undo.
     await u.click(await screen.findByRole('button', { name: 'Remove dev-box-1' }))
@@ -320,7 +330,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: 'Remove dev-box-1' }))
+    await u.click(await screen.findByRole('button', { name: 'Remove dev-box-1' }))
     await u.click(await screen.findByRole('button', { name: 'Remove dev-box-1' }))
     expect(await screen.findByText(/Remove of m1 failed: registry is locked/, undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
@@ -336,7 +346,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: 'Diagnose dev-box-1' }))
+    await u.click(await screen.findByRole('button', { name: 'Diagnose dev-box-1' }))
     expect(await screen.findByText(/m1: host did not answer/, undefined, { timeout: 5_000 })).toBeInTheDocument()
 
     // The note renders through ErrorNotice now, so its dismiss control carries
@@ -355,7 +365,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: 'Diagnose dev-box-1' }))
+    await u.click(await screen.findByRole('button', { name: 'Diagnose dev-box-1' }))
     await waitFor(() => expect(api.instanceStatus).toHaveBeenCalledWith('m1', true))
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
@@ -384,7 +394,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: 'Diagnose dev-box-1' }))
+    await u.click(await screen.findByRole('button', { name: 'Diagnose dev-box-1' }))
     const note = await screen.findByTestId('remote-crew-diagnosis-status', undefined, { timeout: 5_000 })
     expect(note).toHaveAttribute('role', 'status')
     expect(note).toHaveTextContent(/m1: All checks passed/)
@@ -414,7 +424,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: 'Diagnose dev-box-1' }))
+    await u.click(await screen.findByRole('button', { name: 'Diagnose dev-box-1' }))
     const notice = await screen.findByTestId('remote-crew-diagnosis', undefined, { timeout: 5_000 })
     expect(notice).toHaveTextContent(/m1: tunnel process exited/)
     expect(notice).not.toHaveTextContent(/All checks passed/)
@@ -444,7 +454,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: 'Diagnose dev-box-1' }))
+    await u.click(await screen.findByRole('button', { name: 'Diagnose dev-box-1' }))
     const note = await screen.findByTestId('remote-crew-diagnosis-status', undefined, { timeout: 5_000 })
     expect(note).toHaveAttribute('role', 'status')
     expect(note).toHaveTextContent(/m1: SSH and the remote dashboard are up/)
@@ -476,7 +486,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: 'Diagnose dev-box-1' }))
+    await u.click(await screen.findByRole('button', { name: 'Diagnose dev-box-1' }))
     const notice = await screen.findByTestId('remote-crew-diagnosis', undefined, { timeout: 5_000 })
     expect(notice).toHaveTextContent(/m1: ssh: connect to host dev-box-1 port 22: Connection refused/)
     expect(notice).not.toHaveTextContent(/click Connect/)
@@ -495,7 +505,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: 'Diagnose dev-box-1' }))
+    await u.click(await screen.findByRole('button', { name: 'Diagnose dev-box-1' }))
     expect(await screen.findByText(/Diagnose of m1 failed: probe blew up/, undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 
@@ -510,7 +520,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /Remove Kiro Crew Cloud/ }))
+    await u.click(await screen.findByRole('button', { name: /Remove Kiro Crew Cloud/ }))
     expect(await screen.findByText(/keeps running and billing/i)).toBeInTheDocument()
     await u.click(screen.getByRole('button', { name: /Remove Kiro Crew Cloud/ }))
     await waitFor(() => expect(api.removeInstance).toHaveBeenCalledWith('kc1'))
@@ -526,7 +536,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /^Stop Kiro Crew Cloud/ }))
+    await u.click(await screen.findByRole('button', { name: /^Stop Kiro Crew Cloud/ }))
     await waitFor(() =>
       expect(api.cloudStop).toHaveBeenCalledWith('kc-3f9a', {
         profile: 'Admin',
@@ -547,7 +557,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /^Start Kiro Crew Cloud/ }))
+    await u.click(await screen.findByRole('button', { name: /^Start Kiro Crew Cloud/ }))
     expect(await screen.findByText('unknown error', undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 
@@ -565,7 +575,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     expect(await screen.findByText(/Up to 10 stay warm at once/i)).toBeInTheDocument()
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /^Delete Kiro Crew Cloud/ }))
+    await u.click(await screen.findByRole('button', { name: /^Delete Kiro Crew Cloud/ }))
     expect(await screen.findByText(/terminates the EC2 instance/i)).toBeInTheDocument()
     await u.click(screen.getByRole('button', { name: /^Confirm deleting/ }))
     expect(await screen.findByRole('button', { name: /Deleting/, hidden: true })).toBeDisabled()
@@ -585,7 +595,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /^Delete Kiro Crew Cloud/ }))
+    await u.click(await screen.findByRole('button', { name: /^Delete Kiro Crew Cloud/ }))
     const warning = await screen.findByText(/terminates the EC2 instance/i)
     expect(warning).toHaveTextContent(/removes its disk, IAM role and security group/)
     expect(warning).toHaveTextContent(/chats, memory, files and settings .* cannot be recovered/)
@@ -601,6 +611,7 @@ describe('RemoteCrewPanel — instance actions', () => {
 
     // Two steps now: this cancel destroys the crew being created, so it arms
     // (with the irreversibility warning) before it fires.
+    await u.click(await screen.findByRole('button', { name: /Setting up/ }))
     await u.click(await screen.findByRole('button', { name: 'Cancel setup of kc-4d10 and remove the crew' }))
     await u.click(await screen.findByRole('button', { name: /Yes, remove/i }))
     expect(await screen.findByText(/too late to cancel/, undefined, { timeout: 5_000 })).toBeInTheDocument()
@@ -618,6 +629,7 @@ describe('RemoteCrewPanel — instance actions', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     // Arm, then fire: the button that carries the pending state is the confirm.
+    await u.click(await screen.findByRole('button', { name: /Setting up/ }))
     await u.click(await screen.findByRole('button', { name: 'Cancel setup of kc-4d10 and remove the crew' }))
     const confirm = await screen.findByRole('button', { name: /Yes, remove/i })
     await u.click(confirm)
@@ -658,9 +670,32 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await openSetupTab(u)
 
+    // The CloudFormation call ran and was denied: an error, with its hand-off, in that row.
+    const missing = await screen.findByText(/needs permission for this service/)
+    expect(missing.closest('[role="alert"]')).not.toBeNull()
+    expect(within(missing.closest('li') as HTMLElement).getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+
     await u.click(await screen.findByRole('button', { name: /Copy policy JSON/ }))
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('{"Version":"2012-10-17"}'))
     expect(await screen.findByRole('button', { name: /Copied/ })).toBeInTheDocument()
+  })
+
+  it('hands the agent the failed service check, profile and Region', async () => {
+    // The three service rows share one sentence, so the hand-off must say which call failed.
+    vi.mocked(api.listInstances).mockResolvedValue(list([]))
+    vi.mocked(api.cloudPreflight).mockResolvedValue({ ...PREFLIGHT_OK, cloudformation_reachable: false })
+    const u = setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await openSetupTab(u)
+
+    const row = (await screen.findByText(/needs permission for this service/)).closest('li') as HTMLElement
+    await u.click(within(row).getByRole('button', { name: /Ask the agent/ }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('"cloudformation_reachable":false')
+    expect(prompt).toContain('"region":"us-east-1"')
+    expect(prompt).toContain('"profile":""')
+    expect(prompt).not.toContain('ec2_reachable')
+    expect(prompt).not.toContain('ssm_reachable')
   })
 
   it('names the second policy when the edition attaches host policies', async () => {
@@ -747,8 +782,26 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
 
     expect(await screen.findByText('Credentials for this profile have expired.')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Launch' })).toBeDisabled())
-    // Every row fails; the hint names the first one in checklist order.
+    // The hint names the first failing row in checklist order: the credentials.
     expect(screen.getByText('Fix “AWS credentials” above to enable this.')).toBeInTheDocument()
+    // The EC2, CloudFormation and SSM checks run with those credentials, so none
+    // of them ran: no row blames a permission, marks a failure, or offers a policy to copy.
+    const notChecked = screen.getAllByText('Not checked yet — needs working AWS credentials first.')
+    expect(notChecked).toHaveLength(3)
+    for (const el of notChecked) {
+      expect(el.closest('li')?.querySelector('.lucide-x')).toBeNull()
+      expect(el.closest('li')?.querySelector('.lucide-check')).toBeNull()
+    }
+    expect(screen.queryByText(/needs permission for this service/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Copy policy JSON/ })).toBeNull()
+    // Typing another profile greys every verdict, but a row that was never
+    // checked has none to grey: it keeps its hollow ring.
+    await u.type(screen.getByRole('textbox', { name: 'AWS profile' }), 'Admin')
+    for (const el of notChecked) {
+      const mark = el.closest('li')?.querySelector(':scope > span')
+      expect(mark).toHaveClass('border-border-strong')
+      expect(mark).not.toHaveClass('bg-border-strong')
+    }
   })
 
   it('offers a re-check when the preflight request itself fails', async () => {
@@ -906,7 +959,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
 
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     const host = form.getByRole('textbox', { name: /SSH host/i })
@@ -935,7 +988,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     await u.click(form.getByRole('button', { name: /Save changes/i }))
 
@@ -956,7 +1009,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     await u.clear(form.getByRole('textbox', { name: /Remote kirocrew path/i }))
     await u.click(form.getByRole('button', { name: /Save changes/i }))
@@ -975,7 +1028,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     const port = form.getByRole('textbox', { name: /Remote port/i })
     await u.clear(port)
@@ -998,8 +1051,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for Kiro Crew Cloud/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for Kiro Crew Cloud/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit Kiro Crew Cloud/i }))
     // Everything stop/start/delete addresses the machine BY is frozen, not just
     // the instance id: a different profile or region points those calls at
@@ -1024,7 +1077,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
 
     const port = form.getByRole('textbox', { name: /Remote port/i })
@@ -1068,7 +1121,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     const port = form.getByRole('textbox', { name: /Remote port/i })
     await u.clear(port)
@@ -1092,7 +1145,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
 
     // Someone else changes the host while this form sits open; the poll picks it up.
@@ -1135,7 +1188,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     const profile = form.getByRole('textbox', { name: /AWS profile/i })
     expect(profile).not.toHaveAttribute('readonly')
@@ -1156,8 +1209,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for Kiro Crew Cloud/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for Kiro Crew Cloud/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit Kiro Crew Cloud/i }))
     const target = form.getByRole('textbox', { name: /SSM target/i })
     expect(target).toHaveAttribute('aria-readonly', 'true')
@@ -1172,7 +1225,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     await openRowMenu(u)
-    await u.click(await screen.findByRole('menuitem', { name: 'Remove dev-box-1' }))
+    await u.click(await screen.findByRole('button', { name: 'Remove dev-box-1' }))
     expect(await screen.findByRole('button', { name: 'Remove dev-box-1' })).toBeInTheDocument()
 
     // Two controls, not three: the primary action stands down while the row is
@@ -1182,12 +1235,11 @@ describe('RemoteCrewPanel — editing a crew', () => {
 
     await u.click(screen.getByRole('button', { name: /^Cancel$/ }))
 
-    // Disarmed: the confirm is gone, nothing was removed, and the menu is back.
+    // Disarmed: the confirm is gone, nothing was removed, and the row's actions are back.
     await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'Remove dev-box-1' })).not.toBeInTheDocument(),
+      expect(screen.getByRole('button', { name: 'Remove dev-box-1' })).toHaveTextContent('Remove…'),
     )
     expect(api.removeInstance).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: /More actions/i })).toBeInTheDocument()
   })
 
   it('refuses to swap an open edit form out from under unsaved work', async () => {
@@ -1198,16 +1250,16 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     const host = form.getByRole('textbox', { name: /SSH host/i })
     await u.clear(host)
     await u.type(host, 'dev-box-1-corrected')
 
     // Trying to edit the other crew is refused, with the reason stated.
-    await openRowMenu(u, /More actions for dev-box-2/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-2/i)
+    await u.click(within(crewRow('dev-box-2')).getByRole('button', { name: /Edit settings/i }))
 
     expect(await screen.findByText(/Save or cancel the open edit/i)).toBeInTheDocument()
     // The first form is still open, still holding the typed value.
@@ -1233,8 +1285,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const view = renderWithProviders(<RemoteCrewPanel />)
 
     try {
-      await openRowMenu(u, /More actions for dev-box-1/i)
-      await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+      await openRowMenu(u, /details for dev-box-1/i)
+      await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
       const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
       const host = form.getByRole('textbox', { name: /SSH host/i })
       await u.clear(host)
@@ -1271,8 +1323,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     const host = form.getByRole('textbox', { name: /SSH host/i })
     await u.click(form.getByRole('button', { name: /Save changes/i }))
@@ -1290,7 +1342,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
       'disabled:border-dashed',
       'disabled:cursor-not-allowed',
     )
-    expect(screen.getByRole('radio', { name: /Set up a new one/i })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Add Crew' })).toBeEnabled()
     // Stop waiting is the in-form exit from a save whose request never returns.
     expect(form.getByRole('button', { name: /^Stop waiting$/i })).toBeEnabled()
 
@@ -1314,8 +1366,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     const name = form.getByRole('textbox', { name: /^Name$/i })
     await u.clear(name)
@@ -1354,8 +1406,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const settings = within(
       await screen.findByRole('group', { name: /Edit dev-box-1/i }),
     )
@@ -1366,8 +1418,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     // Re-choosing Edit settings on the row that already holds the draft is not
     // the cross-row swap the panel refuses: the same form stays open with the
     // typed correction intact.
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
 
     expect(screen.queryByText(/Save or cancel the open edit/i)).not.toBeInTheDocument()
     const reopened = within(screen.getByRole('group', { name: /Edit dev-box-1/i }))
@@ -1378,26 +1430,24 @@ describe('RemoteCrewPanel — editing a crew', () => {
     expect(api.updateInstance).not.toHaveBeenCalled()
   })
 
-  it('keeps a typed edit across a switch to the setup tab and back', async () => {
-    // The crew list unmounts when the setup tab opens, so an edit whose only home
-    // was the form's own state was silently reverted to the stored values on the
-    // way back. A guard can only refuse the exits it enumerates; the draft lives
-    // in the panel instead, so it survives the unmount rather than being defended
-    // from it one exit at a time.
+  it('keeps a typed edit while the Add Crew modal opens and closes', async () => {
+    // The setup form used to be a tab that unmounted the crew list. It is a modal
+    // over the list now, and an open edit must still hold what was typed after it.
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const host = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
       .getByRole('textbox', { name: /SSH host/i })
     await u.clear(host)
     await u.type(host, 'dev-box-1-corrected')
 
-    await u.click(screen.getByRole('radio', { name: /Set up a new one/i }))
-    expect(screen.queryByRole('group', { name: /Edit dev-box-1/i })).not.toBeInTheDocument()
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
 
-    await u.click(screen.getByRole('radio', { name: /Your crews|Crews/i }))
+    await u.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     const reopened = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     expect((reopened.getByRole('textbox', { name: /SSH host/i }) as HTMLInputElement).value).toBe(
       'dev-box-1-corrected',
@@ -1417,8 +1467,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const host = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
       .getByRole('textbox', { name: /SSH host/i })
     await u.clear(host)
@@ -1432,8 +1482,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     await act(async () => {
       await u.click(screen.getByRole('button', { name: 'Refresh' }))
     })
-    await u.click(screen.getByRole('radio', { name: /Set up a new one/i }))
-    await u.click(screen.getByRole('radio', { name: /Your crews/i }))
+    await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
+    await u.click(screen.getByRole('button', { name: 'Close' }))
     await screen.findByRole('group', { name: /Edit dev-box-1/i })
 
     // The port moved externally, which is a machine coordinate, so the save is
@@ -1459,16 +1509,16 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     const host = form.getByRole('textbox', { name: /SSH host/i })
     await u.clear(host)
     await u.type(host, 'typed-then-cancelled')
     await u.click(form.getByRole('button', { name: /^Cancel$/i }))
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const again = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     expect((again.getByRole('textbox', { name: /SSH host/i }) as HTMLInputElement).value).toBe(
       MANUAL_INSTANCE.ssh_host,
@@ -1487,8 +1537,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const store = storeWithWarm('m1')
     renderWithProviders(<RemoteCrewPanel />, { store })
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     const host = form.getByRole('textbox', { name: /SSH host/i })
     await u.clear(host)
@@ -1509,8 +1559,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const store = storeWithWarm('m1')
     renderWithProviders(<RemoteCrewPanel />, { store })
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     const name = form.getByRole('textbox', { name: /^Name$/i })
     await u.clear(name)
@@ -1533,8 +1583,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     const host = form.getByRole('textbox', { name: /SSH host/i })
     await u.clear(host)
@@ -1573,8 +1623,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const host = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
       .getByRole('textbox', { name: /SSH host/i })
     await u.clear(host)
@@ -1594,8 +1644,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     await act(async () => {
       await u.click(screen.getByRole('button', { name: 'Refresh' }))
     })
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const reopened = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     expect((reopened.getByRole('textbox', { name: /SSH host/i }) as HTMLInputElement).value).toBe(
       MANUAL_INSTANCE.ssh_host,
@@ -1611,15 +1661,15 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await openRowMenu(u, /More actions for dev-box-1/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-1/i)
+    await u.click(await screen.findByRole('button', { name: /Edit settings/i }))
     const form = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     const host = form.getByRole('textbox', { name: /SSH host/i })
     await u.clear(host)
     await u.type(host, 'fixed')
 
-    await openRowMenu(u, /More actions for dev-box-2/i)
-    await u.click(await screen.findByRole('menuitem', { name: /Edit settings/i }))
+    await openRowMenu(u, /details for dev-box-2/i)
+    await u.click(within(crewRow('dev-box-2')).getByRole('button', { name: /Edit settings/i }))
     expect(await screen.findByRole('alert')).toHaveTextContent(/Save or cancel the open edit/i)
 
     await u.click(form.getByRole('button', { name: /Save changes/i }))

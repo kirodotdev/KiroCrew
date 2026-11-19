@@ -97,6 +97,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # with no reason.
         mcp_identity_unreadable_reason=e.mcp_identity_unreadable_reason,
         kas_builtin_ids=e.kas_builtin_ids,
+        # Dropping this would let trust answer KAS's ask on an organisation's web
+        # rule when the policy record is missing (``web_ask_rule``).
+        kas_managed_ask=e.kas_managed_ask,
         # Dropping it hides the reason box on a KAS card, and the reason with it.
         takes_rejection_reason=e.takes_rejection_reason,
         # Dropping this would leave every spec-granted KAS built-in prompting on

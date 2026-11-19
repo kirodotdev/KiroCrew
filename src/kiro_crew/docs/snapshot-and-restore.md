@@ -227,7 +227,7 @@ live state is this module's job, and it needs the gateway stopped (below).
 
 | Mode | Behavior |
 |------|----------|
-| `replace` | Overwrite the target with the snapshot, backing up any existing state first |
+| `replace` | Overwrite the target with the snapshot, backing up any existing state first, except `session_map.json` and `workspace_dir`: they name folders on the machine that made the snapshot, so this install's copy stays (see below) |
 | `merge` | Import new data without overwriting what is already there |
 
 There is no default mode. Name one with `--mode replace` or `--mode merge`.
@@ -261,7 +261,12 @@ component was being replaced.
   way is named (`↩️  config.json: kept the existing file; the bundle's copy was
   NOT merged into it ...`) and `✅ config` is printed only when no setting was
   left behind. Host state in the same component (`session_map.json`,
-  `project_dir`, `workspace_dir`) keeps this machine's copy silently. A bundle
+  `workspace_dir`) keeps this machine's copy silently in a merge. Neither mode
+  installs `session_map.json` or `workspace_dir` from the bundle, even where this
+  install has none, so a restore on the same machine does not bring back the
+  bundle's session resume bindings; a restore also never installs the archive's
+  `project_dir`. A replace says `↩  <file>: not restored` and keeps this install's
+  copy of each. A bundle
   `ui-prefs.json` or `notification_settings.json` that its own store would read
   as empty, or refuse, stops the restore before anything is installed. A replace
   always checks it; a merge checks it only where the destination lacks that file,
@@ -295,7 +300,11 @@ outranks `config.json`. The result names every settings file it kept, so a Merge
 that brought none of your settings back says so. To restore the archive's
 settings over this install's, choose Replace in the mode menu and import again:
 Replace installs all four files, saving the ones it replaces to
-`pre-restore-<timestamp>/` first. A settings file in the archive that is not
+`pre-restore-<timestamp>/` first. Replace also leaves `session_map.json` alone,
+and installs the archive's `workspace_dir` only when it is a plain folder under
+this home (not the home itself, the data home or a folder holding it, or a
+protected folder); otherwise this install's copy stays and the result names it.
+A settings file in the archive that is not
 usable is named in the result and never installed, in either mode.
 Memory, crons, workspace files and skills follow the never-overwrite rules
 above in both tools.

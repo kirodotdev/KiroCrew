@@ -672,6 +672,25 @@ def test_an_unexpected_apply_error_is_recorded_and_never_raised(calls, monkeypat
     assert update_next_start.read().pending_apply_error == "state directory is read-only"
 
 
+def test_a_record_the_counter_cannot_read_is_an_apply_error_and_runs_no_apply(
+    calls, monkeypatch
+) -> None:
+    from kiro_crew import atomic_write
+
+    def locked(path, **kwargs):
+        raise PermissionError("[WinError 32] the record is held open")
+
+    update_next_start.arm("2.0.0")
+    monkeypatch.setattr(atomic_write, "read_bytes_with_retry", locked)
+
+    assert _boot() is False
+
+    assert calls.child == 0 and calls.execs == []
+    after = update_next_start.read()
+    assert "WinError 32" in after.pending_apply_error
+    assert after.armed is False
+
+
 def test_an_apply_error_that_cannot_even_be_recorded_still_never_raises(calls, monkeypatch) -> None:
     def refuse(*args, **kwargs):
         raise RuntimeError()
@@ -752,3 +771,79 @@ def test_ending_with_the_sigterm_status_drops_any_handler_then_signals_itself(
         signal.signal(signal.SIGTERM, previous)
 
     assert sent == [(os.getpid(), signal.SIGTERM)]
+
+
+class _DoneProc:
+    """A finished child that printed *out* and exited with *code*."""
+
+    # nosemgrep: kirocrew.mock-pid-allocatable -- process double, never signalled
+    pid = 4243
+
+    def __init__(self, out: bytes, code: int) -> None:
+        self._out = out
+        self.returncode = code
+
+    async def communicate(self):
+        return self._out, None
+
+
+def _run_finished_child(out: bytes, code: int) -> tuple[bool, str]:
+    async def run() -> tuple[bool, str]:
+        async def fake_spawn(*args, **kwargs):
+            return _DoneProc(out, code)
+
+        with patch("asyncio.create_subprocess_exec", fake_spawn):
+            return await update_boot_apply._run_apply_child()
+
+    return asyncio.run(run())
+
+
+def test_the_apply_output_goes_through_the_contexts_redactor(monkeypatch) -> None:
+    # A loaded companion's own pattern applies, not only the baseline's.
+    monkeypatch.setattr(
+        "kiro_crew.platform.context.redact_via_context",
+        lambda text: text.replace("CORP-MARKER-123", "[REDACTED]"),
+    )
+
+    ok, tail = _run_finished_child(b"pip said CORP-MARKER-123\nerror: it broke\n", 1)
+
+    assert ok is False
+    assert "CORP-MARKER-123" not in tail
+    assert update_boot_apply._failure_reason(tail) == "error: it broke"
+
+
+def test_an_apply_output_with_no_trusted_redactor_is_withheld(monkeypatch) -> None:
+    from kiro_crew.platform.context import PlatformCompositionError
+
+    def refuse(text: str) -> str:
+        raise PlatformCompositionError("companion did not compose")
+
+    monkeypatch.setattr("kiro_crew.platform.context.redact_via_context", refuse)
+
+    ok, tail = _run_finished_child(b"raw output CORP-MARKER-123\n", 1)
+
+    assert (ok, tail) == (False, "")
+    assert update_boot_apply._failure_reason(tail) == "the update command failed"
+
+
+def test_the_apply_tail_is_redacted_before_its_cut_even_with_redaction_off() -> None:
+    from kiro_crew.security import redaction_switch
+    from kiro_crew.testing.synthetic_credentials import github_classic
+
+    key = github_classic()
+    # The key straddles the start of the kept tail, so a skipped pass would keep a suffix.
+    out = (key + "y" * (update_boot_apply._OUTPUT_TAIL_CHARS - 20)).encode()
+    with redaction_switch.owner_view():
+        _ok, tail = _run_finished_child(out, 1)
+
+    assert key[-15:] not in tail
+
+
+def test_a_standalone_apply_tail_matches_the_baseline_redactor() -> None:
+    from kiro_crew.security import redact
+
+    out = b"Collecting kiro-crew\nerror: Your local changes would be overwritten\n"
+    ok, tail = _run_finished_child(out, 0)
+
+    assert ok is True
+    assert tail == redact(out.decode()).strip()

@@ -244,7 +244,13 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
     return {
         "no_dashboard": getattr(args, "slack_only", False),
         "no_crons": getattr(args, "no_crons", False),
-        "no_tunnel": getattr(args, "no_tunnel", False),
+        # --test-mode and --seed start a test or dev gateway: it must never publish a
+        # tunnel or register with the Kiro relay, whatever its config or sign-in.
+        "no_tunnel": bool(
+            getattr(args, "no_tunnel", False)
+            or test_mode
+            or getattr(args, "seed", None) is not None
+        ),
         "no_open": no_open,
         "port_override": port,
         "json_ready": json_ready,
@@ -306,10 +312,11 @@ def _diagnostic_bind_address() -> str | None:
 
 
 def _refuse_unpersistable_data_home() -> None:
-    """Exit 1 with one line when the data home cannot hold files.
+    """Exit 1 with the reason when the data home cannot hold files.
 
-    ``config_dir()``, not the probe's own mkdir, creates a missing home, so it is
-    owner-only from the start.
+    Files another account owns are named on the line after it (a home a root run
+    created is the usual cause). ``config_dir()``, not the probe's own mkdir,
+    creates a missing home, so it is owner-only from the start.
     """
     try:
         error = platform_compat.probe_file_persistence(config_dir())
@@ -317,4 +324,7 @@ def _refuse_unpersistable_data_home() -> None:
         error = f"cannot create files in {peek_data_home()}: {exc}"
     if error is not None:
         print(f"❌ Cannot persist state: {error}", file=sys.stderr)
+        from kiro_crew.data_home_owner import print_if_data_home_not_owned
+
+        print_if_data_home_not_owned(peek_data_home())
         raise SystemExit(1)
