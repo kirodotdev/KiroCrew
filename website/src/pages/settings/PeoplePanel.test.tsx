@@ -1225,7 +1225,8 @@ describe('People: connection sources at once, one list with source chips', () =>
     fireEvent.click(ssmButton)
     const dialog = await screen.findByTestId('invite-dialog')
     expect(within(dialog).getByTestId('invite-transport-ssm')).toHaveAttribute('aria-selected', 'true')
-    expect(within(dialog).getByTestId('ssm-form')).toBeVisible()
+    // The dialog fades in from opacity 0, so the form is visible only once a frame has run.
+    await waitFor(() => expect(within(dialog).getByTestId('ssm-form')).toBeVisible())
   })
 
   it('locks the invite buttons for a teammate, saying only the owner can invite', async () => {
