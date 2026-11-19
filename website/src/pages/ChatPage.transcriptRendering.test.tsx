@@ -35,7 +35,7 @@ function props(over: Partial<Props> = {}): Props {
     slotHasMore: false, slotOldestIndex: 0, cursorIsForActiveSlot: true, loadingOlder: false, chatConfig: loadChatConfig(),
     activeSlotRemoteBound: false, automationId: undefined, setAutomationOpen: fn(), handleArtifactOpen: vi.fn(async () => undefined),
     handleFileOpen: fn() as never, handleFolderOpen: fn(), handleOpenDiff: fn(), handleSubagentPanelOpen: fn(), sessionTitles: new Map(),
-    handleFork: vi.fn(async () => false), highlightTs: null, selectSessionTab: fn(), linkPreviewsOn: false, socialShareOn: false,
+    handleFork: vi.fn(async () => false), highlightTs: null, landedTs: null, jumpMid: null, selectSessionTab: fn(), linkPreviewsOn: false, socialShareOn: false,
     connectionsUiOn: false, planTaskId: '', showRefusedPress: fn(), decideRow: vi.fn(async () => undefined),
     revealAppInPanel: fn(), lastTextIdx: -1, regenerating: false, handleRegenerate: fn(), replacingMids: new Set<string>(), continuable: false, continuing: false,
     freshSession: { phase: 'idle' } as never, handleContinue: fn(), handleFreshSession: fn(), interrupted: false, openDefaultModelSetting: fn(),
@@ -237,5 +237,31 @@ describe('renderFarmItem', () => {
     const single = el(result.current.renderFarmItem(3))
     expect(single.props.className).toBe('px-4 mx-auto w-full py-1 empty:hidden')
     expect(farmPassRef.current).toBe(false)
+  })
+})
+
+describe('the jump mark on a run of messages that share a ts', () => {
+  const first = msg('assistant', 'first twin', 'same', { mid: 'm-1' })
+  const second = msg('assistant', 'second twin', 'same', { mid: 'm-2' })
+  const third = msg('assistant', 'third twin', 'same', { mid: 'm-3' })
+  const markOf = (node: ReactNode): { target: unknown; cls: string } => {
+    const scope = el(node)
+    const row = el(scope.props.children as ReactNode)
+    return { target: row.props['data-jump-target'], cls: String(row.props.className ?? '') }
+  }
+
+  it('marks only the message whose mid the jump carried', () => {
+    const msgs = [first, second, third]
+    const { result } = render({ messages: msgs, messagesRef: { current: msgs }, landedTs: 'same', jumpMid: 'm-2' })
+    const marks = msgs.map((m, i) => markOf(result.current.renderMessage(i, m)))
+    expect(marks.map(m => m.target)).toEqual([undefined, 'same', undefined])
+    expect(marks.map(m => m.cls.includes('animate-msg-landed'))).toEqual([false, true, false])
+  })
+
+  it('marks every row of that ts when the jump carried no mid', () => {
+    const msgs = [first, second]
+    const { result } = render({ messages: msgs, messagesRef: { current: msgs }, highlightTs: 'same', jumpMid: null })
+    const marks = msgs.map((m, i) => markOf(result.current.renderMessage(i, m)))
+    expect(marks.map(m => m.target)).toEqual(['same', 'same'])
   })
 })

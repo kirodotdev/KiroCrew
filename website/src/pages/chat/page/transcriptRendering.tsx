@@ -19,6 +19,7 @@ import { canForkAtWindow } from '../pagination'
 import { messageRowKey, turnLeadKey, msgIdentityKey } from '../ChatPageMessageContent'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { MessageSearchScope } from '../../../hooks/SearchHighlightContext'
+import { isJumpTarget } from '../../../hooks/JumpRevealContext'
 import { UserMessage, AssistantMessage } from '..'
 import type { TurnStats } from '../AssistantMessage'
 import { warmBriefBodyOf } from '../../../components/chat/WarmBriefCard'
@@ -107,6 +108,10 @@ interface TranscriptRenderingOptions {
   handleFork: (visibleIndex: number, messageId?: string, explicitDirection?: 'head') => Promise<boolean>
   forkDirectionChoice?: boolean
   highlightTs: string | null
+  /** The row a `link` jump landed on; it wears the landing highlight. */
+  landedTs: string | null
+  /** The marked message's own id; only it, among rows sharing the marked `ts`, is marked. */
+  jumpMid: string | null
   selectSessionTab: (key: string) => void
   linkPreviewsOn: boolean
   socialShareOn: boolean
@@ -179,7 +184,7 @@ const restartGatewayFromError = (): Promise<unknown> => api.restartGateway()
 export function useTranscriptRendering({
   embedded, mode, popout, filteredSlots, connected, activeSlot, voiceRecoverySlot, appToolCallIds, mcpAppPanel, messages, messagesRef, slotRunning, toolDisclosure, setToolDisclosureFor, slotState,
   activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, chatConfig, activeSlotRemoteBound, automationId, setAutomationOpen, handleArtifactOpen, handleFileOpen,
-  handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
+  handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, landedTs, jumpMid, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
   decideRow, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
   openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
   handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
@@ -357,7 +362,7 @@ export function useTranscriptRendering({
     const msgTimeFull = fmtMessageTimeFull(m.ts)
     return (
       <MessageSearchScope key={key} messageIdx={i}>
-      <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''} ${m.ts && m.ts === highlightTs ? 'animate-msg-highlight rounded-lg' : ''}`}>
+      <div data-jump-target={isJumpTarget(m, landedTs, jumpMid) || isJumpTarget(m, highlightTs, jumpMid) ? m.ts : undefined} className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''} ${isJumpTarget(m, landedTs, jumpMid) ? 'animate-msg-landed rounded-lg' : isJumpTarget(m, highlightTs, jumpMid) ? 'animate-msg-highlight rounded-lg' : ''}`}>
         <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
           {isUser ? (
             <UserMessage
@@ -519,7 +524,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, landedTs, jumpMid, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

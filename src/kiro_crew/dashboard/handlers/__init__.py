@@ -510,6 +510,7 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     api_sessions_memory,
     api_sessions_restart,
     api_sessions_search,
+    api_sessions_search_messages,
     api_sessions_summarize,
     api_sessions_usage,
     api_sessions_usage_refresh,

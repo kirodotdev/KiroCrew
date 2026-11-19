@@ -392,6 +392,9 @@ export function useChatPageSessionController({
   const [sidError, setSidError] = useState('')
   const [newSlotFailed, setNewSlotFailed] = useState(false)
   const [highlightTs, setHighlightTs] = useState<string | null>(null)
+  // The row another surface sent the reader to (Search all chats, `?msg=`): its
+  // own state, so the turn stepper's and the pins' flash never wear its look.
+  const [landedTs, setLandedTs] = useState<string | null>(null)
   const [appSlotLaunch, setAppSlotLaunch] = useState<ChatLaunchOptions | null>(null)
   const appSlotLaunchRef = useRef<ChatLaunchOptions | null>(null)
   // A launch whose target is not in the session list yet, and the session that
@@ -1509,6 +1512,7 @@ export function useChatPageSessionController({
     appSlotLaunch,
     setAppSlotLaunch,
     highlightTs,
+    landedTs,
     launchedDraftInteracted,
     initialMidRef,
     initialMsgRef,
@@ -1520,6 +1524,7 @@ export function useChatPageSessionController({
     selectSessionTab,
     sessionTabs,
     setHighlightTs,
+    setLandedTs,
     setNewSlotFailed,
     setSidError,
     sidError,

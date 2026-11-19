@@ -88,6 +88,8 @@ import { mcpAppTabTitle } from '../lib/mcpAppSrcdoc'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 import { isComposerSendHeld, useComposerSendHeld } from '../utils/composerSendHolds'
 
+import JumpRevealContext from '../hooks/JumpRevealContext'
+import { useJumpMark } from './chat/page/jumpMark'
 import SearchHighlightContext from '../hooks/SearchHighlightContext'
 import { useChatProjectDir } from '../components/sessionEnvironmentHooks'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
@@ -533,6 +535,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     handleSurveyLayoutChange,
     composerBandRef,
     navToDisplayIndex,
+    cancelNavScroll,
     displayItemsRef,
     pinFoldRef,
     pinCardRef,
@@ -595,6 +598,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     ensureSlotTab,
     handleResumeSession,
     highlightTs,
+    landedTs,
     launchedDraftInteracted,
     initialMidRef,
     initialMsgRef,
@@ -606,6 +610,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     selectSessionTab,
     sessionTabs,
     setHighlightTs,
+    setLandedTs,
     setNewSlotFailed,
     setSidError,
     sidError,
@@ -1005,12 +1010,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (flag) steer(flag === 'auto' ? { auto: true } : undefined)
     else void send()
   }
+  // One owner of every jump's mark and its expiry (pins, quotes, links, search).
+  const { markJump, markStep, jumpSeq, jumpTarget } = useJumpMark(setHighlightTs, setLandedTs)
+  // The marked message's own id; a turn-step flash is no jump and carries none.
+  const jumpMid = jumpTarget?.mid ?? null
+  const revealScrollerEl = useCallback(() => scrollerRef.current, [scrollerRef])
+  // The row a jump highlighted, for a turn whose step fold holds it to open, and
+  // the hand-off that lets that turn's own scroll end the jump's. Keyed on the
+  // jump target alone: a turn-step flash must not rerun a jump's row scroll.
+  const jumpReveal = useMemo(
+    () => ({ ts: jumpTarget?.ts ?? null, mid: jumpMid, seq: jumpSeq, claimScroll: cancelNavScroll, scrollerEl: revealScrollerEl }),
+    [jumpTarget, jumpMid, jumpSeq, cancelNavScroll, revealScrollerEl],
+  )
   const {
     messageToDisplayIdx, navigateToTurn, chatNav, turnStepAnnouncement, chatPins, chatPinsLoading, isPinned, setPendingPinnedJump, handleEditLastRequest, handleJumpToPinnedMessage, handleJumpToQuote,
     handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus, messageToDisplayIdxRef,
   } = useTranscriptPins({
     embedded, dispatch, isMobile, activeSlot, messages, messagesRef, slotRunning, splitMode, crewWindow, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, activeViewIsBoundedPage,
-    isWelcomeState, activeSlotRemoteBound, scrollerRef, search, navToDisplayIndex, pinnedJumpChrome, scrollToPinnedPrompt, setHighlightTs, splitFeatureEnabled, regenerating, setEditLast, editSeqRef,
+    isWelcomeState, activeSlotRemoteBound, scrollerRef, search, navToDisplayIndex, pinnedJumpChrome, scrollToPinnedPrompt, markStep, markJump, splitFeatureEnabled, regenerating, setEditLast, editSeqRef,
     renderedDisplayItems, renderedTranscript, insertIntoComposer: insertDashboardReply,
   })
   // Search steps and clicks, the approval bar's "Show in chat", and ?msg= deep links.
@@ -1027,7 +1044,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     initialMsgRef,
     initialMidRef,
     initialSidRef,
-    setHighlightTs,
+    markJump,
     handleJumpToPinnedMessage,
   })
   const {
@@ -1035,7 +1052,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = useTranscriptRendering({
     embedded, mode, popout, filteredSlots, connected, activeSlot, voiceRecoverySlot, appToolCallIds, mcpAppPanel, messages, messagesRef, slotRunning, toolDisclosure, setToolDisclosureFor, slotState,
     activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, chatConfig, activeSlotRemoteBound, automationId, setAutomationOpen, handleArtifactOpen, handleFileOpen,
-    handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
+    handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, landedTs, jumpMid, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
     decideRow, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
     openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
     handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
@@ -1210,6 +1227,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           />
         ) : (
           <SearchHighlightContext.Provider value={searchCtxValue}>
+          <JumpRevealContext.Provider value={jumpReveal}>
           <div className="relative flex flex-col flex-1 min-h-0" {...dropTargetProps}>
             <ChatTitleOverlay
               embedMode={embedMode} popout={popout} activeSlot={activeSlot} dispatch={dispatch} filteredSlots={filteredSlots} isMobile={isMobile} titleInTopbar={titleInTopbar}
@@ -1294,6 +1312,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               steerWorkerRoot={currentCrewRoot}
             />
           </div>
+          </JumpRevealContext.Provider>
           </SearchHighlightContext.Provider>
         )}
       </div>

@@ -91,6 +91,7 @@ import BuiltinAppRoute from './apps/BuiltinAppRoute'
 import { MobileNavRailContext, MobileRosterBarContext, type MobileNavRailOptions } from './components/MobileNavRailContext'
 import ShortcutsModal from './components/ShortcutsModal'
 import QuickSearchSurface from './components/QuickSearchSurface'
+import GlobalChatSearchDialog from './components/globalChatSearch/GlobalChatSearchDialog'
 import ReportProblemModal from './components/ReportProblemModal'
 import KiroAccountModal from './components/KiroAccountModal'
 
@@ -1082,6 +1083,8 @@ export default function App() {
       opener={commandPalette.opener}
       openShortcuts={toggleShortcutsModal}
     />
+    {/* Search all chats (⌘⇧F / Ctrl+Shift+F, the sidebar button). */}
+    <GlobalChatSearchDialog />
     {/* Theme decoration: decorative overlays (widgets, transitions)
         contributed by the active theme's branding. Absent unless a registered
         theme declares them, and while the user has turned that theme's

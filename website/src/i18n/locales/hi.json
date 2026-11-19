@@ -11625,6 +11625,33 @@
       "undo_failed": "ड्राफ़्ट फिर से अलग नहीं रखा जा सका: जगह नहीं है या ब्राउज़र स्टोरेज उपलब्ध नहीं है।",
       "discarded_one": "अलग रखा ड्राफ़्ट हटा दिया गया। {{count}} ड्राफ़्ट अभी भी अलग रखा है।",
       "discarded_other": "अलग रखा ड्राफ़्ट हटा दिया गया। {{count}} ड्राफ़्ट अभी भी अलग रखे हैं।"
+    },
+    "globalChatSearch": {
+      "title": "सभी चैट खोजो",
+      "placeholder": "हर चैट में संदेश खोजो…",
+      "filter_bot": "Bot",
+      "any_bot": "सभी Bot",
+      "filter_who": "किसने",
+      "who_any": "कोई भी",
+      "who_me": "मैं",
+      "who_bot": "Bot",
+      "filter_when": "कब",
+      "when_any": "कभी भी",
+      "when_today": "आज",
+      "when_week": "पिछले 7 दिन",
+      "when_month": "पिछले 30 दिन",
+      "hint_min": "खोजने के लिए कम से कम {{min}} अक्षर लिखो",
+      "searching": "खोज रहे हैं…",
+      "no_results": "कोई संदेश मेल नहीं खाता",
+      "error": "खोज विफल रही। फिर से कोशिश करो।",
+      "open_failed": "वह चैट नहीं खुल सकी",
+      "results_label": "खोज परिणाम",
+      "role_you": "तुम",
+      "role_bot": "Bot",
+      "keyboard_hint": "↑ ↓ से चलो · Enter से खोलो · Esc से बंद करो",
+      "scan_note": "{{total}} में से नवीनतम {{searched}} चैट खोजी गईं",
+      "more_matches_one": "इस चैट में {{count}} और मिलान",
+      "more_matches_other": "इस चैट में {{count}} और मिलान"
     }
   },
   "hooks": {

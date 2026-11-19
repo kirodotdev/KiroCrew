@@ -11355,6 +11355,32 @@
       "discard_failed": "无法丢弃草稿：浏览器存储不可用。草稿仍在暂存区中。",
       "undo_failed": "无法将草稿放回暂存区：暂存区已满或浏览器存储不可用。",
       "discarded_other": "已丢弃暂存的草稿。仍有 {{count}} 条暂存。"
+    },
+    "globalChatSearch": {
+      "title": "搜索所有聊天",
+      "placeholder": "在所有聊天中搜索消息…",
+      "filter_bot": "Bot",
+      "any_bot": "所有 Bot",
+      "filter_who": "发送者",
+      "who_any": "任何人",
+      "who_me": "我",
+      "who_bot": "Bot",
+      "filter_when": "时间",
+      "when_any": "任意时间",
+      "when_today": "今天",
+      "when_week": "最近 7 天",
+      "when_month": "最近 30 天",
+      "hint_min": "至少输入 {{min}} 个字符进行搜索",
+      "searching": "正在搜索…",
+      "no_results": "没有匹配的消息",
+      "error": "搜索失败，请重试。",
+      "open_failed": "无法打开该聊天",
+      "results_label": "搜索结果",
+      "role_you": "你",
+      "role_bot": "Bot",
+      "keyboard_hint": "↑ ↓ 移动 · Enter 打开 · Esc 关闭",
+      "scan_note": "已搜索最近的 {{searched}} 个聊天（共 {{total}} 个）",
+      "more_matches_other": "此聊天中还有 {{count}} 条匹配"
     }
   },
   "hooks": {
