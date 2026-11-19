@@ -1656,7 +1656,6 @@ jobs:
           Get-CimInstance Win32_Processor | Format-List Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed | Out-File (Join-Path $probe "host.txt")
           Get-CimInstance Win32_ComputerSystem | Format-List TotalPhysicalMemory,Model,Manufacturer | Out-File -Append (Join-Path $probe "host.txt")
           Get-CimInstance Win32_LogicalDisk | Format-List DeviceID,Size,FreeSpace | Out-File -Append (Join-Path $probe "host.txt")
-          Start-Process -FilePath $py -ArgumentList @(".github/ci-probe/runner_sampler.py", (Join-Path $probe "samples.jsonl"), (Join-Path $probe "STOP"), "5") -RedirectStandardError (Join-Path $probe "sampler.log")
 
       # No surface selector here, unlike the POSIX backend-test job. Narrowing
       # this job to the cross-surface subset on a frontend-only diff was
@@ -1713,8 +1712,11 @@ jobs:
           by_mem=$(( (mem_mib - 2048) / 3072 ))
           WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$WORKERS" -ge 1 ] || WORKERS=1
-          WORKERS=6  # ci-probe run 2: worker-count experiment
+          WORKERS=$(( ${{ matrix.group }} <= 4 ? 4 : 6 ))  # ci-probe run 2: shards 1-4 at 4, 5-8 at 6
           echo "pytest workers: $WORKERS"
+          # ci-probe: the sampler lives inside this step; a process started in an
+          # earlier Windows step does not outlive that step.
+          "$RUNNER_TEMP/probe-venv/Scripts/python.exe" .github/ci-probe/runner_sampler.py "$RUNNER_TEMP/runner-probe/samples.jsonl" "$RUNNER_TEMP/runner-probe/STOP" 5 > /dev/null 2> "$RUNNER_TEMP/runner-probe/sampler.log" &
           # Host memory in use (total - available), sampled every 5s; the
           # "Report peak memory" step prints the high-water mark.
           python -c '
