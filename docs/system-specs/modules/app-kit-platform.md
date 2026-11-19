@@ -962,6 +962,24 @@ manifest file, so an explicit refresh always retries, and the marker lives in
 `by-source/`, so the GC sweep reclaims it. A missing, expired or unreadable
 marker reads as absent and the listing fetches.
 
+An anonymous ssh fetch is also skipped while its ssh destination has just
+refused the sign-in. ssh refuses before it names a repository, so a `Permission
+denied (<methods>)` from one app's clone holds for every app at the same
+`user@host[:port]` (`_anonymous_ssh_destination`). Only ssh's own whole line
+counts (`_is_ssh_sign_in_refusal`, which ends a line at `\n` alone), never the
+phrase inside git's echo of a repository path or branch, which an index chooses.
+A row whose branch or URL holds a newline takes no part, because git echoes both
+in its own errors, nor does a URL holding a `%` escape, because git decodes it
+before it echoes the path. `_resolve_manifest`
+records the refusal in process memory (`_SSH_SIGN_IN_REFUSED`), never in the
+agent-writable data home, and for `_MANIFEST_NEGATIVE_CACHE_TTL` the other rows
+there run with `allow_remote=False` and write the marker above. So a cold listing
+pays one wave of refused clones per destination, not one clone per app. The
+memory holds at most `_SSH_SIGN_IN_REFUSED_MAX` destinations of at most
+`_SSH_DESTINATION_MAX_CHARS` characters and is cleared when full;
+`refresh_registries` forgets it. Owner-designated fetches and https rows never
+take part.
+
 A failed registry-index fetch is remembered the same way, one level up.
 `_fetch_and_cache_external_registry` writes an empty `_registry_<stem>.failed.json`
 marker beside the index cache when the fetch fails, and removes it when a fetch

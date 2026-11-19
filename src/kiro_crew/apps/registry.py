@@ -869,7 +869,12 @@ if _typing.TYPE_CHECKING:
     )
     from kiro_crew.apps.registry_pipeline.manifests import (  # noqa: F401
         _REGISTRY_ROW_KEYS,
+        _SSH_DESTINATION_MAX_CHARS,
+        _SSH_SIGN_IN_REFUSED,
+        _SSH_SIGN_IN_REFUSED_MAX,
+        _anonymous_ssh_destination,
         _fetch_app_manifest,
+        _is_ssh_sign_in_refusal,
         _merge_manifest,
         _resolve_manifest,
         official_catalog,
