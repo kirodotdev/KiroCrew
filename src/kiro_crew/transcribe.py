@@ -1293,6 +1293,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.transcribe_local import (  # noqa: F401
         _LANGUAGE_RE,
+        _WAV_SLICE_BYTES,
         _WAV_SUFFIXES,
         _make_temp_wav,
         _pcm_from_wav,
