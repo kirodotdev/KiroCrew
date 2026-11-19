@@ -8142,7 +8142,7 @@
       "if_you_are_diagnosing_this_from_a_terminal_kiro": "আপনি যদি টার্মিনাল থেকে এটি নির্ণয় করছেন, তবে মনে রাখবেন যে Kiro CLI অ্যাপটি নিজে চালু না থাকা পর্যন্ত kiro-cli diagnostic কিছুই জানায় না — প্রথমে kiro-cli launch দিয়ে এটি চালু করুন। ওই প্রত্যাখ্যান এটির কারণ নয়।",
       "install_kiro_cli_sign_in_once_and_kiro_crew_will": "Kiro CLI ইনস্টল করুন, একবার সাইন ইন করুন, বাকিটা {{productName}} সামলে নেবে।",
       "kiro_cli_is_installed_but_too_old": "Kiro CLI ইনস্টল করা আছে, তবে এই সংস্করণটি সেই acp কমান্ডের চেয়ে পুরনো যা দিয়ে {{productName}} প্রতিটি সেশন চালায়। এটি আপডেট করো, আর এই পৃষ্ঠাটি নিজে থেকেই এগিয়ে যাবে।",
-      "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI ইনস্টল করা আছে, কিন্তু এটি যাচাই করা যায়নি",
+      "the_agent_sandbox_could_not_be_started": "এজেন্ট স্যান্ডবক্স চালু করা যায়নি",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI ইনস্টল করা আছে। চালিয়ে যেতে সাইন-ইন শেষ করো।",
       "kiro_cli_s_reason": "কেন প্রত্যাখ্যান হয়েছে",
       "kiro_cli_update_needed": "Kiro CLI আপডেট প্রয়োজন",

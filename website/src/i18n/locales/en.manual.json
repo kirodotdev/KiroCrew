@@ -3003,7 +3003,7 @@
       "how_to_fix": "How to fix",
       "if_this_keeps_happening": "If this keeps happening",
       "if_you_are_diagnosing_this_from_a_terminal_kiro": "If you are diagnosing this from a terminal, note that kiro-cli diagnostic reports nothing until the Kiro CLI app itself is running — launch it with kiro-cli launch first. That refusal is not the cause of this.",
-      "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI is installed but could not be verified",
+      "the_agent_sandbox_could_not_be_started": "The agent sandbox could not be started",
       "kiro_cli_is_installed_but_too_old": "Kiro CLI is installed, but this version predates the acp command {{productName}} launches every session through. Update it and this page continues on its own.",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI is installed. Finish signing in to continue.",
       "kiro_cli_s_reason": "Why it was refused",

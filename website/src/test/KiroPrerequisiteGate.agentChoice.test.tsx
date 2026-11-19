@@ -949,7 +949,29 @@ describe('KiroPrerequisiteGate agent choice', () => {
 
     await settle(queryClient)
     expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Kiro CLI is installed but could not be verified' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'The agent sandbox could not be started' })).toBeInTheDocument()
+  })
+
+  it('heads the sandbox-blocked screen as a sandbox problem on the built-in engine route', async () => {
+    // What failed is the host's sandbox, whichever engine runs, so the heading
+    // names the sandbox and never sends the user after a Kiro CLI problem.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+      sandbox_remedy: 'apparmor_userns',
+    }))
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: {} })
+    vi.mocked(api.acpBackends).mockResolvedValue({
+      backends: [probe({ id: 'kas', policy_id: 'kas', independent_setup: false })],
+    })
+    const { queryClient } = renderSettled()
+
+    await settle(queryClient)
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'The agent sandbox could not be started' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /Kiro CLI/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/This host allows user namespaces, but the kernel then denied the mount namespace/)).toBeInTheDocument()
   })
 
   it('uses KAS when the config has no manual harness choice', async () => {

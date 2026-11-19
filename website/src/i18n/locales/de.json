@@ -8142,7 +8142,7 @@
       "if_you_are_diagnosing_this_from_a_terminal_kiro": "Falls du dies über ein Terminal untersuchst: kiro-cli diagnostic meldet nichts, solange die Kiro CLI App selbst nicht läuft — starte sie zuerst mit kiro-cli launch. Diese Verweigerung ist nicht die Ursache hierfür.",
       "install_kiro_cli_sign_in_once_and_kiro_crew_will": "Installiere Kiro CLI, melde dich einmal an, und {{productName}} übernimmt den Rest.",
       "kiro_cli_is_installed_but_too_old": "Kiro CLI ist installiert, aber diese Version ist älter als der acp-Befehl, über den {{productName}} jede Sitzung startet. Aktualisiere es, und diese Seite fährt von selbst fort.",
-      "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI ist installiert, konnte aber nicht verifiziert werden",
+      "the_agent_sandbox_could_not_be_started": "Die Sandbox des Agenten konnte nicht gestartet werden",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI ist installiert. Schließe die Anmeldung ab, um fortzufahren.",
       "kiro_cli_s_reason": "Grund der Ablehnung",
       "kiro_cli_update_needed": "Kiro-CLI-Update erforderlich",

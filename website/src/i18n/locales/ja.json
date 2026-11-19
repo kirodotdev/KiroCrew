@@ -7932,7 +7932,7 @@
       "if_you_are_diagnosing_this_from_a_terminal_kiro": "ターミナルからこれを診断している場合、Kiro CLI アプリ自体が実行されるまでkiro-cli診断レポートは何も返さないことに注意してください。まずkiro-cli launchで起動してください。その拒否はこれの原因ではありません。",
       "install_kiro_cli_sign_in_once_and_kiro_crew_will": "Kiro CLI をインストールして一度サインインすれば、あとは {{productName}} が処理します。",
       "kiro_cli_is_installed_but_too_old": "Kiro CLI はインストール済みですが、このバージョンは {{productName}} が各セッションで使用する acp コマンドより古いものです。更新すると、このページは自動的に続行します。",
-      "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI はインストールされていますが、確認できませんでした",
+      "the_agent_sandbox_could_not_be_started": "エージェントのサンドボックスを起動できませんでした",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI がインストールされました。続行するにはサインインを完了してください。",
       "kiro_cli_s_reason": "拒否された理由",
       "kiro_cli_update_needed": "Kiro CLI の更新が必要です",

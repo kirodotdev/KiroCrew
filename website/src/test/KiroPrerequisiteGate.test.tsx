@@ -1200,7 +1200,7 @@ describe('KiroPrerequisiteGate', () => {
     )
 
     expect(
-      await screen.findByText('Kiro CLI is installed but could not be verified'),
+      await screen.findByRole('heading', { name: 'The agent sandbox could not be started' }),
     ).toBeInTheDocument()
     expect(screen.getByText(/provides no OS-level sandbox/)).toBeInTheDocument()
     // The technical reason names the failing step, so it is shown verbatim.
@@ -1545,7 +1545,7 @@ describe('KiroPrerequisiteGate', () => {
 
     expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
     expect(
-      screen.queryByText('Kiro CLI is installed but could not be verified'),
+      screen.queryByText('The agent sandbox could not be started'),
     ).not.toBeInTheDocument()
   })
 

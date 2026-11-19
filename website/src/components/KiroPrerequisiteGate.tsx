@@ -359,11 +359,12 @@ function SandboxUnavailable({
   onRetry: () => void
   allowRemoteSetup: boolean
 }) {
-  // One honest title for every kind — the CLI is installed, verification is
-  // what failed — with the body carrying the mechanism, because the remedies
-  // diverge sharply. A transient failure clears on retry and must NOT push the
-  // user toward disabling their own isolation; a foreign outer sandbox means
-  // this host's sandbox is fine; only 'no_backend' is a host-level verdict.
+  // One honest title for every kind and every engine route — the agent
+  // sandbox could not be started — with the body carrying the mechanism,
+  // because the remedies diverge sharply. A transient failure clears on retry
+  // and must NOT push the user toward disabling their own isolation; a foreign
+  // outer sandbox means this host's sandbox is fine; only 'no_backend' is a
+  // host-level verdict.
   //
   // The generic no_backend sentence ("this host provides no OS-level sandbox")
   // is FALSE under the Ubuntu AppArmor restriction: user namespaces work, the
@@ -406,7 +407,7 @@ function SandboxUnavailable({
           {i18nT('components.kiroPrerequisiteGate.sandbox_unavailable')}
         </p>
         <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
-          {i18nT('components.kiroPrerequisiteGate.kiro_cli_is_installed_but_could_not_be_verified')}
+          {i18nT('components.kiroPrerequisiteGate.the_agent_sandbox_could_not_be_started')}
         </h1>
         <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">{body}</p>
         {/* A foreign outer sandbox means this host is fine, so host remedies
