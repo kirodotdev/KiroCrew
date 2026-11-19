@@ -581,20 +581,26 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         readonly_ancestor_guards = tuple(
             g for g in readonly_ancestor_guards if g not in after_masks
         )
-    # Seatbelt: a caller mask is a path rule, so each directory above it that exists is
-    # guarded against rename; a missing one is skipped (see ``hidden_leaf_parents``).
-    caller_ancestor_guards = (
-        ()
-        if namespace
-        else _literal_ancestor_guards(
-            tuple(
-                parent
-                for entry in request.extra_hidden_dirs
-                for parent in (os.path.dirname(os.path.abspath(entry)),)
-                if os.path.lexists(parent)
-            )
-        )
+    # A caller mask is guarded like a built-in hidden leaf on both backends: each directory
+    # above it that exists is guarded against rename (a missing one is skipped, see
+    # ``hidden_leaf_parents``); the namespace backend keeps only those this uid could rename.
+    caller_parents = tuple(
+        parent
+        for entry in request.extra_hidden_dirs
+        for parent in (os.path.dirname(os.path.abspath(entry)),)
+        if os.path.lexists(parent)
     )
+    caller_ancestor_guards = (
+        _renameable_ancestor_guards(caller_parents, uid)
+        if namespace
+        else _literal_ancestor_guards(caller_parents)
+    )
+    # An app's folder is pinned AFTER the masks whichever list it came from (see above).
+    caller_after_masks = {g for g in caller_ancestor_guards if app_dir_ids and _is_app_dir_pin(g)}
+    for guard in caller_ancestor_guards:
+        if guard in caller_after_masks:
+            app_dir_pins.setdefault(os.path.realpath(guard), guard)
+    caller_ancestor_guards = tuple(g for g in caller_ancestor_guards if g not in caller_after_masks)
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     operator_paths, operator_exceptions = configured_readonly_layer()
     operator_readonly_probes = _operator_layer_probes(operator_paths, keep_unprobeable=True)
