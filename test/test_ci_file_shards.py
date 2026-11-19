@@ -333,6 +333,50 @@ class TestFileShards(unittest.TestCase):
         self.assertLess(max(pinned) - min(pinned), max(hashed) - min(hashed))
         self.assertLessEqual(max(pinned) - min(pinned), 100.0)
 
+    def test_pin_generator_every_file_plans_each_measured_file_and_evens_the_rest(self):
+        runs = self.root / "runs"
+        # The names are chosen by hash: every light file's hash owner is shard 1,
+        # so a plan that stops at the two heavy files cannot even the shards.
+        light = [
+            n for n in (f"test/test_light_{i}.py" for i in range(200)) if hash_shard(n, 2) == 1
+        ]
+        light = light[:30]
+        weights = {"test/test_heavy_0.py": 100.0, "test/test_heavy_1.py": 100.0}
+        weights.update(dict.fromkeys(light, 10.0))
+        # Measured in one run of three: its median share is zero, so it has no weight.
+        unweighted = "test/test_new.py"
+        for run in "abc":
+            shard_dir = runs / run / "linux-pytest-progress-1"
+            shard_dir.mkdir(parents=True)
+            seconds = {**weights, unweighted: 50.0} if run == "c" else weights
+            records = [
+                {"event": "phase_end", "module": name, "phase": "call", "elapsed": value}
+                for name, value in seconds.items()
+            ]
+            (shard_dir / "gw0.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8"
+            )
+        for name in (*weights, unweighted):
+            self.write(name, "def test_ok(): pass\n")
+        out = self.root / "pins.txt"
+        argv = [str(runs / run) for run in "abc"]
+        argv += ["--shards=2", "--pins=2", f"--out={out}", f"--root={self.root}"]
+
+        def spread() -> float:
+            pins = read_pins(out, 2)
+            load = [0.0, 0.0]
+            for name, seconds in weights.items():
+                load[pins.get(name, hash_shard(name, 2)) - 1] += seconds
+            return abs(load[0] - load[1])
+
+        self.assertEqual(ci_file_shard_pins.main(argv), 0)
+        self.assertEqual(set(read_pins(out, 2)), {"test/test_heavy_0.py", "test/test_heavy_1.py"})
+        self.assertEqual(spread(), 100.0)
+        self.assertEqual(ci_file_shard_pins.main(argv + ["--every-file"]), 0)
+        # Every weighted file is planned; the unweighted one keeps its hash shard.
+        self.assertEqual(set(read_pins(out, 2)), set(weights))
+        self.assertEqual(spread(), 0.0)
+
     def test_reduced_backend_scope_timeout_accounts_for_windows(self):
         self.assertEqual(
             _backend_scope_timeout_seconds(windows=False), _LINUX_BACKEND_SCOPE_TIMEOUT_SECONDS

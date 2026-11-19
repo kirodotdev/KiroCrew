@@ -22,6 +22,14 @@ Refresh one from several green runs (the artifacts are kept 7 days)::
 Each file's weight is its median share of a run's total test time, scaled by the
 median total, so one slow runner does not dominate. Pins are placed heaviest
 first onto the shard whose load (hashed files plus pins so far) is lowest.
+
+``--every-file`` plans every file that has a measured weight instead of the
+``--pins`` heaviest. The hashed remainder is what leaves the shards uneven: on
+12 green main runs (2026-11-18), planned from 11 and replayed on the one held
+out, the heaviest shard's test seconds were 1.07x the mean with 800 pins and
+1.02x with every file planned (Linux; 1.06x and 1.02x on Windows). A file with
+no weight (new, or measured in under half the runs) still keeps its hash shard:
+the lightest-shard rule would put every such file on the same shard.
 """
 
 from __future__ import annotations
@@ -94,6 +102,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("runs", nargs="+", type=Path, help="one directory per downloaded run")
     parser.add_argument("--shards", type=int, default=DEFAULT_SHARDS)
     parser.add_argument("--pins", type=int, default=DEFAULT_PINS)
+    parser.add_argument(
+        "--every-file",
+        action="store_true",
+        help="plan every file with a measured weight, not only the --pins heaviest",
+    )
     parser.add_argument("--platform", choices=sorted(DEFAULT_OUT), default="linux")
     parser.add_argument("--out", type=Path, default=None, help="default: the platform's pin file")
     parser.add_argument("--root", type=Path, default=ROOT, help="checkout the pins are for")
@@ -103,7 +116,8 @@ def main(argv: list[str] | None = None) -> int:
     # A file measured on an older main but since moved or deleted would only be
     # a dead pin; leave it out so the pins describe this checkout.
     weight = {name: value for name, value in weights(runs).items() if (args.root / name).is_file()}
-    owners = place(weight, args.shards, args.pins)
+    pins = sum(value > 0 for value in weight.values()) if args.every_file else args.pins
+    owners = place(weight, args.shards, pins)
     load = [0.0] * (args.shards + 1)
     for name, value in weight.items():
         load[owners.get(name, hash_shard(name, args.shards))] += value
