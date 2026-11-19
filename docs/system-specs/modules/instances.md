@@ -584,6 +584,10 @@ Two persisted hints drive lazy reconnect:
   gateway shutdown and a failed auto-revive, so the frontend keeps the entry in an
   error / click-to-reconnect state instead of dropping it. It is also what the
   frontend keys entry visibility on (`was_connected || connected || warm`).
+  A crew whose `disabled` flag is set, or one chained behind such a crew, gets no
+  entry even with `was_connected` kept: `connect()` refuses it, so it has no pane,
+  and a kept row would show that refusal as a tunnel error. It reads Off in
+  Settings -> Remote Crew, where it is turned back on.
 - `last_active_id` records the instance most recently connected to. `connect()`
   writes it and `remove()` clears it, and any value that no longer resolves to a
   live record is dropped on the next write. Nothing in the gateway reads it:
