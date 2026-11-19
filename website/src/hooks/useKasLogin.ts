@@ -31,9 +31,17 @@ const LOOPBACK_POLL_INTERVAL_MS = 2_000
 // How often the flow re-reads the stored sign-in while it is mounted.
 const STATUS_POLL_INTERVAL_MS = 30_000
 
-// Extra begin-device fields the `idc` provider needs (the company's IAM Identity
-// Center access-portal URL, plus an optional region); other providers send none.
-export type KasLoginExtra = { start_url?: string; region?: string }
+// Extra begin fields: the `idc` provider needs the company's IAM Identity Center
+// access-portal URL (plus an optional region); `external_idp` (the organization
+// sign-in) takes an optional work e-mail domain OR Kiro start URL the portal uses
+// to find the organization, plus the optional region its Kiro profile lives in.
+// Other providers send none.
+export type KasLoginExtra = {
+  start_url?: string
+  region?: string
+  external_idp_domain?: string
+  external_idp_start_url?: string
+}
 
 // `extra` keeps Company SSO's start URL and region, so Start over can begin the
 // same sign-in again without the form.
@@ -171,19 +179,20 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
   })
 
   const beginLoopback = useMutation({
-    mutationFn: (provider: KasLoginProvider) =>
-      replaces
-        ? api.kasLoginBeginLoopback(provider, { replaces })
+    mutationFn: ({ provider, extra }: { provider: KasLoginProvider; extra?: KasLoginExtra }) =>
+      replaces || extra
+        ? api.kasLoginBeginLoopback(provider, { ...(extra ?? {}), ...(replaces ? { replaces } : {}) })
         : api.kasLoginBeginLoopback(provider),
-    onSuccess: (s, provider) => {
+    onSuccess: (s, { provider, extra }) => {
       if (cancelIfAbandoned(s.login_id)) return
-      setSession({ kind: 'loopback', provider, ...s })
+      setSession({ kind: 'loopback', provider, extra, ...s })
       openAuthTab(s.auth_url)
     },
     // 409 loopback_unavailable (busy ports, or the gateway decided against it) is
     // not a failure the user can act on: silently take the device path instead.
-    onError: (err, provider) => {
-      if (isLoopbackUnavailable(err) && !abandoned.current) {
+    // The organization sign-in has no device path, so its 409 stays an error.
+    onError: (err, { provider }) => {
+      if (provider !== 'external_idp' && isLoopbackUnavailable(err) && !abandoned.current) {
         setFellBack(true)
         beginDevice.mutate({ provider })
       }
@@ -286,6 +295,9 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
   const pollStatus = pollQuery.data?.status
   useEffect(() => {
     if (session?.kind !== 'loopback' || settling) return
+    // No device flow exists for the organization sign-in: its terminal answer is
+    // a problem screen, never a restart on another transport.
+    if (session.provider === 'external_idp') return
     if (pollStatus !== 'expired' && pollStatus !== 'error') return
     if (pollCode === 'token_store_failed') return
     const provider = session.provider
@@ -385,18 +397,21 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
     else next(prev)
   }
 
-  const switchToCode = () =>
-    replaceAttempt(({ provider }) => {
+  // The organization sign-in has no device flow to switch to.
+  const switchToCode = () => {
+    if (!session || session.provider === 'external_idp') return
+    return replaceAttempt(({ provider }) => {
       setFellBack(true)
       beginDevice.mutate({ provider })
     })
+  }
 
   // Start over: a fresh attempt with the same provider on the same transport,
   // one click. Switching method is the chooser's job (`reset`).
   const startOver = () =>
     replaceAttempt((prev) =>
       prev.kind === 'loopback'
-        ? beginLoopback.mutate(prev.provider)
+        ? beginLoopback.mutate({ provider: prev.provider, extra: prev.extra })
         : beginDevice.mutate({ provider: prev.provider, extra: prev.extra }),
     )
 
@@ -432,10 +447,16 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
     beginLoopback.reset()
     setFellBack(false)
     setReplaceWarning(false)
-    // Only the two portal-brokered social providers have a loopback flow;
-    // Builder ID / IdC run the SSO-OIDC device flow on every shape (as in kiro-cli).
+    // The portal-brokered providers have a loopback flow: Google and GitHub
+    // (with the device flow as fallback) and the organization sign-in (loopback
+    // only; the chooser offers it only when `loopbackOk`). Builder ID / IdC run
+    // the SSO-OIDC device flow on every shape (as in kiro-cli).
+    if (provider === 'external_idp') {
+      beginLoopback.mutate({ provider, extra })
+      return
+    }
     if (loopbackOk && (provider === 'google' || provider === 'github')) {
-      beginLoopback.mutate(provider)
+      beginLoopback.mutate({ provider })
       return
     }
     beginDevice.mutate({ provider, extra })
@@ -464,10 +485,13 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
     retryDroppedCancel: (loginId: string) => void cancelDropped(loginId),
     dismissUnsettled: () => setUnsettledLoginId(null),
     pollQuery,
+    loopbackOk,
     beginBusy,
     beginError:
       beginDevice.error?.message ??
-      (beginLoopback.error && !isLoopbackUnavailable(beginLoopback.error)
+      (beginLoopback.error &&
+      (beginLoopback.variables?.provider === 'external_idp' ||
+        !isLoopbackUnavailable(beginLoopback.error))
         ? beginLoopback.error.message
         : ''),
     beginErrorCode: apiErrorCode(beginDevice.error),

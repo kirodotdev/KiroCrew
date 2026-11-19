@@ -355,6 +355,50 @@ Portal returns IdP metadata (`issuer_url`, `client_id`, `scopes`, `login_hint`,
 the token's own `tokenEndpoint` with `grant_type=refresh_token`. Ensure
 `offline_access` scope for refresh.
 
+The dashboard runs it as the fifth sign-in choice, named "Work account" on the button
+("Work account — sign in with my work email"), the open form's heading, the waiting
+screen and a stored sign-in, with "Signs in directly with your organization's identity
+provider, not through AWS IAM Identity Center" as the helper line under the form
+heading only (the Work account button has no caption under it, like the AWS Builder ID
+and Company SSO buttons),
+through `POST /api/kas-login/loopback {provider: "external_idp"}` with the
+optional portal lookup hints `external_idp_domain` (a work e-mail domain; a whole
+address is cut to its domain), `external_idp_start_url` (an HTTPS Kiro start URL) and
+`region` (the control-plane region the profile is resolved in, default `us-east-1`):
+
+```
+{portal}/signin?state&code_challenge&redirect_uri=http://localhost:<port>
+        &redirect_from=kirocli&signin_methods=external_idp[&external_idp_*]
+-> http://localhost:<port>/signin/callback?login_option=external_idp&state
+        &issuer_url&client_id&scopes[&login_hint][&audience]      (no code)
+-> GET {issuer_url}/.well-known/openid-configuration
+        (issuer must equal issuer_url; HTTPS authorization/token endpoints;
+         issuer, endpoints and start URL use connections.l0_probe's validators)
+-> 302 to authorization_endpoint, its own query kept
+        (fresh PKCE pair, fresh state, scopes + offline_access)
+-> http://localhost:<port>/oauth/callback?code&state
+-> token_endpoint (form, client_id + code_verifier, no client secret)
+-> ListAvailableProfiles with TokenType: EXTERNAL_IDP -> profile ARN
+-> KasToken(identity=external_idp, provider=ExternalIdp, auth_method=external_idp,
+            token_endpoint, scopes (as granted), audience, profile_arn, region)
+```
+
+`portal.wait_for_callback(on_idp_handoff=...)` serves both legs: the first hit must be
+the portal's hand-off with the portal state and no code; after it only the IdP leg's
+state is accepted, and a code before the hand-off fails the login. The hand-off leg
+again with the portal state and no code (the wait screen's "open the sign-in page
+again" replays the first portal URL) gets the same 302 to the already-issued IdP URL,
+with no new discovery, and the login goes on. The endpoints come
+from the issuer's own discovery document, never from the redirect. The stored scope is
+the one the token response granted (the requested one when the response names none);
+the refresh repeats it and the `audience`, and keeps a narrower scope a refresh grants.
+
+Loopback only: an arbitrary external IdP has no device-code grant, so the choice is
+offered only where a loopback sign-in can land (gateway transport `loopback` and a
+dashboard served from a loopback address), the begin answers 409
+`loopback_unavailable` elsewhere, and a timeout or failure ends on the problem screen
+instead of restarting on the device flow. kiro-cli and the IDE have the same limit.
+
 ## Refresh
 
 Each identity refreshes on its own endpoint; the module owns the refresh and the
@@ -799,7 +843,7 @@ engine instead ([aws-control.md](aws-control.md)).
   filter in `website/src/pages/SettingsPage.tsx`). The Kiro Agent row of the
   Agent Harness tab keeps one status line and a link to the tab. The card embeds
   the same views `KasLoginGate` renders (`KasLoginEmbedded`, card chrome instead
-  of the scrim + aside door; in that chrome the four provider choices are
+  of the scrim + aside door; in that chrome the provider choices are
   outlined and sit in a two-column grid, none accent-filled, because the detail's
   own primary button is "Use {{name}}", from
   `components.kiroPrerequisiteGate.use_agent`; in both chromes every provider
@@ -839,7 +883,8 @@ engine instead ([aws-control.md](aws-control.md)).
   opens no browser tab for it.
   In both places the choices are Google, GitHub and AWS Builder ID with their
   marks (`assets/google-mark.svg`, `assets/aws-mark.svg`, the shipped GitHub mark),
-  then "or", then company SSO. Its device-code screen (`DeviceCodeCard`, card
+  then "or", then company SSO and, where a loopback sign-in can land, the
+  organization (external IdP) choice after it. Its device-code screen (`DeviceCodeCard`, card
   chrome) shows one heading, an "Open sign-in page" button with a copy control,
   the code with its own copy control, one waiting line with the expiry, and a back
   arrow that returns to the choices: in the dialog header (`SignInBackContext`),

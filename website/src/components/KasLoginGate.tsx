@@ -7,6 +7,7 @@ import {
   Copy,
   Globe,
   IdCard,
+  KeyRound,
   Link2,
   Loader2,
   RefreshCw,
@@ -32,6 +33,7 @@ import GithubLogo from './icons/GithubLogo'
 import { Btn, IconButton } from './ui'
 import { initialCompanySignIn, rememberCompanySignIn } from '../utils/companySignIn'
 import ErrorNotice from './ErrorNotice'
+import { lazyRetry } from './lazyRetry'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeHref } from '../utils/safeHref'
 import { openAuthTab, useKasLoginFlow, type KasLoginExtra } from '../hooks/useKasLogin'
@@ -48,6 +50,19 @@ const LOOPBACK_SLOW_HINT_MS = 30_000
 // The begin error's DOM id, so the SSO field it names can point at it.
 const SSO_ERROR_ID = 'kas-sso-begin-error'
 const SSO_PREFILLED_ID = 'kas-sso-start-url-prefilled'
+
+// Lazy: the chooser is on the dashboard's first load, and this form renders
+// only after the organization choice is clicked. A chunk that fails to load
+// shows its failure in the form's place, with Try Again, so the throw never
+// reaches the host's boundary (the Settings card, the sign-in notice, the chat
+// page) and the other sign-in choices stay usable.
+// No hand-off: the lookup and region fields the form holds are unsaved.
+const KasOrganizationForm = lazyRetry(() => import('./KasOrganizationForm'), {
+  layout: 'block',
+  title: () => i18nT('components.kasLogin.could_not_start_sign_in'),
+  scope: 'kas-org-form',
+  askAgent: false,
+})
 
 /**
  * Which chrome the flow renders in. `gate` is the full-screen door (scrim +
@@ -325,23 +340,45 @@ function LinkField({ value, onCopied }: { value: string; onCopied: (ok: boolean)
 }
 
 /**
+ * Makes `target` focusable for as long as this is mounted, and focuses it once,
+ * when it mounts, only if nothing else holds focus: a re-render never moves
+ * focus, and a field the person moved to keeps it. The attribute is set here,
+ * not as a prop, so the container is not focusable once the content it holds
+ * the place of has rendered.
+ */
+function FocusOnMount({ target }: { target: { current: HTMLElement | null } }) {
+  useEffect(() => {
+    const el = target.current
+    if (!el) return
+    el.setAttribute('tabindex', '-1')
+    const active = document.activeElement
+    if (!active || active === document.body) el.focus()
+    return () => el.removeAttribute('tabindex')
+  }, [target])
+  return null
+}
+
+/**
  * One sign-in choice. `primary` renders the accent-filled variant — on the
  * gate only. In card chrome every choice is the outlined, shorter form and the
- * four sit in a two-column grid: the card lives inside a Settings detail whose
+ * choices sit in a two-column grid: the card lives inside a Settings detail whose
  * own primary button is "Use {{name}}", and a second accent-filled button the
  * full width of the panel read as the page's main action rather than as one of
- * four equal ways to sign in.
+ * several equal ways to sign in.
  */
 function ProviderButton({
   icon,
   label,
   primary,
+  wide,
   disabled,
   onClick,
 }: {
   icon: ReactNode
   label: string
   primary?: boolean
+  /** Spans the whole card-chrome grid row, for a label too long for one cell. */
+  wide?: boolean
   disabled?: boolean
   onClick: () => void
 }) {
@@ -352,8 +389,9 @@ function ProviderButton({
   const variant = primary && !card
     ? 'btn-sweep border-none bg-accent font-semibold text-accent-fg hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)]'
     : 'border border-border bg-transparent font-medium text-text hover:border-border-strong hover:bg-bg-hover'
+  const span = wide ? ' sm:col-span-full' : ''
   return (
-    <button type="button" disabled={disabled} onClick={onClick} className={`${base} ${variant}`}>
+    <button type="button" disabled={disabled} onClick={onClick} className={`${base} ${variant}${span}`}>
       {icon}
       {label}
     </button>
@@ -365,6 +403,7 @@ function Chooser({
   beginError,
   beginErrorCode,
   companyDefault,
+  organizationAvailable,
   bare = false,
   onPick,
 }: {
@@ -374,6 +413,10 @@ function Chooser({
   beginErrorCode: string
   /** The gateway's default company portal (`KasLoginStatus.company_sign_in`). */
   companyDefault?: KasLoginStatus['company_sign_in']
+  /** The organization (external IdP) sign-in returns only to a loopback
+   *  listener on this machine and has no device flow, so the choice is offered
+   *  only where a loopback sign-in can land. */
+  organizationAvailable: boolean
   bare?: boolean
   onPick: (provider: KasLoginProvider, extra?: KasLoginExtra) => void
 }) {
@@ -381,7 +424,32 @@ function Chooser({
   // beginning immediately: the portal URL is per-company, so there is nothing to
   // start until the user supplies it.
   const organisationOnly = useContext(OrganisationOnlyContext)
-  const [ssoOpen, setSsoOpen] = useState(organisationOnly)
+  const [ssoOpen, setSsoOpenState] = useState(organisationOnly)
+  // The organization choice expands its own form (optional domain or start URL,
+  // optional region). At most one of the two forms is open.
+  const [orgOpen, setOrgOpenState] = useState(false)
+  // An enterprise gateway accepts Company SSO only, so it offers no organization choice.
+  const offerOrganization = organizationAvailable && !organisationOnly
+  const [orgLookup, setOrgLookup] = useState('')
+  const [orgRegion, setOrgRegion] = useState('')
+  const setSsoOpen = (open: boolean) => {
+    setSsoOpenState(open)
+    if (open) setOrgOpenState(false)
+  }
+  const setOrgOpen = (open: boolean) => {
+    setOrgOpenState(open)
+    if (open) setSsoOpenState(false)
+  }
+  const orgSlot = useRef<HTMLDivElement>(null)
+  const organizationChoice = (disabled: boolean, onClick: () => void) => (
+    <ProviderButton
+      icon={<KeyRound className="lucide-inline" />}
+      label={i18nT('components.kasLogin.continue_with_organization_idp')}
+      wide
+      disabled={disabled}
+      onClick={onClick}
+    />
+  )
   // Seeded from the last company sign-in submitted on this browser, else the
   // gateway's default portal, so a person need not look the URL up.
   const [initial] = useState(() => initialCompanySignIn(companyDefault))
@@ -466,6 +534,7 @@ function Chooser({
           <form
             className="rounded-lg border border-border bg-bg-elevated p-3 sm:col-span-full"
             data-testid="kas-login-sso-form"
+            aria-labelledby="kas-sso-form-title"
             onSubmit={(e) => {
               e.preventDefault()
               if (!startUrlReady || busy) return
@@ -476,6 +545,11 @@ function Chooser({
               })
             }}
           >
+            {/* Each open form names the choice that opened it, so the
+                button it replaced is not the only place that said what it is. */}
+            <h2 id="kas-sso-form-title" className="mb-2 text-[13px] font-semibold text-text-strong">
+              {i18nT('components.kasLogin.provider_company_sso')}
+            </h2>
             <label
               className="block text-[12px] font-medium text-text-strong"
               htmlFor="kas-sso-start-url"
@@ -537,6 +611,9 @@ function Chooser({
                 className="focus-ring mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-[13px] font-normal text-text-strong placeholder:text-muted aria-invalid:border-danger"
               />
             </label>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted">
+              {i18nT('components.kasLogin.org_region_hint')}
+            </p>
             <div className="mt-3 flex items-center gap-2">
               <Btn type="submit" primary disabled={!startUrlReady || busy}>
                 {i18nT('components.kasLogin.sso_continue')}
@@ -552,10 +629,40 @@ function Chooser({
           <ProviderButton
             icon={<Building2 className="lucide-inline" />}
             label={i18nT('components.kasLogin.continue_with_company_sso')}
+            wide
             disabled={busy}
             onClick={() => setSsoOpen(true)}
           />
         )}
+        {offerOrganization && orgOpen ? (
+          // The slot is focusable and takes focus only while the chunk loads or
+          // its failure notice shows, so focus is not left on the page when the
+          // clicked choice unmounts, and the notice's Try Again is inside it.
+          // Once the form renders, the slot is a plain container again and the
+          // form's own autoFocus places focus.
+          <div ref={orgSlot} className="outline-none sm:col-span-full">
+            <KasOrganizationForm
+              // While the chunk loads, the clicked choice holds its row, so the
+              // rows below do not move.
+              loading={
+                <>
+                  <FocusOnMount target={orgSlot} />
+                  {organizationChoice(true, () => undefined)}
+                </>
+              }
+              keepOnFailure={<FocusOnMount target={orgSlot} />}
+              lookup={orgLookup}
+              region={orgRegion}
+              busy={busy}
+              onLookup={setOrgLookup}
+              onRegion={setOrgRegion}
+              onSubmit={(extra) => onPick('external_idp', extra)}
+              onCancel={() => setOrgOpen(false)}
+            />
+          </div>
+        ) : offerOrganization ? (
+          organizationChoice(busy, () => setOrgOpen(true))
+        ) : null}
       </div>
       {/* The failure appears in place after the click (ErrorNotice is
           role="alert"), with no route change a screen reader would announce.
@@ -570,7 +677,7 @@ function Chooser({
       <ErrorNotice
         id={SSO_ERROR_ID}
         className={chrome.card ? 'mt-3 max-w-lg' : 'mt-4 max-w-md'}
-        askAgent={chrome.card && !ssoOpen}
+        askAgent={chrome.card && !ssoOpen && !orgOpen}
         title={
           eitherBad
             ? i18nT('components.kasLogin.sso_start_url_or_region_invalid')
@@ -650,9 +757,11 @@ function LoopbackWaiting({
       </p>
       {/* role="status", mounted before the notice fills it: assistive tech
           announces a live region's change, not one that arrives full, and
-          should hear it once without being interrupted by it. */}
+          should hear it once without being interrupted by it. The
+          organization sign-in has no code to switch to, so the hint that
+          promotes one is not shown for it. */}
       <div role="status">
-        {slow ? (
+        {slow && provider !== 'external_idp' ? (
           <div
             className="mt-4 max-w-md rounded-lg border border-border bg-bg-elevated px-3 py-2"
             data-testid="kas-login-loopback-slow"
@@ -681,9 +790,11 @@ function LoopbackWaiting({
           <ExternalLink className="lucide-inline" />
           {i18nT('components.kasLogin.loopback_open_again')}
         </Btn>
-        <Btn type="button" disabled={busy} onClick={onUseCode}>
-          {i18nT('components.kasLogin.loopback_use_code')}
-        </Btn>
+        {provider !== 'external_idp' ? (
+          <Btn type="button" disabled={busy} onClick={onUseCode}>
+            {i18nT('components.kasLogin.loopback_use_code')}
+          </Btn>
+        ) : null}
       </div>
       <button
         type="button"
@@ -967,7 +1078,7 @@ export interface KasLoginFlowSlots {
    * `renderAuthenticated`; the gate never re-authenticates.
    */
   renderReauthCancel?: (cancel: () => void, busy: boolean) => ReactNode
-  /** Only the four choices: no intro line, no browser note (the dialog's form). */
+  /** Only the sign-in choices: no intro line, no browser note (the dialog's form). */
   bare?: boolean
   /** Show the choices over a stored sign-in too: a switch, or one Kiro refused. */
   startInReauth?: boolean
@@ -1123,12 +1234,17 @@ function KasLoginFlow({
     const loopbackDeadEnd =
       session.kind === 'loopback' &&
       terminal &&
-      (pollQuery.error != null || pollQuery.data?.code === 'token_store_failed')
+      (pollQuery.error != null ||
+        pollQuery.data?.code === 'token_store_failed' ||
+        session.provider === 'external_idp')
     if ((session.kind === 'device' && terminal) || loopbackDeadEnd) {
       const detail = pollQuery.error?.message || pollQuery.data?.error || ''
+      // "The code expired" names the device flow's code; the organization
+      // sign-in has none, so its timeout reads as a failed sign-in.
+      const codeExpired = effective === 'expired' && session.provider !== 'external_idp'
       return (
         <SignInProblem
-          expired={effective === 'expired'}
+          expired={codeExpired}
           code={pollQuery.error ? undefined : pollQuery.data?.code}
           // A coded refusal is the gateway's own answer (its 502 when the auth
           // service is unreachable), so it keeps its text.
@@ -1176,6 +1292,7 @@ function KasLoginFlow({
         beginError={flow.beginError}
         beginErrorCode={flow.beginErrorCode}
         companyDefault={status.company_sign_in}
+        organizationAvailable={flow.loopbackOk}
         bare={bare}
         onPick={flow.pick}
       />

@@ -181,6 +181,7 @@ async def list_available_profiles(
     region: str,
     session: aiohttp.ClientSession,
     viewer_cps_url: str = "",
+    token_type: str = "",
 ) -> ProfileListing:
     """Return the caller's Kiro profiles from the first control plane that has any.
 
@@ -202,12 +203,17 @@ async def list_available_profiles(
     not list. The viewer already sends this sign-in to that host, so asking it here
     shares the token with no new party. Any failure there, a transport error included,
     counts as a refusal and the prod hosts are asked next.
+
+    *token_type* is passed to :func:`cps_headers` (``EXTERNAL_IDP`` for an
+    External IdP token).
     """
     errors: list[ControlPlaneError] = []
     empty: list[ProfileListing] = []
     if viewer_cps_url:
         try:
-            listing = await _list_profiles_at(viewer_cps_url, access_token, session)
+            listing = await _list_profiles_at(
+                viewer_cps_url, access_token, session, token_type=token_type
+            )
         except (ControlPlaneError, aiohttp.ClientError, asyncio.TimeoutError) as err:
             # Type only for a transport error: its message can carry the resolver's text.
             detail = err if isinstance(err, ControlPlaneError) else type(err).__name__
@@ -221,7 +227,7 @@ async def list_available_profiles(
         if url.rstrip("/") == viewer_cps_url.rstrip("/"):
             continue  # already asked above
         try:
-            listing = await _list_profiles_at(url, access_token, session)
+            listing = await _list_profiles_at(url, access_token, session, token_type=token_type)
         except ControlPlaneError as err:
             logger.warning("ListAvailableProfiles at %s failed: %s", url, err)
             errors.append(err)
@@ -239,7 +245,7 @@ async def list_available_profiles(
 
 
 async def _list_profiles_at(
-    url: str, access_token: str, session: aiohttp.ClientSession
+    url: str, access_token: str, session: aiohttp.ClientSession, *, token_type: str = ""
 ) -> ProfileListing:
     """The profiles of the first page of CPS host *url* that lists any.
 
@@ -248,7 +254,7 @@ async def _list_profiles_at(
     ControlPlaneError on a non-200 or malformed page, on a token the service already
     handed out (a loop), and after :data:`_MAX_PAGES` pages.
     """
-    headers = cps_headers(_TARGET, access_token)
+    headers = cps_headers(_TARGET, access_token, token_type=token_type)
     seen_tokens: set[str] = set()
     next_token: str | None = None
     for page in range(1, _MAX_PAGES + 1):
