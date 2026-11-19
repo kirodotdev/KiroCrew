@@ -137,7 +137,9 @@ def test_event_values_are_printed_only_when_they_match() -> None:
 def test_a_hostile_issue_body_is_read_in_linear_time() -> None:
     body = "Fix in progress: " * 20000 + "<!-- main-red-state " + "{" * 50000
     assert mod.watch.parse_state(body) is None
-    assert mod.watch.pick_issue([{"number": 1, "title": "Main is red: x", "body": body}]) is None
+    assert (
+        mod.watch.pick_issue([{"number": 1, "title": "ci: Main is red: x", "body": body}]) is None
+    )
 
 
 def test_the_comment_has_the_marker_both_lists_and_never_excuses_the_pull_request() -> None:
@@ -333,7 +335,7 @@ def _open_issue() -> dict[str, Any]:
     state = watch.next_state(first, MAIN, LAST, 950, RUN_URL)
     return {
         "number": 5,
-        "title": "Main is red: test/test_a.py::test_x",
+        "title": "ci: Main is red: test/test_a.py::test_x",
         "body": watch.render_body(state, [], 5),
         "author": {"login": "app/github-actions"},
     }

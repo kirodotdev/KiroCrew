@@ -40,7 +40,33 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-TITLE_PREFIX = "Main is red: "
+# The issue is written as `.github/ISSUE_TEMPLATE/ci_failure.yml` renders one: its
+# title prefix, its labels, and one `### <label>` section per form field, in the
+# form's order. The step checks out `.github/scripts` only, so the form is not
+# read at run time; `test/test_main_red_issue_form.py` fails when it and these
+# constants differ.
+FORM_TITLE_PREFIX = "ci: "
+FORM_LABELS = ("bug", "area: ci")
+FORM_FIELDS = (
+    ("search", "Existing issues"),
+    ("run", "Failing run"),
+    ("target", "Test or job"),
+    ("commit", "Commit"),
+    ("pattern", "How it fails"),
+    ("runner", "Runner OS"),
+    ("first-bad", "First bad commit"),
+    ("output", "Error output"),
+    ("context", "Anything else"),
+)
+FORM_SEARCHED = "I searched open issues and this is not already reported."
+FORM_PATTERN_ONCE = "Not sure"
+FORM_PATTERN_REPEATED = "Red every time on this commit"
+FORM_RUNNERS = ("Linux", "macOS", "Windows", "Several")
+NO_RESPONSE = "_No response_"
+OWN_TITLE = "Main is red: "
+TITLE_PREFIX = FORM_TITLE_PREFIX + OWN_TITLE
+# An issue this watcher filed before its title took the form's prefix is still its own.
+TITLE_PREFIXES = (TITLE_PREFIX, OWN_TITLE)
 STATE_MARKER = "main-red-state"
 MESSAGE_CHARS = 80
 MAX_NODEIDS = 100
@@ -289,7 +315,7 @@ def pick_issue(issues: list[dict[str, Any]]) -> dict[str, Any] | None:
         issue
         for issue in issues
         if is_watcher_author(issue.get("author"))
-        and str(issue.get("title", "")).startswith(TITLE_PREFIX)
+        and str(issue.get("title", "")).startswith(TITLE_PREFIXES)
         and parse_state(str(issue.get("body") or "")) is not None
     ]
     return min(ours, key=lambda item: int(item["number"])) if ours else None
@@ -343,11 +369,34 @@ def title_for(failures: dict[str, str]) -> str:
     return TITLE_PREFIX + clean(next(iter(failures)), 150)
 
 
+def runner_os(job_names: list[str]) -> str | None:
+    """The form's `Runner OS` answer for the failed jobs of a run, or ``None``.
+
+    A job name says its OS in any case: `Backend Tests (Windows)`, and the matrix
+    legs `(IPv6, windows-latest)` and `(IPv6, macos-latest)`. A name that says
+    neither runs on Linux.
+    """
+    folded = [name.casefold() for name in job_names if name.strip()]
+    seen = {
+        "Windows" if "windows" in name else "macOS" if "macos" in name else "Linux"
+        for name in folded
+    }
+    return "Several" if len(seen) > 1 else next(iter(seen), None)
+
+
 def render_body(
-    state: dict[str, Any], prs: list[dict[str, str]], issue_number: int | None = None
+    state: dict[str, Any],
+    prs: list[dict[str, str]],
+    issue_number: int | None = None,
+    runner: str | None = None,
 ) -> str:
+    """The issue body: the CI failure form's sections, then the state record."""
     failures: dict[str, str] = state["failures"]
-    lines = [
+    listed = list(failures.items())[:MAX_LISTED]
+    more = len(failures) - len(listed)
+    first = next(iter(failures))
+    output = [f"{nodeid} - {message}" if message else nodeid for nodeid, message in listed]
+    context = [
         f"Main's `CI` push run [{state['last_sha']}]({state['last_url']}) ended red with "
         f"{len(failures)} failing test(s). First red: [{state['first_sha']}]({state['first_url']}). "
         f"Streak: {state['streak']} red main run(s) that named a failing test.",
@@ -357,19 +406,37 @@ def render_body(
         "Failing tests, with the first 80 characters of each message:",
         "",
     ]
-    for nodeid, message in list(failures.items())[:MAX_LISTED]:
-        lines.append(f"- `{nodeid}`" + (f": `{message}`" if message else ""))
-    if len(failures) > MAX_LISTED:
-        lines.append(f"- and {len(failures) - MAX_LISTED} more in the run's job logs")
-    lines += [
+    context += [
+        f"- `{nodeid}`" + (f": `{message}`" if message else "") for nodeid, message in listed
+    ]
+    if more > 0:
+        context.append(f"- and {more} more in the run's job logs")
+    context += [
         "",
         "A push to `main` that runs the tests green closes this issue. A run that names "
         "no failing test (a Fast Gate timeout, a cancelled run) changes nothing here.",
         "",
         "<sub>Filed by `.github/workflows/main-red-watch.yml`. It never assigns anyone.</sub>",
-        f"<!-- {STATE_MARKER} {dump_state(state)} -->",
-        "",
     ]
+    answers = {
+        "search": f"- [x] {FORM_SEARCHED}",
+        "run": state["last_url"],
+        "target": f"`{first}`" + (f" and {len(failures) - 1} more" if len(failures) > 1 else ""),
+        "commit": f"{state['last_sha']} (push to `main`)",
+        "pattern": (
+            f"{FORM_PATTERN_REPEATED}: {state['streak']} red push runs in a row"
+            if state["streak"] > 1 and state["first_sha"] == state["last_sha"]
+            else FORM_PATTERN_ONCE
+        ),
+        "runner": runner if runner in FORM_RUNNERS else NO_RESPONSE,
+        "first-bad": f"{state['first_sha']}, the commit of the first red run of this streak",
+        "output": "\n".join(["```shell", *output, "```"]),
+        "context": "\n".join(context),
+    }
+    lines: list[str] = []
+    for key, label in FORM_FIELDS:
+        lines += [f"### {label}", "", answers[key], ""]
+    lines += [f"<!-- {STATE_MARKER} {dump_state(state)} -->", ""]
     return "\n".join(lines)
 
 
@@ -460,8 +527,24 @@ def cmd_render(args: argparse.Namespace) -> int:
         return STALE
     prs = fix_prs(read_json_values(_read_text(args.timeline)), args.repo)
     Path(args.out_title).write_text(title_for(failures), encoding="utf-8")
-    Path(args.out_body).write_text(render_body(state, prs, args.issue_number), encoding="utf-8")
+    body = render_body(state, prs, args.issue_number, runner_os(_red_job_names(args)))
+    Path(args.out_body).write_text(body, encoding="utf-8")
     return 0
+
+
+def _red_job_names(args: argparse.Namespace) -> list[str]:
+    """Names of the failed jobs that named a failing test, from `<id>\\t<name>` rows.
+
+    A job that failed beside the tests (a Coverage Gate on Linux next to a
+    Windows-only break) says nothing about where the test fails.
+    """
+    names = []
+    for row in _read_text(args.jobs).splitlines():
+        job, _, name = row.partition("\t")
+        if args.logdir and not (job.isdigit() and _job(Path(args.logdir), job)):
+            continue
+        names.append(name)
+    return names
 
 
 def cmd_should_close(args: argparse.Namespace) -> int:
@@ -494,6 +577,8 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--run-id", required=True)
     render.add_argument("--run-url", required=True)
     render.add_argument("--issue-number", type=int)
+    render.add_argument("--jobs")
+    render.add_argument("--logdir")
     render.add_argument("--out-title", required=True)
     render.add_argument("--out-body", required=True)
     render.set_defaults(run=cmd_render)

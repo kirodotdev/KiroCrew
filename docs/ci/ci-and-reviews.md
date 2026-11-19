@@ -245,7 +245,11 @@ Three structural facts explain most of the rest:
   break, opens nothing; that run ends with a warning naming the tests it saw red
   in one job. An open issue is updated by every red run that names a test. It
   opens or updates one issue,
-  `Main is red: <first node id>`, under the `main-red` label (found by title
+  `ci: Main is red: <first node id>`, in the shape of the CI failure issue form
+  (`.github/ISSUE_TEMPLATE/ci_failure.yml`: its `ci: ` title prefix, its `bug`
+  and `area: ci` labels, created when the repository lacks one and left off
+  rather than lose the issue, one section per form field in the form's order, and
+  `_No response_` where the run knows nothing), under the `main-red` label (found by title
   prefix if the label cannot be created), holding that set, the first-red SHA and
   the streak. A run that names no node id (a Fast Gate barrier timeout, a Coverage
   Gate failure) writes nothing and says so in a warning with what it read, a run none of whose failed jobs could be read
@@ -265,7 +269,8 @@ Three structural facts explain most of the rest:
   `checks: read`, `contents: read` and `issues: write`.
   `test/test_main_red_watch.py` pins the name, the gate and the log parsing, and
   runs the step with `gh` stubbed; `test/test_main_red_annotations.py` pins the
-  annotation parsing against rows the API returned for red shards on `main`.
+  annotation parsing against rows the API returned for red shards on `main`, and
+  `test/test_main_red_issue_form.py` fails when the form and the issue differ.
 - **A failed pull request run names the tests that are red on main.** While a
   `Main is red:` issue is open, `main-red-pr-notice.yml` reads the failed jobs of
   a same-repository pull request's `CI` run (target `main`), from their
