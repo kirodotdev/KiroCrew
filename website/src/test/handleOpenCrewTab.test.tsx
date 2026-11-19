@@ -36,8 +36,14 @@ vi.mock('../hooks/usePanelTabs', () => ({
   useAnyLiveAppTab: () => false,
   usePanelTabs: () => ({ tabs: [], openView: vi.fn(), openFolder: vi.fn(), openDiff: vi.fn() }),
 }))
+const openFileTabMock = vi.hoisted(() => vi.fn())
+// The host's `onOpened`, as the document actions would call it once a tab opened.
+const docHooks = vi.hoisted(() => ({ onOpened: undefined as undefined | ((slot?: string | null) => void) }))
 vi.mock('../hooks/usePanelDocumentActions', () => ({
-  usePanelDocumentActions: () => ({ openFile: vi.fn(), openArtifact: vi.fn(), saveFile: vi.fn() }),
+  usePanelDocumentActions: (o: { onOpened?: (slot?: string | null) => void }) => {
+    docHooks.onOpened = o.onOpened
+    return { openFile: openFileTabMock, openArtifact: vi.fn(), saveFile: vi.fn() }
+  },
 }))
 vi.mock('../hooks/useTheme', () => ({ useTheme: () => ({ colorTheme: null }) }))
 vi.mock('../hooks/useScreenSnip', () => ({
@@ -160,6 +166,32 @@ describe('handleFolderOpen (split-pane slot override)', () => {
     // Held first, then switched (the order `openCrewSession` uses).
     expect(openFolder.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(dispatch).mock.invocationCallOrder[switchCall])
     expect(closeSearch).toHaveBeenCalledTimes(1)
+  })
+
+  it('a file opened from a split pane switches the panel to that pane\'s chat and opens held', () => {
+    // A file chip or a diff's Open button in split pane B: the tab lands in
+    // B's strip, so the panel must show B, or the click seems to do nothing.
+    const { result } = renderHook(() => useController('active-chat'), { wrapper })
+    void result.current.handleFileOpen('/repo/a.md', { slot: 'pane-chat', line: 3 })
+    expect(openFileTabMock).toHaveBeenCalledWith('/repo/a.md', { slot: 'pane-chat', line: 3, hold: true })
+    // No switch until the tab is open: a failed read must not blank the pane.
+    expect(switchSlot).not.toHaveBeenCalled()
+    docHooks.onOpened?.('pane-chat')
+    expect(switchSlot).toHaveBeenCalledTimes(1)
+    expect(switchSlot).toHaveBeenCalledWith({ key: 'pane-chat', announceOnMissing: true, gesture: true })
+    expect(dispatch).toHaveBeenCalledWith({ type: 'test/switchSlot', payload: { key: 'pane-chat', announceOnMissing: true, gesture: true } })
+  })
+
+  it('a file opened for the chat the panel already shows does not switch', () => {
+    const { result } = renderHook(() => useController('active-chat'), { wrapper })
+    void result.current.handleFileOpen('/repo/a.md', { slot: 'active-chat' })
+    void result.current.handleFileOpen('/repo/b.md')
+    expect(openFileTabMock).toHaveBeenNthCalledWith(1, '/repo/a.md', { slot: 'active-chat' })
+    expect(openFileTabMock).toHaveBeenNthCalledWith(2, '/repo/b.md', undefined)
+    docHooks.onOpened?.('active-chat')
+    docHooks.onOpened?.(null)
+    docHooks.onOpened?.()
+    expect(switchSlot).not.toHaveBeenCalled()
   })
 
   it('without an override stamps the active slot', () => {

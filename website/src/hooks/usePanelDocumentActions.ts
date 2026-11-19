@@ -26,8 +26,12 @@ export interface PanelDocumentActionsOptions {
   showActionError: (message: string, title?: string) => void
   /** Runs after a tab was opened and focused. ChatPage uses it to reveal the
    *  right dock and dismiss the find pane, which shares that dock; a host whose
-   *  panel is permanent passes nothing. Never called on a failed open. */
-  onOpened?: () => void
+   *  panel is permanent passes nothing. Never called on a failed open. A file
+   *  open that named its chat (`opts.slot`, a split pane) passes that chat, so
+   *  ChatPage can show the pane's chat in the panel. It passes nothing when the
+   *  slot came from `slotRef`, or when `slotRef` moved during the read: the
+   *  user went to another chat, and the open must not pull them back. */
+  onOpened?: (slot?: string | null) => void
 }
 
 /** Write a file's new content. `slot` names the chat, so the gateway refuses a
@@ -66,7 +70,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
   // placeholder tab; any other failure is REPORTED rather than shown as the
   // file's text. Bypassed entirely when the IntelliJ plugin handles file opens
   // — the user wanted IDE-native, not in-dashboard.
-  const openFile = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; canReplace?: () => boolean; slot?: string | null }) => {
+  const openFile = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; canReplace?: () => boolean; slot?: string | null; hold?: boolean }) => {
     try { window.dispatchEvent(new CustomEvent('kirocrew-file-open', { detail: { path: filePath } })) } catch { /* the IDE bridge is optional; the dashboard path below still runs */ }
     if ((window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles) return
     // Capture the slot BEFORE awaiting the read — the same discipline as
@@ -81,6 +85,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     // hosts byte-for-byte unchanged; an explicit `null` is a deliberate
     // "no slot" and is honoured.
     const slot = opts?.slot !== undefined ? opts.slot : (slotRef.current ?? null)
+    const hostSlotAtClick = slotRef.current ?? null
     try {
       const [read] = await Promise.all([
         queryClient.fetchQuery({
@@ -109,7 +114,8 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
       // behind here would be lost to the panel for good.
       const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
       tabsCtl.openFile(filePath, body, slot, { ...optsForReplace(opts), binary: ok && binary, partial: ok && partialReadCause(read), placeholder: !ok })
-      onOpened?.()
+      const hostUnmoved = (slotRef.current ?? null) === hostSlotAtClick
+      onOpened?.(opts?.slot !== undefined && hostUnmoved ? slot : undefined)
     } catch (e) {
       // The read itself threw (network, aborted). Reported above the composer
       // rather than as a tab whose "content" is the error sentence.
