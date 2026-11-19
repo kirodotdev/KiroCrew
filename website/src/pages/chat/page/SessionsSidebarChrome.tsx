@@ -1,7 +1,7 @@
 import type { MotionValue } from 'motion-dom'
 import type { Dispatch, SetStateAction, MutableRefObject, RefObject } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { KiroCrewAgent } from '../../../components/AgentSelector'
 import type { MobileNavRailRenderer } from '../../../components/MobileNavRailContext'
@@ -18,6 +18,7 @@ import MobileTopBar from './MobileTopBar'
 import ChatSidebar from '../../ChatSidebar'
 import { SIDEBAR_MAX } from '../sidebarWidth'
 import OverlayDrawer from '../../../components/OverlayDrawer'
+import { AdoptPaneHost, useKeptPaneHost } from '../../../components/AdoptPaneHost'
 import SessionFlyout, { TOGGLE_RECT } from '../SessionFlyout'
 import { PanelLeftLight, PanelLeftSolid } from '../../../components/icons/panels'
 import SlotTagPopover from '../../../components/SlotTagPopover'
@@ -111,22 +112,6 @@ interface SessionsSidebarChromeProps {
   promoting: boolean
 }
 
-/** Puts the kept sidebar's host element inside the open drawer, and takes it
- *  out again when the drawer leaves. */
-export function AdoptPaneHost({ host }: { host: HTMLElement | null }) {
-  const ref = useRef<HTMLDivElement>(null)
-  useLayoutEffect(() => {
-    const slot = ref.current
-    if (!slot || !host) return
-    slot.appendChild(host)
-    // Release the host only if this slot still holds it: when the drawer
-    // swaps its slot (a phone/desktop switch while open), the new slot adopts
-    // the host before the old one unmounts.
-    return () => { if (host.parentNode === slot) host.remove() }
-  }, [host])
-  return <div ref={ref} style={{ display: 'contents' }} />
-}
-
 /**
  * The sessions chrome around the chat pane: the phone drawer and its scrim, the desktop sidebar toggle and its recents flyout, the sidebar or drawer itself (or the embedded sessions list), the phone top bar, and the tag popover.
  */
@@ -172,12 +157,7 @@ export default function SessionsSidebarChrome({
   // the same list back on screen instead of mounting it again. Closed, it
   // takes the same updates it takes open.
   const keepPaneMounted = !embedMode
-  const [paneHost] = useState(() => {
-    if (typeof document === 'undefined') return null
-    const el = document.createElement('div')
-    el.style.display = 'contents'
-    return el
-  })
+  const paneHost = useKeptPaneHost()
   // The phone drawer resets its direct child's card border, radius and
   // margin; the list sits one level down, inside `paneHost`, so the host
   // carries the same resets.

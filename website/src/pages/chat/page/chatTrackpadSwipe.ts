@@ -6,6 +6,7 @@ import { shownWithin, useTrackpadSwipe } from '../../../hooks/useTrackpadSwipe'
 import { idleTrackpadDrag, leadTrackpadSamples, moveTrackpadDrag, releaseTrackpadDrag, settleTrackpadDrag, speedCommitTrackpadDrag, type TrackpadPanelDrag } from '../../../hooks/trackpadPanelDrag'
 import { openActivityPanel } from '../../../store/chatSlice'
 import { beginPanelSlide, retirePanelSlide } from '../../../utils/panelSlide'
+import { sidePanelIn } from '../../../utils/sidePanelHealth'
 import type { AppDispatch } from '../../../store'
 
 interface ChatPanelTrackpadSwipeOptions {
@@ -182,7 +183,7 @@ export function useChatPanelTrackpadSwipe({
         setDeskSlide(true)
       })
       // An open measures the panel once it is mounted, at its own width.
-      const panel = deskPanelWrapRef.current?.firstElementChild as HTMLElement | null | undefined
+      const panel = sidePanelIn(deskPanelWrapRef.current)
       const travel = docked || panel?.offsetWidth || window.innerWidth
       travelRef.current = travel
       deskX.set(startedOpen ? 0 : travel)

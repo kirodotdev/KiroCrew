@@ -1,5 +1,5 @@
 import type { MotionValue } from 'motion-dom'
-import { useCallback, useEffect, useRef, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { ChatPanelTrackpadSwipe } from './chatTrackpadSwipe'
@@ -20,6 +20,7 @@ import { coversPaneProps } from '../../../hooks/paneVisibility'
 import { useSidePanelHealth } from '../../../hooks/useSidePanelHealth'
 import { useAppDispatch } from '../../../store'
 import { closeActivityPanel } from '../../../store/chatSlice'
+import { AdoptPaneHost, useKeptPaneHost } from '../../../components/AdoptPaneHost'
 
 interface ChatSidePanelsProps {
   mode?: string
@@ -110,6 +111,7 @@ export default function ChatSidePanels({
   const instantPlacement = deskSlide || wasDeskSliding.current
   useEffect(() => { wasDeskSliding.current = deskSlide })
   const dispatch = useAppDispatch()
+  const panelState = { activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }
   const activeTab = tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)
   const browserBehind = hasBrowserTab && activeTab?.kind !== 'browser'
   const hideNative = useCallback(() => { if (activeSlot) void window.browserAPI?.setInactive(activeSlot, true) }, [activeSlot])
@@ -136,6 +138,24 @@ export default function ChatSidePanels({
       close: () => dispatch(closeActivityPanel()),
     },
   })
+  // ONE side panel for both forms. The desktop form shows it in the shell's
+  // activity column and the phone form in an overlay over the chat, so it
+  // renders into a kept host that the showing surface adopts: a fold or an
+  // unfold moves the panel instead of mounting a new one, and what it holds
+  // only in its own state (a Dashboard tab's half-typed answer) comes through,
+  // with its scroll offsets and focus.
+  const panelHost = useKeptPaneHost({ keepScrollAndFocus: true })
+  // Surfaces holding the host. The panel mounts only once one does: its first
+  // effects (following the newest activity, revealing the active tab, a
+  // terminal taking the focus) do nothing off the page. It then stays mounted
+  // while a surface holds it, so one that animates out takes the panel along,
+  // and while the store wants it, so it waits in its host through the frames
+  // of a form switch where neither surface is up yet.
+  const [panelSurfaces, setPanelSurfaces] = useState(0)
+  const onPanelSurface = useCallback((mounted: boolean) => setPanelSurfaces(n => n + (mounted ? 1 : -1)), [])
+  const panelWasMounted = useRef(false)
+  const panelMounted = panelSurfaces > 0 || (panelWasMounted.current && shouldMountSidePanel(panelState))
+  useEffect(() => { panelWasMounted.current = panelMounted })
   // A narrow desktop window where the panel fills the chat column needs no mark:
   // it squeezes the transcript to zero width, which the on-screen backstop sees
   // (paneVisibility, #23564), and a bottom-docked panel leaves it on screen.
@@ -181,9 +201,9 @@ export default function ChatSidePanels({
           // below) so its iframe — and the drawing inside it — survives the
           // close, exactly as the width-reveal branch always did.
           ? (sideOverlayPhase !== 'closed'
-              || (shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
-                  && isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }))) && !activitySlot
-          : shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) && !activitySlot) && (
+              || (shouldMountSidePanel(panelState)
+                  && isSidePanelHidden(panelState))) && !activitySlot
+          : shouldMountSidePanel(panelState) && !activitySlot) && (
           <motion.div
             key="side-panel-inline"
             data-testid="side-panel-inline"
@@ -212,28 +232,9 @@ export default function ChatSidePanels({
               ? (sideOverlayPhase === 'closed'
                   ? { display: 'none' } // keep-alive: mounted for the iframe, invisible
                   : { x: sideOverlayX })
-              : (isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) ? { display: 'none' } : undefined)}
+              : (isSidePanelHidden(panelState) ? { display: 'none' } : undefined)}
           >
-            <SidePanel
-              tabsCtl={tabsCtl}
-              slot={activeSlot || ''}
-              panelHidden={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })}
-              onFileOpen={handleFileOpen}
-              onArtifactOpen={handleArtifactOpen}
-              onAddToContext={handleAddToContext} onComposerInsert={insertDashboardReply}
-              onOpenWorkingTreeDiff={handleOpenWorkingTreeDiff}
-              projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
-              sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl} onDismissSource={dismissSource}
-              issues={panelIssues} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
-              onAddSourceToChat={addSourceCommentToChat}
-              onSubmitComments={submitComments} connected={connected} onFileSave={handleFileSave} onClose={toggleAct}
-              pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onPutPinInComposer={handlePutPinInComposer && putPinInComposer} onUnpin={handleUnpinById}
-              slotTitle={activeSlotTitle} chatMode={mode} pinSummary={pinSummary}
-              expanded={panelMaximized}
-              fillWidth={panelFillWidth}
-              extraReserveW={!isMobile && sidebarOpen ? effectiveSidebarWidth : 0}
-              canDockBottom={false}
-            />
+            <AdoptPaneHost host={panelHost} onMountChange={onPanelSurface} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -246,7 +247,7 @@ export default function ChatSidePanels({
           the window edge — both sides move together instead of snapping. */}
       {activitySlot && createPortal(
         <AnimatePresence initial={false}>
-          {(shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) || deskSlide) && (
+          {(shouldMountSidePanel(panelState) || deskSlide) && (
             <motion.div
               key="side-panel"
               ref={deskPanelWrapRef}
@@ -262,9 +263,9 @@ export default function ChatSidePanels({
                 // While it slides the panel keeps its size and only moves: its own
                 // layer (`will-change`) and containment let the browser move it
                 // without repainting or re-laying out its content each frame.
-                ? 'h-full relative overflow-hidden flex [&>:first-child]:absolute [&>:first-child]:inset-y-0 [&>:first-child]:left-0 [&>:first-child]:will-change-transform [&>:first-child]:[contain:layout_paint]'
+                ? 'h-full relative overflow-hidden flex [&_[data-testid=side-panel-root]]:absolute [&_[data-testid=side-panel-root]]:inset-y-0 [&_[data-testid=side-panel-root]]:left-0 [&_[data-testid=side-panel-root]]:will-change-transform [&_[data-testid=side-panel-root]]:[contain:layout_paint]'
                 : sidePanelDock === 'bottom' ? 'w-full overflow-visible flex flex-col justify-end' : 'h-full overflow-visible flex justify-end'}
-              style={!deskSlide && isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
+              style={!deskSlide && isSidePanelHidden(panelState) ? { display: 'none' } : undefined}
               data-testid="side-panel-column"
               data-sliding={deskSlide ? 'true' : undefined}
               // A native Browser view (useNativeBrowser) is a layer over the
@@ -273,31 +274,37 @@ export default function ChatSidePanels({
               // whole drag and settle; docking shows it at the new rect.
               data-native-overlay={deskSlide ? '' : undefined}
             >
-              <SidePanel
-                tabsCtl={tabsCtl}
-                slot={activeSlot || ''}
-                panelHidden={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) && !deskSlide}
-                onFileOpen={handleFileOpen}
-                onArtifactOpen={handleArtifactOpen}
-                onAddToContext={handleAddToContext} onComposerInsert={insertDashboardReply}
-                onOpenWorkingTreeDiff={handleOpenWorkingTreeDiff}
-                projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
-                sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl} onDismissSource={dismissSource}
-              issues={panelIssues} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
-              onAddSourceToChat={addSourceCommentToChat}
-                onSubmitComments={submitComments} connected={connected} onFileSave={handleFileSave} onClose={toggleAct}
-                pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onPutPinInComposer={handlePutPinInComposer && putPinInComposer} onUnpin={handleUnpinById}
-                slotTitle={activeSlotTitle} chatMode={mode} pinSummary={pinSummary}
-                expanded={panelMaximized}
-                fillWidth={panelFillWidth}
-                extraReserveW={!isMobile && sidebarOpen ? effectiveSidebarWidth : 0}
-              />
-              {/* After the panel, so the panel keeps its place and never remounts. */}
+              <AdoptPaneHost host={panelHost} onMountChange={onPanelSurface} />
+              {/* After the panel, so the panel keeps its place. */}
               {deskSlide && <motion.div data-testid="side-panel-swipe-spacer" className="h-full shrink-0" style={{ width: deskSpacerW }} />}
             </motion.div>
           )}
         </AnimatePresence>,
         activitySlot
+      )}
+      {panelMounted && panelHost && createPortal(
+        <SidePanel
+          tabsCtl={tabsCtl}
+          slot={activeSlot || ''}
+          panelHidden={isSidePanelHidden(panelState) && !deskSlide}
+          onFileOpen={handleFileOpen}
+          onArtifactOpen={handleArtifactOpen}
+          onAddToContext={handleAddToContext} onComposerInsert={insertDashboardReply}
+          onOpenWorkingTreeDiff={handleOpenWorkingTreeDiff}
+          projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
+          sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl} onDismissSource={dismissSource}
+          issues={panelIssues} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
+          onAddSourceToChat={addSourceCommentToChat}
+          onSubmitComments={submitComments} connected={connected} onFileSave={handleFileSave} onClose={toggleAct}
+          pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onPutPinInComposer={handlePutPinInComposer && putPinInComposer} onUnpin={handleUnpinById}
+          slotTitle={activeSlotTitle} chatMode={mode} pinSummary={pinSummary}
+          expanded={panelMaximized}
+          fillWidth={panelFillWidth}
+          extraReserveW={!isMobile && sidebarOpen ? effectiveSidebarWidth : 0}
+          // The phone overlay and the embed reveal have no bottom row to dock in.
+          canDockBottom={!!activitySlot}
+        />,
+        panelHost,
       )}
     </>
   )
