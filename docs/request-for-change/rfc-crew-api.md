@@ -598,6 +598,28 @@ listed here so the count is not read as "everything the gateway exposes":
 The routes that are reachable without a token need a specification as detailed as the `/v1`
 operations before phase 2 starts ([Q8](#open-questions)).
 
+**Local authorization: how the app waits for the owner** (amendment, 2026-11-19; proposed with the
+pull request that builds the four routes, and in force once a maintainer merges it).
+
+A machine that runs Kiro Crew as a server often has no browser, and the owner answers some time
+after the app asks. So `GET /oauth/authorize` never grants by itself:
+
+1. The first call records a grant request and answers that it waits: 202 with `request_id`,
+   `user_code`, `expires_at` and `interval` for a program that accepts `application/json`, else a
+   page that reloads.
+2. The owner approves or denies the request. With a dashboard this is the consent page; without
+   one it is an Owner route. The owner can narrow the requested scopes, never widen them. An app
+   credential cannot answer a request.
+3. The app asks again with `request_id` and the same parameters, no sooner than `interval`
+   seconds. Once the owner answered, the gateway redirects to the app's loopback `redirect_uri`
+   with a one-time code, or with `error=access_denied`.
+
+The four routes answer only a request made directly from this machine; one that arrives through
+the relay or another entry gets 404. Each request and grant stores a `namespace` field, fixed to
+`default`. The access token is a JWT with `typ` `kiro-crew-local+jwt`, valid 5 minutes. Proposals
+to be confirmed: a request waits 10 minutes, a code lives 60 seconds, a refresh token expires
+after 24 hours unused and 7 days in all, and at most 5 requests wait per `client_id` and 20 in all.
+
 ### 9. Versioning and compatibility
 
 | Level | Where | Changes when |
