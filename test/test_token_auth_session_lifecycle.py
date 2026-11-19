@@ -494,12 +494,15 @@ def test_revoked_store_locks_the_file_down_to_its_owner(tmp_path, monkeypatch) -
     from kiro_crew.dashboard import token_auth as token_auth_mod
 
     locked: list[tuple[str, int]] = []
+    test_thread = threading.get_ident()
     real_restrict = platform_compat.restrict_to_owner
 
     def _spy(path, **_kw) -> None:
         # Record the size at lockdown time: the nonce list must not be sitting
-        # in the file yet (see the ordering assertion below).
-        locked.append((str(path), os.path.getsize(str(path))))
+        # in the file yet (see the ordering assertion below). This thread only:
+        # the SEL writer thread re-locks its non-empty log per append.
+        if threading.get_ident() == test_thread:
+            locked.append((str(path), os.path.getsize(str(path))))
         real_restrict(path)
 
     monkeypatch.setattr(token_auth_mod.platform_compat, "restrict_to_owner", _spy)
@@ -566,8 +569,11 @@ def test_is_revoked_answers_while_a_denylist_write_is_stuck(tmp_path, monkeypatc
     real_restrict = platform_compat.restrict_to_owner
 
     def _stuck_lockdown(path, **_kw) -> None:
-        in_write.set()
-        release.wait(default_timeout())
+        # This store's files only: revoke runs on worker threads, and the SEL
+        # writer thread re-locks its non-empty log on every append.
+        if os.path.dirname(str(path)) == str(tmp_path):
+            in_write.set()
+            release.wait(default_timeout())
         real_restrict(path)
 
     monkeypatch.setattr(token_auth_mod.platform_compat, "restrict_to_owner", _stuck_lockdown)
