@@ -210,6 +210,10 @@ EVENT_WRAPPED: dict[tuple[str, str], str] = {
     ("design-review.yml", "design-review"): ACTION_REF,
     ("first-principles-review.yml", "first-principles-review"): ACTION_REF,
     ("ux-review.yml", "ux-review"): ACTION_REF,
+    # Their API calls are inside a third-party action, so they wait with the
+    # action's `gh-rate-limit-wait` (test_gh_rate_limit_wait.py).
+    ("codeql.yml", "analyze"): ACTION_REF,
+    ("dependency-review.yml", "license-gate"): ACTION_REF,
 }
 
 

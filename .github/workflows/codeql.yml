@@ -33,6 +33,15 @@ name: CodeQL
 # main but missing on the PR turns GitHub's `CodeQL` results check neutral
 # ("1 configuration not found"), and PR Readiness holds a neutral result at
 # pending.
+#
+# THE UPLOAD WAITS FOR THE API RATE LIMIT. The job's token draws on the
+# installation's hourly REST pool, which the rest of the fleet can spend, and
+# the one request this job cannot do without is the results upload at the end
+# of a scan that can run past 20 minutes. So `analyze` does not upload, and the
+# upload is its own step after a `gh-rate-limit-wait` (see
+# `.github/actions/gh-rate-limit`), which sleeps until the reset when the pool
+# is already spent. A failed upload fails the job: the wait never stands in for
+# it, so the job is green only when the upload succeeded.
 on:
   pull_request:
     branches: [main]
@@ -83,7 +92,8 @@ jobs:
     # runner group, so it takes the hosted image. The AWS webhook remains the
     # security boundary; this expression controls availability.
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
-    timeout-minutes: 60
+    # The scan, plus the 30 minutes the upload may wait for a rate-limit reset.
+    timeout-minutes: 75
     permissions:
       actions: read
       contents: read
@@ -98,11 +108,33 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "1800"
+
       - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: ${{ matrix.language }}
           build-mode: none
 
+      # `failure-only`: the results are uploaded by the steps below. A failed
+      # scan still uploads its debugging information from here.
       - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        id: analyze
         with:
+          category: /language:${{ matrix.language }}
+          upload: failure-only
+
+      - name: Wait for API quota before the upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh-rate-limit-wait 100
+
+      # One upload per job: the action refuses a second upload of a category
+      # in the same job before it sends anything, so a failed upload cannot be
+      # repeated here. It fails the job, as it did when `analyze` uploaded.
+      - name: Upload the results
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: ${{ steps.analyze.outputs.sarif-output }}
           category: /language:${{ matrix.language }}

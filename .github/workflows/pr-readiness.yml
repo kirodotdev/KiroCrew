@@ -423,12 +423,26 @@ jobs:
             fi
           }
 
+          # with_read_token <command...>: runs a READ on the pool the "Select
+          # the token pool for reads" step chose. Every `gh_retry` call is a
+          # read and goes through it. A write never does: a status, label or
+          # comment written with any token but GITHUB_TOKEN starts workflow
+          # runs of its own.
+          with_read_token() {
+            if [ -n "${READINESS_READ_TOKEN:-}" ] \
+              && [ "$(cat "$RUNNER_TEMP/readiness-read-pool" 2>/dev/null)" = readiness ]; then
+              GH_TOKEN="$READINESS_READ_TOKEN" "$@"
+            else
+              "$@"
+            fi
+          }
+
           gh_retry() {
             local attempt out err rc=1
             for attempt in 1 2 3; do
               # `bounded` caps a HANGING attempt (gh applies no HTTP request
               # timeout of its own); rc 124 is just another retryable failure.
-              if out="$(bounded "$@" 2>"$RUNNER_TEMP/gh-retry-err")"; then
+              if out="$(with_read_token bounded "$@" 2>"$RUNNER_TEMP/gh-retry-err")"; then
                 cat "$RUNNER_TEMP/gh-retry-err" >&2
                 printf '%s\n' "$out"
                 return 0
@@ -537,10 +551,42 @@ jobs:
           }
           HELPER
 
+      # Reads can draw on a pool of their own, so lane traffic on the shared
+      # installation pool cannot starve the verdict. The step is identical in
+      # pr-readiness-sweep.yml; test_readiness_read_token.py pins that.
+      - name: Select the token pool for reads
+        env:
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
+          READ_POOL_FLOOR: "50"
+        run: |
+          # Which pool this job reads from. PR_READINESS_READ_TOKEN is a
+          # separate, read-only token. It is used only when it answers
+          # `/rate_limit` (not counted against the quota) with at least
+          # READ_POOL_FLOOR requests left. Unset, refused or nearly spent,
+          # reads stay on GITHUB_TOKEN. Only counts are printed, never a token.
+          pool=shared
+          if [ -z "${READINESS_READ_TOKEN:-}" ]; then
+            echo "readiness reads: token pool -- shared (GITHUB_TOKEN); PR_READINESS_READ_TOKEN is not set"
+          else
+            bound=""
+            if command -v timeout >/dev/null 2>&1; then bound="timeout 60"; fi
+            left="$(GH_TOKEN="$READINESS_READ_TOKEN" $bound gh api rate_limit \
+              --jq '.resources.core | "\(.remaining)/\(.limit)"' 2>/dev/null || true)"
+            if [[ "$left" =~ ^([0-9]+)/[0-9]+$ ]] && [ "${BASH_REMATCH[1]}" -ge "$READ_POOL_FLOOR" ]; then
+              pool=readiness
+              echo "readiness reads: token pool -- readiness (PR_READINESS_READ_TOKEN), $left remaining"
+            else
+              [[ "$left" =~ ^[0-9]+/[0-9]+$ ]] || left="no reading"
+              echo "::warning::PR_READINESS_READ_TOKEN is set but its pool is unreadable or under $READ_POOL_FLOOR requests ($left); reads use the shared GITHUB_TOKEN pool."
+            fi
+          fi
+          echo "$pool" > "$RUNNER_TEMP/readiness-read-pool"
+
       - name: Resolve current pull request revision
         id: context
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           INPUT_PR: ${{ inputs.pr }}
@@ -727,6 +773,7 @@ jobs:
         if: steps.context.outputs.stale != 'true' && steps.context.outputs.state != 'OPEN'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
         run: |
@@ -784,6 +831,7 @@ jobs:
           && steps.context.outputs.state == 'OPEN'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
           REPO: ${{ github.repository }}
           SHA: ${{ steps.context.outputs.sha }}
           URL: ${{ steps.context.outputs.url }}
@@ -905,6 +953,9 @@ jobs:
           && steps.context.outputs.state == 'OPEN'
           && steps.hold.outputs.held != 'true'
         env:
+          # GITHUB_TOKEN only, never the readiness read token: the evaluator
+          # asks for each record author's collaborator permission, and a token
+          # refused that read makes every author a non-writer.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
@@ -1010,6 +1061,9 @@ jobs:
           && steps.hold.outputs.held != 'true'
           && steps.context.outputs.author != 'dependabot[bot]'
         env:
+          # GITHUB_TOKEN only, never the readiness read token: the evaluator
+          # asks for each record author's collaborator permission, and a token
+          # refused that read makes every author a non-writer.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
@@ -1054,6 +1108,7 @@ jobs:
           && steps.hold.outputs.held != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
           SHA: ${{ steps.context.outputs.sha }}
@@ -2093,7 +2148,11 @@ jobs:
             # collaborator"; any other failed read is unknown, so pending.
             while IFS= read -r reviewer; do
               [ -n "$reviewer" ] || continue
-              if permission="$(gh_retry gh api \
+              # Read with GITHUB_TOKEN whatever pool was selected: the
+              # answer depends on what the asking token may see, and a token
+              # that may not see collaborators would read as "not a
+              # collaborator" and drop the block.
+              if permission="$(READINESS_READ_TOKEN="" gh_retry gh api \
                 "repos/$REPO/collaborators/$reviewer/permission" \
                 --jq '.permission // "none"' 2>"$RUNNER_TEMP/review-permission-err")"; then
                 case "$permission" in
@@ -2302,6 +2361,7 @@ jobs:
           && steps.hold.outputs.held != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
           SHA: ${{ steps.context.outputs.sha }}
@@ -2744,13 +2804,20 @@ jobs:
             printf "rest-calls: workflow=%s job=%s rest=%d graphql=%d paginated=%d other=%d basis=gh-invocations\n",
               wf, job, c["rest"], c["graphql"], c["paginate"], c["other"] }' "$f" || true
 
-      # One line for measuring this workflow's draw on the shared pool.
+      # One line for measuring this workflow's draw on the shared pool, and one
+      # for the readiness pool when the reads used it.
       # `GET /rate_limit` is not counted against the limit it reports.
       - name: Log the remaining REST budget
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
         run: |
           timeout 60 gh api rate_limit --jq '.resources.core
             | "pr-readiness: core rate limit -- \(.remaining)/\(.limit) remaining, resets \(.reset | todate)"' \
             || echo "pr-readiness: core rate limit could not be read"
+          if [ "$(cat "$RUNNER_TEMP/readiness-read-pool" 2>/dev/null)" = readiness ]; then
+            GH_TOKEN="$READINESS_READ_TOKEN" timeout 60 gh api rate_limit --jq '.resources.core
+              | "pr-readiness: readiness pool rate limit -- \(.remaining)/\(.limit) remaining, resets \(.reset | todate)"' \
+              || echo "pr-readiness: readiness pool rate limit could not be read"
+          fi

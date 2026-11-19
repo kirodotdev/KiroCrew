@@ -497,6 +497,46 @@ reason a failed run costs nothing the next tick does not re-cover (frequent
 sweeps, full re-derivations, and a job whose model step can write to the
 runner's disk). That test fails for a new scheduled `gh` job that does neither.
 
+A job whose API calls are made inside a third-party action cannot be wrapped:
+the action calls from its own process. For those the same action installs
+`gh-rate-limit-wait [floor]`. It reads the REST (`core`) bucket from
+`/rate_limit` and, when fewer than `floor` requests remain, sleeps until the
+reset out of the same job-wide `max-wait` budget. It prints `waited` or `ready`
+and exits non-zero only when the reset is past the budget, with an `::error::`
+that names the rate limit as CI infrastructure, not the code under test. It
+retries nothing and reports nothing for the action it guards. A job runs it
+before the action. Where the action can be run again in the same job, the job
+runs it once more after a failed attempt: `waited` means the pool was spent and
+has reset, `ready` means quota remained and the fixed pause applies. Two jobs
+use it, both with a floor of 100 requests and a 30-minute budget:
+
+- **CodeQL** (`codeql.yml`). The request the job cannot do without is the
+  results upload, at the end of a scan that can run past 20 minutes, so a wait
+  before the scan would not help. `analyze` runs with `upload: failure-only`
+  and the upload is a separate `upload-sarif` step, right after the wait. There
+  is one upload per job: the action refuses a second upload of one category in
+  the same job before it sends a request (`validateUniqueCategory`), so a
+  failed upload fails the job and is not repeated. The job is green only when
+  the upload succeeded.
+- **Dependency License Gate** (`dependency-review.yml`). It waits before the
+  first review, and the pause before the retry is the wait for the reset when
+  the pool is spent (the fixed 60 s otherwise). When both reviews failed and the
+  pool is spent, the verdict step fails as "could not run" naming the rate
+  limit. It does not probe then, because a probe that waited for the reset
+  would answer and the job would call a rate-limited retry a license finding.
+  A retry that did read the dependency graph and reported a license it does
+  not accept (its `invalid-license-changes` output) is the action's license
+  verdict whatever the pool reads by then.
+
+What this does not cover: a pool that empties between the wait and the action's
+own request still fails that attempt (the CodeQL job then fails as before; the
+license gate's retry is its second attempt), and a request the action makes
+with quota left but refused for another reason fails as before. The wait reads
+only the REST bucket, so a spent GraphQL bucket or a secondary limit inside the
+action is not waited for. Neither job can pass, skip or report success without
+the action having run.
+`test/test_gh_rate_limit_wait.py` runs the command and both jobs' steps.
+
 ### A red that is not your diff: external, or self-inflicted?
 
 Before re-running, read the failing step's `##[error]` line and match it here.
@@ -3288,7 +3328,10 @@ every PR with "Dependency review is not supported on this repository", so a fail
 review is retried once after 60s; when the retry fails too, the job probes
 `dependency-graph/compare` for the PR's range and fails either as the action's
 license verdict (the API answers) or as "could not run" naming the API's answer
-(it does not). Both fail closed; only the message differs.
+(it does not). Both fail closed; only the message differs. A spent API rate
+limit produces the same "not supported" words, so the job waits for the reset
+before each attempt: see
+[a spent API rate limit](#scheduled-workflows-a-spent-api-rate-limit).
 
 **`docker-smoke.yml`** is paths-filtered to the container surface (`docker/**` plus
 the source files the container contract spans: the bind override in
@@ -4653,7 +4696,9 @@ status plus one `readiness:` label**.
   its previous head, and a draft PR is not scanned until it is ready for review.
   GitHub rejects its uploads while default setup is on, so its jobs are
   skipped until an admin has turned default setup off and set the repository
-  variable `CODEQL_ADVANCED_SETUP` to `true`.
+  variable `CODEQL_ADVANCED_SETUP` to `true`. The results upload is its own
+  step and waits for a spent API rate limit to reset: see
+  [a spent API rate limit](#scheduled-workflows-a-spent-api-rate-limit).
 - **The aggregator reads CodeQL from either setup** (#20576). It first resolves
   the analysis run by `path == "dynamic/github-code-scanning/codeql"` (default
   setup); only when the head has no such run does it read this PR's
@@ -5000,6 +5045,49 @@ Two subtleties:
 
   Each run ends with a `pr-readiness: core rate limit -- N/M remaining` log line
   (`GET /rate_limit` is free) so the pool's draw can be measured rather than estimated.
+
+  **Reads can use a pool of their own.** When the repository secret
+  `PR_READINESS_READ_TOKEN` is set, this workflow and `pr-readiness-sweep.yml`
+  make their reads with that token instead of `GITHUB_TOKEN`, so lane traffic
+  on the shared pool cannot starve the verdict. The first step after the retry
+  helper, `Select the token pool for reads` (identical in both workflows), asks
+  that token for `/rate_limit` and logs
+  `readiness reads: token pool -- readiness (PR_READINESS_READ_TOKEN), N/M remaining`.
+  With the secret unset it logs `token pool -- shared (GITHUB_TOKEN)`, and
+  nothing else changes. A token that is refused (expired, revoked) or has fewer
+  than `READ_POOL_FLOOR` (50) requests left raises a `::warning::` and the run
+  reads with `GITHUB_TOKEN`, so a bad secret degrades to the shared pool and
+  never stops the required check. Only counts are logged, never the token, and
+  the secret reaches a step only through its `env`. In `pr-readiness.yml` every
+  `gh_retry` call (all of them reads) takes the selected pool, and the run's
+  last step adds a
+  `pr-readiness: readiness pool rate limit -- N/M remaining` line. In the sweep
+  the scan, the comment and status reads and the active-dispatch listing take
+  it. Three things stay on `GITHUB_TOKEN` on purpose:
+
+  - **Every write** (the status, labels, the sweep's dispatch and republish). A
+    write made with any other token starts workflow runs of its own: a label
+    change would re-run every workflow that listens for `labeled`.
+  - **Every collaborator-permission read**: the one behind "changes requested"
+    and the ones the disposition and supersession evaluators (`pr_status.py`)
+    make for each record's author, so both evaluator steps run on
+    `GITHUB_TOKEN` whole. The answer depends on what the asking token may see.
+    A token refused that read makes a reviewer read as "not a collaborator" and
+    a disposition author as a non-writer, which drops the block or the record
+    and can publish a green the PR has not earned.
+  - **The sweep's reserve.** It still reads the shared pool, with the same
+    `RATE_RESERVE_PERCENT` and `DISPATCH_COST`: the dispatch and the recompute's
+    writes draw on that pool.
+
+  The token must be able to read this public repository's pull requests,
+  reviews, issue comments, labels, commit statuses, check runs, workflow runs
+  and file contents, over REST and GraphQL. It needs no write access and no
+  access to collaborator permissions, because no read that depends on them is
+  made with it. A fine-grained personal access token has a 5,000-request hourly
+  pool of its owner's, which the selection falls back from when it runs low.
+  `test/test_readiness_read_token.py` pins the selection, the fallback, that no
+  write goes through the read token, and that the step is identical in both
+  workflows.
   Screening events before the evaluation was measured and then withdrawn: settling an
   event skips the publish, and the publish is the only write that corrects an isolated,
   never-cancelled publisher's stale success, so every screened shape moved that write
