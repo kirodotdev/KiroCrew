@@ -692,7 +692,9 @@ def pr_observation_is_about(
     Otherwise *target* is put through the same inference :func:`parse_targets`
     already admits it by, and either the watched side infers to the same identity --
     host included, since one slug on two servers is two pull requests -- or the
-    inferred ``kind`` and ``subject`` equal the pair the monitor is bound to.
+    inferred ``kind`` and ``subject`` equal the pair the monitor is bound to. Subjects
+    compare through :func:`~kiro_crew.probes.targets.same_subject`, so a brief
+    spelling the slug in another letter case still names the watched pull request.
 
     That third way is what a GATED loop needs. ``monitor_watch`` stores the caller's
     own canonical URL, so the first two ways cover it; ``infer_monitor`` stores the
@@ -710,6 +712,8 @@ def pr_observation_is_about(
     ``False`` on every doubtful case, which drops the target: the collector counts a
     drop, and a tick with no evidence answers FALLBACK, which fires.
     """
+    from kiro_crew.probes.targets import same_subject
+
     kind = (monitor_kind or "").strip()
     watched = (monitor_target or "").strip()
     requested = (target or "").strip()
@@ -717,7 +721,11 @@ def pr_observation_is_about(
         return False
     if isinstance(observation, Mapping):
         labelled = observation.get("target")
-        if isinstance(labelled, str) and labelled.strip() and labelled.strip() != watched:
+        if (
+            isinstance(labelled, str)
+            and labelled.strip()
+            and not same_subject(kind, labelled.strip(), kind, watched)
+        ):
             return False
         observed_kind = observation.get("kind")
         if (
@@ -731,9 +739,10 @@ def pr_observation_is_about(
     identity = _pr_identity(requested)
     if identity is None:
         return False
-    if identity == _pr_identity(watched):
+    other = _pr_identity(watched)
+    if other is not None and other[2] == identity[2] and same_subject(*identity[:2], *other[:2]):
         return True
-    return (identity[0], identity[1]) == (kind, watched)
+    return same_subject(identity[0], identity[1], kind, watched)
 
 
 #: The remark kinds the fetcher reports, mapped to the evidence kind each becomes.

@@ -64,6 +64,12 @@ loop resolves the same instruction against its own monitor's target
 cannot drift as the log grows. The judge's collector cannot re-read the
 transcript, so `parse_targets(..., watched=)` admits the gh-pr monitor's own subject
 for exactly this shape, and only when the instruction's number is the monitor's.
+Where the tick, the terminal recheck and the judge's `pr_observation_is_about` compare
+the stored subject with a re-inferred or requested one, `probes.targets.same_subject`
+compares a gh-pr subject's owner and repository case-folded, because GitHub slugs are
+case-insensitive; the number, and a host wherever one is compared, stay exact, and
+every other kind compares exactly. So a brief spelling `kirodotdev/kirocrew` against a
+stored `kirodotdev/KiroCrew` keeps the loop gated.
 A loop that does resolve to one subject attaches
 `PrWatchProbe`, which FETCHES that pull request every tick and hands the reading to
 the wake judge. A retarget that changes the subject advances `config_generation`, so a
