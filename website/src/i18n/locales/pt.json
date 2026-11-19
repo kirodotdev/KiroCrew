@@ -7327,6 +7327,7 @@
       "generating": "gerando…",
       "unwrap": "Desativar quebra de linha",
       "wrap": "Quebrar linhas",
+      "wrap_not_saved": "Não foi possível salvar a opção de quebra de linha neste navegador. Ela vale até você recarregar.",
       "code_label": "código",
       "code_region": "Código {{lang}}"
     },

@@ -7140,6 +7140,7 @@
       "generating": "wird erstellt…",
       "unwrap": "Zeilenumbruch aufheben",
       "wrap": "Zeilen umbrechen",
+      "wrap_not_saved": "Die Zeilenumbruch-Einstellung konnte in diesem Browser nicht gespeichert werden. Sie gilt bis zum Neuladen.",
       "code_label": "Code",
       "code_region": "{{lang}}-Code"
     },
