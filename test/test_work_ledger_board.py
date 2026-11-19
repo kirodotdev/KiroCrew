@@ -496,6 +496,17 @@ async def test_a_report_the_harness_never_delivered_is_on_the_board_without_the_
 
 
 @pytest.mark.asyncio
+async def test_a_hosted_discussion_reaches_the_board_row():
+    """The Board's "discussing" row reads `discussion` from this payload."""
+    item_id = _item()
+    _bind(item_id)
+    _report(item_id, "progress", discussion={"phase": "talking", "round": 2, "agreed": ["ship A"]})
+    body, _ = await _call(_state({WORKER: _slot(running=True)}), CONDUCTOR)
+    talk = body["items"][0]["discussion"]
+    assert (talk["phase"], talk["round"], talk["agreed"]) == ("talking", 2, ["ship A"])
+
+
+@pytest.mark.asyncio
 async def test_a_board_shows_only_its_own_conductor_s_items():
     mine = _item(CONDUCTOR, title="mine")
     theirs = _item(OTHER_CONDUCTOR, title="theirs")

@@ -206,6 +206,25 @@ describe('milestoneState', () => {
     expect(milestoneState(item({ status: 'question', outstanding: false, terminal: true, state: 'abandoned' }), false)).toBe('not_done')
     expect(milestoneState(item({ status: 'done', terminal: true, state: 'rejected' }), true)).toBe('not_done')
   })
+
+  it('discussing: an open item whose worker hosts a discussion and is still there', () => {
+    const talk = { status: 'progress' as const, discussion: { phase: 'talking' as const, round: 1 }, ...R }
+    expect(milestoneState(item({ ...talk, alive: 'running' }), false)).toBe('discussing')
+    expect(milestoneState(item({ ...talk, alive: 'idle' }), false)).toBe('discussing')
+    // The person comes first.
+    expect(milestoneState(item(talk), true)).toBe('needs_you')
+  })
+
+  it('discussing ends when the item closes, and a stalled host falls back to its plain state', () => {
+    const talk = { status: 'progress' as const, discussion: { phase: 'talking' as const, round: 3 }, ...R }
+    expect(milestoneState(item({ ...talk, state: 'accepted', terminal: true, alive: 'closed' }), false)).toBe('done')
+    expect(milestoneState(item({ ...talk, state: 'abandoned', terminal: true }), false)).toBe('not_done')
+    expect(milestoneState(item({ ...talk, stale: true }), false)).toBe('quiet')
+    expect(milestoneState(item({ ...talk, alive: 'closed' }), false)).toBe('stuck')
+    expect(milestoneState(item({ ...talk, orphaned: true }), false)).toBe('stuck')
+    // No phase is no discussion.
+    expect(milestoneState(item({ ...talk, discussion: { phase: '' } as never }), false)).toBe('waiting')
+  })
 })
 
 describe('personAsks', () => {
