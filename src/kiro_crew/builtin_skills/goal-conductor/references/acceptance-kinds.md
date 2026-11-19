@@ -5,6 +5,10 @@ this goal, and whenever a verdict surprises you. The `acceptance` argument of
 `work_ledger_record` lists the object for each kind, and `work_dispatch` takes
 the same object: write one of those, exactly; there is nothing else to look up.
 
+- **`repo`** (both PR kinds): `owner/name` for github.com, `host/owner/name`
+  for a GitHub Enterprise server (`ghe.example.com/owner/name`). A bare
+  `owner/name` always resolves on github.com, so a GHE pull request needs the
+  host. The host is a plain DNS name: no scheme, port or extra path segment.
 - **`pr_checks`**: a PR's checks all green via `gh`. Always set `repo` to
   `owner/name`: without it `gh` resolves the PR number against whatever
   checkout the evaluator runs in, which can be another repository's PR, and

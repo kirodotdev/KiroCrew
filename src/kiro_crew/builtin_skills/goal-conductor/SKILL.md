@@ -31,7 +31,7 @@ string), and is auto-approved, so a verify cycle never waits on a click.
 deliberately kept out of `allowedTools`, so every shell call prompts and is
 audit-logged. The evaluator accepts **no command, argv array or shell string
 from a spec**: it builds every argv from a fixed template (`pr_checks` becomes
-`gh pr checks <n>`, `pr_merged` becomes `gh pr view <n> --repo <owner/name>
+`gh pr checks <n>`, `pr_merged` becomes `gh pr view <n> --repo <[host/]owner/name>
 --json state`, `edition_check` becomes `kirocrew acceptance-check --json <check>
 <ref>`), and nothing else runs. A spec that could name a command would make this
 approved wrapper a general way to run one, which the denied-command floor cannot
@@ -93,7 +93,9 @@ A candidate qualifies only if **all three** hold:
    dispatching, as one of the evaluator's kinds: `pr_checks` (a non-draft
    PR's checks all green), `pr_merged`, `edition_check`, `file` (a path
    existing) or `human_approval` (the user accepts it). For `pr_checks` and
-   `pr_merged`, always set `repo` to `owner/name`, with `repo` required.
+   `pr_merged`, always set `repo` to `owner/name`, with `repo` required; on a
+   GitHub Enterprise server write `host/owner/name` (`ghe.example.com/owner/name`),
+   because a bare `owner/name` always resolves on github.com.
    **There is deliberately no "run this command" kind**, so "the test suite
    passes" is expressed as `pr_checks` on the PR that carries the work — CI
    runs the suite, and its verdict is the one that counts. If an item's

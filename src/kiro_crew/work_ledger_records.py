@@ -87,10 +87,14 @@ ACCEPTANCE_READ_FIELDS: dict[str, tuple[str, ...]] = {
     "edition_check": ("check", "ref"),
 }
 
-#: ``accept_eval.py``'s own ``pr_merged`` ``repo`` pattern, mirrored so a bar it can
-#: only answer ``error`` to is not called concrete. Applied with ``fullmatch``, as
-#: there. A test pins the two equal.
-ACCEPTANCE_GH_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
+#: ``accept_eval.py``'s own ``repo`` pattern (``owner/name`` or ``host/owner/name``),
+#: mirrored so a bar it can only answer ``error`` to is not called concrete. Applied
+#: with ``fullmatch``, as there. A test pins the two equal.
+ACCEPTANCE_GH_REPO = re.compile(
+    r"(?:(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?/)?"
+    r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}"
+)
 
 #: ``accept_eval.py``'s own ``edition_check`` field patterns, mirrored so a bar it
 #: can only answer ``error`` to is not called concrete. Applied with ``fullmatch``,

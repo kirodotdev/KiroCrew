@@ -835,6 +835,10 @@ def test_the_concreteness_rules_are_exactly_accept_evals_error_only_guards():
         {"kind": "pr_merged", "pr": 7},
         {"kind": "pr_merged", "pr": 7, "repo": "TBD"},
         {"kind": "pr_merged", "pr": 7, "repo": "-owner/name"},
+        {"kind": "pr_merged", "pr": 7, "repo": "ghe.example.com:443/owner/name"},
+        {"kind": "pr_merged", "pr": 7, "repo": "ghe.example.com/owner/name/extra"},
+        {"kind": "pr_checks", "pr": 7, "repo": "-owner/name"},
+        {"kind": "pr_checks", "pr": 7, "repo": 17},
         {"kind": "edition_check", "check": "TBD", "ref": "ID-1"},
         {"kind": "edition_check", "ref": "ID-1"},
         {"kind": "edition_check", "check": "name"},
@@ -862,6 +866,10 @@ def test_the_concreteness_rules_are_exactly_accept_evals_error_only_guards():
     # ``pr_merged`` shells out too, so its valid form is asserted concrete and
     # evaluated nowhere, as for ``pr_checks`` above.
     assert wl.is_acceptance_concrete({"kind": "pr_merged", "pr": 7, "repo": "owner/name"}) is True
+    # A GitHub Enterprise host prefix is the same repo, reachable only with the host.
+    ghe = "ghe.example.com/owner/name"
+    assert wl.is_acceptance_concrete({"kind": "pr_merged", "pr": 7, "repo": ghe}) is True
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": 7, "repo": ghe}) is True
     # ``edition_check`` shells out too, so its valid form is asserted concrete and
     # evaluated nowhere, as for ``pr_checks`` above. A placeholder ref matches the
     # evaluator's ref pattern and would reach ``kirocrew``, so it is held to the
