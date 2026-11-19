@@ -348,6 +348,7 @@ from kiro_crew.dashboard.server_runtime.middleware_chain import (  # noqa: F401
     _insert_lts_gate,
     _install_api_middlewares,
     _install_dashboard_middlewares,
+    _relay_origin_middleware,
     _resolve_tailnet_trust,
     _tailnet_origin_enabled,
 )

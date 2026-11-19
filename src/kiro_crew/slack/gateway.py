@@ -34,6 +34,7 @@ from __future__ import annotations
 # this file: removing one fails test_every_global_an_owner_function_reads_is_bound_on_the_facade,
 # not a call at runtime, and test_gateway_runtime_bindings.py checks that each import is read.
 import asyncio
+import concurrent.futures
 import contextlib
 import hashlib
 import importlib
@@ -513,6 +514,7 @@ from kiro_crew.slack.gateway_runtime.cron_dispatch import (
 from kiro_crew.slack.gateway_runtime.cron_failure import (
     _failure_alert_due,
     _log_held_alert,
+    _scrubbed,
 )
 from kiro_crew.slack.gateway_runtime.cron_fire import (
     APP_JOB_BOT_REFUSAL,
@@ -786,6 +788,7 @@ class GatewayOrchestrator:
     _inline_parked: dict[Any, list[_ParkedCompletion]]
     _inline_tasks: set[asyncio.Task[Any]]
     _running_script_ids: set[str]
+    _auto_pause_alerts: set[concurrent.futures.Future[None]]
     task_runner: TaskRunner | None
     _runner_admission: Any
     _runner_admission_adopted: bool
@@ -963,6 +966,7 @@ class GatewayOrchestrator:
     _deliver_failure_alert = _cron_failure._deliver_failure_alert
     _advance_failure_dedup = _cron_failure._advance_failure_dedup
     _alert_cron_failure = _cron_failure._alert_cron_failure
+    _alert_cron_auto_paused = _cron_failure._alert_cron_auto_paused
     _alert_cron_interrupted = _cron_failure._alert_cron_interrupted
     _cron_single_failure = _cron_failure._cron_single_failure
     # gateway_runtime/delivery.py

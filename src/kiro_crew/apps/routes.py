@@ -241,7 +241,11 @@ def register_app_routes(app: web.Application) -> None:
     async def _start_proxy_session(app: web.Application) -> None:
         # No auto-decompress: the relay copies the backend's Content-Encoding and
         # Content-Length, so the body must stay the bytes those headers describe.
-        app["_proxy_session"] = aiohttp.ClientSession(auto_decompress=False)
+        # No cookie jar: a relayed answer's cookies belong to the browser that asked,
+        # never to the next request this shared session makes for anyone else.
+        app["_proxy_session"] = aiohttp.ClientSession(
+            auto_decompress=False, cookie_jar=aiohttp.DummyCookieJar()
+        )
 
     async def _close_proxy_session(app: web.Application) -> None:
         session = app.get("_proxy_session")

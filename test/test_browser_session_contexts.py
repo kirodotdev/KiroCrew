@@ -376,6 +376,63 @@ async def test_a_chat_that_turned_isolation_off_leaves_its_context_tabs_behind(
     assert await _tabs_listed(sup, "chat-a") == ["T2"]
 
 
+async def test_a_popup_from_the_other_side_of_a_flip_is_claimed_but_never_followed(
+    daemon: tuple[_Daemon, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shared-era tab's popup must not put shared cookies on an isolated chat's card."""
+    sup, _sent = daemon
+    hub = live_hub.get_live_hub()
+    _isolation(monkeypatch, False)
+    assert await browser_ops._bind_target(hub, "chat-a", sup) == "T-person"
+    _isolation(monkeypatch, True)
+    assert await browser_ops._bind_target(hub, "chat-a", sup) == "T1"
+    # The shared-era tab opens a sign-in popup: the relay ledgers it in that tab's
+    # (default) context, not the chat's.
+    await sup.relay._observe_popup({"targetId": "P-shared", "type": "page", "openerId": "T-person"})
+    assert sup.relay.context_of("P-shared") == ""
+    assert await browser_ops.follow_popup(hub, "chat-a", sup, sup.call) is None
+    assert hub.target_of("chat-a") == "T1" and sup.current == "T1"
+    assert ("switch_tab", {"target": "P-shared", "activate": False}) not in sup.calls
+    # Still the chat's, so the chat's end closes it.
+    assert "P-shared" in hub.targets_of("chat-a")
+    # A popup of the isolated tab, in the chat's own context, is followed as before.
+    await sup.relay._observe_popup({"targetId": "P-own", "type": "page", "openerId": "T1"})
+    assert sup.relay.context_of("P-own") == "CTX-1"
+    followed = await browser_ops.follow_popup(hub, "chat-a", sup, sup.call)
+    assert followed is not None and followed["target_id"] == "P-own"
+    assert hub.target_of("chat-a") == "P-own"
+
+
+async def test_the_first_op_after_a_flip_binds_before_it_follows_a_popup(
+    daemon: tuple[_Daemon, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pre-op follow reads the context THIS op's bind chose, not the last op's."""
+    sup, _sent = daemon
+
+    async def _supervisor(_hub: Any, _key: str) -> Any:
+        return sup
+
+    async def _no_stream(self: Any, key: str, relay: Any, target: str, **_kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(browser_ops, "_supervisor", _supervisor)
+    monkeypatch.setattr(browser_ops, "_sel", lambda: MagicMock())
+    monkeypatch.setattr(live_hub.LiveHub, "start_stream", _no_stream)
+    hub = live_hub.get_live_hub()
+    _isolation(monkeypatch, False)
+    assert await browser_ops._bind_target(hub, "chat-a", sup) == "T-person"
+    # The shared tab's popup opens after that op answered; then isolation turns on.
+    await sup.relay._observe_popup({"targetId": "P-shared", "type": "page", "openerId": "T-person"})
+    _isolation(monkeypatch, True)
+    req = make_mocked_request("POST", "/api/browser/op")
+    req["internal_auth"] = True
+    req._read_bytes = json.dumps({"op": "snapshot", "session_key": "dashboard:chat-a"}).encode()
+    body = json.loads((await browser_ops.api_browser_op(req)).body)
+    assert body["ok"] is True and "popup" not in body["result"]
+    assert hub.target_of("chat-a") == "T1" and sup.current == "T1"
+    assert ("switch_tab", {"target": "P-shared", "activate": False}) not in sup.calls
+
+
 @pytest.mark.parametrize("broken", ["config.json", "config.local.json"])
 async def test_an_unreadable_setting_refuses_the_op(
     daemon: tuple[_Daemon, list[Any]],

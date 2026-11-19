@@ -250,14 +250,15 @@ search falls back to your local sessions, which is always the floor.
 
 ## Opening a remote Crew through the Kiro relay
 
-Everything above reaches a machine over a tunnel you set up. The desktop app has
-a second way in that needs no tunnel and no SSH key: it asks the control plane
+Everything above reaches a machine over a tunnel you set up. There is a second
+way in that needs no tunnel and no SSH key: the dashboard asks the control plane
 which remote Crews your Kiro sign-in may open, and opens one through the Kiro
 relay. This is the viewer side only. A Crew you open this way still needs Kiro
 Relay turned on where it runs.
 
-It is off by default, and only the desktop app offers it. A browser tab or the
-installed web app shows nothing new.
+It is off by default. The desktop app opens the Crew as a tab in its main window.
+A browser on the same machine as this Crew opens it in a new browser tab, which
+this Crew relays for you (see "In a browser" below).
 
 ### Turning it on
 
@@ -355,11 +356,15 @@ Choosing an online row sends only the Crew's endpoint ID to the desktop app's
 main process. Main asks this machine's gateway for a short-lived access token,
 presenting the gateway's local secret, so a web page can't make that call. The
 gateway lists your Crews again, refuses one that is no longer in your list, and
-only then asks the control plane for the token. If any step refuses, no window
-opens, the switcher stays open, and the row shows the reason in plain words.
+only then asks the control plane for the token. If any step refuses, nothing
+opens, what you had in front stays there, the switcher stays open, and the row
+shows the reason in plain words.
 
-The Crew then opens in its own window, with its own session that is kept in
-memory and cleared when the window closes:
+The Crew then opens as a tab in the main window, under its top bar, with its own
+session that is kept in memory and cleared when the tab closes. A desktop app too
+old for tabs opens it in a window of its own instead. Opening a Crew from another
+dashboard window (Connection > New Window) brings the main window forward and
+opens it there.
 
 - Main adds the access token, in the `Kiro-Relay-Authorization` header, to every
   request for that Crew's own address, WebSocket connections included, and to
@@ -368,28 +373,54 @@ memory and cleared when the window closes:
 - Permission prompts (camera, notifications and the like) are refused.
 - A link to another site opens in your browser. A pop-up window on the Crew's own
   address is refused.
-- One window per Crew. Opening a Crew from its row when it is already open brings
-  its window forward.
+- One tab per Crew. Opening a Crew from its row when it is already open brings
+  its tab forward.
+- Up to three relay Crews stay loaded. Opening a fourth closes the one you used
+  least recently: its page closes and its stored data, unsent text included, is
+  cleared. It stays in the Remote Crews list, and choosing it there opens it again.
+- If you choose something else while a Crew is still opening, what you chose stays
+  in front; the Crew that finished opening waits as a tab.
+- Reload and Force Reload in the app menu reload the relay Crew tab in front.
+
+### In a browser
+
+Connect opens a new browser tab. This Crew gets the access token, keeps it, and
+relays the remote Crew to that tab on an address of its own,
+`http://kcr-<random>.localhost:<port>`, made for that one open. The tab never
+sees the token, and nothing from an earlier open or another account is ever loaded
+there again.
+
+- Only a browser on this machine can do it. An `ssh -L` forward counts when it
+  uses the dashboard's own port, or a port listed in
+  `KIROCREW_ALLOWED_LOOPBACK_PORTS`. From anywhere else the row says so.
+- If the browser blocks the new tab, the row says so; allow pop-ups for the
+  dashboard.
+- Signing out, signing in or switching account closes every such tab at once: the
+  tab drops the Crew's page and says it is closed. A sign-out made elsewhere (the
+  CLI, another dashboard tab) is caught within about half a minute.
+- `*.localhost` names need a browser that resolves them itself (Chrome, Edge and
+  Firefox do).
 
 ### Keeping the token fresh
 
 Main renews the access token before it runs out. When the token's answer names a
 renewal time, main uses it, with a few seconds of random spread so open windows
 don't renew in step.
-While a window is minimized or hidden it renews once and then pauses until you
-show it again.
+While a tab is behind another, or the window is minimized or hidden, it renews
+once and then pauses until you show it again.
 
 - If the Crew's page answers 401, main gets a new token once and reloads. A second
-  401 soon after stops renewal for that window.
+  401 soon after stops renewal for that Crew.
 - If access is refused (no longer granted, remote access off, the Crew offline,
-  or the feature turned off), renewal stops. The window stays open but
+  or the feature turned off), renewal stops. The tab stays open but
   sends no token from then on. Opening that Crew from its row again tries a fresh
   token and reloads.
 - If your Kiro sign-in has ended, main stops every renewal and closes every relay
-  Crew window when a renewal or opening a Crew from its row gets the signed-out
-  answer. Sign out and Switch account in the desktop dashboard now close every
-  relay Crew window at once; a sign-out made anywhere else is still caught at the
-  next renewal or when a Crew is opened from its row.
+  Crew tab when a renewal or opening a Crew from its row gets the signed-out
+  answer. Sign out and Switch account in any desktop dashboard window close every
+  relay Crew tab at once; a sign-out made anywhere else is still caught at the
+  next renewal or when a Crew is opened from its row. Nothing opens by itself after
+  you sign in again.
 - If the control plane can't be reached or answers with an error, main retries
   with a growing wait. When it asks to slow down, main waits as asked once.
 

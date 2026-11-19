@@ -570,6 +570,12 @@ class CronService:
         self.quarantined_store: Path | None = None
         self._on_job = on_job
         self._jobs: list[CronJob] = []
+        #: ``auto_paused`` per job id as the DISK last held it (set by _load
+        #: without announcing, advanced by every _save): the auto-pause notice
+        #: fires on this snapshot's rising edge, at the save, so it never
+        #: outruns the disk, never doubles across the flush/merge race, and
+        #: never fires for a pause another process landed and announced.
+        self._announced_pauses: dict[str, bool] = {}
         self._timer_task: asyncio.Task[None] | None = None
         # True during an _on_timer() dispatch pass, so _arm_timer() does not
         # cancel self._timer_task before the sweep has spawned its due jobs.
@@ -663,6 +669,11 @@ class CronService:
         # and the notices in flight, which stop() waits for before it returns.
         self._interrupt_alert: Callable[[CronJob, str], Coroutine[Any, Any, None]] | None = None
         self._interrupt_alerts: set[asyncio.Task[None]] = set()
+        # The gateway's auto-pause notice (set_auto_pause_alert): a SYNC
+        # callback, because the save that detects the rising edge runs on a
+        # worker thread under the store lock and must not block; the callback
+        # hands delivery to the gateway loop itself.
+        self._auto_pause_alert: Callable[[CronJob, int, str], None] | None = None
         _cfg = KiroCrewConfig.load().cron_history
         _history_dir = base_dir if base_dir is not None else _default_dir()
         # History is BEST-EFFORT: a raise here would take down the whole cron
@@ -823,6 +834,8 @@ class CronService:
     raise_if_store_unreadable = _store_sync.raise_if_store_unreadable
     _sync_for_write = _store_sync._sync_for_write
     _save = _store_sync._save
+    _announce_saved_pause_edges = _store_sync._announce_saved_pause_edges
+    set_auto_pause_alert = _store_sync.set_auto_pause_alert
 
     def _update_job_locked(self, job_id: str, **kwargs: Any) -> CronJob | None:
         """Lock/reload/mutate/save core of :meth:`update_job` (no timer work).

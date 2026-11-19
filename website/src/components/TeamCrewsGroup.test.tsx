@@ -16,7 +16,8 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { api, ApiError, type InstanceView, type RelayCrewEntry, type SsoStatus } from '../api/client'
 import TeamCrewsSwitcher from './TeamCrewsGroup'
 import { setCrewPins, setStableOrder } from './InstanceTabBar'
-import { RELAY_VIEWER_CREWS_KEY, relayRefusalText, relayRetryable } from '../hooks/useRelayViewerCrews'
+import { RELAY_VIEWER_CREWS_KEY, openRelayCrewTab, relayRefusalText, relayRetryable } from '../hooks/useRelayViewerCrews'
+import { relayPaneClosed, setActiveId } from '../store/instancesSlice'
 import { timeAgo } from '../utils/timeAgo'
 import { renderWithProviders, createTestStore } from '../test/helpers'
 
@@ -93,12 +94,125 @@ afterEach(() => {
 })
 
 describe('TeamCrewsGroup', () => {
-  it('reads nothing and leaves the bar as today (no remote Crews: no bar) without the desktop bridge', async () => {
-    const spy = vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
+  it('in a browser, Connect opens the Crew in a new tab cut from this page, at the URL the gateway gave', async () => {
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({ endpointId: 'ep-9', name: 'Lab' })] })
+    let answer: (v: { url: string }) => void = () => {}
+    const browserOpen = vi.spyOn(api, 'relayViewerBrowserOpen').mockReturnValue(new Promise(r => { answer = r }))
+    const tab = { opener: {} as unknown, close: vi.fn(), location: { replace: vi.fn() } }
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
     mount()
-    await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
+    const u = userEvent.setup()
+    await openGroup(u)
+    await u.click(row('Lab'))
+    // Opened inside the click, before the gateway answered.
+    expect(open).toHaveBeenCalledWith('about:blank', '_blank')
+    expect(tab.opener).toBeNull()
+    expect(browserOpen).toHaveBeenCalledWith('ep-9')
+    await act(async () => { answer({ url: 'http://kcr-abc.localhost:5476/' }) })
+    expect(tab.location.replace).toHaveBeenCalledWith('http://kcr-abc.localhost:5476/')
+    expect(tab.close).not.toHaveBeenCalled()
+  })
+
+  it('in a browser, a refused open closes its blank tab and says why under the row; a blocked pop-up says so', async () => {
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({ endpointId: 'ep-9', name: 'Lab' })] })
+    vi.spyOn(api, 'relayViewerBrowserOpen').mockRejectedValue(
+      new ApiError(403, 'not local', JSON.stringify({ error: 'x', code: 'BROWSER_NOT_LOCAL' })),
+    )
+    const tab = { opener: {}, close: vi.fn(), location: { replace: vi.fn() } }
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
+    mount()
+    const u = userEvent.setup()
+    await openGroup(u)
+    await u.click(row('Lab'))
+    expect((await screen.findByTestId('relay-crew-refusal')).textContent).toContain('on the machine that runs this Crew')
+    expect(tab.close).toHaveBeenCalled()
+    expect(tab.location.replace).not.toHaveBeenCalled()
+    open.mockReturnValue(null)
+    await u.click(row('Lab'))
+    await waitFor(() => expect(screen.getByTestId('relay-crew-refusal').textContent).toContain('blocked the new tab'))
+  })
+
+  it('in a browser, an answer that lands after a newer choice closes its tab and goes nowhere', async () => {
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {} } })
+    let answer: (v: { url: string }) => void = () => {}
+    vi.spyOn(api, 'relayViewerBrowserOpen').mockReturnValue(new Promise(r => { answer = r }))
+    const tab = { opener: {}, close: vi.fn(), location: { replace: vi.fn() } }
+    vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
+    const opening = openRelayCrewTab('ep-9', 'Lab', store.dispatch)
+    act(() => { store.dispatch(setActiveId(null)) })
+    await act(async () => { answer({ url: 'http://kcr-abc.localhost:5476/' }) })
+    expect(await opening).toEqual({ ok: true })
+    expect(tab.close).toHaveBeenCalled()
+    expect(tab.location.replace).not.toHaveBeenCalled()
+  })
+
+  it('in a browser, a second click while an open waits joins it: one tab, one mint', async () => {
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {} } })
+    let answer: (v: { url: string }) => void = () => {}
+    const browserOpen = vi.spyOn(api, 'relayViewerBrowserOpen').mockReturnValue(new Promise(r => { answer = r }))
+    const tab = { opener: {}, close: vi.fn(), location: { replace: vi.fn() } }
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
+    const first = openRelayCrewTab('ep-7', 'Lab', store.dispatch)
+    const second = openRelayCrewTab('ep-7', 'Lab', store.dispatch)
+    await act(async () => { answer({ url: 'http://kcr-abc.localhost:5476/' }) })
+    expect(await first).toEqual({ ok: true })
+    expect(await second).toEqual({ ok: true })
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(browserOpen).toHaveBeenCalledTimes(1)
+    expect(tab.location.replace).toHaveBeenCalledTimes(1)
+    expect(tab.close).not.toHaveBeenCalled()
+  })
+
+  it.each(['relay_local_credential', 'owner_only'])('hides the group on a page that cannot use it (403 %s)', async (code) => {
+    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(new ApiError(403, 'no', JSON.stringify({ error: 'no', code })))
+    const client = mount()
+    await waitFor(() => expect(client.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('error'))
+    expect(screen.queryByTestId('team-crews-group')).toBeNull()
     expect(screen.queryByRole('button', { name: /Switch crew/i })).toBeNull()
-    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('reads an answer with no list as an empty one, and the shell keeps running', async () => {
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({} as never)
+    const client = mount()
+    await waitFor(() => expect(client.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('success'))
+    expect(client.getQueryData<{ crews: unknown[] }>(RELAY_VIEWER_CREWS_KEY)?.crews).toEqual([])
+  })
+
+  it('keeps an open Crew reachable and closable from the bar while the list read fails', async () => {
+    const closePane = vi.fn(async () => ({ ok: true }))
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open: vi.fn(), openPane: vi.fn(), closePane, onPaneEvent: () => () => {} }
+    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
+      new ApiError(502, 'down', JSON.stringify({ error: 'down', code: 'UNREACHABLE' })),
+    )
+    vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: null, mru: [], unread: {}, relayTabs: [{ id: 'ep-9', name: 'Lab' }], relayLive: ['ep-9'], relayActive: null },
+    })
+    renderWithProviders(<TeamCrewsSwitcher variant="inline" />, { store })
+    const u = userEvent.setup()
+    await u.click(await screen.findByRole('button', { name: /Switch crew/ }))
+    expect(screen.getAllByRole('menuitemradio').some(r => r.textContent?.includes('Lab'))).toBe(true)
+    await u.click(screen.getByTestId('crew-close-relay:ep-9'))
+    expect(closePane).toHaveBeenCalledWith('ep-9')
+  })
+
+  it('brings back the tab of an open Crew that has since gone offline, from its row', async () => {
+    const openPane = vi.fn(async () => ({ ok: true }))
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open: vi.fn(), openPane, closePane: vi.fn(), onPaneEvent: () => () => {} }
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({
+      crews: [crew({ endpointId: 'ep-9', name: 'Lab', relayConnectionStatus: 'DISCONNECTED' })],
+    })
+    vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: null, mru: [], unread: {}, relayTabs: [{ id: 'ep-9', name: 'Lab' }], relayLive: ['ep-9'], relayActive: null },
+    })
+    renderWithProviders(<TeamCrewsSwitcher variant="inline" />, { store })
+    const u = userEvent.setup()
+    await openGroup(u)
+    expect(row('Lab').getAttribute('aria-disabled')).toBeNull()
+    await u.click(row('Lab'))
+    expect(store.getState().instances.relayActive).toBe('ep-9')
+    expect(openPane).not.toHaveBeenCalled()
   })
 
   it('leaves the bar as today while the crews route answers 404', async () => {
@@ -330,8 +444,7 @@ describe('TeamCrewsGroup', () => {
     await waitFor(() => expect(screen.queryByTestId('team-crews-group')).toBeNull())
   })
 
-  it('with the hidden pane key on, Open puts the Crew in a tab over <main>; a refusal still stays in the menu', async () => {
-    localStorage.setItem('mc-relay-crew-pane', '1')
+  it('with the pane calls, Open puts the Crew in a tab over <main>; a refusal still stays in the menu', async () => {
     const open = vi.fn(async () => ({ ok: true }))
     const openPane = vi.fn(async () => ({ ok: true }))
     ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open, openPane, onPaneEvent: () => () => {} }
@@ -357,17 +470,52 @@ describe('TeamCrewsGroup', () => {
     main.remove()
   })
 
-  it('with the key absent, Open still opens a window even when the shell has the pane calls', async () => {
-    const open = vi.fn(async () => ({ ok: true }))
+  it('shows a × on an open Crew\'s row only while it is open, and the × closes its pane', async () => {
     const openPane = vi.fn(async () => ({ ok: true }))
-    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open, openPane, onPaneEvent: () => () => {} }
-    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({ endpointId: 'ep-9', name: 'Lab' })] })
-    mount()
+    const closePane = vi.fn(async () => ({ ok: true }))
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = { open: vi.fn(), openPane, closePane, onPaneEvent: () => () => {} }
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({ endpointId: 'ep-9', name: 'Lab' }), crew({})] })
+    vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {} } })
+    renderWithProviders(<TeamCrewsSwitcher variant="inline" />, { store })
     const u = userEvent.setup()
     await openGroup(u)
+    expect(screen.queryByTestId('relay-crew-close-ep-9')).toBeNull()
     await u.click(row('Lab'))
-    await waitFor(() => expect(open).toHaveBeenCalledWith('ep-9'))
-    expect(openPane).not.toHaveBeenCalled()
+    await waitFor(() => expect(store.getState().instances.relayActive).toBe('ep-9'))
+    await openGroup(u)
+    const x = await screen.findByTestId('relay-crew-close-ep-9')
+    expect(x.getAttribute('aria-label')).toBe('Close Lab')
+    expect(screen.queryByTestId(`relay-crew-close-${crew({}).endpointId}`)).toBeNull()
+    await u.click(x)
+    expect(closePane).toHaveBeenCalledWith('ep-9')
+    // The pane's `closed` event drops the tab, and the × with it.
+    act(() => { store.dispatch(relayPaneClosed('ep-9')) })
+    await waitFor(() => expect(screen.queryByTestId('relay-crew-close-ep-9')).toBeNull())
+    expect(row('Lab')).toBeTruthy()
+  })
+
+  it('opens, as a tab in this window, a Crew another dashboard window handed to it, and says why one is refused', async () => {
+    let handOff: (id: string) => void = () => {}
+    const unsubscribe = vi.fn()
+    const openPane = vi.fn(async (id: string) => (id === 'ep-9' ? { ok: true } : { ok: false, error: 'CREW_OFFLINE' }))
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = {
+      open: vi.fn(), openPane, onPaneEvent: () => () => {},
+      onOpenRequest: (cb: (id: string) => void) => { handOff = cb; return unsubscribe },
+    }
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({ endpointId: 'ep-9', name: 'Lab' }), crew({})] })
+    vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
+    vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {} } })
+    const { unmount } = renderWithProviders(<TeamCrewsSwitcher variant="inline" />, { store })
+    await screen.findByRole('button', { name: /Switch crew/ })
+    await act(async () => { handOff('ep-9') })
+    await waitFor(() => expect(store.getState().instances.relayActive).toBe('ep-9'))
+    expect(store.getState().instances.relayTabs).toEqual([{ id: 'ep-9', name: 'Lab' }])
+    await act(async () => { handOff(crew({}).endpointId) })
+    expect((await screen.findByTestId('relay-crew-open-refusal')).textContent).toContain("Couldn't open Build box. This Crew is offline.")
+    unmount()
+    expect(unsubscribe).toHaveBeenCalled()
   })
 
   it('never connects a listed Crew on its own', async () => {
@@ -731,20 +879,18 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
     await waitFor(() => expect(screen.queryByTestId('crew-switcher-new-dot')).toBeNull())
   })
 
-  it('keeps the Open through a failed list read and opens the Crew once a read succeeds', async () => {
-    const open = withBridge()
-    const read = vi.spyOn(api, 'relayViewerCrews')
-      .mockRejectedValueOnce(new ApiError(502, 'down', JSON.stringify({ error: 'down', code: 'UNREACHABLE' })))
+  it("sends a note's Open at once while the list reads signed out, and a later sign-in opens nothing", async () => {
+    const open = withBridge(vi.fn(async () => ({ ok: false, error: 'SIGNED_OUT' })))
+    vi.spyOn(api, 'relayViewerCrews')
+      .mockRejectedValueOnce(new ApiError(401, 'signed out', JSON.stringify({ error: 'signed out', code: 'SIGNED_OUT' })))
       .mockResolvedValue({ crews: [fresh()] })
     vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
     const { queryClient } = mountAt(`/chat?relay_crew=${NEW_ID}`)
-    await waitFor(() => expect(queryClient.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('error'))
-    expect(screen.queryByTestId('relay-crew-open-refusal')).toBeNull()
-    expect(open).not.toHaveBeenCalled()
-    await act(async () => { await queryClient.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY }) })
     await waitFor(() => expect(open).toHaveBeenCalledWith(NEW_ID))
-    expect(read).toHaveBeenCalledTimes(2)
-    expect(screen.queryByTestId('relay-crew-open-refusal')).toBeNull()
+    expect((await screen.findByTestId('relay-crew-open-refusal')).textContent).toContain('Sign in')
+    await act(async () => { await queryClient.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY }) })
+    await screen.findByTestId('crew-switcher-new-dot')
+    expect(open).toHaveBeenCalledTimes(1)
   })
 
   it("opens a note's Crew through the bridge even when the cached list doesn't have it", async () => {
@@ -758,7 +904,7 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
     expect(screen.queryByTestId('relay-crew-open-refusal')).toBeNull()
   })
 
-  it("ignores a note's pending Open when the list read lands after history moved on", async () => {
+  it("does not open a note's Crew from a render that lags a navigation", async () => {
     const open = withBridge()
     let answer!: (v: { crews: RelayCrewEntry[] }) => void
     vi.spyOn(api, 'relayViewerCrews').mockReturnValueOnce(new Promise(r => { answer = r }))
@@ -770,6 +916,7 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
     // The router keeps rendering the note's location, as BrowserRouter does while
     // a click's navigation is still in its transition.
     const at = history.location
+    act(() => { history.push('/settings?tab=general') })
     render(
       <QueryClientProvider client={queryClient}>
         <Provider store={store}>
@@ -779,7 +926,6 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
         </Provider>
       </QueryClientProvider>,
     )
-    act(() => { history.push('/settings?tab=general') })
     await act(async () => { answer({ crews: [fresh()] }) })
     // The list has rendered (its new Crew dots the caret), so the effect has had its run.
     await screen.findByTestId('crew-switcher-new-dot')
@@ -864,11 +1010,15 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
     expect(seen.mock.calls.map(c => c[0].length)).toEqual([200, 200, 50])
   })
 
-  it('says why beside the switcher when that open fails, and keeps the dot', async () => {
-    withBridge(vi.fn(async () => ({ ok: false, error: 'CREW_OFFLINE' })))
+  it('says why beside the switcher when that open fails, naming the Crew once the list has it, and keeps the dot', async () => {
+    // The refusal lands after the list read, as a mint through the gateway does.
+    let refuse: (r: { ok: boolean; error?: string }) => void = () => {}
+    withBridge(vi.fn(() => new Promise<{ ok: boolean; error?: string }>(r => { refuse = r })))
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [fresh()] })
     const seen = vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
     mountAt(`/chat?relay_crew=${NEW_ID}`)
+    await screen.findByTestId('crew-switcher-new-dot')
+    await act(async () => { refuse({ ok: false, error: 'CREW_OFFLINE' }) })
     expect((await screen.findByTestId('relay-crew-open-refusal')).textContent).toContain("Couldn't open Docs box. This Crew is offline.")
     expect(screen.getByTestId('crew-switcher-new-dot')).toBeTruthy()
     expect(seen).not.toHaveBeenCalled()

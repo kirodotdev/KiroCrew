@@ -33,8 +33,10 @@ from kiro_crew.apps.registry_pipeline.caches import (
     _read_external_registry_cache,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _communicate_with_timeout
+from kiro_crew.apps.registry_pipeline.gh_credential import _github_https_repo
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _FETCH_CAUSE_OTHER,
+    _GH_FETCH_CAUSES,
     _entry_git_url,
     _git_target_is_unsupported,
     _git_url_host,
@@ -547,6 +549,9 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
                 host = _git_url_host(reg.repo)
                 if host:
                     row["host"] = host
+                github_repo = _github_https_repo(reg.repo)
+                if cause in _GH_FETCH_CAUSES and github_repo:
+                    row["repo"] = github_repo
             results.append(row)
             continue
         # Expire per-app manifest caches so fresh display info is refetched

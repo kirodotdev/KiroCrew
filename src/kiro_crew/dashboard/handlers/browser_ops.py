@@ -76,6 +76,7 @@ import asyncio
 import importlib
 import logging
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from aiohttp import web
@@ -186,6 +187,55 @@ def _own_targets(hub: LiveHub, supervisor: Any, key: str, targets: list[str]) ->
     return session_contexts.in_context(relay, targets, hub.context_of(key))
 
 
+def _opener_of(relay: Any, target_id: str) -> str:
+    """The agent tab that opened popup *target_id* (``CdpRelay.opener_of``), or ``""``."""
+    opener_of = getattr(relay, "opener_of", None)
+    if not callable(opener_of):
+        return ""
+    opener = opener_of(target_id)
+    return opener if isinstance(opener, str) else ""
+
+
+def claim_popups(hub: LiveHub, key: str, relay: Any) -> list[str]:
+    """Give *key* the popups its own tabs opened; return the ones newly claimed.
+
+    The relay ledgers a popup by its opener (``CdpRelay.opener_of``) but knows no
+    chat; the chat that owns the opener owns the popup, so ``tabs`` lists it, a
+    switch may move onto it and the chat's end closes it. A popup of a popup is
+    claimed on the same call, in ledger order.
+    """
+    if relay is None:
+        return []
+    claimed: list[str] = []
+    mine = hub.targets_of(key)
+    for target in list(relay.agent_targets()):
+        if target in mine or hub.owner_of_target(target) is not None:
+            continue
+        if _owning_ancestor_is(hub, key, relay, target, mine):
+            hub.add_target(key, target)
+            mine.add(target)
+            claimed.append(target)
+    return claimed
+
+
+def _owning_ancestor_is(hub: LiveHub, key: str, relay: Any, target: str, mine: set[str]) -> bool:
+    """Whether *target*'s nearest owned ancestor, by opener links, is one of *key*'s.
+
+    The links outlive a closed popup, so a popup whose own opener popup already
+    closed still reaches the chat's tab. The walk stops at a tab another chat owns.
+    """
+    seen = {target}
+    opener = _opener_of(relay, target)
+    while opener and opener not in seen:
+        if opener in mine:
+            return True
+        if hub.owner_of_target(opener) not in (None, key):
+            return False
+        seen.add(opener)
+        opener = _opener_of(relay, opener)
+    return False
+
+
 def close_chat_tabs(state: Any, session_key: str) -> None:
     """Close, in the background, the agent tabs an ended chat session owned.
 
@@ -214,6 +264,7 @@ async def _close_tabs_of(state: Any, key: str) -> None:
             hub.reset_run(key)
             relay = _live_handlers()._current_relay()
             if relay is not None:
+                claim_popups(hub, key, relay)
                 try:
                     await relay.close_agent_targets(hub.targets_of(key))
                 finally:
@@ -310,7 +361,9 @@ def build_context(
         # The tabs THIS session owns, the browser still has, and that sit in the
         # context it browses in now: ``tabs list`` shows them and ``tabs switch``
         # moves only among them, never onto another chat's, and never onto a tab
-        # from the other side of a flip of ``browser.isolation``.
+        # from the other side of a flip of ``browser.isolation``. A popup one of
+        # them opened since the last op counts as its own.
+        claim_popups(hub, session_key, getattr(supervisor, "relay", None))
         mine = hub.targets_of(session_key)
         held = [t for t in _ledgered_targets(supervisor) if t in mine]
         return _own_targets(hub, supervisor, session_key, held)
@@ -629,6 +682,15 @@ async def _bind(hub: LiveHub, key: str, supervisor: Any, call: Any, *, context: 
         if current != mine:
             await call("switch_tab", target=mine, activate=False)
         return mine
+    opener = _live_opener(hub, key, getattr(supervisor, "relay", None), mine, ledgered)
+    if opener:
+        # The session was on a popup that closed (a sign-in window that finished):
+        # it goes back to the tab that opened it, not to a fresh blank one.
+        if current != opener:
+            await call("switch_tab", target=opener, activate=False)
+        hub.bind_target(key, opener)
+        hub.note_tab_moved(key, {"popup_closed": {"target_id": mine, "returned_to": opener}})
+        return opener
     owner = hub.owner_of_target(current) if current else None
     if not context and current and current in ledgered and owner in (None, key):
         hub.bind_target(key, current)
@@ -645,6 +707,184 @@ def _restarted() -> dict[str, Any]:
     return harness_ops.refusal(
         "browser_restarted", "the browser restarted during the op; its context is gone"
     )
+
+
+def _live_opener(hub: LiveHub, key: str, relay: Any, target: str, ledgered: set[str]) -> str:
+    """The nearest still-open tab of *key*'s that opened *target*, or ``""``."""
+    seen: set[str] = set()
+    opener = _opener_of(relay, target) if relay is not None and target else ""
+    while opener and opener not in seen:
+        if opener in ledgered and hub.owner_of_target(opener) in (None, key):
+            return opener
+        seen.add(opener)
+        opener = _opener_of(relay, opener)
+    return ""
+
+
+#: Longest popup ``url`` and ``title`` an answer carries (the live hub's caps).
+POPUP_URL_CAP = 2048
+POPUP_TITLE_CAP = 300
+
+
+async def follow_popup(
+    hub: LiveHub,
+    key: str,
+    supervisor: Any,
+    call: Any,
+    url_allowed: Callable[[str], bool] = committed_url_allowed,
+) -> dict[str, Any] | None:
+    """Move *key* onto a popup its tab opened since the last look; describe it.
+
+    A sign-in button that opens its own window leaves the agent on the page behind
+    it, where nothing happens, so the newest popup becomes the session's tab, as a
+    person's browser would bring it to the front. Returns what the op's answer
+    carries (``target_id``, plus ``url`` and ``title`` when the navigate gate admits
+    the address), or ``None`` when no popup opened. The gate is still applied to the
+    page itself when the stream follows the tab (:func:`follow_current_tab`).
+
+    Only a popup in the context the op's bind put *key* in is followed: after a
+    flip of ``browser.isolation``, a popup the chat's tab from the other side opens
+    is still the chat's (its end closes it), but the chat never moves onto it.
+    """
+    relay = getattr(supervisor, "relay", None)
+    claimed = claim_popups(hub, key, relay)
+    if relay is None or not claimed:
+        return None
+    followable = session_contexts.in_context(relay, claimed, hub.context_of(key))
+    if not followable:
+        return None
+    popup = followable[-1]
+    await call("switch_tab", target=popup, activate=False)
+    hub.bind_target(key, popup)
+    view: dict[str, Any] = {"target_id": popup}
+    try:
+        tab = await call("current_tab")
+    except HelperError:
+        hub.note_tab_moved(key, {"popup": view})
+        return view
+    url = str(tab.get("url") or "") if isinstance(tab, dict) else ""
+    if url and url_allowed(url):
+        view["url"] = url[:POPUP_URL_CAP]
+        view["title"] = str(tab.get("title") or "")[:POPUP_TITLE_CAP]
+    hub.note_tab_moved(key, {"popup": view})
+    return view
+
+
+#: How long a failed op waits for the browser to report its popup gone. Chrome's
+#: ``targetDestroyed`` can trail the daemon's lost session by a few frames.
+POPUP_CLOSE_GRACE_S = 1.0
+_POPUP_CLOSE_POLL_S = 0.05
+
+
+async def _bound_popup_gone(
+    hub: LiveHub, key: str, supervisor: Any, *, sleep: Any = asyncio.sleep
+) -> str:
+    """*key*'s bound tab, when it is a popup that left the ledger, else ``""``.
+
+    Waits up to :data:`POPUP_CLOSE_GRACE_S` for the browser to report it gone.
+    """
+    relay = getattr(supervisor, "relay", None)
+    popup = hub.target_of(key)
+    if relay is None or not popup or not _opener_of(relay, popup):
+        return ""
+    waited = 0.0
+    while popup in set(_ledgered_targets(supervisor)):
+        if waited >= POPUP_CLOSE_GRACE_S:
+            return ""
+        await sleep(_POPUP_CLOSE_POLL_S)
+        waited += _POPUP_CLOSE_POLL_S
+    return popup
+
+
+async def _popup_closed_under_op(
+    hub: LiveHub, key: str, supervisor: Any, call: Any, *, sleep: Any = asyncio.sleep
+) -> dict[str, Any] | None:
+    """The answer for an op whose own action closed its popup, or ``None``.
+
+    Only a failure of the op itself reaches here, never one of the bind before it.
+    Only a popup counts (:func:`_bound_popup_gone`). Then the session returns to
+    its opener and the op answers ``ok`` with ``popup_closed``; any other failure
+    stays the error it was.
+    """
+    relay = getattr(supervisor, "relay", None)
+    popup = await _bound_popup_gone(hub, key, supervisor, sleep=sleep)
+    if not popup:
+        return None
+    ledgered = set(_ledgered_targets(supervisor))
+    opener = _live_opener(hub, key, relay, popup, ledgered)
+    if not opener:
+        return None
+    try:
+        await call("switch_tab", target=opener, activate=False)
+    except Exception:  # noqa: BLE001 - the next op's bind retries the switch
+        logger.debug("browser: returning to the opener of a closed popup failed", exc_info=True)
+    hub.bind_target(key, opener)
+    return {
+        "ok": True,
+        "popup_closed": {
+            "target_id": popup,
+            "returned_to": opener,
+            "hint": "the popup window closed during this action (for example a "
+            "finished sign-in); ops now run on the tab that opened it. Snapshot it.",
+        },
+    }
+
+
+#: Ops that act on an element or a point of the current page. A ref or a coordinate
+#: is per document (``e1`` exists on every page), so after the bind moved the chat
+#: onto a different page such an op would hit an unrelated element.
+_PAGE_TARGETED_OPS = frozenset(
+    {"click", "drag", "scroll", "type", "press_key", "hover", "select_option", "dialog", "reflex"}
+)
+
+
+#: What each kind of unreported tab move tells the agent.
+_TAB_MOVE_HINTS = {
+    "popup": "a popup window opened and is now the current tab; snapshot it. "
+    "When it closes, ops return to the tab that opened it.",
+    "popup_closed": "the popup window closed; ops now run on the tab that opened it. "
+    "Snapshot it.",
+}
+
+
+def _refused_for_tab_move(hub: LiveHub, key: str, op: str) -> dict[str, Any] | None:
+    """The refusal for a page-targeted op while a tab move is unreported, or ``None``.
+
+    The ref or point the agent sent was read off the page it was on before a popup
+    moved its tab, so it would land on an unrelated element. Ops that do not point
+    into the page (``navigate``, ``snapshot``, ``screenshot``, ``tabs``, ...) run.
+    """
+    pending = hub.pending_tab_move(key)
+    if op not in _PAGE_TARGETED_OPS or not pending:
+        return None
+    if "popup" in pending:
+        return harness_ops.refusal(
+            "popup_opened",
+            "a popup window opened and is now the current tab; snapshot it before acting",
+        )
+    return harness_ops.refusal(
+        "popup_closed",
+        "the popup closed and ops now run on the tab that opened it; snapshot it before acting",
+    )
+
+
+def _with_tab_move(hub: LiveHub, key: str, answer: Any) -> Any:
+    """Report the unreported tab move on *answer*, success or refusal alike.
+
+    Taking it clears it, so the agent is told exactly once. A non-answer (the
+    person holds the browser, or a claim cut the op short) leaves it pending.
+    """
+    if not isinstance(answer, dict) or answer.get("code") == DENIED_CODE:
+        # A governance deny is shown as fixed text, so the move waits for the next answer.
+        return answer
+    notice = hub.take_tab_move(key)
+    if not notice:
+        return answer
+    out = dict(answer)
+    for kind, view in notice.items():
+        if kind not in out:
+            out[kind] = {**view, "hint": _TAB_MOVE_HINTS[kind]}
+    return out
 
 
 async def follow_current_tab(
@@ -1092,6 +1332,35 @@ async def _fenced_op(
     caller_key: str = DASHBOARD_SURFACE_KEY,
     sites: tuple[str, ...] = (),
 ) -> dict[str, Any] | object:
+    """:func:`_run_fenced_op`, with any unreported popup tab move on its answer.
+
+    Every answer carries it, a refusal or a failure as much as a success: a chat
+    moved onto a popup without being told would aim its next ref at a page it
+    never saw.
+    """
+    answer = await _run_fenced_op(
+        request, hub, key, supervisor, ctx, op, args, budget, caller_key=caller_key, sites=sites
+    )
+    if op == "ask":
+        # A quick ask's text is its outcome alone (``mcp_tools.browser._ask_text``),
+        # so the move would be cleared without being shown: it waits for the next op.
+        return answer
+    return _with_tab_move(hub, key, answer)
+
+
+async def _run_fenced_op(
+    request: web.Request,
+    hub: LiveHub,
+    key: str,
+    supervisor: Any,
+    ctx: harness_ops.OpContext,
+    op: str,
+    args: dict[str, Any],
+    budget: float,
+    *,
+    caller_key: str = DASHBOARD_SURFACE_KEY,
+    sites: tuple[str, ...] = (),
+) -> dict[str, Any] | object:
     """Bind, run, follow -- under both locks.
 
     Returns the op's result, or :data:`_HELD` (the person claimed before the op
@@ -1111,6 +1380,7 @@ async def _fenced_op(
         return harness_ops.refusal(
             "ask_pending", "a quick ask is waiting for the user; wait for its outcome"
         )
+
     try:
         return await _bound_op(
             request, hub, key, supervisor, ctx, op, args, budget, caller_key, sites
@@ -1134,8 +1404,27 @@ async def _bound_op(
     caller_key: str,
     sites: tuple[str, ...],
 ) -> dict[str, Any] | object:
+    async def _bind() -> dict[str, Any] | None:
+        # The bind comes first: it records the context this op browses in, which
+        # decides the popups it may follow. Then a popup that opened after the last
+        # op's answer is followed, so this op runs on it.
+        try:
+            await _bind_target(hub, key, supervisor, ctx.helper)
+        except (BrowsingDenied, BrowserRestarted, session_contexts.IsolationUnknown):
+            raise
+        except Exception:
+            # The bound popup closed while the bind ran (its ledger snapshot was
+            # stale): bind again, now onto its opener, and the op still runs.
+            if not await _bound_popup_gone(hub, key, supervisor):
+                raise
+            await _bind_target(hub, key, supervisor, ctx.helper)
+        return await follow_popup(hub, key, supervisor, ctx.helper, ctx.url_allowed)
+
+    bound = False
     try:
-        await asyncio.wait_for(_bind_target(hub, key, supervisor, ctx.helper), timeout=OP_TIMEOUT_S)
+        await asyncio.wait_for(_bind(), timeout=OP_TIMEOUT_S)
+        bound = True
+        moved = _refused_for_tab_move(hub, key, op)
         if hub.in_control(key):
             # A claim landed during the bind; the op has not touched the page yet.
             return _HELD
@@ -1156,26 +1445,30 @@ async def _bound_op(
                 return denied
             _audit(request, "allowed")
             return result
-        max_repeats = _run_limits()
-        if max_repeats:
-            sess = hub.get(key)
-            if sess is not None:
-                stopped = run_budget.check(sess.run, op, args, max_repeats=max_repeats)
-                if stopped is not None:
-                    _audit(request, "denied", run_budget.CODE)
-                    return stopped
-        task = asyncio.ensure_future(harness_ops.run_op(op, args, ctx))
-        hub.op_started(key, task)
-        try:
-            result = await asyncio.wait_for(task, timeout=budget)
-        except asyncio.CancelledError:
-            if hub.op_finished(key):
-                # Cancelled BY a claim, not by our own client leaving: the person
-                # took over mid-op; the op's remaining steps never ran.
-                return _INTERRUPTED
-            raise
-        finally:
-            hub.op_finished(key)
+        if moved is not None:
+            # The ref or point the agent sent belongs to the page it left.
+            result = moved
+        else:
+            max_repeats = _run_limits()
+            if max_repeats:
+                sess = hub.get(key)
+                if sess is not None:
+                    stopped = run_budget.check(sess.run, op, args, max_repeats=max_repeats)
+                    if stopped is not None:
+                        _audit(request, "denied", run_budget.CODE)
+                        return stopped
+            task = asyncio.ensure_future(harness_ops.run_op(op, args, ctx))
+            hub.op_started(key, task)
+            try:
+                result = await asyncio.wait_for(task, timeout=budget)
+            except asyncio.CancelledError:
+                if hub.op_finished(key):
+                    # Cancelled BY a claim, not by our own client leaving: the person
+                    # took over mid-op; the op's remaining steps never ran.
+                    return _INTERRUPTED
+                raise
+            finally:
+                hub.op_finished(key)
     except asyncio.TimeoutError:
         _audit(request, "error", "timeout")
         return {"ok": False, "code": "timeout", "error": f"{op} ran past {budget:g}s"}
@@ -1192,6 +1485,24 @@ async def _bound_op(
         _audit(request, "denied", DENIED_CODE)
         return harness_ops.refusal(DENIED_CODE, DENIED_TEXT)
     except Exception as exc:  # noqa: BLE001 - a helper or the daemon raised
+        closed = await _popup_closed_under_op(hub, key, supervisor, ctx.helper) if bound else None
+        if closed is not None:
+            # The op's own click closed its popup (a sign-in window that finished):
+            # that is the page working, not the op failing.
+            if not hub.in_control(key):
+                # The opener may have been sent somewhere the gate refuses as the
+                # popup closed: that refusal is the answer, as on the success path.
+                refused = await follow_current_tab(
+                    hub, key, supervisor, caller_key=caller_key, sites=sites
+                )
+                if refused is not None:
+                    _audit(request, "denied", str(refused.get("code") or ""))
+                    return refused
+            denied = await _denied_after_op(request, caller_key)
+            if denied is not None:
+                return denied
+            _audit(request, "allowed")
+            return closed
         logger.warning("browser op %s failed: %s", op, exc)
         _audit(request, "error", type(exc).__name__)
         return {"ok": False, "code": "browser_error", "error": _safe(exc)}
@@ -1199,6 +1510,7 @@ async def _bound_op(
     if denied is not None:
         return denied
     if not hub.in_control(key):
+        await _follow_popup_after_op(hub, key, supervisor, ctx)
         refused = await follow_current_tab(hub, key, supervisor, caller_key=caller_key, sites=sites)
         if refused is not None:
             _audit(request, "denied", str(refused.get("code") or ""))
@@ -1210,6 +1522,22 @@ async def _bound_op(
         return denied
     _audit(request, "allowed")
     return result
+
+
+async def _follow_popup_after_op(
+    hub: LiveHub, key: str, supervisor: Any, ctx: harness_ops.OpContext
+) -> dict[str, Any] | None:
+    """:func:`follow_popup` after the op answered; a failure leaves the answer as it was.
+
+    A deny that lands here is still caught: the check after it reports it.
+    """
+    try:
+        return await asyncio.wait_for(
+            follow_popup(hub, key, supervisor, ctx.helper, ctx.url_allowed), timeout=OP_TIMEOUT_S
+        )
+    except Exception:  # noqa: BLE001 - the op itself already answered
+        logger.debug("browser: following a popup after the op failed", exc_info=True)
+        return None
 
 
 async def _denied_after_op(

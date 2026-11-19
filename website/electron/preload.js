@@ -375,8 +375,12 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("fileOpenAPI", {
 // they carry the endpoint ID, the pane's rect with this page's viewport size,
 // or whether a local overlay covers the pane or another tab is in front of it.
 // `onPaneEvent(cb)` hears a pane's switch chord or its close, as `{ type,
-// endpointId, index }` and nothing more, and returns its unsubscribe. Nothing
-// calls them yet.
+// endpointId, index }` and nothing more, and returns its unsubscribe. An
+// `openPane` from another dashboard window is handed to the main window's
+// dashboard, which hears it through `onOpenRequest(cb)` (the endpoint ID only)
+// while it is subscribed; one subscriber at a time, the newest.
+let openRequestHandler = null;
+let openRequestSeq = 0;
 if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
   open: (endpointId) => ipcRenderer.invoke("relay-crew:open", String(endpointId || "")),
   closeAll: () => ipcRenderer.invoke("relay-crew:close-all"),
@@ -393,6 +397,19 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
     });
     ipcRenderer.on("relay-crew:pane-event", handler);
     return () => ipcRenderer.removeListener("relay-crew:pane-event", handler);
+  },
+  onOpenRequest: (cb) => {
+    const handler = (_e, endpointId) => { if (typeof endpointId === "string") cb(endpointId); };
+    if (openRequestHandler) ipcRenderer.removeListener("relay-crew:open-request", openRequestHandler);
+    openRequestHandler = handler;
+    ipcRenderer.on("relay-crew:open-request", handler);
+    void ipcRenderer.invoke("relay-crew:open-requests", true, ++openRequestSeq).catch(() => {});
+    return () => {
+      if (openRequestHandler !== handler) return;
+      openRequestHandler = null;
+      ipcRenderer.removeListener("relay-crew:open-request", handler);
+      void ipcRenderer.invoke("relay-crew:open-requests", false, ++openRequestSeq).catch(() => {});
+    };
   },
 });
 
