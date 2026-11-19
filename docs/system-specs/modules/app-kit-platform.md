@@ -1509,7 +1509,12 @@ The package root is chosen by `execution.shipped_builtin_app_root`, where the
 shipped `app.json` is authoritative and installed metadata can only REMOVE that
 provenance: for a name whose wheel copy is released (an adopted former built-in,
 or one uninstalled after adoption) it answers None, and every root chooser
-resolves the data-home tree (§ Former built-in adoption).
+resolves the data-home tree (§ Former built-in adoption). The scan of the shipped
+builtins behind it (a resolve and a manifest read per builtin) is kept per process,
+because an agent-owner lookup asks it once per installed app. It is scanned again
+when a manifest source's directory inode or mtime moves, when the sources change,
+and after `execution.invalidate_shipped_builtin_apps`, which every app-record write
+and `invalidate_orphan_cache` (uninstall, cleanup, adoption) call.
 
 ### 5.1 Resource-path containment is host-independent and flavour-explicit
 

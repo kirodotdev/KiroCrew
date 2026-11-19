@@ -314,7 +314,7 @@ from kiro_crew import (
 )
 from kiro_crew.acp import client as acp_client
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.apps import credential_masks, hidden_sessions, manager_records
+from kiro_crew.apps import credential_masks, execution, hidden_sessions, manager_records
 from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV, load_adoption_pins
 from kiro_crew.config import live as config_live
 from kiro_crew.config import loader as config_loader
@@ -835,6 +835,7 @@ def _reset_home_bound_globals() -> None:
     sandbox._SHIM_ARGV_CACHE.clear()
     credential_masks.clear_cache()
     manager_records._recorded_names_cache.clear()
+    execution.invalidate_shipped_builtin_apps()
     # Under the refresh lock, so a refresh still publishing finishes first and
     # cannot write the old home's sets back after this clears them.
     with hidden_sessions._refresh_lock:
