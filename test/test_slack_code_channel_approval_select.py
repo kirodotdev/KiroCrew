@@ -677,6 +677,182 @@ def test_a_confirmation_is_good_for_one_click(chan: Any) -> None:
     assert chan.slack.ephemerals[-1][2] == approval_picker.CONFIRM_STALE_TEXT
 
 
+def test_a_repeat_click_after_the_switch_says_the_channel_is_on_it(chan: Any) -> None:
+    """A second press of a used button, the channel still on Trust: say so
+    rather than "expired", and change nothing."""
+    assert asyncio.run(approval_picker.handle_select(chan.orch, _pick("trust")))
+    click = _confirm_click(chan)
+    assert asyncio.run(approval_picker.handle_confirm(chan.orch, click))
+    rows = len(chan.mode_rows)
+    assert asyncio.run(approval_picker.handle_confirm(chan.orch, click))
+    assert _mode_of(chan.slot) == "trust" and len(chan.mode_rows) == rows
+    assert chan.slack.ephemerals[-1][2] == "ℹ This channel is already on *Trust*."
+
+
+def test_a_repeat_click_before_the_first_lands_claims_nothing(
+    chan: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A double press whose second click lands before the first has applied:
+    the channel is not on Trust yet, so the reply never says it is."""
+    ManualClock().install(monkeypatch, approval_picker)
+    assert asyncio.run(approval_picker.handle_select(chan.orch, _pick("trust")))
+    click = _confirm_click(chan)
+    real = approval_picker.set_channel_mode
+    held = asyncio.Event()
+    parked = asyncio.Event()
+
+    async def gated(*args: Any, **kwargs: Any) -> Any:
+        parked.set()
+        await held.wait()
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(approval_picker, "set_channel_mode", gated)
+
+    async def scenario() -> None:
+        first = asyncio.create_task(approval_picker.handle_confirm(chan.orch, click))
+        try:
+            await async_wait_until(
+                lambda: parked.is_set() or first.done(), describe=lambda: "first click parking"
+            )
+            assert not first.done(), "the first click finished before it applied"
+            assert await approval_picker.handle_confirm(chan.orch, click)
+            assert _mode_of(chan.slot) == "normal"
+            assert chan.slack.ephemerals[-1][2] == approval_picker.CONFIRM_STALE_TEXT
+            held.set()
+            assert await await_until(first, what="the first click finishing")
+        finally:
+            held.set()
+            if not first.done():
+                first.cancel()
+                await asyncio.gather(first, return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert _mode_of(chan.slot) == "trust"
+
+
+@pytest.mark.parametrize("revoke", ["command", "dashboard"])
+def test_a_repeat_click_after_a_revoke_mid_apply_is_stale(
+    chan: Any, monkeypatch: pytest.MonkeyPatch, revoke: str
+) -> None:
+    """The first click has committed Trust and is still in its Slack writes; the
+    owner revokes (a Slack command, or the dashboard's picker, which notes no
+    Slack request); a second press must not claim the channel is switching."""
+    ManualClock().install(monkeypatch, approval_picker)
+    assert asyncio.run(approval_picker.handle_select(chan.orch, _pick("trust")))
+    click = _confirm_click(chan)
+    real_refresh = approval_picker._refresh
+    held = asyncio.Event()
+    parked = asyncio.Event()
+
+    async def held_refresh(*args: Any, **kwargs: Any) -> Any:
+        parked.set()
+        await held.wait()
+        return await real_refresh(*args, **kwargs)
+
+    monkeypatch.setattr(approval_picker, "_refresh", held_refresh)
+
+    async def scenario() -> None:
+        first = asyncio.create_task(approval_picker.handle_confirm(chan.orch, click))
+        try:
+            await async_wait_until(
+                lambda: parked.is_set() or first.done(), describe=lambda: "first click committing"
+            )
+            assert not first.done(), "the first click finished before it was held"
+            assert _mode_of(chan.slot) == "trust"
+            if revoke == "command":
+                binding = await asyncio.to_thread(approval_picker.store().get_binding, CH)
+                monkeypatch.setattr(approval_picker, "_refresh", real_refresh)
+                await approval_picker.set_channel_mode(
+                    binding, "normal", OWNER, via="command", orch=chan.orch, team="T1"
+                )
+            else:
+                chan.slot._trust = False  # the dashboard's picker lowers it
+            assert _mode_of(chan.slot) == "normal"
+            assert await approval_picker.handle_confirm(chan.orch, click)
+            assert chan.slack.ephemerals[-1][2] == approval_picker.CONFIRM_STALE_TEXT
+            held.set()
+            assert await await_until(first, what="the first click finishing")
+        finally:
+            held.set()
+            if not first.done():
+                first.cancel()
+                await asyncio.gather(first, return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert _mode_of(chan.slot) == "normal"
+
+
+HOOK_URL = "https://hooks.slack.com/actions/T1/1/x"
+
+
+def _record_posts(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
+    posts: list[tuple[str, dict[str, Any]]] = []
+
+    async def record(url: str, body: dict[str, Any]) -> None:
+        posts.append((url, body))
+
+    monkeypatch.setattr(approval_picker, "_post_response_url", record)
+    return posts
+
+
+def test_a_used_confirmation_loses_its_button(chan: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The private confirmation is rewritten to a plain line once used, so its
+    button is gone and cannot be pressed a second time."""
+    posts = _record_posts(monkeypatch)
+    assert asyncio.run(approval_picker.handle_select(chan.orch, _pick("trust")))
+    click = {**_confirm_click(chan), "response_url": HOOK_URL}
+    assert asyncio.run(approval_picker.handle_confirm(chan.orch, click))
+    assert _mode_of(chan.slot) == "trust"
+    assert len(posts) == 1
+    url, body = posts[0]
+    assert url == HOOK_URL and body["replace_original"] is True
+    assert body["text"] == "✅ Switched this channel to *Trust*."
+    assert all(b["type"] != "actions" for b in body["blocks"])
+
+
+def test_a_refused_switch_still_drops_the_button(
+    chan: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A spent click whose change was refused never claims it switched."""
+    posts = _record_posts(monkeypatch)
+    assert asyncio.run(approval_picker.handle_select(chan.orch, _pick("trust")))
+    click = {**_confirm_click(chan), "response_url": HOOK_URL}
+    monkeypatch.setattr(safety_override_mod, "approval_mode_permitted", lambda _m: False)
+    assert asyncio.run(approval_picker.handle_confirm(chan.orch, click))
+    assert _mode_of(chan.slot) == "normal"
+    assert [body["text"] for _url, body in posts] == ["This confirmation was used."]
+
+
+@pytest.mark.parametrize("case", ["not_slack", "outbound_refused", "channel_refused"])
+def test_the_confirmation_is_only_rewritten_through_slack_under_policy(
+    chan: Any, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """The rewrite is a write outside the Slack client: only to Slack's hooks
+    host, and only while the channels policy admits Slack and this channel."""
+    from kiro_crew.slack import channel_policy
+
+    posts = _record_posts(monkeypatch)
+    url = HOOK_URL
+    if case == "not_slack":
+        url = "https://example.com/hook"
+    elif case == "outbound_refused":
+
+        async def refused() -> bool:
+            return False
+
+        monkeypatch.setattr(approval_picker.surface, "outbound_permitted", refused)
+    else:
+
+        def refuse(channel: str) -> None:
+            raise channel_policy.SlackChannelRefused("not allowed")
+
+        monkeypatch.setattr(channel_policy, "require_channel", refuse)
+    assert asyncio.run(approval_picker.handle_select(chan.orch, _pick("trust")))
+    click = {**_confirm_click(chan), "response_url": url}
+    assert asyncio.run(approval_picker.handle_confirm(chan.orch, click))
+    assert posts == []
+
+
 def test_two_interleaved_clicks_cannot_re_grant_trust_after_a_revoke(
     chan: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
