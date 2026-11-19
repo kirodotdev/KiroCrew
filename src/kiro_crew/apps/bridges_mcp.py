@@ -1284,9 +1284,9 @@ def _deregister_mcp_servers(app_name: str) -> int:
     # flock can block indefinitely. deregister_app() runs synchronously on the
     # gateway event loop (dashboard disable/update/uninstall), and a stall here
     # would freeze all chat and heartbeat tasks. The scrub is idempotent and is
-    # performed at boot by reconcile_enabled_app_resources(), which the gateway
-    # already runs off-loop via run_in_executor — so the migration still lands,
-    # just not on this hot path.
+    # performed for every enabled app by the boot reconcile in
+    # start_enabled_app_backends(), which the gateway runs off-loop via
+    # run_in_executor — so the migration still lands, just not on this hot path.
     if to_remove:
         logger.info("Deregistered %d MCP server(s) for app %s", len(to_remove), app_name)
     return len(to_remove)

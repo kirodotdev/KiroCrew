@@ -2822,8 +2822,8 @@ specified compatibility change.
     restart-dropped grant notice;
   - `owner_notices` — the owner DM over the configured channels, redacted at its one
     exit point;
-  - `app_platform` — the app backend start waves, the app resource reconcile and the
-    builtin app and agent warms;
+  - `app_platform` — the app backend start waves (whose boot pass is also the one app
+    resource reconcile) and the builtin app and agent warms;
   - `session_restore` — restoring dashboard sessions at boot;
   - `skill_learning` — the dashboard-only fallback consolidator and the staged-skill
     notifications;

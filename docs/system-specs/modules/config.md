@@ -2475,7 +2475,7 @@ spec.
    (`register_app`, `apps/bridges_register.py`, registers the app's MCP servers BEFORE its
    agents and publishes the snapshot synchronously; imported via a **local** import
    inside the function to avoid the top-level `apps`↔`dashboard` cycle, mirroring
-   `dashboard/server_runtime/app_platform.py`'s local import of `reconcile_enabled_app_resources`. `register_app`
+   `apps/backend_runtime/startup.py`'s local import of `reconcile_enabled_app_resources`. `register_app`
    is used rather than the narrower `refresh_app_agents` because a never-materialized
    app also has unregistered MCP servers, and re-materializing only the agent would
    inline an empty server map — recreating an agent whose own `@<app>:<server>` tool
@@ -2555,8 +2555,8 @@ message shows the policy card itself. Pinned by
 `register_app` (`apps/bridges_register.py`) backs the from-source recovery with a **visible
 error**: when a manifest declares agents but `_register_agents` materializes none
 (source missing or unreadable) it appends a `"registered 0 of N declared
-agent(s)"` entry to `result.errors` — which `reconcile_enabled_app_resources`
-counts and logs — instead of returning a silent 0-agent success; a partial
+agent(s)"` entry to `result.errors` — which the boot reconcile in
+`start_enabled_app_backends` logs as "completed with errors" — instead of returning a silent 0-agent success; a partial
 registration (some but not all) logs a warning.
 
 ### Materialized-agent snapshot (`config/loader_snapshots.py`)
