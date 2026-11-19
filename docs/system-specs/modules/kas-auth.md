@@ -152,6 +152,46 @@ every engine-facing read: `getAccessToken`, `getProfileArn` and
 sign-in, so a Builder ID sign-in made before the change works without signing in
 again. Every other identity sends the ARN its sign-in stored.
 
+### Workload identity in place of a sign-in
+
+A team Crew deployed as a workload (an EKS pod with workload identity) signs in
+with its own JWT-SVID, with no person sign-in, kiro-cli login or crew API key.
+`KIROCREW_WORKLOAD_IDENTITY=spiffe` turns it on. A sidecar such as `spiffe-helper`
+fetches the JWT-SVID for the Kiro audience from the SPIFFE Workload API, writes it
+to `KIROCREW_WORKLOAD_IDENTITY_SVID_FILE` and keeps it fresh; Crew reads that file
+for each use and speaks no Workload API itself. `..._AUDIENCE` (the Kiro runtime
+URL) and `..._PROFILE_ARN` are required (`kiro_crew/workload_identity.py`). The
+claims are checked (`sub` is `spiffe://`, `aud` names the audience, at least 3
+minutes left); the signature is the relying party's to check. While the switch is
+set, even to a bad value:
+
+- `answer_get_access_token` answers `{accessToken, expiresAt, profileArn,
+  provider: "Enterprise"}` from the file, with no `authMethod`, so the engine
+  sends no `TokenType` header. A file that cannot be used answers `workload
+  identity unavailable`; the local log names the cause, never the token.
+- `auth/bridge.vault_holds_identity` answers `True` without reading the vault, so
+  every KAS spawn is Crew-owned and never falls back to kiro-cli's account, and
+  the KAS route (`acp/kas_route.py`) counts the workload as Crew's usable sign-in.
+- Nothing reads, renews or writes the person vault: `sign_in_refused` answers
+  False, the gateway's sign-in refresher does not run, the turn gate
+  (`kiro_readiness.kas_crew_signin_ready`) asks whether the file holds a usable
+  JWT-SVID for a turn on KAS (on any route, live or cold; a turn on another
+  harness keeps the kiro-cli gate), the kiro-cli readiness probe stays kiro-cli's
+  own answer, because a kiro-cli turn cannot use the JWT-SVID, the
+  model catalog is keyed by the profile ARN, and the usage poll does not read the
+  vault (`vault_identity_claims` answers empty).
+- `GET /api/models` serves the engine's recorded list
+  (`models_kas_bundle.api_models_kas_workload`), never kiro-cli's
+  `--list-models`, which needs kiro-cli's own sign-in.
+- The relay lease reads the same file through the file form of
+  `tunnel.relay_lease_credential`, with `tunnel.relay_lease_token_type` empty, so
+  the call carries the JWT-SVID as its bearer with no `TokenType` and no
+  `profileArn`. An empty credential is refused by name, never the sign-in lease.
+
+Known limit: where the agent runs unsandboxed (a Restricted pod has no user
+namespaces), the agent can read the JWT-SVID file, as it can any file the
+gateway reads there.
+
 ## Login flows (four identities × two transports)
 
 The wire contract below is reverse-engineered from kiro-cli source

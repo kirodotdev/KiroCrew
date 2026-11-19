@@ -6176,9 +6176,6 @@
       "empty": "Tu n’as encore aucune Crew partagée à ouvrir.",
       "managed_by_admin": "Les Crews partagées sont gérées par ton administrateur dans l’AWS Management Console.",
       "open_console": "Ouvrir l’AWS Management Console",
-      "refusal_list_generic": "Impossible de charger tes Crews partagées.",
-      "refusal_not_configured": "Les Crews partagées via le relais ne sont pas configurées.",
-      "refusal_signed_out": "Connecte-toi à Kiro pour voir tes Crews partagées.",
       "setup_desc": "Les Crews partagées sont créées et gérées par un administrateur dans l’AWS Management Console. Demande à ton administrateur d’en configurer une pour ton équipe.",
       "setup_title": "Configurer une nouvelle Crew partagée",
       "section_title": "Partagées avec moi",
@@ -8028,14 +8025,12 @@
       "refusal_popup_blocked": "Ton navigateur a bloqué le nouvel onglet. Autorise les fenêtres pop-up pour cette page et réessaie.",
       "refusal_generic": "Impossible d'ouvrir cette crew.",
       "refusal_list_generic": "Impossible de charger tes Crews partagées.",
-      "try_again": "Réessayer",
-      "request_id": "ID de requête : {{id}}",
+      "refresh_failed": "Impossible d'actualiser tes Crews partagées. Voici la dernière liste chargée.",
       "group_team_crews": "Crews distantes",
       "opens_own_window": "S'ouvre dans sa propre fenêtre",
       "new_crew": "Nouveau",
       "seen_not_saved": "Impossible d’enregistrer que tu l’as vu. Il apparaîtra de nouveau comme nouveau.",
       "open_crew_failed": "Impossible d’ouvrir {{name}}.",
-      "sign_in": "Se connecter à Kiro",
       "connect": "Connecter",
       "connect_crew": "Connecter {{name}}"
     },
@@ -22190,7 +22185,8 @@
         "turn_off_failed": "Impossible de désactiver le contrôle à distance",
         "load_failed": "Impossible de lire le réglage du contrôle à distance",
         "on_teammate": "Le contrôle à distance est activé. Les personnes qui ont accès peuvent rejoindre cette Crew via le relais Kiro.",
-        "owner_only": "Seul le propriétaire de la Crew peut désactiver le contrôle à distance."
+        "owner_only": "Seul le propriétaire de la Crew peut désactiver le contrôle à distance.",
+        "local_only": "Désactive le contrôle à distance sur la machine où tourne {{productName}}. Il ne peut pas être désactivé via le relais."
       },
       "remoteCrewPanel": {
         "added_by_you": "Ajoutée par toi",

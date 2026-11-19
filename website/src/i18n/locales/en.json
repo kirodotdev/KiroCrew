@@ -5138,14 +5138,12 @@
       "refusal_popup_blocked": "Your browser blocked the new tab. Allow pop-ups for this page and try again.",
       "refusal_generic": "Couldn't open this Crew.",
       "refusal_list_generic": "Couldn't load your Shared Crews.",
-      "try_again": "Try again",
-      "request_id": "Request ID: {{id}}",
+      "refresh_failed": "Couldn't refresh your Shared Crews. This is the last list loaded.",
       "group_team_crews": "Remote Crews",
       "opens_own_window": "Opens in its own window",
       "new_crew": "New",
       "seen_not_saved": "Couldn't save that you've seen this. It will show as new again.",
       "open_crew_failed": "Couldn't open {{name}}.",
-      "sign_in": "Sign in to Kiro",
       "connect": "Connect",
       "connect_crew": "Connect {{name}}"
     },
@@ -5893,9 +5891,6 @@
       "empty": "You don't have any Shared Crews to open yet.",
       "managed_by_admin": "Shared Crews are managed by your admin in the AWS Management Console.",
       "open_console": "Open the AWS Management Console",
-      "refusal_list_generic": "Couldn't load your Shared Crews.",
-      "refusal_not_configured": "Shared Crews over the relay aren't set up.",
-      "refusal_signed_out": "Sign in to Kiro to see your Shared Crews.",
       "setup_desc": "Shared Crews are created and managed by an admin in the AWS Management Console. Ask your admin to set one up for your team.",
       "setup_title": "Set up a new Shared Crew",
       "section_title": "Shared with me",
@@ -11599,7 +11594,8 @@
         "turn_off_failed": "Couldn't turn Remote Control off",
         "load_failed": "Couldn't read the Remote Control setting",
         "on_teammate": "Remote Control is on. People with access can reach this Crew through the Kiro relay.",
-        "owner_only": "Only the Crew's owner can turn Remote Control off."
+        "owner_only": "Only the Crew's owner can turn Remote Control off.",
+        "local_only": "Turn Remote Control off on the machine running {{productName}}. It can't be turned off through the relay."
       },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",

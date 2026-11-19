@@ -22,6 +22,11 @@ _ACTIONS = (
 
 #: An LTS build ignores ``tunnel.relay_enabled`` (``edition_locks``), so no restart connects.
 LOCKED_NOTICE = "Remote Control is managed by this build and cannot be turned on here."
+#: Status for a Crew that hosts only because its team key or workload identity is set.
+BY_DEFAULT_NOTICE = (
+    "On by default, because this Crew has a team key or a workload identity. "
+    "To turn it off: kirocrew remote-control off"
+)
 
 
 def register_parser(sub: Any) -> None:
@@ -52,14 +57,17 @@ def _status(as_json: bool) -> int:
 
     requested = setting.requested()
     locked = setting.locked()
+    by_default = requested and setting.by_default()
     if as_json:
-        print(json.dumps({"requested": requested, "locked": locked}))
+        print(json.dumps({"requested": requested, "locked": locked, "by_default": by_default}))
         return 0
     if locked:
         print("Remote Control: off")
         print(LOCKED_NOTICE)
         return 0
     print(f"Remote Control: {'on' if requested else 'off'}")
+    if by_default:
+        print(f"   {BY_DEFAULT_NOTICE}")
     return 0
 
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import string
 import time
 from dataclasses import dataclass, field
@@ -60,6 +61,10 @@ LAST_SEEN_MAX_AHEAD_SECONDS = 300.0
 #: characters, so a log line or the dashboard never shows anything else from it.
 REQUEST_ID_MAX_CHARS = 64
 _REQUEST_ID_CHARS = frozenset(string.ascii_letters + string.digits + "-")
+#: Kiro's relay zone. With no dev relay domain set, a Crew is listed, and gets a
+#: token, only at ``https://<endpointId>.<one DNS label>.relay.kiro.dev``.
+RELAY_ZONE = "relay.kiro.dev"
+_DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 # ── typed refusal codes ──
 SIGNED_OUT = "SIGNED_OUT"
@@ -152,9 +157,9 @@ async def list_crew_endpoints(
 ) -> tuple[CrewEndpoint, ...]:
     """Every Crew this person can open, in the service's order, checked entry by entry.
 
-    *crew_domain* is the relay's domain, lower case. When set, an entry is kept
+    *crew_domain* is a dev relay domain, lower case. When set, an entry is kept
     only when its host is exactly ``<endpointId>.<crew_domain>`` with no port.
-    Empty keeps the host check that has no domain. *token_type* is
+    Empty keeps only ``<endpointId>.<one DNS label>.`` :data:`RELAY_ZONE` hosts. *token_type* is
     ``EXTERNAL_IDP`` for an external IdP sign-in, else empty. *profile_arn* is
     sent as ``profileArn`` on every page when set, which CPS needs to tell which
     account is asking; with it CPS lists the personal Crews of that profile
@@ -202,7 +207,7 @@ async def list_crew_endpoints(
             (
                 "; tunnel.relay_viewer_relay_domain is set, so only addresses under it are kept"
                 if crew_domain
-                else ""
+                else f"; only addresses under {RELAY_ZONE} are kept"
             ),
         )
     return tuple(crews.values())
@@ -255,19 +260,22 @@ def _crew_endpoint(raw: Any, crew_domain: str) -> Optional[CrewEndpoint]:
     if not isinstance(url, str) or crew_url_problem(url) is not None:
         return None
     # The token goes only to this origin, so it must be this endpoint's own name,
-    # on the default port. With the relay's domain set, it must be exactly that
-    # name under the domain.
-    # shortcut: one relay domain, change to a list when the viewer must reach a second relay region.
+    # on the default port, in Kiro's relay zone under one region label. A dev
+    # relay domain replaces the zone: exactly that name under the domain.
     parts = urlsplit(url)
     if parts.port is not None:
         return None
+    host = parts.hostname or ""
     if crew_domain:
-        if parts.hostname != f"{endpoint}.{crew_domain}":
+        if host != f"{endpoint}.{crew_domain}":
             return None
-    # No relay domain: pin the window to the exact host the control plane listed for this
-    # Crew. A host with nothing after the endpoint ID fails crew_url_problem above.
-    elif not (parts.hostname or "").startswith(f"{endpoint}."):
-        return None
+    else:
+        head, tail = f"{endpoint}.", f".{RELAY_ZONE}"
+        label = (
+            host[len(head) : -len(tail)] if host.startswith(head) and host.endswith(tail) else ""
+        )
+        if _DNS_LABEL_RE.fullmatch(label) is None:
+            return None
     crew_type = raw.get("crewType")
     if not is_display_name(name) or not isinstance(crew_type, str) or crew_type not in CREW_TYPES:
         return None

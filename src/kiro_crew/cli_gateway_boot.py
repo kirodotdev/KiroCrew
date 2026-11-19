@@ -244,7 +244,13 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
     return {
         "no_dashboard": getattr(args, "slack_only", False),
         "no_crons": getattr(args, "no_crons", False),
-        "no_tunnel": getattr(args, "no_tunnel", False),
+        # --test-mode and --seed start a test or dev gateway: it must never publish a
+        # tunnel or register with the Kiro relay, whatever its config or sign-in.
+        "no_tunnel": bool(
+            getattr(args, "no_tunnel", False)
+            or test_mode
+            or getattr(args, "seed", None) is not None
+        ),
         "no_open": no_open,
         "port_override": port,
         "json_ready": json_ready,

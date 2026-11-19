@@ -1904,7 +1904,7 @@ async def test_a_quota_or_throttling_refusal_names_its_cause_on_the_backoff_step
         assert str(later.value).startswith(
             f"the lease service refused the renewal ({body['__type']}): {why}"
         )
-        assert body["message"] not in str(later.value)
+        assert f'The service said: "{body["message"]}"' in str(later.value)
         assert CREDENTIAL not in str(later.value)
         assert len(lease.requests) == 1
         # Today's backoff path: the first reconnect step, then a normal renewal.
@@ -1943,7 +1943,7 @@ async def test_remote_access_turned_off_says_so_and_holds_15_minutes(
         assert "remote access is turned off for this Crew's account or organization" in str(
             later.value
         )
-        assert body["message"] not in str(later.value)
+        assert f'The service said: "{body["message"]}"' in str(later.value)
         assert CREDENTIAL not in str(later.value)
         # Today's access-refusal hold.
         assert len(lease.requests) == 1

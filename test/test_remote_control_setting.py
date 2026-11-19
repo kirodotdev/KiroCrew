@@ -52,8 +52,8 @@ def _stored(path: Path) -> Any:
 class TestTheSetting:
     def test_the_default_is_the_one_named_value(self) -> None:
         assert TunnelConfig().relay_enabled is REMOTE_CONTROL_ON_BY_DEFAULT
-        # Pending a product decision: off until it is made.
-        assert REMOTE_CONTROL_ON_BY_DEFAULT is False
+        # Unset: the Crew's credential decides (remote_control.hosting).
+        assert REMOTE_CONTROL_ON_BY_DEFAULT is None
 
     def test_the_section_builder_reads_the_field_default_for_an_absent_key(
         self, monkeypatch
@@ -63,7 +63,7 @@ class TestTheSetting:
         # Patched through the sections facade, which mirrors the write to every owner.
         from kiro_crew.config import section_builders, sections
 
-        assert section_builders._build_tunnel_config({}).relay_enabled is False
+        assert section_builders._build_tunnel_config({}).relay_enabled is None
         real = sections.field_default
         monkeypatch.setattr(
             sections,
@@ -450,7 +450,11 @@ class TestTheTerminalCommand:
         assert capsys.readouterr().out == f"Remote Control: {text}\n"
         with pytest.raises(SystemExit):
             run(_cli("status", "--json"))
-        assert json.loads(capsys.readouterr().out) == {"requested": stored, "locked": False}
+        assert json.loads(capsys.readouterr().out) == {
+            "requested": stored,
+            "locked": False,
+            "by_default": False,
+        }
 
     def test_a_locked_build_refuses_on_and_status_says_why(
         self, config_file, monkeypatch, capsys
@@ -472,7 +476,11 @@ class TestTheTerminalCommand:
         assert capsys.readouterr().out == f"Remote Control: off\n{LOCKED_NOTICE}\n"
         with pytest.raises(SystemExit):
             run(_cli("status", "--json"))
-        assert json.loads(capsys.readouterr().out) == {"requested": True, "locked": True}
+        assert json.loads(capsys.readouterr().out) == {
+            "requested": True,
+            "locked": True,
+            "by_default": False,
+        }
         # Off still writes: it clears the stored true.
         run(_cli("off"))
         assert _stored(config_file) is False
@@ -514,7 +522,7 @@ class TestTheRoute:
     ) -> None:
         config_file.write_text(json.dumps({"tunnel": {"relay_enabled": True}}), encoding="utf-8")
         body = await (await client.get("/api/remote-control")).json()
-        assert body == {"requested": True, "locked": False, "running": False}
+        assert body == {"requested": True, "locked": False, "running": False, "relayed": False}
 
     async def test_get_says_a_locked_build_ignores_the_setting(
         self, client, config_file, monkeypatch
@@ -525,7 +533,7 @@ class TestTheRoute:
         monkeypatch.setattr(edition, "is_lts", lambda: True)
         config_file.write_text(json.dumps({"tunnel": {"relay_enabled": True}}), encoding="utf-8")
         body = await (await client.get("/api/remote-control")).json()
-        assert body == {"requested": True, "locked": True, "running": False}
+        assert body == {"requested": True, "locked": True, "running": False, "relayed": False}
 
     async def test_the_dashboard_cannot_turn_it_on(self, client, config_file) -> None:
         # Turning on is the terminal command's job.
@@ -564,7 +572,7 @@ class TestTheRoute:
         # once it is done: a raw read racing it failed with EACCES on Windows CI.
         await async_wait_until(lambda: manager.stops == 1)
         assert _stored(config_file) is False
-        assert body == {"requested": False, "locked": False, "running": False}
+        assert body == {"requested": False, "locked": False, "running": False, "relayed": False}
 
     async def test_put_off_answers_before_the_relay_stops(
         self, client, config_file, monkeypatch
@@ -590,7 +598,7 @@ class TestTheRoute:
         )
         assert resp.status == 200
         body = await resp.json()
-        assert body == {"requested": False, "locked": False, "running": False}
+        assert body == {"requested": False, "locked": False, "running": False, "relayed": False}
         assert manager.stops == 0, "the relay must outlive the off request's answer"
         assert guard.stop_pending
         # A poll tick meanwhile sees the setting off but leaves the stop to the drain.

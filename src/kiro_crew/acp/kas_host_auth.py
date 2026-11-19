@@ -14,7 +14,9 @@ This module is the runtime's seam to the one where Crew owns the credential:
   ``_kiro/auth/getAccessToken`` request from
   :class:`kiro_crew.auth.provider.KasAuthProvider` (resolve + refresh under the
   cross-process lock, refresh token withheld). Failures are mapped to a
-  token-free category string the runtime can both log and return.
+  token-free category string the runtime can both log and return. On a
+  workload-identity host it answers from the Crew's JWT-SVID
+  (:mod:`kiro_crew.workload_identity`) and the vault is never read.
 
 Both are thin over :mod:`kiro_crew.auth.bridge`, the auth module's own KAS seam;
 this module exists so the ACP runtime has one import for "Crew-owned auth" and so
@@ -90,7 +92,19 @@ async def answer_get_access_token() -> dict:
     part of it. Raises :class:`HostAuthCallbackError` with a token-free message
     when no credential is stored or the refresh fails, so the runtime can return
     the same string to the engine as a JSON-RPC error.
+
+    On a workload-identity host (:mod:`kiro_crew.workload_identity`) the answer is
+    the Crew's JWT-SVID, and the vault is not read.
     """
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
+        try:
+            return await asyncio.to_thread(workload_identity.kas_access_token_answer)
+        except workload_identity.WorkloadIdentityError as exc:
+            # The message names the cause, never the token.
+            logger.warning("KAS auth callback: workload identity: %s", exc)
+            raise HostAuthCallbackError("workload identity unavailable") from exc
     # Deferred: see the module docstring (boot-path and cryptography gates).
     from kiro_crew.auth.bridge import default_token_store, handle_get_access_token
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
@@ -153,8 +167,13 @@ async def sign_in_refused(served_digest: str | None) -> bool:
     True only on proof that a new sign-in is needed: nothing stored, the issuer
     refused the renewal, or the renewal cannot be attempted and the token is
     already past its margin. A network failure, or any other error, is False:
-    that start keeps its retryable error.
+    that start keeps its retryable error. So is a workload-identity host: no
+    person sign-in can fix it, and the vault is never renewed there.
     """
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
+        return False
     # Deferred: see the module docstring (boot-path and cryptography gates).
     from kiro_crew.auth.bridge import default_token_store
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated

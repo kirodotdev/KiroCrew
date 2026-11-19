@@ -1,8 +1,9 @@
 """The relay viewer's gateway routes: the desktop app lists remote Crews and opens one.
 
-Off unless ``tunnel.relay_viewer_enabled`` is set: every route answers 404
-``RELAY_VIEWER_OFF`` while it is off. None is reachable through the relay
-(``kiro_relay.limits`` refuses everything under ``/api/relay-viewer``).
+On with no setting. A build that locks the ``tunnel`` control (LTS) keeps it
+off: every route answers 404 ``RELAY_VIEWER_OFF`` there. None is reachable
+through the relay (``kiro_relay.limits`` refuses everything under
+``/api/relay-viewer``).
 
 * ``GET /api/relay-viewer/crews``: the owner's dashboard reads the Crews this
   person can open. The answer carries no token, and names the kind of account
@@ -20,11 +21,13 @@ Off unless ``tunnel.relay_viewer_enabled`` is set: every route answers 404
   the grant (``relay_viewer.browser_origin``) and answers only the URL of the
   origin it relays that one open on.
 
-Both calls to the control plane go through :mod:`kiro_crew.relay_viewer.cps` with
-the person's Kiro sign-in from the gateway's own vault, or the test credential
-``tunnel.relay_viewer_credential`` names. They go to ``tunnel.relay_viewer_cps_url``
-when it is set, else to the built-in control plane for the sign-in's region. No
-token, sign-in or credential value is logged or put in an error. Every answer is
+Both calls to the control plane go through :mod:`kiro_crew.relay_viewer.cps`, to
+the built-in control plane for the sign-in's region, with the person's Kiro
+sign-in from the gateway's own vault. ``tunnel.relay_viewer_enabled`` is a dev
+switch: only while it is on are ``tunnel.relay_viewer_cps_url``, the test
+credential ``tunnel.relay_viewer_credential`` names and (with the URL)
+``tunnel.relay_viewer_relay_domain`` used instead. No token, sign-in or
+credential value is logged or put in an error. Every answer is
 ``Cache-Control: no-store``.
 """
 
@@ -44,13 +47,14 @@ from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.core import _unix_peer_is_self
 from kiro_crew.dashboard.origin import is_loopback
 from kiro_crew.dashboard.token_auth import _ct_eq
+from kiro_crew.edition_locks import local_enable_locked
 from kiro_crew.executors import local_auth_executor, relay_viewer_executor
 
 if TYPE_CHECKING:
     from kiro_crew.relay_viewer import cps
 
 # The control plane client and the relay modules are imported inside the handlers,
-# after the setting check, so a gateway with the viewer off loads none of them.
+# after the edition check, so a build with the viewer locked off loads none of them.
 
 logger = logging.getLogger(__name__)
 
@@ -133,18 +137,28 @@ async def _off_loop(func: Callable[..., _T], /, *args: Any) -> _T:
 
 
 async def _settings() -> Optional[tuple[str, str, str]]:
-    """``(cps_url, credential_ref, crew_domain)`` while the viewer is on, else ``None``."""
+    """``(cps_url, credential_ref, crew_domain)``, or ``None`` in a build that locks ``tunnel``.
+
+    The viewer needs no setting. The three values are dev settings, read only while
+    ``tunnel.relay_viewer_enabled`` is the boolean ``True``, and the domain only
+    with a control plane URL, so a leftover value cannot hide every Crew or send
+    the sign-in somewhere else. Otherwise all three are "": the built-in control
+    plane, the person's sign-in, and the relay host rule in ``relay_viewer.cps``.
+    """
+    if local_enable_locked("tunnel"):
+        return None
     tunnel = await _off_loop(_load_tunnel)
     if getattr(tunnel, "relay_viewer_enabled", False) is not True:
-        return None
-    url = getattr(tunnel, "relay_viewer_cps_url", "")
-    ref = getattr(tunnel, "relay_viewer_credential", "")
-    domain = getattr(tunnel, "relay_viewer_relay_domain", "")
-    return (
-        url.strip() if isinstance(url, str) else "",
-        ref.strip() if isinstance(ref, str) else "",
-        domain.strip() if isinstance(domain, str) else "",
+        return "", "", ""
+    url, ref, domain = (
+        value.strip() if isinstance(value, str) else ""
+        for value in (
+            getattr(tunnel, "relay_viewer_cps_url", ""),
+            getattr(tunnel, "relay_viewer_credential", ""),
+            getattr(tunnel, "relay_viewer_relay_domain", ""),
+        )
     )
+    return url, ref, domain if url else ""
 
 
 def _control_plane(cps_url: str, profile_arn: str) -> str:
@@ -201,6 +215,12 @@ async def _bearer(ref: str, rejected: str = "") -> tuple[str, str, str]:
             return await _off_loop(read_lease_credential, ref), "", ""
         except LeaseCredentialError:
             raise cps.CpsRefused(cps.NOT_SET_UP, "the relay viewer credential can't be read")
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
+        # A workload host never reads, renews or sends a person's sign-in, so it
+        # lists no Crews of a person (``workload_identity``).
+        raise cps.CpsRefused(cps.SIGNED_OUT, "this Crew runs on its workload identity")
     from kiro_crew.auth.bridge import default_token_store
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
     from kiro_crew.auth.refresh import RefreshBlocked, RefreshRejected
@@ -262,6 +282,10 @@ async def _sign_in_marker(ref: str) -> Optional[str]:
     credential or an empty fingerprint. Never logged.
     """
     if ref:
+        return None
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
         return None
     from kiro_crew.auth.bridge import vault_identity_fingerprint
 
@@ -579,8 +603,8 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
         return _refused(exc)
     logger.info("relay viewer: mint %s -> done", endpoint_id)
     _audit(request, "success", endpoint_id)
-    # No relay domain: pin the window to the exact host the control plane listed for this
-    # Crew. The list kept only https://<endpointId>.<rest> on the default port.
+    # No dev relay domain: pin the window to the exact host the control plane listed for
+    # this Crew. The list kept only https://<endpointId>.<region>.relay.kiro.dev.
     crew_domain = settings[2]
     relay_domain = crew_domain or (urlsplit(crew.crew_url).hostname or "")[len(endpoint_id) + 1 :]
     return _ok(
