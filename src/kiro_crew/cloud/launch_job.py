@@ -708,6 +708,27 @@ def _show_detail(job: "LaunchJob", store: "LaunchJobStore", step: LaunchStep, te
     store.save(job)
 
 
+def _provision_detail_writers(
+    job: "LaunchJob", store: "LaunchJobStore", step: LaunchStep
+) -> "tuple[Callable[[str], None], Callable[[str], None]]":
+    """The provision step's two detail writers: the network fallback and the sub-step.
+
+    The step shows the fallback sentence, if any, and the current sub-step on its
+    own line below it, so a sub-step never hides the network the launcher picked.
+    The two arrive on different threads (``ec2.deploy`` and the engine's poller),
+    hence the lock.
+    """
+    lines = {"fallback": "", "progress": ""}
+    lock = threading.Lock()
+
+    def write(key: str, text: str) -> None:
+        with lock:
+            lines[key] = text
+            _show_detail(job, store, step, "\n".join(v for v in lines.values() if v))
+
+    return functools.partial(write, "fallback"), functools.partial(write, "progress")
+
+
 def _target_unsupported_message(engine: "LaunchEngine", job: "LaunchJob") -> str:
     return (
         f"provisioner {job.provider_id!r} cannot sign in as {job.login_target.describe()}: "
@@ -1065,10 +1086,13 @@ def run_launch(
         s = _activate(STEP_PROVISION)
         # Only the built-in EC2 engine takes a subnet; the handler refuses it elsewhere.
         extra: dict = {"subnet_id": job.subnet_id} if job.subnet_id else {}
+        show_fallback, show_progress = _provision_detail_writers(job, store, s)
         if _accepts_keyword(engine.provision, "on_network_fallback"):
             # A network the engine picked for the user is named on this step
             # before the stack is created, not after.
-            extra["on_network_fallback"] = functools.partial(_show_detail, job, store, s)
+            extra["on_network_fallback"] = show_fallback
+        if _accepts_keyword(engine.provision, "on_progress"):
+            extra["on_progress"] = show_progress
         job.instance_id = engine.provision(
             tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region, **extra
         )
