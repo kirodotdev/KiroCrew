@@ -338,7 +338,11 @@ def _backup_and_copy(
     host_local = COMPONENTS[component].host_local
     for f in host_local:
         if os.path.lexists(snap / f):
-            print(f"  ↩️  {f}: kept this host's own; the archive's copy was NOT installed")
+            kept = "; this install's copy is kept" if os.path.lexists(mc / f) else ""
+            print(
+                f"  ↩  {f}: not restored (the backup's copy points at the machine "
+                f"that made it){kept}."
+            )
     files = [f for f in CORE_FILES.get(component, ()) if f not in host_local]
     if not _facade()._staging_is_pinned(
         allow_unpinned=allow_unpinned, what=f"restore of {component!r}"

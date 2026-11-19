@@ -76,7 +76,11 @@ def test_an_absent_project_dir_stays_absent(tmp_path, monkeypatch, mode):
     assert not (home / "project_dir").exists()
 
 
-def test_replace_installs_the_rest_of_config_and_says_the_pointer_was_kept(
+def _project_dir_lines(capsys) -> list[str]:
+    return [ln for ln in capsys.readouterr().out.splitlines() if "project_dir" in ln]
+
+
+def test_replace_installs_the_rest_of_config_and_says_the_pointer_was_not_restored(
     tmp_path, monkeypatch, capsys
 ):
     home = tmp_path / "home"
@@ -84,5 +88,17 @@ def test_replace_installs_the_rest_of_config_and_says_the_pointer_was_kept(
     assert _restore(tmp_path, home, monkeypatch, "replace") == 0
 
     assert json.loads((home / "config.json").read_text())["agent"]["model"] == "from-archive"
-    lines = [ln for ln in capsys.readouterr().out.splitlines() if "project_dir" in ln]
-    assert len(lines) == 1 and "kept" in lines[0]
+    lines = _project_dir_lines(capsys)
+    # The host had no copy, so the summary must not claim one was kept.
+    assert len(lines) == 1 and "not restored" in lines[0] and "kept" not in lines[0]
+
+
+def test_replace_says_the_live_pointer_was_kept(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "project_dir").write_text(_LIVE)
+
+    assert _restore(tmp_path, home, monkeypatch, "replace") == 0
+
+    lines = _project_dir_lines(capsys)
+    assert len(lines) == 1 and "not restored" in lines[0] and "copy is kept" in lines[0]
