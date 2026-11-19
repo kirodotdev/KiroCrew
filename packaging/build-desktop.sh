@@ -446,7 +446,8 @@ _eb_invoke() {
 # retry loop can shadow it.
 _eb_release_busy_dmg() {
   local disk
-  disk="$(grep -oE 'couldn.t (eject|unmount) "disk[0-9]+"' "$1" | head -n 1 | grep -oE 'disk[0-9]+' || true)"
+  # A slice ("disk5s1") is reduced to its whole disk: detach addresses the disk.
+  disk="$(grep -oE 'couldn.t (eject|unmount) "disk[0-9]+(s[0-9]+)?"' "$1" | head -n 1 | grep -oE 'disk[0-9]+' | head -n 1 || true)"
   [ -n "$disk" ] || return 0
   (
     # shellcheck source=signing/hdiutil-detach.sh

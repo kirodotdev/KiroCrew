@@ -265,7 +265,16 @@ _eb_release_busy_dmg() {{ return 1; }}
         assert "EXIT=1" in proc.stdout, proc.stdout + proc.stderr
         assert len(counter.read_text()) == 1, "a held device must stop the retries"
 
-    def test_release_detaches_the_device_named_in_the_log(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "busy_line",
+        [
+            _DMG_BUSY_LINE,
+            'hdiutil: couldn\'t unmount "disk5s1" - Resource busy',
+        ],
+    )
+    def test_release_detaches_the_device_named_in_the_log(
+        self, tmp_path: Path, busy_line: str
+    ) -> None:
         bindir = tmp_path / "bin"
         bindir.mkdir()
         calls = tmp_path / "hdiutil.calls"
@@ -280,7 +289,7 @@ _eb_release_busy_dmg() {{ return 1; }}
         )
         hdiutil.chmod(0o755)
         log = tmp_path / "eb.log"
-        log.write_text(_DMG_BUSY_LINE + "\n")
+        log.write_text(busy_line + "\n")
         prelude = f'ROOT="{SCRIPT.parent.parent}"\nPATH="{bindir}:$PATH"\n'
         proc = _run(
             prelude,
