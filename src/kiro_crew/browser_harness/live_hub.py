@@ -86,6 +86,8 @@ STATES = frozenset(
 
 #: Longest step label kept; the tool's labels are a few words.
 MAX_STEP_LABEL = 120
+#: Longest label on the cursor an app draws over the live view (:meth:`LiveHub.aim`).
+MAX_AIM_LABEL = 48
 #: Steps kept per turn; older ones fold into the count.
 MAX_STEPS = 200
 #: The whole budget for releasing what the person held when control goes back:
@@ -244,6 +246,9 @@ class LiveSession:
     #: A release of control is sending the held input's releases: the lock is still
     #: shut, but no card event is forwarded and no new release starts.
     releasing: bool = False
+    #: Where the cursor drawn over the live view points (:meth:`LiveHub.aim`):
+    #: ``{"x", "y", "label", "seq"}`` in viewport CSS px, or ``None`` before any aim.
+    aim: dict[str, Any] | None = None
 
     @property
     def relay(self) -> Relay | None:
@@ -333,6 +338,8 @@ def live_event(sess: LiveSession) -> dict[str, Any]:
         "ask": sess.ask.wire() if sess.ask is not None and not sess.ask.outcome else None,
         "started_at_ms": int(sess.started_ms),
         "ended_at_ms": int(sess.ended_ms),
+        # Only once something aimed: older readers see the fields they always had.
+        **({"aim": dict(sess.aim)} if sess.aim is not None else {}),
     }
 
 
@@ -596,6 +603,27 @@ class LiveHub:
         if len(sess.steps) > MAX_STEPS:
             del sess.steps[: len(sess.steps) - MAX_STEPS]
         self._emit(sess)
+
+    def aim(self, session_key: str, x: float, y: float, label: str = "") -> bool:
+        """Point the cursor drawn over *session_key*'s live view at (*x*, *y*), viewport CSS px.
+
+        Drawn by the card over the frame, never inside the page. ``True`` when a
+        stream shows the session now; ``False`` (and nothing sent) with no stream or a
+        point that is not two finite numbers.
+        """
+        sess = self._sessions.get(session_key)
+        if sess is None or sess.stream is None:
+            return False
+        if not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+            for v in (x, y)
+        ):
+            return False
+        seq = int((sess.aim or {}).get("seq", 0)) + 1
+        text = str(label or "")[:MAX_AIM_LABEL]
+        sess.aim = {"x": round(float(x), 1), "y": round(float(y), 1), "label": text, "seq": seq}
+        self._emit(sess)
+        return True
 
     def turn_ended(self, session_key: str) -> None:
         """The turn is over: the stream stops, the lock opens, the card folds to one line.

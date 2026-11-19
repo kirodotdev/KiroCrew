@@ -1085,6 +1085,34 @@ never the gateway's port; applied to `navigate` and to the URL a new tab opens
 with). It then posts `{session_key, op, args}` to `POST /api/browser/op` (strict,
 internal-secret only) and renders the gateway's answer. It holds no state.
 
+#### One door: `run_browser_op`
+
+The route's body is `dashboard/handlers/browser_ops.run_browser_op(session_key, op,
+args, *, state, caller)`, which answers `(body, http_status)`. The route only
+authenticates and validates the body, then calls it; an app's `PagePort`
+(`apps/browser_page_port.py`, not yet handed to any app) calls the same function with the slot's own
+runtime key (`dashboard:<slot>`), so the Bot and an app share every gate from one
+copy, in this order: the `capabilities.browse` check for that key; the navigate gate
+on the address the op asks to open (`navigate`, and `tabs new` with a URL), which
+answers `url_blocked` before the browser starts, so a refused address is never
+requested even by a caller inside the gateway that skips the shim; an app slot's
+approved `browserSites`; the takeover hold; the gateway-wide lock (an app's op queues
+behind the Bot's); the second browse check; the per-session
+fence; the tab binding; and the per-caller checks of every helper and frame send.
+
+An in-gateway caller is audited as a `GatewayCaller` (`app:<name>`, path
+`app.browser`). When the person holds the page it is answered `user_in_control`
+without parking the slot: it has no hand-back poll to wait on. It never takes the
+note the person left for the Bot at a hand-back, so that note reaches the Bot's next
+op, and it opens no card turn (it joins one the Bot has open), since only the Bot's
+turn end folds a card.
+
+`LiveHub.aim(key, x, y, label)` sets the cursor an app draws over the live view: the
+`aim` field of the `browser_live` event (`{x, y, label, seq}`, viewport CSS px,
+label at most `MAX_AIM_LABEL` characters), sent only once something aimed and only
+while a stream shows the session. It is for the live view to draw over the frame (the
+component that draws it is the RFC's step 1c), and it never enters the page.
+
 `browser_harness.ops.run_op(op, args, ctx)` runs in the gateway. It reaches the
 browser only through `ctx.helper(name, **kwargs)` -- one allowlisted Harness
 helper over the daemon's IPC -- and the `js` helper is only ever given
