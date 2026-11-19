@@ -9,7 +9,7 @@ browses the pages the owner approved without a card per step, and the page's
 ``ctx.embed``'s batch members share level 10.
 Level 11 adds the page's ``BrowserView``, ``useBrowserView`` and ``useBrowserCoords``:
 the live view of the app's own chat slot, with take over and hand back, behind the
-``app_browser_sdk`` preview.
+``app_browser_sdk`` preview; and the SDK's ``appWebOriginStatus``.
 """
 
 APP_SDK_LEVEL = 11

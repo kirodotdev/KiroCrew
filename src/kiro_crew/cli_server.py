@@ -892,6 +892,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GATEWAY_NOT_LISTENING_HINT,
         _TOKEN_REFUSAL_REMEDIES,
         _TOKEN_REQUEST_TIMEOUT,
+        EMBED_FORWARD_PORT_ENV,
+        _embed_query,
         _emit_session_urls,
         _logout,
         _probe_dashboard_health,

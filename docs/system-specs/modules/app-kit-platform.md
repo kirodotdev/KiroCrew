@@ -6000,9 +6000,10 @@ is decided there and reaches no dashboard layer:
   checked by listener (`SsmGate.owns`) because this router runs before that
   listener's gate;
 - only on a port the dashboard's own loopback origins in `allowed_origins` name
-  (the bound port and `KIROCREW_ALLOWED_LOOPBACK_PORTS`), else 421. A missing
-  `Host` port is the HTTP default, 80, and is served only when 80 is one of those
-  dashboard ports;
+  (the bound port and `KIROCREW_ALLOWED_LOOPBACK_PORTS`), or on a Remote Crew
+  pane port a signed pane token recorded (below), else 421. A missing `Host` port
+  is the HTTP default, 80, and is served only when 80 is one of those dashboard
+  ports;
 - only for `<name>` that is installed, enabled, opted in, gateway-managed and has a
   tracked backend port, else 404 with a body that names nothing; a name under the
   suffix that is not one DNS label is 404 too;
@@ -6018,9 +6019,42 @@ is decided there and reaches no dashboard layer:
   becomes 1000, a dropped connection (1006) becomes 1001, and a code outside
   1000-4999 becomes 1002, because those codes are never sent.
 
+**Remote Crew pane ports.** A pane loads this dashboard at
+`http://<hub's loopback name>:P`, where P is the hub's SSH forward port and
+usually not a dashboard port here (Instances spec §4). The pane's dashboard
+token carries the signed `embed_parent_port` claim, the hub page's port. When
+the token layer authenticates a dashboard (non-app) request with such a token,
+on a direct local request whose `Host` is `localhost`, `127.0.0.1` or
+`kirocrew.localhost` on a port P (no port in `Host` reads as 80, as the router
+reads it), it records
+`P -> {parent port: session_exp}` in memory (`apps/pane_ports.py`,
+`note_pane_request`, called from `token_auth_middleware` after the credential is
+published, so both a `?token=` exchange and a cookie-authenticated request
+record). A token that also carries `embed_forward_port` records only the port
+it names; one without it (minted by an older hub) records the port in `Host`.
+The record keeps a union of parents per port (two hubs can reach this gateway on
+the same P), at most 16 ports and 4 parents per port, least recently recorded
+dropped first; a pairing keeps the latest `session_exp` any token gave it, so
+an older session on the same ports never cuts short a newer one's grant;
+expired parents are dropped when read, and nothing survives a
+restart (the pane's next authenticated request records it again). The Session
+Manager listener's requests never reach the token flow, so they never record.
+On a recorded, unexpired P the router serves as on a dashboard port, and its
+`frame-ancestors` is `'self'`, P's loopback origins and
+`parent_port_frame_ancestors(parent)` for each live parent, never a wildcard:
+the directive is matched against every ancestor, and the app frame sits inside
+the pane, which sits inside the hub page. The hub picks P on its own machine, so
+P can equal one of this gateway's dashboard ports; P is then recorded too, and
+the router adds each live parent's `parent_port_frame_ancestors` to that port's
+usual ancestors. The record admits no new peer: a
+request on P must still arrive straight from this machine, which an SSH forward
+or local code already reaches the backend's own port from.
+
 Every decision is audited, because each one is a permission decision: one SEL
 `api_access` row per served request, reads included (`outcome=granted`,
-`resources` the canonical app host and path), and per refusal (`outcome=denied`,
+`resources` the canonical app host and path, with ` (pane port)` on a pane
+port), one per new pane port pairing or extended expiry (`operation=record pane port`),
+and per refusal (`outcome=denied`,
 the refusal reason in `error`), both `source=app_web_origin`. A write that fails
 loses its row and never changes the decision (`_audit`).
 
@@ -6040,7 +6074,8 @@ in with bearer or Basic auth therefore needs the app's backend to add
 another app's name), and each comma-separated CSP policy the backend sent loses
 only its `frame-ancestors` directive. Every other directive and every non-empty
 policy stays enforced. One more policy carries `frame-ancestors 'self'` plus the
-dashboard's loopback origins (`frame_ancestors_value`). The dashboard's own
+dashboard's loopback origins (`frame_ancestors_value`), or on a pane port the
+pane's and its recorded parents' loopback origins. The dashboard's own
 security headers are not applied.
 
 **Dashboard side.** `APP_WEB_ORIGIN_CSP_SOURCE` (`http://*.apps.localhost:*`) is in the
@@ -6064,23 +6099,35 @@ says so.
 `localhost`, `127.0.0.1` or `kirocrew.localhost` over http, and `null` otherwise.
 That includes an IPv6 dashboard: CSP `frame-ancestors` cannot express its
 bracketed host source, so the app origin cannot be framed there. A published
-HTTPS host and a Remote Crew pane also have no app origin. It reads the dashboard's host name only, not whether this browser reaches
-the name, so an app probes the origin (a `no-cors` fetch, which `connect-src`
+HTTPS host has no app origin. A Remote Crew pane is on its hub's own loopback
+name, so it answers one, which the crew's gateway serves once the pane's token
+recorded its port. `appWebOriginStatus(name)` (level 11) answers `{origin, reason}`: `loopback` with the origin, or `null` with
+`remote-front-door` (https or any other host name: open the app's upstream page
+in a new tab rather than frame a loopback port, which on this viewer's device is
+the viewer's own machine), `ipv6`, or `invalid-name`. It reads the dashboard's
+host name only, not whether this browser reaches the name, so an app probes the origin (a `no-cors` fetch, which `connect-src`
 admits) before it switches its frame, and keeps its loopback frame when the
 probe fails. An app on an older
 host finds no such export and keeps its own loopback frame.
 
 Not covered: a dashboard reached over a published HTTPS host (it has no wildcard
-name or certificate for app hosts), a Remote Crew pane whose forward port differs
-from the remote gateway's, and Session Manager forwards. Each keeps what the app
-did before.
+name or certificate for app hosts), Session Manager forwards (a Remote Crew pane
+over SSM included), and the desktop app's own page when it reaches its gateway on
+a managed forward port that is not opted in through
+`KIROCREW_ALLOWED_LOOPBACK_PORTS`. Each keeps what the app did before.
 
-Writers: `apps/app_web_origin.py`, `apps/manifest_sections.py`, `apps/manifest.py`,
+Writers: `apps/app_web_origin.py`, `apps/pane_ports.py`, `dashboard/token_auth.py`
+(the record call and the `embed_forward_port` carry), `dashboard/refresh_tokens.py`,
+`dashboard/handlers/auth_refresh.py`, `dashboard/handlers/core_local_token.py`,
+`cli_server_requests.py`, `cli_parser_gateway.py`, `instances/token_mint.py`,
+`instances/ssh_tunnel_manager_transport.py`, `instances/ssh_tunnel_manager_tokens.py`,
+`apps/manifest_sections.py`, `apps/manifest.py`,
 `dashboard/server_runtime/middleware_chain.py`,
 `dashboard/server_runtime/security_headers.py`, `website/src/app-sdk/webOrigin.ts`,
 `website/src/app-sdk/index.ts`, `website/public/vendor/kirocrew-app-sdk.mjs`,
 `website/src/app-sdk/sdkLevel.ts`, `apps/app_sdk_level.py`.
-Tests: `test/test_app_web_origin.py`, `website/src/app-sdk/webOrigin.test.ts`.
+Tests: `test/test_app_web_origin.py`, `test/test_app_web_origin_panes.py`,
+`website/src/app-sdk/webOrigin.test.ts`.
 
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
@@ -7526,7 +7573,8 @@ transport), `ctx.chat_slots` (§41), the SDK's project picker (§18i) and `ctx.w
 on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `useChatLauncher().createChat` (§44), `permissions.browserSites` and the SDK's
 `useBrowserMedia` (§45), and `ctx.embed`'s batch members; level 11 adds the SDK's `BrowserView`,
-`useBrowserView` and `useBrowserCoords` (RFC app-sdk-browser, step 1c). Several seams share level 7,
+`useBrowserView` and `useBrowserCoords` (RFC app-sdk-browser, step 1c) and the SDK's
+`appWebOriginStatus` (§18k). Several seams share level 7,
 three share level 8, and the open batch that level 10 starts shares level 10, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.

@@ -157,6 +157,12 @@ async def api_token_local(request: web.Request) -> web.Response:
     epp = request.query.get("embed_parent_port", "")
     if epp.isdigit() and 1 <= int(epp) <= 65535:
         extra["embed_parent_port"] = str(int(epp))
+        # The pane's own forward port on this machine, which binds the app web
+        # origin record to the port the hub minted for (apps/pane_ports.py).
+        # Meaningful only with a parent port, so only minted beside one.
+        efp = request.query.get("embed_forward_port", "")
+        if efp.isdigit() and 1 <= int(efp) <= 65535:
+            extra["embed_forward_port"] = str(int(efp))
     token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=owner_mint_extra(extra))
     _sel().log_api_access(
         caller=request.remote or "unknown",

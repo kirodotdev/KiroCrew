@@ -97,6 +97,10 @@ PREDICATE_SITES = {
     # refuses by listener first the same way.
     "relay_viewer/browser_origin.py": 1,
     "dashboard/handlers/relay_viewer.py": 1,
+    # Recording a Remote Crew pane port runs inside token auth, after the SSM gate
+    # has marked what it admits, so the predicate refuses an SSM request here. The
+    # router that serves the recorded port still refuses by listener first.
+    "apps/pane_ports.py": 1,
     "dashboard/file_api/desktop.py": 1,
     "dashboard/handlers/core.py": 2,
     "dashboard/handlers/external_terminal.py": 1,

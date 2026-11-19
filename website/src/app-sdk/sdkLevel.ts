@@ -8,6 +8,7 @@
  * `credentialMasks`, `permissions.chatLaunch`, and `permissions.browserSites` with the
  * page's `useBrowserMedia` (play, pause, seek and volume on the app's own agent's tab).
  * Level 11 adds `BrowserView`, `useBrowserView` and `useBrowserCoords`: the live view of
- * the app's own chat slot, with take over and hand back, behind `app_browser_sdk`.
+ * the app's own chat slot, with take over and hand back, behind `app_browser_sdk`; and
+ * `appWebOriginStatus`.
  */
 export const APP_SDK_LEVEL = 11

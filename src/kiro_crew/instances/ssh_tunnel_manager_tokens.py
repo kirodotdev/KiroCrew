@@ -233,7 +233,14 @@ async def mint_embed_token(
         else:
             mint = _Mint(
                 await self._mint_token_with_parent_port(
-                    inst, params, int(embed_parent_port), ttl=lent_ttl
+                    inst,
+                    params,
+                    int(embed_parent_port),
+                    ttl=lent_ttl,
+                    # Our own page's pane loads this crew on our forward's port;
+                    # another gateway's pane loads it on a port only that gateway
+                    # knows, so its token carries no forward claim.
+                    **({"embed_forward_port": hop} if own_page else {}),
                 )
             )
     except TokenMintError as e:
@@ -501,6 +508,7 @@ async def _mint_token_with_parent_port(
     embed_parent_port: int,
     *,
     ttl: str,
+    embed_forward_port: int = 0,
 ) -> str:
     """Mint *inst*'s token carrying *embed_parent_port* as the frame-ancestor claim.
 
@@ -516,6 +524,9 @@ async def _mint_token_with_parent_port(
     one its caller computed (:meth:`_lent_hop_ttl`), and the same number has to
     reach the lease and the answer. A default would let a future caller mint an
     uncapped credential without saying so.
+
+    *embed_forward_port*, when set, is the port the asker's pane loads this crew
+    on; only an SSH mint carries it (``build_remote_token_command``).
     """
     if params.method == "fargate" or params.headless:
         raise TokenMintError(
@@ -541,6 +552,7 @@ async def _mint_token_with_parent_port(
         remote_port=inst.remote_port,
         embed_parent_port=embed_parent_port,
         timeout_secs=self._mint_timeout_for(params.method),
+        **({"embed_forward_port": embed_forward_port} if embed_forward_port > 0 else {}),
     )
 
 
