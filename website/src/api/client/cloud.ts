@@ -150,6 +150,9 @@ export interface LaunchJob {
   instance_id?: string
   signin?: CloudLaunchSignin | null
   signin_detected?: boolean
+  /** The owner launched without the Kiro sign-in, or skipped it on the card. A
+   *  choice, not a failure: such a crew is not badged "Needs sign-in". */
+  signin_skipped?: boolean
   error?: string
   created_at: number
   updated_at: number
@@ -219,7 +222,7 @@ export function createCloudEndpoints({ get, post, del, j }: ClientTransport) {
     cloudIdentity: () => get('/api/cloud/identity').then(j) as Promise<CloudIdentity>,
     // `provider_id` is optional on the wire: the server defaults it to "aws_ec2"
     // and answers 400 `unknown_provisioner` for an id it does not offer.
-    cloudLaunch: (body: { provider_id?: string; profile: string; region: string; size_key: string; subnet_id?: string; login_target?: KiroLoginTarget }) =>
+    cloudLaunch: (body: { provider_id?: string; profile: string; region: string; size_key: string; subnet_id?: string; login_target?: KiroLoginTarget; skip_signin?: boolean }) =>
       post('/api/cloud/launch', body).then(j) as Promise<LaunchJob>,
     cloudLaunchStatus: (id: string) =>
       get('/api/cloud/launch/' + encodeURIComponent(id)).then(j) as Promise<LaunchJob>,
@@ -245,6 +248,11 @@ export function createCloudEndpoints({ get, post, del, j }: ClientTransport) {
     // job never created a crew (there is nothing to sign in).
     cloudLaunchSigninRestart: (id: string) =>
       post('/api/cloud/launch/' + encodeURIComponent(id) + '/signin/restart').then(j) as Promise<LaunchJob>,
+    // Goes on to Connect without the Kiro sign-in, while a launch is signing in.
+    // The gateway stops the remote login and marks the step skipped. 409 once
+    // the launch is over or its crew is already registered.
+    cloudLaunchSigninSkip: (id: string) =>
+      post('/api/cloud/launch/' + encodeURIComponent(id) + '/signin/skip').then(j) as Promise<LaunchJob>,
     // The gateway resolves the stack from the tag but needs the launch's AWS
     // coordinates: a crew created under a non-default profile/region is invisible
     // to the default ones, so omitting them makes stop/start/destroy fail. destroy

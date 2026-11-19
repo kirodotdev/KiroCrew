@@ -368,6 +368,15 @@ describe('instancesSlice launch draft', () => {
     expect(reducer(held, dropLaunchedCrewDraft({ subnet_id: 'subnet-a', identity: null })).crewForms.launch).toEqual(a)
   })
 
+  it('keeps a changed sign-in toggle and treats an absent toggle as on', () => {
+    const off = { ...a, signinOnLaunch: false }
+    const held = reducer(undefined, setCrewLaunchDraft(off))
+    expect(reducer(held, dropLaunchedCrewDraft(a)).crewForms.launch).toEqual(off)
+    expect(reducer(held, dropLaunchedCrewDraft({ ...off })).crewForms.launch).toBeNull()
+    const legacy = reducer(undefined, setCrewLaunchDraft(a))
+    expect(reducer(legacy, dropLaunchedCrewDraft({ ...a, signinOnLaunch: true })).crewForms.launch).toBeNull()
+  })
+
   it('drops nothing for a launch sent with no draft while one is held', () => {
     const held = reducer(undefined, setCrewLaunchDraft(a))
     expect(reducer(held, dropLaunchedCrewDraft(null)).crewForms.launch).toEqual(a)

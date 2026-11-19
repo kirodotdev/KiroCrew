@@ -417,6 +417,7 @@ class DashboardState:
         # Cloud provisioning launch jobs (lazy-init in handlers_cloud).
         self.cloud_launch_store: Any = None  # LaunchJobStore
         self.cloud_launch_cancels: Any = None  # dict[str, threading.Event]
+        self.cloud_launch_skips: Any = None  # dict[str, threading.Event]
         self.cloud_launch_engine: Any = (
             None  # test-injected LaunchEngine (None -> RealLaunchEngine)
         )
