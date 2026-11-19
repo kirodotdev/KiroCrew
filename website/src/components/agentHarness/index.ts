@@ -8,4 +8,5 @@
 export { AgentPickerRow } from './AgentPickerRow'
 export { AgentStatusBadge } from './AgentStatusBadge'
 export { AgentDetailActions, AgentInstallDetail } from './AgentDetail'
+export { AgentNotReadyDetail, type AgentNotReadyReason } from './AgentNotReadyDetail'
 export { CopyCommand } from './CopyCommand'
