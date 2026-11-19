@@ -258,6 +258,7 @@ class _ChatTurn:
     _undelivered_watch: "Any"
     _session_stop_gen_at_entry: "int"
     _shell_tool_calls: "set[str]"
+    _slim_resume_pending: "bool"
     _span_base_len: "int"
     _span_probe: "str"
     _prompt_segments: "tuple[Any, ...]"

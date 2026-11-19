@@ -1014,6 +1014,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # the member section instead of running the member with no bounds.
     _member_session_start_pending = False
     turn._member_session_start_pending = _member_session_start_pending
+    # A slim resume (a new provider session over a restored history) owes the
+    # lessons and steering its compacted history may have lost. Armed at the
+    # session claim and narrowed at prompt assembly; the settle re-arms the
+    # reinjection when the owed blocks were not delivered.
+    turn._slim_resume_pending = False
     # Recoverable tool refusals (host-gate policy deny / read-only bash gate)
     # recorded during this turn as (redacted_title, reason). Each deny also gets
     # its reason steered in-band (see _refusal_notices); this ledger is what the

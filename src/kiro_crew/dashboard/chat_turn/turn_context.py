@@ -71,15 +71,14 @@ def _folder_steering_turn(
     execution_context: Any,
     *,
     context_is_new: bool,
-    provider_has_history: bool,
     needs_reinjection: bool,
 ) -> bool:
     """Whether this turn must resolve the folder's steering directories.
 
-    A template chat reads the folder tree only on the two turns that carry
-    session-start context: a fresh provider session (not a resumed one, which
-    already holds its original injection) and a reinjection after compaction.
-    Warm template turns never touch it.
+    A template chat reads the folder tree only on the turns that send folder
+    steering: a new or resumed provider session (a resume re-sends it, because a
+    compacted restored history may have lost it) and a reinjection after
+    compaction. Warm template turns never touch it.
 
     A V2 MEMBER chat is different. ``build_message`` rebuilds the member's
     essentials envelope on EVERY turn, and that envelope declares itself the
@@ -88,7 +87,7 @@ def _folder_steering_turn(
     that passed no directories would hand the model a snapshot that silently
     withdraws the folder's guides. Every turn that rebuilds the envelope resolves.
     """
-    if (context_is_new and not provider_has_history) or needs_reinjection:
+    if context_is_new or needs_reinjection:
         return True
     return bool(
         getattr(slot, "mode", "") == "member"
