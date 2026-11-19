@@ -575,8 +575,8 @@ Each cycle:
    **When the lines show the item itself is wrong** (already done on main,
    mis-scoped, needing a split, a bar that cannot be met), re-plan that item now
    (Close the round).
-6. **A patrol wake gets one line**, as your prompt's patrol-reply rule says,
-   and more only in the cases it names. Never stop bare after your tool
+6. **Reply to a patrol wake as your prompt's patrol-reply rule says**, and
+   write more only in the cases it names. Never stop bare after your tool
    calls: that keeps the empty-response recovery.
 
 ### Close the round

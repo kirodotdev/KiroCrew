@@ -313,7 +313,7 @@ nobody reports) and the ledger shows no report since your last turn, do not just
 re-read the board: for each open item, compare its elapsed time with its
 `budget: <N>m` and look for the files its brief named. Re-plan now, and say why,
 any item that is stalled, past budget with nothing to show, or on a wrong brief.
-With nothing wrong, the one line a patrol wake gets says so.
+With nothing wrong, reply as your patrol-reply rule says.
 
 """,
     "routine_incidents": """**Handle routine incidents from the goal, then report them.** A worker out of
@@ -330,7 +330,17 @@ when a conductor dispatched you. A turn that ends having reported nothing tells
 nobody where the goal stands.
 
 """,
-    "patrol_reply": """**A patrol wake gets one line.** On a turn your work-ledger patrol opened
+    "skill_first": """The `goal-conductor` skill carries the operating procedure — the work-item
+tests, the dispatch steps, the patrol cycle, the stop conditions. Read it before
+acting on a goal. When a turn carries a REINJECTED AFTER COMPACTION block, the
+skill text you read is gone: read it again before you act. """,
+}
+
+#: Conductor mode's reply to a patrol wake. Not a shared rule: a person watches a
+#: conductor-mode chat live, while a Bot's thread is read once or twice a day, so
+#: a Bot's ``conductor.patrol`` carries its own rule (a wake with no news says
+#: nothing). The team lead runs conductor mode, so it carries this one.
+_CONDUCTOR_PATROL_REPLY = """**A patrol wake gets one line.** On a turn your work-ledger patrol opened
 (a `[work-ledger wake]` or an `[auto-nudge cycle N]`, its forced hourly wake
 included) that has nothing the person must see, reply with ONE short line saying
 what you did, never `nothing_to_do`: "Extended the docs task's budget to 300m."
@@ -341,12 +351,7 @@ milestone report is not this line: a task starting, finishing or getting stuck
 is reported in full. A Heartbeat or `[Worker report]` turn keeps its own quiet
 end.
 
-""",
-    "skill_first": """The `goal-conductor` skill carries the operating procedure — the work-item
-tests, the dispatch steps, the patrol cycle, the stop conditions. Read it before
-acting on a goal. When a turn carries a REINJECTED AFTER COMPACTION block, the
-skill text you read is gone: read it again before you act. """,
-}
+"""
 
 
 #: ``_CONDUCTOR_SYSTEM_PROMPT`` in reading order, one ``(name, text)`` per section.
@@ -546,7 +551,7 @@ steer.
     ("wake_check", _LEDGER_CONDUCTOR_RULES["wake_check"]),
     ("routine_incidents", _LEDGER_CONDUCTOR_RULES["routine_incidents"]),
     ("report_before_park", _LEDGER_CONDUCTOR_RULES["report_before_park"]),
-    ("patrol_reply", _LEDGER_CONDUCTOR_RULES["patrol_reply"]),
+    ("patrol_reply", _CONDUCTOR_PATROL_REPLY),
     (
         "tracker",
         """**Add a tracker when one patrol read no longer fits.** Your `compact` ledger
@@ -728,6 +733,8 @@ _SHARED_CONDUCTOR_RULES_BLOCK = (
     "The dispatch steps are 1. `work_ledger_record` `action=create`, 2. "
     "`session_create` with `agent` set explicitly, 3. `bind`, 4. the seed.\n\n"
     + "\n\n".join(rule.strip() for rule in _LEDGER_CONDUCTOR_RULES.values())
+    + "\n\n"
+    + _CONDUCTOR_PATROL_REPLY.strip()
     + "\n"
 )
 
