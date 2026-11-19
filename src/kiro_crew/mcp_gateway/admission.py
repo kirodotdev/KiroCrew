@@ -51,10 +51,11 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Hashable, Optional
 
 from kiro_crew.start_priority import StartOrder, StartPriority
 
+from .backend_handshake import INITIALIZE_DEADLINE_REASON, _effective_initialize_timeout_secs
 from .host_budget import HostBudget, HostCharge
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,10 @@ _INIT_WATCH_GRACE_SECS = 1.0
 #: The deadline is the backend's effective one (``Backend.initialize_timeout_secs``,
 #: never below the cold-start floor), the same value its own reaper fires at.
 SLOW_INIT_FRACTION = 0.8
+
+#: Longest first-``initialize`` deadline a pool key gets after its spawns were
+#: reaped at the deadline (``Admission.initialize_timeout_for``).
+INIT_DEADLINE_STRETCH_CAP_SECS = 120.0
 
 #: Window over which slow inits are counted for the snapshot's ``slow_inits``,
 #: the gate's own latency evidence for the adaptive controller.
@@ -566,6 +571,64 @@ class Admission:
         self.initialize_timeout_secs = float(initialize_timeout_secs)
         self.spawn_queue_wait_secs = float(spawn_queue_wait_secs)
         self._reapers: set[asyncio.Task[None]] = set()
+        # Pool key -> first-``initialize`` deadline reaps in a row, cleared by the
+        # key's next handshake that completes (see ``initialize_timeout_for``).
+        self._deadline_reaps: dict[Hashable, int] = {}
+
+    def initialize_timeout_for(self, key: Hashable) -> float:
+        """The first-``initialize`` deadline the next spawn for *key* gets.
+
+        The configured deadline, unless the key's last spawns were reaped at it.
+        A reaped backend is killed, so its respawn starts cold again; on a host
+        whose cold start takes a little longer than the deadline (a slow disk, a
+        file scanner, every session's backends starting at once), each attempt
+        would be reaped at the same point and the server would never start. Each
+        reap in a row doubles the next deadline, up to
+        ``INIT_DEADLINE_STRETCH_CAP_SECS``. A configured value above the cap is
+        never lowered, and a backend that never answers still fails, only later.
+        """
+        base = _effective_initialize_timeout_secs(self.initialize_timeout_secs)
+        reaps = self._deadline_reaps.get(key, 0)
+        if reaps <= 0:
+            return self.initialize_timeout_secs
+        return max(base, min(base * (2**reaps), INIT_DEADLINE_STRETCH_CAP_SECS))
+
+    def track_initialize(
+        self,
+        key: Hashable,
+        *,
+        init_done: asyncio.Event,
+        outcome: Callable[[], tuple[str, Optional[str]]],
+        process_exited: Callable[[], Awaitable[Any]],
+    ) -> None:
+        """Count *key*'s deadline reaps from one backend's first handshake.
+
+        *outcome* returns the backend's ``(init state, dead reason)`` once
+        *init_done* is set. A handshake that completed clears the count; one
+        reaped at the deadline adds one. Anything else (a crash, a client that
+        left before ``initialize``) leaves the count as it was. Ends when the
+        process exits, so a backend that never handshakes holds no task.
+        """
+
+        async def _note() -> None:
+            exited = asyncio.ensure_future(process_exited())
+            done = asyncio.ensure_future(init_done.wait())
+            try:
+                await asyncio.wait({exited, done}, return_when=asyncio.FIRST_COMPLETED)
+                if not init_done.is_set():
+                    return
+                state, reason = outcome()
+                if state == "ready":
+                    self._deadline_reaps.pop(key, None)
+                elif state == "failed" and (reason or "").startswith(INITIALIZE_DEADLINE_REASON):
+                    self._deadline_reaps[key] = min(self._deadline_reaps.get(key, 0) + 1, 8)
+            finally:
+                exited.cancel()
+                done.cancel()
+
+        task = asyncio.create_task(_note(), name="mcp-gateway-init-deadline-track")
+        self._reapers.add(task)
+        task.add_done_callback(self._reapers.discard)
 
     def track_process(
         self, charge: HostCharge, process_exited: Callable[[], Awaitable[Any]]
