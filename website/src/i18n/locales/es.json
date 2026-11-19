@@ -20710,7 +20710,6 @@
         "tagline": "Envía mensajes a tus agentes desde la aplicación Messages en cualquiera de tus dispositivos Apple. Sin bot ni token: el gateway controla Messages en esta Mac."
       },
       "instancesPanel": {
-        "20h": "20h",
         "add_instance": "Añadir crew remoto",
         "add_remote_crew": "Añadir crew remoto",
         "adding": "Añadiendo…",
