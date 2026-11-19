@@ -843,6 +843,8 @@ def test_a_move_no_answer_reported_stays_pending_and_refuses_page_targeted_ops()
     assert mod._with_tab_move(hub, "k", held) is held
     assert hub.pending_tab_move("k") is not None
     assert mod._refused_for_tab_move(hub, "k", "snapshot") is None, "reads still run"
+    pasted = mod._refused_for_tab_move(hub, "k", "paste")
+    assert pasted is not None and pasted["code"] == "popup_opened", "paste is refused like type"
     refused = mod._refused_for_tab_move(hub, "k", "click")
     assert refused is not None and refused["code"] == "popup_opened"
     told = mod._with_tab_move(hub, "k", refused)

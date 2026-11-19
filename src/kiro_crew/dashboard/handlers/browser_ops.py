@@ -837,7 +837,18 @@ async def _popup_closed_under_op(
 #: is per document (``e1`` exists on every page), so after the bind moved the chat
 #: onto a different page such an op would hit an unrelated element.
 _PAGE_TARGETED_OPS = frozenset(
-    {"click", "drag", "scroll", "type", "press_key", "hover", "select_option", "dialog", "reflex"}
+    {
+        "click",
+        "drag",
+        "scroll",
+        "type",
+        "paste",
+        "press_key",
+        "hover",
+        "select_option",
+        "dialog",
+        "reflex",
+    }
 )
 
 
