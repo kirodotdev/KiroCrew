@@ -97,7 +97,10 @@ Initial sends and zero-activity resends reuse that same segmented prompt, so
 memory and hook image paths stay text while the task's own images can attach.
 
 Continuation tools retain the original `subagent:<conversation-id>` while each
-follow-up has its own run ID. Ordinary HTTP caller recognition uses the unique
+follow-up has its own run ID. A request naming a running follow-up's ID checks
+its owner's conversation for activity and is refused as `conversation_busy`. A
+request naming a finished follow-up's ID continues under `subagent:<that-id>`.
+Ordinary HTTP caller recognition uses the unique
 active continuation for that conversation; queued or completed runs cannot supply
 a live caller. The frozen record supplies memory and app scope independently of
 that liveness check.
