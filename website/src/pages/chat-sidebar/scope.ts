@@ -70,6 +70,9 @@ export interface ChatSidebarProps {
   /** The host stretches the sidebar to its own width (the mobile drawer, the
    *  sessions embed), so its paint reserves no chat pane beside it. */
   fillsHost?: boolean
+  /** Not the dashboard's own chat page (ChatPage decides it): the list is
+   *  never placed against a fold. */
+  embedded?: boolean
   /** Optional callback fired when the user explicitly clicks a slot.
    *  When provided, this fires AFTER the switchSlot dispatch so consumers
    *  can react to user-driven selection (e.g. to navigate the URL). */

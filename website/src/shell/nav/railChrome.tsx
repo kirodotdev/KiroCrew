@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeftToLine, PanelLeft } from 'lucide-react'
+import { ArrowLeftToLine, Lock, PanelLeft } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from '../../components/BrandIcon'
 import type { getThemeBranding } from '../../themeBranding'
 import { i18nT } from '../../i18n/t'
@@ -8,6 +8,8 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuideRevealScope } from '../../guide/GuideRevealScope'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useNavTip } from './navTip'
+import { useViewportSegments } from '../../hooks/useViewportSegments'
+import { leadingEdge } from '../../lib/layoutFormTransition'
 import { PackLoaderImage } from '../../pages/chat/PackLoaderImage'
 
 /** Glyph inside the nav-rail header's expand/collapse button — the same
@@ -45,9 +47,14 @@ export function RailHeaderGlyph({ avatar, boxClass, iconSize }: { avatar: string
   )
 }
 
+/** How long a press on the locked toggle shows its reason. */
+const LOCK_NOTE_MS = 2000
+
 /** The rail header: the brand mark that is also the collapse toggle. */
-export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, branding, botName }: {
+export function RailBrandToggle({ effectiveCollapsed, locked = false, toggleNav, avatar, branding, botName }: {
   effectiveCollapsed: boolean
+  /** A reported fold holds the rail compact, so the toggle has nothing to do. */
+  locked?: boolean
   toggleNav: () => void
   avatar: string
   branding: ReturnType<typeof getThemeBranding>
@@ -58,6 +65,32 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
   // Collapsed, the logo is the only expand control and carries no text, so it
   // gets the same instant hover/focus label as the collapsed nav rows (#25743).
   const { tip, tipOn, rowRef, showTip, hideTip, dismissTip, pointerProps } = useNavTip<HTMLButtonElement>(effectiveCollapsed)
+  // A locked toggle does nothing, so its name says why instead of offering an expand.
+  const label = locked ? i18nT('app.sidebar_compact_while_folded') : effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')
+  // A tap or a key press on the locked toggle shows why, below the mark, for
+  // LOCK_NOTE_MS: on touch the hover tip never shows, so the press is the only
+  // moment to say it. Cleared on blur and when the lock lifts.
+  const [lockNote, setLockNote] = useState(0)
+  useEffect(() => {
+    if (!lockNote) return
+    const t = setTimeout(() => setLockNote(0), LOCK_NOTE_MS)
+    return () => clearTimeout(t)
+  }, [lockNote])
+  useEffect(() => { if (!locked) setLockNote(0) }, [locked])
+  // Where the press's reason sits: the row's box, read when the press lands.
+  // The note ends at the fold: its width is bounded by the leading segment's
+  // right edge (the hinge), and it wraps rather than crossing it.
+  const segments = useViewportSegments()
+  // shortcut: the bound assumes a left-to-right layout (the rail on the left,
+  // the leading segment first); upgrade with sidebarWidth's leadingSegment when
+  // a right-to-left locale ships.
+  const foldEdge = segments && leadingEdge() === 'left' ? segments[0].x + segments[0].width : null
+  const [noteAt, setNoteAt] = useState<{ top: number; left: number; width: number; height: number } | null>(null)
+  useEffect(() => {
+    if (!locked || !lockNote || !rowRef.current) { setNoteAt(null); return }
+    const r = rowRef.current.getBoundingClientRect()
+    setNoteAt({ top: r.top, left: r.left, width: r.width, height: r.height })
+  }, [locked, lockNote, rowRef])
   /*
    * mb-1.5 (6px) + the container's gap-0.5 (2px) = 8px between the
    * header and the first nav item, without widening the 2px item gaps.
@@ -94,15 +127,20 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
           brand block makes the row taller. */}
       <button
         type="button"
-        className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left"
-        onClick={() => { dismissTip(); toggleNav() }}
+        // aria-disabled, not disabled: a disabled button leaves the tab order and
+        // drops focus, so a keyboard or screen-reader user would never reach
+        // the name that says why the rail is held.
+        aria-disabled={locked || undefined}
+        className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer aria-disabled:cursor-default text-left"
+        onClick={() => { dismissTip(); if (locked) setLockNote(n => n + 1); else toggleNav() }}
         {...pointerProps}
         onMouseEnter={showTip}
         onMouseLeave={hideTip}
         onFocus={showTip}
-        onBlur={hideTip}
-        title={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
-        aria-label={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
+        onBlur={() => { hideTip(); setLockNote(0) }}
+        title={label}
+        // Spelled out (same keys and condition as `label`): the ui-index reader registers literals and catalog keys only.
+        aria-label={locked ? i18nT('app.sidebar_compact_while_folded') : effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
         aria-expanded={!effectiveCollapsed}
         {...uiLocation('shell.nav-toggle', rowRef)}
       >
@@ -133,6 +171,15 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
             )}
           </AnimatePresence>
         </span>
+        {/* Locked: a visible cue on the mark itself. On touch the tip does not
+            show on a tap (navTip ignores a touch's replayed hover and focus), so
+            without it a tap on the locked toggle reads as broken. The reason
+            stays in the name and title. */}
+        {locked && (
+          <span data-testid="rail-locked-cue" aria-hidden="true" className="absolute left-6 top-6 flex items-center justify-center w-4 h-4 rounded-full bg-bg-elevated border border-border text-muted pointer-events-none">
+            <Lock size={9} />
+          </span>
+        )}
         {/* Arrow is ABSOLUTE (out of flex flow), pinned to the right.
             If it were a flex child it would reserve ~16px on the right
             from frame 1 of expand — but the rail is still at collapsed
@@ -155,13 +202,27 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
             </motion.span>
           )}
         </AnimatePresence>
-        {effectiveCollapsed && tip && <OverlayPortal>
+        {/* One label by the mark, in the overlay root so the rail cannot clip
+            it: the hover/focus tip beside the mark, or the reason a press on
+            the locked toggle shows (lockNote) below it, positioned from the row
+            since the touch press never set `tip`. */}
+        {effectiveCollapsed && (tip || noteAt) && <OverlayPortal>
           <div
-            data-testid="rail-expand-tip"
-            className={`fixed flex items-center px-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
-            style={{ top: tip.top, left: tip.left + tip.width + 4, height: tip.height }}
+            data-testid={noteAt ? 'rail-lock-note' : 'rail-expand-tip'}
+            aria-hidden={noteAt ? 'true' : undefined}
+            className={`fixed flex items-center px-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none ${locked ? 'py-1.5 whitespace-normal' : 'whitespace-nowrap'} transition-opacity duration-150 ${tipOn || noteAt ? 'opacity-100' : 'opacity-0'}`}
+            style={(() => {
+              const at = noteAt ?? tip!
+              // Locked (a fold is reported), the label sits below the mark and
+              // ends at the fold, for the press note and the hover/focus tip
+              // alike: beside the mark it covered the sessions header's New
+              // button and crossed the hinge.
+              return locked
+                ? { top: at.top + at.height + 6, left: at.left, maxWidth: foldEdge !== null ? Math.max(0, foldEdge - at.left - 8) : undefined }
+                : { top: at.top, left: at.left + at.width + 4, height: at.height }
+            })()}
           >
-            {i18nT('app.expand_sidebar')}
+            {label}
           </div>
         </OverlayPortal>}
       </button>

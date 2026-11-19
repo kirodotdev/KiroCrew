@@ -150,7 +150,7 @@ function ChatSidebarBody({
   // only the binding is scoped, which forces every call site inside this file
   // to say which collection it means.
   slots: slotsProp, history, historyHasMore,
-  defaultAgent, installedAgents, rowAgents, rowChoices, mode, onWidthChange, onDragChange, fillsHost, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession, collapsible,
+  defaultAgent, installedAgents, rowAgents, rowChoices, mode, onWidthChange, onDragChange, fillsHost, embedded, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession, collapsible,
   onDropSessionRef, onShowSessionInPane, staticRows,
 }: ChatSidebarBodyProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -428,8 +428,8 @@ function ChatSidebarBody({
   } = useBoardColumns()
   // After the columns: only board view may widen the sidebar past SIDEBAR_MAX.
   const {
-    paintedSidebarWidth, rootStyle, sidebarMax, paintedWidthRef, sidebarResize, nudgeSidebar, widenForBoard, restorePreBoardWidth,
-  } = useSidebarResize({ onWidthChange, onDragChange, fillsHost, boardActive: orderedColumns.length > 0 })
+    paintedSidebarWidth, foldLocked, rootStyle, sidebarMax, paintedWidthRef, sidebarResize, nudgeSidebar, widenForBoard, restorePreBoardWidth,
+  } = useSidebarResize({ onWidthChange, onDragChange, fillsHost, embedded, boardActive: orderedColumns.length > 0 })
   const fullTitlesOnScroll = useFullTitlesOnScrollSetting()
   const needsMeHoverCard = useNeedsMeHoverCardSetting()
   // Which edges of the board's lane strip hide lanes. A window too narrow for
@@ -1128,6 +1128,7 @@ function ChatSidebarBody({
           rounded-xl radius so the accent bar spans exactly the straight
           segment of the border. `sidebar-resize-handle` stays as the hook the
           mobile overlay and the split-pane host use to hide it. */}
+      {!foldLocked && (
       <ResizeHandle
         handleProps={sidebarResize}
         label={i18nT('pages.chatSidebar.resize_sidebar')}
@@ -1141,6 +1142,7 @@ function ChatSidebarBody({
         // width, and at z-10 it took the inner half of the grip's 6px strip.
         className="sidebar-resize-handle absolute top-0 -right-[3px] h-full z-40"
       />
+      )}
 
       {/* Header — all elements ("Sessions" title, kebab, New button) centered
           on one line 23px from the panel top (1px card border + mt-0.5, then
