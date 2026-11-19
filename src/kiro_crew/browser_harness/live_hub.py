@@ -192,7 +192,7 @@ class LiveSession:
     #: event takes the label of the step it reported (:meth:`LiveHub.record_op`).
     step_seq: int = 0
     last_step: str = ""
-    #: The current repeat run against ``browser.run.max_repeats``. Starts again on a
+    #: The ops run and the current repeat run, against ``browser.run``. Starts again on a
     #: takeover (:meth:`LiveHub.claim`) and when the chat's session ends (:meth:`LiveHub.reset_run`).
     run: RunCount = field(default_factory=RunCount)
     #: The loop op's counters for the card's loop line (:meth:`LiveHub.loop`), or

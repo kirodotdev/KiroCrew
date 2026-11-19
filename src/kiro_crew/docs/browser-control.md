@@ -172,12 +172,15 @@ type during a takeover is kept only as a character count. Deleting a chat
 deletes its recordings. `browser.recording.enabled`, `max_session_mb` and
 `max_total_mb` turn recording off or cap its size.
 
-**Stopping a repeat.** `browser.run.max_repeats` (off by default) caps how many times
+**Stopping a task that runs on.** `browser.run.max_ops` (off by default) caps the
+browser steps one chat runs; past it the next step is not run and the agent is told to
+stop and say where it got to. `browser.run.max_repeats` (also off) caps how many times
 in a row the same step runs with the same details (the same click on the same element,
 the same scroll distance). Past it the next step is not run: the agent gets an
 `Error (run_budget)` answer and tries something else. Any different step, typing
 different text into one field, taking over the browser or starting a new chat counts
-again from zero. Set it with `kirocrew config set browser.run.max_repeats 5`.
+again from zero. A step held while you hold the browser is not counted. Set them with
+`kirocrew config set browser.run.max_ops 100` or `browser.run.max_repeats 5`.
 
 **Fast mode.** When browser help is on (the **Browser steps: pick and check** row
 on the Decisions card, under Settings → Developer → Feature Previews), the agent

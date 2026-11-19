@@ -1,8 +1,8 @@
-"""``browser.run.max_repeats``: stop one browser op repeated in a row.
+"""``browser.run.max_ops`` and ``browser.run.max_repeats``: stop a browser task that runs on.
 
 A long browser task can loop unnoticed: the agent scrolls or clicks the same control
-dozens of times and every call succeeds. With the setting above 0 the gateway asks
-:func:`check` before an op reaches the browser and answers the repeat with a report
+dozens of times and every call succeeds. With a setting above 0 the gateway asks
+:func:`check` before an op reaches the browser and answers the stop with a report
 the model reads instead of an error it might retry around.
 """
 
@@ -21,8 +21,9 @@ _WAY_ON = "a person can raise {setting}, take over the browser, or start a new c
 
 @dataclass
 class RunCount:
-    """The last op's fingerprint and how many times in a row it has run."""
+    """Ops run, the last op's fingerprint and how many times in a row it has run."""
 
+    ops: int = 0
     last: str = ""
     repeats: int = 0
 
@@ -34,18 +35,29 @@ def _fingerprint(op: str, args: dict[str, Any]) -> str:
 
 
 def check(
-    count: RunCount, op: str, args: dict[str, Any], *, max_repeats: int
+    count: RunCount, op: str, args: dict[str, Any], *, max_ops: int = 0, max_repeats: int = 0
 ) -> dict[str, Any] | None:
     """Count *op* for the chat, or return the refusal that stops it.
 
-    ``None`` means run it. A refused op is not counted, so the same op stays refused
-    until a different one goes first. A limit of 0 is off and counts nothing.
+    ``None`` means run it. A refused op is not counted, so the count says what ran and
+    a repeat stays refused until a different op goes first. The op cap is checked
+    before the repeat run. A limit of 0 is off; with both off nothing is counted.
     """
-    if max_repeats <= 0:
+    if max_ops <= 0 and max_repeats <= 0:
         return None
+    if 0 < max_ops <= count.ops:
+        return {
+            "ok": False,
+            "code": CODE,
+            "error": (
+                f"browser run budget reached: {count.ops} browser ops in this chat "
+                f"(browser.run.max_ops = {max_ops}). This `{op}` was not run. Stop browsing and "
+                f"tell the user where you got to; {_WAY_ON.format(setting='browser.run.max_ops')}."
+            ),
+        }
     current = _fingerprint(op, args)
     run = count.repeats + 1 if current == count.last else 1
-    if run > max_repeats:
+    if 0 < max_repeats < run:
         return {
             "ok": False,
             "code": CODE,
@@ -56,5 +68,6 @@ def check(
                 f"{_WAY_ON.format(setting='browser.run.max_repeats')}."
             ),
         }
+    count.ops += 1
     count.last, count.repeats = current, run
     return None
