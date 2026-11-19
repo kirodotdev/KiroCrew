@@ -154,8 +154,8 @@ BASELINE: dict[str, tuple[int, str]] = {
     "slack/interactions_settings.py": (2, "allowlist approved and denied DMs"),
     "slack/owner_claim.py": (1, "fixed welcome DM to a newly confirmed owner"),
     "slack/renderer.py": (
-        5,
-        "the channel renderer: placeholders, answer parts, fallback and notices",
+        2,
+        "the channel renderer: options fallback and notices",
     ),
     "slack/renderer_stream_debt.py": (
         1,
