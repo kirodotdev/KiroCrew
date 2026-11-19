@@ -490,6 +490,22 @@ describe('LexicalComposerInput', () => {
       await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('hi there'))
     })
 
+    // #35447: the read-only twin of the keydown above. A read-only editor is
+    // not editable, and Lexical dispatches no key command then, so neither the
+    // mention handler nor any other key edit reaches the draft.
+    it('a plain Backspace keydown inside a mention leaves it alone while read-only (#35447)', async () => {
+      const editorRef = createRef<LexicalEditor>()
+      const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+      const onMentionKey = vi.fn(mentionKeyEditForSrcMain)
+      const initial = `hi ${MENTION} there`
+      render(<ControlledHost initial={initial} editorRef={editorRef} controlRef={controlRef} onMentionKey={onMentionKey} readOnly />)
+      await waitFor(() => expect(editorRef.current?.isEditable()).toBe(false))
+      await setCaret(controlRef, 3 + MENTION.length)
+      fireEvent.keyDown(editable(), { key: 'Backspace' })
+      expect(onMentionKey).not.toHaveBeenCalled()
+      expect(screen.getByTestId('value').textContent).toBe(initial)
+    })
+
     it('a plain Delete keydown just before a mention removes it whole via DELETE_CHARACTER_COMMAND', async () => {
       const editorRef = createRef<LexicalEditor>()
       const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
