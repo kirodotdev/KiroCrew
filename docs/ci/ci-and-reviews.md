@@ -259,8 +259,9 @@ Three structural facts explain most of the rest:
   from each run that finishes, about one every 50 minutes, and the issue opens
   with the first of those that is red on a test. The
   body's `Fix in progress:` line is rewritten on every main run from the open pull
-  requests whose body closes the issue (`Fixes #<issue>`; a comment that only
-  cites the issue does not count), so a second author sees that a fix
+  requests whose body declares the issue (`Fixes #<issue>`, read with the same
+  reference grammar as the Issue Gate; a comment that only cites the issue does
+  not count), so a second author sees that a fix
   exists and can put `Fixes #<issue>` in their own. A later push run, or a
   successful re-run of the last red one, comments and closes the issue only if
   it ran the full backend suite (the `Backend Tests` shards' coverage upload ran,

@@ -336,7 +336,7 @@ PR_URL = "https://github.com/example/repo/pull/23933"
 
 def _row(**over: Any) -> dict[str, Any]:
     row = {"url": PR_URL, "state": "open", "author": "buluoray", "created": "2026-10-26T07:00:32Z"}
-    return {"closes": [77], **row, **over}
+    return {"body": "Fixes #77", **row, **over}
 
 
 def test_with_no_fix_pr_the_line_invites_one_and_names_the_issue() -> None:
@@ -359,10 +359,15 @@ def test_an_open_pr_whose_body_closes_the_issue_becomes_the_line() -> None:
         _row(url="https://github.com/example/repo/pull/5x"),
         _row(author="bad name; rm -rf"),
         _row(author=""),
-        _row(closes=[]),
-        _row(closes=[78, 770]),
-        _row(closes=None),
-        {k: v for k, v in _row().items() if k != "closes"},
+        _row(body="Red on main, see #77."),
+        _row(body="Fixes #78\n\nFixes #770"),
+        _row(body="This also fixed #77 along the way."),
+        _row(body="```\nFixes #77\n```"),
+        _row(body="<!-- Fixes #77 -->"),
+        _row(body="Fixes other/repo#77"),
+        _row(body=None),
+        _row(body=["Fixes #77"]),
+        {k: v for k, v in _row().items() if k != "body"},
     ],
     ids=[
         "closed",
@@ -370,10 +375,15 @@ def test_an_open_pr_whose_body_closes_the_issue_becomes_the_line() -> None:
         "not-a-number",
         "odd-login",
         "no-login",
-        "cited-in-a-comment-only",
-        "closes-another-issue",
-        "null-closes",
-        "no-closes",
+        "cites-without-declaring",
+        "declares-another-issue",
+        "mid-sentence",
+        "in-a-code-block",
+        "in-an-html-comment",
+        "another-repo",
+        "null-body",
+        "body-not-text",
+        "no-body",
     ],
 )
 def test_a_row_that_is_not_an_open_pr_of_this_repo_is_ignored(row: dict) -> None:
@@ -381,7 +391,53 @@ def test_a_row_that_is_not_an_open_pr_of_this_repo_is_ignored(row: dict) -> None
 
 
 def test_before_the_issue_has_a_number_no_pr_is_a_fix() -> None:
-    assert mod.fix_prs([_row(), _row(closes=[])], "example/repo", None) == []
+    assert mod.fix_prs([_row(), _row(body="")], "example/repo", None) == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "fixes #77",
+        "Summary.\r\n\r\nCloses: #77\r\n",
+        "RESOLVES #77",
+        "- Fixes #77",
+        "Fixes https://github.com/example/repo/issues/77",
+        "Fixes example/repo#77",
+    ],
+)
+def test_a_body_that_declares_the_issue_in_any_form_of_the_grammar_is_a_fix(body: str) -> None:
+    assert [pr["number"] for pr in mod.fix_prs([_row(body=body)], "example/repo", 77)] == ["23933"]
+
+
+def test_what_declares_an_issue_is_the_issue_gates_answer_not_a_second_grammar() -> None:
+    """Every body gets the answer `issue_gate_refs.declared_numbers` gives, and no other."""
+    gate = load_skill_script("issue_gate_refs_under_test", SCRIPT.with_name("issue_gate_refs.py"))
+    grammar = gate.load_grammar()
+    bodies = [
+        "Fixes #77",
+        "Refs #77",
+        "Part of #77",
+        "see #77",
+        "It fixes #77.",
+        "> Fixes #77",
+        "`Fixes #77`",
+        "Fixes #077",
+        "Fixes #7777",
+    ]
+    for body in bodies:
+        declared = "77" in gate.declared_numbers(body, "example/repo", grammar)[0]
+        assert bool(mod.fix_prs([_row(body=body)], "example/repo", 77)) is declared, body
+    sources = [SCRIPT, SCRIPT.with_name("main_red_fix_line.py")] + list(
+        (ROOT / ".github" / "workflows").glob("main-red-*.yml")
+    )
+    for source in sources:
+        assert "close[sd]" not in source.read_text(encoding="utf-8"), source.name
+
+
+def test_an_unknown_fix_line_says_so_and_invites_no_second_fix() -> None:
+    assert mod.fix_line(None, 77) == "Fix in progress: unknown."
+    body = mod.render_body(_state(failures={"test/a.py::t": ""}), None, 77)
+    assert "Fix in progress: unknown." in body and "none yet" not in body
 
 
 def test_a_bot_author_is_named_without_a_mention_and_the_list_is_capped_oldest_first() -> None:
@@ -486,7 +542,10 @@ def test_actions_are_pinned_to_a_commit_and_the_checkout_keeps_no_credentials() 
     for step in uses:
         assert step["uses"].split("@")[1].isalnum() and len(step["uses"].split("@")[1]) == 40
         assert step["with"]["persist-credentials"] is False
-        assert step["with"]["sparse-checkout"] == ".github/scripts"
+        assert step["with"]["sparse-checkout"].split() == [
+            ".github/scripts",
+            "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts",
+        ]
 
 
 def test_nothing_from_the_event_is_interpolated_into_the_script() -> None:
@@ -1003,6 +1062,7 @@ def test_a_pr_that_only_cites_the_issue_is_not_a_fix_in_progress(tmp_path: Path)
         _pr(4, "Fixes #55"),
         _pr(5, "Prefixes #5"),
         _pr(6, "Fixes #6\n\nAlso relates to #5."),
+        _pr(7, "This RESOLVED #5 in passing."),
     ]
     out, stub = _run_step(tmp_path, issues=[_open_issue()], timeline=timeline)
     assert out.returncode == 0, out.stderr
@@ -1016,7 +1076,7 @@ def test_each_closing_keyword_in_a_pr_body_makes_it_a_fix_in_progress(tmp_path: 
         _pr(1, "Mentioned in passing: #5."),
         _pr(11, "fixes #5"),
         _pr(12, "Summary.\r\n\r\nCloses: #5\r\n"),
-        _pr(13, "This RESOLVED #5, and fixed #77."),
+        _pr(13, "RESOLVES #5\n\nAlso fixed #77 on the way."),
     ]
     out, stub = _run_step(tmp_path, issues=[_open_issue()], timeline=timeline)
     assert out.returncode == 0, out.stderr
@@ -1199,3 +1259,24 @@ def test_shell_text_in_a_failure_message_is_never_executed(tmp_path: Path) -> No
     body = (stub / "created-body.md").read_text(encoding="utf-8")
     (line,) = [ln for ln in body.splitlines() if ln.startswith("- `test/test_x.py::test_a`")]
     assert re.fullmatch(r"- `[^`]+`: `[^`]*`", line), line
+
+
+def test_a_fix_line_that_cannot_be_built_still_writes_the_issue_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def unavailable(*_args: Any) -> list[dict[str, str]]:
+        raise ImportError("cannot load the reference grammar")
+
+    monkeypatch.setattr(mod, "fix_prs", unavailable)
+    failures = tmp_path / "f.json"
+    failures.write_text(json.dumps({"test/a.py::t": "boom"}), encoding="utf-8")
+    timeline = tmp_path / "timeline.ndjson"
+    timeline.write_text(json.dumps(_row()), encoding="utf-8")
+    argv = ["render", "--failures", str(failures), "--repo", "example/repo", "--sha", SHA]
+    argv += ["--run-id", "1000", "--run-url", RUN_URL, "--timeline", str(timeline)]
+    argv += ["--issue-number", "77", "--out-title", str(tmp_path / "t.txt")]
+    argv += ["--out-body", str(tmp_path / "b.md")]
+    assert mod.main(argv) == 0
+    body = (tmp_path / "b.md").read_text(encoding="utf-8")
+    assert "Fix in progress: unknown." in body and mod.parse_state(body) is not None
+    assert "::warning::The fix line could not be built" in capsys.readouterr().out

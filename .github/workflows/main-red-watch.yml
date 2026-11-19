@@ -18,12 +18,12 @@ name: Main Red Watch
 # `_No response_` where it knows nothing. The body holds the
 # set {node id: first 80 characters of the message}, the first-red SHA and the
 # streak, and one line, `Fix in progress: ...`, that it rewrites on every main run
-# from the open pull requests whose body closes the issue (`Fixes #N`). When a later push
+# from the open pull requests whose body declares the issue (`Fixes #N`). When a later push
 # run of `CI` ends green, it comments on the issue and closes it.
 #
 # WARN ONLY: it writes an issue and nothing else. It comments on no pull request,
 # assigns nobody and mentions nobody but the author of a pull request whose
-# body closes the issue (the line names who is fixing it). No check of any
+# body declares the issue (the line names who is fixing it). No check of any
 # pull request changes. Reverting this one file set removes it.
 #
 # WHY ANNOTATIONS AND NOT THE LOG: the Actions token's read of a job log
@@ -152,7 +152,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts
 
       - name: Open, update or close the main-red issue
         env:
@@ -337,10 +339,11 @@ jobs:
           }
 
           if [ -n "$existing" ]; then
-            # Open pull requests whose body closes the issue. A comment that only
-            # cites the issue cross-references it too and is not a fix.
+            # Pull requests that cross-reference the issue, with their bodies. The
+            # script keeps those whose body declares the issue: a comment that only
+            # cites it cross-references it too and is not a fix.
             if gh api "repos/$REPO/issues/$existing/timeline?per_page=100" --paginate \
-              --jq '.[] | select(.event == "cross-referenced" and .source.issue.pull_request != null) | {url: .source.issue.html_url, state: .source.issue.state, author: .source.issue.user.login, created: .source.issue.created_at, closes: [(.source.issue.body // "") | scan("(?i)\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\\s+#([0-9]{1,9})\\b") | .[0] | tonumber]}' \
+              --jq '.[] | select(.event == "cross-referenced" and .source.issue.pull_request != null) | {url: .source.issue.html_url, state: .source.issue.state, author: .source.issue.user.login, created: .source.issue.created_at, body: .source.issue.body}' \
               > "$work/timeline.ndjson"; then
               render "$existing" "$work/timeline.ndjson"
             else

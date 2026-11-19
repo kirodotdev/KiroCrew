@@ -108,13 +108,13 @@ PR_URL = "https://github.com/example/repo/pull/23933"
 
 def _row(**over: Any) -> dict[str, Any]:
     row = {"url": PR_URL, "state": "open", "author": "buluoray", "created": "2026-10-26T07:00:32Z"}
-    return {"closes": [5], **row, **over}
+    return {"body": "Fixes #5", **row, **over}
 
 
 def test_the_fix_line_is_rebuilt_from_the_timeline_without_a_mention() -> None:
     line = mod.fix_line([_row()], "example/repo", 5)
     assert line == "Fix in progress: #23933 (buluoray, opened 2026-10-26 07:00Z)"
-    assert mod.fix_line([_row(closes=[])], "example/repo", 5).startswith(
+    assert mod.fix_line([_row(body="Red on main, see #5.")], "example/repo", 5).startswith(
         "Fix in progress: none yet"
     )
     assert mod.fix_line([_row(state="closed")], "example/repo", 5).startswith(
@@ -239,7 +239,10 @@ def test_actions_are_pinned_to_a_commit_and_the_checkout_keeps_no_credentials() 
     for step in uses:
         assert len(step["uses"].split("@")[1]) == 40
         assert step["with"]["persist-credentials"] is False
-        assert step["with"]["sparse-checkout"] == ".github/scripts"
+        assert step["with"]["sparse-checkout"].split() == [
+            ".github/scripts",
+            "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts",
+        ]
 
 
 def test_nothing_from_the_event_is_interpolated_into_the_script() -> None:
