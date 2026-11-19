@@ -48,12 +48,14 @@ async def update(
     *,
     expected_revision: int,
     expected_source_sha256: str,
+    expected_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Append the run's source as the saved workflow's next revision, or refuse.
 
     ``not_found`` names the run and ``definition_not_found`` the saved workflow.
     The source is read once, before any await, so the bytes written are the bytes
-    whose digest was checked.
+    whose digest was checked. With ``expected_id`` (the workflow the caller
+    previewed), a ref that now reaches another workflow is a ``conflict``.
     """
     handle = await service._reusable_run(run_id)
     if isinstance(handle, dict):
@@ -87,7 +89,7 @@ async def update(
         workflow_ref,
         source=source,
         expected_revision=expected_revision,
-        expected_id=str(current["id"]),
+        expected_id=expected_id or str(current["id"]),
     )
     # Deleted between the read above and the write: the run itself still exists.
     return _definition_not_found() if out.get("not_found") else out

@@ -14105,7 +14105,18 @@
         "save_title": "Guardar este flujo de trabajo",
         "save_workflow": "Guardar flujo de trabajo",
         "saved_as": "Guardado como {{command}}",
-        "source_unavailable": "No se pudo cargar el código del flujo de trabajo completado."
+        "source_unavailable": "No se pudo cargar el código del flujo de trabajo completado.",
+        "update_apply": "Aplicar",
+        "update_done": "{{command}} actualizado a la revisión {{revision}}",
+        "update_existing": "Actualizar existente…",
+        "update_format_mismatch": "Esta ejecución y el flujo de trabajo guardado usan formatos distintos, así que no puede ser una revisión suya.",
+        "update_help": "Añade el flujo de trabajo exacto de esta ejecución completada como la siguiente revisión de un flujo de trabajo guardado. Las revisiones anteriores se conservan.",
+        "update_pick": "Elige un flujo de trabajo guardado",
+        "update_revision": "Revisión {{from}} → {{to}}",
+        "update_stale": "El flujo de trabajo guardado o esta ejecución cambió mientras el diálogo estaba abierto. Revisa el nuevo diff y vuelve a aplicar.",
+        "update_target": "Flujo de trabajo guardado",
+        "update_title": "Actualizar un flujo de trabajo guardado",
+        "update_unchanged": "El flujo de trabajo de esta ejecución ya es la revisión actual del flujo de trabajo guardado."
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "No se pudo cargar la instantánea:",
