@@ -511,6 +511,8 @@ def _run_session_fork(args: dict[str, Any], ctx: ToolContext) -> str:
     payload = {"source": args.get("source", ""), "title": args.get("title", "")}
     if args.get("at_message_index") is not None:
         payload["at_message_index"] = args["at_message_index"]
+    if args.get("memory_mode"):
+        payload["memory_mode"] = args["memory_mode"]
     fld_id, folder_label, made_note, fld_err = _resolve_folder_for_new_session(
         ctx, str(args.get("folder") or ""), "filing a forked session at creation"
     )
@@ -527,9 +529,13 @@ def _run_session_fork(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         return redact(f"Error: could not fork the session: {refused.error}{made_note}")
     filed = f" filed in `{folder_label}`" if folder_label else ""
+    # "as an incognito session", "as a temporary session".
+    mode = str(resp.get("memory_mode") or "")
+    article = "an" if mode[:1] in ("a", "e", "i", "o", "u") else "a"
+    as_mode = f" as {article} {mode} session" if args.get("memory_mode") and mode else ""
     return redact(
         f"\U0001f500 Forked `{resp.get('source')}` into `{resp.get('target')}` "
-        f"({resp.get('title')}) carrying {resp.get('messages')} message(s){filed}."
+        f"({resp.get('title')}){as_mode} carrying {resp.get('messages')} message(s){filed}."
         f"{made_note} It is idle and waiting in the user's sidebar; seed it with "
         "session_send and watch it with session_read_message."
     )

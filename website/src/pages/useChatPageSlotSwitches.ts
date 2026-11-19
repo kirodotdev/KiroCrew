@@ -12,6 +12,7 @@ import { markChallengeAutoSend } from '../utils/channelChallengeSend'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import { errMessage } from '../utils/thunkError'
 import { showTranscriptForkFailure } from '../utils/forkFailure'
+import type { PrivateForkMemoryMode } from '../utils/forkMemoryModes'
 import { withReason } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import type { FollowupStartMode } from '../components/FollowUpCard'
@@ -38,7 +39,7 @@ export function useForkSession({
   // history; with it off the plain entry already forks with history. A primitive, so it can sit in
   // the transcript renderer's dependency list.
   const forkDirectionChoice = forkCfg?.tail_fork_enabled === true
-  const handleFork = useCallback(async (visibleIndex: number, messageId?: string, explicitDirection?: 'head'): Promise<boolean> => {
+  const handleFork = useCallback(async (visibleIndex: number, messageId?: string, explicitDirection?: 'head', memoryMode?: PrivateForkMemoryMode): Promise<boolean> => {
     if (!activeSlot) return false
     let direction: 'head' | 'tail' = 'head' // hoisted so the catch advises the same way
     let control: string | undefined
@@ -71,7 +72,7 @@ export function useForkSession({
       if (resolvedCfg?.tail_fork_enabled === true) {
         control = i18nT(direction === 'head' ? 'pages.chat.assistantMessage.fork_earlier_messages' : 'pages.chat.assistantMessage.fork_later_messages_only')
       }
-      const result = await dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, messageId, direction })).unwrap()
+      const result = await dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, messageId, direction, ...(memoryMode ? { memoryMode } : {}) })).unwrap()
       if (result.ok) {
         if (forkMayOpen(store.getState(), origin)) {
           const switching = dispatch(switchSlot({ key: result.key, requestSeq: origin.seq }))

@@ -98,6 +98,7 @@ async def fork_session(
     folder_id: str = "",
     at_message_index: int | None = None,
     caller_fenced: bool | None = None,
+    memory_mode: object = None,
 ) -> dict[str, Any]:
     """Open a new session that CARRIES a transcript: the dashboard's Fork, for an agent.
 
@@ -108,7 +109,9 @@ async def fork_session(
     (``chat_fork.fork_slot``), so what the child inherits -- agent, model,
     memory store and mode, project, folder, tags, the ``forked_from`` link --
     is exactly what a person's fork inherits, and for the same memory-boundary
-    reasons no override of agent, model or mode is taken here. The exceptions
+    reasons no override of agent or model is taken here. ``memory_mode`` may only
+    tighten the inherited mode, under the same rule the human route applies
+    (``chat_fork_memory_mode``). The exceptions
     are the folder (a Crew Mode caller's child is unfiled, and so is a child
     whose parent sits in a mate's home the caller does not own) and the sidebar pin:
     a person's fork of a pinned session is pinned, this child never is,
@@ -425,6 +428,7 @@ async def fork_session(
         direction=_FORK_DIRECTION_HEAD,
         prompt="",
         mode_override=None,
+        memory_mode=memory_mode,
         # An agent-made child: not app-scoped, not a human request-layer session
         # for the session-count survey, and never Jev-routed -- arming a second
         # routed session is the owner's own click, which no caller here made.
@@ -459,6 +463,7 @@ async def fork_session(
             "source": source_slot.key,
             "messages": str(result.messages),
             "folder_id": child.folder_id or "",
+            "memory_mode": child.memory_mode,
             "inherited_trust": "true" if posture.get("trust") else "false",
             "inherited_trust_reads": "true" if posture.get("trust_reads") else "false",
             # See create_session: whether the creating edge landed is kept in the audit
@@ -473,6 +478,7 @@ async def fork_session(
         "source": source_slot.key,
         "messages": result.messages,
         "folder_id": child.folder_id or None,
+        "memory_mode": child.memory_mode,
         **_crew_filing_answer(folder_named=bool(folder_id), in_crew_tree=in_crew_tree),
     }
 

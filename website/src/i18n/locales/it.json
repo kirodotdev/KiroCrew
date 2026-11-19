@@ -13419,6 +13419,8 @@
         "fork_in_progress": "Diramazione in corso…",
         "fork_other_in_progress": "È in corso un'altra diramazione.",
         "fork_with_another_model": "Dirama con un altro modello",
+        "fork_as_incognito": "Dirama come chat in incognito",
+        "fork_as_temporary": "Dirama come chat temporanea",
         "copy_failed": "Copia non riuscita",
         "quote_message": "Cita messaggio",
         "turn_credits": "{{credits}} crediti",

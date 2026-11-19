@@ -13129,6 +13129,8 @@
         "fork_in_progress": "Fork wird erstellt…",
         "fork_other_in_progress": "Eine andere Verzweigung wird gerade erstellt.",
         "fork_with_another_model": "Mit einem anderen Modell verzweigen",
+        "fork_as_incognito": "Als Inkognito-Chat verzweigen",
+        "fork_as_temporary": "Als temporären Chat verzweigen",
         "copy_failed": "Kopieren fehlgeschlagen",
         "quote_message": "Nachricht zitieren",
         "turn_credits": "{{credits}} Credits",

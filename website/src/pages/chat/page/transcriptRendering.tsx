@@ -40,6 +40,7 @@ import { parseOptions } from '../../../app-sdk/protocol'
 import { isNoteRow } from '../../../lib/noteContract'
 import type { ChatConfig } from '../ChatSettings'
 import type { ParsedSubagentCompletion } from '../subagentCompletion'
+import type { PrivateForkMemoryMode } from '../../../utils/forkMemoryModes'
 import TurnBlock from '../TurnBlock'
 import { i18nT } from '../../../i18n/t'
 import { fmtMessageTime, fmtMessageTimeFull } from '../messageTime'
@@ -111,7 +112,7 @@ interface TranscriptRenderingOptions {
   handleOpenDiff: (filePath: string, modified: string, original: string) => void
   handleSubagentPanelOpen: (parsed: ParsedSubagentCompletion) => void
   sessionTitles: Map<string, string>
-  handleFork: (visibleIndex: number, messageId?: string, explicitDirection?: 'head') => Promise<boolean>
+  handleFork: (visibleIndex: number, messageId?: string, explicitDirection?: 'head', memoryMode?: PrivateForkMemoryMode) => Promise<boolean>
   forkDirectionChoice?: boolean
   highlightTs: string | null
   /** The row a `link` jump landed on; it wears the landing highlight. */
@@ -214,6 +215,8 @@ export function useTranscriptRendering({
   }, [messages])
 
   const activeSlotTitle = filteredSlots.find(s => s.key === activeSlot)?.title
+  // Decides which more private forks the message menu offers (only stricter modes).
+  const activeSlotMemoryMode = filteredSlots.find(s => s.key === activeSlot)?.memory_mode
 
   // Session documents (in-session artifacts) for the active slot. Used only to
   // badge file-change rows that are tracked docs/artifacts (e.g. a generated
@@ -273,6 +276,11 @@ export function useTranscriptRendering({
   const handleForkWithModel = useCallback(async (visibleIndex: number, messageId?: string) => {
     if (await handleFork(visibleIndex, messageId, 'head')) openModelPickerFromError()
   }, [handleFork, openModelPickerFromError])
+  // "Fork as incognito" / "Fork as temporary": a fork with the earlier messages whose new chat
+  // is more private than this one, so a side thread's work never reaches memory or lessons.
+  const handleForkWithMemoryMode = useCallback((visibleIndex: number, messageId: string | undefined, memoryMode: PrivateForkMemoryMode) => (
+    handleFork(visibleIndex, messageId, 'head', memoryMode)
+  ), [handleFork])
   const lastTextIdxRef = useRef(lastTextIdx); lastTextIdxRef.current = lastTextIdx
   // The first reply in this session with a removed credential: the one-time
   // redaction coach renders after it and nowhere else.
@@ -458,7 +466,7 @@ export function useTranscriptRendering({
               {startsNewReply && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1 border-t border-border pt-2" data-testid="regenerate-new-reply">{i18nT('pages.chatPage.regenerate_new_reply')}</span>}
               <AssistantMessage body={warmBriefBodyOf(m, activeSlot || undefined)} grillRowId={grillRowId(m)} grillMid={threadMidOf(m)} grillSent={grillKeysSentAfter(messagesRef.current, i)} revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} copyOnSelect={copyOnSelect} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files} blockedLinks={(m.meta as Record<string, unknown> | undefined)?.link_blocks} redactions={(m.meta as Record<string, unknown> | undefined)?.redactions} showRedactionCoach={!!m.ts && m.ts === redactionCoachTs} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} decisionsStrip={decisionStripFieldOf(m)} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? rowHandlersFor(m, 'assistant').togglePin : undefined} onQuoteMessage={activeSlot && !activeSlotRemoteBound && !isStreaming ? rowHandlersFor(m, 'assistant').quote : undefined} showFooter={replyShowsFooter(m, messagesRef.current, i, slotRunning)} onSpeak={handleSpeak} onRegenerate={i === lastTextIdxRef.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound ? stableRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
                 showRefusedPress('switch_variant', e)
-              }) } : undefined} onFork={embedded && !popout ? undefined : handleFork} onForkWithModel={embedded && !popout ? undefined : handleForkWithModel} forkDirectionChoice={forkDirectionChoice} forkHasLaterMessages={forkHasLaterMessages} forkIndex={forkIndex} forkMessageId={canResolveOnServer ? messageId : undefined} onLoadEarlier={cursorIsForActiveSlot ? handleLoadEarlier : undefined} loadingOlder={loadingOlder} earlierRemaining={slotOldestIndex} onApplyPlan={handleApplyPlan} />
+              }) } : undefined} onFork={embedded && !popout ? undefined : handleFork} onForkWithModel={embedded && !popout ? undefined : handleForkWithModel} onForkWithMemoryMode={embedded && !popout ? undefined : handleForkWithMemoryMode} forkSourceMemoryMode={activeSlotMemoryMode} forkDirectionChoice={forkDirectionChoice} forkHasLaterMessages={forkHasLaterMessages} forkIndex={forkIndex} forkMessageId={canResolveOnServer ? messageId : undefined} onLoadEarlier={cursorIsForActiveSlot ? handleLoadEarlier : undefined} loadingOlder={loadingOlder} earlierRemaining={slotOldestIndex} onApplyPlan={handleApplyPlan} />
             </div>
           )}
         </div>
@@ -553,7 +561,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, landedTs, jumpMid, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, kiroSignedIn, kasStatusError, kasStatusOutage, framed, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, handleForkWithMemoryMode, activeSlotMemoryMode, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, landedTs, jumpMid, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, kiroSignedIn, kasStatusError, kasStatusOutage, framed, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

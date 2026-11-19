@@ -13129,6 +13129,8 @@
         "fork_in_progress": "ফর্ক করা হচ্ছে…",
         "fork_other_in_progress": "আরেকটি ফর্ক শুরু হচ্ছে।",
         "fork_with_another_model": "অন্য মডেল দিয়ে ফর্ক করো",
+        "fork_as_incognito": "ছদ্মবেশী চ্যাট হিসেবে ফর্ক করো",
+        "fork_as_temporary": "অস্থায়ী চ্যাট হিসেবে ফর্ক করো",
         "copy_failed": "কপি ব্যর্থ হয়েছে",
         "quote_message": "বার্তা উদ্ধৃত করো",
         "turn_credits": "{{credits}} ক্রেডিট",

@@ -13709,6 +13709,8 @@
         "fork_in_progress": "Ответвление…",
         "fork_other_in_progress": "Запускается другое ответвление.",
         "fork_with_another_model": "Создать ответвление с другой моделью",
+        "fork_as_incognito": "Создать ответвление в режиме инкогнито",
+        "fork_as_temporary": "Создать ответвление как временный чат",
         "copy_failed": "Не удалось скопировать",
         "quote_message": "Цитировать сообщение",
         "turn_credits": "{{credits}} кредита",
