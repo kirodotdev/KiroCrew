@@ -3,10 +3,10 @@ title: Session-keyed scratch, a $KIROCREW_SCRATCH that lasts as long as the chat
 status: draft
 author: Pearcekieser
 created: 2026-10-28
-last-audited: 2026-11-02
-audited-at: 62c27336b1
+last-audited: 2026-11-19
+audited-at: e80241791b
 doc-pr: null
-implementation-prs: []
+implementation-prs: [30062]
 tracking-issues: [15979]
 supersedes: []
 superseded-by: []
@@ -30,18 +30,29 @@ per-session directory agents have been missing.
 
 [#15979](https://github.com/kirodotdev/KiroCrew/issues/15979) reports the
 resume case and [#15980](https://github.com/kirodotdev/KiroCrew/pull/15980)
-builds a rejoin for it. Triage parked both because the change alters the
+built a rejoin for it. Triage parked both because the change alters the
 documented scratch lifecycle and asked for a one-pager first. This is that
-document. Measured against main at `c6789799df`. Nothing here is built. The
-Phase 0 probe ran on 2026-11-02 at `62c27336b1`; its verdicts are under
-"Phase 0 verdicts" in the migration plan.
+document. First measured against main at `c6789799df`, re-audited at
+`e80241791b`. The Phase 0 probe ran on 2026-11-02 at `62c27336b1`; its
+verdicts are under "Phase 0 verdicts" in the migration plan.
+
+Phase 1, the rejoin, is on main. On 2026-11-05 a maintainer decided to build
+it before this document leaves `draft`
+([#15979](https://github.com/kirodotdev/KiroCrew/issues/15979#issuecomment-6647199622),
+[#30062](https://github.com/kirodotdev/KiroCrew/pull/30062#issuecomment-6650226059)),
+and [#30062](https://github.com/kirodotdev/KiroCrew/pull/30062), which
+continues #15980, merged it on 2026-11-14 as `684bc6215f`. The same decision
+answered open question 3: a reset starts a new tree. The status stays
+`draft`, which is a maintainer decision. Phases 2 and 3 are not built, and
+Phase 2 waits on open questions 1 and 2.
 
 ## Summary
 
 | | Today | Proposed |
 |---|---|---|
-| What a tree belongs to | the processes that mount it (`.owner` pids) | a session key, recorded host-side |
-| New process for the same chat after a gateway restart or resume | new empty tree | the chat's existing tree, same path |
+| What a tree belongs to | the processes that mount it (`.owner` pids); since Phase 1 a key also records the tree it last used, for rejoin only | a session key, recorded host-side |
+| New process that resumes the same conversation (gateway restart, backend exit, idle reap) | the chat's existing tree, same path, if the sweep has not reclaimed it yet (Phase 1) | the chat's existing tree, same path |
+| Reset that starts a fresh conversation on the same tab | new empty tree | new empty tree, unchanged |
 | Reclaim starts | 1 h after every owner process group is dead and the tree is idle | when the session is closed, plus a retention window |
 | Detached (`setsid`) job writing into scratch | holds the tree only while it keeps writing; an hour after its last write the tree goes | held while the session is open |
 | Sessions with no close event (crons, incognito, `_bg`, warm spares, channel threads with no dashboard slot) | process rule | process rule, unchanged |
@@ -61,11 +72,17 @@ Phase 0 probe ran on 2026-11-02 at `62c27336b1`; its verdicts are under
   successor and a respawn on the same provider object
   (`_start_kiro_runtime_impl` in `providers/acp_runtime_start.py` reads
   `work_scratch_dir` off the previous client and later off the live runtime).
-- The tree is NOT carried when a new provider is built for the same session
-  key. A resume (`resume_sid` read from `_session_map` in `_get_or_create_impl`,
-  `session_allocation_parts/get_or_create.py`) builds a new provider, and
-  nothing tells it which tree the key had. The record that would say so does
-  not exist on main: no index from session key to tree is persisted anywhere.
+- Before Phase 1 the tree was NOT carried when a new provider was built for
+  the same session key. A resume (`resume_sid` read from `_session_map` in
+  `_get_or_create_impl`, `session_allocation_parts/get_or_create.py`) builds a
+  new provider, and nothing told it which tree the key had. Since #30062,
+  `get_or_create` records every non-stateless session's tree with
+  `agent_scratch_trees.record_tree` in `<scratch root>/.trees.json` before it
+  publishes the SID. A persistent-memory resume reads it back with
+  `recorded_tree` and passes it as `shared_scratch`. A fresh conversation on
+  the key, a reset included, starts its own tree, the row then names the new
+  tree, and the old one is left to the sweep. Rows record a tree only. They
+  carry no session state, and the sweep does not read them.
 - The only reclaimer is the gateway's hourly maintenance loop
   (`_run_agent_scratch_sweep` in `slack/gateway_runtime/process_entry.py`,
   which calls `sweep_dead_scratch`). It deletes a tree when every pid in
@@ -150,7 +167,13 @@ today's process rule. Everything downstream of "this tree may be reclaimed"
 
 ### The session index
 
-The gateway keeps one host-side file, `<scratch root>/.sessions.json`, that
+Phase 1 shipped this index as `<scratch root>/.trees.json`
+(`src/kiro_crew/agent_scratch_trees.py`), with one tree basename per session
+key and no state. Phase 2 adds the `state` and `closed_at` fields below to
+the same file rather than adding a second one. The rest of this section is
+the Phase 2 target.
+
+The gateway keeps one host-side file, `<scratch root>/.trees.json`, that
 maps a session key to a tree basename plus a state:
 
 ```json
@@ -175,7 +198,9 @@ maps a session key to a tree basename plus a state:
   spawned process can reach it. It is also added to the crew-home sensitive
   leaves in `security/paths_lists.py`, because the `scratch` leaf is
   deliberately reachable by the agent's file tools and the index must not be.
-  #15980 makes the same two choices for its `.trees.json`.
+  #15980 made the same two choices for its `.trees.json`, and #30062 shipped
+  them (`security/paths_lists.py` and `sandbox_leaves.py` both list
+  `scratch/.trees.json`).
 - It is not kept in `session_map.json`. `security.md` documents that file as
   agent-writable, so a row there could be repointed at another session's tree.
 - A row names a basename only, validated on every read as a plain directory
@@ -201,15 +226,22 @@ runtime already joins its parent's tree through the existing window and adds
 its pid to `.owner`; it gets no row of its own, because its tree is the
 parent's.
 
+Phase 1 already writes a row, for rejoin only, for every key `get_or_create`
+does not classify as stateless. Under Phase 2 a row changes the sweep rule
+only once it carries a state, which only a key with a close event gets; every
+other row keeps the process rule.
+
 ### Rejoin
 
 Wherever a provider is built for a key that has an `open` row, the gateway
 passes the row's tree as `shared_scratch`. The existing window logic validates
 it, refreshes its mtime and falls back to the process's own directory if the
 tree is gone. That is one call site in `get_or_create` for the resume and
-revive paths, which #15980 adds, plus the restart path on the provider
-object, which already exists. A rejoin that falls back writes the new tree
+revive paths, which #30062 added, plus the restart path on the provider
+object, which already existed. A rejoin that falls back writes the new tree
 into the row, so the next process joins the directory this one actually has.
+Phase 1 rejoins on a persistent-memory resume (`resume_sid` set) and reads
+any row the key has, since rows carry no state until Phase 2.
 
 A resume already skips the warm pool (`pool_decision = "bypass_resume"` in
 `_get_or_create_impl`) and every root provider builds its own `AcpRuntime` in
@@ -265,11 +297,18 @@ The row's state changes at three existing points:
 - History deletion (`dashboard/handlers/sessions_parts/delete_claim.py`) sets
   `deleted`.
 
-`reset_conversation` and `/clear` keep the row. The tab and the session key
-are the same, and the reset tool's own description tells the agent to write
-anything it still needs to a file before the reset. Deleting that file at the
-reset would contradict it. #15980 starts a fresh tree on a reset; this is the
-one point where this design differs from it.
+A reset that starts a fresh conversation on the same tab (`reset_conversation`
+or `/clear`) starts a new tree, and the key's row then names the new tree. A
+maintainer ruled this on 2026-11-05, keeping #15980's choice over this
+document's earlier proposal that a reset keep its tree, and Phase 1 ships it:
+a fresh conversation on a reused key, a provider switch included, starts its
+own tree (`docs/system-specs/modules/subagent.md`, "A resumed conversation
+rejoins its tree"). The tree the reset leaves has no row, so the process rule
+reclaims it an hour after its last process ends and its last write. A file
+in `$KIROCREW_SCRATCH` therefore does not carry across a reset. The reset
+tool's description asks the agent to write down what carries forward first,
+in "a file, a ticket, a memory". Phase 3's guidance says that a scratch file
+is not such a place.
 
 A forked session (`session_fork`) gets its own tree. Copying a tree is out of
 scope, and sharing one would let two open sessions write the same files.
@@ -295,7 +334,9 @@ When the design ships, the `$KIROCREW_SCRATCH` rule in `config/prompt.md` change
 "reclaimed automatically once the session's processes are gone" to say that
 `$KIROCREW_SCRATCH` lasts as long as this chat and is reclaimed
 `SESSION_RETENTION_SECONDS` after the chat closes. The subagent spec sentence
-"a gateway restart starts a fresh one" changes in the same PR.
+"a gateway restart starts a fresh one" changes in the same PR. Phase 1 changed
+neither text. That spec sentence no longer holds for a resumed conversation,
+which rejoins its tree after a restart if the sweep has not reclaimed it.
 
 ## Acceptance cases
 
@@ -364,9 +405,11 @@ same path and the file is there.
   holds the sweep between the two steps to force that order.
 - A9 History deletion. Delete the closed session from History; the next sweep
   hands the tree to the reclaim path regardless of the window.
-- A10 Reset. `reset_conversation` on the slot keeps the path and the file.
+- A10 Reset. `reset_conversation` on the slot starts a new tree, the key's
+  row names the new tree, and a later resume does not rejoin the old one. The
+  old tree is reclaimed by the process rule. This is Phase 1 behaviour.
 - A11 Isolation. From inside a sandboxed session, the file tools and the shell
-  cannot read or write `.sessions.json`. A row hand-written to name another
+  cannot read or write `.trees.json`. A row hand-written to name another
   tree, or a link, or a path outside the root, is refused and the session
   starts on its own tree.
 - A12 Unkeyed sessions. A script cron, an incognito chat, the `_bg` session
@@ -429,20 +472,27 @@ own tree, so an agent cannot count it. The operator can, from a terminal:
 `du -sh ~/.kiro/crew/scratch` and `ls ~/.kiro/crew/scratch | wc -l`. Open
 question 1 waits on that number.
 
-**Phase 1, rejoin.** The index, written at session start and read on every new
-provider for a keyed session, plus the sensitive-leaf entry. This is the scope
-#15980 already builds, except that a reset keeps the row. Exit: A1, A2, A5
-and A11 pass; A12 is unchanged.
+**Phase 1, rejoin. Built.** [#30062](https://github.com/kirodotdev/KiroCrew/pull/30062),
+which continues #15980, merged it on 2026-11-14 as `684bc6215f`: the index,
+written before a non-stateless session publishes its SID and read on a
+persistent-memory resume, plus the sensitive-leaf and sandbox-leaf entries. A
+reset starts a new tree, as ruled. Its exit is A1, A2, A5 and A11 passing,
+A10 holding and A12 unchanged. The unit tests in
+`test/test_subagent_scratch_tree_index.py` cover a resume handed its recorded
+tree and a fresh conversation starting its own. On #15979 a contributor
+reported an end-to-end restart run, the A1 shape, passing on #30062's head.
+No A case was re-run end to end for this document.
 
-**Phase 2, reclaim by session state.** Close, revive and delete update the
-row; the sweep applies the rule above; the root's first process gets a
-separate `TMPDIR` directory. The prompt and subagent-spec text change here.
-Exit: A3, A4, A8, A9 and A10 pass; A12 is unchanged; a process's temp files
-are still reclaimed one hour after it dies.
+**Phase 2, reclaim by session state.** Blocked on open questions 1 and 2.
+Close, revive and delete update the row; the sweep applies the rule above;
+the root's first process gets a separate `TMPDIR` directory. The prompt and
+subagent-spec text change here. Exit: A3, A4, A8 and A9 pass; A10 and A12 are
+unchanged; a process's temp files are still reclaimed one hour after it dies.
 
 **Phase 3, guidance.** Point the skills and docs that tell agents to keep
-durable work outside scratch back at `$KIROCREW_SCRATCH`, and say where the
-retention window is set. Exit: no skill shipped in this repository tells an
+durable work outside scratch back at `$KIROCREW_SCRATCH`, say where the
+retention window is set, and say that a file in `$KIROCREW_SCRATCH` does not
+carry across a reset. Exit: no skill shipped in this repository tells an
 agent to put per-session work under `/tmp` or a home-directory path.
 
 ## Backward compatibility
@@ -452,7 +502,8 @@ agent to put per-session work under `/tmp` or a home-directory path.
 - Trees allocated before Phase 1 have no row and age out under the process
   rule.
 - The visible change is that `$KIROCREW_SCRATCH` stays the same across a
-  restart or resume, and that trees for open sessions stay on disk longer.
+  restart or resume, though not across a reset, and that trees for open
+  sessions stay on disk longer.
 
 ## Security considerations
 
@@ -497,11 +548,15 @@ belongs with `kirocrew doctor`, not here.
 
 1. `SESSION_RETENTION_SECONDS`. Proposed: 7 days, the same idle window as
    `work_root.IDLE_GRACE_SECONDS`. A chat revived from History after the
-   window starts a new tree.
+   window starts a new tree. Asked of a maintainer on
+   [#15979](https://github.com/kirodotdev/KiroCrew/issues/15979#issuecomment-6827180894)
+   on 2026-11-12, with question 2; not ruled yet.
 2. Should an open session whose tree has had no write and no live owner for
    N days be treated as closed? Proposed: no bound in Phase 2, revisit with
    Phase 0's numbers.
-3. A reset keeps the tree (above). Confirm, since #15980 chose the opposite.
+3. Answered on 2026-11-05 by a maintainer: a reset that starts a fresh
+   conversation starts a new tree, as #15980 chose. Phase 1 ships it; see the
+   reset paragraph under Reclaim and A10.
 4. Does a revive after an idle reap always go through the `resume_sid` path,
    or can it reach a fresh provider without one? Answered by Phase 0 for the
    idle reaper: the chat came back on the same conversation id. Whether every
