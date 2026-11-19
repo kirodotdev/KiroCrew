@@ -5217,9 +5217,15 @@ Where the walk cannot follow bash's quoting, every `>` stays a write: a quote
 left open, a command carrying `<<` (a heredoc body, which can sit in a later
 segment than its `<<`), `#` (a comment), `$'` (ANSI-C quoting, where a backslash
 escapes a single quote) or `${` (a quoting context of its own inside double
-quotes), and Windows, where the shell is PowerShell and a backslash escapes
-nothing. The read-only (trust-reads) tier drops nothing and still refuses every
+quotes), and Windows, where PowerShell (kiro-cli's shell) reads a backslash as
+plain text. The read-only (trust-reads) tier drops nothing and still refuses every
 `>`, so the two tiers agree on every unquoted `>`.
+On Windows the splitter reads a command's quotes and backslashes both ways, since
+the harness picks the shell there (kiro-cli runs PowerShell, Claude Code's Bash
+tool runs bash). When the two readings mask different characters, as in
+`echo "a\" ; calc ; echo \"b"` (one command to bash, three to PowerShell), the
+command gets no segments, so no grant covers it and it asks
+(`split_command_segments`).
 
 **Child-fidelity split: identity vs arguments.** A backend-subagent permission
 event whose structured params never reached the tool_call cache is low-fidelity
