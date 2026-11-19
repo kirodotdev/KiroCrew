@@ -1781,6 +1781,18 @@ describe('the card brand mark', () => {
     expect(slot.querySelector('[data-testid="provider-logo-gitlab"]')).not.toBeNull()
     expect(slot.textContent).toBe('')
   })
+
+  // Slack's card showed a lettered "S" tile: the repo's official Slack mark
+  // lived in assets/ but was never mapped for the Connections card.
+  it('renders the full-colour slack mark, and no letter', async () => {
+    mount()
+
+    await waitFor(() => expect(card('slack')).toBeInTheDocument())
+    const slot = card('slack').querySelector('header [role="img"]')
+    if (!slot) throw new Error('no brand-mark slot on the slack card')
+    expect(slot.querySelector('img[data-testid="provider-logo-slack"]')).not.toBeNull()
+    expect(slot.textContent).toBe('')
+  })
 })
 
 // sizes to its own copy makes the row it sits in ragged. jsdom runs no layout
