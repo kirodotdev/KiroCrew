@@ -801,6 +801,21 @@ def _isolate_context_store_caches(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_member_identity_cache(_floor_monkeypatch):
+    """Give each test an empty cache of passed member-database identity checks.
+
+    A kept answer is keyed on the file's path and stat, and tests reuse temporary
+    paths, so a passed check from one test must not answer for another's file.
+    Only an imported module can hold one, so a run that never imports it pays
+    nothing.
+    """
+    member_db = sys.modules.get("kiro_crew.vector_memory_member")
+    if member_db is None:
+        return
+    _floor_monkeypatch.setattr(member_db, "_IDENTITY_CACHE", {})
+
+
+@pytest.fixture(autouse=True)
 def _isolate_advertised_model_cache(_floor_monkeypatch):
     """Keep one session's advertised model spellings and labels inside its own test."""
     from kiro_crew import model_registry

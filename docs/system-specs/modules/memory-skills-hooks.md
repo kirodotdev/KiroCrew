@@ -98,6 +98,11 @@ a new database. `open_member_database` uses SQLite `mode=rw`, validates the stor
 identity, format and required schema, and never creates or migrates a database.
 `read_member_database_identity` inspects an existing database read-only. Missing,
 corrupt, mismatched and unsupported files produce an error and retain their bytes.
+Its full check (`PRAGMA quick_check`, which reads every page) runs once per file
+state: a passed answer is kept per resolved path while the database and its
+non-empty `-wal` keep the same device, inode, size, mtime and ctime, so a
+replaced, rewritten or damaged file is checked again; a failure, and an identity
+string over `_IDENTITY_CACHE_MAX_CHARS` (256), is never kept.
 Admission normalizes missing or corrupt database errors from the selected SQLite
 driver to member-memory unavailability, without falling back to Global memory.
 Admission uses the identity reader's selected driver, including its stdlib fallback
