@@ -17,6 +17,8 @@ vi.mock('../api/client', async importOriginal => {
     api: {
       ...mod.api,
       kasLoginStatus: vi.fn(),
+      // Stubbed so no test races a real config request (see beforeEach).
+      kirocrewConfig: vi.fn(),
       // No kiro-cli sign-in beside the card's own: the card says nothing extra.
       kasLoginSources: vi.fn().mockResolvedValue({
         active: 'none',
@@ -47,6 +49,7 @@ const kasLoginStatus = vi.mocked(api.kasLoginStatus)
 // #36156: the saved config with KAS as the main harness, and a usage reading naming an account.
 const ON_KAS = { agent: { acp_backend: 'kas' } }
 const ADA = { used: 1, limit: 10, bonusCredits: [], email: 'ada@example.com' }
+const kirocrewConfig = vi.mocked(api.kirocrewConfig)
 const kasLoginLogout = vi.mocked(api.kasLoginLogout)
 const kasLoginBeginDevice = vi.mocked(api.kasLoginBeginDevice)
 
@@ -82,6 +85,8 @@ async function openSignIn() {
 describe('KiroSignInCard', () => {
   beforeEach(() => {
     kasLoginStatus.mockReset()
+    kirocrewConfig.mockReset()
+    kirocrewConfig.mockResolvedValue(ON_KAS as Awaited<ReturnType<typeof api.kirocrewConfig>>)
     kasLoginLogout.mockClear()
     kasLoginBeginDevice.mockClear()
   })
@@ -159,6 +164,7 @@ describe('KiroSignInCard', () => {
 
   it('names no account when the main harness is kiro-cli, whose login the usage reading then names (#36156)', async () => {
     kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kiro' } } as Awaited<ReturnType<typeof api.kirocrewConfig>>)
     const { queryClient } = renderWithProviders(<KiroSignInCard />)
     act(() => {
       queryClient.setQueryData(['kirocrewConfig'], { agent: { acp_backend: 'kiro' } })
@@ -254,28 +260,55 @@ describe('KiroSignInCard', () => {
     expect(summary).not.toHaveTextContent('renewed automatically')
   })
 
-  it('lapsed (issuer refused the refresh): says the sign-in expired and offers sign in again, not a silent fallback', async () => {
-    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, expired: true, refresh_rejected: true })
+  // Every lapsed cause says the same two lines and no reason line: signing in
+  // again is the one fix whichever way the sign-in lapsed.
+  it.each([
+    ['issuer refused the refresh', { expired: true, refresh_rejected: true }],
+    ['refused, access token still live', { refresh_rejected: true }],
+    ['expired, nothing to renew it', { expired: true, has_refresh_token: false, usable: false }],
+  ])('lapsed (%s): says only "Sign-in expired." and how to resume, with sign in again', async (_label, lapse) => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, ...lapse })
     renderWithProviders(<KiroSignInCard />)
     const summary = await screen.findByTestId('kiro-sign-in-summary')
     expect(summary).toHaveAttribute('data-lapsed', 'true')
-    expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent('Sign-in expired')
-    expect(screen.getByTestId('kiro-sign-in-expiry')).toHaveTextContent('Kiro refused to renew this sign-in.')
-    expect(summary).toHaveTextContent('nothing falls back to a kiro-cli login on its own')
+    expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent(/^Sign-in expired\.$/)
+    expect(screen.getByTestId('kiro-sign-in-state')).toHaveClass('font-semibold')
+    // The body waits for the (stubbed, KAS) config read.
+    await waitFor(() => expect(summary).toHaveTextContent('Sign in again to resume sessions and agent work.'))
+    expect(screen.queryByTestId('kiro-sign-in-expiry')).toBeNull()
     expect(screen.getByRole('button', { name: 'Sign in again' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Switch account' })).toBeNull()
   })
 
-  it('lapsed (expired, nothing to renew it): the spawn predicate drives the state', async () => {
-    kasLoginStatus.mockResolvedValue({
-      ...SIGNED_IN,
-      expired: true,
-      has_refresh_token: false,
-      usable: false,
-    })
+  it.each([
+    ['nothing runs on KAS: only the account features stop', { agent: { acp_backend: 'kiro' } }, 'Sign in again to use features that need your Kiro account.'],
+    ['agents run on KAS: sessions and agent work stop', ON_KAS, 'Sign in again to resume sessions and agent work.'],
+  ])('lapsed, %s', async (_label, cfg, body) => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, expired: true, has_refresh_token: false, usable: false })
+    kirocrewConfig.mockResolvedValue(cfg as Awaited<ReturnType<typeof api.kirocrewConfig>>)
     renderWithProviders(<KiroSignInCard />)
-    expect(await screen.findByTestId('kiro-sign-in-summary')).toHaveAttribute('data-lapsed', 'true')
-    expect(screen.getByTestId('kiro-sign-in-expiry')).toHaveTextContent('nothing to renew it with')
+    const summary = await screen.findByTestId('kiro-sign-in-summary')
+    expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent(/^Sign-in expired\.$/)
+    await waitFor(() => expect(summary).toHaveTextContent(body))
+  })
+
+  it('lapsed, config read failed: says so instead of guessing what stopped', async () => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, expired: true, has_refresh_token: false, usable: false })
+    kirocrewConfig.mockRejectedValue(new Error('config_read_failed'))
+    renderWithProviders(<KiroSignInCard />)
+    const summary = await screen.findByTestId('kiro-sign-in-summary')
+    expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent(/^Sign-in expired\.$/)
+    expect(await screen.findByTestId('kiro-sign-in-config-error', {}, { timeout: 10_000 })).toHaveTextContent('Could not read the dashboard settings')
+    expect(summary).not.toHaveTextContent(/resume sessions|features that need/)
+    expect(screen.getByRole('button', { name: 'Sign in again' })).toBeInTheDocument()
+  })
+
+  it('a live sign-in whose access token lapsed but renews on next use keeps its reason line', async () => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, expired: true })
+    renderWithProviders(<KiroSignInCard />)
+    expect(await screen.findByTestId('kiro-sign-in-summary')).toHaveAttribute('data-lapsed', 'false')
+    expect(screen.getByTestId('kiro-sign-in-expiry')).toHaveTextContent('will be renewed the next time')
   })
 
   it('sign in again opens the dialog over the stored identity, and closing it backs out', async () => {
@@ -469,6 +502,8 @@ describe('KiroSignInCard closes relay Crew windows', () => {
 
   beforeEach(() => {
     kasLoginStatus.mockReset()
+    kirocrewConfig.mockReset()
+    kirocrewConfig.mockResolvedValue(ON_KAS as Awaited<ReturnType<typeof api.kirocrewConfig>>)
     kasLoginLogout.mockClear()
     kasLoginBeginDevice.mockClear()
     closeAll.mockClear()

@@ -20,8 +20,8 @@
  *   07 status read fails (HTTP 500)    -> ErrorNotice with the agent hand-off
  *                                         and the sign-in button
  *   08 320px, Spanish                  -> label wraps, dismiss stays in view
- *   09 refused and expired, light      -> says the agents cannot run, no
- *                                         agent hand-off
+ *   09 refused and expired, light      -> the same "Sign-in expired." copy as
+ *                                         01, no agent hand-off
  *   15 signed out, Settings > Kiro account -> the card's one Sign in button,
  *                                         no notice, no dialog open
  *
@@ -211,15 +211,16 @@ async function main() {
 
   // Every shape is an ErrorNotice: the hand-off (where shown) and dismiss on
   // its first row, the sign-in button on its own row below. The two expired
-  // shapes have no hand-off: on KAS the agent runs as the lapsed sign-in.
-  const expired = { title: 'Kiro sign-in expired', buttons: 2, open: true }
+  // shapes have no hand-off: on KAS the agent runs as the lapsed sign-in, and
+  // they say the same two lines whatever the cause.
+  const expired = { title: 'Sign-in expired.', buttons: 2, open: true, detail: 'Sign in again to resume sessions and agent work.' }
   const refused = { testId: 'kiro-sign-in-refused', title: 'Kiro refused to renew your sign-in', buttons: 3, open: true, detail: 'Agents will stop when this sign-in expires' }
-  const refusedExpired = { ...refused, buttons: 2, detail: 'Agents cannot run until you sign in again. This sign-in has already expired.' }
+  const refusedExpired = { ...expired, testId: 'kiro-sign-in-refused' }
   const failed = { testId: 'kiro-sign-in-status-error', title: 'We could not check sign-in status', buttons: 3, open: true, detail: 'Sign in again if your Kiro sign-in stopped working, or ask the agent to look into it.' }
   // No sign-in button: the backend is unknown, and kiro-cli or Claude has no sign-in.
   const configFailed = { testId: 'kiro-sign-in-config-error', title: 'Could not read the dashboard settings', buttons: 2, open: false, detail: 'Reload the page to try again' }
   const loadFailed = { testId: 'kiro-sign-in-notice-load-error', title: 'Part of the dashboard could not load', buttons: 2, open: false }
-  const expiredEs = { title: 'Inicio de sesión en Kiro caducado', buttons: 2, open: true, dismissName: 'Descartar' }
+  const expiredEs = { title: 'Inicio de sesión caducado.', buttons: 2, open: true, dismissName: 'Descartar' }
   if (BEFORE) {
     await frame('00-before-expired-dark', { status: EXPIRED, want: null })
   } else {
