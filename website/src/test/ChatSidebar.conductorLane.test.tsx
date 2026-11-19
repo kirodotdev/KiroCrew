@@ -128,6 +128,8 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import { crewRowOwnState } from '../pages/chat-sidebar/SessionRow'
+import { OPEN_DELAY_MS } from '../components/InstantTip'
+import chatReducer from '../store/chatSlice'
 import type { RootState } from '../store'
 import { turnOffCrewModeAsLts } from './crewModeOff'
 
@@ -232,29 +234,29 @@ afterEach(() => {
 })
 
 describe('chat sidebar — conductor lane', () => {
-  it('draws a conductor mode root as a plain row with an inline ghost, eyebrow, worker ghosts and what needs you', async () => {
+  it('draws a conductor root with one coloured bolt before its title and what needs you', async () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
       { key: 'k-w2', title: 'W2', messages: 0, running: false, pending_approval: true, modified: 2000, created_by: 'k-root', crew_root: 'k-root' },
       { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
     ]
-    const { container, getByTestId, getAllByTestId } = renderSidebar(slots, [], null, {}, [], slots)
+    const { container, getByTestId } = renderSidebar(slots, [], null, {}, [], slots)
     const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
     expect(card).toBeTruthy()
-    // A plain session row: no tinted card frame.
+    // A plain session row: no tinted card frame and no repeated mode label.
     expect(card.className).not.toContain('crew-card')
-    const eyebrow = within(card).getByTestId('crew-eyebrow')
-    expect(eyebrow).toHaveTextContent('Conductor mode')
-    // A whole-pixel tracking: an em fraction at this size renders "CRE W MODE".
-    expect(eyebrow.className).toContain('tracking-[1px]')
-    expect(eyebrow.className).not.toMatch(/tracking-\[[\d.]+em\]/)
-    // The conductor mode mark is a 12px lightning bolt inline on the eyebrow line, just
-    // before the eyebrow, not a badge before the title: the title keeps the row's width.
+    expect(within(card).queryByText('Conductor mode')).toBeNull()
     expect(within(card).queryByTestId('crew-ghost-badge')).toBeNull()
-    const bolt = eyebrow.previousElementSibling as SVGElement
-    expect(bolt.getAttribute('class')).toContain('lucide-zap')
-    expect(bolt.getAttribute('width')).toBe('12')
+    const title = card.querySelector('[data-session-title]') as HTMLElement
+    const bolt = within(card).getByTestId('conductor-mode-title-mark')
+    // The bolt leads the title from outside its line box (see the layout test below).
+    expect(bolt.nextElementSibling).toBe(title)
+    expect(bolt.querySelectorAll('.lucide-zap')).toHaveLength(1)
+    expect(bolt.querySelector('.lucide-zap')).toHaveClass('conductor-mode-accent')
+    expect(bolt.querySelector('.lucide-zap')).toHaveAttribute('width', '14')
+    expect(bolt).toHaveAttribute('aria-label', 'Conductor mode')
+    expect(title).toHaveTextContent('Crew root')
     // The conductor's name is not shown: Crew Mode chooses it.
     expect(within(card).queryByText('kirocrew-conductor')).toBeNull()
     // The server's groups, not a guess from the rows: W2 waits on an approval.
@@ -267,31 +269,153 @@ describe('chat sidebar — conductor lane', () => {
     expect(within(live).queryByTestId('crew-worker-stack')).toBeNull()
     // The full counts stay in the tooltip.
     expect(getByTestId('crew-root-attention')).toHaveAttribute('title', '2 sessions, 1 needs you, and 1 waiting')
-    // Only the root wears the eyebrow.
-    expect(getAllByTestId('crew-eyebrow')).toHaveLength(1)
-    // An idle crew's tag stays still: motion on the list means work is running.
-    expect(eyebrow).toHaveAttribute('data-flowing', 'false')
   })
 
-  it('flows the conductor mode tag only while the crew root has live work', () => {
-    const slots = [
-      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: true, modified: 4000, crew_mode_root: true },
-      { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
-    ]
-    const { container } = renderSidebar(slots, [], null, {}, [], slots)
-    const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
-    expect(within(card).getByTestId('crew-eyebrow')).toHaveAttribute('data-flowing', 'true')
-  })
-
-  it('flows the conductor mode tag while a crew member runs, even with the root idle', () => {
+  it('keeps a conductor root row the height of a plain row: the 24px bolt is out of the 20px title line', () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
-      { key: 'k-w1', title: 'W1', messages: 2, running: true, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
       { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
     ]
     const { container } = renderSidebar(slots, [], null, {}, [], slots)
     const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
-    expect(within(card).getByTestId('crew-eyebrow')).toHaveAttribute('data-flowing', 'true')
+    const plain = container.querySelector('[data-session-row="k-plain"]') as HTMLElement
+    const title = card.querySelector('[data-session-title]') as HTMLElement
+    const plainTitle = plain.querySelector('[data-session-title]') as HTMLElement
+    const bolt = within(card).getByTestId('conductor-mode-title-mark')
+    // No box of the bolt's sits in the title's line box, so nothing there can
+    // be taller than the 20px line: the title holds only text and inline marks.
+    expect(title.contains(bolt)).toBe(false)
+    expect(title.querySelector('button')).toBeNull()
+    // Out of flow at its static position, centred on the line, with a real 24px box.
+    expect(bolt).toHaveClass('absolute', 'h-6', 'w-6', '-mt-0.5')
+    // Its target stays inside that reserved box, even on a coarse pointer.
+    expect(bolt).not.toHaveClass('mc-touch-hit')
+    // The title reserves the box's width; it is otherwise the plain row's title.
+    expect(title).toHaveClass('indent-6', 'leading-[20px]', 'truncate')
+    expect(title.className.replace(' indent-6', '')).toBe(plainTitle.className)
+    // The column anchors the bolt and hides it with the title under a crewmate head.
+    const column = title.parentElement as HTMLElement
+    expect(bolt.parentElement).toBe(column)
+    expect(column).toHaveClass('relative')
+    expect(column.className).toContain('[&:has([data-member-head])>[data-read-only-bolt]]:hidden')
+    expect(plain.querySelector('[data-read-only-bolt]')).toBeNull()
+  })
+
+  it('a root with no meta or status keeps vertical bolt overflow and horizontal clipping', async () => {
+    mocks.crewWorkersRows = []
+    const slots = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, crew_mode_root: true }]
+    const { container, qc } = renderSidebar(slots)
+    await waitFor(() => expect(qc.getQueryState(['crew-workers', 'k-root'])?.status).toBe('success'))
+    const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
+    expect(within(card).queryByTestId('crew-root-summary')).toBeNull()
+    expect(within(card).queryByTestId('session-row-time')).toBeNull()
+    expect(card.querySelector('.session-agent-label')?.textContent).toBe('')
+    const title = card.querySelector('[data-session-title]') as HTMLElement
+    const bolt = within(card).getByTestId('conductor-mode-title-mark')
+    expect(title.parentElement).toHaveClass('relative', 'overflow-x-clip')
+    expect(title.parentElement).not.toHaveClass('overflow-hidden', 'overflow-x-hidden')
+    expect(title).toHaveClass('truncate', 'leading-[20px]')
+    expect(bolt).toHaveClass('h-6', 'w-6', 'focus-visible:-outline-offset-2')
+  })
+
+  it('a tapped row bolt keeps its tip through the replayed mouse leave until focus leaves', () => {
+    const slots = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true }]
+    const { container } = renderSidebar(slots, [], null, {}, [], slots)
+    vi.useFakeTimers()
+    const bolt = within(container.querySelector('[data-crew-root="true"]') as HTMLElement).getByTestId('conductor-mode-title-mark')
+    fireEvent.pointerDown(bolt, { pointerType: 'touch' })
+    fireEvent.pointerUp(bolt, { pointerType: 'touch' })
+    fireEvent.mouseEnter(bolt)
+    fireEvent.focus(bolt)
+    fireEvent.click(bolt)
+    fireEvent.mouseLeave(bolt)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Conductor mode')
+    expect(screen.getByRole('tooltip')).toHaveAttribute('data-placement', 'below')
+    fireEvent.blur(bolt)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('the row bolt shows its name on hover, focus and tap, and never switches, renames or opens the row', () => {
+    const slots = [
+      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
+      { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
+    ]
+    // The chat slice's full initial state, so a row click's `switchSlot.pending`
+    // moves `activeSlot` synchronously and a stray switch is visible below.
+    const { container, store } = renderSidebar(slots, [], null, { ...chatReducer(undefined, { type: '@@test/init' }), revealRequest: null }, [], slots)
+    vi.useFakeTimers()
+    const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
+    const bolt = within(card).getByTestId('conductor-mode-title-mark')
+    // The one visible mark: a single bolt and no mode text on the row.
+    expect(card.querySelectorAll('.lucide-zap')).toHaveLength(1)
+    expect(bolt.textContent).toBe('')
+
+    // Hover, after the intent delay.
+    fireEvent.pointerEnter(bolt, { pointerType: 'mouse' })
+    fireEvent.mouseEnter(bolt)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Conductor mode')
+    fireEvent.mouseLeave(bolt)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+
+    // Keyboard focus, at once.
+    fireEvent.focus(bolt)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Conductor mode')
+    fireEvent.blur(bolt)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+
+    // A touch tap: its pointer events, then the mouse events the browser replays.
+    fireEvent.pointerEnter(bolt, { pointerType: 'touch' })
+    fireEvent.pointerDown(bolt, { pointerType: 'touch' })
+    fireEvent.pointerUp(bolt, { pointerType: 'touch' })
+    fireEvent.mouseEnter(bolt)
+    fireEvent.mouseDown(bolt)
+    fireEvent.focus(bolt)
+    fireEvent.mouseUp(bolt)
+    fireEvent.click(bolt)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Conductor mode')
+
+    // None of it reached the row: no switch and no rename box. (The middle-click
+    // tab path is pinned in CrewModeMarks.test.tsx; this harness opens no tabs.)
+    fireEvent.click(bolt, { detail: 2 })
+    fireEvent.doubleClick(bolt)
+    expect(store.getState().chat.activeSlot).toBeNull()
+    expect(card.querySelector('textarea')).toBeNull()
+
+    // The title beside it still switches and renames, so the checks above can fail.
+    const title = card.querySelector('[data-session-title]') as HTMLElement
+    fireEvent.click(title)
+    expect(store.getState().chat.activeSlot).toBe('k-root')
+    fireEvent.doubleClick(title)
+    expect(card.querySelector('textarea')).not.toBeNull()
+  })
+
+  it('a long touch on the row bolt never lifts the row, while the same hold on its title does', async () => {
+    const slots = [
+      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
+      { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
+    ]
+    const { container } = renderSidebar(slots, [], null, {}, [], slots)
+    vi.useFakeTimers()
+    const rootRow = () => container.querySelector('[data-crew-root="true"]') as HTMLElement
+    const bolt = within(rootRow()).getByTestId('conductor-mode-title-mark')
+    // The row's TouchSensor arms on touchstart and lifts after a 250ms still hold.
+    fireEvent.pointerDown(bolt, { pointerType: 'touch', clientX: 4, clientY: 4 })
+    fireEvent.touchStart(bolt, { touches: [{ identifier: 1, clientX: 4, clientY: 4 }] })
+    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+    expect(rootRow()).not.toHaveClass('opacity-40')
+    fireEvent.touchEnd(bolt, { touches: [], changedTouches: [{ identifier: 1, clientX: 4, clientY: 4 }] })
+    fireEvent.pointerUp(bolt, { pointerType: 'touch', clientX: 4, clientY: 4 })
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Conductor mode')
+
+    // The same hold on the title lifts the row, so the bolt check can fail.
+    const title = rootRow().querySelector('[data-session-title]') as HTMLElement
+    fireEvent.touchStart(title, { touches: [{ identifier: 2, clientX: 40, clientY: 4 }] })
+    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+    expect(rootRow()).toHaveClass('opacity-40')
+    fireEvent.touchEnd(title, { touches: [], changedTouches: [{ identifier: 2, clientX: 40, clientY: 4 }] })
+    await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+    expect(rootRow()).not.toHaveClass('opacity-40')
   })
 
   it('counts the root\'s own question with the crew\'s approvals as needs you', async () => {

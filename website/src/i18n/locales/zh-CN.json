@@ -10523,7 +10523,6 @@
     "crewMode": {
       "chip_off": "Conductor mode",
       "chip_hint_off": "打开 Conductor mode：每个任务在单独的聊天中运行，并在这里汇报结果。",
-      "chip_hint_on": "关闭 Conductor mode。发送第一条消息之前都可以关闭。",
       "chip_hint_busy": "回复结束后可用。",
       "switching_on": "正在打开 Conductor mode…",
       "switching_off": "正在关闭 Conductor mode…",
@@ -10537,7 +10536,7 @@
       "flow_board": "看板",
       "flow_needs_you": "需要你",
       "eyebrow": "Conductor mode",
-      "composer_chip_label": "这个对话已开启 Conductor mode",
+      "composer_chip_label": "这个对话以 Conductor mode 运行",
       "back_to_main_chat": "返回主聊天",
       "parent_row_hint": "正在查看它的一位团队成员",
       "steer_too_long": "发给 {{name}} 的消息最多 {{max}} 个字符。请缩短后再发送。",

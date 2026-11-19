@@ -10523,7 +10523,6 @@
     "crewMode": {
       "chip_off": "Conductor mode",
       "chip_hint_off": "Conductor mode をオンにします。各タスクは専用のチャットで実行され、結果をここに報告します。",
-      "chip_hint_on": "Conductor mode をオフにします。最初のメッセージを送るまでオフにできます。",
       "chip_hint_busy": "返信のあとで使えます。",
       "switching_on": "Conductor mode をオンにしています…",
       "switching_off": "Conductor mode をオフにしています…",
@@ -10537,7 +10536,7 @@
       "flow_board": "ボード",
       "flow_needs_you": "要判断",
       "eyebrow": "Conductor mode",
-      "composer_chip_label": "このチャットでは Conductor mode がオンです",
+      "composer_chip_label": "このチャットは Conductor mode で動いています",
       "back_to_main_chat": "メインチャットに戻る",
       "parent_row_hint": "このチャットのクルーメンバーを表示中",
       "steer_too_long": "{{name}} へのメッセージは {{max}} 文字までです。短くしてから送信してください。",

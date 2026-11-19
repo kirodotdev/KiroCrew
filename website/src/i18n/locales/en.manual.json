@@ -4406,7 +4406,6 @@
     "crewMode": {
       "chip_off": "Conductor mode",
       "chip_hint_off": "Turn on conductor mode: each task runs in its own chat and reports back here.",
-      "chip_hint_on": "Turn off conductor mode. You can do this until you send your first message.",
       "chip_hint_busy": "Available after the reply.",
       "switching_on": "Turning conductor mode on…",
       "switching_off": "Turning conductor mode off…",
@@ -4420,7 +4419,7 @@
       "flow_board": "Board",
       "flow_needs_you": "Needs you",
       "eyebrow": "Conductor mode",
-      "composer_chip_label": "Conductor mode is on for this chat",
+      "composer_chip_label": "This chat runs in conductor mode",
       "back_to_main_chat": "Back to main chat",
       "parent_row_hint": "Showing one of its crew members",
       "steer_too_long": "A message to {{name}} can be at most {{max}} characters. Shorten it to send.",

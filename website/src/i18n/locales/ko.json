@@ -10523,7 +10523,6 @@
     "crewMode": {
       "chip_off": "Conductor mode",
       "chip_hint_off": "Conductor mode를 켭니다. 각 작업이 별도의 채팅에서 실행되고 여기로 결과를 알려 줍니다.",
-      "chip_hint_on": "Conductor mode를 끕니다. 첫 메시지를 보내기 전까지 끌 수 있습니다.",
       "chip_hint_busy": "답변이 끝나면 사용할 수 있습니다.",
       "switching_on": "Conductor mode를 켜는 중…",
       "switching_off": "Conductor mode를 끄는 중…",
@@ -10537,7 +10536,7 @@
       "flow_board": "보드",
       "flow_needs_you": "내 결정 필요",
       "eyebrow": "Conductor mode",
-      "composer_chip_label": "이 채팅에서 Conductor mode가 켜져 있습니다",
+      "composer_chip_label": "이 채팅은 Conductor mode로 실행됩니다",
       "back_to_main_chat": "메인 채팅으로 돌아가기",
       "parent_row_hint": "이 채팅의 크루 멤버를 보는 중",
       "steer_too_long": "{{name}}에게 보내는 메시지는 최대 {{max}}자까지입니다. 줄여서 보내세요.",

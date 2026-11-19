@@ -11007,7 +11007,6 @@
     "crewMode": {
       "chip_off": "Conductor mode",
       "chip_hint_off": "Active Conductor mode : chaque tâche tourne dans son propre chat et rend compte ici.",
-      "chip_hint_on": "Désactive Conductor mode. Possible jusqu'à l'envoi de ton premier message.",
       "chip_hint_busy": "Disponible après la réponse.",
       "switching_on": "Activation de Conductor mode…",
       "switching_off": "Désactivation de Conductor mode…",
@@ -11021,7 +11020,7 @@
       "flow_board": "Tableau",
       "flow_needs_you": "À toi",
       "eyebrow": "Conductor mode",
-      "composer_chip_label": "Conductor mode est activé pour cette discussion",
+      "composer_chip_label": "Cette discussion fonctionne en Conductor mode",
       "back_to_main_chat": "Revenir au chat principal",
       "parent_row_hint": "Affiche l’un de ses membres d’équipe",
       "steer_too_long": "Un message pour {{name}} peut compter au plus {{max}} caractères. Raccourcis-le pour l'envoyer.",
