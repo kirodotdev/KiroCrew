@@ -154,14 +154,19 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
     gw = _resolve_gateway_args(args)
     cfg = KiroCrewConfig.load()
     # Open a browser only when the normal gateway would: not with `--no-open` or
-    # `dashboard.auto_open_browser` off, and not on a headless SSH session, where
-    # a console browser would take over the terminal (service_boot.py).
-    is_ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
+    # `dashboard.auto_open_browser` off, and not on a headless remote (SSH or
+    # Session Manager) session, where a console browser would take over the
+    # terminal (service_boot.py). On a Session Manager shell the normal gateway
+    # still checks SSH variables only, so the two differ there until the
+    # shell_origin consolidation moves the gateway onto is_remote_session.
+    from kiro_crew.shell_origin import is_remote_session
+
+    is_remote = is_remote_session()
     has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
     no_open = (
         bool(gw["no_open"])
         or not cfg.dashboard.auto_open_browser
-        or (is_ssh and not has_display and sys.platform != "darwin")
+        or (is_remote and not has_display and sys.platform != "darwin")
     )
     _host, port = parse_dashboard_url(cfg.dashboard.url)
     override = gw["port_override"]
