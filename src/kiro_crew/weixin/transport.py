@@ -15,8 +15,8 @@ SCAFFOLD NOTES / TODO:
     ``weixin/media.py`` (CDN + AES-128-ECB) and ``weixin/attachments.py``
     (shared ingest adapter). Inbound VIDEO is rejected with a visible note
     BEFORE any download (``messaging/attachments.py`` classifies and refuses it
-    ahead of the fetch), so it costs no CDN round trip; outbound media is still
-    unimplemented (``getuploadurl`` + encrypted CDN PUT).
+    ahead of the fetch), so it costs no CDN round trip. Outbound, only an inline
+    image reference in a reply is sent, as a picture (``weixin/media_upload.py``).
   * Outbound chunking goes through ``renderer.render_chunks``, the Markdown-
     and fence-aware splitter.
   * Group delivery is intentionally unsupported for now (iLink bot identities
@@ -84,16 +84,15 @@ MAX_RETAINED_USER_ID_LEN = 256
 # iLink renders Markdown natively; DM-only; no threads. ``files_inbound=True``
 # because inbound image/voice/file items are downloaded from the WeChat CDN and
 # AES-128-ECB decrypted (weixin/media.py) then handed to the shared attachment
-# pipeline (weixin/attachments.py). ``files_outbound`` stays False: send_message
-# carries text only — the upload half (getuploadurl + encrypted CDN PUT) is not
-# implemented, and declaring a capability the transport cannot perform makes the
-# contract lie to every future capability-aware caller.
+# pipeline (weixin/attachments.py). ``files_outbound=True`` because the renderer
+# uploads a local image reference in a reply as a picture (getuploadurl +
+# encrypted CDN upload, weixin/media_upload.py). send_message stays text only.
 WEIXIN_CAPABILITIES = TransportCapabilities(
     streaming=False,
     edit=False,
     reactions=False,
     files_inbound=True,
-    files_outbound=False,
+    files_outbound=True,
     rich_blocks=False,
     threads=False,
     # iLink clients render Markdown natively, tables included -- which is why

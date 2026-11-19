@@ -131,12 +131,13 @@ def _atomic_json_write(path: Path, payload: Dict[str, Any]) -> None:
         raise
 
 
-# NOTE: OUTBOUND media (image/voice/file/video) is NOT supported yet -- replies
-# are text-only. INBOUND media IS supported: ``weixin/media.py`` downloads the
-# CDN object and AES-128-ECB decrypts it (the cipher mode is dictated by the
-# remote protocol, not chosen by us) and ``weixin/attachments.py`` feeds it to
-# the shared ingest pipeline. The upload half (``getuploadurl`` + encrypted CDN
-# PUT) lands with outbound media rather than sitting here unreachable.
+# Media: INBOUND, ``weixin/media.py`` downloads the CDN object and AES-128-ECB
+# decrypts it (the cipher mode is dictated by the remote protocol, not chosen by
+# us) and ``weixin/attachments.py`` feeds it to the shared ingest pipeline.
+# OUTBOUND, only pictures: ``weixin/media_upload.py`` encrypts and uploads them
+# through ``get_upload_url`` + ``upload_cdn_object`` below, and ``send_image``
+# delivers the item.
+CDN_UPLOAD_TIMEOUT_MS = 60_000
 
 
 # --- Ephemeral state persistence ----------------------------------------------
@@ -333,13 +334,28 @@ class WeixinClient:
         """
         if not text or not text.strip():
             raise ValueError("send_message: text must not be empty")
+        item = {"type": ITEM_TEXT, "text_item": {"text": text}}
+        return await self._send_item(to, item, context_token, client_id)
+
+    async def send_image(
+        self, *, to: str, image_item: Dict[str, Any], context_token: Optional[str], client_id: str
+    ) -> Dict[str, Any]:
+        """Send one uploaded picture (``media_upload.upload_image``'s item).
+
+        Raises :class:`WeixinSendError` on a rejection, like :meth:`send_message`.
+        """
+        return await self._send_item(to, image_item, context_token, client_id)
+
+    async def _send_item(
+        self, to: str, item: Dict[str, Any], context_token: Optional[str], client_id: str
+    ) -> Dict[str, Any]:
         message: Dict[str, Any] = {
             "from_user_id": "",
             "to_user_id": to,
             "client_id": client_id,
             "message_type": MSG_TYPE_BOT,
             "message_state": MSG_STATE_FINISH,
-            "item_list": [{"type": ITEM_TEXT, "text_item": {"text": text}}],
+            "item_list": [item],
         }
         if context_token:
             message["context_token"] = context_token
@@ -348,6 +364,55 @@ class WeixinClient:
         if code is not None:
             raise WeixinSendError(EP_SEND_MESSAGE, code, resp)
         return resp
+
+    async def get_upload_url(
+        self,
+        *,
+        to_user_id: str,
+        filekey: str,
+        media_type: int,
+        rawsize: int,
+        rawfilemd5: str,
+        filesize: int,
+        aeskey: str,
+    ) -> Dict[str, Any]:
+        """Ask iLink for a CDN upload ticket; raises :class:`WeixinSendError` on a refusal."""
+        payload = {
+            "filekey": filekey,
+            "media_type": media_type,
+            "to_user_id": to_user_id,
+            "rawsize": rawsize,
+            "rawfilemd5": rawfilemd5,
+            "filesize": filesize,
+            "no_need_thumb": True,
+            "aeskey": aeskey,
+        }
+        resp = await self._post(EP_GET_UPLOAD_URL, payload, timeout_ms=API_TIMEOUT_MS)
+        code = protocol_error_code(resp)
+        if code is not None:
+            raise WeixinSendError(EP_GET_UPLOAD_URL, code, resp)
+        return resp
+
+    async def upload_cdn_object(self, url: str, data: bytes) -> str:
+        """POST encrypted bytes to the CDN; return the download ``encrypt_query_param``.
+
+        The CDN names the stored object in its ``x-encrypted-param`` response
+        header. A success without it would leave an image item pointing nowhere,
+        so that is a failure too.
+        """
+
+        async def _do() -> str:
+            headers = {"Content-Type": "application/octet-stream"}
+            async with self._session.post(url, data=data, headers=headers) as resp:
+                if resp.status != 200:
+                    detail = resp.headers.get("x-error-message") or (await resp.text())[:200]
+                    raise RuntimeError(f"CDN upload HTTP {resp.status}: {detail}")
+                return str(resp.headers.get("x-encrypted-param") or "")
+
+        param = await asyncio.wait_for(_do(), timeout=CDN_UPLOAD_TIMEOUT_MS / 1000)
+        if not param:
+            raise RuntimeError("CDN upload answered without x-encrypted-param")
+        return param
 
     async def get_config(self, *, user_id: str, context_token: Optional[str]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"ilink_user_id": user_id}

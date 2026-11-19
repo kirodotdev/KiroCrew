@@ -5551,8 +5551,9 @@ target, or a room Webex reports as `direct`), as its renderer does. **Telegram**
 screen), **Teams** (an inline PNG/JPEG attachment on a learned personal-chat
 route) and **Slack** (`slack.files.upload_outbound_files`, under
 `slack.files.UPLOAD_LIMITS`) upload wherever their renderer would.
-**iMessage** and **Weixin** have no picture send (`files_outbound=False`), so
-their mirror names every picture.
+**iMessage** has no picture send (`files_outbound=False`), and **Weixin**'s
+transport answers no `outbound_image_limits` (its pictures go out from the
+renderer only), so their mirror names every picture.
 
 Both user-message echoes (Slack's `> *Sent from Kiro Crew:*` quote and the plain
 channel-neutral `Sent from Kiro Crew:` line, one `MIRROR_ECHO_LABEL`) send

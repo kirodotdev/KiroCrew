@@ -72,6 +72,12 @@ compacts on its own.
   "typing…" indicator runs for the duration.
 - **Markdown is preserved** — iLink clients render it. Replies longer than 4000
   characters split at paragraph/code-fence boundaries.
+- **Pictures in a reply arrive as pictures.** A reply that embeds a local image
+  (`![chart](/abs/path.png)`) from the session's folder or its scratch folder
+  sends the text first, then each image (up to 10 per reply, 10 MB each) as its
+  own WeChat picture. A picture that cannot be sent is listed by path instead.
+  An incognito or temporary conversation keeps printing the path. `file_send`
+  does not deliver to Weixin yet.
 - **Tool calls and reasoning are not echoed** to the chat (they would each become
   a separate bubble).
 - **No approval buttons.** iLink has no interactive controls, so the channel runs
