@@ -71,6 +71,7 @@ claim that a hostile in-process agent is fully contained.
 |--------|------|
 | `aws.py` | The `run_aws` chokepoint for captured AWS CLI calls — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key), and a child environment without the gateway's Python interpreter settings (`sandbox.without_python_env`), because aws-cli v1 is a Python program. `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`; `configured_region(profile)`, the profile's own Region from the AWS config file (`aws configure get region`, "" when unset or in an agent session), which `cloud doctor` compares with the default Region it checks; `warn_if_started_from_agent_session()`, the gateway's log-only post-READY WARNING when its own process reads as an agent session (`_in_agent_session`, the check `assert_human_action` refuses on), e.g. restarted from an agent's shell. |
 | `ec2.py` | `deploy`/`status`/`stop`/`start`/`destroy` via `aws cloudformation` + `ec2`; AZ- **and egress-**aware `discover_network` + `resolve_explicit_subnet` (`--subnet` pin, same guarantees); tag-based stateless discovery (`list_instances` drops an instance EC2 reports terminated, shutting down, or no longer has, so a crew whose stack was deleted leaves `list` as `status`/`destroy` already report it absent); `_validate_cidr`. `find_stack` verifies BOTH `kirocrew:managed=true` AND `kirocrew:instance==<tag>` before status/stop/start/destroy touch a stack — so a same-prefix managed stack with a different instance tag can't be acted on by the wrong `--tag`. |
+| `ec2_failure.py` | The plain-words cause `ec2.deploy` puts ahead of a failed `cloudformation deploy`: a denied action, an EC2 account refusal (vCPU quota, account validation) or no capacity in a zone, and the zone a capacity refusal names, which `deploy` uses to retry in another zone. |
 | `github_tag_probe.py` | `public_tag_exists`: confirms a release tag on the default public repository with one HTTPS GET of GitHub's exact-ref API, for `ec2.release_tag_exists` when this machine has no trusted `git`. Spawns nothing; any non-200 or error is a WARNING and a miss. |
 | `iam.py` | Least-privilege launcher policy generator (applied by the user, never by KiroCrew) + read-only reachability check + the **content-fixed instance permissions-boundary document** (`boundary_policy_document`/`boundary_arn`) and its constants (`BOUNDARY_NAME`). |
 | `host_policy.py` | Reads and validates the edition's `cloud_instance_policy` seam (managed policies for the EC2 instance role, plus the boundary statements they need). The one reader for the boundary document, the second launcher policy (`iam.host_policy_document`) and the template's `ExtraManagedPolicyArns`; also checks before the deploy that the launch account holds each of those policies (`require_managed_policies`); see Security model. |
@@ -254,6 +255,25 @@ Service Quotas, or a smaller size when one exists; an account still being
 validated (EC2's "in this region is being validated" message) says to retry once
 AWS confirms. The match is on EC2's message because CloudFormation's resource
 handler drops EC2's error code from the reason. `missing_action` stays unset.
+`ec2_failure.py` owns this cause text; `ec2.deploy` raises the error it builds.
+
+When EC2 has no capacity for the size in the zone the launch used (EC2's
+"do not have sufficient ... capacity in the Availability Zone you requested
+(<zone>)" message, or `InsufficientInstanceCapacity`), a **new** stack on a
+subnet the launcher picked moves to another zone: `deploy` deletes the refused
+stack, waits for the delete to confirm, and calls `discover_network` again with
+`skip_zones` holding every zone that refused, so the next pick is a subnet with
+egress in an untried zone that offers the size. Each pass skips one more zone,
+so the retries stop when the zones run out, a zone repeats, or the delete does
+not confirm. Before each retry `on_network_fallback` gets one sentence naming the
+zone that refused and the next subnet (the dashboard shows it as the provision
+step's detail, the CLI as an info line). The final failure leads with the plain
+cause: the zone that refused, or every zone tried when the launch moved, then the
+next step: the same-size tier on the other architecture (for example
+`balanced-x86`) or another Region. A `--subnet` / Subnet ID pin, a reused stack
+and `--keep-on-failure` never move; the pinned case also says to clear the
+Subnet ID so the launch can try the other zones. The uploaded source is removed
+only when the launch finally fails.
 
 Teardown removes the uploaded source object as part of the contract: after a **confirmed** `delete-stack`, `source.delete_source` returns `{removed, uri, error}`. If the stack delete itself did not confirm, the source object and `last_tag` pointer are preserved and the CLI exits non-zero.
 
