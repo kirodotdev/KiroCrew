@@ -14,7 +14,7 @@ import os
 import shutil
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_sdk.backends import (
@@ -192,10 +192,12 @@ class KnowledgeHarnessUnavailable(RuntimeError):
     """An LTS knowledge pool would fall back to the Kiro CLI harness.
 
     LTS only (RFC D6): KAS is the floor and the Kiro CLI harness is being
-    retired, so an LTS build never falls back to it. The pool cannot run on
-    KAS (it needs a client KAS has no arm in), so it runs on Kiro CLI only when the
-    user picked Kiro CLI (``agent.acp_backend`` ``"kiro"``) and the remote
-    ``agent_backend`` policy allows it. Otherwise it refuses before any process.
+    retired, so an LTS build never falls back to it. The pool runs on KAS through
+    the gateway's background runtime (:class:`SessionWorker`), and on Kiro CLI
+    only when the user picked Kiro CLI (``agent.acp_backend`` ``"kiro"``) and the
+    remote ``agent_backend`` policy allows it. Otherwise (a backend neither path
+    can run, or no session manager to reach KAS through) it refuses before any
+    process.
     """
 
     code = "knowledge_harness_unavailable"
@@ -215,8 +217,9 @@ class KnowledgeHarnessUnavailable(RuntimeError):
 class KnowledgeKiroCliSignedOut(KnowledgeHarnessUnavailable):
     """The pool's Kiro CLI worker cannot start or answer because Kiro CLI is signed out.
 
-    The pool runs on Kiro CLI whenever the chosen agent cannot run it (KAS among
-    them), so a gateway signed in only to KAS reaches a signed-out Kiro CLI here.
+    The pool runs on Kiro CLI when it is picked, and in an ``oss`` build whenever
+    no other path can run the chosen agent, so a gateway signed in only to KAS
+    can still reach a signed-out Kiro CLI here.
     Every chunk then failed on its own, each one spawning Kiro CLI twice, so a
     long document outlived its caller's timeout and a short one was stored with
     no extraction. A subclass of the harness refusal so it takes the same path:
@@ -234,8 +237,8 @@ class KnowledgeKiroCliSignedOut(KnowledgeHarnessUnavailable):
         # Skip the parent's LTS text: this is not a build refusal.
         RuntimeError.__init__(
             self,
-            "Knowledge Library extraction needs Kiro CLI signed in for now; it "
-            "cannot run on Kiro Agent yet. Kiro CLI is not signed in here, so nothing "
+            "Knowledge Library extraction needs Kiro CLI signed in when it runs on "
+            "Kiro CLI. Kiro CLI is not signed in here, so nothing "
             f"was added. Run `{spawn_login_command()}` in a terminal on the gateway "
             "host, then add the document again (a watched-folder file: press Retry "
             "on the Knowledge page). Documents already in the library stay "
@@ -436,7 +439,7 @@ def _kiro_pick_allowed() -> str:
     return ACP_BACKEND_KIRO
 
 
-def _get_acp_backend(config: Optional[dict] = None) -> str:
+def _get_acp_backend(config: Optional[dict] = None, *, sessions: Any = None) -> str:
     """Configured ``agent.acp_backend``, through the one selection gate (H3),
     then narrowed to a backend this pool's zero-tool workers can trust.
 
@@ -451,6 +454,9 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
     ``AcpRuntime`` sessions refuse every permission request but still run some
     calls without asking) and ``.acp_client_spawnable`` (not
     kas/codex, which need ``AcpRuntime`` and have no arm in ``AcpClient._spawn``).
+    A backend that passes the first and fails the second (KAS) is still returned
+    when *sessions*, the gateway's session manager, runs its shared background
+    runtime on it: the pool then runs each chunk there (:class:`SessionWorker`).
 
     The pool reads raw ``config.json``, which never passed the loader's
     normalizer, so the stored vocabulary is translated first (``"kiro"`` is Kiro
@@ -478,9 +484,34 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
         )
         return _kiro_fallback(f"{_label(resolved)} does not honor a zero-tool spec")
     if not capabilities_for(resolved).acp_client_spawnable:
+        # KAS needs ``AcpRuntime``, which the gateway's background runtime already
+        # runs; the pool uses that runtime (``SessionWorker``) when it is on this backend.
+        if _session_path_serves(resolved, sessions):
+            return resolved
         _log_capability_fallback(resolved, declared, "is not acp_client_spawnable")
         return _kiro_fallback(f"{_label(resolved)} cannot run the knowledge pool's client")
     return resolved
+
+
+def _session_path_serves(backend: str, sessions: Any) -> bool:
+    """Whether *sessions*' shared background runtime runs on *backend*.
+
+    The rule ``get_bg_session`` dispatches on (a backend in the runtime set gets a
+    fresh session per call on one shared process), plus the backend that runtime
+    spawns under, read the way it reads it. Only then can a :class:`SessionWorker`
+    run a chunk on *backend*. ``None`` or an unreadable manager answers False, so
+    the pool keeps its old path. Never raises.
+    """
+    if sessions is None:
+        return False
+    try:
+        return (
+            bool(sessions._bg_backend_supports_runtime())
+            and sessions._configured_bg_backend() == backend
+        )
+    except Exception:
+        logger.debug("Knowledge pool: background runtime unreadable", exc_info=True)
+        return False
 
 
 def _label(backend: str) -> str:
@@ -628,6 +659,67 @@ def _select_effort_level(requested: str, supported: list[str]) -> Optional[str]:
         if level in supported_levels and EFFORT_LEVELS.index(level) <= requested_index
     ]
     return eligible[-1] if eligible else None
+
+
+async def _apply_effort_to(target: Any, backend: str, requested: str, *, who: str) -> str | None:
+    """Apply *requested* effort on *target* (a client or a session) and return what was set.
+
+    The one effort writer of this pool's workers (``AcpWorker._apply_effort``, and
+    ``SessionWorker`` on each KAS session after its model is set). ``None`` means
+    nothing was sent and the provider default applies: the backend has no channel
+    for it, the option is not offered, no advertised level fits, or the write
+    failed. *who* names the worker in the log lines.
+    """
+    try:
+        via_config_option = capabilities_for(backend).effort_via_config_option
+        if not via_config_option and not capabilities_for(backend).effort_via_slash_command:
+            logger.warning(
+                "%s: effort=%s unsupported on backend=%s; using provider default",
+                who,
+                requested,
+                _label(backend),
+            )
+            return None
+        # Resolved per backend, like every other effort site: writing the
+        # wrong spelling draws "unknown config option", and the except
+        # below turns that into "using provider default" without saying
+        # why.
+        effort_option = effort_config_option_id(backend)
+        if via_config_option and not target.supports_config_option(effort_option):
+            logger.warning("%s: effort=%s unsupported; using provider default", who, requested)
+            return None
+        # The harness's own spelling first, then the advertised fold: the
+        # table answers a level this harness does not HAVE, and
+        # ``_select_effort_level`` answers one the current model will not
+        # take. Both are asked here so this site writes the same value as
+        # the three other effort writers.
+        requested = effort_config_option_value(backend, requested)
+        supported = target.get_valid_effort_levels()
+        if not isinstance(supported, list):
+            supported = []
+        effective = _select_effort_level(requested, supported)
+        if effective is None:
+            logger.warning(
+                "%s: no supported effort at or below %s; using provider default",
+                who,
+                requested,
+            )
+            return None
+        if via_config_option:
+            await target.set_config_option(effort_option, effective)
+        else:
+            await target.send_command("/effort", args={"level": effective})
+    except Exception:
+        logger.warning(
+            "%s: could not apply effort=%s; using provider default",
+            who,
+            requested,
+            exc_info=True,
+        )
+        return None
+    if effective != requested:
+        logger.warning("%s: effort=%s downgraded to supported effort=%s", who, requested, effective)
+    return effective
 
 
 def _repair_agent_spec(tolerate_registered_injection: bool = False) -> bool:
@@ -944,64 +1036,13 @@ class AcpWorker(Worker):
         inherit an existing member's.
         """
         client = self._client
-        requested = self._effort
-        if client is None or requested is None:
+        if client is None or self._effort is None:
             return
-        try:
-            backend = getattr(client, "backend", "")
-            via_config_option = capabilities_for(backend).effort_via_config_option
-            if not via_config_option and not capabilities_for(backend).effort_via_slash_command:
-                logger.warning(
-                    "AcpWorker: effort=%s unsupported on backend=%s; using provider default",
-                    requested,
-                    _label(backend),
-                )
-                return
-            # Resolved per backend, like every other effort site: writing the
-            # wrong spelling draws "unknown config option", and the except
-            # below turns that into "using provider default" without saying
-            # why.
-            effort_option = effort_config_option_id(backend)
-            if via_config_option and not client.supports_config_option(effort_option):
-                logger.warning(
-                    "AcpWorker: effort=%s unsupported; using provider default",
-                    requested,
-                )
-                return
-            # The harness's own spelling first, then the advertised fold: the
-            # table answers a level this harness does not HAVE, and
-            # ``_select_effort_level`` answers one the current model will not
-            # take. Both are asked here so this site writes the same value as
-            # the three other effort writers.
-            requested = effort_config_option_value(backend, requested)
-            supported = client.get_valid_effort_levels()
-            if not isinstance(supported, list):
-                supported = []
-            effective = _select_effort_level(requested, supported)
-            if effective is None:
-                logger.warning(
-                    "AcpWorker: no supported effort at or below %s; " "using provider default",
-                    requested,
-                )
-                return
-            if via_config_option:
-                await client.set_config_option(effort_option, effective)
-            else:
-                await client.send_command("/effort", args={"level": effective})
-        except Exception:
-            logger.warning(
-                "AcpWorker: could not apply effort=%s; using provider default",
-                requested,
-                exc_info=True,
-            )
-            return
-        self._effective_effort = effective
-        if effective != requested:
-            logger.warning(
-                "AcpWorker: effort=%s downgraded to supported effort=%s",
-                requested,
-                effective,
-            )
+        effective = await _apply_effort_to(
+            client, getattr(client, "backend", ""), self._effort, who="AcpWorker"
+        )
+        if effective is not None:
+            self._effective_effort = effective
 
     async def send_message(self, prompt: str, timeout: float = DEFAULT_TIMEOUT) -> str:
         if self._client is None or not self._client.is_ready:
@@ -1383,8 +1424,13 @@ class LLMPool:
         effort_key: Optional[str] = None,
         fallback_effort: str = "",
         config_pool_size_key: Optional[str] = None,
+        sessions: Optional[Callable[[], Any]] = None,
     ):
         self._pool_size = pool_size
+        # Returns the gateway's session manager (or None). Read per worker, so a
+        # pool built before the manager exists still finds it. Without it a backend
+        # the pool cannot spawn a client for falls back as before.
+        self._sessions = sessions
         self._effort = _normalize_effort(effort)
         # Workload-bound effort resolution: when ``effort_key`` is set, the
         # effort is re-resolved from the config read in ``start()`` (explicit
@@ -1553,6 +1599,16 @@ class LLMPool:
                 self._provider_type,
             )
 
+    def _session_manager(self) -> Any:
+        """The gateway's session manager, or None (no getter, or it raised)."""
+        if self._sessions is None:
+            return None
+        try:
+            return self._sessions()
+        except Exception:
+            logger.debug("LLMPool: session manager unreadable", exc_info=True)
+            return None
+
     async def _create_worker(self) -> Worker:
         """Create and start a new worker based on provider type.
 
@@ -1576,11 +1632,19 @@ class LLMPool:
         if is_claude_code(self._provider_type):
             worker: Worker = CCWorker(sandbox_mode=sandbox_mode)
         else:
-            worker = AcpWorker(
-                sandbox_mode=sandbox_mode,
-                effort=self._effort,
-                acp_backend=await asyncio.to_thread(_get_acp_backend),
-            )
+            sessions = self._session_manager()
+            acp_backend = await asyncio.to_thread(_get_acp_backend, sessions=sessions)
+            if capabilities_for(acp_backend).acp_client_spawnable:
+                worker = AcpWorker(
+                    sandbox_mode=sandbox_mode,
+                    effort=self._effort,
+                    acp_backend=acp_backend,
+                )
+            else:
+                # Only returned when the session manager's background runtime runs it.
+                from kiro_crew.knowledge.llm_pool_session import SessionWorker
+
+                worker = SessionWorker(sessions, backend=acp_backend, effort=self._effort)
         try:
             await worker.start()
         except KnowledgeSpecUnconfirmed as exc:
@@ -1744,6 +1808,13 @@ class LLMPool:
         idx, worker = await self.acquire()
         try:
             return await worker.send_message(prompt, timeout=timeout)
+        except KnowledgeSpecUnconfirmed as exc:
+            # A worker can be refused mid-call (KAS judges each session); start the
+            # same cooldown a refused start does, so the next acquire spawns nothing.
+            if self._spec_refusal is None:
+                logger.warning("LLMPool: %s", exc)
+                self._spec_refusal = (time.monotonic(), exc)
+            raise
         except Exception as exc:
             if self._closed:
                 raise LLMPoolClosed() from exc
