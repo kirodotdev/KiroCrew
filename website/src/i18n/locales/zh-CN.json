@@ -12851,7 +12851,8 @@
         "turn_cache_likely": "缓存可能已重建",
         "turn_cache_likely_hint": "这条回复是在超过模型缓存该对话的时长之后发出的，因此很可能重新保存了整段对话，花费比平时更多。这只是估计。",
         "turn_cache_rewritten": "缓存已重建",
-        "turn_cache_rewritten_hint": "这条回复需要重新保存整段对话，因此花费比平时更多。"
+        "turn_cache_rewritten_hint": "这条回复需要重新保存整段对话，因此花费比平时更多。",
+        "speaker_heading": "{{productName}}"
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "浏览器弹出了“允许远程调试？”。点 允许，{{productName}} 就能在标签里操作。只问一次；{{productName}} 只碰它自己打开的标签。",
@@ -13643,7 +13644,8 @@
         "edit_replaces_below": "发送会替换下方的回复",
         "seed_from_conductor": "来自主对话",
         "seed_from_worker": "来自团队成员",
-        "seed_from_session": "来自另一个对话"
+        "seed_from_session": "来自另一个对话",
+        "speaker_heading": "你"
       },
       "workflowCompletionCard": {
         "hide_result": "隐藏结果",
@@ -14321,6 +14323,10 @@
         "no_prompt_yet": "此会话中尚未发送任何提示词。",
         "retry": "重试",
         "starting": "正在打开新的草稿会话…"
+      },
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}：{{text}}",
+        "approval": "{{speaker}} 正在等待你的批准：{{operation}}"
       }
     },
     "chatPage": {

@@ -34,10 +34,10 @@ vi.mock('../chat-core/transport/sendTurn', async (importOriginal) => {
 
 interface Row { role: string; content: string }
 vi.mock('../app-sdk/ChatMessageList', () => ({
-  default: React.forwardRef(function MockList({ messages }: { messages: Row[] }, ref: React.Ref<unknown>) {
+  default: React.forwardRef(function MockList({ messages, transcript }: { messages: Row[]; transcript?: { announcement?: string } }, ref: React.Ref<unknown>) {
     React.useImperativeHandle(ref, () => ({ scrollToBottom: vi.fn() }), [])
     return (
-      <ol data-testid="rows">
+      <ol data-testid="rows" data-announcement={transcript?.announcement ?? ''}>
         {messages.map((m, i) => <li key={i} data-role={m.role}>{m.content}</li>)}
       </ol>
     )
@@ -109,5 +109,27 @@ describe('ChatEmbed send that throws', () => {
     expect(mockSendTurn).toHaveBeenCalledWith(expect.objectContaining({ message: 'Run tests' }))
     expect(input().value).toBe('half-typed')
     expect(rowsOf('error').map(li => li.textContent)).toEqual(["Couldn't send — check your connection and try again."])
+  })
+
+  it('speaks a failed send once, through the embed status region, never the transcript region', async () => {
+    const history = [{ role: 'assistant', content: 'Hello.', ts: '1', meta: { mid: 'm1' } }]
+    mockGet.mockResolvedValue({ messages: history, running: false, title: '' })
+    await act(async () => { renderEmbed(<ChatEmbed slotKey="slot-1" />) })
+    await settle()
+    const transcriptRegion = () => screen.getByTestId('rows').getAttribute('data-announcement')
+    await act(async () => { fireEvent.change(input(), { target: { value: 'what is the plan?' } }) })
+    await act(async () => { fireEvent.click(screen.getByLabelText('Send message')) })
+    await settle()
+    const failure = "Couldn't send — check your connection and try again."
+    expect(screen.getAllByRole('status').map(el => el.textContent)).toContain(failure)
+    // The transcript region holds only what was sent: not the failure, and not
+    // the earlier reply, which a turn that ended without a reply must not re-speak.
+    expect(transcriptRegion()).toBe('You: what is the plan?')
+    // A poll that brings in another row does not make the transcript region
+    // speak the failure either.
+    mockGet.mockResolvedValue({ messages: [...history, { role: 'assistant', content: 'Later.', ts: '2', meta: { mid: 'm2' } }], running: false, title: '' })
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+    expect(rowsOf('assistant')).toHaveLength(2)
+    expect(transcriptRegion()).not.toContain(failure)
   })
 })

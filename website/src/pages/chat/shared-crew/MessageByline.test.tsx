@@ -6,9 +6,9 @@ import type { ReactNode } from 'react'
 import { api } from '../../../api/client'
 import { ALL_UNAVAILABLE } from '../../../api/sharedCrewUi'
 import type { CrewModeResponse } from '../../../api/sharedCrewMode'
-import { MessageByline } from './MessageByline'
+import { MessageByline, SpeakerHeading } from './MessageByline'
 
-vi.mock('../../../api/client', () => ({ api: { sharedCrewViewer: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), sharedCrewPeople: vi.fn() } }))
+vi.mock('../../../api/client', () => ({ api: { sharedCrewViewer: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), sharedCrewPeople: vi.fn(), listApps: vi.fn(async () => []) } }))
 const viewer = vi.mocked(api.sharedCrewViewer)
 
 const person = (id: string, name: string, kind: 'human' | 'unknown' = 'human') => ({ id, kind, display: { name, login: '', captured_at: null } })
@@ -93,5 +93,29 @@ describe('MessageByline', () => {
     expect((await screen.findByTestId('message-byline')).textContent).toBe('Cy')
     const { container } = mount(<MessageByline meta={{}} />, null)
     expect(container.innerHTML).toBe('')
+  })
+})
+
+describe('SpeakerHeading', () => {
+  const headings = () => screen.queryAllByRole('heading', { level: 2 }).map(el => el.textContent)
+
+  it('names a teammate and says You for the viewer, the same rule as the byline', async () => {
+    mount(<><SpeakerHeading meta={authored('p_bob', 'Bob')} slotKey="s1" /><SpeakerHeading meta={authored('p_cy', 'Cy')} slotKey="s1" /></>, [SLOT])
+    await waitFor(() => expect(headings()).toEqual(['You', 'Cy']))
+  })
+
+  it('says You on a message with no author stamp', () => {
+    mount(<SpeakerHeading meta={{}} />, null)
+    expect(headings()).toEqual(['You'])
+  })
+
+  it('names the app on a row an app sent', () => {
+    mount(<SpeakerHeading meta={{ turnActor: 'app', appLabel: 'notes-app' }} />, null)
+    expect(headings()).toEqual(['notes-app'])
+  })
+
+  it('names the sending session on a relayed message, never You', () => {
+    mount(<SpeakerHeading meta={{}} relayedFrom="Research session" />, null)
+    expect(headings()).toEqual(['Research session'])
   })
 })

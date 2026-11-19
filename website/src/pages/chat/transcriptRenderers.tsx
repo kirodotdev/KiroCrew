@@ -780,6 +780,9 @@ export function createTranscriptRenderers(
               revealActions: o.revealActions,
               copyOnSelect: o.copyOnSelect,
               linkPreviews: o.linkPreviews,
+              // The heading inside the bubble names the same speaker as the
+              // group around it, not the product.
+              speakerName: crewmate.label || crewmate.name,
             })
             if (bubble === null) return null
             return ctx.row(

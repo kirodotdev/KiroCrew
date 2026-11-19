@@ -213,5 +213,19 @@ export function confirmedDelivered(body: { ok?: boolean; queued?: boolean }): bo
  *  renderer module: `App.tsx` needs it, and pulling the renderer into the shell
  *  chunk for one line would be the wrong trade. */
 export function mintSendId(): string {
-  return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const id = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  LOCAL_SEND_IDS.add(id)
+  if (LOCAL_SEND_IDS.size > LOCAL_SEND_IDS_MAX) LOCAL_SEND_IDS.delete(LOCAL_SEND_IDS.values().next().value as string)
+  return id
+}
+
+/** The ids this tab minted, newest last. The server keeps a sender's `sendId`
+ *  on the row it broadcasts, so a Shared Crew teammate's message carries one
+ *  too; only an id minted here marks a row as this reader's own send. */
+const LOCAL_SEND_IDS = new Set<string>()
+const LOCAL_SEND_IDS_MAX = 200
+
+/** Whether `id` was minted by this tab's `mintSendId`. */
+export function isLocalSendId(id: unknown): boolean {
+  return typeof id === 'string' && LOCAL_SEND_IDS.has(id)
 }

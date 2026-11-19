@@ -100,6 +100,42 @@ export function MessageByline({ meta, slotKey, continuesRun = false }: { meta?: 
   return <AuthoredBy author={author} slotKey={slotKey} />
 }
 
+function SpeakerHeadingText({ text }: { text: string }) {
+  return <h2 className="sr-only">{text}</h2>
+}
+
+function AuthorSpeakerHeading({ author, slotKey }: { author: PublicPrincipal; slotKey?: string }) {
+  const sender = useOtherSender(author, slotKey)
+  const text = sender
+    ? principalName(sender) || i18nT('sharedCrew.unattributed')
+    : i18nT('pages.chat.userMessage.speaker_heading')
+  return <SpeakerHeadingText text={text} />
+}
+
+function AppSpeakerHeading({ id }: { id: string }) {
+  const name = useAppName(id)
+  return <SpeakerHeadingText text={name || i18nT('sharedCrew.sent_by_an_app')} />
+}
+
+/** The offscreen heading that opens a user-role message, naming who is
+ *  speaking. It follows the byline's rule, so a screen reader hears the same
+ *  speaker the visible byline names: the app for a row an app sent, the
+ *  teammate for a message someone else wrote, and "You" for the viewer's own. */
+export function SpeakerHeading({ meta, slotKey, relayedFrom }: {
+  meta?: Record<string, unknown>
+  slotKey?: string
+  /** The sender `UserMessage` shows above a message another session delivered
+   *  (its "From …" line); that row names that sender, never "You". */
+  relayedFrom?: string
+}) {
+  const app = appSender(meta)
+  if (app) return <AppSpeakerHeading id={app.name} />
+  if (relayedFrom) return <SpeakerHeadingText text={relayedFrom} />
+  const author = messageAuthor(meta)
+  if (!author) return <SpeakerHeadingText text={i18nT('pages.chat.userMessage.speaker_heading')} />
+  return <AuthorSpeakerHeading author={author} slotKey={slotKey} />
+}
+
 function OtherSenderTone({ author, slotKey, children }: { author: PublicPrincipal; slotKey?: string; children: (other: boolean) => ReactNode }) {
   return <>{children(useOtherSender(author, slotKey) !== null)}</>
 }

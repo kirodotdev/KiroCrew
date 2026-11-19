@@ -5961,7 +5961,8 @@
         "fork_other_in_progress": "Another fork is starting.",
         "fork_with_another_model": "Fork with another model",
         "copy_failed": "Copy failed",
-        "quote_message": "Quote message"
+        "quote_message": "Quote message",
+        "speaker_heading": "{{productName}}"
       },
       "messageContextMenu": {
         "copy_link_text": "Copy link text",
@@ -6482,7 +6483,8 @@
         "more_actions": "More actions",
         "seed_from_conductor": "From the main chat",
         "seed_from_worker": "From a crew member",
-        "seed_from_session": "From another chat"
+        "seed_from_session": "From another chat",
+        "speaker_heading": "You"
       },
       "earlierMessagesBar": {
         "load_failed": "Couldn't load earlier messages",
@@ -6873,6 +6875,10 @@
         "replay_action_hand_back": "you handed back",
         "replay_action_page_moved": "page moved on",
         "replay_action_auto": "passed on its own"
+      },
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}: {{text}}",
+        "approval": "{{speaker}} is waiting for your approval: {{operation}}"
       }
     },
     "chatPage": {

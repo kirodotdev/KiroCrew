@@ -88,7 +88,7 @@ export function mergePaneSends(earlier: PaneSentRestore, later: PaneSentRestore)
   }
 }
 
-export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent }: {
+export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent, announceSent }: {
   slotKey: string
   crewmate?: CrewmateIdentity
   dispatch: AppDispatch
@@ -103,6 +103,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
   paneAgentName: string
   pendingQuestion: ReturnType<typeof pendingQuestionFor>
   markCrewmateSent: (sendId: string) => void
+  /** Speaks the sent message through the transcript's live region (`useTranscriptAnnouncement`). */
+  announceSent?: (markdown: string) => void
 }) {
   const { input, setInput, pendingFiles, setPendingFiles, pasteBlocks, setPasteBlocks, readPastes, slotKeyRef, inputRef, mountedRef, restoreIntoComposer } = draft
   const project = paneSlot?.project
@@ -330,6 +332,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       // Same record as ChatPage's send: ↑ can recall it if the bubble is lost.
       dispatch(recordSendAttempt({ slot: slotKey, text: displayTxt, sendId, pastes: bubblePastes }))
     }
+    // Spoken at the send, as on ChatPage: a user row at the tail is also what a
+    // still-running session looks like on first load.
+    announceSent?.(displayTxt)
     const sendEpoch = selectSlotRunEpoch(store.getState(), slotKey)
     // Sending is explicit intent to be at the end, so the pane force-pins the
     // transcript exactly as ChatPage does after its own optimistic append: the
@@ -462,7 +467,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
       return delivered
     })
-  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
+  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, announceSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing behind it. The pane's counterpart to ChatPage.steer, on the
@@ -534,6 +539,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       slot: slotKey,
       message: { role: 'user', content: txt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, ...steerMeta } },
     }))
+    announceSent?.(txt)
     // Cleared HERE (not in ChatInput) so text, attachments and paste blocks
     // clear atomically.
     setInput('')
@@ -583,7 +589,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       return receipt.status === 'dispatched' || receipt.status === 'queued'
         || selectSendConfirmed(store.getState(), slotKey, sendId)
     })
-  }, [running, paneSlot?.running, doSend, input, pendingFiles, pasteBlocks, setPasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer, consumeQuote, recoverQuoteInto, interceptPaneSlash, crewmate, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
+  }, [running, paneSlot?.running, doSend, input, pendingFiles, pasteBlocks, setPasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer, consumeQuote, recoverQuoteInto, interceptPaneSlash, crewmate, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles, announceSent])
 
   // The pending-question card's one-click answer (`PendingQuestionCard.onDirectSend`).
     /* No-ask_id card: the card IS the interaction, answered in one click.
@@ -642,7 +648,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // duplicate. Only the `steer` POST flag and the pre-append chunk
     // drain differ between the two routes.
     const steerLive = (busy || (!!crewmate && (running || !!paneSlot?.running))) && pendingQuestion?.native === true
-    const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    const sendId = mintSendId()
     // Drain the per-frame chunk buffer before the append, as `doSteer`
     // does: a pre-steer chunk still buffered means the finalize-on-steer
     // finds no streaming row, so the bubble would flush BELOW it and
@@ -651,6 +657,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     if (steerLive || crewmate) drainPendingChunks()
     if (crewmate) markCrewmateSent(sendId)
     dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { ...(steerLive ? { steer: true } : {}), ...(crewmate ? { responsiveSend: true } : {}), optimistic: true, sendId } } }))
+    announceSent?.(text)
     void sendTurn({ message: text, slot: slotKey, meta: { sendId }, ...(crewmate ? { responsive: true } : {}), ...(steerLive ? { steer: true } : {}) }).then((receipt) => {
       applySteerReceipt(receipt, {
         // A confirmed echo is stronger evidence than a missing/late HTTP

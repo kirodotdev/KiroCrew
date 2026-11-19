@@ -53,6 +53,7 @@ import { useRef, useCallback, useEffect, useMemo, useState, type ReactNode } fro
 import { useQuery, useMutation, useQueryClient, focusManager } from '@tanstack/react-query'
 import { Loader2, Paperclip } from 'lucide-react'
 import ChatMessageList, { type VirtualTranscriptHandle } from './ChatMessageList'
+import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
 import ErrorNotice from '../components/ErrorNotice'
 import { FilePreviewStrip } from '../components/chat-input/FilePreviewStrip'
 import { buildOutgoingTurn } from '../chat-core/composer/outgoingTurn'
@@ -806,6 +807,22 @@ function ChatEmbed({
     () => shownTails.length === 0 ? messages : [...messages, ...shownTails.map(t => ({ role: t.role, content: t.content, cls: '' }))],
     [messages, shownTails],
   )
+  // Text for the transcript's one live region, the same decision ChatPage makes,
+  // with one difference. The embed polls, and the server sends a `streaming`
+  // row only while chunks are uncollapsed, so a reply that finishes between two
+  // polls goes straight from the user's row to `assistant` and is never seen
+  // streaming. The slot's `running` flag spans the whole turn, so its true ->
+  // false edge is the landing the embed can always see. Both are read off the
+  // page the server last sent, not off the stall's rewrite of it: a stalled
+  // poll relabels a half-written reply as settled and drops `running`, and
+  // reading those would announce the cut-off text as a finished answer.
+  // Send-recovery rows (`shownTails`) are not part of this tail: the embed
+  // speaks them through its own status region below, and reading them here too
+  // would announce one failure twice.
+  const embedTail = announcementTail(messages)
+  const embedStreaming = serverMessages[serverMessages.length - 1]?.role === 'streaming' || (shown?.running ?? false)
+  const embedApprovals = useMemo(() => pendingApprovalsOf(messages), [messages])
+  const { announcement, announcementTailSpeaker, announceSent } = useTranscriptAnnouncement(embedTail, embedStreaming, undefined, slotKey, embedApprovals, messages.length)
   /** Latest rendered draft, for the async send path to read at settle time
    *  instead of a value closed over at render. */
   const draftRef = useRef(draft)
@@ -1225,8 +1242,11 @@ function ChatEmbed({
       text: msg,
       before,
     }])
+    // Spoken at the send, as on ChatPage: a user row at the tail is also what a
+    // still-running session looks like on first load.
+    announceSent(msg)
     sendMutation.mutate({ msg, meta, files, resized, sentPastes, draftText, override: override != null, sendId, slot: slotKey, steer: steerWhileBusy, ...(hostBaseline ? { hostProof: { text: msg, slot: slotKey, ...hostBaseline } } : {}) })
-  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, steerWhileBusy, attachments, closePickers, pastes, armRefocus])
+  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, steerWhileBusy, attachments, closePickers, pastes, armRefocus, announceSent])
 
   const pickerLabel = attachments.uploading
     ? i18nT('appSdk.chatEmbed.uploading_files')
@@ -1413,6 +1433,8 @@ function ChatEmbed({
           handOff={false}
           transcript={{
             sessionId: `embed:${slotKey}`,
+            announcement,
+            announcementTailSpeaker,
             followOutput: !!startAtBottom,
             initialPlacement: startAtBottom ? 'bottom' : 'top',
             onAtBottomChange: setIsAtBottom,

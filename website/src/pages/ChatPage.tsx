@@ -4,6 +4,7 @@ import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
 import { useAppSelector, store, type AppDispatch } from '../store'
+import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
 import {
   switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog, setPendingInput,
 } from '../store/chatSlice'
@@ -646,6 +647,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Auto-scroll during streaming — only when pinned to bottom
   const lastMsg = messages[messages.length - 1]
   const isStreaming = lastMsg?.role === 'streaming'
+  // Text for the transcript's one live region (TranscriptScrollShell's
+  // `announcement`), spoken when a turn lands and released shortly after.
+  const pendingApprovals = useMemo(() => pendingApprovalsOf(messages), [messages])
+  const { announcement, announcementTailSpeaker, announceSent } = useTranscriptAnnouncement(announcementTail(messages), isStreaming, undefined, activeSlot, pendingApprovals, messages.length)
   // Follow-up option chips and the ownership of the text they append.
   const {
     followUpOptions, followUpSourceKey, followUpMulti,
@@ -673,7 +678,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef, forkUnavailable,
     setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
     messageQuote, setPrefillHint, autoSendRef, setAutoSendTick, newSessionRef, widgetPrefillRef, mergeSlotTokens, pasteBlocksRef, pendingFilesRef, pendingSessionsRef, pickedFileTokens, setPasteBlocks, readPasteBlocks, installPasteBlocks,
-    setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason,
+    setPendingFiles, setPendingSessions, composerRef, currentProjectRef, colorThemeRef, autoFollowAllowed, scrollBottom, setRefusedPress, createFailReason, announceSent,
   })
 
   // Submit inline document comments to the session the file was opened from,
@@ -992,6 +997,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     dispatch,
     onSlashRefused: reportSlashRefusal,
     showActionError,
+    announceSent,
   })
   // The endpointer's auto-submit is an Enter press: the composer's default busy
   // decision for the active slot (never the flipped chord), including a worker
@@ -1256,7 +1262,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               footerSentHere={turnSentHere(messages)}
               footerToolsReturned={footerToolsReturned}
               toggleAct={toggleAct} renderedDisplayItems={renderedDisplayItems} stableMsgKey={stableMsgKey} virtualKey={virtualKey} handleLoadEarlier={handleLoadEarlier}
-              spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement}
+              spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement} announcement={announcement} announcementTailSpeaker={announcementTailSpeaker}
               renderFarmItem={renderFarmItem} renderMessage={renderMessage} renderTurnItem={renderTurnItem}
             />
             <ConductorModeEffect />
