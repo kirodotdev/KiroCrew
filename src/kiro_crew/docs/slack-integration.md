@@ -342,7 +342,7 @@ your own workspace.
    separately configured Slack MCP/search integration: `channels:history`,
    `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`,
    `mpim:history`, `mpim:read`, `search:read`, and `users:read`. The gateway
-   does not consume this `xoxp-...` token. **Slack tools for your agent**
+   does not consume this `xoxp-...` token. **Slack tools for your agents**
    (`slack.slack_mcp`, below) replaces this list in the generated manifest.
 4. **Subscribe to bot events**: `message.im`, `message.channels`,
    `message.groups`, `app_mention`, `app_home_opened`, `file_change`, and
@@ -447,7 +447,7 @@ exactly as with the switch off, and the page says why under the switch.
   `channels:write.invites`, `groups:write.invites` and `pins:write` scopes (the last
   lets the work board pin itself in its channel). Your workspace must have
   Slack code channels enabled.
-- **Slack tools for your agent** (`slack.slack_mcp`) lets the same Slack app also serve
+- **Slack tools for your agents** (`slack.slack_mcp`) lets the same Slack app also serve
   Slack's MCP server (`https://mcp.slack.com/mcp`), so each person can connect their agents
   to Slack as themselves. It adds `settings.is_mcp_enabled: true`,
   `oauth_config.pkce_enabled: true` and the redirect URL `http://localhost:48106/callback`,
@@ -473,11 +473,11 @@ exactly as with the switch off, and the page says why under the switch.
   - on a PKCE app Slack expires refresh tokens 30 days after sign-in, so each person
     reconnects about once a month.
 
-  Not yet tested against Slack: that guide registers a separate app and says to leave its
-  Bot Token Scopes empty, because a PKCE `localhost` sign-in cannot request bot scopes.
-  This switch keeps the bot scopes on the same app, and the sign-in asks only for user
-  scopes. If **Connect** is refused over bot scopes, turn the switch off and register a
-  separate app as the guide describes; PKCE stays on for this app either way.
+  One app serves both: the Slack card's sign-in asks only for user scopes, which is all a
+  PKCE `localhost` sign-in may ask for, so the app keeps its bot scopes and Install to
+  Workspace still issues the bot token. That guide also registers a separate app for the
+  MCP side only, and that app can leave its Bot Token Scopes empty; never remove them from
+  an app the bot uses.
 
 **Defaults for new code channels** (`slack.code_channel_defaults`, applied without a
 restart): a folder, an agent, a model, a reasoning effort and an approval mode. Set any of

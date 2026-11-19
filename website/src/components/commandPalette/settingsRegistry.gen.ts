@@ -912,11 +912,11 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "channels.slack-tools-for-your-agent-slack",
-    "label": "Slack tools for your agent (Slack)",
+    "id": "channels.slack-tools-for-your-agents-slack",
+    "label": "Slack tools for your agents (Slack)",
     "labelKey": "pages.settings.slackPanel.slackCode.slack_mcp",
     "labelSuffix": "Slack",
-    "description": "Let your agents search and read Slack as you. They see only what you can already see in Slack, private messages and DMs included, and they can't post or change anything there. Nothing is read until a person connects their own Slack account.",
+    "description": "Turning this on only changes your Slack app's manifest, which asks for read-only permissions; nothing is read until someone connects their own Slack account. Then your agents can search and read Slack as that person: they see only what that person can already see, private messages and DMs included, and they can't post or change anything there. Each person can disconnect on the Slack card at any time, which stops their agents reading Slack.",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,

@@ -78,13 +78,16 @@ function UnconfirmableNote({ offerSave }: { offerSave: boolean }) {
 
 /** *permissionsOnly*: a saved switch adds lines no reading covers (user scopes,
  *  app settings), so a green "Up to date" would vouch for more than was read.
- *  The pill then says what was checked, in a neutral tone. */
+ *  The pill then names only what the check read (the bot permissions), in a
+ *  neutral tone; it never asks for the save, because no reading can tell
+ *  whether that save already happened. The note under it says so. */
 function StatusPill({ status, permissionsOnly = false }: { status: string; permissionsOnly?: boolean }) {
   const [key, variant] = permissionsOnly && status === 'up_to_date'
     ? (['pages.settings.slackPanel.slackCode.status_permissions_up_to_date', 'muted'] as const)
     : STATUS_KEY[status] ?? STATUS_KEY.unknown
   return (
-    <Badge variant={variant} data-testid="slack-manifest-status" data-status={status}>
+    // Wraps instead of clipping: a translated status can outgrow a 320px row.
+    <Badge variant={variant} className="max-w-full whitespace-normal" data-testid="slack-manifest-status" data-status={status}>
       {i18nT(key)}
     </Badge>
   )
@@ -95,11 +98,12 @@ function StatusPill({ status, permissionsOnly = false }: { status: string; permi
  *  install holds it; ``line``: in the manifest, which Slack cannot confirm
  *  (events, feature blocks, scopes it did not report); ``remove``: held but no
  *  longer asked for. */
-function Chip({ text, kind, missing }: { text: string; kind: 'add' | 'have' | 'line' | 'remove'; missing?: boolean }) {
+function Chip({ text, kind, missing, labelled = false }: { text: string; kind: 'add' | 'have' | 'line' | 'remove'; missing?: boolean; labelled?: boolean }) {
   const tone = kind === 'remove'
-    ? 'border-border text-muted line-through'
+    ? `border-border text-muted${labelled ? '' : ' line-through'}`
     : missing ? 'border-warn text-warn' : 'border-border text-text'
-  const sign = kind === 'add' ? '+ ' : kind === 'remove' ? '− ' : ''
+  // *labelled*: the text already says what happens to the line ("No longer requested: …").
+  const sign = labelled ? '' : kind === 'add' ? '+ ' : kind === 'remove' ? '− ' : ''
   return (
     <span className={`inline-flex flex-wrap items-center gap-x-1 max-w-full min-w-0 rounded border bg-bg px-1.5 py-0.5 text-[11.5px] font-mono ${tone}`}>
       {kind === 'have' && <Check size={11} className="text-ok flex-none" aria-hidden />}
@@ -141,10 +145,10 @@ function ChangeLines({ change, missing, scopesKnown, pending }: {
         // Label above the chips on a narrow screen, beside them from sm up; the
         // chip column may shrink, so a long line wraps instead of overflowing.
         <div key={labelKey} className="flex flex-col gap-0.5 sm:flex-row sm:items-start sm:gap-2" data-testid="slack-manifest-lines">
-          <span className="text-[11px] text-muted sm:w-[64px] sm:flex-none sm:pt-0.5">{i18nT(labelKey)}</span>
+          <span className="text-[11px] text-muted sm:w-[132px] sm:flex-none sm:pt-0.5">{i18nT(labelKey)}</span>
           <div className="flex flex-wrap gap-1 min-w-0">
             {items.map(item => <Chip key={item} text={item} kind={kindFor(item, isScope)} missing={isScope && missing.has(item)} />)}
-            {removed.map(item => <Chip key={`-${item}`} text={item} kind="remove" />)}
+            {removed.map(item => <Chip key={`-${item}`} text={i18nT('pages.settings.slackPanel.slackCode.removed_line', { line: item })} kind="remove" labelled />)}
           </div>
         </div>
       ))}
@@ -413,7 +417,7 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
           A reading that is not current gets no line: its status would be
           the old switch set's, and a failed check has its own notice. */}
       {current && (savedOn.length > 0 || (readingShown && installStatus === 'unknown')) && !pending && !TOKEN_ERRORS.has(installStatus) && !checkFailed(reading) && (
-        // Under a "Bot permissions up to date" pill, "every permission these
+        // Under a "Slack bot permissions up to date" pill, "every permission these
         // switches need" would contradict the note that the reading does not
         // cover this switch's lines, so that note takes the line's place.
         noteUnderPill ? (
@@ -444,11 +448,13 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
         </div>
       )}
 
-      {/* A fixed feature order, so a box never moves when a switch flips. */}
+      {/* A fixed feature order, so a box never moves when a switch flips. The
+          Slack tools box says what added its lines, so it doesn't read as a
+          second control named like the switch above. */}
       {status && FEATURES.filter(f => (savedOn.includes(f) || pendingOn.includes(f)) && !!status.feature_changes?.[f]).map(f => (
         <div key={f} className="rounded-md border border-border bg-bg-elevated px-3 py-2.5 flex flex-col gap-2">
           <div className="flex items-center gap-2">
-            <span className="text-[12px] font-semibold text-text">{featureLabel(f)}</span>
+            <span className="text-[12px] font-semibold text-text">{f === 'slack_mcp' ? i18nT('pages.settings.slackPanel.slackCode.box_slack_mcp') : featureLabel(f)}</span>
             {pendingOn.includes(f) && <span className="text-[11px] text-muted">{i18nT('pages.settings.slackPanel.slackCode.after_save')}</span>}
           </div>
           <ChangeLines
@@ -532,7 +538,7 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
       {!noUpdate && !pending && !stepsHeld && (
       <div className="flex items-center gap-2 flex-wrap">
         <Btn onClick={() => { void copy() }} disabled={!manifestText}>
-          {copied ? <><Check size={13} /> {i18nT('pages.settings.slackPanel.copied')}</> : i18nT('pages.settings.slackPanel.copy_manifest_yaml')}
+          {copied ? <><Check size={13} /> {i18nT('pages.settings.slackPanel.copied')}</> : i18nT('pages.settings.slackPanel.slackCode.copy_manifest')}
         </Btn>
         <a href={manifestUrl} target="_blank" rel="noopener noreferrer"
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border border-border text-text hover:bg-bg-hover transition-colors">
