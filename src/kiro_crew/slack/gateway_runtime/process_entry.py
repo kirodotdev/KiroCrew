@@ -495,6 +495,14 @@ async def run_gateway(
 
     start_plaintext_credentials_notice()
 
+    # ── Container memory limit notice ──
+    # One WARNING when the container's memory limit is at or under
+    # agent.resource_critical_gb, naming the settings to lower. Read-only cgroup
+    # read, scheduled in the background and never awaited.
+    from kiro_crew.resource_status_container_limit import start_container_limit_notice
+
+    start_container_limit_notice(cfg)
+
     # ── KAS kiro-cli floor ──
     # A configured KAS on a kiro-cli that cannot select the KAS engine falls back
     # to kiro-cli, with the notice in the log. Scheduled in the background, never

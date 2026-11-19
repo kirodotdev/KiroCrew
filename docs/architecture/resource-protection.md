@@ -382,6 +382,10 @@ is named once it holds a tenth of the ceiling (`_SLICE_SHMEM_NOTABLE_RATIO`): it
 files in a tmpfs (`/dev/shm`, a tmpfs `/tmp`), charged to the slice until they are deleted,
 and no reclaim can drop it. The ample path reads nothing extra, and nothing gates on the
 attribution: posture, admission and the spawn floor read the same figure as before.
+In a container whose memory limit is at or under the raw `agent.resource_critical_gb`, the
+posture's figure never rises above that threshold, so at start-up the gateway logs one warning
+naming that limit and the settings to lower
+(`resource_status_container_limit.start_container_limit_notice`).
 
 The kernel enforces both ceilings at `fork()` and allocation time, so there is no reaper
 race. `--scope` execs into the target rather than forking a wrapper, so the gateway's PID

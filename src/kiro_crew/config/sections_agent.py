@@ -976,7 +976,9 @@ class AgentConfig:
             "Resource Critical Threshold (GB)",
             "Available memory (GB) at or below which the [RESOURCES] context line "
             "escalates to 'critically low' and advises against starting heavy work "
-            "at all. Should be <= resource_pressure_gb. 0 disables the critical tier.",
+            "at all. Should be <= resource_pressure_gb. 0 disables the critical tier. "
+            "When the container's memory limit is at or under it, the gateway logs one "
+            "start-up warning naming the settings to lower.",
         ),
     )
     admission_gate: bool = field(
