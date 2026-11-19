@@ -60,6 +60,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 import ChatSidebar from '../pages/ChatSidebar'
 import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
+import { expandSessionLinks } from './SessionLinksTestUtils'
 
 const PR_URL = 'https://github.com/kirodotdev/KiroCrew/pull/634'
 const ISSUE_URL = 'https://github.com/kirodotdev/KiroCrew/issues/701'
@@ -125,6 +126,7 @@ function renderSidebar(opts: {
       </Provider>
     </QueryClientProvider>,
   )
+  expandSessionLinks()
 }
 
 /** The chip's title now names the panel and the modifier escape hatch. Built
@@ -237,6 +239,9 @@ describe('ChatSidebar – PR chip', () => {
     expect(bar.className).toContain('group-has-[:focus-visible]:opacity-100')
     expect(bar.className).toContain('has-[[data-state=open]]:opacity-100')
     expect(bar.className).not.toContain('focus-within')
+    // Top-anchored, so it never covers the status line's links count (#38200).
+    expect(bar.className).toContain('top-1.5')
+    expect(bar.className).not.toContain('top-1/2')
   })
 
   it('keeps focus on the chip when it is activated from the keyboard', () => {
