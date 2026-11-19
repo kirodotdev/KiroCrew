@@ -109,6 +109,9 @@ def test_each_owner_route_wraps_the_handler_of_the_twin_it_names():
     }
     for path, item in CONTRACT["paths"].items():
         for method, operation in item.items():
+            if "x-crew-wraps" not in operation:
+                # No ``/api/*`` twin; test_crew_api_grant_requests.py pins its owner gate.
+                continue
             twin_method, twin_path = operation["x-crew-wraps"].split(" ", 1)
             wrapped = table[(method.upper(), path)]
             assert wrapped.__wrapped__ is table[(twin_method, twin_path)]

@@ -89,6 +89,8 @@ async def oauth_metadata(request: web.Request) -> web.Response:
             "token_endpoint_auth_methods_supported": ["none"],
             "scopes_supported": list(la.SCOPES),
             "crew_endpoint": base,
+            # Where the owner answers a request on this Kiro Crew: the Owner routes.
+            "crew_consent_modes": ["owner_api"],
         }
     )
 

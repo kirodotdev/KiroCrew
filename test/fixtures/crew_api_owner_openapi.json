@@ -32,6 +32,68 @@
           "500": {"$ref": "#/components/responses/Error"}
         }
       }
+    },
+    "/v1/crew/owner/grant-requests": {
+      "get": {
+        "operationId": "get_v1_crew_owner_grant_requests",
+        "summary": "The grant requests of local authorization that wait for the owner's consent, oldest first",
+        "x-crew-tier": "owner",
+        "parameters": [
+          {"$ref": "#/components/parameters/CrewApiVersion"},
+          {"$ref": "#/components/parameters/RequestId"}
+        ],
+        "responses": {
+          "200": {
+            "description": "The waiting requests",
+            "headers": {
+              "X-Request-Id": {"$ref": "#/components/headers/X-Request-Id"},
+              "Crew-API-Version": {"$ref": "#/components/headers/Crew-API-Version"}
+            },
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/GrantRequestList"}}
+            }
+          },
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/crew/owner/grant-requests/{request_id}/decision": {
+      "post": {
+        "operationId": "post_v1_crew_owner_grant_requests_request_id_decision",
+        "summary": "Approve or deny one grant request",
+        "x-crew-tier": "owner",
+        "parameters": [
+          {"$ref": "#/components/parameters/CrewApiVersion"},
+          {"$ref": "#/components/parameters/RequestId"},
+          {"name": "request_id", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^greq_"}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/GrantRequestDecision"}}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The request after the decision",
+            "headers": {
+              "X-Request-Id": {"$ref": "#/components/headers/X-Request-Id"},
+              "Crew-API-Version": {"$ref": "#/components/headers/Crew-API-Version"}
+            },
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/GrantRequest"}}
+            }
+          },
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
     }
   },
   "components": {
@@ -59,7 +121,9 @@
         "pattern": "^[a-z][a-z0-9_]*$",
         "examples": [
           "authentication_error",
+          "conflict_error",
           "invalid_request_error",
+          "not_found_error",
           "permission_error",
           "server_error"
         ]
@@ -69,6 +133,48 @@
         "description": "Open enum: a client treats a code it does not know by the HTTP status.",
         "pattern": "^[a-z][a-z0-9_]*$",
         "examples": ["owner_only", "invalid_token", "internal_error"]
+      },
+      "GrantRequest": {
+        "type": "object",
+        "required": ["id", "object", "namespace", "status", "client_id", "requested_scopes", "created_at", "expires_at"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^greq_"},
+          "object": {"const": "grant_request"},
+          "namespace": {"const": "default", "description": "Stored on every record; one fixed value today"},
+          "status": {"enum": ["pending", "approved", "denied", "expired"]},
+          "client_id": {"type": "string", "description": "As the app reported it"},
+          "client_name": {"type": "string", "description": "As the app reported it"},
+          "verified": {"const": false, "description": "Nothing verified the name or the client_id"},
+          "redirect_uri": {"type": "string", "description": "The loopback address the authorization code goes to"},
+          "user_code": {"type": "string", "description": "Short code the app shows, so the owner can tell requests apart"},
+          "requested_scopes": {"type": "array", "items": {"type": "string"}},
+          "created_at": {"type": "integer"},
+          "expires_at": {"type": "integer"}
+        }
+      },
+      "GrantRequestList": {
+        "type": "object",
+        "required": ["object", "data", "has_more"],
+        "properties": {
+          "object": {"const": "list"},
+          "data": {"type": "array", "items": {"$ref": "#/components/schemas/GrantRequest"}},
+          "first_id": {"type": ["string", "null"]},
+          "last_id": {"type": ["string", "null"]},
+          "has_more": {"type": "boolean"}
+        }
+      },
+      "GrantRequestDecision": {
+        "type": "object",
+        "required": ["decision"],
+        "additionalProperties": false,
+        "properties": {
+          "decision": {"enum": ["approve", "deny"]},
+          "scopes": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Only with approve: the scopes to give, a subset of requested_scopes. Left out: all of them."
+          }
+        }
       },
       "BotRoster": {
         "type": "object",
