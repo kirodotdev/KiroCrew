@@ -15587,6 +15587,7 @@
       "jump_to_new_many": "{{count}} новых · К последним",
       "jump_to_new_other": "{{count}} новых · К последним",
       "could_not_repair_images": "Не удалось восстановить изображения",
+      "could_not_edit_and_resend": "Не удалось изменить и отправить снова",
       "session_closed_elsewhere": "Этот чат закрыли за пределами этого окна."
     },
     "chatSidebar": {

@@ -23,11 +23,12 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import chatReducer, { setSlotRunning } from '../store/chatSlice'
+import chatReducer, { setActiveSlot, setSlotRunning } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
+import { ApiError } from '../api/apiError'
 
 interface VirtuosoMockProps {
   data?: unknown[]
@@ -40,11 +41,12 @@ vi.mock('react-virtuoso', () => ({ Virtuoso: ({ data, itemContent }: VirtuosoMoc
  * `chat.messages`, so the fetch and the preloaded store must tell the same
  * story or the transcript this test clicks on would be silently blanked.
  */
-type Msg = { role: string; content: string; variants?: { content: string; ts?: string }[]; variant_idx?: number; meta?: Record<string, unknown> }
+type Msg = { role: string; content: string; ts?: string; variants?: { content: string; ts?: string }[]; variant_idx?: number; meta?: Record<string, unknown> }
 const detail = vi.hoisted(() => ({ messages: [] as Msg[] }))
 const regenerateSlot = vi.hoisted(() => vi.fn())
 const switchVariant = vi.hoisted(() => vi.fn())
 const continueSlot = vi.hoisted(() => vi.fn())
+const rewind = vi.hoisted(() => vi.fn())
 vi.mock('../api/client', () => ({
   api: {
     chatSlots: vi.fn().mockResolvedValue([]),
@@ -60,6 +62,7 @@ vi.mock('../api/client', () => ({
     regenerateSlot: (...a: unknown[]) => regenerateSlot(...a),
     switchVariant: (...a: unknown[]) => switchVariant(...a),
     continueSlot: (...a: unknown[]) => continueSlot(...a),
+    rewind: (...a: unknown[]) => rewind(...a),
   },
   SEARCH_MIN_CHARS: 2,
 }))
@@ -80,13 +83,13 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPage from '../pages/ChatPage'
 
-function makeStore(messages: Msg[]) {
+function makeStore(messages: Msg[], extraSlots: string[] = []) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
         status: null,
-        slots: [{ key: 'slot-a', messages: messages.length, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+        slots: ['slot-a', ...extraSlots].map(key => ({ key, messages: messages.length, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined })),
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -114,9 +117,9 @@ function makeStore(messages: Msg[]) {
  */
 const NOTICE_READY = { timeout: 5000 }
 
-async function renderWith(messages: Msg[]) {
+async function renderWith(messages: Msg[], extraSlots: string[] = []) {
   detail.messages = messages
-  const store = makeStore(messages)
+  const store = makeStore(messages, extraSlots)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   await act(async () => {
     render(
@@ -153,6 +156,7 @@ beforeEach(() => {
   regenerateSlot.mockReset()
   switchVariant.mockReset()
   continueSlot.mockReset()
+  rewind.mockReset()
 })
 
 describe('refused presses render the notice above the composer', () => {
@@ -212,5 +216,70 @@ describe('refused presses render the notice above the composer', () => {
     // with — the old reason would now describe a state that passed.
     await act(async () => { store.dispatch(setSlotRunning(true)) })
     await waitFor(() => expect(screen.queryByTestId('refused-press-error')).toBeNull())
+  })
+})
+
+/** A settled turn whose user row carries the ts edit-and-resend rewinds to. */
+const editableTurn: Msg[] = [
+  { role: 'user', content: 'original question', ts: '2026-05-21T16:00:00Z' },
+  { role: 'assistant', content: 'first answer', ts: '2026-05-21T16:00:01Z' },
+]
+
+function editAndResend(text: string) {
+  fireEvent.click(screen.getByTestId('edit-message'))
+  const editor = screen.getByLabelText('Edit message')
+  fireEvent.change(editor, { target: { value: text } })
+  fireEvent.keyDown(editor, { key: 'Enter', shiftKey: false })
+}
+
+describe('a refused edit-and-resend shows why and restores the transcript', () => {
+  const refusals: [string, unknown, string][] = [
+    [
+      'the 503 sign-in wall',
+      new ApiError(503, 'Kiro CLI setup or sign-in is required before starting a session.', JSON.stringify({ code: 'kiro_prerequisite_required' })),
+      'Kiro CLI setup or sign-in is required',
+    ],
+    ['a 409 running slot', new ApiError(409, 'slot is running'), 'slot is running'],
+    ['a network failure', new TypeError('Failed to fetch'), 'Failed to fetch'],
+  ]
+
+  it.each(refusals)('%s', async (_name, err, reason) => {
+    rewind.mockRejectedValue(err)
+    const store = await renderWith(editableTurn)
+
+    editAndResend('edited question')
+
+    const notice = await screen.findByTestId('refused-press-error', NOTICE_READY)
+    expect(notice.textContent).toContain("Couldn't edit and resend")
+    expect(notice.textContent).toContain(reason)
+    expect(rewind).toHaveBeenCalledWith('slot-a', '2026-05-21T16:00:00Z', 'edited question')
+    // The rollback still restores the pre-edit rows.
+    expect(store.getState().chat.messages.map(m => m.content)).toEqual(['original question', 'first answer'])
+  })
+
+  it('a refusal that lands after a slot switch shows no notice on the new slot', async () => {
+    let reject: (e: unknown) => void = () => {}
+    rewind.mockImplementation(() => new Promise((_resolve, rej) => { reject = rej }))
+    const store = await renderWith(editableTurn, ['slot-b'])
+
+    editAndResend('edited question')
+    await waitFor(() => expect(rewind).toHaveBeenCalledOnce())
+    await act(async () => { store.dispatch(setActiveSlot('slot-b')) })
+    await act(async () => { reject(new ApiError(409, 'slot is running')) })
+
+    expect(store.getState().chat.activeSlot).toBe('slot-b')
+    expect(screen.queryByTestId('refused-press-error')).toBeNull()
+  })
+
+  it('a successful rewind keeps the edit and shows no notice', async () => {
+    rewind.mockResolvedValue({ ok: true, at_message_index: 0 })
+    const store = await renderWith(editableTurn)
+
+    editAndResend('edited question')
+
+    await waitFor(() => expect(rewind).toHaveBeenCalledWith('slot-a', '2026-05-21T16:00:00Z', 'edited question'))
+    await act(async () => { await Promise.resolve() })
+    expect(store.getState().chat.messages.map(m => m.content)).toEqual(['edited question'])
+    expect(screen.queryByTestId('refused-press-error')).toBeNull()
   })
 })

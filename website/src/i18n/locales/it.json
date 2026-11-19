@@ -15233,6 +15233,7 @@
       "jump_to_new_other": "{{count}} nuovi · Vai in fondo",
       "jump_to_new_many": "{{count}} nuovi · Vai in fondo",
       "could_not_repair_images": "Impossibile riparare le immagini",
+      "could_not_edit_and_resend": "Impossibile modificare e reinviare",
       "session_closed_elsewhere": "Questa chat è stata chiusa fuori da questa finestra."
     },
     "chatSidebar": {

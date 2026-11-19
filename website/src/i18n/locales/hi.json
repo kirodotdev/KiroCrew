@@ -14879,6 +14879,7 @@
       "jump_to_new_one": "{{count}} नया · नवीनतम पर जाओ",
       "jump_to_new_other": "{{count}} नए · नवीनतम पर जाओ",
       "could_not_repair_images": "छवियाँ ठीक नहीं की जा सकीं",
+      "could_not_edit_and_resend": "संपादित करके फिर से नहीं भेज सके",
       "session_closed_elsewhere": "यह चैट इस विंडो के बाहर बंद की गई।"
     },
     "chatSidebar": {

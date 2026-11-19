@@ -38,6 +38,7 @@ export const REFUSED_PRESS_TITLE_KEYS = {
   fork: 'pages.chatPage.could_not_fork_session',
   fresh_session: 'pages.chatPage.could_not_start_fresh_session',
   repair_images: 'pages.chatPage.could_not_repair_images',
+  edit_resend: 'pages.chatPage.could_not_edit_and_resend',
 } as const
 
 export type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS

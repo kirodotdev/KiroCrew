@@ -7015,6 +7015,7 @@
       "could_not_check_restored_tabs": "Could not check whether every tab was restored after the last restart.",
       "could_not_start_fresh_session": "Couldn't start a fresh session",
       "could_not_repair_images": "Couldn't repair the images",
+      "could_not_edit_and_resend": "Couldn't edit and resend",
       "delivery_unconfirmed_option": "Delivery not confirmed — check the conversation above, then tap the suggestion again if it is missing.",
       "delivery_unconfirmed_comments": "Delivery not confirmed — send your comments again from the document if they aren’t in this conversation within a minute. Sending again sooner could duplicate them.",
       "delivery_unconfirmed_comments_overlay": "Delivery not confirmed — reopen the side panel and send your comments again if they aren’t in this conversation within a minute. Sending again sooner could duplicate them.",
