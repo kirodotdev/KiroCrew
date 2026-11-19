@@ -3966,7 +3966,13 @@ The `denied_command` change-card kind was not used for this: it adds or toggles 
 user deny rule, a settings change, while this is the person running one command. Item 5 says a suggested reply (an `[OPTIONS:]` chip) offers only
 what the Bot can then do, never asks it for a card (a card that fits is
 raised directly, since the card is the question), and carries no internal word
-(card, worker, helper, a tool name such as `propose_change`).
+(card, worker, helper, a tool name such as `propose_change`); nothing else the Bot
+writes to the user says worker, helper, session or dispatch either. Item 2 tells
+the Bot that to the user it is one Bot: its workers are part of it, so work a
+worker does is the Bot's own, and it never tells the user it cannot do a task or
+that someone else must, but says it will handle it and reports the result. That
+rule covers work a worker can do: a task a rule blocks, or one only the user can
+supply something for, is still said plainly, as items 1 and 3 say.
 `worker.principles` tells the worker to report a blocked command with the exact
 command in a code block rather than look for a way around it. The refusal
 itself also says this to any session: the `pipe-to-shell` category has its own

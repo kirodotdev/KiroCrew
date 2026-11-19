@@ -1597,10 +1597,10 @@ its first message from the stub. Another agent, a prompt a person wrote, a
 non-dashboard key and every other harness keep the message path. Resource
 URIs and their order remain unchanged on the wire, and conditional, skill and knowledge resources keep native selection.
 Exact template and body matches omit initial manual copies. The complete-envelope
-budget is checked BEFORE omission: 64,000 characters including wrappers, with
+budget is checked BEFORE omission: 65,000 characters including wrappers, with
 whole guides left out and named when it is exceeded
 ([memory-skills-hooks](memory-skills-hooks.md)); reads
-refuse above 256,000 bytes per source, and resource expansion is bounded to 64
+refuse above 260,000 bytes per source, and resource expansion is bounded to 64
 unique documents. KAS's existing registration ceiling is 50 custom agents, not a
 file-body budget. An id in `agent_files.KAS_RESERVED_AGENT_IDS` (`default` and
 the built-in mode ids `vibe`, `spec`, `quick-spec`, `bug-fix`, `plan`,
