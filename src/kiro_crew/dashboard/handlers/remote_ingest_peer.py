@@ -10,9 +10,11 @@ where the crew log says.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -200,11 +202,50 @@ def worker_digest(fields: Mapping[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
+#: Per mailbox board on this crew, the events of the hub waits held open on it
+#: (``remote_work_items_pull.api_chat_work_items_wait``). Loop-confined: set and
+#: read on the dashboard's event loop only.
+_WAITERS: dict[str, set[asyncio.Event]] = {}
+
+
+def note_report(board: str) -> None:
+    """A worker report landed on *board*: release every hub wait held on it. ON THE
+    LOOP. Costs one dict read when nobody waits, so the report route calls it for
+    every board."""
+    for event in _WAITERS.get(board, ()):
+        event.set()
+
+
+def waiting_count() -> int:
+    """How many hub waits this crew holds open right now, over every board."""
+    return sum(len(events) for events in _WAITERS.values())
+
+
+@contextlib.contextmanager
+def report_waiter(board: str) -> Iterator[asyncio.Event]:
+    """An event :func:`note_report` sets for *board*, registered for the block. ON
+    THE LOOP. Registered before the caller's first read, so a report landing between
+    that read and the wait is never missed."""
+    event = asyncio.Event()
+    _WAITERS.setdefault(board, set()).add(event)
+    try:
+        yield event
+    finally:
+        events = _WAITERS.get(board)
+        if events is not None:
+            events.discard(event)
+            if not events:
+                del _WAITERS[board]
+
+
 __all__ = [
     "CODE_FOLD_UNREADABLE",
     "FoldedPeer",
     "PeerReport",
     "folded_skipped",
+    "note_report",
+    "report_waiter",
+    "waiting_count",
     "needs_page",
     "legacy_seen",
     "new_reports",

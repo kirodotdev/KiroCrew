@@ -397,3 +397,61 @@ def test_a_pull_one_patrol_interval_old_still_holds(recorded, peer):
     assert work_ledger.remote_pull_fresh(CONDUCTOR, item, now=two) is True
     assert work_ledger.remote_pull_fresh(CONDUCTOR, item, now=two + timedelta(seconds=1)) is False
     assert pulled.tzinfo is not None and pulled <= datetime.now(timezone.utc)
+
+
+# ── the held wait (W3b) ──────────────────────────────────────────────────────
+
+
+def test_a_remote_done_reaches_the_board_through_the_held_wait(recorded, peer, monkeypatch):
+    from kiro_crew.dashboard.handlers import remote_batch_pull
+
+    answers = [(200, {"news": True}), (404, None)]
+    plain = peer._answer
+
+    def answer(method, path, body):
+        if path == remote_batch_pull.WAIT_PATH:
+            return answers.pop(0)
+        return plain(method, path, body)
+
+    monkeypatch.setattr(peer, "_answer", answer)
+    monkeypatch.setattr(remote_puller, "_waits", {})
+    monkeypatch.setattr(remote_puller, "_unsupported", {})
+    clock = {"now": 0.0}
+    real_wait = remote_batch_pull.wait_crew
+
+    async def held(*a):
+        # Each wait takes the crew's whole hold on the fake clock, so none backs off.
+        clock["now"] += remote_batch_pull.WAIT_SECS
+        return await real_wait(*a)
+
+    monkeypatch.setattr(remote_batch_pull, "wait_crew", held)
+    monkeypatch.setattr(remote_puller, "_clock", lambda: clock["now"])
+
+    async def go() -> str:
+        item_id = await _remote_item(peer)
+        peer.report("done", "shipped", "2026-10-29T10:00:00+00:00", pr=7)
+        await asyncio.wait_for(remote_puller._wait_loop(_state(peer), CONDUCTOR, hub.CREW), 30)
+        return item_id
+
+    item_id = asyncio.run(go())
+    assert _status(item_id) == "done"
+    assert any(key.startswith("report:") for key in _wakes())
+    waits = [c for c in peer.calls if c["path"] == remote_batch_pull.WAIT_PATH]
+    assert len(waits) == 2
+    assert waits[0]["body"]["conductor_key"] == CONDUCTOR
+    assert waits[0]["body"]["wait_secs"] == remote_batch_pull.WAIT_SECS
+    assert list(waits[0]["body"]["items"]) == [item_id]
+    # The 404 left this crew to the patrol pull.
+    assert (CONDUCTOR, hub.CREW) in remote_puller._unsupported
+
+
+def test_a_tick_with_no_remote_item_starts_no_wait(recorded, peer, monkeypatch):
+    monkeypatch.setattr(remote_puller, "_waits", {})
+
+    async def go() -> None:
+        await helpers._board()
+        peer.calls.clear()
+        await remote_puller.on_patrol_tick(_state(peer), CONDUCTOR)
+
+    asyncio.run(go())
+    assert remote_puller._waits == {} and peer.calls == []

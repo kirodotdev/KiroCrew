@@ -439,6 +439,10 @@ async def api_work_report(request: web.Request) -> web.Response:
                     cite_unit=own_unit,
                 )
             _audit(caller, "work_report", "ok", resources=f"{item_id} status={item.status}")
+            # A hub holding a wait on this board (remote dispatch) reads it now.
+            from kiro_crew.dashboard.handlers import remote_ingest_peer
+
+            remote_ingest_peer.note_report(conductor_key)
             await asyncio.to_thread(work_ledger.clear_undelivered, caller)
             return web.json_response(
                 {"ok": True, "item_id": item.item_id, "status": item.status, "round": item.round}

@@ -85,6 +85,13 @@ async def api_chat_work_items_pull(request: web.Request) -> web.Response:
     return await remote_work_items_pull.api_chat_work_items_pull(request)
 
 
+async def api_chat_work_items_wait(request: web.Request) -> web.Response:
+    """Remote dispatch's held wait for one hub conductor's news, imported on first use."""
+    from kiro_crew.dashboard.handlers import remote_work_items_pull
+
+    return await remote_work_items_pull.api_chat_work_items_wait(request)
+
+
 async def api_chat_slot_work_item_patch(request: web.Request) -> web.Response:
     """Remote dispatch's per-slot decision write, imported on first use, never at boot."""
     from kiro_crew.dashboard.handlers import remote_work_item
@@ -150,6 +157,7 @@ def register(app: web.Application) -> None:
     app.router.add_patch("/api/chat/slots/{slot}/work-item", api_chat_slot_work_item_patch)
     # The same read for every item one hub conductor holds here, in one call.
     app.router.add_post("/api/chat/work-items/pull", api_chat_work_items_pull)
+    app.router.add_post("/api/chat/work-items/wait", api_chat_work_items_wait)
     app.router.add_get("/api/chat/slots/{slot}/dashboard-card", api_dashboard_card)
     # Same path, POST: reading a summary must stay free of side effects, so
     # generating one is a separate verb rather than a query flag on the GET.

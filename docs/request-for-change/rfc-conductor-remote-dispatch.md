@@ -273,6 +273,14 @@ How (a) works:
   `pending_approval` / `trust_active`, and the copy with its events from the
   cursor on only when something changed. A crew that does not serve the route
   is read per item, with the slot list and `GET .../work-item`, as before.
+- **A held wait between ticks.** So a remote report does not wait up to a whole
+  patrol interval, the hub keeps one `POST api/chat/work-items/wait` open per
+  crew a board has open items on, with the same cursor. The peer answers
+  `news: true` as soon as a worker report moves one of them past it, else
+  `news: false` after 25 s; the hub then runs the same pull, so the report wakes
+  the conductor as a local one does. The tick's pull stays the fallback. A crew
+  that answers 404 is left to it; a failed or instant quiet answer, or repeated instant news, backs off up to
+  the patrol interval.
 - **`decide` forwards.** `work_ledger_record action=decide` on a remote item
   writes locally, then PATCHes the peer copy. A failed PATCH is reported in the
   tool reply; the local write stands and the next `decide` carries it again.

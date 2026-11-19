@@ -21,6 +21,11 @@ conductor's tick. A board a read is already pulling is skipped by
 ``ingest_board``'s own guard. Behind ``work_ledger.remote_dispatch``: off, nothing
 is pulled.
 
+A tick that pulled also starts the held wait (:func:`start_waits`): one open request
+per crew the board has open items on, which the crew answers as soon as one of them
+has a new report, so a remote report reaches the conductor in about the time a
+local one does rather than at the next tick.
+
 Each tick, and once at boot, :func:`sweep_closes` also closes retired peer slots
 on every board here, so a slot retired before its conductor stopped patrolling is
 still closed when its crew comes back, and a close that failed is tried again on
@@ -31,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from kiro_crew import work_ledger
@@ -162,13 +168,152 @@ async def _sweep(state: "DashboardState", swept: list[str]) -> None:
 
 
 async def on_patrol_tick(state: "DashboardState", board: str) -> None:
-    """The patrol tick's remote step: pull *board*, then sweep closes. Never raises."""
-    await pull_on_patrol(state, board)
+    """The patrol tick's remote step: pull *board*, keep its waits held, then sweep
+    closes. Never raises."""
+    if await pull_on_patrol(state, board):
+        await start_waits(state, board)
     await sweep_closes(state)
 
 
+# ── the held wait (W3b) ──────────────────────────────────────────────────────
+#
+# Between two patrol pulls, the hub holds one wait open per crew a board has open
+# items on (``remote_batch_pull.wait_crew``). The crew answers it as soon as a
+# worker report moves one of those items past the hub's cursor, and the hub then
+# pulls the board through the patrol's own path (:func:`pull_on_patrol`). The
+# report is filed as a recorded report, so the crew-log bus wakes the conductor
+# (``conductor_wake``) as for a local one. The patrol pull stays the fallback.
+#
+# How it stops. Each wait re-reads the board first and ends once the switch is
+# off, the cache is dirty or the crew has no open item left on it. A crew that
+# answers 404 serves no wait: it is left to the patrol pull and not asked again
+# for :data:`WAIT_UNSUPPORTED_RETRY_SECS`. A failed wait, a quiet one answered
+# sooner than :data:`WAIT_FAST_SECS`, or a second instant news in a row backs
+# off, doubling up to the patrol interval, so no path asks a crew in a tight loop;
+# any other news resets it. Anything unexpected ends the wait; the next
+# patrol tick starts it again.
+
+#: Seconds a wait may take on the hub beyond the crew's hold: its ready check,
+#: the cursor reads and the reply.
+WAIT_SLACK_SECS = 15.0
+
+#: First and longest pause after a failed or fast-answered wait. The longest is
+#: the patrol interval: a crew failing for long is asked no more often than pulled.
+WAIT_BACKOFF_MIN_SECS = 5.0
+WAIT_BACKOFF_MAX_SECS = 300.0
+
+#: A wait answered sooner than this did not wait at all: counted as a failure for
+#: the backoff, so a crew that always answers at once is not asked in a tight loop.
+WAIT_FAST_SECS = 2.0
+
+#: Seconds a crew that answered 404 is left to the patrol pull before it is asked
+#: again (it may have been upgraded, or had the preview turned on).
+WAIT_UNSUPPORTED_RETRY_SECS = 3600.0
+
+#: Most items one wait names: the peer route's own cap.
+WAIT_MAX_ITEMS = 32
+
+#: ``(board, crew)`` -> its running wait. At most one per pair, never one per item.
+_waits: dict[tuple[str, str], "asyncio.Task[None]"] = {}
+
+#: ``(board, crew)`` -> clock reading before which a 404 crew is not waited on.
+_unsupported: dict[tuple[str, str], float] = {}
+
+#: The clock and the pause, as module names so tests drive them with no real sleep.
+_clock = time.monotonic
+_sleep = asyncio.sleep
+
+
+def _open_by_crew(board: str) -> dict[str, list[work_ledger.WorkItem]]:
+    """Crew -> *board*'s open items bound there; empty when the board needs no pull
+    (:func:`_needs_pull`). BLOCKING."""
+    from kiro_crew.dashboard.handlers.remote_ingest_report import _is_remote_open
+
+    if not _needs_pull(board):
+        return {}
+    out: dict[str, list[work_ledger.WorkItem]] = {}
+    for item in work_ledger.list_work_items(board):
+        if _is_remote_open(item):
+            out.setdefault(str(item.worker_instance_id), []).append(item)
+    # shortcut: a crew holding more than WAIT_MAX_ITEMS of one board's items has
+    # the rest reach the hub on the patrol pull only; name them in turns if needed.
+    return {crew: items[:WAIT_MAX_ITEMS] for crew, items in out.items()}
+
+
+async def start_waits(state: "DashboardState", board: str) -> list[str]:
+    """Start a wait for each crew *board* has open items on that has none running.
+    Never raises. Answers the crews a wait was started for."""
+    try:
+        crews = await asyncio.to_thread(_open_by_crew, board)
+    except Exception:  # noqa: BLE001 - the patrol pull still runs
+        logger.debug("remote wait: board check failed", exc_info=True)
+        return []
+    now = _clock()
+    for key in [k for k, until in _unsupported.items() if until <= now]:
+        del _unsupported[key]
+    started: list[str] = []
+    loop = asyncio.get_running_loop()
+    for crew in crews:
+        key = (board, crew)
+        task = _waits.get(key)
+        if key in _unsupported or (task is not None and not task.done()):
+            continue
+        _waits[key] = loop.create_task(_wait_loop(state, board, crew), name="remote-crew-wait")
+        started.append(crew)
+    return started
+
+
+async def _wait_loop(state: "DashboardState", board: str, crew: str) -> None:
+    """Hold waits on *crew* for *board* until it has no open item there. Never raises."""
+    from kiro_crew.dashboard.handlers import remote_batch_pull as batch
+
+    key = (board, crew)
+    backoff = 0.0
+    last_fast_news = False
+    try:
+        while True:
+            items = (await asyncio.to_thread(_open_by_crew, board)).get(crew)
+            if not items:
+                return
+            began = _clock()
+            try:
+                outcome = await asyncio.wait_for(
+                    batch.wait_crew(
+                        state, getattr(state, "instances_manager", None), board, crew, items
+                    ),
+                    batch.WAIT_SECS + WAIT_SLACK_SECS,
+                )
+            except asyncio.TimeoutError:
+                outcome = batch.WAIT_FAILED
+            # Taken before the pull: a slow pull must not make an instant answer
+            # look like a held wait.
+            fast = _clock() - began < WAIT_FAST_SECS
+            if outcome == batch.WAIT_UNSUPPORTED:
+                _unsupported[key] = _clock() + WAIT_UNSUPPORTED_RETRY_SECS
+                return
+            if outcome == batch.WAIT_NEWS:
+                await pull_on_patrol(state, board)
+            # An instant news answer is real news when the one before it was not:
+            # a report landed while this loop slept. Two in a row mean the pull did
+            # not move the cursor, so that backs off as a failure does.
+            fast_news = fast and outcome == batch.WAIT_NEWS
+            stuck = fast_news and last_fast_news
+            last_fast_news = fast_news
+            if outcome == batch.WAIT_FAILED or (fast and not fast_news) or stuck:
+                backoff = min(max(backoff * 2, WAIT_BACKOFF_MIN_SECS), WAIT_BACKOFF_MAX_SECS)
+                await _sleep(backoff)
+            else:
+                backoff = 0.0
+    except Exception:  # noqa: BLE001 - the next patrol tick starts it again
+        logger.warning("remote wait on one crew stopped", exc_info=True)
+    finally:
+        if _waits.get(key) is asyncio.current_task():
+            del _waits[key]
+
+
 def ensure_running(_state: DashboardState) -> None:
-    """No-op: nothing runs in the background any more.
+    """No-op: no timer runs in the background; the held waits start from the
+    patrol tick (:func:`start_waits`).
 
     shortcut: kept only for the bind route's call (``remote_dispatch_routes``,
     owned by another change); delete with that call.

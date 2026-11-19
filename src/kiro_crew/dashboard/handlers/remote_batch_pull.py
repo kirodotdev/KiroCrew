@@ -116,6 +116,51 @@ async def pull_crew(
     return _parse(payload, set(hints))
 
 
+#: The peer's held wait (``remote_work_items_pull.api_chat_work_items_wait``).
+WAIT_PATH = "api/chat/work-items/wait"
+
+#: Seconds the hub asks a crew to hold one wait: the peer's own cap.
+WAIT_SECS = remote_work_items_pull.MAX_WAIT_SECS
+
+#: What one wait came back with.
+WAIT_NEWS, WAIT_QUIET, WAIT_UNSUPPORTED, WAIT_FAILED = "news", "quiet", "unsupported", "failed"
+
+
+async def wait_crew(
+    state: Any, mgr: Any, board: str, crew: str, items: list[work_ledger.WorkItem]
+) -> str:
+    """One held wait on *crew* for news on *items*. Never raises.
+
+    :data:`WAIT_NEWS` when the crew says a report moved one of them past the hub's
+    cursor, :data:`WAIT_QUIET` when its wait ran out first, :data:`WAIT_UNSUPPORTED`
+    for a plain 404 (a crew older than the route, or with the preview off) and
+    :data:`WAIT_FAILED` for anything else: not ready, a tunnel fault, a refusal, a
+    reply this module cannot read.
+    """
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    try:
+        if not await _crew_ready(state, mgr, board, crew):
+            return WAIT_FAILED
+        hints = {item.item_id: await _hint(board, item) for item in items}
+        status, payload = await remote_ingest._routes().peer_call(
+            mgr,
+            crew,
+            "POST",
+            WAIT_PATH,
+            body={"conductor_key": board, "items": hints, "wait_secs": WAIT_SECS},
+        )
+    except Exception:  # noqa: BLE001 - a wait that broke is backed off, never raised
+        logger.debug("remote wait on one crew failed", exc_info=True)
+        return WAIT_FAILED
+    if status == 404:
+        return WAIT_UNSUPPORTED
+    news = payload.get("news") if isinstance(payload, dict) else None
+    if not 200 <= status < 300 or not isinstance(news, bool):
+        return WAIT_FAILED
+    return WAIT_NEWS if news else WAIT_QUIET
+
+
 def payload_of(row: dict[str, Any]) -> dict[str, Any] | None:
     """The per-slot read's payload for a row with news, else ``None``."""
     change = row.get("change")
@@ -246,4 +291,7 @@ __all__ = [
     "payload_of",
     "pull_batches",
     "pull_crew",
+    "WAIT_PATH",
+    "WAIT_SECS",
+    "wait_crew",
 ]

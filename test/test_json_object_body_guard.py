@@ -429,7 +429,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     ),
     # A hub's batch read: at most 32 items, each a slot key, 16 event ids, a stamp
     # and a digest, all capped by the route itself, well under the default.
-    "handlers/remote_work_items_pull.py::api_chat_work_items_pull": (
+    # Read once for it and for its held wait, which adds only ``wait_secs``.
+    "handlers/remote_work_items_pull.py::_checked": (
         "<default>",
         _BOUNDED_CONTROL_FIELDS,
     ),
