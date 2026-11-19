@@ -83,17 +83,26 @@ class SectionReader:
         result = coerce(value, default, *bounds, **options)
         plain = unclamped or (coerce if bounds or options else None)
         if plain is not None and key in self._data and result != plain(value, default):
-            seen = (self._dto, key, repr(value))
-            if seen not in _REPORTED_CLAMPS:
-                _REPORTED_CLAMPS.add(seen)
-                logger.warning(
-                    "Config: %s.%s = %r is outside its allowed range; using %r",
-                    self._dto.__name__,
-                    key,
-                    value,
-                    result,
-                )
+            _report_clamp(self._dto, key, value, result)
         return result
+
+
+def _report_clamp(dto: type, key: str, stored: Any, used: Any) -> None:
+    """Warn, once per disk read of the config files, that *stored* loads as *used*.
+
+    The one wording of a clamp report, for ``SectionReader.read`` and for a value that
+    is not a section key (an entry of a list) and so is clamped outside ``read``.
+    """
+    seen = (dto, key, repr(stored))
+    if seen not in _REPORTED_CLAMPS:
+        _REPORTED_CLAMPS.add(seen)
+        logger.warning(
+            "Config: %s.%s = %r is outside its allowed range; using %r",
+            dto.__name__,
+            key,
+            stored,
+            used,
+        )
 
 
 DEFAULT_MODEL = "auto"
