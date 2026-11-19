@@ -1031,6 +1031,69 @@ browser's autoplay rule; the route then clicks the element once, which counts as
 gesture. The hook draws nothing, so the buttons are yours. Only the dashboard owner's own
 page can call it: the agent's tools and app tokens are refused.
 
+## Browser View
+
+`BrowserView` shows the live browser of one of your app's own chat slots, and lets the
+person take it over and hand it back. `useBrowserView(slot)` gives the same state and the
+same two acts without the picture, and `useBrowserCoords(slot)` converts between the view's
+coordinates and the page's. They need `APP_SDK_LEVEL >= 11` and the `App browser access`
+feature preview (Settings > Developer > Feature previews, `app_browser_sdk`), and the
+owner's approval of your `permissions.browser` `view` verb (install approves none; the
+owner approves it on your app's page). With the preview off the view says so and sends
+nothing; without `view` approved it says the owner has not approved it yet. The approved
+verbs reach your page as `useAppInfo().permissions.browser`.
+While your app is turned off, no one sees or drives the browser of its slots: the
+gateway refuses every live-view route for them (`app_disabled`) and ends a takeover
+and the stream still running, and a mounted view shows that the app is off as soon
+as the gateway says so (its `app_state` frame, sent to every open dashboard when the
+app is turned on or off), even while `useAppInfo().enabled` still holds the page's
+first read.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+<sdk.BrowserView
+  slot="myapp-123"
+  aria-label="The page the Bot is on"
+  onHandBack={(note) => console.log('handed back', note)}
+  marks={[{ x: 120, y: 80, width: 200, height: 40, label: 'Price' }]}
+/>
+```
+
+| Prop | Meaning |
+|---|---|
+| `slot` | required; one of your slot keys (`<app>-<id>`), a slot your app made with `ctx.chat_slots` |
+| `aria-label` | required; the name of the view for a screen reader |
+| `interactive` | may the person take over; default `true` |
+| `onTakeover()` | the person took over in this view, once the gateway accepted it |
+| `onHandBack(note?)` | the person handed back, with their note or chosen reply if they gave one |
+| `onNavigate({ url, title })` | the page changed address or title |
+| `marks` | `{ x, y, width?, height?, label? }` in view coordinates (CSS pixels from the view's top left); a box when both sizes are given, else a dot. Drawn over the picture, never inside the page; `label` is plain text |
+
+| `useBrowserView(slot)` member | Does |
+|---|---|
+| `access` | `off` (preview off), `app_off` (your app is turned off), `not_granted` (`view` not approved), `denied` (not your slot), `ok` |
+| `state` | `idle` before the slot has browsed, else `live`, `in_control`, `waiting_allow`, `login_needed`, `done` or `error` |
+| `url`, `title` | the page's address and title |
+| `claim()`, `release(note?)` | take over, hand back; `false` when refused or not allowed |
+
+`useBrowserCoords(slot)` answers `toPage(x, y)` (view point to frame pixels, `null` outside
+the picture) and `toView(x, y)` (frame pixels to view point), for the `BrowserView` of that
+slot on screen; both are `null` until a frame is drawn.
+
+The view is the dashboard's own live view. It reads the state your dashboard already
+receives and uses the owner routes the chat card uses, so the person's takeover, Esc to hand
+back and the password-field mask work exactly as in chat. It adds no channel and no route.
+A hand-back note the Bot was not waiting for becomes the person's next message in that slot,
+as it does in chat, sent once even when the chat page is open too.
+
+A slot counts as yours when the gateway stamped it with your app's name, which it does only
+for a slot your app opened through `ctx.chat_slots`; the key's prefix proves nothing, so `foo`
+does not get `foo-bar-1`. Any other slot shows "denied". The check
+helps an honest app; it is not a security boundary, because your page runs in the owner's
+dashboard. Reading, clicking and typing from your backend are `ctx.browser`, with their own
+checks in the gateway.
+
 ## Chat Marker Protocol
 
 An agent encodes UI affordances inline in the prose it streams. A surface that renders a transcript
@@ -2057,6 +2120,30 @@ app named like a core source (`agent`) is always refused. The seam grants nothin
 the route, its gateway-token authentication, your signature check and your audit rows
 stay yours. The owner sees the declaration, with the source id, at the trust prompt.
 
+### Browser (`ctx.browser`)
+
+The browser tabs of your app's own chat slots (RFC #38322, step 1a). Present only
+when the manifest declares `permissions.browser` and the owner turned on **App
+browser access** (`dashboard.feature_previews.app_browser_sdk`) in Settings >
+Developer > Feature previews; `None` otherwise, so feature-detect it:
+
+```python
+browser = getattr(ctx, "browser", None)
+if browser is None or "read" not in browser.verbs():
+    ...  # the owner has not turned the preview on, or not approved "read" yet
+```
+
+| Member | Returns | Description |
+|--------|---------|-------------|
+| `verbs()` | `tuple[str, ...]` | The verbs your app holds now: declared, approved by the owner on your app's page, the app turned on, and the preview on. Blocking: call it from a worker thread. Empty when any of these is missing; turning the app off keeps the approvals, and they apply again when it is turned on. |
+
+Installing approves no verb: the owner approves them on your app's page, and an
+update that adds a verb holds that verb back while the ones already approved keep
+working. `ctx.browser` itself and the answer of `verbs()` are re-read at each use, so
+an approval, a removed verb or the preview turned on or off applies at once, with no
+restart. This step adds only the grant and the gate; the
+page operations (`page(slot)`, `slots()`) follow in step 1b of the RFC.
+
 ### App token (`ctx.app_token()`)
 
 `await ctx.app_token()` returns an app token for your app, the same token
@@ -2133,7 +2220,8 @@ installed app's `credentialMasks` to the agent's file tools too and adds the man
 [`useChatLauncher().createChat`](#app-sdk-hooks-dashboard-ui),
 `permissions.browserSites` with the page's [`useBrowserMedia`](#browser-media), and the
 shared embedder's batch members (`ctx.embed.embed_batch`, see
-[Shared embedder](#shared-embedder-ctxembed)); each level
+[Shared embedder](#shared-embedder-ctxembed)), and level 11
+adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browser-view); each level
 includes every level below it. Several seams share level 7, three share level 8, and
 level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it

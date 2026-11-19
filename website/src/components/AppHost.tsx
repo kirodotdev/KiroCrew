@@ -36,6 +36,8 @@ export interface AppHostProps {
   app: {
     /** Declared `ui.frameSources` origins the owner approved, and those an update or edit holds back. */
     frameSourcesGrant?: { approved: string[]; staged: string[] }
+    /** `permissions.browser` verbs the owner approved; published to the page as `info.permissions.browser`. */
+    browserGrant?: { approved: string[] }
     name: string
     version?: string
     displayName?: string
@@ -405,6 +407,8 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
         origin={app.origin === 'builtin' ? 'builtin' : 'external'}
         allowedApiPaths={allowedApi}
         allowedEvents={allowedEvents}
+        approvedBrowserVerbs={app.browserGrant?.approved}
+        appEnabled={app.enabled}
         active={active}
         subscribeFn={subscribeFn}
         navigateFn={navigateFn}

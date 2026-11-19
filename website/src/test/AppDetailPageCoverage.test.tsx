@@ -885,7 +885,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, {
       api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], linkOpenHosts: [], linkOpenFullUrl: [],
-      api: ['/api/memory'], events: ['log'], bots: [], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [], reachableByUserSessions: [], desktopCapabilities: [], frameSources: [], browserSites: [],
+      api: ['/api/memory'], events: ['log'], bots: [], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [], reachableByUserSessions: [], desktopCapabilities: [], frameSources: [], browserSites: [], browser: [],
     }))
     expect(await screen.findByText('Approved: /api/memory, log. The app can use them now.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
@@ -968,6 +968,42 @@ describe('AppDetailPage — uncovered surfaces', () => {
     for (const site of sites) expect(staged).toHaveTextContent(site)
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ browserSites: sites })))
+  })
+
+  it('lists the browser verbs an install held back, says the preview is off, and approves them', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [], browser: ['view', 'act'] } },
+      approvedGrants: { api: [], events: [] },
+      browserGrant: { approved: ['view'], staged: ['act'], preview: false },
+    }))
+    renderDetail()
+    await loaded()
+    // Only the held-back verb waits in the notice; the card lists both and tags it.
+    expect(screen.getAllByTestId('staged-browser-verb').map(n => n.textContent)).toEqual(['Open pages on that tab, and click and type there for you.'])
+    expect(screen.getByTestId('staged-browser-note')).toHaveTextContent('right away, with no further prompt')
+    expect(screen.getByTestId('browser-verb-act')).toHaveTextContent('not approved')
+    expect(screen.getByTestId('browser-verb-view')).not.toHaveTextContent('not approved')
+    expect(screen.getByTestId('browser-preview-off')).toBeInTheDocument()
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [], browser: ['view', 'act'] } },
+      approvedGrants: { api: [], events: [] },
+      browserGrant: { approved: ['view', 'act'], staged: [], preview: false },
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ browser: ['act'] })))
+    expect(await screen.findByText('Approved: Open pages on that tab, and click and type there for you. The app can use them now.')).toBeInTheDocument()
+  })
+
+  it('reads the App browser access switch for a row with no browser grant, such as a store row', async () => {
+    const { BrowserVerbsBox } = await import('../pages/AppDetailGrantBoxes')
+    const { PREVIEW_APP_BROWSER_SDK } = await import('../utils/previewFlags')
+    localStorage.setItem(PREVIEW_APP_BROWSER_SDK, '1')
+    const on = render(<BrowserVerbsBox declared={['view']} staged={[]} />)
+    expect(screen.queryByTestId('browser-preview-off')).not.toBeInTheDocument()
+    on.unmount()
+    localStorage.removeItem(PREVIEW_APP_BROWSER_SDK)
+    render(<BrowserVerbsBox declared={['view']} staged={[]} />)
+    expect(screen.getByTestId('browser-preview-off')).toBeInTheDocument()
   })
 
   it('lists a held-back session reach verb and approves only that verb', async () => {

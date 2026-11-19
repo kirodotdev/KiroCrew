@@ -61,6 +61,9 @@ class ScopedApiError extends ApiError implements AppApiError {
 export interface AppPermissions {
   api: string[]
   events: string[]
+  /** The `permissions.browser` verbs the owner approved (`view`, `read`, `act`);
+   *  absent on a host that predates it or for an app that declares none. */
+  browser?: string[]
 }
 
 /**
@@ -90,6 +93,9 @@ export interface AppInfo {
   name: string
   version: string
   permissions: AppPermissions
+  /** Whether the app is turned on, as the host last read it; absent when the host
+   *  does not say (treat as on). The SDK's `BrowserView` stops once it is false. */
+  enabled?: boolean
   /** Whether the app's host surface is currently visible. A routed page is
    *  always the visible surface (`true`); a body-owning side-panel tab stays
    *  mounted while hidden and reads this to pause polling or release global
@@ -394,6 +400,8 @@ export function AppScopedApiProvider({
   notifyFn = hostNotify,
   sessionKey,
   slotPush,
+  approvedBrowserVerbs,
+  appEnabled,
   children,
 }: {
   allowedApiPaths: string[]
@@ -425,6 +433,10 @@ export function AppScopedApiProvider({
   sessionKey?: string
   /** The host's per-slot change signal (slotPush.ts). Omitted, embeds poll. */
   slotPush?: SlotPush
+  /** Published as `info.permissions.browser`: the owner-approved browser verbs. */
+  approvedBrowserVerbs?: string[]
+  /** Published as `info.enabled`: whether the app is turned on. */
+  appEnabled?: boolean
   children: ReactNode
 }) {
   const identity = useAppIdentity()
@@ -443,13 +455,15 @@ export function AppScopedApiProvider({
   // this object from a fetch, so a fresh identity every render would rebuild
   // the context — and with it the scoped API client — on every render.
   const updateKey = JSON.stringify(appUpdate ?? null)
+  const browserKey = JSON.stringify(approvedBrowserVerbs ?? null)
   const value = React.useMemo<AppSdkContextValue>(() => ({
     api: createScopedApi(allowedApiPaths, resolvedName, sessionKey, appDisplayName || resolvedName),
     info: {
       name: resolvedName,
       version: appVersion,
-      permissions: { api: allowedApiPaths, events: allowedEvents },
+      permissions: { api: allowedApiPaths, events: allowedEvents, ...(approvedBrowserVerbs ? { browser: approvedBrowserVerbs } : {}) },
       active,
+      ...(appEnabled === undefined ? {} : { enabled: appEnabled }),
       // Spread, so the key is ABSENT rather than explicitly undefined when the
       // host has no answer: `'update' in info` then separates "not consulted"
       // from "consulted, nothing newer", which is the distinction the field
@@ -467,7 +481,7 @@ export function AppScopedApiProvider({
     slotPush,
     launchChat: createChatLauncher(resolvedName, sessionKey),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn, slotPush])
+  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, browserKey, appEnabled, sessionKey, active, subscribeFn, navigateFn, notifyFn, slotPush])
 
   return React.createElement(AppSdkContext.Provider, { value }, children)
 }

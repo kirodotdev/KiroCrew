@@ -398,8 +398,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _view,
     )
     from kiro_crew.apps.routes_enable import (  # noqa: F401
+        _APP_STATE_BOOT,
+        _APP_STATE_SEQ_LOCK,
         _BUILTIN_SERVICE_APPS,
         _OPEN_COMMAND_DESKTOP_ENV_KEYS,
+        _announce_app_state,
+        _app_state_last_seq,
+        _end_turned_off_app_views,
+        _next_app_state_seq,
         _notify_builtin_service,
         _sync_builtin_config,
     )

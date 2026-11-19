@@ -19,6 +19,8 @@ from kiro_crew.apps.agent_turn_sdk import AgentTurnSDK
 from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL
 from kiro_crew.apps.app_storage import AppStorage
 from kiro_crew.apps.audit_sdk import AuditSDK
+from kiro_crew.apps.browser_sdk import BrowserSDK, browser_sdk_for
+from kiro_crew.apps.browser_sdk import preview_on as browser_preview_on
 from kiro_crew.apps.chat_slot_sdk import ChatSlotSDK
 from kiro_crew.apps.crewmate_sdk import CrewmateSDK
 from kiro_crew.apps.cron_sdk import CronSDK
@@ -147,12 +149,29 @@ class AppContext:
     # app's name (``webhook_source_sdk``). None unless the manifest declares
     # ``permissions.webhookSource``; an app without it refuses its webhook.
     webhook_source: WebhookSourceSDK | None = None
+    # This app's ``ctx.browser`` (``browser_sdk``), built when the manifest declares
+    # ``permissions.browser``; ``browser`` below hands it out only while the
+    # ``app_browser_sdk`` feature preview is on.
+    browser_sdk: BrowserSDK | None = None
     # The gateway's untrusted-text screen, neutralizer and fences. Unconditional,
     # like `scrub`, and built from `name` so its audit rows name this app.
     untrusted: UntrustedTextSDK = field(init=False)
 
     def __post_init__(self) -> None:
         self.untrusted = UntrustedTextSDK(self.name)
+
+    @property
+    def browser(self) -> BrowserSDK | None:
+        """The browser tabs of this app's own slots, or ``None``.
+
+        ``None`` unless the manifest declares ``permissions.browser`` and the
+        ``app_browser_sdk`` preview is on. The preview is read at each access, so
+        turning it on or off applies to a context that is already built; each call on
+        the SDK re-reads the verbs the owner approved.
+        """
+        if self.browser_sdk is None or not browser_preview_on():
+            return None
+        return self.browser_sdk
 
     async def app_token(self) -> str:
         """An app token for this app's own calls to the gateway REST API, or ``""``.
@@ -367,4 +386,5 @@ def build_app_context(
         turns=turns,
         chat_slots=chat_slots,
         webhook_source=webhook_source,
+        browser_sdk=browser_sdk_for(app_name, perms),
     )
