@@ -135,6 +135,20 @@ class TestStatusSnapshot:
         snap = state.status_snapshot()
         assert snap["release_channel"] in ("nightly", "insider", "stable")
 
+    @pytest.mark.parametrize(
+        ("stamp", "expected"),
+        [("docker", "docker exec kirocrew kirocrew token"), ("wheel", ""), ("dmg", ""), ("", "")],
+    )
+    def test_names_the_container_sign_in_command_only_on_a_container(
+        self, state: DashboardState, monkeypatch, stamp: str, expected: str
+    ) -> None:
+        """A container's dashboard sends the person on the host through
+        ``docker exec``; every other install keeps the catalog's ``kirocrew token``.
+        Read from the baked stamp, so the environment variable cannot set it."""
+        monkeypatch.setattr("kiro_crew.beacon._BAKED_DISTRIBUTION", stamp)
+        monkeypatch.setenv("KIROCREW_DISTRIBUTION", "docker")
+        assert state.status_snapshot().get("sign_in_command") == expected
+
     def test_cached_overrides_skip_expensive_calls(self, state: DashboardState) -> None:
         """Caller-supplied cron_jobs/lessons pass straight through and never
         touch list_jobs()/load_all() — the counts are always caller-supplied."""

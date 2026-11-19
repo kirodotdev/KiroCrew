@@ -45,6 +45,12 @@ is a component's own child, never a value:
 `components={{ mono: <code>{command}</code> }}` with `<mono/>` in the catalog
 string.
 
+One sentence family takes a value without a placeholder: the sign-in sentences
+name `api.client.reauth_command` verbatim, and on a container gateway
+`api/signInCommand.ts` replaces that command, as a whole, with the one the
+gateway sends. A translation keeps its own `reauth_command` inside each of those
+sentences; `ApiClient.coverage.test.tsx` pins it in every catalog.
+
 `LanguageProvider` forces a re-RENDER of the tree on a language change, using
 `cloneElement` (which defeats React's referential-equality bailout) rather than a
 changing `key`. It deliberately does **not** remount, because a remount discards
