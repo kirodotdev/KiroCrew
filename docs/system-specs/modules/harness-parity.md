@@ -6,12 +6,13 @@ growing set of adapted ones: Claude Code (`ACP_BACKEND_CLAUDE`), `KAS`
 (`ACP_BACKEND_KAS`), Codex (`ACP_BACKEND_CODEX`), OpenCode
 (`ACP_BACKEND_OPENCODE`), MiMo Code (`ACP_BACKEND_MIMOCODE`), Pi (`ACP_BACKEND_PI`),
 goose (`ACP_BACKEND_GOOSE`), DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), GitHub Copilot CLI
-(`ACP_BACKEND_COPILOT`), Strands (`ACP_BACKEND_STRANDS`) and Google Antigravity
-(`ACP_BACKEND_ANTIGRAVITY`), plus whatever a bring-your-own (BYO) adapter registers
+(`ACP_BACKEND_COPILOT`), Strands (`ACP_BACKEND_STRANDS`), Google Antigravity
+(`ACP_BACKEND_ANTIGRAVITY`) and Mistral Vibe (`ACP_BACKEND_MISTRAL_VIBE`), plus
+whatever a bring-your-own (BYO) adapter registers
 next.
 
-Kiro, Claude Code, KAS, Strands, Codex, OpenCode, MiMo Code, Pi, goose, DeepSeek, Copilot
-and Antigravity are selectable on a plain public build. Claude Code in particular is
+Kiro, Claude Code, KAS, Strands, Codex, OpenCode, MiMo Code, Pi, goose, DeepSeek, Copilot,
+Antigravity and Mistral Vibe are selectable on a plain public build. Claude Code in particular is
 a shipped harness and not a dormant seam: `acp/harness/claude.py` owns the
 whole Claude launch and the adapter is a public npm package, so an earlier
 revision that left it out of the baseline removed only the switch, never a
@@ -25,7 +26,11 @@ exception — pinned by
 `test_agent_backend_editable.py::test_baseline_ships_every_known_backend`, which
 guards against an undocumented NARROWING rather than a widening.
 There is no exception today: `NOT_SHIPPED_SELECTABLE` is empty, which is the state
-to return to. `ACP_BACKEND_DEEPSEEK` was an earlier member. It passed the
+to return to. `ACP_BACKEND_MISTRAL_VIBE` is the most recent member: Crew seeds
+`VIBE_DEFAULT_AGENT=ask` plus the auto-approve clamp variables and reads the
+resolved profile back off the session's `modes` block before the first prompt
+(`Routing.VERIFIED_SEEDED_SETTINGS`, `acp/harness/mistral_vibe.py`, captures at
+`test/fixtures/acp_frames/mistral-vibe/`). Before it, `ACP_BACKEND_DEEPSEEK` was an earlier member. It passed the
 install-probe half of the bar and failed the routing half — its own sandbox decided
 its tool calls, so Crew's PreToolUse gate would not run for what a session actually
 did — and it left the set the way the bar demands, through the routing half rather

@@ -60,6 +60,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_MISTRAL_VIBE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -952,6 +953,10 @@ class AcpClient:
         return self.backend == ACP_BACKEND_PI
 
     @property
+    def _is_vibe(self) -> bool:
+        return self.backend == ACP_BACKEND_MISTRAL_VIBE
+
+    @property
     def _is_copilot(self) -> bool:
         return self.backend == ACP_BACKEND_COPILOT
 
@@ -1359,6 +1364,7 @@ class AcpClient:
 
     # Answer an ``AcpClient`` session's permission requests and enforce its tool restrictions: ``kiro_crew.acp.client_permissions``.
     _apply_session_permission_routing = _client_permissions._apply_session_permission_routing
+    _verify_mistral_vibe_routing = _client_permissions._verify_mistral_vibe_routing
     approve_tool = _client_permissions.approve_tool
 
     def take_batch_refusal(self, request_id: str | int) -> str | None:

@@ -41,6 +41,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_MISTRAL_VIBE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_STRANDS,
     ACP_BACKENDS_ACP_RUNTIME,
@@ -80,6 +81,7 @@ _STRANDS_PROJECT = "/opt/run/strands"
 _STRANDS_GATE = "/opt/run/strands/agent.py"
 _ANTIGRAVITY_SERVER = "/opt/bin/agy_acp_server.par"
 _ANTIGRAVITY_HELPER = "/opt/bin/localharness_external"
+_VIBE_BIN = "/opt/bin/vibe-acp"
 _SEARCH_PATH = "/opt/bin"
 _OPENCODE_CONFIG = '{"permission":"ask"}'
 #: The stubbed return of ``_mimocode_routing_config``. The golden pins this literal, not
@@ -452,6 +454,7 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
                     ACP_BACKEND_DEEPSEEK: (_DEEPSEEK_BIN, _SEARCH_PATH),
                     ACP_BACKEND_COPILOT: (_COPILOT_BIN, _SEARCH_PATH),
                     ACP_BACKEND_STRANDS: (_STRANDS_BIN, _SEARCH_PATH),
+                    ACP_BACKEND_MISTRAL_VIBE: (_VIBE_BIN, _SEARCH_PATH),
                 }[backend],
             ),
         ]

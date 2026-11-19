@@ -197,6 +197,7 @@ underneath.
 | `antigravity` | `antigravity.py` | `mcpServers` through the session array; `model` and `thinking_level` config options | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | `permissions.defaultMode` → fixed by `mode=default`; `prompt`, `resources`, `autoApprove` withheld; `hooks` — no channel: Crew's turn loop fires every event but `preToolUse`, because file reads run without a permission request; `toolsSettings` — no channel [11] |
 | `pi` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
 | `deepseek` | `deepseek.py` | `mcpServers` through the session array; `model` through the lane profile before `session/new` | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | `availableModels`, `autoApprove`, `permissions.defaultMode`, `prompt`, `resources` and `hooks` withheld |
+| `mistral-vibe` | none | — | — | no projection of the spec — kind `broker-only` [8]; the `session/new` array itself is the channel (vibe-acp hands it to the session as `SessionOptions.mcp_servers`), so Crew's pooled broker stubs are mounted, but the spec's own servers and per-tool deny set are not; `model` and `prompt` still arrive [9] |
 | `strands` | `strands.py` | `mcpServers`, by the `--mcp-config` launch file, never the wire [10]; `model`, as the `--model` launch argument [10] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | `availableModels` — no vocabulary advertised; `autoApprove` and `permissions.defaultMode` — gate-preserving (Crew's gate module asks for every call); `prompt` — context-instead [10]; `resources` — no-reader [6]; `toolsSettings` — no channel [11] |
 
 **An empty `tools` list is a second, stronger case of the "allowlist" row.** `tools:
@@ -247,7 +248,8 @@ a permission request, so no refusal could make `tools: []` hold
 (`ACP_BACKENDS_UNASKED_NATIVE_TOOLS`, subtracted from
 `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`). A call that asks is judged like any other, so an
 agent spec relying on `tools: []` on mimocode is not enforced; the pool does not run
-on it.
+on it. `mistral-vibe` has no zero-tools capture either, so it stays out of
+`ACP_BACKENDS_HONOR_ZERO_TOOL_BAN` and the pool does not run on it.
 
 The knowledge and research pool spawns zero-tool agents and does not rely on the
 native ban alone. On kiro-cli, `--agent` resolves against the project checkout
@@ -334,11 +336,15 @@ disk, so there the injection is refused as before.
    mounted on a session where none can be called. `deepseek` mounts stdio elements
    from its mirror's array, including the spec servers that survive the allowlist
    and whole-server deny rules (`providers/mirrors/deepseek.py`).
+   `mistral-vibe` consumes the `session/new` array itself, so the shared gateway's
+   pooled broker stubs are mounted there too — just not the servers its own spec
+   declares, and not its per-tool deny set.
 9. "No mirror" is not "nothing from the spec". `pi` takes its model through
    `session/set_config_option` after `session/new`
    (`agent_sdk/backends_models.py`, `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`).
    `deepseek` also supports that model-switch channel, while its mirror declares
    the initial model delivered by the lane profile before `session/new`.
+   `mistral-vibe` is in that frozenset too, on the same channel.
    `prompt` arrives as context text on every harness alike (`build_message`
    appends the `[AGENT SYSTEM PROMPT]` block for a custom agent with no backend
    condition on it). The mirror decides DeepSeek's MCP surface; Pi has none.
@@ -480,8 +486,9 @@ is the part worth knowing before you switch:
   Crew's gate instead of being pre-approved inside the harness.
 - **`hooks` reaches three mirrors whole, and `resources` only half-reaches.**
   `hooks` is `translated` on `goose`, `opencode` and `strands`, where Crew's
-  turn loop fires it; it is `no-channel` on `claude`, `codex` and `antigravity`
-  and withheld on `deepseek` and `copilot`. On `mimocode` it is `withheld` as well: that fork's
+  turn loop fires it; it is `no-channel` on `claude`, `codex`, `antigravity`
+  and `mistral-vibe` (the backend is `broker-only` and no mirror translates the
+  spec, so `hooks` never leaves Crew) and withheld on `deepseek` and `copilot`. On `mimocode` it is `withheld` as well: that fork's
   projection follows opencode's rules, but some of its tools never ask, so Crew
   does not fire hooks there. Neither URI scheme is loaded natively, but a mapped
   `skill://` still arrives as Crew's injected skill directory, per the note above,

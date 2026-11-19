@@ -165,6 +165,7 @@ _INHERITED_HOME_OVERRIDE_ENV_VARS = (
     "COPILOT_HOME",
     # Google Antigravity relocates its ACP settings and OAuth state together.
     "GEMINI_HOME",
+    "VIBE_HOME",
 )
 
 

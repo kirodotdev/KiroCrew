@@ -1031,6 +1031,8 @@ async def _initialize_session(self: AcpClient) -> None:
                     self._verify_session_mode(load_resp)
                 if self._pins_starting_mode and self._resumed:
                     await self._pin_starting_mode(load_resp)
+                if self._is_vibe and self._resumed:
+                    self._verify_mistral_vibe_routing(load_resp)
         else:
             logger.info("Session file missing for %s, skipping load", resume_sid)
 
@@ -1060,6 +1062,8 @@ async def _initialize_session(self: AcpClient) -> None:
         # an adapter (harness-parity H13).
         if self._reads_back_session_mode:
             self._verify_session_mode(session_resp)
+        if self._is_vibe:
+            self._verify_mistral_vibe_routing(session_resp)
         if not self._session_id:
             # Both the initial attempt and the substitution retry failed to
             # yield a session. Raise a clear, actionable error instead of
