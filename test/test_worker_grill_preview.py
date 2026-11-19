@@ -151,3 +151,14 @@ def test_the_protocol_ends_in_a_brief_not_in_questions() -> None:
     assert "no `status=question`" in ref
     assert "`asking`" not in ref
     assert "work_ask_record" not in ref
+
+
+def test_a_multi_line_start_and_its_pictures_reach_the_moderator() -> None:
+    # The card writes a field's further lines starting with two spaces and puts its
+    # pictures ahead of the opening line; the conductor must read both that way.
+    ref = (SKILL_DIR / "references" / "worker-grill.md").read_text(encoding="utf-8")
+    start = ref.split("3. **Start.**", 1)[1].split("**Card key.**", 1)[0]
+    assert "start with two spaces" in start
+    assert "each picture's absolute path as written" in start
+    assert "two spaces continues the labelled line" in grill.GUIDANCE
+    assert "each picture's absolute" in grill.GUIDANCE

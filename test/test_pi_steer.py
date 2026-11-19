@@ -29,7 +29,9 @@ from kiro_crew.acp.harness.pi_steer import (
     new_pi_steer_channel,
     steer_echo_seq,
 )
+from kiro_crew.acp.transport_errors import _raise_acp_error
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
     ACP_BACKENDS_STEER,
@@ -591,6 +593,39 @@ async def test_the_live_model_error_capture_fails_the_turn_and_shows_no_envelope
     assert not [e for e in events if e.kind in (EVENT_TEXT_CHUNK, EVENT_COMPLETE)]
     assert client._last_stop_reason == ""
     assert client._turn_done.is_set()
+
+
+_MANY_IMAGE_REFUSAL = (
+    '400 {"type":"error","error":{"type":"invalid_request_error","message":'
+    '"messages.1.content.1.image.source.base64.data: At least one of the image '
+    'dimensions exceed max allowed size for many-image requests: 2000 pixels"}}'
+)
+
+
+def _raised_on(backend: str, data: str) -> AcpError:
+    """What the shared classifier raises for a provider failure whose text is *data*."""
+    with pytest.raises(AcpError) as raised:
+        _raise_acp_error(
+            {"code": -32603, "message": "Internal error", "data": data}, [], backend=backend
+        )
+    return raised.value
+
+
+@pytest.mark.asyncio
+async def test_the_many_image_cap_shows_codexs_message_and_is_not_retried(
+    tmp_path: Path,
+) -> None:
+    """The provider's many-image refusal, reported by the extension, reads as on codex."""
+    client, reader = _client(tmp_path, None)
+    client._pi_gate_nonce = _NONCE
+    report = _chunk(_failure(error=_MANY_IMAGE_REFUSAL), notify=True)
+    with pytest.raises(AcpError) as raised:
+        await _turn(client, reader, report + _complete(), None)
+    assert str(raised.value) == str(_raised_on(ACP_BACKEND_CODEX, _MANY_IMAGE_REFUSAL))
+    assert "Start a new conversation" in str(raised.value)
+    assert raised.value.transient is False
+    assert raised.value.structural_terminal is True
+    assert raised.value.image_dimension_wedge is False
 
 
 @pytest.mark.asyncio

@@ -762,6 +762,9 @@ class ChannelTurns:
         # compaction replay fences against the session the replay reacquired, not
         # the first acquisition's entry that an earlier reset already popped.
         _fence_token: Any = None
+        # Built before the wake's own claim, so that claim's resume debt is
+        # recorded too.
+        bracket = TurnBracket(sessions, ctx_builder, session_key)
         if monitor is not None:
             # A wake claims its session WITHOUT waiting, before anything is built: a
             # conversation already in a turn answers BUSY and the wake retries its
@@ -790,6 +793,7 @@ class ChannelTurns:
                 logger.exception("%s monitor session claim failed", channel)
                 return self._outcome(Verdict.FAILED, monitor)
             _acquired = claimed = True
+            bracket.owe_resume(is_new=is_new, resumed=resumed)
             _fence_token = _claim_token
             _turn_provider = provider
             if self._opens_crew_log(asker):
@@ -815,6 +819,7 @@ class ChannelTurns:
                     # A wake owns its claim before the renderer exists, unlike an
                     # inbound turn: fail closed and give the claim back.
                     sessions.release(session_key)
+                    bracket.settle()
                     logger.exception("%s monitor pre-turn setup failed", channel)
                     return self._outcome(Verdict.BUSY, monitor, acquired=True)
                 raise
@@ -823,7 +828,6 @@ class ChannelTurns:
                 getattr(renderer, "capabilities", None),
                 getattr(renderer, "channel_type", "") or channel,
             )
-        bracket = TurnBracket(sessions, ctx_builder, session_key)
         driver: Any = None
         prompt = text
         accumulated = ""
@@ -958,6 +962,9 @@ class ChannelTurns:
                         **extra,
                     )
                     _acquired = True
+                    # The claim consumed a one-shot resume: owe its re-sent
+                    # lessons and steering before any await a Stop can cut.
+                    bracket.owe_resume(is_new=is_new, resumed=resumed)
                     # Hold the provider this attempt obtained, for the failure
                     # handler's attribution question. Captured HERE rather than looked
                     # up when a failure is handled: the recovery paths replace a dead
@@ -1043,6 +1050,7 @@ class ChannelTurns:
                         _fence_token,
                     )
                     provider, is_new, resumed = reprojection.claimed
+                    bracket.owe_resume(is_new=is_new, resumed=resumed)
                     _reprojected = _reprojected or reprojection.reprojected
                     if reprojection.superseded or (
                         reprojection.reprojected

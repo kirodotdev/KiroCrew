@@ -694,6 +694,9 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     _web_ask = web_ask_rule.needs_person(event)
     turn._web_ask = _web_ask
     _card_turn = _card_turn or bool(_held) or bool(_web_ask)
+    # Read by _on_permission_prompt's timeout note: no auto-approve, YOLO included,
+    # answers this request.
+    turn._no_auto_approve = _card_turn
     # Drain the key as soon as its permission decision begins. The
     # stream handles one decision at a time, so one bounded key is
     # enough for every approval arm below and in _on_permission_prompt;

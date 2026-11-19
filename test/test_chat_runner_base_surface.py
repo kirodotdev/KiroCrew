@@ -348,7 +348,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_folder_steering_turn",
             "function",
-            "(slot: 'Any', execution_context: 'Any', *, context_is_new: 'bool', provider_has_history: 'bool', needs_reinjection: 'bool') -> 'bool'",
+            "(slot: 'Any', execution_context: 'Any', *, context_is_new: 'bool', needs_reinjection: 'bool') -> 'bool'",
         ),
         (
             "_read_and_tighten_turn_execution",

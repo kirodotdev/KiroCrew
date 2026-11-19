@@ -5079,6 +5079,7 @@
       "pill_blocked": "Waiting for approval: {{command}}"
     },
     "grillCard": {
+      "add_picture": "Add picture",
       "decline": "No thanks",
       "label": "Discussion proposal",
       "minutes_one": "About {{count}} minute",
@@ -5086,6 +5087,7 @@
       "must": "Must",
       "not_sent": "This view has no chat box to send to.",
       "question": "Question",
+      "remove_picture": "Remove {{name}}",
       "send_decline": "No discussion needed",
       "send_failed": "It did not go out. Try again.",
       "send_must": "Must: {{text}}",
@@ -5098,6 +5100,7 @@
       "staged": "Put in the chat box. Send it from there.",
       "start": "Start",
       "unconfirmed": "Not confirmed. It may have gone out. If it is not in the chat, reload the page to try again.",
+      "uploading": "Uploading…",
       "who": "Who talks"
     },
     "promptStash": {
