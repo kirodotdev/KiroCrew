@@ -171,6 +171,7 @@ def open_turn_crew_log(
     store: tuple[str, bool, bool] | None = None,
     model_requested: str = "",
     workspace: str = "",
+    slot: str = "",
 ) -> None:
     """Open the channel session's crew log ahead of its turn, as the dashboard runner does.
 
@@ -184,8 +185,10 @@ def open_turn_crew_log(
     Only facts the dispatcher can establish are recorded; an absent field means
     "not observed". No ACP session id on *provider* means no log. ``slot`` is the
     channel key folded to the filename charset (``channel_slot_name``, also what
-    ``session_create`` stamps as ``_created_by``), so the session tree joins them.
-    Served model and cwd come off the provider; ``model_requested`` comes from
+    ``session_create`` stamps as ``_created_by``), so the session tree joins them;
+    a caller whose conversation the dashboard writer files under another name passes
+    that name as *slot* (a cron run: its tab's name, so a later dashboard turn's log
+    can cite this one as ``previous``). Served model and cwd come off the provider; ``model_requested`` comes from
     :func:`requested_model_sid`; ``resumed`` is ``get_or_create``'s answer. The
     class is stated only when ``ctx_builder.live_memory_mode_for_session`` knows the
     memory mode, with ``channel=True`` (as ``_crew_log_class`` reads a linked slot).
@@ -224,7 +227,7 @@ def open_turn_crew_log(
         crew_log_emit.on_session_opened(
             session_id,
             agent=agent or "",
-            slot=transcript_stem(session_key),
+            slot=slot or transcript_stem(session_key),
             model=str(getattr(provider, "served_model", "") or ""),
             model_requested=model_requested,
             cwd=str(getattr(provider, "cwd", "") or ""),
