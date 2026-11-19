@@ -86,6 +86,7 @@ from aiohttp import web
 from kiro_crew import browser_host_trust
 from kiro_crew.apps import browser_sites
 from kiro_crew.apps.browser_sites import app_browser_sites, browser_call_url, url_matches
+from kiro_crew.browser_harness import live_hub_views
 from kiro_crew.browser_harness import ops as harness_ops
 from kiro_crew.browser_harness import run_budget, session_contexts
 from kiro_crew.browser_harness import sign_in as browser_sign_in
@@ -267,6 +268,10 @@ async def _close_tabs_of(state: Any, key: str) -> None:
                 # under the key are its own now.
                 return
             await hub.stop_stream(key)
+            # The second views of its tabs (``live_hub_views``) end with it.
+            views = live_hub_views.views_of(hub, key)
+            for view in views:
+                await live_hub_views.stop_view(hub, view)
             hub.reset_run(key)
             relay = _live_handlers()._current_relay()
             if relay is not None:
@@ -279,6 +284,8 @@ async def _close_tabs_of(state: Any, key: str) -> None:
                 # Not reopened during the awaits above: a resumed chat's turn opens
                 # its session before it waits for the lock, so keep that one.
                 hub.forget(key)
+                for view in views:
+                    hub.forget(view)
     except Exception:  # noqa: BLE001 - best effort beside a close that already committed
         logger.debug("browser: closing the tabs of %s failed", key, exc_info=True)
 

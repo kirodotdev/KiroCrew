@@ -1177,6 +1177,7 @@ import * as sdk from '@kirocrew/app-sdk'
 | Prop | Meaning |
 |---|---|
 | `slot` | required; one of your slot keys (`<app>-<id>`), a slot your app made with `ctx.chat_slots` |
+| `tabId` | one of that slot's own tabs (from `tabs()` below), shown in a second view beside the slot's own, for two tabs side by side. Look only: no take over, and `useBrowserCoords` reads the slot's own view. Opened when the view mounts and closed when it unmounts; a view left by a reloaded page is ended by the gateway the next time the slot's mounted view sends a keepalive or opens a new view (the idle window is 120 seconds of no positive visibility heartbeat); at most 8 per slot. The gateway refuses a tab that is not the slot's own (`not_agent_tab`) and the view says why |
 | `aria-label` | required; the name of the view for a screen reader |
 | `interactive` | may the person take over; default `true` |
 | `stayLive` | keep the picture after the Bot's turn ends while its tab is still open (music still playing): the view streams that tab again by itself, once per turn while mounted and on screen. A closed tab stays folded, and a refused reopen shows its error and is not retried. Default `false`: the view folds to a "Show the live page" button. An older dashboard ignores it |
@@ -1191,6 +1192,7 @@ import * as sdk from '@kirocrew/app-sdk'
 | `state` | `idle` before the slot has browsed, else `live`, `in_control`, `waiting_allow`, `login_needed`, `done` or `error` |
 | `url`, `title` | the page's address and title |
 | `claim()`, `release(note?)` | take over, hand back; `false` when refused or not allowed |
+| `tabs()` | the slot's own tabs, `[{ tabId, url, title, current }]` (`current`: the tab the Bot is on); empty when not allowed |
 
 `useBrowserCoords(slot)` answers `toPage(x, y)` (view point to frame pixels, `null` outside
 the picture) and `toView(x, y)` (frame pixels to view point), for the `BrowserView` of that
@@ -1198,7 +1200,9 @@ slot on screen; both are `null` until a frame is drawn.
 
 The view is the dashboard's own live view. It reads the state your dashboard already
 receives and uses the owner routes the chat card uses, so the person's takeover, Esc to hand
-back and the password-field mask work exactly as in chat. It adds no channel and no route.
+back and the password-field mask work exactly as in chat. It adds no channel. A second view
+(`tabId`) uses three owner routes, `/api/browser/live/views/tabs`, `open` and `close`, behind
+the same preview, `view` approval and app-on checks.
 A hand-back note the Bot was not waiting for becomes the person's next message in that slot,
 as it does in chat, sent once even when the chat page is open too.
 

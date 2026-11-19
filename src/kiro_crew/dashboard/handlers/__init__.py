@@ -1077,6 +1077,13 @@ from kiro_crew.dashboard.handlers.browser_live import (  # noqa: E402, F401
     bind_live_hub,
 )
 
+# A second live view of an app slot's own tab, for BrowserView's tabId (owner-only).
+from kiro_crew.dashboard.handlers.browser_live_views import (  # noqa: E402, F401
+    api_browser_live_views_close,
+    api_browser_live_views_open,
+    api_browser_live_views_tabs,
+)
+
 # The owner's media buttons on an app page (play, pause, seek, volume), owner-only.
 from kiro_crew.dashboard.handlers.browser_media import api_browser_media  # noqa: E402, F401
 
