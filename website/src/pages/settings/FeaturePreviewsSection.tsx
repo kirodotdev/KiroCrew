@@ -8,10 +8,11 @@ import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../compo
 import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { clearPreviewFlagWriteError, usePreviewFlagWriteError } from '../../hooks/usePreviewFlagServerSync'
 import ErrorNotice from '../../components/ErrorNotice'
-import { Btn } from '../../components/ui'
+import { Badge, Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
+import { useSharedCrewCapabilities } from '../../hooks/sharedCrew/useSharedCrew'
 import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
@@ -209,6 +210,8 @@ export function FeaturePreviewsSection() {
   const [restartFailed, setRestartFailed] = useState(false)
   const sharedCrewPreview = useSharedCrewPreviewSetting({ poll: gatewayRestarting })
   const sharedCrewSetting = sharedCrewPreview.setting
+  const { capabilities } = useSharedCrewCapabilities()
+  const connectedComputersUnavailable = (sharedCrewSetting?.active ?? capabilities.shared_crew_preview) === true
   // The stored choice and what this gateway started with disagree: a restart applies it.
   const sharedCrewNeedsRestart = !!sharedCrewSetting && (sharedCrewSetting.restart_required
     || (!sharedCrewSetting.env_override && sharedCrewSetting.enabled !== sharedCrewSetting.active))
@@ -497,8 +500,12 @@ export function FeaturePreviewsSection() {
           <SettingsToggle
             label={i18nT('connectedComputers.preview.label')}
             description={i18nT('connectedComputers.preview.description')}
+            descriptionBadge={connectedComputersUnavailable && (
+              <Badge variant="muted">{i18nT('connectedComputers.preview.shared_crew_off')}</Badge>
+            )}
             hint={i18nT('connectedComputers.preview.hint')}
-            checked={connectedComputers}
+            checked={!connectedComputersUnavailable && connectedComputers}
+            disabled={connectedComputersUnavailable}
             onChange={value => setPreviewFlag(PREVIEW_CONNECTED_COMPUTERS, value)}
           />
         )}

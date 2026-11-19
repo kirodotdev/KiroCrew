@@ -36,6 +36,8 @@ DISABLED_REASON: Final[str] = (
     "Connected computers is turned off on this gateway; turn it on in "
     "Settings > Developer > Feature Previews"
 )
+#: Personal computers cannot serve a Crew until their callers' ownership is checked.
+SHARED_CREW_REASON: Final[str] = "Connected computers are off on a shared Crew."
 #: Shown by a remote gateway whose preview is on but which was started without
 #: Session Environments' developer flag (``session_environment.DEVELOPER_FLAG``).
 DEVELOPER_GATE_REASON: Final[str] = (
@@ -71,8 +73,23 @@ def _config(cfg: Any) -> Any:
         return None
 
 
+def _shared_crew_active() -> bool:
+    """Treat an unreadable Shared Crew state as shared, so no computer is exposed."""
+    try:
+        from kiro_crew.shared_crew.preview import preview_enabled
+
+        return preview_enabled()
+    except Exception:  # noqa: BLE001 -- unknown ownership must not allow personal computers
+        logger.debug(
+            "connected computers: Shared Crew state unreadable; treating as shared", exc_info=True
+        )
+        return True
+
+
 def preview_on(cfg: Any = None) -> bool:
-    """Whether the edition permits the preview and its stored value is exactly ``True``."""
+    """Whether a non-shared Crew's edition permits its exact ``True`` stored switch."""
+    if _shared_crew_active():
+        return False
     from kiro_crew.edition_locks import feature_previews
 
     previews = feature_previews(
@@ -105,6 +122,8 @@ def remote_refusal(cfg: Any = None) -> Optional[str]:
     """
     from kiro_crew.session_environment import session_environments_enabled
 
+    if _shared_crew_active():
+        return SHARED_CREW_REASON
     if not preview_on(cfg):
         return DISABLED_REASON
     if not session_environments_enabled():

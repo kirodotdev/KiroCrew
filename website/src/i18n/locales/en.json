@@ -6712,7 +6712,8 @@
     "preview": {
       "description": "Chats on this server can work in a folder on your own computer. Nothing is shared until you approve it on that computer.",
       "hint": "Your computer connects to this server and shares only the folder you approve. Turning this off stops sharing and never deletes files. Remote Crew is the reverse: it lets you use this server from another device.",
-      "label": "Connected computers"
+      "label": "Connected computers",
+      "shared_crew_off": "Off on a shared Crew"
     }
   },
   "hooks": {

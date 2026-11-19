@@ -136,3 +136,16 @@ async def test_standing_rejection_still_prevents_admission(admission, monkeypatc
     assert result.code == code
     assert admission.broker.live("laptop") is None
     admission.socket.send_str.assert_not_awaited()
+
+
+async def test_shared_crew_refuses_final_admission(admission, monkeypatch):
+    from kiro_crew.connected_computers.flag import SHARED_CREW_REASON
+    from kiro_crew.shared_crew import preview
+
+    monkeypatch.setattr(preview, "preview_enabled", lambda: True)
+    result = await admission.admit()
+    assert isinstance(result, CredentialRejected)
+    assert result.code == "connected_computers_disabled"
+    assert str(result) == SHARED_CREW_REASON
+    assert admission.broker.live("laptop") is None
+    admission.socket.send_str.assert_not_awaited()

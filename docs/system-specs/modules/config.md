@@ -1768,7 +1768,10 @@ and API.
 A feature preview in `FEATURE_PREVIEW_FLAGS` (`config/sections_dashboard.py`) that,
 unlike most previews, has server behaviour. Default off; it turns on only for a literal
 `true`, and an unreadable config reads as off (`connected_computers/flag.py`).
-The shared `preview_on` reader passes the stored switches through
+The shared `preview_on` reader first refuses a running Shared Crew preview
+(`shared_crew.preview.preview_enabled`, imported lazily); a state read that raises
+also keeps connected computers off, and `remote_refusal` names the shared-Crew
+restriction before the ordinary disabled reason. It then passes the stored switches through
 `edition_locks.feature_previews`: an LTS build reads this preview as off even
 when its saved value is `true`. This applies to the connector token-auth
 exemption and route, admission checks, picker, local helpers and the config
@@ -1805,6 +1808,10 @@ stops; nothing is retried or fabricated). The gateway's shutdown closes sockets 
 switch stays off neither does anything: the hook returns before scheduling work, and
 shutdown finds no broker.
 The frontend key is `mc-preview-connected-computers` (`website/src/utils/previewFlags.ts`).
+Feature Previews reuses the disabled Settings toggle with a short shared-Crew badge
+in `descriptionBadge`, preserving the literal description for settings search,
+reading the owner's running `active` state or the existing `shared_crew_preview`
+capability for other viewers; it leaves the saved computer switch unchanged.
 
 ## Unknown keys are preserved on round-trip
 

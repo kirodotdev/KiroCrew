@@ -24964,7 +24964,8 @@
     "preview": {
       "description": "Os chats deste servidor podem trabalhar em uma pasta do seu próprio computador. Nada é compartilhado até você aprovar nesse computador.",
       "hint": "Seu computador se conecta a este servidor e compartilha só a pasta que você aprovar. Desativar interrompe o compartilhamento e nunca apaga arquivos. O Remote Crew é o contrário: permite que você use este servidor de outro dispositivo.",
-      "label": "Computadores conectados"
+      "label": "Computadores conectados",
+      "shared_crew_off": "Desativado em um Crew compartilhado"
     }
   }
 }
