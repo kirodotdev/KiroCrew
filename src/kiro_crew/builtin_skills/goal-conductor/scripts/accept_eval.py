@@ -39,6 +39,10 @@ Kinds:
                     commit. Optional ``head`` (a hex commit id, such as the
                     one a ``pr_checks`` pass names): a PR merged at another
                     head fails.
+
+``repo`` is ``owner/name`` for github.com or ``host/owner/name`` for a GitHub
+Enterprise server (``siemens.ghe.com/open/mcp``); it reaches ``gh --repo``
+verbatim. Optional for ``pr_checks``, but validated the same way when given.
     file            a path exists (or, with ``"exists": false``, does not).
                     The evidence names its size and modification time.
                     Optional, only with ``exists`` true: ``min_bytes`` (a
@@ -153,10 +157,20 @@ EVIDENCE_TAIL_CHARS = 500
 #: gh pr checks exits 8 when checks are still running (gh >= 2.30).
 _GH_PENDING_EXIT = 8
 
-#: The GitHub ``owner/name`` ``pr_merged`` accepts. Applied with ``fullmatch``:
-#: a ``$`` anchor also matches before a trailing newline. ASCII classes only,
-#: and an owner cannot start with ``-``, so the value can never read as a flag.
-_GH_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
+#: The GitHub repository ``pr_merged`` and ``pr_checks`` accept: ``owner/name``,
+#: or ``host/owner/name`` for a GitHub Enterprise server (``gh --repo`` takes
+#: both, and without the host it asks github.com). The host is a DNS name of at
+#: least two dot-separated labels, each of letters, digits and inner hyphens: no
+#: scheme, port, user info or extra path segment. Applied with ``fullmatch``: a
+#: ``$`` anchor also matches before a trailing newline. ASCII classes only, and
+#: neither a host nor an owner can start with ``-``, so the value can never read
+#: as a flag.
+_GH_REPO = re.compile(
+    r"(?:(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?/)?"
+    r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}"
+)
+_GH_REPO_FORM = "owner/name or host/owner/name"
 
 #: ``edition_check``'s two fields, applied with ``fullmatch``: a ``$`` anchor
 #: also matches before a trailing newline. ASCII classes only, and both must
@@ -348,7 +362,7 @@ def _pr_merged(accept):
         return ("error", "pr_merged spec needs a positive integer pr")
     repo = accept.get("repo")
     if not isinstance(repo, str) or not _GH_REPO.fullmatch(repo):
-        return ("error", "pr_merged spec needs a repo of the form owner/name")
+        return ("error", f"pr_merged spec needs a repo of the form {_GH_REPO_FORM}")
     want = accept.get("head")
     if want is not None and (not isinstance(want, str) or not _GIT_BASE.fullmatch(want)):
         return ("error", "pr_merged head must be a lower-case hex commit id, 7-64 chars")
@@ -646,9 +660,13 @@ def _evaluate(item):
         if not isinstance(pr, int) or isinstance(pr, bool):
             return ("error", "pr_checks spec needs an integer pr")
         repo = accept.get("repo")
+        # Optional here, but held to the same pattern when given, so the draft
+        # probe below never sees an unvalidated value either.
+        if repo and (not isinstance(repo, str) or not _GH_REPO.fullmatch(repo)):
+            return ("error", f"pr_checks spec repo must be of the form {_GH_REPO_FORM}")
         argv = ["gh", "pr", "checks", str(pr)]
         if repo:
-            argv += ["--repo", str(repo)]
+            argv += ["--repo", repo]
         before = _pr_head(pr, repo)
         verdict, evidence = _run(argv)
         if verdict == "pass":

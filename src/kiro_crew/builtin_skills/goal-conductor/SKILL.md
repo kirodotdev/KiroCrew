@@ -58,7 +58,7 @@ A candidate qualifies only if **all three** hold:
    later round.
 2. **Assertable** — you can name its completion condition *now*, as one of the
    evaluator's kinds: `pr_checks` or `pr_merged` (always with `repo` as
-   `owner/name`), `edition_check`, `file`, `git_commit` (a local branch
+   `owner/name`, or `host/owner/name` on a GitHub Enterprise server), `edition_check`, `file`, `git_commit` (a local branch
    carries a commit past `base`) or `human_approval`. There is
    deliberately no "run this command" kind; never invent a condition. Read
    `<this skill's dir>/references/work-items.md` before you write an
