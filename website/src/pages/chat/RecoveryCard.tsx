@@ -476,9 +476,9 @@ export function opensTurn(row: ChatMessage): boolean {
 }
 
 /**
- * Decide which card, if any, an `inject` row gets. The single decision point
- * shared by ChatPage and the transcript-renderer registry, so the surfaces
- * cannot disagree.
+ * Decide which card, if any, an `inject` row gets. The single decision point,
+ * called by the app-sdk default registry that every surface draws through, so
+ * the surfaces cannot disagree.
  *
  * Returns a {@link ParsedRecovery} to render as a folded note, or null to mean
  * "not mine — let the caller's own renderer draw this row".
@@ -508,10 +508,8 @@ export function resolveInjectCard(m: { content: string; meta?: Record<string, un
   // early returns for those three were measured to be unreachable (the allowlist
   // already rejects them), so they are omitted rather than kept as dead code.
   // The behavioural contract for each is pinned in RecoveryCard.test.tsx.
-  // `automation_notice` is also NOT a note here: it is suppressed entirely on
-  // the Sessions page (transcriptRenderers `automation_notice_inject`) because
-  // the refusal's `notice` bar already shows it, and hidden in the crewmate DM
-  // by MACHINERY_ROLES — so it never needs a card.
+  // `automation_notice` is not a note: the registry's `automation_notice_inject`
+  // row hides it, because the refusal's `notice` bar already shows it.
   if (kind !== 'recovery' && kind !== 'synthesis' && kind !== 'workflow' && kind !== 'heartbeat') return null
 
   return {
