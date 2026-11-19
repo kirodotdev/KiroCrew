@@ -1869,8 +1869,8 @@ that never learned a revision sends none and is not compared.
 | `GET /api/shared-crew/capabilities` | `Capabilities` |
 | `GET /api/auth/me` | gains `principal` (`Principal.to_public_dict`) |
 | `GET /api/shared-crew/sessions?creator=&q=&cursor=&limit=` | `SessionPage`; each item carries `attribution` |
-| `GET /api/shared-crew/people` | observed collaborators with usage (`is_owner` per row, `tailscale_share` rows), and the directory state. With the preview off it reads no session catalogue and no Tailscale daemon, so it lists only the viewer; the dashboard does not request it then |
-| `GET /api/shared-crew/mode` | the mode body (§2 People and setup modes), with `viewer_via` and `owner_label`. With the preview off it reads no session catalogue, so no creator makes the mode `network`; the dashboard does not request it then, except `HostSandboxUnavailableCard` for a non-owner |
+| `GET /api/shared-crew/people` | observed collaborators with usage (`is_owner` per row, `tailscale_share` rows), and the directory state. With the preview off it reads no session catalogue and no Tailscale daemon, so it lists no session creators and no sharees, only people this process saw; the dashboard does not request it then |
+| `GET /api/shared-crew/mode` | the mode body (§2 People and setup modes), with `viewer_via` and `owner_label`. With the preview off it reads no session catalogue, so no session creator makes the mode `network`; it is `network` then only through a set-up sharing path, a relay team Crew or another person seen on a request, which is what `sharedCrewInUse` reads from the cache the chat strip fills (the strip reads the mode with the preview off, once per chat) |
 | `GET` / `PUT /api/shared-crew/preview` `{enabled}` | owner only, registered with the preview off: `{enabled, active, env_override, restart_required}` (Release gate) |
 | `GET /api/shared-crew/capacity` | `CapacityResponse` for the viewer |
 | `GET /api/shared-crew/work?session_key=` | public `AcceptedWork` list |

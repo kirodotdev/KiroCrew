@@ -7,6 +7,8 @@ import { ALL_UNAVAILABLE } from '../../../api/sharedCrewUi'
 import UserMessage from '../UserMessage'
 import { QueuedSendLabel, queuedChatTurn } from './QueuedSendLabel'
 import { SessionCollabStrip } from './SessionCollabStrip'
+import { sharedCrewInUse } from '../closedOutsideHere'
+import { sharedCrewKeys } from '../../../hooks/sharedCrew/sharedCrewSocket'
 import { PresenceChips, SessionPresence } from './PresenceChips'
 import { refusalMessage, queuedReason } from './overloadCopy'
 import { alreadyResolvedDecision, resolvedByLine, settledElsewhereLine } from '../../../components/chat-input/sharedDecision'
@@ -75,18 +77,21 @@ describe('above the composer', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('with the Shared Crew preview off, reads neither People nor the mode', async () => {
-    mount(<SessionCollabStrip sessionKey="s1" />)
-    await waitFor(() => expect(api.sharedCrewPresence).toHaveBeenCalled())
-    await new Promise(r => setTimeout(r, 0))
-    expect(api.sharedCrewMode).not.toHaveBeenCalled()
+  // The strip enables mode and People only after the capabilities query resolves, so these
+  // waits sit behind that chain and use CHAIN_TIMEOUT_MS (declared below).
+  it('with the Shared Crew preview off, reads the mode once and never People, and the Crew is not in use', async () => {
+    vi.mocked(api.sharedCrewMode).mockResolvedValue({ schema_version: 1, mode: 'personal', crew_id: 'c1' } as never)
+    const { qc } = mount(<SessionCollabStrip sessionKey="s1" />)
+    await waitFor(() => expect(api.sharedCrewMode).toHaveBeenCalledTimes(1), { timeout: CHAIN_TIMEOUT_MS })
+    await waitFor(() => expect(qc.getQueryData(sharedCrewKeys.mode)).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
     expect(api.sharedCrewPeople).not.toHaveBeenCalled()
+    expect(sharedCrewInUse(qc)).toBe(false)
   })
 
   it('with the Shared Crew preview on, reads People and the mode once', async () => {
     vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ ...ALL_UNAVAILABLE, presence: 'available', attribution: 'available', shared_crew_preview: true })
     mount(<SessionCollabStrip sessionKey="s1" />)
-    await waitFor(() => expect(api.sharedCrewPeople).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(api.sharedCrewPeople).toHaveBeenCalledTimes(1), { timeout: CHAIN_TIMEOUT_MS })
     expect(api.sharedCrewMode).toHaveBeenCalledTimes(1)
   })
 

@@ -34,11 +34,12 @@ export function SessionCollabStrip({ sessionKey, typing }: { sessionKey: string 
   const attributionOn = capabilityUsable(capabilities.attribution)
   const viewer = useSharedCrewViewer(presenceOn || attributionOn)
   // Own MessageByline's shared reads here, once per chat even with the sidebar closed.
-  // With the Shared Crew preview off nobody else is here and the gateway builds
-  // these for nothing, so read them only with it on, as the sidebar does.
-  const teamReads = attributionOn && sharedCrewPreviewOn(capabilities)
-  const mode = useSharedCrewMode(teamReads)
-  const people = useSharedCrewPeople(teamReads)
+  // The mode is read with the preview off too: the chat page reads the cached mode
+  // (`sharedCrewInUse`, `cachedViewerIds`), and the gateway answers it without a
+  // catalogue walk then. People is built for the team surfaces only, so it waits
+  // for the preview, as the sidebar does.
+  const mode = useSharedCrewMode(attributionOn)
+  const people = useSharedCrewPeople(attributionOn && sharedCrewPreviewOn(capabilities))
   const presence = useSessionPresence(sessionKey, presenceOn)
   // Read here so its failure is said once; `useResolvedElsewhere` and `useRaisedBy` use the cache.
   const decisions = useSessionDecisions(sessionKey, attributionOn)

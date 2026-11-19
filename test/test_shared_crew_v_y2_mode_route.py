@@ -6,7 +6,7 @@ mode route as an error, so a route the lane module defines but the gateway does
 not mount would leave People and the session list on an error state.
 
 With the Shared Crew preview off, the People and mode reads answer without
-walking the session catalogue or asking the Tailscale daemon (#39326).
+walking the session catalogue or asking the Tailscale daemon.
 """
 
 from __future__ import annotations
@@ -104,7 +104,11 @@ async def _read_with_a_counted_walk(state, monkeypatch, path: str, *, preview_on
 async def test_with_the_preview_off_the_read_does_not_walk_the_catalog(state, monkeypatch, path):
     body, reads = await _read_with_a_counted_walk(state, monkeypatch, path, preview_on=False)
     assert reads == []
-    assert body["viewer"] if path == routes_identity.MODE_PATH else body["people"]
+    if path == routes_identity.MODE_PATH:
+        # No catalogue means no other creator, so the Crew reads as personal (not "in use").
+        assert body["mode"] == "personal"
+    else:
+        assert body["people"]
 
 
 @pytest.mark.asyncio
