@@ -761,7 +761,8 @@ approvals; question, follow-up and folder cards), `slotList.ts`,
 `bundleReload.ts` (the `dashboard` status frame), `serverState.ts` (the
 server-owned caches), `automationSeed.ts` and `voicePlayback.ts`;
 `workflowRuns.ts` reconciles the workflow rows those frames fold, `attention.ts`
-owns the unread / read-relay rules and the focus senders, and `browserEvents.ts`
+owns the unread / read-relay rules and the focus senders, `serverReads.ts` applies
+the gateway's read times after each slot list, and `browserEvents.ts`
 owns the window events that re-broadcast a frame. `frames.ts` decodes the
 `/api/ws` envelope and types its `FrameData` for the router, and `retiredIds.ts`
 holds the watermarked retired-id logs `approvals.ts` and `composerCards.ts`

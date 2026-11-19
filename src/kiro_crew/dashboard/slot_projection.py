@@ -367,6 +367,7 @@ class SlotProjection:
                 strip_options=strip_options,
                 is_system_notice=is_system_notice,
                 last_message_preview=last_message_preview,
+                retry_kind=_cu.TRANSIENT_RETRY_KIND,
             ),
         )
         last_ts = summary.last_ts
@@ -612,6 +613,13 @@ class SlotProjection:
             "pending_approval_info": pending_approval_info,
             "last_activity_ts": last_activity_ts,
             "last_agent_ts": last_agent_ts,
+            # The newest row that badges this chat when no window saw it, by the live per-mode rule.
+            "unread_ts": (
+                (last_agent_ts if pending_approval or needs_input else summary.last_reply_ts)
+                if slot.mode == "member"
+                else summary.last_unread_ts
+            ),
+            "unread_failed": slot.mode != "member" and summary.unread_failed,
             "waiting_for_input": waiting_for_input,
             "needs_input": needs_input,
             "interrupted": interrupted,

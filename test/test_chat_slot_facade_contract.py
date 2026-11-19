@@ -73,6 +73,8 @@ _TO_DICT_KEYS = (
     "pending_approval_info",
     "last_activity_ts",
     "last_agent_ts",
+    "unread_ts",
+    "unread_failed",
     "waiting_for_input",
     "needs_input",
     "interrupted",

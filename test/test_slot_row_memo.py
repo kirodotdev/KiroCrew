@@ -21,10 +21,12 @@ from kiro_crew.dashboard import slot_row_memo
 from kiro_crew.dashboard.chat_utils_display import _clear_display_redaction_cache
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.state_parts import slots_frame
+from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.session_map import SessionMap
 from kiro_crew.session_parts import links as session_links
 
+RECYCLE_NOTICE = {"kind": "compaction", "notice": "session_recycled"}
 _LINK_ACCESSORS = (
     "clear_mirror_link",
     "clear_slack_link",
@@ -500,3 +502,29 @@ def test_summary_memo_is_not_stored_for_a_meta_of_empty_strings(state: Dashboard
     state.serialize_slots()
     assert slot._row_summary_memo is None
     _assert_same(state)
+
+
+@pytest.mark.parametrize(
+    ("tail", "want"),
+    [
+        ({"role": "error", "ts": "3"}, ("1", "3", True)),
+        ({"role": "error", "ts": "3", "meta": {"kind": "transient_retry"}}, ("1", "3", False)),
+        ({"role": "assistant", "ts": "3", "meta": {"kind": "compaction"}}, ("1", "3", False)),
+        *(({"role": role, "ts": "3"}, ("1", "3", False)) for role in ("inject", "system", "tool")),
+        ({"role": "user", "content": "next", "ts": "3"}, ("1", "2", False)),
+        ({"role": "assistant", "ts": "3", "meta": RECYCLE_NOTICE}, ("1", "2", False)),
+    ],
+)
+def test_the_unread_times_follow_the_live_badge_rule(tail: dict, want: tuple) -> None:
+    rows = [{"role": "assistant", "content": "hi", "ts": "1"}, {"role": "tool_call", "ts": "2"}]
+    summary = slot_row_memo.summarize_rows(
+        [*rows, tail],
+        transient_roles=frozenset(),
+        redact=str,
+        parse_options=lambda text: [],
+        strip_options=str,
+        is_system_notice=is_system_notice,
+        last_message_preview=str,
+        retry_kind="transient_retry",
+    )
+    assert (summary.last_reply_ts, summary.last_unread_ts, summary.unread_failed) == want
