@@ -237,9 +237,11 @@ export function PrereqCard({
   )
 }
 
+const SUBNET_ERROR_ID = 'remote-crew-subnet-error'
+
 /** The launch form: size, subnet, the Kiro identity the crew signs in as, billing note and Launch. */
 export function LaunchFormCard({
-  region, sizeKey, setSizeKey, showMoreSizes, setShowMoreSizes, subnetId, setSubnetId,
+  region, sizeKey, setSizeKey, showMoreSizes, setShowMoreSizes, subnetId, setSubnetId, subnetErr,
   identityQuery, identityChosen, identityUnknownCause, identityRadioShown, identityMode,
   identityStartUrl, identityStartUrlOk, identityRegion, identityRegionOk, onIdentity,
   launchBuiltin, launchReady, alreadyLaunched, launching, setupRunning, launchFailed,
@@ -253,6 +255,8 @@ export function LaunchFormCard({
   setShowMoreSizes: (f: (v: boolean) => boolean) => void
   subnetId: string
   setSubnetId: (v: string) => void
+  /** A launch refused for this subnet, shown under the field. */
+  subnetErr: string | null
   identityQuery: UseQueryResult<CloudIdentity>
   identityChosen: boolean
   identityUnknownCause: 'no_answer' | 'no_portal' | null
@@ -322,6 +326,8 @@ export function LaunchFormCard({
           type="text"
           value={subnetId}
           aria-label={i18nT('pages.settings.remoteCrewPanel.subnet')}
+          aria-invalid={subnetErr ? true : undefined}
+          aria-describedby={subnetErr ? SUBNET_ERROR_ID : undefined}
           onChange={e => setSubnetId(e.target.value)}
           placeholder="subnet-0123456789abcdef0"
           spellCheck={false}
@@ -329,6 +335,9 @@ export function LaunchFormCard({
         />
         <span className="block mt-1 text-[12px]">{i18nT('pages.settings.remoteCrewPanel.subnet_hint')}</span>
       </label>
+      {/* askAgent ON: the unlaunched subnet draft lives in the store and survives the hand-off.
+          The row wraps so the hand-off takes the line under the message in the narrow modal. */}
+      {subnetErr && <ErrorNotice id={SUBNET_ERROR_ID} variant="inline" className="mt-1 flex-wrap" messageClassName="grow basis-[calc(100%-2rem)]" message={subnetErr} askAgent />}
 
       <div className="mt-4">
         <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.identity')}</div>
