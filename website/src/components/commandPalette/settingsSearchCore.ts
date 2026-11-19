@@ -132,6 +132,7 @@ export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.mark-out-of-date-dashboard-fields',
   'developer.wake-bots-to-update-out-of-date-fields',
   'developer.agent-harness-for-worker-chats',
+  'developer.visual-refresh',
   'developer.session-environments',
 ])
 
