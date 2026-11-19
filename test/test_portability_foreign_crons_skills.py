@@ -569,3 +569,173 @@ def test_replace_installs_the_skills_tree_on_a_machine_with_no_live_skills(tmp_p
 
     assert (home / "skills" / "foreign" / "SKILL.md").is_file()
     assert "skills_kept" not in summary
+
+
+def _managed_copy(home: Path) -> Path:
+    """What the gateway's startup leaves in the skills folder: a marked core skill copy."""
+    from kiro_crew import deploy
+
+    name = sorted(p.name for p in deploy._SKILLS_DIR.iterdir() if p.is_dir())[0]
+    copy = home / "skills" / name
+    copy.mkdir(parents=True)
+    (copy / deploy._MANAGED_MARKER).write_text("", encoding="utf-8")
+    (copy / "SKILL.md").write_text("managed copy", encoding="utf-8")
+    return copy
+
+
+def test_replace_installs_the_skills_tree_when_the_live_skills_are_only_managed_copies(tmp_path):
+    home = _home(tmp_path)
+    _managed_copy(home)
+    (home / "skills" / "auto").mkdir()
+
+    summary = _import(_skills_zip(tmp_path), home)
+
+    assert (home / "skills" / "foreign" / "SKILL.md").is_file()
+    assert "skills_kept" not in summary
+
+
+def test_replace_keeps_learned_skills_under_auto_beside_managed_copies(tmp_path):
+    home = _home(tmp_path)
+    _managed_copy(home)
+    learned = home / "skills" / "auto" / "learned" / "SKILL.md"
+    learned.parent.mkdir(parents=True)
+    learned.write_text("learned", encoding="utf-8")
+
+    summary = _import(_skills_zip(tmp_path), home)
+
+    assert learned.read_text(encoding="utf-8") == "learned"
+    assert summary["skills_kept"] is True
+
+
+def test_replace_keeps_a_user_skill_that_sits_beside_managed_copies(tmp_path):
+    home = _home(tmp_path)
+    _managed_copy(home)
+    mine = _live_skill(home)
+
+    summary = _import(_skills_zip(tmp_path), home)
+
+    assert mine.read_text(encoding="utf-8") == "live skill"
+    assert not (home / "skills" / "foreign").exists()
+    assert summary["skills_kept"] is True
+
+
+def _config(agents: dict) -> str:
+    return json.dumps({"agents": agents})
+
+
+def _alias_import(
+    tmp_path: Path,
+    live: dict | str | None,
+    archive: dict | str | None,
+    agent="crew-alias",
+    mode="replace",
+    live_local: dict | None = None,
+    archive_local: dict | None = None,
+):
+    home = _home(tmp_path)
+    if live is not None:
+        (home / "config.json").write_text(
+            live if isinstance(live, str) else _config(live), encoding="utf-8"
+        )
+    if live_local is not None:
+        (home / "config.local.json").write_text(_config(live_local), encoding="utf-8")
+    files = {"crons.json": json.dumps({"jobs": [_risky_job(agent_id=agent)]})}
+    if archive is not None:
+        files["config.json"] = archive if isinstance(archive, str) else _config(archive)
+    if archive_local is not None:
+        files["config.local.json"] = _config(archive_local)
+    _import(_zip(tmp_path / "a.zip", files), home, mode=mode)
+    return _read(home / "crons.json")["nightly"]
+
+
+ALIAS = {"crew-alias": {"kiro_agent": "default"}}
+
+
+def test_a_crew_alias_of_the_live_config_keeps_its_cron_agent_id(tmp_path):
+    assert _alias_import(tmp_path, live=ALIAS, archive=None)["agent_id"] == "crew-alias"
+
+
+def test_a_crew_alias_of_the_archive_config_keeps_its_cron_agent_id(tmp_path):
+    assert _alias_import(tmp_path, live=None, archive=ALIAS)["agent_id"] == "crew-alias"
+
+
+def test_an_alias_only_the_replaced_live_config_has_is_reset(tmp_path):
+    job = _alias_import(tmp_path, live=ALIAS, archive={"other": {"kiro_agent": "default"}})
+
+    assert not job.get("agent_id")
+
+
+def test_an_unknown_agent_id_is_still_reset_beside_a_crew_alias(tmp_path):
+    assert not _alias_import(tmp_path, live=ALIAS, archive=None, agent="ghost-agent").get(
+        "agent_id"
+    )
+
+
+def test_an_oversized_archive_config_is_not_read_for_aliases(tmp_path):
+    from kiro_crew import portability_vetting
+
+    big = tmp_path / "config.json"
+    big.write_text(_config(ALIAS) + " " * 64, encoding="utf-8")
+
+    assert portability_vetting._config_crew_aliases(big) == {"crew-alias"}
+    with patch.object(portability_vetting, "_MAX_SETTINGS_DOCUMENT_BYTES", 32):
+        assert portability_vetting._config_crew_aliases(big) == frozenset()
+
+
+def test_a_merge_into_a_home_without_config_uses_the_archive_aliases(tmp_path):
+    job = _alias_import(tmp_path, live=None, archive=ALIAS, mode="merge")
+
+    assert job["agent_id"] == "crew-alias"
+
+
+def test_a_merge_keeps_this_installs_aliases_not_the_archives(tmp_path):
+    other = {"other": {"kiro_agent": "default"}}
+
+    assert not _alias_import(tmp_path, live=other, archive=ALIAS, mode="merge").get("agent_id")
+
+
+def test_an_alias_of_the_live_overlay_is_kept_by_a_merge(tmp_path):
+    job = _alias_import(tmp_path, live={}, archive=None, live_local=ALIAS, mode="merge")
+
+    assert job["agent_id"] == "crew-alias"
+
+
+def test_an_alias_of_the_archive_overlay_is_kept_by_a_replace(tmp_path):
+    job = _alias_import(tmp_path, live=None, archive={}, archive_local=ALIAS)
+
+    assert job["agent_id"] == "crew-alias"
+
+
+def test_a_merge_does_not_take_aliases_from_the_archive_overlay(tmp_path):
+    job = _alias_import(tmp_path, live={}, archive=None, archive_local=ALIAS, mode="merge")
+
+    assert not job.get("agent_id")
+
+
+def test_an_alias_whose_value_is_not_a_table_is_not_known(tmp_path):
+    job = _alias_import(tmp_path, live={"crew-alias": "not a table"}, archive=None)
+
+    assert not job.get("agent_id")
+
+
+def test_a_live_config_saved_with_a_bom_keeps_its_cron_alias(tmp_path):
+    job = _alias_import(tmp_path, live="\ufeff" + _config(ALIAS), archive=None)
+
+    assert job["agent_id"] == "crew-alias"
+
+
+def test_a_malformed_archive_config_does_not_decide_the_aliases(tmp_path):
+    job = _alias_import(tmp_path, live=ALIAS, archive="not json at all")
+
+    assert job["agent_id"] == "crew-alias"
+
+
+def test_a_file_named_auto_in_the_live_skills_is_user_content(tmp_path):
+    home = _home(tmp_path)
+    _managed_copy(home)
+    (home / "skills" / "auto").write_text("mine", encoding="utf-8")
+
+    summary = _import(_skills_zip(tmp_path), home)
+
+    assert (home / "skills" / "auto").read_text(encoding="utf-8") == "mine"
+    assert summary["skills_kept"] is True
