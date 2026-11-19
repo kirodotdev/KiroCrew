@@ -9,7 +9,7 @@ from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401
 from redaction_structured_cases import github_classic
 
 import kiro_crew.acp.client as acp_client
-from conftest import requires_symlinks
+import kiro_crew.acp.client_claude_seed as client_claude_seed
 from kiro_crew.acp.client import (
     AcpClient,
     AcpError,
@@ -339,15 +339,15 @@ class TestSubstitutionFollow:
             lambda wire_servers: guard_calls.append(list(wire_servers or []))
         )
         sent = []
-        settings = tmp_path / ".claude" / "settings.local.json"
 
         async def _send(method, params):
             sent.append(list(params.get("mcpServers") or []))
             if len(sent) == 1 and lose_surface:
-                # A link: the one shape that can be neither governed nor left out
-                # of the session's setting sources.
-                settings.unlink()
-                settings.symlink_to(tmp_path / "elsewhere.json")
+                # The path turns unusable (a link, or a sensitive target): the one
+                # shape that can be neither governed nor left out of the session's
+                # setting sources. Patched rather than built with a real symlink,
+                # so the case runs on hosts without symlink privilege.
+                monkeypatch.setattr(client_claude_seed, "_claude_settings_usable", lambda _path: False)
             return len(sent)
 
         waits = 0
@@ -369,7 +369,6 @@ class TestSubstitutionFollow:
         return sent[1], server, resolve_calls, report_calls, guard_calls
 
     @pytest.mark.asyncio
-    @requires_symlinks
     async def test_substitution_retry_withholds_mcp_when_surface_lost(self, tmp_path, monkeypatch):
         retried, _server, resolves, reports, guards = await self._run_substitution_retry_case(
             tmp_path, monkeypatch, lose_surface=True
