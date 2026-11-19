@@ -597,6 +597,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "method",
             "(self, job: 'CronJob', key: 'str', agent: 'str | None') -> 'str | None'",
         ),
+        ("_cron_key_work_pending", "async method", "(self, key: 'str') -> 'bool'"),
+        (
+            "_cron_batch_kind_defers",
+            "async method",
+            "(self, job: 'CronJob', key: 'str', provider: 'Any', *, reprojected: 'bool') -> 'bool'",
+        ),
         ("_announce_cron_quarantine", "method", "(self) -> 'None'"),
         ("_start_cron_after_memory_ready", "async method", "(self) -> 'None'"),
     ),

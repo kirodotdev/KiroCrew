@@ -682,6 +682,16 @@ class AcpProvider(LLMProvider):
         return value if isinstance(value, frozenset) else None
 
     @property
+    def kas_folder_hooks_projected(self) -> bool:
+        """Whether this session's registered batch projects a folder agent's hooks.
+
+        Read off the live handle (``AcpSessionHandle.kas_folder_hooks_projected``):
+        only a KAS session records it, and a client with no handle answers False.
+        """
+        handle = getattr(self._client, "_handle", None)
+        return getattr(handle, "kas_folder_hooks_projected", False) is True
+
+    @property
     def kas_projected_agent(self) -> str:
         """The agent this session's registered batch was built for, or ``""``."""
         value = getattr(self._client, "kas_projected_agent", "")

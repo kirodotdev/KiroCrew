@@ -174,6 +174,11 @@ async def _cron_run_sequence(
                 "sequence",
             )
             return None
+        _live = self.sessions.get_provider(step.session_key) if self.sessions else None
+        if _live is not None and await self._cron_batch_kind_defers(
+            job, step.session_key, _live, reprojected=False
+        ):
+            return None
 
     result_text = "_No response._"
     # Each step's missing-server note, kept apart from result_text because the
@@ -275,6 +280,14 @@ async def _cron_run_sequence(
                     _seq_downgraded = _seq_downgraded or downgraded
                     return (got, fresh, resumed), tok.entry
 
+                # Past the sweep a step never defers, or the steps before it would
+                # replay: on a person's batch with sub-agent work on its key, it runs
+                # as projected.
+                from kiro_crew.agent_sdk.kas_project_hooks import scheduled_turn_reprojects
+
+                _seq_kind = scheduled_turn_reprojects(
+                    client
+                ) and not await self._cron_key_work_pending(agent_session_key)
                 _seq_reprojection = await reproject_unattended_claim(
                     self.sessions,
                     agent_session_key,
@@ -282,6 +295,7 @@ async def _cron_run_sequence(
                     (client, is_new, _resumed),
                     _seq_reclaim,
                     _seq_token,
+                    scheduled=_seq_kind,
                 )
                 client, is_new, _resumed = _seq_reprojection.claimed
                 _seq_reprojected = _seq_reprojection.reprojected
@@ -844,13 +858,26 @@ async def _cron_run_single(
             _run_provider = got
             return (got, fresh, resumed), tok.entry
 
+        # A batch a person's turn projected with folder hooks is re-projected for
+        # this turn, never while work is pending on its key: a scheduled fire
+        # defers then, and a manual Run (never deferred) runs as projected, with
+        # no kind reset; ordinary hook staleness still re-projects either.
+        from kiro_crew.agent_sdk.kas_project_hooks import scheduled_turn_reprojects
+
+        _single_agent = running_agent(client, _dispatch_agent or "")
+        if await self._cron_batch_kind_defers(job, session_key, client, reprojected=False):
+            return None
+        _kind_reset = not (
+            scheduled_turn_reprojects(client) and await self._cron_key_work_pending(session_key)
+        )
         _reprojection = await reproject_unattended_claim(
             self.sessions,
             session_key,
-            running_agent(client, _dispatch_agent or ""),
+            _single_agent,
             (client, is_new, _resumed),
             _reclaim,
             _single_token,
+            scheduled=_kind_reset,
         )
         client, is_new, _resumed = _reprojection.claimed
         _reprojected = _reprojection.reprojected
@@ -862,6 +889,8 @@ async def _cron_run_single(
             _defer_cron_before_dispatch(
                 job, "the session was replaced by a Stop before this run started"
             )
+            return None
+        if await self._cron_batch_kind_defers(job, session_key, client, reprojected=True):
             return None
         # The job's tab reads this lease as running, and with surface_channel_sessions
         # off no reconcile pass pushes the start.

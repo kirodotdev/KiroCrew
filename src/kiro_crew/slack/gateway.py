@@ -980,6 +980,8 @@ class GatewayOrchestrator:
     _resolve_cron_agent = _cron_fire._resolve_cron_agent
     _acquire_with_model_fallback = _cron_fire._acquire_with_model_fallback
     _retained_session_agent_mismatch = _cron_fire._retained_session_agent_mismatch
+    _cron_key_work_pending = _cron_fire._cron_key_work_pending
+    _cron_batch_kind_defers = _cron_fire._cron_batch_kind_defers
     _announce_cron_quarantine = _cron_fire._announce_cron_quarantine
     _start_cron_after_memory_ready = _cron_fire._start_cron_after_memory_ready
     # gateway_runtime/cron_exec.py

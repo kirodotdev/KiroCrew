@@ -9,8 +9,9 @@ to the agent it dispatches, and acquiring the session that agent runs in; and
 arming the scheduler once memory is ready, and saying when startup moved an
 unreadable cron store aside.
 
-Orchestrator fields read: ``_cfg``, ``_no_crons``, ``_running_script_ids``,
-``ctx_builder``, ``dashboard_state``, ``sessions``.
+Orchestrator fields read: ``_cfg``, ``_cron_injecting``, ``_no_crons``,
+``_running_script_ids``, ``cron_svc``, ``ctx_builder``, ``dashboard_state``,
+``sessions``, ``subagent_mgr``.
 Orchestrator fields written: ``_cron_armed``, ``_cron_quarantine``,
 ``_cron_reconciled``, ``_cron_runs_holding`` (a message run's task, from before its
 first acquire to its end), ``cron_svc``.
@@ -34,7 +35,9 @@ if TYPE_CHECKING:
         LLMProvider,
         Path,
         _await_cron_fire_time_gate,
+        _defer_cron_before_dispatch,
         _pre_create_cron_slot,
+        _subagent_work_pending,
         agent_sequence_dispatches,
         build_cron_session_context,
         cron_job_env_without_reserved,
@@ -985,6 +988,59 @@ def _retained_session_agent_mismatch(
     if isinstance(live_agent, str) and live_agent and live_agent != (agent or ""):
         return live_agent
     return None
+
+
+async def _cron_key_work_pending(self: GatewayOrchestrator, key: str) -> bool:
+    """Whether sub-agent work or an injection still runs on *key*'s session.
+
+    A sub-agent probe that raises counts as pending: a batch is never reset under
+    work nobody could rule out.
+    """
+    if self._cron_injecting.get(key, 0) > 0:
+        return True
+    if not self.subagent_mgr:
+        return False
+    try:
+        return await _subagent_work_pending(self.subagent_mgr, key)
+    except Exception:  # noqa: BLE001 - counted as pending
+        logger.debug(
+            "cron: sub-agent work on %s unreadable; counted as pending", key, exc_info=True
+        )
+        return True
+
+
+async def _cron_batch_kind_defers(
+    self: GatewayOrchestrator,
+    job: CronJob,
+    key: str,
+    provider: Any,
+    *,
+    reprojected: bool,
+) -> bool:
+    """Defer a scheduled fire that cannot run on the batch a person's turn projected.
+
+    That batch recorded withholding what the fire auto-approves
+    (``kas_project_hooks.scheduled_turn_reprojects``), so the fire re-projects it
+    first. Before the re-projection, it waits while work is pending on *key*
+    (``_cron_key_work_pending``: sub-agent work, an injection, or a probe that
+    raised); after it (*reprojected*), it waits when the batch is still
+    person-kind, never running on it or dropping the spec's hooks. A manual Run is
+    never deferred: its person is there to answer the asks, so with work pending it
+    runs as projected, without the kind reset (the caller's ``scheduled=False``).
+    """
+    from kiro_crew.agent_sdk.kas_project_hooks import scheduled_turn_reprojects
+
+    if not scheduled_turn_reprojects(provider):
+        return False
+    if self.cron_svc is not None and self.cron_svc.run_trigger(job.id) == "manual":
+        return False
+    if not reprojected and not await self._cron_key_work_pending(key):
+        return False
+    logger.info("Cron '%s': %s runs a person's batch; deferring this fire", job.name, key)
+    _defer_cron_before_dispatch(
+        job, "the session runs a batch a person's turn projected and cannot be re-projected yet"
+    )
+    return True
 
 
 def _announce_cron_quarantine(self: GatewayOrchestrator) -> None:

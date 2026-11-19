@@ -551,12 +551,15 @@ itself:
   A Crew Turn off beats kiro-cli's trust, and a missing, unreadable or unknown
   kiro-cli record reads as off. The choice lives in `project_hooks_consent.json`
   on the keystone floor, so no agent can write it. Crew fires the hooks on the
-  chat, sub-agent, task-runner and channel turns (a cron turn fires only the
-  user-level spec's hooks, never a folder agent's own), the
+  chat, sub-agent, task-runner and channel turns (a scheduled cron run fires only
+  the user-level spec's hooks, never a folder agent's own; a message you type into
+  a cron result tab is a chat turn and fires them, except while sub-agent work,
+  usually the scheduled run's own, still runs on the tab's session), the
   folder's `mcpServers` and other grants stay withheld, and a user-level agent of
   the same name still wins. A new chat session says which applies, with a Turn on
   or Turn off link; when the hooks run because of kiro-cli, that notice shows once
-  per folder;
+  per folder. A cron result tab shows no such row: make the choice from an
+  ordinary chat;
 - a spec from a project checkout's `.kiro/agents` is untrusted: its prompt must
   be a relative path that stays inside that directory (a leading `$` counts as
   rooted and is refused);
