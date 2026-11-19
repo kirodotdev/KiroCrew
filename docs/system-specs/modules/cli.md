@@ -2053,20 +2053,21 @@ else in an update route calls `dep_sync.sync_or_reinstall` or
 2. The NEW release's `kirocrew kas install --if-in-use` runs on the new code's
    interpreter (`<python> -I -P -m kiro_crew kas install --if-in-use`), so the pin
    it installs is the new release's, never the one the updating process
-   imported. The child decides how much the install needs the engine.
+   imported. Every update puts the pinned engine on disk, whether anything runs
+   it or not (owner decision, 2026-11-18: install the engine by default
+   everywhere; with `agent.kas_bundle` off it is simply not used). The child
+   decides only how much a failure matters.
    `agent.kas_bundle` on makes it required: a failure fails the update. That is
    the switch alone, not `kas_bundle_route()`, because with it on a member route
    (`agent.member_acp_backend`), a Bot's harness pin or a spawn asking for KAS
    runs the engine while the default backend is something else. An engine
    version on disk while a KAS spawn here takes the bundle route on its own
    (`acp.kas_route.resolve_kas_route`: no kiro-cli, or one that cannot run a
-   session) is required too, because KAS already runs on that engine; with
-   nothing on disk that route needs nothing from the update, since the gateway
-   installs the engine at the first spawn. An engine
-   version only on disk under `<data home>/engines/kas` while the spawn runs
-   kiro-cli's relay (the installers lay one
-   down on every default install) makes it optional: the child still tries, and
-   on any failure (a refused fetch, a full or unwritable disk) prints the retry
+   session) is required too, because KAS already runs on that engine. Anything
+   else makes it optional, including no engine on disk at all (an install from
+   before the installers downloaded it, or one made with `--no-kas`): the child
+   still tries, and on any failure (a refused fetch, a full or unwritable disk)
+   prints the retry
    (`kirocrew kas install`) and exits
    `release_apply.ENGINE_OPTIONAL_FAILED_EXIT` (4), which the update reports and
    switches past. The optional child also bounds itself below the update's kill
@@ -2076,8 +2077,12 @@ else in an update route calls `dep_sync.sync_or_reinstall` or
    `ENGINE_OPTIONAL_HARD_STOP_SECS` (660 s), both exiting 4. It prints
    `ENGINE_OPTIONAL_MARKER` as a stdout line before it starts, so an optional
    child that ends any other nonzero way (a signal) is reported the same way.
-   Neither: it exits 0 having done nothing. So a relay-route host
-   that cannot fetch the engine (an old glibc, no network, a slow link) keeps updating. A
+   So a relay-route host
+   that cannot fetch the engine (an old glibc, no network, a slow link) keeps updating. With
+   the switch off on a host that can never run the engine
+   (`kas_bundle.host_unsupported_reason()` names a glibc floor or a missing
+   build), the child tries nothing and exits 0 with that reason and no retry
+   line, since every retry there is refused. A
    target release that predates the step (a channel move or rollback to an older
    build: argparse's usage exit for no `kas` command or no `--if-in-use`) counts
    as nothing to install. An unreadable config reads as the relay route, as it does for every
