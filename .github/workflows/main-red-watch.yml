@@ -10,7 +10,12 @@ name: Main Red Watch
 # reads the check-run annotations of every failed job, collects the failing tests
 # the rootdir `conftest.py` annotated there (title: the node id; message:
 # `<node id> - <reason>`), and opens or updates ONE issue titled
-# `Main is red: <first node id>` under the `main-red` label. The body holds the
+# `ci: Main is red: <first node id>` under the `main-red` label. The issue has
+# the shape of the repository's CI failure form (`.github/ISSUE_TEMPLATE/ci_failure.yml`):
+# its `ci: ` title prefix, its labels `bug` and `area: ci` (created when the
+# repository lacks one, and left off if filing with them fails), and one section per
+# form field in the form's order, filled from what this run knows and
+# `_No response_` where it knows nothing. The body holds the
 # set {node id: first 80 characters of the message}, the first-red SHA and the
 # streak, and one line, `Fix in progress: ...`, that it rewrites on every main run
 # from the open pull requests that cross-reference the issue. When a later push
@@ -323,6 +328,7 @@ jobs:
             python3 "$script" render --failures "$work/failures.json" \
               --prev-body "$work/prev-body.md" ${2:+--timeline "$2"} \
               --repo "$REPO" --sha "$HEAD_SHA" --run-id "$RUN_ID" --run-url "$RUN_URL" \
+              --jobs "$work/failed-jobs.txt" --logdir "$work/logs" \
               ${1:+--issue-number "$1"} --out-title "$work/title.txt" --out-body "$work/body.md" || rc=$?
             if [ "$rc" = 10 ]; then
               exit 0
@@ -353,9 +359,21 @@ jobs:
             fi
             : > "$work/prev-body.md"
             render ""
+            # The form's labels exist where the form does. A repository without one
+            # (a fork's own main) gets it created here, with no `--force`, so a
+            # label that exists keeps its colour and description. A label must
+            # never cost the issue: if filing with labels fails, it is filed bare.
+            label_args=()
+            for form_label in bug "area: ci"; do
+              gh label create "$form_label" --repo "$REPO" >/dev/null 2>&1 || true
+              label_args+=(--label "$form_label")
+            done
             if [ "$have_label" = 1 ]; then
-              created="$(gh issue create --repo "$REPO" --title "$(< "$work/title.txt")" --body-file "$work/body.md" --label main-red)"
-            else
+              label_args+=(--label main-red)
+            fi
+            if ! created="$(gh issue create --repo "$REPO" --title "$(< "$work/title.txt")" \
+              --body-file "$work/body.md" ${label_args[@]+"${label_args[@]}"} 2> "$work/read-error.txt")"; then
+              say warning "Could not file the issue with its labels ($(why)); filing it without labels."
               created="$(gh issue create --repo "$REPO" --title "$(< "$work/title.txt")" --body-file "$work/body.md")"
             fi
             printf '%s\n' "$created"

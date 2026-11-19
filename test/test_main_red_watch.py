@@ -287,11 +287,11 @@ BOT = {"login": "app/github-actions", "is_bot": True}
 
 def test_the_oldest_issue_with_the_marker_the_title_prefix_and_our_author_is_picked() -> None:
     marked = mod.render_body(_state(), [], 5)
-    title = "Main is red: test/a.py::t"
+    title = "ci: Main is red: test/a.py::t"
     issues = [
         {"number": 9, "title": title, "body": marked, "author": BOT},
         {"number": 5, "title": title, "body": marked, "author": BOT},
-        {"number": 2, "title": "Main is red: by hand", "body": "no record", "author": BOT},
+        {"number": 2, "title": "ci: Main is red: by hand", "body": "no record", "author": BOT},
         {"number": 1, "title": "Something else", "body": marked, "author": BOT},
     ]
     assert mod.pick_issue(issues)["number"] == 5
@@ -302,7 +302,7 @@ def test_the_oldest_issue_with_the_marker_the_title_prefix_and_our_author_is_pic
 def test_an_issue_a_person_wrote_is_never_ours_even_with_a_perfect_record() -> None:
     """The forged-issue attack: our title, a valid record, a huge last_run_id."""
     forged = mod.render_body(_state(99_999_999_999), [], 3)
-    title = "Main is red: x"
+    title = "ci: Main is red: x"
     people = [
         {"login": "octocat", "is_bot": False},
         {"login": "github-actions", "is_bot": False},
@@ -394,7 +394,7 @@ def test_the_body_carries_the_set_the_first_sha_the_streak_and_the_fix_line() ->
     assert "Streak: 1" in body
     assert "Fix in progress: #23933 (@buluoray, opened 2026-10-26 07:00Z)" in body
     assert "none yet" not in body
-    assert mod.title_for(state["failures"]) == "Main is red: test/a.py::t"
+    assert mod.title_for(state["failures"]) == "ci: Main is red: test/a.py::t"
 
 
 # ── Wiring and least privilege ───────────────────────────────────────────────
@@ -520,7 +520,7 @@ printf '%s\n' "$*" >> "$d/gh.log"
 filter() { while [ "$#" -gt 0 ]; do [ "$1" = "--jq" ] && { printf '%s' "$2"; return; }; shift; done; }
 arg_after() { local k="$1"; shift; while [ "$#" -gt 0 ]; do [ "$1" = "$k" ] && { printf '%s' "$2"; return; }; shift; done; }
 case "$1 $2" in
-  "label create") [ -f "$d/label-refused" ] && exit 1; exit 0 ;;
+  "label create") [ "$3" = main-red ] && [ -f "$d/label-refused" ] && exit 1; exit 0 ;;
   "issue list")
     case " $* " in
       *" --label "*) cat "$d/labelled-issues.json" ;;
@@ -528,6 +528,7 @@ case "$1 $2" in
     esac
     exit 0 ;;
   "issue create")
+    case " $* " in *" --label "*) [ -f "$d/labelled-create-refused" ] && { echo "could not add label: 'area: ci' not found" >&2; exit 1; } ;; esac
     arg_after --title "$@" > "$d/created-title.txt"
     cp "$(arg_after --body-file "$@")" "$d/created-body.md"
     echo "https://github.com/example/repo/issues/77"; exit 0 ;;
@@ -613,7 +614,7 @@ def _open_issue(number: int = 5, run_id: int = 900) -> dict:
     state = mod.next_state(None, {"test/old.py::t": "x"}, "a" * 40, run_id, RUN_URL)
     return {
         "number": number,
-        "title": "Main is red: test/old.py::t",
+        "title": "ci: Main is red: test/old.py::t",
         "body": mod.render_body(state, [], number),
         "author": BOT,
     }
@@ -630,6 +631,7 @@ def _run_step(
     conclusion: str = "failure",
     timeline: list[dict] | None = None,
     label_refused: bool = False,
+    labelled_create_refused: bool = False,
     timeline_refused: bool = False,
     labelled_issues: list[dict] | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
@@ -653,6 +655,8 @@ def _run_step(
         (stub / f"rate-limited-{job_id}").write_text("", encoding="utf-8")
     if label_refused:
         (stub / "label-refused").write_text("", encoding="utf-8")
+    if labelled_create_refused:
+        (stub / "labelled-create-refused").write_text("", encoding="utf-8")
     if timeline_refused:
         (stub / "timeline-refused").write_text("", encoding="utf-8")
     bin_dir = tmp_path / "bin"
@@ -709,7 +713,8 @@ def test_a_red_run_with_node_ids_files_one_labelled_issue_titled_by_the_first(
         (stub / "created-title.txt")
         .read_text(encoding="utf-8")
         .startswith(
-            "Main is red: test/test_memory_files_substitution.py::TestTheInjectedImplementationAnswers::"
+            "ci: Main is red: test/test_memory_files_substitution.py::"
+            "TestTheInjectedImplementationAnswers::"
         )
     )
     assert len(_wrote(stub, "create")) == 1
@@ -782,7 +787,7 @@ def test_a_red_run_whose_logs_cannot_be_read_is_filed_from_its_annotations(tmp_p
     out, stub = _run_step(tmp_path, jobs=jobs, logs={}, annotations=notes)
     assert out.returncode == 0, out.stderr
     assert (stub / "created-title.txt").read_text(encoding="utf-8") == (
-        "Main is red: test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::"
+        "ci: Main is red: test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::"
         "test_an_unconfirmed_resume_is_evicted_without_deleting_its_record[response0]"
     )
     state = mod.parse_state((stub / "edit-77.md").read_text(encoding="utf-8"))
@@ -994,10 +999,47 @@ def test_an_older_red_run_finishing_late_edits_nothing(tmp_path: Path) -> None:
 def test_without_the_label_the_issue_is_filed_and_found_by_title_prefix(tmp_path: Path) -> None:
     out, stub = _run_step(tmp_path, label_refused=True)
     assert out.returncode == 0, out.stderr
-    assert not any("--label" in c for c in _calls(stub))
+    # The label it could not create is left off; the form's own labels are not its to create.
+    assert not any("--label main-red" in c for c in _calls(stub))
+    assert any("--label bug --label area: ci" in c for c in _wrote(stub, "create"))
     out, stub = _run_step(tmp_path / "again", label_refused=True, issues=[_open_issue()])
     assert _wrote(stub, "create") == []
     assert any(c.startswith("issue list") and "--label" not in c for c in _calls(stub))
+
+
+@_needs_posix
+def test_the_form_labels_are_ensured_without_force_before_the_issue_is_filed(
+    tmp_path: Path,
+) -> None:
+    out, stub = _run_step(tmp_path)
+    assert out.returncode == 0, out.stderr
+    ensured = [c for c in _calls(stub) if c.startswith("label create")]
+    assert [c for c in ensured if "main-red" not in c] == [
+        "label create bug --repo example/repo",
+        "label create area: ci --repo example/repo",
+    ]
+    (create,) = _wrote(stub, "create")
+    assert create.endswith("--label bug --label area: ci --label main-red")
+
+
+@_needs_posix
+def test_a_label_that_cannot_be_added_never_costs_the_issue(tmp_path: Path) -> None:
+    out, stub = _run_step(tmp_path, labelled_create_refused=True)
+    assert out.returncode == 0, out.stderr
+    first, second = _wrote(stub, "create")
+    assert "--label" in first and "--label" not in second
+    said = "Could not file the issue with its labels (could not add label: 'area: ci' not found"
+    assert f"::warning::{said}" in out.stdout
+    assert said in (stub / "summary.md").read_text(encoding="utf-8")
+    assert (stub / "created-title.txt").read_text(encoding="utf-8").startswith("ci: Main is red: ")
+    assert _wrote(stub, "edit")[0].startswith("issue edit 77")
+
+
+@_needs_posix
+def test_neither_label_step_stops_an_unlabelled_issue(tmp_path: Path) -> None:
+    out, stub = _run_step(tmp_path, label_refused=True, labelled_create_refused=True)
+    assert out.returncode == 0, out.stderr
+    assert len(_wrote(stub, "create")) == 2 and "--label" not in _wrote(stub, "create")[1]
 
 
 @_needs_posix
