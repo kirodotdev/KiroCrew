@@ -1,12 +1,12 @@
 ---
 title: Slack owner claim — the owner sends the bot a DM and confirms it on the local Settings page
-status: draft
+status: accepted
 author: zejiangg (drafted with an agent session)
 created: 2026-11-18
-last-audited: 2026-11-18
-audited-at: 539737a2a
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-11-19
+audited-at: 1b0ef7692
+doc-pr: 38903
+implementation-prs: [39086]
 tracking-issues: [38899]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Slack owner claim
 
-Status: draft. Nothing is built and this document changes no code. It answers [#38899](https://github.com/kirodotdev/KiroCrew/issues/38899). Acceptance is requested from a maintainer, who records it on this Status line. Every code reference below was read at `539737a2a`.
+Status: accepted. [Accepted 2026-11-18](https://github.com/kirodotdev/KiroCrew/pull/38903#pullrequestreview-5952717861) by the repository owner (maintainer approval on #38903). Phase 1 is built in [#39086](https://github.com/kirodotdev/KiroCrew/pull/39086) and takes effect when it merges. It answers [#38899](https://github.com/kirodotdev/KiroCrew/issues/38899). The code references below were first read at `539737a2a` and re-checked at `1b0ef7692`, where §3's hook and §11's `events.py` row are built as the claim window's own Socket Mode listener instead, so `events.py` is unchanged (see #39086).
 
 ## Summary
 
@@ -103,7 +103,7 @@ A message becomes a candidate only when **all** hold; anything else is dropped a
 ### 4. Candidates
 
 - Counted per sender, with no global failure cap: one sender's latest message replaces their earlier one, so a flood from one person adds one row, not many.
-- At most 3 distinct senders are kept; a fourth drops the oldest.
+- The first 3 distinct senders are kept. A listed sender's new message updates their row in place, without moving it. A fourth sender is ignored and counted in `ignored`, and the more-than-one-candidate warning still shows.
 - Each row shows avatar, display name, `@handle`, workspace name, member ID, **the message text and the time it arrived**. The person recognises what they just typed, which a look-alike name and avatar cannot copy.
 - With more than one candidate, the page shows a prominent warning: more than one person sent a message; check the text before confirming.
 - The page also shows the count of ignored messages, without their content.
@@ -145,8 +145,8 @@ The window closes, and Socket Mode disconnects unless the close is a confirm, on
 
 ### 9. After the claim
 
-- The Slack panel shows "Owner: @handle (workspace)" with a Clear button. The manual Owner Slack member ID field stays as a fallback.
-- **Clear** only removes `KIROCREW_OWNER_ID` from `.env` and tells the person to restart the gateway. It does not change the running gateway's owner: Reconnect refuses an owner change (`_reconnect` answers `OWNER_CHANGE_NEEDS_RESTART`). Until the restart, "Claim in Slack" still answers 409 because the gateway owner is set (§2).
+- The Slack panel shows "Owner: @handle (workspace)". The manual Owner Slack member ID field stays as a fallback.
+- Clearing the owner goes through the Owner Slack member ID field: empty it and save. That only removes `KIROCREW_OWNER_ID` from `.env` and the save answers restart-required. It does not change the running gateway's owner: Reconnect refuses an owner change (`_reconnect` answers `OWNER_CHANGE_NEEDS_RESTART`). Until the restart, "Claim in Slack" still answers 409 because the gateway owner is set (§2).
 
 ### 10. CLI
 
@@ -191,11 +191,11 @@ The setup wizard, which puts this panel on its own screen, is a separate pull re
 | Open | 409 when the gateway owner is set; 409 when only the saved owner is set (manual Save, no Reconnect); 409 when a window is open; refused for an `E…` org install; refused without both tokens |
 | Connection | Saving tokens with no owner does not connect; `start` connects; expiry disconnects and restores `KIROCREW_OWNER_ID is not set`; cancel disconnects |
 | Filters | one rejection test each: not `im`; `bot_id`; `subtype`; other envelope team; `user_team` mismatch; both team fields missing; `check_message_origin` refuses; `users.info` fails; `deleted`, `is_bot`, `is_app_user`, `is_restricted`, `is_ultra_restricted`, `is_stranger` |
-| Candidates | one sender flooding keeps one row and does not push out another sender; a fourth sender drops the oldest; rows carry text and time; more than one candidate sets the warning flag; `users.info` called once per sender |
+| Candidates | one sender flooding keeps one row and does not push out another sender; a fourth sender is ignored and counted while the first 3 stay in place, and a repeat from a listed sender keeps its position; rows carry text and time; more than one candidate sets the warning flag; `users.info` called once per sender |
 | Silence | a candidate message never reaches `_route_message`; the bot posts nothing during the window; slash, interaction and Home tab events post nothing; `delivery.py`, `result_egress.py`, `turn_approvals.py` and `service_boot.py` outbound paths send nothing with an empty owner |
 | Confirm | an ID not in the candidates is 404; compare-then-write answers 409 when a manual Save set the owner after `start`; the written value equals `event.user` byte for byte, including a `W…` ID; Reconnect then succeeds and `is_owner` is true; one welcome DM is posted |
 | Close | a bot-token write, an app-token write and an owner write each close an open window |
-| Clear | Clear writes only `.env`, answers restart-required, and `start` still answers 409 until restart |
+| Clear | Emptying the Owner Slack member ID field and saving writes only `.env`, answers restart-required, and `start` still answers 409 until restart |
 | UI | a read-only viewer sees no Claim, Confirm or Cancel controls |
 
 ## Backward compatibility
@@ -205,7 +205,7 @@ Compatible. With no window open, every path behaves as today. The only value wri
 ## Rollback
 
 - Code: revert the implementation pull request. Nothing is persisted except `KIROCREW_OWNER_ID`, which a manual entry would have written the same way, so a revert needs no migration.
-- A wrong owner was confirmed: Clear (or delete `KIROCREW_OWNER_ID` from `~/.kiro/crew/.env`), then restart the gateway, then claim again or enter the ID by hand.
+- A wrong owner was confirmed: empty the Owner Slack member ID field and save (or delete `KIROCREW_OWNER_ID` from `~/.kiro/crew/.env`), then restart the gateway, then claim again or enter the ID by hand.
 - A window misbehaves: restart the gateway. Window state is in memory only, so a restart returns to the ownerless-closed state.
 
 ## Security considerations
@@ -220,7 +220,7 @@ Assets: who becomes the owner, and what an ownerless gateway admits or sends. Ac
 | T2 | A workspace member sends a DM during the window, copying the owner's name and avatar | The owner must click Confirm locally; rows show the message text and time; more than one candidate triggers a warning (§4). |
 | T3 | A Slack Connect, guest or foreign-team user is offered | Envelope team pin, `user_team` / `users.info` team match with fail-closed on missing fields, guest and stranger flags, org gate (§3). |
 | T4 | A bot or app is offered | `bot_id`, `subtype`, `is_bot`, `is_app_user` rejected; trusted-bot admission off in claim mode (§3). |
-| T5 | Flooding pushes the owner out or burns a shared limit | Per-sender counting, 3 distinct senders, no global failure cap, one `users.info` per sender (§3, §4). |
+| T5 | Flooding pushes the owner out or burns a shared limit | Per-sender counting, the first 3 distinct senders kept (a later one is ignored), no global failure cap, one `users.info` per sender (§3, §4). |
 | T6 | A long-lived ownerless connection | Connects only on a local click, 10-minute expiry, disconnect on close (§1, §7). |
 | T7 | The token changes to another workspace mid-window | Any Slack credential write closes the window (§7). |
 | T8 | A race with a manual Save sets two owners | 409 on either owner at open; compare-then-write under a lock shared with Save (§2, §6). |

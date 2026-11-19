@@ -406,6 +406,17 @@ describe('SlackPanel save payload', () => {
     expect(await screen.findByText('Saved.', undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 
+  it('leaves the owner out of a save that did not edit it, so a claim confirmed meanwhile stays', async () => {
+    const { save } = seed()
+    await hydrated()
+
+    fireEvent.change(screen.getByPlaceholderText('kirocrew'), { target: { value: 'crew' } })
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).not.toHaveProperty('owner_id')
+  })
+
   it('lists Slack conversations by default and saves the switch turned off', async () => {
     const { save } = seed()
     await hydrated()

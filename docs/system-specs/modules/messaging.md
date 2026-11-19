@@ -1836,8 +1836,9 @@ the facade reaches moved code. New work goes to the owner of its responsibility:
 | `notifications.py` | the notification feed and the per-channel notification settings |
 | `agent_push.py` | `POST /api/notifications/agent`, an agent session's `send_notification` push, and `POST /api/notifications/agent/dismiss`, its `dismiss_notification` |
 | `*_settings.py`, one per channel | that channel's settings API |
-| `channel_config_writes.py` | the channel-config transaction every channel saver commits through: `_LockedSectionWrite`, and `_write_env_or_roll_back`, the one `.env` write, rollback and environment sync (its off-loop drain, `_write_env_off_loop`, stays in `handlers/messaging.py`); plus `_mask_secret`, `_clean_id_list` and `_threshold_pct_rejection` |
+| `channel_config_writes.py` | the channel-config transaction every channel saver commits through: `_LockedSectionWrite`, and `_write_env_or_roll_back`, the one `.env` write (with an optional `check` run on the file text under the `.env` lock, which the owner claim's confirm uses), rollback and environment sync (its off-loop drain, `_write_env_off_loop`, stays in `handlers/messaging.py`); plus `_mask_secret`, `_clean_id_list` and `_threshold_pct_rejection` |
 | `slack_workspace.py` | the Slack pin, reaction, history, profile and manifest routes |
+| `slack_owner_claim.py` | the four `/api/slack/owner-claim` routes over `slack/owner_claim.py` |
 | `channel_folder_backfill.py` | `POST /api/channel-folders/backfill`, filing a channel's existing sessions |
 
 An owner route that parses its body with `await request.json()` and then reads it
@@ -3956,6 +3957,26 @@ dashboard token auth.
   boot's own `init_socket_mode` + `_connect_slack` have returned (the gateway
   publishes `DashboardState.slack_reconnect` only then, so a reconnect never
   opens a socket boot would replace without closing).
+- `GET /api/slack/owner-claim`, `POST /api/slack/owner-claim/start`,
+  `/cancel` and `/confirm` (`{"user_id"}`) — the owner-claim window
+  (`slack.owner_claim.OwnerClaim`, published as `DashboardState.slack_owner_claim`
+  beside `slack_reconnect`). All four, the GET included, are direct-local only
+  (remote 403 `remote_read_only`; 503 `slack_reconnect_unavailable` with no
+  socket owner), because the GET lists candidates' names and message text. No
+  other surface (`GET /api/slack/config`, page pushes, audit bodies) carries a
+  candidate. Start answers 409 `owner_set` when the gateway or the saved owner
+  is set, 409 `window_open`, 400 `tokens_missing`, `org_install_refused`,
+  `enterprise_validation_failed`, `denied_by_policy`, `credentials_mismatch` (the
+  tokens it would connect with are not the saved ones) or a Slack error, 502 when
+  the claim socket cannot connect. Confirm answers 400 `invalid_json`, `body_not_object` or `invalid_user_id`, 404
+  `not_a_candidate`, 409 `owner_set` / `credentials_changed` / `no_window`
+  (compare-then-write: the config lock, then a `check` the `.env` writer runs
+  under the cross-process `.env` lock), else `{owner_id, connected,
+  connect_error}` from the Reconnect it runs. After a PUT that writes a Slack
+  credential, and after the gateway's Slack config watcher sees one any other
+  writer changed, the window re-checks the saved owner and tokens and closes
+  when they no longer match what it pinned. Behaviour:
+  [slack-gateway § Owner claim](slack-gateway.md).
 - `GET /api/slack/manifest` — public manifest template rendered with
   `?alias=` (default `kirocrew`, never `$USER`) plus Slack's one-click
   create deep link and `command`, the slash command that manifest registers

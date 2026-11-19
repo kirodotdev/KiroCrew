@@ -952,6 +952,11 @@ def _setup_slack_tokens() -> None:
         owner_rejected = True
     if owner_name:
         print(f"  ✅ Owner verified: {owner_name} ({owner_id})")
+    elif not owner_id:
+        print(
+            "  No member ID saved. Once the gateway runs, use 'Claim in Slack' under "
+            "Settings → Messaging channels → Slack to become the owner from a DM.\n"
+        )
 
     if not app_token or not bot_token:
         print("  ⚠️  Missing tokens — Slack integration will be disabled.\n")

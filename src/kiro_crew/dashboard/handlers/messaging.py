@@ -102,6 +102,7 @@ from kiro_crew.dashboard.messaging_api import notifications as _owner_notificati
 from kiro_crew.dashboard.messaging_api import proactive_send as _owner_proactive_send
 from kiro_crew.dashboard.messaging_api import run_control as _owner_run_control
 from kiro_crew.dashboard.messaging_api import run_views as _owner_run_views
+from kiro_crew.dashboard.messaging_api import slack_owner_claim as _owner_slack_owner_claim
 from kiro_crew.dashboard.messaging_api import slack_settings as _owner_slack_settings
 from kiro_crew.dashboard.messaging_api import slack_workspace as _owner_slack_workspace
 from kiro_crew.dashboard.messaging_api import spawn as _owner_spawn
@@ -234,6 +235,14 @@ from kiro_crew.dashboard.messaging_api.run_views import (  # noqa: F401
     _spawn_result_view,
     api_spawn_list,
     api_spawn_status,
+)
+from kiro_crew.dashboard.messaging_api.slack_owner_claim import (  # noqa: F401
+    _owner_claim_gate,
+    _owner_claim_refused,
+    api_slack_owner_claim_cancel,
+    api_slack_owner_claim_confirm,
+    api_slack_owner_claim_get,
+    api_slack_owner_claim_start,
 )
 from kiro_crew.dashboard.messaging_api.slack_settings import (  # noqa: F401
     _save_code_channel_dispatch_locked,
@@ -897,7 +906,9 @@ async def api_send_message(request: web.Request) -> web.Response:
     )
 
 
-async def _write_env_off_loop(updates: dict[str, str | None]) -> None:
+async def _write_env_off_loop(
+    updates: dict[str, str | None], *, check: Callable[[str], None] | None = None
+) -> None:
     """Run the blocking ``.env`` write on a worker, drained under the config lock.
 
     Every caller holds ``_get_config_lock()`` across this, and a thread cannot be
@@ -927,7 +938,11 @@ async def _write_env_off_loop(updates: dict[str, str | None]) -> None:
     this through :func:`_write_env_or_roll_back`, which rolls the config write
     back on any failure, so on every channel the 409 means nothing was saved.
     """
-    fut = asyncio.ensure_future(asyncio.to_thread(_write_env_updates, updates))
+    fut = asyncio.ensure_future(
+        asyncio.to_thread(_write_env_updates, updates)
+        if check is None
+        else asyncio.to_thread(_write_env_updates, updates, check)
+    )
     try:
         await asyncio.shield(fut)
     except asyncio.CancelledError:
@@ -1115,6 +1130,7 @@ _facade_compose(
         _owner_proactive_send,
         _owner_channel_delivery,
         _owner_slack_settings,
+        _owner_slack_owner_claim,
         _owner_discord_settings,
         _owner_telegram_settings,
         _owner_teams_settings,
