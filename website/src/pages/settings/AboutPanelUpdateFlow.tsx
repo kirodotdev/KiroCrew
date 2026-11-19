@@ -36,7 +36,20 @@ const ARM_TIMEOUT_MS = 5000
  * countdown covers them; a run of them means the approval landing can no
  * longer be observed, which the user must hear rather than wait on forever.
  */
-export const ARM_POLL_FAILURE_THRESHOLD = 3
+const ARM_POLL_FAILURE_THRESHOLD = 3
+
+/**
+ * True once ARM_POLL_FAILURE_THRESHOLD `armStatus` polls in a row have failed, each
+ * counted once after its retries. Not `failureCount`: React Query restarts it at every
+ * fetch, and the dashboard's retry policy gives a 5xx a single retry, so it stops at 2.
+ */
+export function useArmPollFailing({ dataUpdatedAt, errorUpdateCount }: { dataUpdatedAt: number; errorUpdateCount: number }): boolean {
+  // Any answer ends the run, so the count restarts from the errors seen at the last one.
+  const [runStart, setRunStart] = useState({ dataUpdatedAt, errorUpdateCount })
+  if (runStart.dataUpdatedAt !== dataUpdatedAt) setRunStart({ dataUpdatedAt, errorUpdateCount })
+  const failedPolls = runStart.dataUpdatedAt === dataUpdatedAt ? errorUpdateCount - runStart.errorUpdateCount : 0
+  return failedPolls >= ARM_POLL_FAILURE_THRESHOLD
+}
 /**
  * How long `applying` waits for the apply's first progress push. An approval
  * starts the apply at once and it pushes within seconds, so an arm that went
@@ -433,6 +446,7 @@ export function InAppUpdateFlow({
     enabled: isArmed,
     refetchInterval: 5000,
   })
+  const armPollFailing = useArmPollFailing(armStatusQuery)
   const polled = armStatusQuery.data
   const polledAt = armStatusQuery.dataUpdatedAt
   const refetchArmStatus = armStatusQuery.refetch
@@ -676,7 +690,7 @@ export function InAppUpdateFlow({
               testId="arm-copy-error"
             />
           )}
-          {armStatusQuery.failureCount >= ARM_POLL_FAILURE_THRESHOLD && (
+          {armPollFailing && (
             <ErrorNotice
               variant="inline"
               message={i18nT('pages.settings.aboutPanel.arm_status_poll_failing')}
