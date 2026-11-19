@@ -1006,7 +1006,9 @@ class TestTaskStepCliDefaultModel:
             # The step owns its turn while the model is applied.
             held.append(mgr._sessions[key].semaphore.locked())
 
-        handle = SimpleNamespace(session_id="sid-step", set_model=AsyncMock(side_effect=_set_model))
+        handle = SimpleNamespace(
+            session_id="sid-step", kas_memory_mode="", set_model=AsyncMock(side_effect=_set_model)
+        )
 
         async def create_session(**kwargs):
             return handle
