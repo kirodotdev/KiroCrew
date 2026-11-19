@@ -5002,6 +5002,49 @@ Two subtleties:
 
   Each run ends with a `pr-readiness: core rate limit -- N/M remaining` log line
   (`GET /rate_limit` is free) so the pool's draw can be measured rather than estimated.
+
+  **Reads can use a pool of their own.** When the repository secret
+  `PR_READINESS_READ_TOKEN` is set, this workflow and `pr-readiness-sweep.yml`
+  make their reads with that token instead of `GITHUB_TOKEN`, so lane traffic
+  on the shared pool cannot starve the verdict. The first step after the retry
+  helper, `Select the token pool for reads` (identical in both workflows), asks
+  that token for `/rate_limit` and logs
+  `readiness reads: token pool -- readiness (PR_READINESS_READ_TOKEN), N/M remaining`.
+  With the secret unset it logs `token pool -- shared (GITHUB_TOKEN)`, and
+  nothing else changes. A token that is refused (expired, revoked) or has fewer
+  than `READ_POOL_FLOOR` (50) requests left raises a `::warning::` and the run
+  reads with `GITHUB_TOKEN`, so a bad secret degrades to the shared pool and
+  never stops the required check. Only counts are logged, never the token, and
+  the secret reaches a step only through its `env`. In `pr-readiness.yml` every
+  `gh_retry` call (all of them reads) takes the selected pool, and the run's
+  last step adds a
+  `pr-readiness: readiness pool rate limit -- N/M remaining` line. In the sweep
+  the scan, the comment and status reads and the active-dispatch listing take
+  it. Three things stay on `GITHUB_TOKEN` on purpose:
+
+  - **Every write** (the status, labels, the sweep's dispatch and republish). A
+    write made with any other token starts workflow runs of its own: a label
+    change would re-run every workflow that listens for `labeled`.
+  - **Every collaborator-permission read**: the one behind "changes requested"
+    and the ones the disposition and supersession evaluators (`pr_status.py`)
+    make for each record's author, so both evaluator steps run on
+    `GITHUB_TOKEN` whole. The answer depends on what the asking token may see.
+    A token refused that read makes a reviewer read as "not a collaborator" and
+    a disposition author as a non-writer, which drops the block or the record
+    and can publish a green the PR has not earned.
+  - **The sweep's reserve.** It still reads the shared pool, with the same
+    `RATE_RESERVE_PERCENT` and `DISPATCH_COST`: the dispatch and the recompute's
+    writes draw on that pool.
+
+  The token must be able to read this public repository's pull requests,
+  reviews, issue comments, labels, commit statuses, check runs, workflow runs
+  and file contents, over REST and GraphQL. It needs no write access and no
+  access to collaborator permissions, because no read that depends on them is
+  made with it. A fine-grained personal access token has a 5,000-request hourly
+  pool of its owner's, which the selection falls back from when it runs low.
+  `test/test_readiness_read_token.py` pins the selection, the fallback, that no
+  write goes through the read token, and that the step is identical in both
+  workflows.
   Screening events before the evaluation was measured and then withdrawn: settling an
   event skips the publish, and the publish is the only write that corrects an isolated,
   never-cancelled publisher's stale success, so every screened shape moved that write
