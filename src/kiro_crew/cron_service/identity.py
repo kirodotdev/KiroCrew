@@ -223,7 +223,8 @@ def cron_prior_result_context(job: CronJob) -> str:
     # Only a stored text result is carried; anything else is no result.
     if not job.persistent_session or not isinstance(last, str) or not last:
         return ""
-    if job.minimal_context and len(last) > 2000:
+    # The run's own history already holds the full text; keep only its tail.
+    if len(last) > 2000:
         last = "[truncated]…" + last[-2000:]
     safe = _neutralize_dashed_turn_fences(neutralize_untrusted_text(last))
     return (
