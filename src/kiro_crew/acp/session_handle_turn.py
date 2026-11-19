@@ -42,8 +42,9 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import batch_guard, kas_profile
+from kiro_crew.acp import batch_guard, kas_profile, kas_wire
 from kiro_crew.acp._dispatch import (
+    classify_notification,
     is_unattributed_error_candidate,
     prompt_is_adapter_command,
     redact_text,
@@ -100,6 +101,9 @@ from kiro_crew.acp.types import (
     STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
+    UPDATE_AVAILABLE_COMMANDS,
+    UPDATE_CONFIG_OPTION,
+    UPDATE_SESSION_INFO,
     AcpEvent,
     JsonRpcMessage,
 )
@@ -134,6 +138,49 @@ _DRAIN_CLOSED_STOP_REASONS = frozenset(
         STOP_REASON_TOOL_STALL,
     )
 )
+
+# The frames a backend sends between turns that only report session state,
+# measured on KAS: after the ``session/new`` answer while MCP servers connect, and
+# after each prompt's answer. Allowed by name, or as a notification
+# ``classify_notification`` skips, which no turn reads either; every other frame
+# keeps the WARNING, since a turn's content, bill, steer or notice can ride any
+# carrier.
+_DRAIN_STATE_UPDATES = frozenset((UPDATE_AVAILABLE_COMMANDS, UPDATE_CONFIG_OPTION))
+# KAS ``session_info_update`` kinds (``_meta.kiro.kind``) that only report state.
+# ``display_error`` has no constant: nothing in Crew reads it.
+_DRAIN_STATE_KAS_KINDS = frozenset((kas_wire.KIND_CONTEXT_USAGE, "display_error"))
+
+
+def _is_between_turn_state(msg: JsonRpcMessage | None) -> bool:
+    """Whether a frame the pre-turn drain discards only reports session state.
+
+    True for a notification (``method`` set, no ``id``) that
+    ``classify_notification`` skips, which no turn would read either; for a
+    standard ``session/update`` whose kind is in ``_DRAIN_STATE_UPDATES``; and for
+    a KAS ``session_info_update`` whose ``_meta.kiro.kind`` is in
+    ``_DRAIN_STATE_KAS_KINDS``. False for everything else, so a response, a
+    request and any frame not named here keep the WARNING.
+    """
+    if msg is None or msg.method is None or msg.id is not None:
+        return False
+    action = classify_notification(msg)
+    if action != "update":
+        return action == "skip"
+    params = msg.params if isinstance(msg.params, dict) else {}
+    update = params.get("update")
+    if not isinstance(update, dict):
+        return False
+    kind = update.get("sessionUpdate")
+    # A non-str value would raise on a set lookup, outside the turn guard.
+    if not isinstance(kind, str):
+        return False
+    if kind in _DRAIN_STATE_UPDATES:
+        return True
+    if kind != UPDATE_SESSION_INFO:
+        return False
+    kiro = kas_wire.kiro_meta(update)
+    kas_kind = kiro.get(kas_wire.FIELD_KIND) if kiro is not None else None
+    return isinstance(kas_kind, str) and kas_kind in _DRAIN_STATE_KAS_KINDS
 
 
 # Commands that must stay on the PROMPT transport even where native
@@ -553,7 +600,7 @@ async def _run_turn(
     # response length. The one exception is a discarded terminal's
     # stopReason, logged only as a closed protocol value (see
     # _DRAIN_CLOSED_STOP_REASONS). The count is bounded by the queue, and
-    # the log line is one per turn regardless of how many frames drained.
+    # each log line below is one per turn regardless of how many frames drained.
     #
     # ONE class of leftover frame is NOT the abandoned turn's to destroy.
     # The abandoned turn's own frames are owed to nobody: this method
@@ -572,6 +619,10 @@ async def _run_turn(
     # back into the queue being drained would loop forever (the same reason
     # _wait_for_response re-injects from its finally).
     _stale_dropped = 0
+    # Discarded notifications that only report session state
+    # (``_is_between_turn_state``). Counted apart: a backend sends them after
+    # every ``session/new`` and every answer, so they are expected, not lost.
+    _stale_state = 0
     _stale_owned_dropped = False
     # Whether this drain started the turn's claude roster (a child's update read).
     _claude_roster_reset = False
@@ -799,6 +850,9 @@ async def _run_turn(
             # reader: a truthy non-str here would raise on the set membership
             # below, and this arm runs OUTSIDE the _turn_done restoration
             # guard — an escape would wedge the handle permanently.
+            if _is_between_turn_state(stale):
+                _stale_state += 1
+                continue
             _stale_dropped += 1
             if stale is not None and stale.method is None and stale.id is not None:
                 _stale_result = stale.result or {}
@@ -854,6 +908,14 @@ async def _run_turn(
             _stale_dropped,
             _stale_terminals,
             _stale_reason_note,
+        )
+    if _stale_state:
+        # Expected on every fresh session and after every answer: DEBUG, the
+        # count only, for the same reason the WARNING above carries no content.
+        logger.debug(
+            "pre-turn drain dropped %d between-turn state notification(s) on "
+            "this session (no turn content, response or request among them)",
+            _stale_state,
         )
 
     if _stale_owned_dropped:
