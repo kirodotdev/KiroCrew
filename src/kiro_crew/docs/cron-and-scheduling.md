@@ -239,6 +239,8 @@ cron_add(
 
 It implies `persistent_session: false` when that is omitted, and `persistent_session: true` turns it off. It applies to a single-agent (message) job; a script, command or multi-agent job refuses it. `hide_in_chat` still wins, and a run whose result is a duplicate or that is `silent` opens no tab. A run's tab is kept like any other chat; a run that opened none is removed with the other stateless run transcripts after 7 days. It is for infrequent jobs, because every run keeps a tab: a schedule that can run twice within 24 hours is refused, on create and on an update that turns the switch on or changes the schedule.
 
+On the Schedule page the switch is **Start each run in a new chat** in the job form. Turn it on when you create the job. A job that already starts a fresh session every run can turn it on or off when you edit it; a job that keeps one session cannot, so create a new job for it.
+
 ### A Fresh Tab After You Close It (`on_tab_close`)
 
 A job's tab, `Cron: <name>`, keeps the job's conversation. Close it and, by default (`on_tab_close: "resume"`), the next run reopens it with that history. Set `on_tab_close: "fresh"` for a report-style job whose tab you close because it grew too long: the next run reopens the tab empty and keeps posting there until you close it again.
