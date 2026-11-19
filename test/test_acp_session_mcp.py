@@ -21,6 +21,7 @@ from acp_session_mcp_helpers import _pinned_kiro_cli_version  # noqa: F401
 from acp_session_mcp_helpers import agents_dir_fixture  # noqa: F401
 from acp_session_mcp_helpers import isolated_seed_provenance  # noqa: F401
 from acp_session_mcp_helpers import _by_name, _write_project_spec, _write_spec
+from claude_settings_tier_helpers import empty_claude_settings_tiers
 
 from kiro_crew import agent as agent_mod
 from kiro_crew.acp import client as client_mod
@@ -827,6 +828,11 @@ class TestLocalSettingsSeed:
     Absent: Crew creates it with ``O_EXCL``. The cross-session half is in
     ``test_acp_seed_provenance.py``.
     """
+
+    @pytest.fixture(autouse=True)
+    def _empty_user_and_managed_tiers(self, tmp_path, _floor_monkeypatch):
+        """The host's ``~/.claude`` must not decide the seed; ``_user_settings`` repoints it."""
+        empty_claude_settings_tiers(tmp_path, _floor_monkeypatch)
 
     def _client(self, tmp_path, **kw):
         return AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE, **kw)

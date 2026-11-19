@@ -18,6 +18,7 @@ from acp_client_more_coverage_helpers import (  # noqa: F401 -- the autouse fixt
     _client,
     _pinned_kiro_cli_version,
 )
+from claude_settings_tier_helpers import empty_claude_settings_tiers
 
 import kiro_crew.acp.client as acp_client
 import kiro_crew.acp.skill_reads as skill_reads
@@ -208,8 +209,13 @@ class TestAdvertisedModelCacheWiring:
     """The client half of sourcing model selection from the provider's own
     advertised list: the seed reads the cache, and a capture feeds it.
 
-    The module-global ``mr._ADVERTISED_MODELS`` is isolated per test.
+    The module-global ``mr._ADVERTISED_MODELS`` is isolated per test, and so are the
+    user and managed Claude settings tiers, which the seed also reads.
     """
+
+    @pytest.fixture(autouse=True)
+    def _empty_user_and_managed_tiers(self, tmp_path, _floor_monkeypatch):
+        empty_claude_settings_tiers(tmp_path, _floor_monkeypatch)
 
     def _read_seed(self, tmp_path: Path) -> dict:
         return json.loads((tmp_path / ".claude" / "settings.local.json").read_text())

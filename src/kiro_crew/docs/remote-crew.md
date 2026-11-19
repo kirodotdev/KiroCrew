@@ -135,6 +135,12 @@ reconnect because the token is re-minted and the remote dashboard boots again.
 Each row also carries badges read off its record: **SSM** or **SSH** for the
 transport, and **EC2** when the instance was provisioned by the cloud launcher.
 
+An app that frames its own pages on an app web origin (an app that frames a
+third-party editor, for example) works inside a pane too. The remote gateway
+serves the app's origin on the pane's forward port once the pane has signed in,
+so the app page loads from the remote machine, not from yours. Panes over SSM
+are the exception: app web origins are never served there.
+
 ## Turning one crew off
 
 Each crew in **Settings → Remote Crew** has a switch beside its status that reads

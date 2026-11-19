@@ -166,7 +166,8 @@ resolves through:
 |---|---|---|
 | `fmtCurrency(value, currency = 'USD', options?)` | `@kirocrew/app-sdk` | Money in the host's locale. |
 | `APP_SDK_LEVEL` | `@kirocrew/app-sdk` | The seam level, equal to the gateway's `ctx.sdk_level`. |
-| `appWebOrigin(name)` | `@kirocrew/app-sdk` | The app's own origin on the dashboard's port, `http://<name>.apps.localhost:<port>`, for a backend with `backend.webOrigin: true`; available when the dashboard uses http on `localhost`, `127.0.0.1` or `kirocrew.localhost`, and `null` on IPv6 or any other dashboard host. The answer reads the dashboard's host name only, not whether this browser reaches the name, so probe the origin first (a `no-cors` fetch, which the dashboard CSP admits) and keep the app's own loopback frame when the probe fails. Level 8. |
+| `appWebOrigin(name)` | `@kirocrew/app-sdk` | The app's own origin on the dashboard's port, `http://<name>.apps.localhost:<port>`, for a backend with `backend.webOrigin: true`; available when the dashboard uses http on `localhost`, `127.0.0.1` or `kirocrew.localhost`, which includes a Remote Crew pane, and `null` on IPv6 or any other dashboard host. The answer reads the dashboard's host name only, not whether this browser reaches the name, so probe the origin first (a `no-cors` fetch, which the dashboard CSP admits) and keep the app's own loopback frame when the probe fails. Level 8. |
+| `appWebOriginStatus(name)` | `@kirocrew/app-sdk` | `{ origin, reason }`: `origin` is what `appWebOrigin(name)` answers, and `reason` is `'loopback'` when there is one, else `'remote-front-door'` (https, a tunnel, the relay, a published host or a phone link: open the app's upstream page in a new tab instead of framing a loopback port, which on this viewer's device is the viewer's own machine), `'ipv6'` or `'invalid-name'`. Level 11. |
 | `Select` | `@kirocrew/app-sdk/ui` | A themed inline dropdown: `options`, `optionLabels?`, `value`, `onChange`, `clearLabel?`, `disabled?`, `aria-label?`, `title?`, `className?`. Native list on touch devices. |
 | `guideCaution` | `@kirocrew/app-sdk/ui` | Spread onto a control that removes something (`<Btn {...guideCaution}>`), so a dashboard guide shows its caution line before a press there. |
 
@@ -2221,7 +2222,8 @@ installed app's `credentialMasks` to the agent's file tools too and adds the man
 `permissions.browserSites` with the page's [`useBrowserMedia`](#browser-media), and the
 shared embedder's batch members (`ctx.embed.embed_batch`, see
 [Shared embedder](#shared-embedder-ctxembed)), and level 11
-adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browser-view); each level
+adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browser-view) and the
+dashboard's `appWebOriginStatus(name)`; each level
 includes every level below it. Several seams share level 7, three share level 8, and
 level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it

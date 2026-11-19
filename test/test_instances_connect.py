@@ -105,6 +105,7 @@ class TestPortMirror:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             return "TOK"
@@ -349,6 +350,7 @@ class TestLastError:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             return "SECRET_TOK"
@@ -390,6 +392,7 @@ class TestLastError:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             raise TokenMintError("nope")
@@ -414,6 +417,7 @@ class TestLastError:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             calls["n"] += 1
@@ -440,6 +444,7 @@ class TestLastError:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             raise TokenMintError("nope")
@@ -475,6 +480,7 @@ class TestStatusForRetainedError:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             return "SECRET_TOK"
@@ -497,6 +503,7 @@ class TestStatusForRetainedError:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             raise TokenMintError("nope")
@@ -561,6 +568,7 @@ class TestStartupRevive:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             return "SECRET_TOK"
@@ -601,6 +609,7 @@ class TestStartupRevive:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             if "bad" in host:
