@@ -93,10 +93,10 @@ _SIDE_CONFIG_DROPPED_KEYS = ("extensions",)
 def side_home_supported() -> bool:
     """Whether a goose Side Chat session can be given a goose home of its own here.
 
-    POSIX only. On Windows goose keeps its secrets under ``%APPDATA%``, outside
-    the credential leaf the sensitive-path deny names for it, and linking the
-    user's config entries needs a symlink privilege; a goose side turn there keeps
-    running ``REJECT_ALL``.
+    POSIX only. On Windows goose keeps its config under ``%APPDATA%``, which
+    :func:`goose_config_dir` does not resolve, and linking the user's config
+    entries needs a symlink privilege; a goose side turn there keeps running
+    ``REJECT_ALL``.
     """
     return os.name != "nt"
 

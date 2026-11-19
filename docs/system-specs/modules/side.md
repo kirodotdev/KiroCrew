@@ -796,9 +796,10 @@ it (measured on goose 1.50.1: with `shell` listed, a `touch` ran unasked).
   a `Permission.yaml` on case-insensitive storage stays out too. A side session
   with no scratch window, a home that cannot be built, or a `config.yaml` that
   does not parse as a mapping, is refused rather than started on the user's home.
-  POSIX only (`side_home_supported`): on Windows goose keeps its secrets under
-  `%APPDATA%`, outside the credential leaf the sensitive-path deny names, so a
-  goose side turn there keeps running `REJECT_ALL`, and the footer says so.
+  POSIX only (`side_home_supported`): on Windows goose keeps its config under
+  `%APPDATA%`, which `goose_config_dir` does not resolve, and linking needs a
+  symlink privilege, so a goose side turn there keeps running `REJECT_ALL`, and
+  the footer says so.
 - places no MCP server on the session array (`_goose_session_mcp_servers`), as
   on claude. A server named `developer` would also replace goose's builtin
   read tools.

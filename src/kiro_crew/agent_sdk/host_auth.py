@@ -628,22 +628,35 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # ``GOOSE_DISABLE_KEYRING`` selects file storage, which the harness itself
         # describes as plain text. The keyring half is fenced by the OS rather than
         # by a path, so a floor can only name this one -- which is the half an
-        # agent's file tools could otherwise read.
-        credential_leaves=(".config/goose/secrets.yaml",),
+        # agent's file tools could otherwise read. On Windows goose keeps the same
+        # file in ``%APPDATA%\Block\goose\config`` instead (its ``etcetera`` app
+        # strategy, which reads no XDG variable there; read from goose's source,
+        # not measured on a Windows host), so that folder's default under the home
+        # is the second leaf.
+        credential_leaves=(
+            ".config/goose/secrets.yaml",
+            "AppData/Roaming/Block/goose/config/secrets.yaml",
+        ),
         # Only the CONFIG home, because on this harness that IS where the secret
         # store lives -- the inverse of the opencode declaration above, whose token
         # sits under the data home and whose config home is therefore deliberately
         # absent. The data and state homes are excluded here for that same reason:
         # they hold this harness's session database and logs, and anchoring a
-        # credential on them would fence files that carry no secret.
-        home_override_env_vars=("XDG_CONFIG_HOME",),
-        # ``XDG_CONFIG_HOME`` replaces ``.config``, not the leaf's parent, so the
-        # relocated file keeps both remaining segments.
-        override_relative_leaves=("goose/secrets.yaml",),
+        # credential on them would fence files that carry no secret. ``APPDATA`` is
+        # the Windows config home. Each leaf is anchored under both variables, so
+        # each also gains one target under the other platform's root that goose
+        # never writes; a fence on an empty path refuses nothing anyone reads.
+        home_override_env_vars=("XDG_CONFIG_HOME", "APPDATA"),
+        # ``XDG_CONFIG_HOME`` replaces ``.config`` and ``APPDATA`` replaces
+        # ``AppData/Roaming``, not the leaf's parent, so each relocated file keeps
+        # the segments after its root.
+        override_relative_leaves=("goose/secrets.yaml", "Block/goose/config/secrets.yaml"),
         # The one leaf the mask must spare: this harness is enforced, so the mask
         # denies it the whole credential floor, and it resolves its own provider
         # secret from this file. The read gate still refuses the same leaf to the
-        # AGENT's file tools, so the two controls cover different readers.
+        # AGENT's file tools, so the two controls cover different readers. The
+        # Windows leaf is not spared: a goose session is refused on native Windows,
+        # where no OS sandbox applies the mask (``agent_sdk.tool_gate``).
         adapter_own_leaves=(".config/goose/secrets.yaml",),
         # Action only, and no state, because for this harness there may be no state
         # to assert: a model served locally on the operator's own machine needs no
