@@ -3,6 +3,7 @@
 Stop classes and the stop-reason classifier, the tool-call, tool-call-update and
 tool-result event kinds, the stop reasons of a turn the backend did not finish, the
 structured-status frame and its wait reasons, the terminal tool-call statuses, the session-start and prompt timeouts, the
+runtime error family a refused session start raises, the
 native-child marker, the notice a harness reports for the person, the mark a dashboard
 turn's stream draws background work under and the background cards its harness still
 runs (and loses) are backend
@@ -56,6 +57,7 @@ from kiro_crew.acp.raw_sdk_workflow_cards import BackgroundCardRow
 from kiro_crew.acp.session_handle import (
     NATIVE_CHILD_NOT_RESUMABLE,
     AcpRequestTimeout,
+    AcpRuntimeError,
     AcpScopeAdmissionTimeout,
 )
 from kiro_crew.acp.timed_out_continuation import continue_timed_out_calls, timed_out_continuation
@@ -111,6 +113,9 @@ __all__ = [
     "TERMINAL_TOOL_STATUSES",
     "WAIT_REASON_INPUT",
     "AcpRequestTimeout",
+    # The runtime family outside ``AcpError``: a session start the backend
+    # refuses (a KAS engine that cannot be fetched) raises it.
+    "AcpRuntimeError",
     "AcpScopeAdmissionTimeout",
     "AcpTimeoutError",
     "InFlightToolTracker",
