@@ -1448,9 +1448,9 @@ def _no_carried_auto_update_effect(_floor_monkeypatch) -> None:
 def _no_carried_manual_update_verdict(_floor_monkeypatch) -> None:
     """Start every test with no kept manual update verdict.
 
-    A failed isolated check puts the last successful manual verdict back, so one
-    left over from an earlier test would turn the next test's failure into that
-    test's success.
+    A failed isolated check shows the last successful manual verdict, so one left
+    over from an earlier test would turn the next test's failure into that test's
+    success on display.
     """
     from kiro_crew.dashboard.handlers import updates
 

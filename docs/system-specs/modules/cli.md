@@ -3366,9 +3366,8 @@ ahead) OR the pull already landed and only a restart is missing (`HEAD` equals
 its upstream while the on-disk `__version__` outranks the one this process
 imported).
 
-**Whose git config the check's fetch reads.** The boot check, the 12-hour poll,
-the About panel opening and the update popup (`GET /api/update/check`) all share
-one isolated check: every git call runs under `git_command_env()`, which reads no
+**Whose git config the check's fetch reads.** The boot check, the 12-hour poll
+and the update popup (`GET /api/update/check`) all share one isolated check: every git call runs under `git_command_env()`, which reads no
 global or system config, so no credential helper runs. The owner's **Check for
 updates** click is `POST /api/update/check`, with its own single-flight slot
 (`_manual_check_task`) so neither kind answers for the other. On a standalone
@@ -3387,12 +3386,15 @@ operator's config is read only where no update source pin is in force;
 unreadable answer is isolated. A non-owner `POST` runs the isolated check.
 
 The last successful click's verdict on a git checkout stays on the badge until the
-next click or a channel switch: an isolated check whose only failure is the fetch
-(`git_fetch_failed` on a git checkout) puts it back (`_manual_verdict`), since on
-such a remote only the click's fetch can sign in. Any other result replaces it, so
-a failure the click cannot cure is never masked for the cache's other readers (the
-arm path, the gateway's auto-update). A feed or provider install keeps no manual
-verdict.
+next click or a channel switch: while the cache holds an isolated check whose only
+failure is the fetch (`git_fetch_failed` on a git checkout), the status frame and
+the check response show the kept verdict (`_manual_verdict`) with the click's own
+time as its last-checked stamp, since on such a remote only the click's fetch can
+sign in. The kept verdict is display only and is never written back into the
+cache, so the readers that act on it (the arm path, the gateway's auto-update)
+see the fetch failure and apply nothing, as on an install that never clicked; the
+poll's own stamp still drives the 12-hour schedule. Any other isolated result
+drops it. A feed or provider install keeps no manual verdict.
 
 Commit distance is the primary signal because `__version__` is bumped only at a
 release: comparing version strings alone reported "you're on the latest version"
