@@ -1361,6 +1361,25 @@ jobs:
           echo "reduced=true" >> "$GITHUB_OUTPUT"
           echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
 
+      # Experiment (#39368): each xdist worker collects the whole shard and
+      # rewrites the asserts of every test file, because a fresh runner has no
+      # cached pyc. This writes those pycs once, one process per core, without
+      # importing a test module, conftest or kiro_crew, into the cache root the
+      # rootdir conftest points pytest at. Full suite only: it is the arm that
+      # takes --file-shard-pins. Same shell as the test step, so the same user
+      # and home, which is what the cache root is derived from. Best effort:
+      # the script exits 0 whatever happens, and a file it did not cache is
+      # rewritten by pytest. It prints its own elapsed seconds.
+      - name: Prewarm assertion rewrites (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        if: ${{ steps.scope.outputs.reduced == 'false' }}
+        shell: /usr/local/bin/ci-shell {0}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          python -m scripts.ci_rewrite_prewarm \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --file-shard-pins scripts/ci_file_shard_pins.txt
+
       - name: Run tests (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         shell: /usr/local/bin/ci-shell {0}
         # scripts.ci_file_shards assigns each file to one shard before pytest
@@ -1644,9 +1663,11 @@ jobs:
       #   full (main pushes 44376034204, 44365593626): 26.6 min wall, 183-191 job-min
       #   reduced, 1,342 files (run 44426610212):       8.7 min wall,  60 job-min
       #   leaf, 1 file + 909 gates (run 44427119854):  13.8 min wall,  64 job-min
-      # No pytest prewarm: a serial `--collect-only` of one shard costs 104-115 s
-      # and saves 42-75 s of worker collection, so it loses on both OSes, with
-      # and without --cov (prewarm probe in run 44426610212).
+      # No `--collect-only` prewarm: a serial one costs 104-115 s per shard and
+      # saves 42-75 s of worker collection, so it loses on both OSes, with and
+      # without --cov (prewarm probe in run 44426610212). The step before
+      # "Run tests" is a different form: it only rewrites asserts, in parallel,
+      # and imports nothing.
       - name: Select test scope
         id: scope
         shell: bash
@@ -1717,6 +1738,18 @@ jobs:
           fi
           echo "reduced=true" >> "$GITHUB_OUTPUT"
           echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
+
+      # Same experiment and contract as backend-test's prewarm step (#39368),
+      # with the Windows pin file and the test step's shell.
+      - name: Prewarm assertion rewrites (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        if: ${{ steps.scope.outputs.reduced == 'false' }}
+        shell: bash
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          python -m scripts.ci_rewrite_prewarm \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --file-shard-pins scripts/ci_file_shard_pins_windows.txt
 
       - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         # bash (Git Bash on windows-latest), not pwsh: the invocation shares

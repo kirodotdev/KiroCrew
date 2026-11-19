@@ -909,6 +909,24 @@ coverage or a repair of the crashing test. Periodic console records and best-eff
 JSONL artifacts preserve evidence; job-level cancellation can prevent uploads.
 Healthy selection, per-test timeouts and coverage selectors are unchanged.
 
+On the full suite, the step before `Run tests` in both jobs runs
+`scripts/ci_rewrite_prewarm.py` (an experiment, #39368). Every xdist worker
+collects the whole shard and, on a fresh runner, rewrites the asserts of each
+test file because no cached pyc exists. The step writes those pycs once, one
+process per core, with pytest's own rewrite functions, under the cache root the
+rootdir conftest sets (`sys.pycache_prefix`), for the test files the shard owns
+and every `conftest.py` (the two loaded before the conftest redirects
+bytecode, the rootdir one and `test/conftest.py`, are still read from the
+in-tree `__pycache__` by a process that starts without the redirect). It parses and compiles source and imports no test
+module, conftest or `kiro_crew`, which is what separates it from the serial
+`--collect-only` prewarm that measured slower. It does not choose what a shard
+collects: pytest's discovery and the plugin still do. It is best effort: it
+exits 0 whatever happens, a file it did not cache is rewritten by pytest, and
+the reduced and leaf scopes skip it. Bytecode is never restored from
+`actions/cache` or committed. The step prints its file count and elapsed
+seconds. `test/test_ci_rewrite_prewarm.py` proves pytest reads the prewarmed pyc
+and pins the cache root against the conftest's.
+
 The root conftest's import-time telemetry guard fails the offending module's
 collection report on every worker, so pytest/xdist fails the job even when the
 shard does not own `test_host_isolation_floor.py`. The process-wide telemetry-off
