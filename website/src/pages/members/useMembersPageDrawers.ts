@@ -509,7 +509,9 @@ interface MembersPageTrackpadSwipeOptions {
  * Nothing is committed before the page's guard has had its say: an opening
  * swipe while a Profile schedule draft is at stake does not drag at all, and
  * goes to `togglePanel`, which asks first. A leftward run over a panel showing
- * another tab only brings Dashboard forward. The Dashboard frame relays its
+ * another tab only brings Dashboard forward. A run that starts on the Profile
+ * card, docked or floating, is left to the browser: the card is not part of the
+ * panel, and opening the panel would fold a docked card. The Dashboard frame relays its
  * wheels (`relayWheel`); a relayed run may only start the close, and only while
  * the Dashboard tab is on screen.
  *
@@ -582,11 +584,13 @@ export function useMembersPageTrackpadSwipe({
 
   useTrackpadSwipe(membersRootRef, {
     enabled,
-    wants: (dir, fromFrame) => {
+    wants: (dir, fromFrame, target) => {
       const n = now.current
       // A frame in the panel (the Dashboard, or an artifact tab) relays only
       // what its own content does not scroll, and may only start the close.
       if (fromFrame) return dir === 'right' && n.panelVisible
+      // Runs that start on the Profile card go to the browser in both placements.
+      if (target?.closest('[data-crew-profile-card]')) return false
       // Mid-settle, either way grabs the panel where it is.
       if (settleTo.current !== null) return true
       return dir === 'left' ? !n.onDashboard : n.panelVisible

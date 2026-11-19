@@ -770,7 +770,7 @@ describe('useTrackpadSwipe: macOS Natural scrolling off', () => {
       window.dispatchEvent(ev)
     }
     post(20, false)
-    expect(wants).toHaveBeenLastCalledWith('right', true)
+    expect(wants).toHaveBeenLastCalledWith('right', true, null)
   })
 })
 
