@@ -981,9 +981,15 @@ the installed source rather than a mock. It fails, rather than passing vacuously
 when `CI` is set and the library is not installed, and is skipped elsewhere. If
 that test fails after a bump, it is not flaky and it is not the test's problem: the library rewrapped the error, and
 the attribution scheme in `runtime/update/feed-lane.js` and the check lifecycle it reads from `runtime/update/freshness-gate.js` — not one line of it —
-needs re-reading before the bump lands. The version range stays a caret on purpose: `npm ci` builds
+needs re-reading before the bump lands. The same file pins the premise the Download
+click rests on: `downloadUpdate()` fetches only what `doCheckForUpdates()`, the
+event-emitting check, stored in `this.updateInfoAndProvider`, and
+`getUpdateInfoAndProvider()`, the read that emits nothing, never sets it. That is why
+the click's freshness gate in `runtime/update/feed-lane.js` runs a real
+`checkForUpdates()` rather than a read; when that test fails, re-read that gate before
+the bump lands. The version range stays a caret on purpose: `npm ci` builds
 from `package-lock.json`, so resolution is already exact in CI, and the canary is
-the general guard for the premise rather than a frozen version number.
+the general guard for both premises rather than a frozen version number.
 
 It runs in packaged macOS, Linux and Windows builds: `SUPPORTED_PLATFORMS` is
 exactly `{darwin, linux, win32}`.
