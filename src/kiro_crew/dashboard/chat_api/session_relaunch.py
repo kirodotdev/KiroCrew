@@ -28,8 +28,11 @@ if TYPE_CHECKING:
         _append_session_switch_notice,
         _ChatSlot,
         _CommitToken,
+        _PathProbeBusy,
+        _probe_busy_response,
         _reset_slot_session,
         _reset_slot_session_or_warn,
+        _run_path_probe,
         _save_recent_project,
         _slot_not_found,
         _slot_replaced_while_queued,
@@ -690,6 +693,16 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
     return web.json_response(ws_resp)
 
 
+def _resolve_project_dir(project: str) -> tuple[str, bool]:
+    """The canonical path a project pick names, and whether it is a directory.
+
+    Blocking (``expanduser``, ``realpath``, ``isdir``); the route runs it on the
+    request-path probe pool.
+    """
+    resolved = os.path.realpath(os.path.expanduser(project))
+    return resolved, os.path.isdir(resolved)
+
+
 async def api_chat_slot_project(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/project — set project directory for file search scoping."""
     state: DashboardState = request.app["state"]
@@ -731,8 +744,19 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "Not a directory", "code": "not_a_directory"}, status=400
             )
-        project = os.path.realpath(os.path.expanduser(project))
-        if not os.path.isdir(project):
+        # The path is the caller's, so its realpath and isdir run on the
+        # request-path probe pool: a dead mount there must not stall the loop.
+        try:
+            project, is_dir = await _run_path_probe(_resolve_project_dir, project)
+        except _PathProbeBusy:
+            return _probe_busy_response(
+                resource=project,
+                operation="chat_slot_project",
+                caller=request.get("user", "dashboard"),
+            )
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+            return _slot_not_found()
+        if not is_dir:
             return web.json_response({"error": "Not a directory"}, status=400)
         if is_sensitive_path(project):
             sel().log_api_access(
