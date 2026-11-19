@@ -50,8 +50,10 @@ snapshot; the crew's own gate still decides.
    worker is on another machine and cannot see your checkout: the seed names
    the repo URL and the branch to push.
 
-The crew create reply does not show the `patrol=` outcome; check with
-`monitor_inspect` and arm the loop as Patrol says if none runs.
+The crew create reply ends with `patrol=` like a local `bind`: the hub arms
+your default work-ledger patrol when you have no active loop. When it says no
+patrol runs, arm `monitor_start` with `watch="work-ledger"` before you end the
+turn, or nothing pulls the worker's reports.
 
 **No room.** A named crew short on memory, CPU or disk answers `crew_busy` and
 creates nothing. With no `crew=`, placement skips crews that are busy,

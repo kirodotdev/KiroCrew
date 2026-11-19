@@ -363,6 +363,10 @@ async def create_bound(
         await _close_peer_slot(mgr, instance_id, slot)
         code = _response_code(resp) or "bind_failed"
         raise err(409 if resp.status < 500 else 503, code, "the bind did not record; closed")
+    if isinstance(payload, dict):
+        # The bind armed (or tried to arm) the conductor's default patrol, which is
+        # what pulls this worker's reports; the create reply carries its outcome.
+        payload = {**payload, **_patrol_fields(resp)}
     # A decide recorded while the create was in flight found the item unbound and
     # forwarded nothing, so the peer may hold an older decision than the hub. The
     # comparison runs on the SETTLED item, inside the forward's own locks.
@@ -371,6 +375,21 @@ async def create_bound(
     if not outcome.get("ok") and isinstance(payload, dict):
         payload = {**payload, "decision_error": str(outcome.get("code") or "")}
     return slot, payload, bound or item
+
+
+def _patrol_fields(resp: web.Response) -> dict[str, str]:
+    """The ``patrol``, ``patrol_reason`` and ``patrol_note`` a bind reply answered."""
+    try:
+        body = json.loads(resp.text or "{}")
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    return {
+        k: body[k]
+        for k in ("patrol", "patrol_reason", "patrol_note")
+        if isinstance(body.get(k), str)
+    }
 
 
 async def open_unbound_item(board: str, item_id: str) -> work_ledger.WorkItem:
