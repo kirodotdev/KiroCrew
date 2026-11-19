@@ -117,12 +117,16 @@ class ComponentSpec:
     data-home-relative directories copied wholesale. A ``.db`` file in ``files`` is
     copied through the SQLite backup API rather than the filesystem, so a live
     gateway holding the database open still yields a consistent copy.
+
+    ``host_local`` names files of ``files`` that stay in bundles but are never installed by
+    a restore, in either mode: this host's own runtime state, kept as it is.
     """
 
     policy: SecretPolicy
     help: str
     files: tuple[str, ...] = ()
     trees: tuple[str, ...] = ()
+    host_local: tuple[str, ...] = ()
 
 
 # The single source of truth for what a bundle can contain. Both the staging path
@@ -177,6 +181,9 @@ COMPONENTS: dict[str, ComponentSpec] = {
             "project_dir",
             "workspace_dir",
         ),
+        # `project_dir` names the checkout the gateway runs `ensure-node.sh` from at boot;
+        # a bundle that also carries `workspace/` could supply pointer and tree together.
+        host_local=("project_dir",),
     ),
     "skills": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
