@@ -341,3 +341,215 @@ def test_a_bot_that_already_carries_the_folded_shell_entry_is_not_repaired_again
 
     assert (mates / "zxc.json").read_bytes() == before
     assert HELD_KEY not in _ledger(mates)
+
+
+#: An old agent's block that names a bundle beside its rules (KAS expands the bundle
+#: into allow rules on its own side) and denies one capability.
+_BUNDLE_BLOCK = {
+    "policies": ["read-only-shell"],
+    "rules": [{"capability": "subagent", "effect": "deny", "match": ["*"]}],
+}
+
+
+def test_a_deny_beside_a_named_bundle_is_carried_and_nothing_asks_on_every_call(layout, persisted):
+    """A bundle is a grant: the deny beside it is carried, and the Bot keeps its Trust."""
+    user, mates = layout
+    cfg = _moved_before(user, mates, _old(permissions=_BUNDLE_BLOCK), _MOVED_FILE)
+    persisted(cfg)
+
+    assert restore_dropped_policy(cfg) == ["zxc"]
+
+    written = _file(mates, "zxc")
+    assert written["permissions"] == {"rules": _BUNDLE_BLOCK["rules"]}
+    assert "zxc" not in (_ledger(mates).get(HELD_KEY) or {})
+    assert _owed("zxc")[1] is False
+
+
+def test_a_bot_off_kas_holds_a_deny_beside_a_bundle_under_its_own_capability(
+    layout, persisted, monkeypatch
+):
+    user, mates = layout
+    cfg = _moved_before(user, mates, _old(permissions=_BUNDLE_BLOCK), _MOVED_FILE)
+    persisted(cfg)
+    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda c, n=None: "kiro-cli")
+
+    assert restore_dropped_policy(cfg) == ["zxc"]
+
+    caps = {r["capability"] for r in _ledger(mates)[HELD_KEY]["zxc"]["rules"]}
+    assert caps == {"subagent"}
+
+
+def test_a_bot_an_earlier_start_held_on_every_call_is_rechecked_once(
+    layout, persisted, monkeypatch
+):
+    """The hold an earlier release recorded for a bundle block is replaced, once."""
+    from kiro_crew import mate_held_rules
+    from kiro_crew.mate_held_rules import ANY, held_for
+    from kiro_crew.mate_policy_repair import RESPLIT_KEY
+    from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+
+    monkeypatch.setattr(mate_held_rules, "_member_of", lambda agent: agent)
+    user, mates = layout
+    cfg = _moved_before(user, mates, _old(permissions=_BUNDLE_BLOCK), _MOVED_FILE)
+    persisted(cfg)
+    ledger = _ledger(mates)
+    ledger[CHECKED_KEY] = ["zxc"]
+    ledger[HELD_KEY] = {
+        "zxc": {
+            "member_id": "zxc",
+            "rules": [{"text": "its permissions rule to deny subagent (*)", "capability": ANY}],
+        }
+    }
+    (mates.parent / "migrated.json").write_text(json.dumps(ledger), encoding="utf-8")
+    shell_call = LLMEvent(
+        kind=EVENT_PERMISSION_REQUEST, title="ls", request_id="r1", tool_kind="execute"
+    )
+    assert held_for(shell_call, agent="zxc")
+
+    assert restore_dropped_policy(cfg) == ["zxc"]
+
+    after = _ledger(mates)
+    assert "zxc" not in (after.get(HELD_KEY) or {})
+    assert after[RESPLIT_KEY] == ["zxc"]
+    assert _file(mates, "zxc")["permissions"] == {"rules": _BUNDLE_BLOCK["rules"]}
+    assert held_for(shell_call, agent="zxc") == []
+    # Once: the next start leaves the Bot alone.
+    assert restore_dropped_policy(cfg) == []
+
+
+def _checked_every_call_hold(mates: Path) -> list[dict[str, str]]:
+    from kiro_crew.mate_held_rules import ANY
+
+    rules = [{"text": "its permissions rule to deny subagent (*)", "capability": ANY}]
+    ledger = _ledger(mates)
+    ledger[CHECKED_KEY] = ["zxc"]
+    ledger[HELD_KEY] = {"zxc": {"member_id": "zxc", "rules": rules}}
+    (mates.parent / "migrated.json").write_text(json.dumps(ledger), encoding="utf-8")
+    return rules
+
+
+def test_recheck_keeps_the_old_hold_when_the_deny_write_fails(layout, persisted, monkeypatch):
+    from kiro_crew.mate_config import MateConfigError
+    from kiro_crew.mate_policy_repair import RESPLIT_KEY
+
+    user, mates = layout
+    cfg = _moved_before(
+        user,
+        mates,
+        _old(
+            permissions=_BUNDLE_BLOCK,
+            toolsSettings={"execute_bash": {"fallbackAction": "deny"}},
+        ),
+        _MOVED_FILE,
+    )
+    persisted(cfg)
+    old_rules = _checked_every_call_hold(mates)
+    writes = []
+
+    def fail_write(name, spec):
+        writes.append(spec)
+        raise MateConfigError("deny write failed")
+
+    monkeypatch.setattr("kiro_crew.mate_policy_repair.write_mate_spec", fail_write)
+
+    assert restore_dropped_policy(cfg) == []
+
+    assert writes and writes[0]["permissions"]["rules"]
+    after = _ledger(mates)
+    assert all(rule in after[HELD_KEY]["zxc"]["rules"] for rule in old_rules)
+    assert "zxc" not in after.get(RESPLIT_KEY, [])
+    assert _file(mates, "zxc") == _MOVED_FILE
+
+
+def test_recheck_clears_the_hold_when_the_file_already_carries_the_deny(layout, persisted):
+    from kiro_crew.mate_policy_repair import RESPLIT_KEY
+
+    user, mates = layout
+    carried = {**_MOVED_FILE, "permissions": {"rules": _BUNDLE_BLOCK["rules"]}}
+    cfg = _moved_before(user, mates, _old(permissions=_BUNDLE_BLOCK), carried)
+    persisted(cfg)
+    _checked_every_call_hold(mates)
+
+    assert restore_dropped_policy(cfg) == []
+
+    after = _ledger(mates)
+    assert "zxc" not in after.get(HELD_KEY, {})
+    assert after[RESPLIT_KEY] == ["zxc"]
+    assert _file(mates, "zxc") == carried
+
+
+def test_recheck_retries_when_clearing_the_hold_fails(layout, persisted, monkeypatch):
+    from kiro_crew.mate_policy_repair import RESPLIT_KEY
+    from kiro_crew.mate_restriction_carry import _hold
+
+    user, mates = layout
+    carried = {**_MOVED_FILE, "permissions": {"rules": _BUNDLE_BLOCK["rules"]}}
+    cfg = _moved_before(user, mates, _old(permissions=_BUNDLE_BLOCK), carried)
+    persisted(cfg)
+    old_rules = _checked_every_call_hold(mates)
+    monkeypatch.setattr(
+        "kiro_crew.mate_policy_repair._hold",
+        lambda name, held: _hold(name, held) if held else False,
+        raising=False,
+    )
+
+    assert restore_dropped_policy(cfg) == []
+
+    after = _ledger(mates)
+    assert "zxc" not in after.get(RESPLIT_KEY, [])
+    assert after[HELD_KEY]["zxc"]["rules"] == old_rules
+    assert _file(mates, "zxc") == carried
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"permissions": "strict"},
+        {"permissions": {"defaultEffect": "deny"}},
+        {"toolsSettings": ["execute_bash"]},
+        {"hooks": "x"},
+    ],
+)
+def test_a_recheck_keeps_an_every_call_hold_that_is_not_a_bundle(layout, persisted, extra):
+    """Only a bundle beside its rules is read again; a limit that cannot be carried stays held."""
+    from kiro_crew.mate_held_rules import ANY
+    from kiro_crew.mate_policy_repair import RESPLIT_KEY
+
+    user, mates = layout
+    cfg = _moved_before(user, mates, _old(**extra), _MOVED_FILE)
+    persisted(cfg)
+    hold = [{"text": "one of its limits", "capability": ANY}]
+    ledger = _ledger(mates)
+    ledger[CHECKED_KEY] = ["zxc"]
+    ledger[HELD_KEY] = {"zxc": {"member_id": "zxc", "rules": hold}}
+    (mates.parent / "migrated.json").write_text(json.dumps(ledger), encoding="utf-8")
+
+    assert restore_dropped_policy(cfg) == []
+
+    after = _ledger(mates)
+    assert after[HELD_KEY]["zxc"]["rules"] == hold
+    assert after[RESPLIT_KEY] == ["zxc"]
+
+
+def test_an_unchecked_bot_with_an_every_call_hold_still_gets_its_first_repair(layout, persisted):
+    """A hold left by a failed first write is no reason to skip writing the deny."""
+    from kiro_crew.mate_held_rules import ANY
+    from kiro_crew.mate_policy_repair import RESPLIT_KEY
+
+    user, mates = layout
+    hook = {"preToolUse": [{"matcher": "*", "command": "guard"}]}
+    cfg = _moved_before(user, mates, _old(hooks=hook, permissions={"rules": DENIES}), _MOVED_FILE)
+    persisted(cfg)
+    ledger = _ledger(mates)
+    ledger[HELD_KEY] = {
+        "zxc": {"member_id": "zxc", "rules": [{"text": "its preToolUse hook", "capability": ANY}]}
+    }
+    (mates.parent / "migrated.json").write_text(json.dumps(ledger), encoding="utf-8")
+
+    assert restore_dropped_policy(cfg) == ["zxc"]
+
+    written = _file(mates, "zxc")
+    assert all(r in written["permissions"]["rules"] for r in DENIES)
+    after = _ledger(mates)
+    assert after[CHECKED_KEY] == ["zxc"]
+    assert "zxc" not in (after.get(RESPLIT_KEY) or [])

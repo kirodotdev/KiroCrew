@@ -67,6 +67,27 @@ def test_an_uncarriable_limit_is_held_and_the_worker_still_starts():
     assert "toolsSettings" not in out
 
 
+def test_a_deny_beside_a_named_bundle_is_carried_not_held_on_every_call():
+    """A ``policies`` bundle only grants, so the deny beside it lands as a rule alone."""
+    deny = {"capability": "subagent", "effect": "deny", "match": ["*"]}
+    block = {"permissions": {"policies": ["read-only-shell"], "rules": [deny]}}
+
+    out, held = mate_held_rules.split_policy(True, BASE, block, _FILE)
+    assert held == []
+    assert out["permissions"] == {"rules": [deny]}
+
+    _, held_off_kas = mate_held_rules.split_policy(False, BASE, block, _FILE)
+    assert [h["capability"] for h in held_off_kas] == ["subagent"]
+
+
+def test_a_block_with_an_unknown_key_is_still_held_on_every_call():
+    block = {"permissions": {"rules": [], "mystery": True}}
+
+    _, held = mate_held_rules.split_policy(True, BASE, block, _FILE)
+
+    assert [h["capability"] for h in held] == [mate_held_rules.ANY]
+
+
 def test_a_worker_off_kas_gets_no_restriction_written_and_every_one_held():
     out, held = mate_held_rules.split_policy(False, BASE, _DENY, _FILE)
 
