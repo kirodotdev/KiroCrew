@@ -130,6 +130,78 @@ class TestAChangedSourceReachesTheGeneratedSpec:
         assert "timeout" not in _kiro(tmp_path, cfg_dir, {"command": cmd})[SERVER]
 
 
+class TestADeclaringSourceOwnsDisabledTools:
+    """The Kiro global's ``disabledTools`` follows its edits for a server it declares.
+
+    The reported symptom: a 45-entry list copied on the first rebuild was carried
+    forward after the global shrank it to 15, so the worker saw 1 of 46 tools.
+    """
+
+    def test_a_shrunk_list_replaces_the_copy(self, tmp_path: Path) -> None:
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+
+        _kiro(tmp_path, cfg_dir, {"command": cmd, "disabledTools": ["a", "b", "c"]})
+        merged = _kiro(tmp_path, cfg_dir, {"command": cmd, "disabledTools": ["a"]})[SERVER]
+        assert merged["disabledTools"] == [
+            "a"
+        ], "the first rebuild's disabledTools outranked the source's later edit"
+
+    def test_a_removed_list_is_removed(self, tmp_path: Path) -> None:
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+
+        _kiro(tmp_path, cfg_dir, {"command": cmd, "disabledTools": ["a"]})
+        assert "disabledTools" not in _kiro(tmp_path, cfg_dir, {"command": cmd})[SERVER]
+
+    def test_a_url_server_follows_too(self, tmp_path: Path) -> None:
+        cfg_dir = _bundled_defaults(tmp_path)
+        url = "https://mcp.example.test/v1/mcp"
+
+        _kiro(tmp_path, cfg_dir, {"url": url, "disabledTools": ["a", "b"]})
+        merged = _kiro(tmp_path, cfg_dir, {"url": url, "disabledTools": ["b"]})[SERVER]
+        assert merged["disabledTools"] == ["b"]
+
+    def test_the_extra_scope_merge_site_follows_too(self, tmp_path: Path) -> None:
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+
+        _scope(tmp_path, cfg_dir, {"command": cmd, "disabledTools": ["a", "b"]})
+        merged = _scope(tmp_path, cfg_dir, {"command": cmd, "disabledTools": ["b"]})[SERVER]
+        assert merged["disabledTools"] == ["b"]
+
+    def test_a_placeholder_keeps_the_entrys_own_list(self, tmp_path: Path) -> None:
+        """A dashboard stub declares nothing, so it must not delete the list."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+
+        _kiro(tmp_path, cfg_dir, {"command": cmd, "disabledTools": ["a", "b"]})
+        merged = _kiro(tmp_path, cfg_dir, {"disabled": True})[SERVER]
+        assert merged["disabledTools"] == ["a", "b"]
+        merged = _kiro(tmp_path, cfg_dir, {})[SERVER]
+        assert merged["disabledTools"] == [
+            "a",
+            "b",
+        ], "switching a placeholder back on deleted the list written for the server"
+
+    def test_the_store_list_still_wins(self, tmp_path: Path) -> None:
+        """A list the dashboard's Apply wrote to ``~/.kiro/crew/mcp.json`` outranks it."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+
+        def _emit(global_tools: list[str]) -> dict:
+            return _run_install_mcp_merge(
+                tmp_path,
+                cfg_dir,
+                cc_servers={},
+                kiro_servers={SERVER: {"command": cmd, "disabledTools": global_tools}},
+                kirocrew_servers={SERVER: {"disabledTools": ["store"]}},
+            )["mcpServers"][SERVER]
+
+        _emit(["a", "b"])
+        assert _emit(["a"])["disabledTools"] == ["store"]
+
+
 class TestTheCommandsUnitFollowsAnUnchangedCommand:
     """An ``env`` added AFTER the first rebuild reaches the server the entry runs.
 

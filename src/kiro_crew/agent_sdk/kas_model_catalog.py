@@ -170,7 +170,9 @@ def record_catalog(resp: dict[str, Any], backend: str, *, identity: object) -> b
     is the engine's catalog -- is a KAS wire fact, and no other harness's select
     is read as one. Another backend records nothing and nothing is cleared: a
     response that advertises no select (a ``session/load`` on some engines) must
-    not wipe a catalog a ``session/new`` recorded a moment ago.
+    not wipe a catalog a ``session/new`` recorded a moment ago, and neither must
+    one whose select names only the session's current model (a KAS
+    ``session/load`` from kiro-cli 3.4; ``select_lists_only_its_current_model``).
 
     *identity* is the vault fingerprint read as the producing session's request
     went out (``AcpSessionHandle.request_vault_identity``), kept with the rows.
@@ -183,6 +185,17 @@ def record_catalog(resp: dict[str, Any], backend: str, *, identity: object) -> b
     if backend == ACP_BACKEND_KAS:
         rows = catalog_rows_from_session(resp)
         if rows:
+            # Lazy for the same import-order reason as ``catalog_rows_from_session``.
+            from kiro_crew.acp.session_handle_model_selection import (
+                model_select_envelope,
+                select_lists_only_its_current_model,
+            )
+
+            if select_lists_only_its_current_model(model_select_envelope(resp) or {}):
+                logger.debug(
+                    "KAS model catalog not recorded: the select names only the session's model"
+                )
+                return False
             if not (isinstance(identity, str) and identity):
                 logger.debug(
                     "KAS model catalog not recorded: the request carried no vault identity"

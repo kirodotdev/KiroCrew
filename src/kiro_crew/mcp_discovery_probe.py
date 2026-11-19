@@ -60,6 +60,7 @@ from kiro_crew.mcp_gateway.read_limits import resolve_read_buffer_limit
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
     SandboxUnavailableError,
+    app_backend_secret_mask_targets,
     classify_declared_temp_env,
     classify_declared_temp_path,
     create_subprocess_limited,
@@ -705,6 +706,11 @@ async def probe_server(
             from kiro_crew.agent import policy_cache_only_env
 
             managed_env = policy_cache_only_env()
+        # A third-party server is code the gateway does not control; only the
+        # package's own managed server (fixed argv) may be left unmasked.
+        secret_mask: tuple[str, ...] = ()
+        if not first_party_fixed_argv:
+            secret_mask = await asyncio.to_thread(app_backend_secret_mask_targets)
         wrapped_argv, env, sandbox_cleanup = await sandboxed_spawn_argv_async(
             [resolved, *_spawn_args],
             mode="standard",
@@ -712,6 +718,7 @@ async def probe_server(
             strip_python_env=True,
             extra_writable_dirs=((str(probe_scratch),) if probe_scratch is not None else ()),
             first_party_fixed_argv=first_party_fixed_argv,
+            extra_hidden_dirs=secret_mask,
             _prepare=sandboxed_spawn_argv,
         )
         if first_party_fixed_argv:

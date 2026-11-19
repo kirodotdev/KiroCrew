@@ -248,6 +248,11 @@ ALWAYS_REDACTED_SITES: Mapping[str, str] = MappingProxyType(
             "fire_stop_hooks builds the Slack turn's Stop hook payload: a hook is a sink no seam "
             "lists"
         ),
+        "update_boot_apply.py": (
+            "_run_apply_child: the boot-time update output is cut to its tail after the pass "
+            "and stored for the dashboard's update notice, so a skipped pass would keep a "
+            "fragment"
+        ),
     }
 )
 

@@ -895,3 +895,70 @@ def test_the_kiro_cli_helper_check_reads_disk_off_the_event_loop(monkeypatch):
     asyncio.run(KiroHarness().session_extras("helper", work_dir=None, session_key="subagent:a"))
 
     assert seen == [False]
+
+
+def _deep_ledger(ledger: Path, depth: int = 200_000) -> None:
+    """A ``migrated.json`` naming Bot ``m1``, nested too deep for the JSON parser."""
+    head = '{"held_rules": {"zxc": {"member_id": "m1", "rules": [], "x": '
+    ledger.write_text(head + "[" * depth + "]" * depth + "}}}", encoding="utf-8")
+
+
+def test_a_ledger_nested_too_deep_to_parse_holds_every_call_of_the_bot_it_names(
+    ledger, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from kiro_crew import execution_context
+
+    _deep_ledger(ledger)
+    who = {"member": "m1"}
+    monkeypatch.setattr(
+        execution_context,
+        "read_session_execution",
+        lambda key: SimpleNamespace(member_id=who["member"]),
+    )
+    spec = {"allowedTools": ["fs_read", "execute_bash"]}
+
+    assert mate_held_rules.held_for(_event("read"), session_key="k") == [mate_held_rules.UNREADABLE]
+    child = mate_held_rules.held_child_spec(spec, "k")
+    assert "fs_read" not in child.get("allowedTools", [])
+    assert "execute_bash" not in child.get("allowedTools", [])
+
+    # Control: a session of no member is held by nothing and its spec is unchanged.
+    who["member"] = ""
+    assert mate_held_rules.held_for(_event("read"), session_key="k") == []
+    assert mate_held_rules.held_child_spec(spec, "k") is spec
+
+
+def test_a_held_bots_child_spec_that_cannot_be_narrowed_is_refused(ledger, monkeypatch):
+    from types import SimpleNamespace
+
+    from kiro_crew import execution_context
+    from kiro_crew.agent_sdk import kas_tool_view
+
+    def _boom(_block):
+        raise RuntimeError("narrowing failed")
+
+    monkeypatch.setattr(kas_tool_view, "permissions_block_readable", _boom)
+    spec = {"allowedTools": ["fs_read"]}
+    with pytest.raises(mate_held_rules.HeldLimitsNotApplied):
+        _held_child(ledger, monkeypatch, "fs_read", spec)
+
+    # Control: the same fault on a session whose Bot holds nothing changes nothing.
+    monkeypatch.setattr(
+        execution_context, "read_session_execution", lambda key: SimpleNamespace(member_id="other")
+    )
+    assert mate_held_rules.held_child_spec(spec, "k") is spec
+
+
+def test_a_record_read_error_leaves_the_child_spec_as_the_gate_reads_it(ledger, monkeypatch):
+    """An error reading the record reads as nothing held, in the child and the gate alike."""
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("record read failed")
+
+    _hold(ledger, "fs_read")
+    monkeypatch.setattr(mate_held_rules, "_bot_rules", _boom)
+    spec = {"allowedTools": ["fs_read"]}
+    assert mate_held_rules.held_child_spec(spec, "k") is spec
+    assert mate_held_rules.held_for(_event("read"), session_key="k") == []

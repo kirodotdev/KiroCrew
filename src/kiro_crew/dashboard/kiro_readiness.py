@@ -34,7 +34,13 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew.acp_backends import backends_retired_by_host_logout
-from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+from kiro_crew.kiro_prerequisite import (
+    KiroPrerequisiteService,
+    _combine_identity_fingerprints,
+    _identity_components,
+    identity_stamp_mismatch,
+    spawn_identity_of,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
@@ -452,6 +458,54 @@ def _service(request: web.Request) -> object:
     if service is None:
         service = getattr(request.app.get("state"), "kiro_prerequisite_service", None)
     return service
+
+
+async def live_kiro_identity(request: web.Request) -> str:
+    """The signed-in account's identity fingerprint, or ``""`` when it cannot be read.
+
+    :meth:`KiroPrerequisiteService.current_identity_fingerprint` with its short
+    cache: a local read of the stable claims in kiro-cli's store and Crew's vault,
+    no spawn and no API call, so a poll may ask it every time. Token refreshes and
+    chat traffic do not move it; a sign-in to another account does. Never raises.
+    """
+    reader = getattr(_service(request), "current_identity_fingerprint", None)
+    if reader is None:
+        return ""
+    try:
+        return str(await reader() or "")
+    except Exception:  # noqa: BLE001 - an unreadable identity is "unknown", never an error
+        logger.debug("Kiro identity fingerprint read failed", exc_info=True)
+        return ""
+
+
+async def track_kiro_identity(request: web.Request, baseline: str) -> tuple[str, bool]:
+    """Read the identity and compare it with *baseline*: ``(new baseline, moved)``.
+
+    ``moved`` is :func:`identity_stamp_mismatch`: a part (kiro-cli store, API key,
+    Crew vault) that differs while present on both sides. A read missing a part (a
+    locked store, or the gap between `kiro-cli logout` and the next login) is no
+    move, and the new baseline keeps that part's last value, so the login after
+    it is still compared with the account before the logout. Never raises.
+    """
+    live = await live_kiro_identity(request)
+    if not live:
+        return baseline, False
+    parts = [
+        now or was for now, was in zip(_identity_components(live), _identity_components(baseline))
+    ]
+    store, api_key, vault = parts
+    merged = _combine_identity_fingerprints(store, vault, api_key)
+    return merged, identity_stamp_mismatch(baseline, live)
+
+
+async def providers_for_live_account(request: web.Request, providers: list) -> list:
+    """*providers* without the ones spawned under another account than the live one.
+
+    Such a child holds the previous account's model list, and re-probing it asks the
+    same old process. Unstamped children and an unreadable store keep everything.
+    """
+    live = await live_kiro_identity(request)
+    return [p for p in providers if not identity_stamp_mismatch(spawn_identity_of(p), live)]
 
 
 async def reject_if_kiro_unverified(

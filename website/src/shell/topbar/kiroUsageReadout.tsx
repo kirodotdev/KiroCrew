@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Coins, Info, Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
 import { isAccountOnly, parseKiroUsagePayload, kiroUsageRefetchInterval, type KiroUsageState } from '../../api/kiroUsage'
@@ -8,6 +8,7 @@ import type { KiroAccountUsage } from '../../components/KiroAccountModal'
 import { fmtCompact } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { failedWithNoData } from '../../api/queryState'
+import { noteKiroAccount } from '../../providers/adapters/acp'
 
 /**
  * The Kiro credit reading one derivation serves: the capsule's credits segment,
@@ -27,11 +28,18 @@ export function useKiroUsageReadout() {
   // backend cache has not warmed yet" (null) apart from "the request failed"
   // (undefined) — both are falsy. Without it a failing endpoint renders as a
   // spinner that never resolves, since the 30s refetch keeps retrying forever.
+  const queryClient = useQueryClient()
   const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroUsageState>({
     queryKey: ['kiro-usage'],
     // The parser is shared with the account modal's Refresh button, which
     // writes its POST result into this same query: one normalization for both.
-    queryFn: () => api.sessionsUsage().then(parseKiroUsagePayload),
+    // This poll is also how the browser learns of a `kiro-cli login` to another
+    // account: the model list cached for the previous one is dropped and re-read.
+    queryFn: () =>
+      api.sessionsUsage().then(d => {
+        if (noteKiroAccount(d?.account)) void queryClient.resetQueries({ queryKey: ['available-models'] })
+        return parseKiroUsagePayload(d)
+      }),
     // The GET warms the gateway's cache in the background, so a reopen hits an
     // empty cache (`null`) and, before kiro-cli readiness is verified, a 503 the
     // query surfaces as an error. Poll fast while the state is unsettled so the

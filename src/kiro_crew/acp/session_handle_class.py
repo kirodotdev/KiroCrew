@@ -591,6 +591,10 @@ class AcpSessionHandle:
         self._stale_probe = False
         self._tool_dispatched = False
         self._last_stop_reason = ""
+        # Set when this turn ended on the dispatch loop's own unacked-cancel
+        # terminal rather than on the agent's answer; reset with each turn. A
+        # stop that waited on the turn reads it: that ending is no ack.
+        self._cancel_unacked = False
         # The pictures this session's conversation already holds, so text that
         # names the same file every turn does not re-inline it every turn. The
         # handle is one ACP session, so the record lives and dies with it. Kept
@@ -630,7 +634,7 @@ class AcpSessionHandle:
         self._parked_since: float | None = None
         # Last /api/session-keepalive touch addressed to THIS session (monotonic,
         # 0.0 for none), and `_parked_total` when it landed. Written by
-        # note_keepalive(); folded into the tool-idle clock in _dispatch_events.
+        # note_keepalive(); folded into both idle clocks in _dispatch_events.
         # Never reset per turn: a touch from an earlier turn is older than this
         # turn's own frames, so the fold can never pick it up.
         self._keepalive_ts: float = 0.0
@@ -1056,6 +1060,14 @@ class AcpSessionHandle:
         # so a turn on a dead runtime reads inactive -> AcpProvider.cancel() returns
         # "no_turn" instead of firing cancel_session on a corpse.
         return (not self._turn_done.is_set()) and (not self._cancelled) and self._runtime.is_alive()
+
+    @property
+    def cancel_went_unacked(self) -> bool:
+        """True when the current or last turn ended because the agent never
+        answered a stop's ``session/cancel`` within the grace window: the
+        dispatch loop released the caller itself, and the agent may still be
+        running that turn."""
+        return self._cancel_unacked
 
     @property
     def has_unfinished_turn(self) -> bool:

@@ -158,6 +158,20 @@ class AcpRuntimeOverloaded(AcpRequestTimeout):
     transient = False
 
 
+class AcpScopeAdmissionTimeout(AcpRuntimeError):
+    """The user systemd manager did not admit the agent's scope within its bound.
+
+    ``systemd-run --user --scope`` waits for the manager to move its own pid into
+    the new scope before it execs the agent, so while the pid is outside the scope
+    no agent exists and nothing was written to its stdin.
+
+    ``transient = False``: the cause is a manager that is behind, and each retry
+    asks it for one more transient unit, so a retry adds to the queue it waits in.
+    """
+
+    transient = False
+
+
 class AcpRuntimeProtocol(Protocol):
     """Minimal interface that AcpSessionHandle needs from AcpRuntime."""
 
@@ -378,6 +392,7 @@ AcpModeNotFound.__module__ = "kiro_crew.acp.session_handle"
 AcpAgentUnavailable.__module__ = "kiro_crew.acp.session_handle"
 AcpRequestTimeout.__module__ = "kiro_crew.acp.session_handle"
 AcpRuntimeOverloaded.__module__ = "kiro_crew.acp.session_handle"
+AcpScopeAdmissionTimeout.__module__ = "kiro_crew.acp.session_handle"
 
 
 def host_checks_sessions(runtime: object) -> bool:

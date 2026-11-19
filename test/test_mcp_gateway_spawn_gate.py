@@ -310,7 +310,7 @@ class TestDrain:
             watched,
             init_done=done,
             init_state=lambda: "unsent",
-            process_exited=AsyncMock(),
+            process_exited=_never_exits,
             timeout=60.0,
         )
         await gate.close()
@@ -320,6 +320,11 @@ class TestDrain:
         with pytest.raises(adm.SpawnGateClosed):
             await gate.acquire(label="late")
         assert gate.snapshot()["closed"] is True and gate.queued == 0
+
+
+async def _never_exits() -> None:
+    """A backend process that is still running: ``process.wait`` that does not return."""
+    await asyncio.Event().wait()
 
 
 class TestInitializeWatcher:
@@ -333,16 +338,64 @@ class TestInitializeWatcher:
         permit = await gate.acquire(label="p")
         done = asyncio.Event()
         state = self._state_holder("in_flight")
-        exited = AsyncMock()
         task = gate.watch_initialize(
-            permit, init_done=done, init_state=lambda: state[0], process_exited=exited, timeout=5.0
+            permit,
+            init_done=done,
+            init_state=lambda: state[0],
+            process_exited=_never_exits,
+            timeout=5.0,
         )
         state[0] = "ready"
         done.set()
         await task
         assert permit.outcome == adm.OUTCOME_SUCCESS and permit.released
         assert gate.in_flight == 0
-        exited.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_backend_that_exits_before_any_initialize_frees_its_slot_at_once(
+        self,
+    ) -> None:
+        """A stub that left before kiro sent ``initialize`` took its private backend
+        with it, so the permit is not held for the whole initialize window."""
+        gate = adm.SpawnGate(1)
+        permit = await gate.acquire(label="first-stub")
+        exited = asyncio.Event()
+        task = gate.watch_initialize(
+            permit,
+            init_done=asyncio.Event(),
+            init_state=lambda: "unsent",
+            process_exited=exited.wait,
+            timeout=600.0,  # flake-ok: the watcher's own deadline, never waited on
+        )
+        next_spawn = asyncio.create_task(gate.acquire(label="second-stub"))
+        await _settle()
+        assert not next_spawn.done(), "held while the backend process is alive"
+        exited.set()
+        second = await _within_ceiling(
+            next_spawn, "the next spawn is admitted once the process exits"
+        )
+        await _within_ceiling(task, "the watcher ends once the process exits")
+        assert permit.outcome == adm.OUTCOME_NEUTRAL and permit.released
+        assert gate.in_flight == 1
+        second.release()
+
+    @pytest.mark.asyncio
+    async def test_an_exit_with_a_finished_handshake_still_settles_by_that_handshake(
+        self,
+    ) -> None:
+        gate = adm.SpawnGate(1)
+        permit = await gate.acquire(label="p")
+        done = asyncio.Event()
+        done.set()
+        task = gate.watch_initialize(
+            permit,
+            init_done=done,
+            init_state=lambda: "ready",
+            process_exited=AsyncMock(),
+            timeout=5.0,  # flake-ok: the watcher's own deadline, never waited on
+        )
+        await task
+        assert permit.outcome == adm.OUTCOME_SUCCESS and permit.released
 
     @pytest.mark.asyncio
     async def test_failed_settles_failure_and_holds_until_the_process_is_reaped(self) -> None:
@@ -375,7 +428,7 @@ class TestInitializeWatcher:
             permit,
             init_done=asyncio.Event(),
             init_state=lambda: "unsent",
-            process_exited=AsyncMock(),
+            process_exited=_never_exits,
             timeout=0.01,
         )
         await task
@@ -400,7 +453,7 @@ class TestInitializeWatcher:
             permit,
             init_done=done,
             init_state=init_state,
-            process_exited=AsyncMock(),
+            process_exited=_never_exits,
             timeout=0.02,
         )
         await _await_state(lambda: bool(reads), "the watcher's first window expired")
@@ -425,7 +478,7 @@ class TestInitializeWatcher:
                 permit,
                 init_done=done,
                 init_state=lambda: "ready",
-                process_exited=AsyncMock(),
+                process_exited=_never_exits,
                 timeout=timeout,
             )
             assert permit.outcome == adm.OUTCOME_SUCCESS

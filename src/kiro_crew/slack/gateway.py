@@ -101,6 +101,7 @@ from kiro_crew.autonudge import (
     reason_in,
     runtime_budget_exceeded,
     terminal_notification_delivery_matches,
+    terminal_wake_line,
 )
 from kiro_crew.beacon import distribution
 from kiro_crew.channel_history import ChannelHistory
@@ -514,9 +515,13 @@ from kiro_crew.slack.gateway_runtime.cron_failure import (
     _log_held_alert,
 )
 from kiro_crew.slack.gateway_runtime.cron_fire import (
+    APP_JOB_BOT_REFUSAL,
     _annotate_model_downgrade,
+    _app_job_names_bot,
+    _app_job_runs_as_bot,
     _cron_extra_env,
     _CronCapture,
+    _job_is_an_apps,
 )
 from kiro_crew.slack.gateway_runtime.cron_verdict import (
     _CRON_FAILURE_DETAIL_CAP,

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         _CREATABLE_MODES,
         _DEFERRED_PLAIN_CREATE_KNOWN_KEYS,
         ARTIFACT_SLUG_RE,
+        BOT_IDENTITY_DENIED,
         DashboardState,
         KiroCrewConfig,
         MemoryStartupUnavailable,
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
         _sync_dashboard_slots,
         _unhide_folder,
         _workspace_name_for_dir,
+        audit_app_slot_denial,
         create_session_folder,
         cron_creator_admission,
         cron_slot_creator,
@@ -66,6 +68,7 @@ if TYPE_CHECKING:
         restore_agent_selection,
         save_slot_off_loop,
         schedule_eager_spawn,
+        selects_bot_identity,
         slot_history_key,
         slot_not_found,
         tags_write_lock,
@@ -546,6 +549,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     selection_kind=agent_kind,
                 )
             workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
+            if request_app and selects_bot_identity(bindings):
+                # Owning a session is not being given a Bot (``app_names_bot``): an
+                # app names an agent of its own. Refused before the slot is made.
+                audit_app_slot_denial(
+                    request_app, "chat_slot_create", str(name or ""), BOT_IDENTITY_DENIED
+                )
+                return slot_not_found()
             if agent_kind and not bindings.requested_resolved:
                 # A stated namespace never falls back to whoever answers by
                 # default -- and it is refused HERE, before get_or_create_slot,

@@ -456,6 +456,12 @@ async def _mcp_resolve_prefetch_loop(self: GatewayOrchestrator, target_env: dict
     only exit. The window is re-read every iteration so a config reload takes
     effect on the next pass without a broker restart.
     """
+    # The npm install masks the gateway's secret files, and the mask lists only files
+    # that exist at spawn. They are published once the listener is bound, when the
+    # process-ready event is set (service_boot), which is after this task is created.
+    ready = getattr(self, "_mcp_launch_approval_ready", None)
+    if ready is not None:
+        await ready.wait()
     while True:
         await self._prefetch_mcp_resolutions(target_env)
         window = self._mcp_resolve_refresh_secs()

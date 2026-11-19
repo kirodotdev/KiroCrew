@@ -1288,6 +1288,28 @@ in `_KNOWN_SECOND_BOOT_CHANGES` fails there. When startup grows a home-derived
 global, that test names it; put it on the reset list, or on the known list
 with its reason, in the same PR.
 
+A global that startup fills from a job it hands to an executor and never joins
+(`loop.run_in_executor`, `asyncio.to_thread` it does not await) needs both: the
+reset, and a teardown wait until no such job is queued or running. Reset alone
+loses to a job that lands after it and writes the old home's value into the next
+boot. The witness only sees the job when it lands late, so the PR that adds it
+usually passes its own CI and later PRs go red. Make the late landing happen
+before you trust the reset: a throwaway `-p` plugin that delays the job's first
+run by a few seconds (see *Proving a determinism fix*) must turn the witness red
+on the parent and leave it green on the fix.
+
+```python
+# WRONG: reset only; a refresh still queued on the default executor
+# publishes this home's apps after the reset, into the next boot.
+hidden_sessions._app_ids = frozenset()
+
+# RIGHT: teardown waits for the queued and running refreshes, then resets
+# under the refresh lock (test/integration/conftest.py).
+await _drain_hidden_chat_refresh()
+with hidden_sessions._refresh_lock:
+    hidden_sessions._app_ids = frozenset()
+```
+
 The only fake is the model, but not every production step runs: the boot is
 `GatewayOrchestrator.run()`, not `kirocrew gateway`, with `test_mode=True` and
 `no_crons=True`. Skipped, and so left to the E2E layer: everything

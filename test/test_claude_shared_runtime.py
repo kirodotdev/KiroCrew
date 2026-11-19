@@ -1548,3 +1548,151 @@ def test_a_killed_runtime_releases_every_sessions_prepared_state(harness, tmp_pa
     asyncio.run(_end_remaining_session_states(rt))
     assert rt._session_harness_states == {}
     assert not _seed(tmp_path).exists()
+
+
+# --- The held limits of a moved Bot reach the shared session's envelope ---------------
+
+
+@pytest.fixture
+def held_ledger(monkeypatch, tmp_path):
+    """A ``migrated.json`` under a test home, and the session's Bot settable per test."""
+    import json
+
+    import kiro_crew.config.paths as paths_mod
+    from kiro_crew import execution_context
+    from kiro_crew.connections import crew_oauth_proxy
+
+    mates = tmp_path / "home" / "mates" / "agents"
+    mates.mkdir(parents=True)
+    monkeypatch.setattr(paths_mod, "kiro_home", lambda: tmp_path / "home")
+    monkeypatch.setattr(crew_oauth_proxy, "is_connection_server", lambda key, name: False)
+    who = {"member": "m1"}
+    monkeypatch.setattr(
+        execution_context,
+        "read_session_execution",
+        lambda key: type("E", (), {"member_id": who["member"]})(),
+    )
+    path = mates.parent / "migrated.json"
+
+    def hold(capability: str | None, member: str = "m1") -> None:
+        who["member"] = member
+        if capability is None:
+            if path.exists():
+                path.unlink()
+            return
+        rules = [{"text": "a held limit", "capability": capability}]
+        path.write_text(json.dumps({"held_rules": {"zxc": {"member_id": "m1", "rules": rules}}}))
+
+    return hold
+
+
+def _shared_options(harness: Any, work_dir: Path, servers: list[dict]) -> dict:
+    state = asyncio.run(_prepared_for_envelope(harness, work_dir))
+    try:
+        return harness.session_meta(state, servers)["claudeCode"]["options"]
+    finally:
+        asyncio.run(harness.end_session(state))
+
+
+def _asks(options: dict) -> list[str]:
+    return list(((options.get("settings") or {}).get("permissions") or {}).get("ask") or [])
+
+
+_SERVERS = [{"name": "gh", "command": "x"}, {"name": "dot.probe", "command": "y"}]
+
+
+def test_a_shared_session_of_a_bot_with_a_held_read_limit_asks_for_reads(
+    harness, tmp_path, held_ledger
+):
+    """Claude's ``default`` mode runs in-project reads unasked: the shared session of a
+    Bot that holds a read limit asks for each, as the per-session client does."""
+    held_ledger("fs_read")
+    held = _shared_options(harness, tmp_path, _SERVERS)
+    assert _asks(held) == ["Read", "Grep", "Glob"]
+    assert held["allowDangerouslySkipPermissions"] is False
+    assert "strictMcpConfig" not in held
+
+    # Controls: another member, and no ledger at all, get nothing.
+    held_ledger("fs_read", member="other")
+    assert _asks(_shared_options(harness, tmp_path, _SERVERS)) == []
+    held_ledger(None)
+    assert _asks(_shared_options(harness, tmp_path, _SERVERS)) == []
+
+
+def test_a_shared_session_under_a_held_mcp_limit_asks_on_each_server_it_sends(
+    harness, tmp_path, held_ledger
+):
+    held_ledger("mcp")
+    held = _shared_options(harness, tmp_path, _SERVERS)
+    # Claude spells a server's tools with `.` as `_`; the ask must match them.
+    assert _asks(held) == ["mcp__gh", "mcp__dot_probe"]
+    assert held["strictMcpConfig"] is True
+
+    held_ledger("mcp", member="other")
+    other = _shared_options(harness, tmp_path, _SERVERS)
+    assert _asks(other) == []
+    assert "strictMcpConfig" not in other
+
+
+def test_the_shared_envelope_asks_what_the_per_session_client_asks(
+    harness, tmp_path, held_ledger, monkeypatch
+):
+    """Pinned to the per-session result, so the two paths cannot drift. The array
+    carries no pooled stubs: with them the shared list may name more servers."""
+    from types import SimpleNamespace
+
+    from kiro_crew.acp.client_claude_session import (
+        _claude_session_meta,
+        _prepare_claude_held_asks,
+    )
+
+    held_ledger("*")
+    client = SimpleNamespace(
+        backend=ACP_BACKEND_CLAUDE,
+        memory_mode="persistent",
+        _session_key=f"dashboard:{tmp_path.name}",
+        _session_mcp_cache=list(_SERVERS),
+    )
+    asyncio.run(_prepare_claude_held_asks(client))
+    per_session = _claude_session_meta(client)["claudeCode"]["options"]
+    shared = _shared_options(harness, tmp_path, _SERVERS)
+    assert _asks(per_session)
+    assert _asks(shared) == _asks(per_session)
+    assert shared["strictMcpConfig"] is per_session["strictMcpConfig"] is True
+
+
+def test_a_second_envelope_for_the_same_session_does_not_double_its_asks(
+    harness, tmp_path, held_ledger
+):
+    """The substitution retry builds the envelope again for the same state."""
+    held_ledger("*")
+    state = asyncio.run(_prepared_for_envelope(harness, tmp_path))
+    first = _asks(harness.session_meta(state, _SERVERS)["claudeCode"]["options"])
+    second = _asks(harness.session_meta(state, _SERVERS)["claudeCode"]["options"])
+    assert first == second
+    assert len(second) == len(set(second))
+    # A start with a smaller array asks only on the servers it sends.
+    third = _asks(harness.session_meta(state, _SERVERS[:1])["claudeCode"]["options"])
+    assert "mcp__gh" in third and "mcp__dot_probe" not in third
+    asyncio.run(harness.end_session(state))
+
+
+def test_the_shared_prepare_reads_held_asks_after_the_side_denies(harness, tmp_path, monkeypatch):
+    steps: list[str] = []
+    real_side = ClaudeSharedSession._prepare_claude_side_read_denies
+
+    async def _side(self: Any) -> None:
+        steps.append("side")
+        await real_side(self)
+
+    async def _held(self: Any) -> None:
+        steps.append("held")
+        self._claude_held_asks = ("Read",)
+        self._claude_held_mcp = False
+
+    monkeypatch.setattr(ClaudeSharedSession, "_prepare_claude_side_read_denies", _side)
+    monkeypatch.setattr(ClaudeSharedSession, "_prepare_claude_held_asks", _held)
+    state = asyncio.run(_prepare(harness, tmp_path))
+    assert steps == ["side", "held"]
+    assert state._claude_held_builtin_asks == ("Read",)
+    asyncio.run(harness.end_session(state))

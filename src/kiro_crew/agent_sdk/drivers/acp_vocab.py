@@ -53,7 +53,11 @@ from kiro_crew.acp.raw_sdk_tasks import (
 from kiro_crew.acp.raw_sdk_tasks import live_card_ids as live_background_card_ids
 from kiro_crew.acp.raw_sdk_tasks import on_cards_lost as on_background_cards_lost
 from kiro_crew.acp.raw_sdk_workflow_cards import BackgroundCardRow
-from kiro_crew.acp.session_handle import NATIVE_CHILD_NOT_RESUMABLE, AcpRequestTimeout
+from kiro_crew.acp.session_handle import (
+    NATIVE_CHILD_NOT_RESUMABLE,
+    AcpRequestTimeout,
+    AcpScopeAdmissionTimeout,
+)
 from kiro_crew.acp.timed_out_continuation import continue_timed_out_calls, timed_out_continuation
 from kiro_crew.acp.types import (
     EVENT_HARNESS_NOTICE,
@@ -106,6 +110,7 @@ __all__ = [
     "TERMINAL_TOOL_STATUSES",
     "WAIT_REASON_INPUT",
     "AcpRequestTimeout",
+    "AcpScopeAdmissionTimeout",
     "AcpTimeoutError",
     "InFlightToolTracker",
     "StructuredStatus",
@@ -179,9 +184,13 @@ def is_user_worded_failure(exc: BaseException) -> bool:
     error frame, including the formatter's fallback that passes the provider's
     own text or the raw error dict through. Timeouts and process deaths are
     excluded by type, because their messages are internal detail whatever they
-    carry. A caller that shows the text still redacts, caps and escapes it for
-    its own platform.
+    carry. The one exception is ``AcpScopeAdmissionTimeout``, an
+    ``AcpRuntimeError`` whose text is always the fixed diagnosis from
+    ``scope_admission.timeout_message``, so it is True. A caller that shows the
+    text still redacts, caps and escapes it for its own platform.
     """
+    if isinstance(exc, AcpScopeAdmissionTimeout):
+        return True
     if not isinstance(exc, AcpError) or isinstance(exc, (AcpTimeoutError, AcpProcessDied)):
         return False
     return exc.user_worded and exc.transient is not True

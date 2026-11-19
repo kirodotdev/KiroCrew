@@ -94,6 +94,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     KAS_CLIENT_CAPABILITIES,
+    METHOD_KAS_MCP_GOVERNANCE_DISABLED,
     METHOD_KAS_MCP_STATUS,
     METHOD_KAS_SESSION_DELETE,
     METHOD_KAS_TOOLS_CHANGED,
@@ -1348,9 +1349,13 @@ class KasHarness(MembershipHarness):
             else:
                 # A child a Bot started runs under the Bot's identity: its held
                 # limits ask here too (the worker's are applied in its own merge).
-                from kiro_crew.mate_held_rules import held_child_spec
+                from kiro_crew.mate_held_rules import HeldLimitsNotApplied, held_child_spec
 
-                spec = held_child_spec(spec, session_key)
+                try:
+                    spec = held_child_spec(spec, session_key)
+                except HeldLimitsNotApplied as exc:
+                    # Refused, never started with its full pre-approvals.
+                    raise AcpAgentUnavailable(str(exc), agent=agent) from exc
             # KAS loads workspace steering itself, honouring each file's inclusion, from
             # the session's own folder (a subagent's may differ from the runtime's).
             steering_dir = session_cwd or work_dir
@@ -1761,8 +1766,16 @@ class KasHarness(MembershipHarness):
     def notification_aliases(self) -> NotificationAliases:
         return replace(
             KIRO_FAMILY_ALIASES,
+            # governance_disabled travels in the same staged window: it arrives
+            # under the session id during session/new, before the response --
+            # without the alias it drops as an unroutable init frame and a
+            # fail-closed start waits out the whole readiness budget.
             mcp_init=KIRO_FAMILY_ALIASES.mcp_init
-            + (METHOD_KAS_MCP_STATUS, METHOD_KAS_TOOLS_CHANGED),
+            + (
+                METHOD_KAS_MCP_STATUS,
+                METHOD_KAS_TOOLS_CHANGED,
+                METHOD_KAS_MCP_GOVERNANCE_DISABLED,
+            ),
             mcp_readiness=True,
         )
 

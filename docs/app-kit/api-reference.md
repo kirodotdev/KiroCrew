@@ -1299,8 +1299,25 @@ client when it fires.
 job's `created_by` as `app:<name>` from the token. An app token may update,
 delete, enable, run, cancel or acknowledge only jobs that carry its own stamp.
 Any other id, foreign or missing, answers 403 `owner_only`. A job without an
-app stamp is owner-only. An acknowledgement's `ts` must name a cron
+app stamp is owner-only. A create whose `agent` or `member_id` names one of the
+owner's Bots that has memory of its own or a chat of its own answers the same
+403 and stores nothing; the `cron_add` tool answers an agent in your app's
+sessions with an error for the same create. Name an agent of your own instead.
+`POST /api/spawn` holds the same rule: `crew` or `target_member` naming such a
+Bot answers 404 `unknown_member`, and a `parent_session` that is such a Bot's
+answers 409 `member_identity_unavailable`. An acknowledgement's `ts` must name a cron
 notification of that same job.
+
+**Runs for app tokens.** `POST /api/spawn` from an app token starts one of your
+app's own agents, as `sdk.spawn` does. Pass `agent` (`spawn(task, agent)`): a
+request without one answers 400 `spawn_rejected`, and a name that is not one of
+your app's agents is refused with a 400 that carries the reason. A
+`parent_session` must be one of your app's own sessions; any other answers 409
+`member_identity_unavailable`. The run is recorded under your app, and that
+record is what the other routes read: `GET /api/spawn` lists, and
+`GET`/`DELETE /api/spawn/{agent_id}` with `retry`, `continue`, `steer` and
+`release` reach, only the runs your app started. Any other run id answers 404
+`task_scope_denied`, the same answer a run id that does not exist gets.
 
 #### Watching something without paying for a model call (`kiro_crew.irq`)
 
@@ -1775,7 +1792,11 @@ approval: every tool `run` asks for is decided by the host's tool gate with your
 app's name, so the operator's profile for your app applies, and a call the gate
 neither denies nor grants goes to the owner's approval prompt, as a cron job's
 does (Slack DM and dashboard, denied after the short unattended window when
-nobody answers). `run_oneshot`
+nobody answers). When the owner runs the gateway in the `auto` approval mode
+(Settings, `agent.approval_mode`), that call runs without a prompt, as a channel
+chat's does, but only when the turn runs one of your app's own agents (the ones
+your manifest declares); a turn on the host's default agent or another app's
+agent still asks, and so does a host policy that denies `trust`. `run_oneshot`
 rejects every tool. The operator's `capabilities.spawn` row for your app bounds
 which agents you may run, as it does for `ctx.spawn`: when spawning is off for your
 app, or the agent (for `agent=""`, the default agent; for `run_oneshot`,
@@ -2142,6 +2163,7 @@ POST /api/member-records/{slug}
 - `GET /api/sessions`, `GET /api/sessions/search`, `GET /api/sessions/{key}`, `GET /api/sessions/{key}/meta`, `DELETE /api/sessions/{key}` and `POST /api/sessions/summarize` reach only transcripts that record the calling app as their owner. `total` counts only those, search ranks only those, and summarize skips any other key as if it were missing (so `list_sessions` with `summarize` from your app's agent returns summaries for your transcripts only). A delete is also refused when a live slot holding the transcript belongs to someone else.
 - `DELETE /api/sessions` (bulk clear) and `GET /api/sessions/clearable/count` act on every closed transcript at once, so an app is always refused them.
 - A new slot can only be opened on a fresh name or on a transcript your app already owns. `POST /api/chat/slots` with a `name`, `POST /api/chat` that would create its slot, and `POST /api/chat/slots/{slot}/resume` answer 404 for a transcript that belongs to someone else.
+- Your app's sessions run agents of your own, never one of the owner's Bots. `POST /api/chat/slots`, `POST /api/chat` on a session of yours and `POST /api/chat/slots/{slot}/agent` answer the same 404 when `agent` names a Bot that has memory of its own or a chat of its own, and `POST /v1/chat/completions` answers 404 `not_found` for one as `model`. The reserved `default` name still works. A template that shares a Bot's name is picked with `agent_kind: "template"` when you create the session. A turn on a session of yours that names a Bot anyway ends on an error row and starts no agent.
 - Apart from the missing-grant 403, every refusal returns the same body as a missing target, `{"error": "not found", "code": "slot_not_found"}`. The reason is recorded in the security-event log, and so is every access the ownership rule allows.
 - `GET /api/sessions/{key}` can answer 503 `session_busy` when the transcript is being written at that moment. Retry it.
 - Not narrowed yet: `/api/sessions/{id}/agents*`, `POST /api/sessions/restart`, and `/api/sessions/usage`, `/health` and `/memory`. Narrowing them to the app's own sessions is planned, so do not build on reaching other sessions there.

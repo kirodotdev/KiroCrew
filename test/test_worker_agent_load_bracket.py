@@ -369,6 +369,8 @@ def _client_at_the_handshake(snapshot):
 
     c = client_mod.AcpClient.__new__(client_mod.AcpClient)
     c._derived_spec_snapshot = snapshot
+    # A spawn with no scope: the handshake's admission stage returns at once.
+    c._scope_unit = ""
     sent: list[str] = []
 
     async def _send_request(method, params):

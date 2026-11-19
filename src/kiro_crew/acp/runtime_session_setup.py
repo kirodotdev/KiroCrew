@@ -46,6 +46,7 @@ from kiro_crew.acp.runtime_start import _SESSION_NEW_TIMEOUT, _resolve_start_col
 from kiro_crew.acp.session_handle import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.session_mcp import (
     agent_spec_snapshot,
+    refuse_contested_agent_spec,
     session_mcp_disabled_tools,
     session_mcp_server_is_disabled,
 )
@@ -67,7 +68,7 @@ from kiro_crew.mcp_gateway.session_servers import (
     injection_server_names,
     pooled_session_servers,
 )
-from kiro_crew.providers.mirrors.registry import mirror_for
+from kiro_crew.providers.mirrors.registry import has_mirror, mirror_for
 from kiro_crew.sandbox import BoundWorkspaceMismatch, resolve_bound_session_workspace
 from kiro_crew.session_token_sig import publish_session_token
 
@@ -409,6 +410,16 @@ async def _refuse_over_ceiling_start(self: AcpRuntime, active_agent: str | None)
         )
     except agent_mod.SharedTemplateOverCeiling as exc:
         raise AcpRuntimeError(str(exc)) from exc
+    # A mirrored host (codex) projects the spec through the session MCP read, so
+    # two differing specs declaring the agent are refused here, as the adapter
+    # hosts refuse them at spawn (R-SPEC-13). kiro-cli and KAS read the spec
+    # natively and refuse in their own resolution: a synchronous registry read,
+    # so their path gains no await (H13).
+    if has_mirror(getattr(self, "_acp_backend", "")):
+        try:
+            await asyncio.to_thread(refuse_contested_agent_spec, active_agent)
+        except agent_mod.AmbiguousAgentSpecError as exc:
+            raise AcpRuntimeError(str(exc)) from exc
 
 
 def _start_launch_name(self: AcpRuntime, agent: str | None) -> str | None:

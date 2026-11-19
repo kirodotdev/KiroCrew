@@ -85,6 +85,9 @@ _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
 _SEPARATORS = frozenset({";", "|", "||", "&", "&&", "{", "}"})
 
+#: Reserved words after which the next word is still in command position.
+_COMPOUND_OPENERS = frozenset({"then", "do", "else", "elif", "{", "(", "!"})
+
 #: Programs whose ``-c`` value is a command line. Read again from the dequoted
 #: word, since the shared walk can misread a payload inside ``"$( )"``.
 _RUNS_C_VALUE = frozenset({"sh", "bash", "zsh", "dash", "ksh", "su"})
@@ -95,8 +98,15 @@ _SYSTEM_DIRS = ("/usr", "/etc", "/sbin", "/boot", "/lib", "/lib64")
 _CHMOD_DASH_MODE = re.compile(r"^-[rwxXst]+(?:,[ugoa]*[-+=][rwxXst]*)*$")
 
 
-def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
-    """The program a command runs and its arguments, wrappers and ``VAR=x`` stepped over."""
+def _program_index(tokens: "list[str]", options: "list[str] | None" = None) -> "int | None":
+    """Index in *tokens* of the program a command runs, wrappers and ``VAR=x`` stepped over.
+
+    *options* is *tokens* in the case they were written in, when the caller has
+    it: a wrapper's option words are read from it (``sudo -H`` takes no value,
+    ``sudo -h`` does), and ``sudo -e`` / ``--edit`` runs no program at all.
+    Without it the option words are read from *tokens* as they are.
+    """
+    opts = tokens if options is None else options
     i = 0
     while i < len(tokens):
         token = tokens[i]
@@ -110,32 +120,46 @@ def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
         program = _shell._program_basename(token)
         wrapper = _WRAPPERS.get(program)
         if wrapper is None:
-            return program, tokens[i + 1 :]
+            return i
         value_opts, positionals = wrapper
         i += 1
-        while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "-":
-            if tokens[i] == "--":
+        while i < len(tokens) and opts[i].startswith("-") and opts[i] != "-":
+            if opts[i] == "--":
                 i += 1
                 break
-            i += 2 if tokens[i] in value_opts else 1
+            if options is not None and program == "sudo" and opts[i] in ("-e", "--edit"):
+                return None  # sudoedit: every later word is a file it edits
+            i += 2 if opts[i] in value_opts else 1
         i += positionals
     return None
 
 
-def _split_commands(tokens: "list[str]") -> "list[list[str]]":
-    """*tokens* (one frame's flat argv) cut into one argv per command.
+def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
+    """The program a command runs and its arguments, wrappers and ``VAR=x`` stepped over."""
+    i = _program_index(tokens)
+    if i is None:
+        return None
+    return _shell._program_basename(tokens[i]), tokens[i + 1 :]
 
-    A comment runs to the next separator; a ``find -exec`` command is its own argv.
+
+def _split_commands_indexed(tokens: "list[str]") -> "list[list[tuple[int, str]]]":
+    """*tokens* cut into one command per argv, each word kept with its index.
+
+    The one place comment and separator boundaries are decided; callers that
+    need the original token index (the ssh floor's execute-position walk) read
+    it here rather than re-deriving the boundaries. A comment runs to the next
+    separator. ``find -exec`` subcommands are NOT included (they are appended by
+    :func:`_split_commands`, which has no index to preserve).
     """
-    out: list[list[str]] = []
-    current: list[str] = []
+    out: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
     in_comment = False
-    for token in tokens:
+    for i, token in enumerate(tokens):
         if in_comment:
             in_comment = token != ";"
             continue
         if not token:  # an empty word (``chmod "" 777 x``) is an argument, not a separator
-            current.append(token)
+            current.append((i, token))
             continue
         if token.startswith("#"):
             in_comment = True
@@ -143,16 +167,140 @@ def _split_commands(tokens: "list[str]") -> "list[list[str]]":
             # A separator glued to a word (``https://x;``) keeps the word.
             word = token.rstrip(";|&")
             if word and word not in _SEPARATORS and not word.endswith("{"):
-                current.append(word)
+                current.append((i, word))
         else:
-            current.append(token)
+            current.append((i, token))
             continue
         if current:
             out.append(current)
         current = []
     if current:
         out.append(current)
+    return out
+
+
+def _split_commands(tokens: "list[str]") -> "list[list[str]]":
+    """*tokens* (one frame's flat argv) cut into one argv per command.
+
+    A comment runs to the next separator; a ``find -exec`` command is its own argv.
+    """
+    out = [[word for _, word in command] for command in _split_commands_indexed(tokens)]
     return [*out, *(sub for argv in out for sub in _find_exec_argvs(argv))]
+
+
+def _executed_program_indices(tokens: "list[str]", cased: "list[str] | None" = None) -> "set[int]":
+    """Indices in *tokens* that bash runs as a program, wrappers and ``VAR=x`` stepped over.
+
+    One per command and per ``case`` arm body: program position, or the program a wrapper in
+    :data:`_WRAPPERS` runs (``env s?h``, ``sudo s?h``, ``xargs s?h``).  Every
+    other word is an operand of some program.  A word ending in ``)`` in
+    program position is a ``case`` arm pattern (``s*)``) or a subshell close,
+    not a program.  ``find -exec`` commands are not marked (their words keep no
+    index).  *cased* is *tokens* in the case they were written in, read for the
+    wrapper option words (see :func:`_program_index`).
+    """
+    executed: set[int] = set()
+    case_patterns, arm_bodies = _case_arm_pattern_indices(tokens)
+    for command in _split_commands_indexed(tokens):
+        words = [word for _, word in command]
+        # A word cut off a glued separator (``-H;``) keeps its lowered reading.
+        options = None
+        if cased is not None:
+            options = [cased[j] if cased[j].lower() == word else word for j, word in command]
+        # A case arm body's first word (``x) s?h …``) starts a command too.
+        for start in [0] + [k for k, (j, _) in enumerate(command) if k and j in arm_bodies]:
+            found = _program_index(words[start:], None if options is None else options[start:])
+            if found is None or words[start + found].endswith(")"):
+                continue
+            idx = start + found
+            origin = command[idx][0]
+            # A word in a ``case`` arm's pattern list (``s* | r* )``) is a pattern the
+            # shell matches ``$x`` against, not a program it runs; the ``|`` is case
+            # alternation, not a pipe, so the command splitter wrongly starts a new
+            # command at each alternative. Do not read such a word as a run verb.
+            if origin in case_patterns:
+                continue
+            # ``x=$(ls s* l*)`` / ``n=`ls s* l*` `` / ``files=( s* *.* )``: the
+            # resolver steps over the ``VAR=`` word and lands on the next token, but
+            # bash does not run that token as a program here.  It is an array element,
+            # or the operand of a command the substitution runs in its own frame.
+            if found and _assignment_opens_a_construct(words[idx - 1]):
+                continue
+            executed.add(origin)
+    return executed
+
+
+def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]":
+    """Indices in *tokens* that sit in a ``case`` arm's pattern list, and the
+    index of each arm body's first word.
+
+    Between ``case``'s ``in`` (or an arm's ``;;``, ``;;&`` or ``;&``) and that
+    arm's closing ``)``,
+    each word -- and the ``|`` that separates alternatives -- is a pattern the
+    shell matches the case word against, never a program it runs. The command
+    splitter treats the ``|`` as a pipe and would start a fresh command at each
+    alternative, so those words must be taken out of the run-verb reading. The
+    word right after the closing ``)`` is the arm body's program, which the
+    splitter does not see as a command start. Nested
+    ``case`` statements are tracked on a stack; glued separators (``esac;``,
+    ``id;;``) are read off the token. Only a ``case`` in command position opens
+    one (``echo case in x`` does not): a command's first word, a word after a
+    :data:`_COMPOUND_OPENERS` word in command position, or an arm body's first word.
+    """
+    patterns: set[int] = set()
+    bodies: set[int] = set()
+    stack: list[str] = []  # per open case: "await_in", "pattern" or "body"
+    starts = {command[0][0] for command in _split_commands_indexed(tokens)}
+    program_position = False
+    for i, tok in enumerate(tokens):
+        here, program_position = program_position or i in starts, False
+        if tok.rstrip(";&| ") == "esac":
+            if stack:
+                stack.pop()
+            continue
+        if tok == "case":
+            if here:
+                stack.append("await_in")
+            continue
+        program_position = here and tok in _COMPOUND_OPENERS
+        state = stack[-1] if stack else None
+        if state == "await_in":
+            if tok == "in":  # a bare ``for … in`` with no open case never reaches here
+                stack[-1] = "pattern"
+        elif state == "pattern":
+            if tok != "|":
+                patterns.add(i)
+                if ")" in tok:  # the arm's close ends the pattern list
+                    stack[-1] = "body"
+                    program_position = True
+                    bodies.add(i + 1)
+        elif state == "body" and (";;" in tok or ";&" in tok):
+            # ``;;``, ``;;&`` and ``;&`` (fall through) each end an arm, so the
+            # next word opens the next arm's pattern list.
+            stack[-1] = "pattern"
+    return patterns, bodies
+
+
+def _assignment_opens_a_construct(word: str) -> bool:
+    """True if *word* is a ``VAR=`` assignment opening an array literal or an unclosed
+    command substitution.
+
+    The token the resolver lands on after such a word is an array element
+    (``files=( s* …``) or the first operand of the command the substitution runs
+    (``x=$(ls s* …``, ``n=`ls s* …``).  Neither is a program bash runs in this
+    frame -- the substitution's own program is marked in the frame the floor
+    walks for that substitution -- so the ssh gate must not read it as a run verb.
+    A CLOSED substitution (``x=$(true) prog``) does not shield the word after it.
+    """
+    if not ENV_ASSIGNMENT_RE.match(word):
+        return False
+    rest = word.split("=", 1)[1]
+    # ``(`` masks to ``\x05`` inside a quoted nested payload (``bash -c '…( … )…'``).
+    if rest[:1] in ("(", "\x05"):  # VAR=( elem ...   an array literal
+        return True
+    if "$(" in rest and rest.count("(") > rest.count(")"):  # VAR=$(cmd ...  open $( )
+        return True
+    return rest.count("`") % 2 == 1  # VAR=`cmd ...   an open backtick
 
 
 def _find_exec_argvs(argv: "list[str]") -> "list[list[str]]":

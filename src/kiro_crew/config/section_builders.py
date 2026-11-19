@@ -56,6 +56,7 @@ from kiro_crew.config.integration_sections import (
     PublishConfig,
     TunnelConfig,
     _resolve_cwd_use,
+    _resolve_cwd_use_launch,
     _resolve_stub_overrides,
     _resolve_stub_roster,
     _resolve_stub_servers,
@@ -578,6 +579,7 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
         # non-bool value is dropped in exactly one place.
         stub_overrides=_resolve_stub_overrides(mcp_gateway_data),
         cwd_use=_resolve_cwd_use(mcp_gateway_data),
+        cwd_use_launch=_resolve_cwd_use_launch(mcp_gateway_data),
         # The file's own roster, carried so ``save()`` can put it back
         # instead of flattening it to the effective set above. See the
         # field's own comment for why that flattening is a data loss.

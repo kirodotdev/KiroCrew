@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import importlib as _importlib
 import logging
 import os
@@ -287,11 +288,12 @@ from kiro_crew.dashboard.handlers.sessions_parts.usage_scrape import (
 from kiro_crew.dashboard.kiro_readiness import (
     _POLL_GATE_MAX_AGE_SECS,
     reject_if_kiro_unverified,
+    track_kiro_identity,
 )
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
+from kiro_crew.kiro_prerequisite import identity_stamp_mismatch, spawn_supervised_oneshot
 from kiro_crew.platform_compat import _SUBPROCESS_NO_WINDOW, kill_and_reap
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
@@ -442,6 +444,10 @@ _usage_cache_user_id: str | None = None
 #: path publishes never inherits the stamp. ``None`` when the cache is not such a
 #: marker. See :func:`_signin_marker_is_stale`.
 _vault_signin_marker: tuple[dict[str, object], str] | None = None
+#: The sign-in identity the GET last saw (:func:`track_kiro_identity`) and the opaque tag
+#: of the account it last provably moved to. Beside the cache, never in it.
+_usage_account_fp = ""
+_usage_account_tag = ""
 _USAGE_REFRESH_SECS = 600  # background refresh every 10 min
 # Ceiling on ONE whole refresh. Sized above the sum of the inner bounded steps
 # (whoami ≤30s + the /usage scrape ≤60s, plus the unbounded API read between
@@ -1743,6 +1749,15 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
                 pass
 
 
+async def _note_account(request: web.Request) -> bool:
+    """Record the signed-in account; True when it provably moved (:func:`track_kiro_identity`)."""
+    global _usage_account_fp, _usage_account_tag
+    _usage_account_fp, moved = await track_kiro_identity(request, _usage_account_fp)
+    if moved or (_usage_account_fp and not _usage_account_tag):
+        _usage_account_tag = hashlib.sha256(_usage_account_fp.encode()).hexdigest()[:16]
+    return moved
+
+
 async def _fetch_usage_then_alert(state: DashboardState, *, vault_owned: bool) -> str | None:
     """One refresh (:func:`_fetch_usage_bg`), then the plan-credit alert check on its reading.
 
@@ -1750,9 +1765,18 @@ async def _fetch_usage_then_alert(state: DashboardState, *, vault_owned: bool) -
     before its first await, so the flag read here, with no await between, says whether the
     call refreshes or returns at once because another refresh is running, which checks its
     own reading. The check never raises, so the refresh's outcome is what the caller gets.
+
+    A move seen while it ran makes a kiro-cli reading the old account's: dropped, refreshed
+    again. A vault reading is judged by the vault fingerprint inside its own refresh.
     """
+    global _usage_cache_ts
     ran = not _usage_fetching
+    account_before = _usage_account_fp
     outcome = await _fetch_usage_bg(vault_owned=vault_owned)
+    if ran and not vault_owned and identity_stamp_mismatch(account_before, _usage_account_fp):
+        _publish_usage({"available": False})
+        _usage_cache_ts = 0.0
+        return outcome
     if ran:
         await _alert_on_cached_reading(state)
     return outcome
@@ -1801,11 +1825,18 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
         blocked = await reject_if_kiro_unverified(request, max_age_secs=_POLL_GATE_MAX_AGE_SECS)
         if blocked is not None:
             return blocked
+    # Before the snapshot, so a concurrent GET cannot serve what this one drops. A
+    # `kiro-cli login` to another account makes the reading the old account's:
+    # dropped (no preserve may keep it) and refreshed now. The vault path judges
+    # its readings by the vault fingerprint below.
+    account_moved = await _note_account(request) and not vault_owned
+    if account_moved:
+        _publish_usage({"available": False})
     # Payload and the fingerprint it was published under, taken in one step (no
     # await between them, and _publish_usage writes both without yielding), so
     # the foreign check below judges exactly what this response serves.
     served, served_fp = _usage_cache, _usage_cache_vault_fp
-    refresh_now = False
+    refresh_now = account_moved
     not_servable = await _reading_not_servable(vault_owned, served, served_fp)
     if not_servable == "foreign":
         # The cached reading belongs to another identity (an earlier Crew
@@ -1829,18 +1860,19 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
         refresh_now = True
     now = time.time()
     if refresh_now or now - _usage_cache_ts > _USAGE_REFRESH_SECS:
-        # Timed refresh only — deliberately not triggered by the kiro-cli auth
+        # Timed refresh plus the account checks above -- never the kiro-cli auth
         # store changing on disk. That store is shared: `data.sqlite3` holds
-        # `conversations`, `history` and `state` alongside `auth_kv`, so ordinary
-        # chat traffic rewrites it roughly every 30 seconds; a disk-change trigger
-        # would fire on nearly every poll, and each fire can reach the `/usage`
-        # text scrape, a minute-scale kiro-cli subprocess. A faster readout is
-        # not worth that churn; a profile switch is picked up on the next interval.
+        # `conversations`, `history` and `state` alongside `auth_kv`, so chat
+        # traffic rewrites it roughly every 30 seconds, and each fire can reach the
+        # `/usage` text scrape, a minute-scale kiro-cli subprocess. The account
+        # check reads only stable sign-in claims, which chat leaves alone.
         state: DashboardState = request.app["state"]
         task = asyncio.create_task(_fetch_usage_then_alert(state, vault_owned=vault_owned))
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
-    return web.json_response({"usage": served})
+    # An opaque tag of the signed-in account: the browser drops its model list on a change.
+    tag = {"account": _usage_account_tag} if _usage_account_tag else {}
+    return web.json_response({"usage": served, **tag})
 
 
 async def api_sessions_usage_refresh(request: web.Request) -> web.Response:
@@ -1879,6 +1911,10 @@ async def api_sessions_usage_refresh(request: web.Request) -> web.Response:
         blocked = await reject_if_kiro_unverified(request)
         if blocked is not None:
             return blocked
+    # Recorded here too, so a GET during this refresh neither serves the old
+    # account's reading nor later drops this one's as a move.
+    if await _note_account(request) and not vault_owned:
+        _publish_usage({"available": False})
     if _usage_fetching:
         return web.json_response(
             {"error": "A refresh is already running", "code": "refresh_in_flight"},

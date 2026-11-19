@@ -604,7 +604,7 @@ class TestTheReadingHappensBeforeTheJudge:
             self._observation(state="MERGED", merged_at="2026-09-25T00:00:00Z"),
         )
         assert loop.monitor is not None
-        assert loop.monitor.outcome is not None, "a merged subject must be recorded terminal"
+        assert loop.monitor.terminal_pending == "success", "a merged subject owes its final turn"
         assert calls == [], "the terminal mapping wins outright -- the judge is not asked"
 
     def test_a_closed_pull_request_is_not_recorded_as_a_success(
@@ -617,7 +617,7 @@ class TestTheReadingHappensBeforeTheJudge:
             tmp_path, monkeypatch, Outcome.QUIET, True, self._observation(state="CLOSED")
         )
         assert loop.monitor is not None
-        assert loop.monitor.outcome is MonitorOutcome.BLOCKED
+        assert loop.monitor.terminal_pending == MonitorOutcome.BLOCKED.value
 
     def test_a_blind_streak_report_fires_without_asking_the_judge(
         self, tmp_path, monkeypatch

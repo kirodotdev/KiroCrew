@@ -346,6 +346,7 @@ from kiro_crew.dashboard.kas_local_commands import local_harness_menu
 from kiro_crew.dashboard.kiro_readiness import (
     KIRO_PREREQUISITE_REQUIRED_CODE,
     kiro_latched_ready,
+    providers_for_live_account,
     reject_if_kiro_unverified,
 )
 from kiro_crew.dashboard.state import DashboardState
@@ -685,12 +686,11 @@ async def _entitled_kiro_models(request: web.Request, models: list[dict]) -> lis
         return models
     advertised: list[str] = []
     catalog_ids = [m.get("model_name", "") for m in models]
-    # Newest session first. `active_providers()` walks a dict of live sessions, so
-    # forward order is creation order — and a session that started BEFORE a plan
-    # change still holds the advertised list it captured at its own session/new.
-    # Reading the oldest one would narrow the catalog to pre-downgrade
-    # entitlements, i.e. keep offering exactly the models this narrowing exists to
-    # hide. The most recently started session carries the most recent snapshot.
+    # Newest session first, none spawned under another account (its list is that
+    # account's). `active_providers()` is creation-ordered, and a session started BEFORE a
+    # plan change holds the list from its own session/new: reading the oldest would keep
+    # offering exactly the models this narrowing exists to hide.
+    providers = await providers_for_live_account(request, providers)
     for provider in reversed(providers):
         if capabilities_of(provider).model_id_namespace != model_registry_namespace(
             ACP_BACKEND_KIRO

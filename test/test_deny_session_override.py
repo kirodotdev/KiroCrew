@@ -1054,6 +1054,21 @@ class TestOverlayNeverWaived:
         other.tier = "deny-rules"
         assert override_offer_key(other, _make_slot(), _shell_event()) == _RM_ROOT
 
+    def test_no_card_is_offered_for_the_substitution_depth_cap(self, monkeypatch):
+        from kiro_crew.dashboard.deny_override import override_offer_key
+
+        _no_pins(monkeypatch)
+        command = 'echo "$(' * 33 + "true" + ')"' * 33
+        reason = is_denied(command)
+        key = deny_reason_key(reason or "")
+        assert key == "substitution nesting deeper than 32"
+        assert deny_key_is_self_guard(key)
+        verdict = ToolHookResult.deny(reason)
+        verdict.tier = "deny-rules"
+        assert override_offer_key(verdict, _make_slot(), _shell_event()) is None
+        # A waiver naming the key, however it arrived, still refuses.
+        assert is_denied(command, waived=frozenset({key})) == reason
+
     def test_an_unreadable_overlay_offers_nothing(self, monkeypatch):
         from kiro_crew.dashboard.deny_override import override_offer_key
 

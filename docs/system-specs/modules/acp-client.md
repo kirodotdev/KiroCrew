@@ -78,7 +78,7 @@ through it reaches every owner binding the same object (`kiro_crew._facade_mirro
 | `acp/client_tool_events.py` | tool-call frames: text chunk, tool call, update and refinement extraction with their provenance caches, the ACP-layer SEL audit record, the Pre/PostToolUse hook fires and the tool results read back from kiro-cli's session JSONL |
 | `acp/client_usage.py` | usage, metadata and compaction frames: usage and prompt-token updates, context-window metadata, claude and codex inline compaction and `wait_for_compaction` |
 | `acp/client_turn_control.py` | a turn controlled from outside it: kiro, claude, goose and opencode steers, cancel, slash commands and the turn-state queries callers poll |
-| `acp/client_start.py` | the session start: the spawn (kiro-cli's own arm, and every other host's plan through the launch tail both drivers share), the `initialize` handshake and its params, new, loaded, forked and substituted sessions, and `ensure_ready` |
+| `acp/client_start.py` | the session start: the spawn (kiro-cli's own arm, and every other host's plan through the launch tail both drivers share) and the name of its systemd scope, the scope admission wait before `initialize` (`_admit_scope`, with its helpers in `acp/scope_admission.py`), the `initialize` handshake and its params, new, loaded, forked and substituted sessions, and `ensure_ready` |
 | `acp/client_turn.py` | the turn loop: sending the prompt, `_prompt_loop`, reading the prompt response, dispatching and processing frames, `send_message`, `send_message_stream`, `stream_events` and `stream_unsolicited`, the tool-interrupted marker, OpenCode's and MiMo Code's deferred shell permission and the liveness consult |
 | `acp/client_new_conversation.py` | a fresh conversation on the live process: `new_conversation` for a member of `ACP_BACKENDS_CLIENT_NEW_CONVERSATION` (claude) closes the old session and sets a new one up as a cold start does (see claude-code-provider, *A fresh conversation on the live adapter*) |
 | `acp/disposed_session.py` | not a member owner: the per-harness texts that mean a session's backend was disposed in a live process, and the two answers `_prompt_loop` takes from it (see *A session the harness disposed*) |
@@ -202,7 +202,7 @@ names its responsibility, bound in the class under that owner's header.
 | Runtime owner | Owns |
 |---|---|
 | `acp/runtime_tree_kill.py` | the runtime's process tree and its teardown: proving the root is still the process it spawned, recording its descendants, signalling the tree, and `kill` with its reap and the release of what the process held, the root's stdin pipe included |
-| `acp/runtime_spawn_launch.py` | launching the child and making it a runtime: the harness spawn plan and the spawn agent's projected spec, the sandboxed launch tail (`_launch_tools`, the retrying spawn factory, the private-state seed), the `initialize` handshake with the client capabilities it declares, and the failed-start guard that reaps what a broken start left |
+| `acp/runtime_spawn_launch.py` | launching the child and making it a runtime: the harness spawn plan and the spawn agent's projected spec, the sandboxed launch tail (`_launch_tools`, the retrying spawn factory, the private-state seed), the systemd scope admission wait before `initialize` (`_admit_scope`, with its helpers in `acp/scope_admission.py`), the `initialize` handshake with the client capabilities it declares, and the failed-start guard that reaps what a broken start left |
 | `acp/runtime_spawn_entry.py` | `spawn` under the cold-start admission, the one re-derive retry after a stale spawn spec, and the revive of a runtime whose start failed |
 | `acp/runtime_session_setup.py` | what `session/new` and `session/load` are built from and checked against: the working directory, the MCP server array (the mirrored projection, the stub session, the pooled and unpooled control planes, the member panel), KAS custom agents, the derived-spec and member-projection checks, the unresolved-reference guard, the session-open mount check, the start budget and the copy of the native launch sources |
 | `acp/runtime_session_create.py` | `session/new` end to end: `create_session`, the collector hand-off of a start that outlives its budget and the late-session teardown, the finish every answered start shares, and the entitlement probe session |
@@ -1641,8 +1641,24 @@ until a result prints it. Native
 set is fed from every prompt and steer text the transport sends (`note_prompt`),
 every member's arguments and result (`printed(call_id, output)` for each update
 that carries output, `settled` for the terminal one, which alone ends the call)
-and the model's streamed text (`note_text`); any of these texts longer than
-256 KiB, a call's arguments included, marks the set incomplete; arguments, results and text join the set when their
+and the model's streamed text (`note_text`). A non-terminal update's text is
+cumulative, so `printed` reads only the part after what it already read, with a
+64-character overlap (and the two characters before it, a separator's or an
+escape's context) so a token split there is read whole. Times are read from
+there, a `:` in front refusing one at its first character, whose left neighbour
+the cut lost, since a time can be glued to a word (`..._at_12:34:56`). Word
+tokens are read from past a word cut at the overlap's front, so its tail is not
+read as a token: a word running from before the overlap past it is longer than
+any token on every read. Every other detector matches inside a window no longer
+than the overlap and its two characters of context; the one
+that does not, the JSON `"pr"` field parse (`json_pr_numbers`), runs on the whole
+text on every update, gated as `tokens_of` gates it, and never on the cut, so a
+`"pr"` nested in a JSON string is learned even when the terminal update carries
+no output. `printed` reads the whole text when the update does not continue the
+text read (a delta, a rewritten result), which a hash of the read prefix
+decides, and the terminal update is always read whole. Any of these texts longer than
+256 KiB, a call's arguments included, marks the set incomplete, a result by its
+full length whatever part of it is read; arguments, results and text join the set when their
 batch ends, so a value the model writes while composing a batch does not count
 for it. A member's arguments are read from the frame's raw arguments
 (`raw_tool_params`), not from `tool_input`, which can be a rendered edit diff
@@ -2255,9 +2271,12 @@ not by path, so re-creating the directory does not restore it.
 
 Steps 1–2 (`initialize`, `session/load` or `session/new`) block until a JSON-RPC
 response arrives (base 240s) because the session ID is required before proceeding.
+Before step 1, a spawn wrapped in a systemd scope waits for the user manager to admit
+the scope, and that wait comes out of the 240 s window of `initialize` (see
+[scope admission](#scope-admission)).
 If the first attempt times out, `ensure_ready()` kills the process and retries once
 with a fresh spawn — this handles slow kiro-cli first launches where MCP servers are
-still initializing.  `_wait_for_response()` checks `shutdown_event` each iteration
+still initializing. A scope admission timeout is not retried.  `_wait_for_response()` checks `shutdown_event` each iteration
 so init aborts promptly on Ctrl+C instead of blocking for the full timeout.
 
 **Activity-based deadline.** `_wait_for_response()`'s deadline is *not* a fixed
@@ -2553,8 +2572,9 @@ it has no runtime probe to borrow. It stamps its own `session/new` capture
 `AcpClient` built by `_entitlement_probe_client` from this client's own launch
 inputs (work dir, agent, env, backend, sandbox mode, gateway overlay, session key),
 so `_spawn` starts it exactly as it started this session. On its own process it
+waits for scope admission (`_admit_scope`), then
 sends `initialize` (the same `_initialize_params` this session's handshake sends)
-and, before `session/new`, re-verifies the derived spec with
+with the budget admission left, and, before `session/new`, re-verifies the derived spec with
 `require_unchanged_derived_spec` -- the same verify→create bracket every other
 spawn path closes between initialize and session creation, so a spec revoked
 during probe init aborts (raising `DerivedSpecStale`, absorbed as an empty answer)
@@ -2974,6 +2994,9 @@ KAS opts into a readiness barrier through its harness notification declaration.
 Its `_kiro/mcp/status` and `_kiro/tools/didChange` notifications carry an explicit
 `params.sessionId` and full `servers` / `tags` snapshots. The reader stages both
 methods before the create/load response and transfers only that session's frames.
+The KAS `mcp_init` declaration also stages `_kiro/mcp/governance_disabled`
+(`{sessionId, reason}`): the host emits it in the same window when its governance
+verdict fail-closes the session's MCP, and the wait reads it below.
 Status entries carry `name`, `status`, `failedAuthorization`, `errorMessage`,
 `tools` (the connected server's catalog) and `_meta.kiro.resource.source.origin`;
 the required Crew declarations have origin `client`. Exposure -- the model can
@@ -3344,6 +3367,23 @@ before. A timeout after an extension names `agent.session_start_timeout_secs`.
 The allowance is bounded so the subagent startup watchdog still outlives a
 start that spends its whole `session/new` budget and this wait, at the default
 and the 900 s maximum budget.
+With registry mode off, a `_kiro/mcp/governance_disabled` for this session
+with `reason: "api_failure"` arms a checkpoint `GOVERNED_SETTLE_SECS` (6s)
+later. The host sends it when its governance read failed and it fail-closed
+MCP: it then lists no servers for the session. If by the checkpoint the host
+has named none of the required servers for this session in any status entry or
+MCP tag, startup terminates with `AcpRuntimeError` naming the transient
+governance read failure, instead of waiting out the budget. If the host names a
+required server before then (a re-read turned MCP back on), the ordinary wait
+continues and a server that connects still starts the session. The failed start
+evicts the session, and the next start re-reads governance. With registry mode
+on, the registry checkpoint below still decides, as it does for a registry
+drop. `admin_disabled`, other reasons, another session's frame and no frame
+keep the ordinary wait. Read from the KAS 3.4.0 engine: it emits the frame at
+session start as `{sessionId, reason}` while its governance setting turns MCP
+off, `reason` being `api_failure` when the read failed and `admin_disabled`
+otherwise; a later governance change re-mounts the session's MCP and sends a
+fresh status.
 
 While `agent.mcp_registry_mode` is on, the wait has a settle checkpoint (6s,
 the init drain's first-report bound) inside the full start budget. The KAS
@@ -3778,7 +3818,7 @@ tool watchdog armed; the final result disarms it and re-arms stale recovery.
 
 While a turn is dispatching, both ACP transports run a watchdog over a turn gone silent after a tool was dispatched — and both **recover** rather than just `return` on a dead turn (`AcpClient` keeps the blanket `_TOOL_STALL_TIMEOUT` window; the session handle is verdict-driven, below):
 
-- **`AcpClient`** (process-per-session, `_TOOL_STALL_TIMEOUT = 600s`): the stall clock is measured against `_tool_last_seen = max(last_data_ts, self._last_activity)`, so tools that keepalive-ping without emitting stdout frames (`wait`, `spawn_sub_agents`) don't trip a false stall (`_last_activity` is refreshed out of band by the stderr drain / keepalive). On a real stall it `_kill_process(force=True)` and raises `AcpProcessDied`, routing through the existing pipe-death recovery (dashboard resets the session + re-queues, bounded by `_acp_pipe_death_retries`; cron/other callers get a clean error instead of a wedged slot). `_kill_process` only touches the subprocess/pipes (never `_turn_lock`), and blast radius is one session — each `AcpClient` owns exactly one process.
+- **`AcpClient`** (process-per-session, `_TOOL_STALL_TIMEOUT = 720s`: `_LONGEST_NATIVE_TOOL_WAIT` (600s, the most a harness's built-in tool may legally wait silent — Copilot CLI's `bash` `initial_wait` and `read_bash` `delay`, Claude Code's Bash `timeout`) plus a 120s `_TOOL_STALL_MARGIN`, so a legal maximal wait is never reaped as a stall): the stall clock is measured against `_tool_last_seen = max(last_data_ts, self._last_activity)`, so tools that keepalive-ping without emitting stdout frames (`wait`, `spawn_sub_agents`) don't trip a false stall (`_last_activity` is refreshed out of band by the stderr drain / keepalive). On a real stall it `_kill_process(force=True)` and raises `AcpProcessDied`, routing through the existing pipe-death recovery (dashboard resets the session + re-queues, bounded by `_acp_pipe_death_retries`; cron/other callers get a clean error instead of a wedged slot). `_kill_process` only touches the subprocess/pipes (never `_turn_lock`), and blast radius is one session — each `AcpClient` owns exactly one process.
 - **`runtime.py` / `AcpSessionHandle`**: watchdogs are **verdict-driven, not timeout-driven**; see "Session-handle watchdog" below.
 
 #### Session-handle watchdog
@@ -3832,9 +3872,9 @@ is armed even if the model never sends another text chunk. The shared handle
 retains each live call's attribution so either completion order leaves the
 watchdog inspecting a surviving call.
 
-**Both idle clocks measure BACKEND silence, so consumer time is subtracted from them.** `_dispatch_events` is an async generator: it is suspended at its `yield` for the whole of a consumer-side await (a tool approval, an IM send, a hook), and `last_data_ts` does not advance while suspended. Charging that interval to the runtime lets the arm cancel a turn moments *after* a human approves a tool — and at that instant the tool has not started, so the oracle draws `UNKNOWN` or `DEAD`, and `DEAD` acts immediately regardless of the window. `prompt()` therefore times each park around its single re-yield (`_parked_since` → `_parked_total`, cleared in a `finally` so an abandoned generator does not read as parked forever), and the timeout arm subtracts the park accumulated since `last_data_ts` was taken. The tool clock is exact; the stale clock can key off the newer stderr/keepalive activity, in which case part of the correction predates its reference point and is subtracted twice — which only makes that branch more patient, never quicker to probe.
+**Both idle clocks measure BACKEND silence, so consumer time is subtracted from them.** `_dispatch_events` is an async generator: it is suspended at its `yield` for the whole of a consumer-side await (a tool approval, an IM send, a hook), and `last_data_ts` does not advance while suspended. Charging that interval to the runtime lets the arm cancel a turn moments *after* a human approves a tool — and at that instant the tool has not started, so the oracle draws `UNKNOWN` or `DEAD`, and `DEAD` acts immediately regardless of the window. `prompt()` therefore times each park around its single re-yield (`_parked_since` → `_parked_total`, cleared in a `finally` so an abandoned generator does not read as parked forever), and the timeout arm subtracts the park accumulated since `last_data_ts` was taken. Both clocks take the correction from the baseline of the frame or touch they measure from, so it is exact.
 
-**On the shared runtime the tool clock is also SESSION-SCOPED.** `AcpRuntime._reader_loop` marks a frame `fanout_no_owner` when it fans an ownerless frame (no `sessionId`) out to more than one registered session — a lone session is the sole owner and stays unmarked, so a single-session runtime behaves exactly as before. The dispatch loop advances a session-attributable twin of the pair, `last_own_data_ts` / `parked_at_own_data`, only for an unmarked frame, and both the **tool-idle clock** and the **post-compaction-failure budget** read that twin: a co-tenant's roster broadcast (`_kiro.dev/subagent/list_update`) does not defer either on traffic this session never produced. The tool-idle clock also takes the session's own keepalive stamp, `AcpSessionHandle.note_keepalive()`, which `AcpSessionProvider.touch_activity()` sets from `/api/session-keepalive` — the ping `wait`, `spawn_sub_agents` and `mcp_server_wait` send while they block, since a blocking tool emits no frame. A co-tenant's keepalive stamps only its own handle, so it never defers this session. The stamp records the consumer park accumulated up to the touch, an open park included, so the clock subtracts only park time after it and stays exact. The **stale** clock deliberately keeps reading `last_data_ts`, because it already folds in the runtime-wide `_last_activity` (bumped on every stdout line), so runtime-global traffic is inside its contract by construction. Provenance, not the frame's method, is the discriminator — the same notification kind can arrive routed (this session's own progress) or fanned out (a co-tenant's), and only the runtime knows which. The events a marked frame yields carry that provenance to the consumer as `AcpEvent.runtime_global` — the roster, the compaction, clear and agent-switch notices, the steer echoes, and (by the stricter must-name-this-session test) the MCP registration notifications — so a consumer that measures this session's own activity or its startup can tell a co-tenant's frame from its own. A `session/update` names its session by protocol and is routed, so its events leave the flag clear. The one remaining over-count is deliberate and bounded per frame: a frame that arrives *during* the tool branch's oracle await voids that consult's verdict whoever owns it, because a frame still queued has no known owner until it is dequeued. Only the stale clock advances there. The tool clock moves only for a frame proven to be this session's own: one a concurrent `_wait_for_response` buffered is counted in `_own_ingress_seq` when it is not marked `fanout_no_owner`, and one still queued is dequeued next, where the ownership check above decides. A co-tenant frame landing in the await therefore costs one tick and keeps the idle measured so far, so the next consult that no frame interrupts acts on the whole window; it never restarts the window. A keepalive that lands during the await voids the verdict the same way; it is attributed to this session, so it moves only the tool clock, to the touch's stamp.
+**On the shared runtime both idle clocks are also SESSION-SCOPED.** `AcpRuntime._reader_loop` marks a frame `fanout_no_owner` when it fans an ownerless frame (no `sessionId`) out to more than one registered session — a lone session is the sole owner and stays unmarked, so a single-session runtime behaves exactly as before. The dispatch loop advances a session-attributable twin of the pair, `last_own_data_ts` / `parked_at_own_data`, only for an unmarked frame, and the **tool-idle clock**, the **stale clock** and the **post-compaction-failure budget** read that twin: a co-tenant's roster broadcast (`_kiro.dev/subagent/list_update`) does not defer any of them on traffic this session never produced. Both idle clocks also take the session's own keepalive stamp, `AcpSessionHandle.note_keepalive()`, which `AcpSessionProvider.touch_activity()` sets from `/api/session-keepalive` — the ping `wait`, `spawn_sub_agents` and `mcp_server_wait` send while they block, since a blocking tool emits no frame. A co-tenant's keepalive stamps only its own handle, so it never defers this session. The stamp records the consumer park accumulated up to the touch, an open park included, so the clock subtracts only park time after it and stays exact. Neither reads the runtime-wide `_last_activity`: every stdout line and every keepalive touch of any session on the process bumps it, so a principal blocked in `wait` or a sibling streaming text would keep a silent sub-agent turn's stale clock near zero and the turn would never be probed. Provenance, not the frame's method, is the discriminator — the same notification kind can arrive routed (this session's own progress) or fanned out (a co-tenant's), and only the runtime knows which. The events a marked frame yields carry that provenance to the consumer as `AcpEvent.runtime_global` — the roster, the compaction, clear and agent-switch notices, the steer echoes, and (by the stricter must-name-this-session test) the MCP registration notifications — so a consumer that measures this session's own activity or its startup can tell a co-tenant's frame from its own. A `session/update` names its session by protocol and is routed, so its events leave the flag clear. The one remaining over-count is deliberate and bounded per frame: a frame that arrives *during* either branch's oracle await voids that consult's verdict whoever owns it, because a frame still queued has no known owner until it is dequeued. The clock moves only for a frame proven to be this session's own: one a concurrent `_wait_for_response` buffered is counted in `_own_ingress_seq` when it is not marked `fanout_no_owner`, and one still queued is dequeued next, where the ownership check above decides. A co-tenant frame landing in the await therefore costs one tick and keeps the idle measured so far, so the next consult that no frame interrupts acts on the whole window; it never restarts the window. A keepalive that lands during the await voids the verdict the same way; it is attributed to this session, so it moves the clock to the touch's stamp.
 
 **The turn's park is readable from outside the turn.** `parked_for_secs()`, `parked_since`, and `awaiting_permission` exist because this arm cannot report on itself: it only advances when a consumer pulls the generator, so a consumer-side await freezes it and it never executes again for that turn. `session.md`'s `stuck_turn` hook reads those accessors from a loop with its own timer. Answering a permission calls `_end_human_wait()`, which banks the human's thinking time into `_parked_total` and restarts `_parked_since`, so the in-band correction stays exact while the external reading counts only what the consumer itself has spent since the answer.
 
@@ -4551,12 +4591,19 @@ Authentication, protocol, and configuration errors are not retried.
 
 Structured `acp_cold_start` logs distinguish queue wait and spawn, and include
 bounded active/queued counts, outcome, duration, backend class, and coarse process
-state. Structured `acp_startup_stage` logs distinguish `initialize`,
-`session/new`, `session/load`, and `session/set_mode`; timeout records carry the
-method and budget plus bounded stderr-line count. They never include prompts,
-workflow source, credentials, session ids, request ids, or raw process ids.
+state. Structured `acp_startup_stage` logs distinguish `scope_admission` (the
+wait of `AcpRuntime` or `AcpClient` for systemd to admit the agent's scope, see
+[scope admission](#scope-admission)), `initialize`, `session/new`, `session/load`, and `session/set_mode`;
+timeout records carry the method and budget plus bounded stderr-line count. They
+never include prompts, workflow source, credentials, session ids or request ids.
+The `AcpRuntime` records about one process (`scope_admission`, and `initialize`
+when it starts under throttle) name its pid, and so does the `AcpClient`
+`scope_admission` record. The `scope_admission` record also
+names the scope unit. Of the runtime's other lines, only the init line names the
+unit, and it logs only after `initialize` succeeds. The spawn line logs before the
+wait and names the pid.
 
-`ensure_ready()` emits the `kirocrew.session.startup.duration` histogram (unit `ms`) timing the cold-start work — subprocess spawn + session init. The warm fast-path (an already-spawned, already-initialized session returns early) is intentionally **not** measured, since it does no startup work. The emit lives in a `finally` covering **every** exit path, with `outcome` recorded as one of `ready` / `auth_required` / `error` (defaulting to `error`, so any unexpected exception propagating through the `finally` is counted as a failure, never a false `ready`) and `spawned` (bool — whether this call actually forked a new process). `get_recorder` is **lazily imported** inside the `finally` to break the `config.loader → acp.types → acp.client → metrics.provider → config.loader` import cycle, and the entire emit is wrapped in `try/except` so a telemetry failure can never break session startup.
+`ensure_ready()` emits the `kirocrew.session.startup.duration` histogram (unit `ms`) timing the cold-start work — subprocess spawn + session init. The warm fast-path (an already-spawned, already-initialized session returns early) is intentionally **not** measured, since it does no startup work. The emit lives in a `finally` covering **every** exit path, with `outcome` recorded as `ready`, as `error` (the default, so any unexpected exception propagating through the `finally` is counted as a failure, never a false `ready`), or as the start failure that ended it: `auth_required`, `tool_gate_unroutable`, `scope_admission_timeout`, `sandbox_init_failed`, `delegate_launch_failed`, `windows_spawn_blocked` or `registration_rate_limited`. It also records `spawned` (bool — whether this call actually forked a new process). `get_recorder` is **lazily imported** inside the `finally` to break the `config.loader → acp.types → acp.client → metrics.provider → config.loader` import cycle, and the entire emit is wrapped in `try/except` so a telemetry failure can never break session startup.
 
 ### Session-start gate and tracked start ownership (`SessionStartGate`, `StartCollector`)
 
@@ -5018,7 +5065,14 @@ count or the bare fact.
 - **Pre-turn stale drain.** The drain empties the session queue of frames left by
   an abandoned turn (see the cancel-unacked / stale / tool-stall / timeout paths,
   which synthesize a terminal and return while the real kiro-cli turn keeps
-  emitting). A consumer that leaves before the turn's terminal (a caller timeout, a
+  emitting). The cancel-unacked terminal also marks its turn
+  (`cancel_went_unacked`, cleared by the next turn's reset). A turn that ended on
+  it is never an ack: `AcpSessionProvider.cancel` reports it as `"timeout"`, and the
+  client-compat `AcpSessionProvider.wait_turn_done` returns
+  `STOP_REASON_CANCEL_UNACKED` (not the `end_turn` it maps the other synthesized
+  terminals to), which `AcpProvider.cancel` reads as `"timeout"`. The agent did not
+  answer the cancel, so a Stop that waited on it escalates (session.md "Stop
+  Orchestration", step 4). A consumer that leaves before the turn's terminal (a caller timeout, a
   cancelled task, or a closed stream raises `CancelledError`/`GeneratorExit` before
   any terminal is yielded) synthesizes no terminal: the handle records that prompt's
   request id (`_abandoned_prompt_id`), and the next prompt first calls
@@ -5253,11 +5307,11 @@ and the manual-handling state an unbounded tree lands in, are owned by
 
 `AcpClient._kill_process` keeps the same reaped-root window **on POSIX**, and
 there it is known and
-deferred, not closed here. The client holds no spawn of its own and therefore no
-`KIROCREW_SPAWN_INSTANCE`, so the vouched group path refuses for it by
-construction; reaching its tree needs the client to mint and carry an
-incarnation token at spawn time, which is a change to the client's own spawn
-path. What it has instead is the descendant snapshot it takes at spawn, which
+deferred, not closed here. The client now mints its `process_instance` before
+launch and writes it to the child as `KIROCREW_SPAWN_INSTANCE`, which is the
+spawn-path half of reaching its tree; `_kill_process` does not yet pass that
+token to the vouched group path, so the path still refuses for a client root
+and the window stays open until it does. What it has instead is the descendant snapshot it takes at spawn, which
 covers every client root that dies after its first scan; the uncovered case is a
 client root that dies before it, and the cost there is the same bounded leak the
 orphan sweep reports. On Windows the client needs neither the token nor the scan:
@@ -5779,6 +5833,97 @@ the same line at WARNING. The tail is the last five lines through
 `test/test_acp_runtime_initialize_death.py` with a real child that exits 3 after
 writing stderr.
 
+<a id="scope-admission"></a>**Scope admission is a startup stage of its own.** On a
+host with cgroup delegation the runtime's argv starts with `systemd-run --user
+--scope`. systemd-run asks the user systemd manager for the transient
+`kirocrew-rt-<token>.scope`, waits until the manager has moved its own pid into
+it, and then execs the next layer (`env`, `bwrap` or the agent) in the same pid.
+Until the manager has moved the pid, no agent exists. `_spawn_admitted` therefore
+waits for that move before it sends `initialize` (`_admit_scope`, with the wait,
+budget, log and message helpers in `src/kiro_crew/acp/scope_admission.py`). The
+wait reads `/proc/<pid>/cgroup` every 50 ms until the unit name is a component of
+the pid's cgroup path. It does not use the process name. The pid first runs the
+rlimit spawn shim, a Python interpreter that execs systemd-run, and the layer
+after systemd-run can be Python as well, so no name marks the move.
+It runs only when `_scope_unit` is set, inside the failed-start guard, after the
+stderr drain, the reader and the exit watcher have started.
+
+One cold-start window of `_INITIALIZE_TIMEOUT` (90 s) covers admission and
+`initialize`, so the startup watchdog arithmetic does not change. Admission can
+use `_SCOPE_ADMISSION_TIMEOUT`, which is the window less the reserve
+`_SCOPE_ADMISSION_RESERVE` (30 s). `_admit_scope` returns the `initialize`
+budget: the rest of the window, and never less than that reserve. A spawn with
+no scope keeps the whole window. On a healthy host admission takes milliseconds,
+and `initialize` keeps about 90 s. These errors end the stage, and neither
+writes anything to the agent's stdin:
+
+- A bound that passes with the pid still outside its scope raises
+  `AcpScopeAdmissionTimeout`. It is `transient = False`, because each retry
+  asks a slow manager for one more transient unit. Its text names the unit and
+  the pid and tells the operator to count the manager's failed units. A
+  sub-agent start on a companion runtime ends its attempt on it and starts no
+  dedicated process in its place (subagent.md § Session sharing).
+- An exit seen during the wait raises an `AcpRuntimeDead`, so every caller
+  that respawns on a death keeps doing so. The wait reads every 50 ms, so it
+  knows only that no read found the pid in its scope: the manager can move it,
+  and the next layer exit, between two reads.
+  The text says no more than that. It names `stage=scope_admission`, `reads`
+  (the reads that found the pid outside its scope, `0` when none ran), the pid,
+  the unit, the return code and the stderr tail, which names the layer that
+  failed. `scope_admission.exit_evidence` waits for the tail and the exit status
+  the same way as for an `initialize` death, and publishes the tail only through
+  `safe_stderr_tail` (`scope_admission.published_stderr_tail`).
+
+`AcpClient` runs the same stage on its own spawn path. `_spawn` names the scope
+`kirocrew-cl-<process instance>.scope` (`scope_unit_name` and `name_scope_unit`
+with `_CLIENT_SCOPE_UNIT_PREFIX`), and keeps the unit systemd received in
+`_scope_unit`. The prefix is not the runtime's, so the readers of `kirocrew-rt-*`
+scopes (`session_scope_reap.kept_scopes`, `containment.populated_scopes`) do not
+count a client process. The token is the client's `process_instance`, and the
+client writes it to the child's environment as `KIROCREW_SPAWN_INSTANCE` (with
+`KIROCREW_SPAWN_HOME`) through `LaunchRequest.env_after_marker`, as the runtime
+does. A client child therefore carries its own client's token, not one it
+inherited. That is what lets `runtime_reconcile`'s live-owner condition anchor a
+harness an agent starts from a client session's shell tool to the recorded client
+root; without it the harness read as unowned and was reclaimed while the session
+was still serving (#38809). A client can run under a runtime-stamped parent (a
+`kirocrew chat` started from an agent's shell builds its providers in that
+process), but replacing the inherited token removes nothing the outer runtime's
+teardown reached: the client spawn is `start_new_session=True` on POSIX, so its
+children lead their own process group, and the vouched group path signals only
+members of the runtime's own group. Both `initialize` sites call
+`_admit_scope` before they write the request: `_initialize_session` and the
+entitlement probe's `_entitlement_probe_answer`. The client's window is
+`_INIT_TIMEOUT` (240 s) with the same 30 s reserve, so admission can use 210 s
+(`client_timeouts._SCOPE_ADMISSION_TIMEOUT`). The process's own return code marks
+an exit, so the exit status is already read when the wait sees it. The errors are
+the client's own:
+
+- A timeout raises `AcpScopeNotAdmitted` (`src/kiro_crew/acp/scope_not_admitted.py`),
+  an `AcpError` with `transient` fixed `False` and the same text as
+  `AcpScopeAdmissionTimeout`. `ensure_ready` ends the
+  start without its one retry, with startup outcome `scope_admission_timeout`.
+- An exit raises `AcpProcessDied` with the same text as the runtime's death.
+  `ensure_ready` handles it as it handles a death during `initialize`: it reads
+  the stderr for a known start failure, then retries once.
+
+The client's `scope_admission` record logs under `kiro_crew.acp.client`. A start
+that ends in the stage goes through `ensure_ready`'s failed-start cleanup, and
+`_probe_advertised_models` shuts down a probe process that ends there.
+
+A `/proc` read that cannot run counts as admitted, so the spawn goes on to
+`initialize` as it did before the stage. That covers a permission error and a
+file that does not parse at once, a pid that procfs does not list (no procfs, or
+one for another pid namespace) after 2 s with no exit, and a read still waiting
+for a worker thread when the bound passes. Each outcome logs one
+`acp_startup_stage stage=scope_admission outcome=admitted|timeout|exited
+duration_ms=... budget_s=... pid=... scope=...` line. An exit adds
+`reads=... returncode=...`, and a `/proc` read that cannot run adds
+`proc_check=unavailable reason=...`. An admission logs at INFO,
+or at WARNING when it took more than 5 s. A timeout and an exit log at WARNING.
+Pinned by `test/test_acp_scope_admission.py` and, for `AcpClient`,
+`test/test_acp_client_scope_admission.py`.
+
 **Death-log severity is a contract: expected teardowns are INFO, genuine deaths
 are WARNING.** `_mark_dead(reason, *, expected=False)` logs the single
 `AcpRuntime dead (PID …) [returncode=…] stderr_tail: …` line at INFO when the
@@ -6050,6 +6195,20 @@ deletes the kiro-cli replay log (`agent_sdk/codex_transcripts.py`,
 - the shutdown of an incognito or temporary chat, and every other caller of
   `AcpProvider.cleanup_session` (`providers/acp_lifecycle.py`, on
   `is_codex_backend`, off the loop);
+- every caller of `AcpSessionProvider.cleanup_session`, such as the crewmate
+  lessons draft (`acp/session_handle_lifecycle.py`, `delete_native_record`, through
+  the same `TeardownPolicy.delete_disposable_record` with the runtime's `extra_env`),
+  and `SessionManager.release(key, cleanup=True)` through `_safe_cleanup` for a key
+  that cannot be continued. That call deletes the record whatever the memory mode,
+  as kiro-cli's unlink does, since nothing can load the key again. On KAS the same
+  call sends `_kiro/session/delete` on the session's runtime, and when that runtime
+  is gone it schedules the delete due now in `released_sessions`, whose sweep sends
+  it on the background runtime. A KAS `AcpProvider.cleanup_session` hands the call
+  to the `AcpSessionProvider` its runtime start put in `_client`, so a provider
+  `get_or_create` hands out unshared takes the same path after its shutdown.
+  `AcpProvider.shutdown` does not make that call on KAS: a non-persistent session's
+  `destroy` has sent `_kiro/session/delete` already, and a persistent one keeps its
+  record;
 - the subagent tombstone prune and `spawn_release`
   (`subagent_persistence._cleanup_session_files_sync` for `PROVIDER_LABEL_CODEX`);
 - the teardown of a session handle on the shared runtime

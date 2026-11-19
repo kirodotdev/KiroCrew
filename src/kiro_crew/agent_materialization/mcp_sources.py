@@ -223,8 +223,9 @@ def _app_owned_mcp_keys() -> dict[str, bool]:
 
 # Keys a scope global AUTHORS that are also TRANSPORT-INDEPENDENT, so one the
 # source has since DROPPED is dropped here too. Anything else on a merged entry is
-# the user's (``autoApprove``, ``disabledTools``, fields we do not model) and
-# survives by being ABSENT here, so one invented later defaults to surviving.
+# the user's (``autoApprove``, fields we do not model) and survives by being
+# ABSENT here and from :data:`_DECLARATION_OWNED_MCP_KEYS`, so one invented later
+# defaults to surviving.
 # ``url`` is absent (a transport needs a scope that declares one;
 # ``test_mcp_rebuild_reconsumption`` owns that). ``headers`` is absent too --
 # reconciling it without its ``url`` would pair this source's credential with the
@@ -232,6 +233,21 @@ def _app_owned_mcp_keys() -> dict[str, bool]:
 # and ``env`` are one such unit and are reconciled together by
 # :func:`_merge_command_unit`, not here.
 _SOURCE_OWNED_MCP_KEYS = ("timeout", "disabled")
+
+# Keys a scope global owns only where it DECLARES the server (a ``command`` or a
+# ``url``). The dashboard writes a placeholder (``{"disabledTools": [...]}``) to
+# the Kiro global for a server another file declares; a placeholder starts
+# nothing, so it never replaces or removes the list that file holds for it. Kept
+# out of ``_SOURCE_OWNED_MCP_KEYS``, which also fires the dashboard's sync
+# offer: the ``~/.kiro/crew/mcp.json`` store's own list outranks this one, so a
+# comparison against the global's would never converge.
+_DECLARATION_OWNED_MCP_KEYS = ("disabledTools",)
+
+
+def _declares_server(spec: dict) -> bool:
+    """True when *spec* launches a server: a non-empty ``command`` or ``url``."""
+    return any(isinstance(spec.get(k), str) and spec.get(k) for k in ("command", "url"))
+
 
 # The keys that belong WITH a stdio ``command``: a server's arguments and its
 # environment are written for one program. The agent entry carries that program as
@@ -315,9 +331,14 @@ def _merge_source_owned(
     if name not in stale:
         return
     stale.discard(name)
-    for key in _SOURCE_OWNED_MCP_KEYS:
+    owned_keys: tuple[str, ...] = _SOURCE_OWNED_MCP_KEYS
+    if _declares_server(spec):
+        owned_keys += _DECLARATION_OWNED_MCP_KEYS
+    for key in owned_keys:
         if key in spec:
-            existing[key] = spec[key]
+            value = spec[key]
+            # A copy, so a later pass mutating the entry never edits the source.
+            existing[key] = list(value) if isinstance(value, list) else value
         else:
             existing.pop(key, None)
     if not edition_owned:

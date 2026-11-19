@@ -95,7 +95,7 @@ class TestTrapAutomationUnderUserRole:
             [
                 _rec("user", "real request"),
                 _rec("user", "[Subagent completion event] Agent X completed"),
-                _rec("user", "[Cron notification from \"nightly\"] ran"),
+                _rec("user", '[Cron notification from "nightly"] ran'),
                 _rec("user", "[Monitor wake] checks failed"),
                 _rec("user", "[Tool refusal -- automatic recovery] blocked"),
                 _rec("user", "=== Restored Context (from prior session) ==="),
@@ -114,6 +114,22 @@ class TestTrapAutomationUnderUserRole:
         )
         numbered = [t.user_turn for t in turns if not t.injected]
         assert numbered == [1, 2]
+
+    def test_a_monitors_final_wake_is_automation(self):
+        """The last wake of a pull-request watch opens with its result, not the cycle tag."""
+        turns = extract_turns(
+            [
+                _rec("user", "first"),
+                _rec(
+                    "user",
+                    "[monitor finished] PR acme/widgets#7 merged at 2026-11-15T14:37:24Z, "
+                    "head e0a19a0a2e69.\n\n[auto-nudge cycle 4]\nwatch it",
+                ),
+                _rec("user", "second"),
+            ]
+        )
+        assert count_user_turns(turns) == 2
+        assert [t.injected for t in turns] == [False, True, False]
 
     def test_render_labels_automation_explicitly(self):
         turns = extract_turns([_rec("user", "[Subagent completion event] done")])

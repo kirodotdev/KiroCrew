@@ -15,6 +15,7 @@ import pytest
 import kiro_crew.learn as learn_mod
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.learn import Lesson, LessonStore
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # Read through the MODULE, never `from kiro_crew.learn import _DEFAULT_DIR`.
 # ``_DEFAULT_DIR`` is a ``Path.home()``-derived literal, so the isolation floor in the
@@ -823,3 +824,67 @@ class TestAtomicWrite:
         store._cache = None
         assert all(le.negative is None for le in store.load_all()), "file was modified"
         assert list(tmp_path.rglob("*.tmp")) == [], "temp file survived a failed swap"
+
+
+class TestLessonLogLine:
+    """The INFO line about a lesson write is redacted and bounded; the store is not."""
+
+    _KEY = github_classic()
+
+    def test_a_plain_rule_is_logged_unchanged(self, tmp_path: Path, caplog) -> None:
+        rule = "Prefer mermaid diagrams over ASCII art; 当 PR 被阻止时先读代码"
+        store = LessonStore(base_dir=tmp_path)
+        with caplog.at_level("INFO", logger="kiro_crew.learn"):
+            store.save(_make_lesson(rule))
+        assert rule in caplog.text
+
+    def test_a_credential_in_a_rule_stays_out_of_the_log(self, tmp_path: Path, caplog) -> None:
+        rule = f"Rotate the deploy key {self._KEY} before the release"
+        store = LessonStore(base_dir=tmp_path)
+        with caplog.at_level("INFO", logger="kiro_crew.learn"):
+            store.save(_make_lesson(rule))
+            store.replace_rule(rule, None, _make_lesson(rule + " again"))
+        assert self._KEY not in caplog.text
+        assert "Rotate the deploy key" in caplog.text
+
+    def test_a_long_rule_is_cut_in_the_log_and_stored_whole(self, tmp_path: Path, caplog) -> None:
+        rule = "Keep the build fast. " + "x" * 480
+        store = LessonStore(base_dir=tmp_path)
+        with caplog.at_level("INFO", logger="kiro_crew.learn"):
+            store.save(_make_lesson(rule))
+        assert rule not in caplog.text
+        assert rule[:200] in caplog.text
+        assert [le.rule for le in store.load_all()] == [rule]
+
+    def test_a_credential_across_the_cut_is_redacted_with_redaction_off(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        from kiro_crew.security import redaction_switch
+
+        # The key starts at offset 190, so a cut before redaction would keep a prefix.
+        rule = "x" * 190 + self._KEY + " end"
+        store = LessonStore(base_dir=tmp_path)
+        with (
+            redaction_switch.owner_view(),
+            caplog.at_level("INFO", logger="kiro_crew.learn"),
+        ):
+            store.save(_make_lesson(rule))
+        assert self._KEY[:10] not in caplog.text
+        assert [le.rule for le in store.load_all()] == [rule]
+
+    def test_a_redactor_failure_withholds_the_text_and_the_write_succeeds(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        rule = f"Rotate the deploy key {self._KEY} before the release"
+        store = LessonStore(base_dir=tmp_path)
+        with (
+            patch(
+                "kiro_crew.platform.context.redact_log_via_context",
+                side_effect=RuntimeError("redactor broke"),
+            ),
+            caplog.at_level("INFO", logger="kiro_crew.learn"),
+        ):
+            store.save(_make_lesson(rule))
+        assert self._KEY not in caplog.text
+        assert "<lesson text withheld>" in caplog.text
+        assert [le.rule for le in store.load_all()] == [rule]

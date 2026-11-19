@@ -79,6 +79,7 @@ from kiro_crew.acp.batch_guard_tokens import (
     MAX_SCANNED_TEXT_CHARS,
     is_hex,
     is_minted,
+    json_pr_numbers,
     times_of,
     token_keys,
     tokens_of,
@@ -637,6 +638,23 @@ def _all_tokens(text: Any) -> frozenset[str]:
     return frozenset(tokens_of(text) | times_of(text))
 
 
+def _resume_at(text: str, end: int, stop: int) -> tuple[int, int]:
+    """Where to read *text* (up to *stop*) again once it was read up to *end*: the
+    :data:`_CHUNK_TAIL_CHARS` before it, so a token split at *end* is read whole,
+    and the two characters before those, so a separator's context (``-``, ``#``,
+    an escape such as ``\\n``) is kept; times are read from there, as one can be
+    glued to a word (``..._at_12:34:56``). Tokens are read from past a word cut
+    there at its front, so its tail is not read as a token of its own: when it
+    runs past *end*, it is longer than any token on every read."""
+    back = end - _CHUNK_TAIL_CHARS - 2
+    if back <= 0:
+        return 0, 0
+    start = back
+    while start < stop and (text[start].isalnum() or text[start] == "_"):
+        start += 1
+    return back, start
+
+
 def _is_time(token: str) -> bool:
     return len(token) == 8 and token[2] == ":" and token[5] == ":"
 
@@ -709,7 +727,9 @@ class SeenTokens:
 class _Member:
     """One call of the batch: its class, for a shell call its bounded command (so
     it can be classified again with the operator's prefixes), the tokens of its
-    arguments, whether it mints ids, and the tokens of its result."""
+    arguments, whether it mints ids, and the tokens of its result, with how much
+    of the result's cumulative text was read: its length, its last characters and
+    the hash of what precedes them."""
 
     klass: str
     command: str = ""
@@ -721,6 +741,9 @@ class _Member:
     #: The write's target, as full paths and basenames (:func:`_edit_paths`);
     #: empty when the frames named none.
     paths: frozenset[str] = frozenset()
+    scanned: int = 0
+    scanned_tail: str = ""
+    scanned_hash: int = 0
 
     def class_with(self, extra_write_commands: tuple[str, ...]) -> str:
         if self.command and extra_write_commands:
@@ -917,6 +940,9 @@ class BatchWindow:
             held.output,
             new.edit or held.edit,
             new.paths or held.paths,
+            held.scanned,
+            held.scanned_tail,
+            held.scanned_hash,
         )
 
     def refresh(
@@ -953,7 +979,9 @@ class BatchWindow:
         """*call_id* reached a terminal status, with *output* its result text. It
         stays a member of its batch."""
         self._open.pop(liveness_key(call_id), None)
-        self.printed(call_id, output)
+        # The terminal text is read whole: a ``"pr"`` field nested in JSON is
+        # found by parsing all of it, which a cut of it cannot do.
+        self.printed(call_id, output, whole=True)
 
     def open_edit_before(self, call_id: str) -> bool:
         """Whether a file write announced before *call_id* in this batch is still
@@ -975,12 +1003,50 @@ class BatchWindow:
                     return True
         return False
 
-    def printed(self, call_id: str, output: str) -> None:
+    def printed(self, call_id: str, output: str, *, whole: bool = False) -> None:
         """*call_id* returned *output*, in a terminal update or one before it; the
-        call stays open until its terminal update."""
+        call stays open until its terminal update. *output* is cumulative, so
+        what it shares with the text already read is not read again: reading
+        resumes where it stops matching that text, :data:`_CHUNK_TAIL_CHARS`
+        before it. All of it is read when *whole*, or when what precedes the
+        remembered tail differs (a delta, a rewritten result)."""
         member = self._members.get(liveness_key(call_id))
-        if member is not None and output:
-            member.output = self._bounded(member.output | self._tokens(output))
+        if member is None or not output or not self._feeds():
+            return
+        if len(output) > MAX_SCANNED_TEXT_CHARS:
+            self.seen.complete = False
+        end = min(len(output), MAX_SCANNED_TEXT_CHARS)
+        start = 0
+        tail = member.scanned_tail
+        base = member.scanned - len(tail)
+        # The hash proves the text before the tail unchanged (keyed per process,
+        # so a result cannot be made to collide). The tail is compared one
+        # character at a time: a JSON-encoded result ends in its closing
+        # brackets, which the next cumulative update moves past.
+        if not whole and tail and hash(output[:base]) == member.scanned_hash:
+            start = base
+            for old, new in zip(tail, output[base:end]):
+                if old != new:
+                    break
+                start += 1
+        back, resume = _resume_at(output, start, end)
+        if back:
+            # A cut is never parsed as JSON (the ``,`` before it keeps
+            # tokens_of from trying): the ``"pr"`` field parse needs all of the
+            # text, so it reads the whole text on every update instead. The
+            # ``:`` before the times' cut refuses a time at its first character,
+            # whose left neighbour the cut lost.
+            found = frozenset(
+                tokens_of("," + output[resume:end])
+                | times_of(":" + output[back:end])
+                | json_pr_numbers(output)
+            )
+        else:
+            found = self._scanned(output[:end])
+        member.output = self._bounded(member.output | found)
+        member.scanned = end
+        member.scanned_tail = output[max(0, end - _CHUNK_TAIL_CHARS) : end]
+        member.scanned_hash = hash(output[: end - len(member.scanned_tail)])
 
     def note_text(self, text: str) -> None:
         """The model wrote *text*: seen once the current batch ends."""
