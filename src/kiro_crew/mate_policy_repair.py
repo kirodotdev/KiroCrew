@@ -16,6 +16,7 @@ held for a person (``mate_held_rules``): the worker still starts, and no gate
 approves a call it covers without a person. Its user is told once, in its chat
 and, when a limit is held, on the bell (``mate_upgrade_notice.mark_policy_owed``).
 Each Bot is checked once: ``migrated.json`` lists it under ``policy_checked``.
+A Bot held on every call is checked once more (``held_every_call_rechecked``).
 Never raises.
 """
 
@@ -30,6 +31,7 @@ from kiro_crew.config import paths as paths_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mate_config import MateConfigError, write_mate_spec
 from kiro_crew.mate_ledger_lock import ledger_lock
+from kiro_crew.mate_restriction_carry import _hold
 from kiro_crew.mate_spec_policy import SpecPolicyUncarried
 from kiro_crew.mate_worker import merge_worker_spec, worker_additions
 
@@ -37,6 +39,28 @@ logger = logging.getLogger(__name__)
 
 #: The ``migrated.json`` key listing every Bot this repair has checked.
 CHECKED_KEY = "policy_checked"
+
+#: The ``migrated.json`` key listing every Bot whose every-call hold was read again.
+#: An earlier release held a whole ``permissions`` block that named a bundle
+#: (``policies``) beside its rules, so one deny in it made every call of that Bot
+#: ask, Trust included. Each Bot holding such a limit is checked once more, and
+#: keeps only what its rules still need.
+RESPLIT_KEY = "held_every_call_rechecked"
+
+
+def _every_call_held(data: dict[str, Any]) -> set[str]:
+    """The Bots whose recorded hold covers every call (``mate_held_rules.ANY``)."""
+    from kiro_crew.mate_held_rules import ANY, HELD_KEY
+
+    entries = data.get(HELD_KEY)
+    return {
+        name
+        for name, entry in (entries.items() if isinstance(entries, dict) else ())
+        if isinstance(entry, dict)
+        and any(
+            isinstance(r, dict) and r.get("capability") == ANY for r in entry.get("rules") or []
+        )
+    }
 
 
 def _strings(value: Any) -> list[str]:
@@ -69,7 +93,9 @@ def mark_checked(name: str) -> None:
         _write_ledger(data)
 
 
-def _repair_one(cfg: KiroCrewConfig, base: dict[str, Any], name: str, source: str) -> bool | None:
+def _repair_one(
+    cfg: KiroCrewConfig, base: dict[str, Any], name: str, source: str, *, recheck: bool = False
+) -> bool | None:
     """Repair Bot *name* from its old agent *source*: whether it changed.
 
     ``None`` when its file or its old agent cannot be read now, or its held limits
@@ -82,7 +108,7 @@ def _repair_one(cfg: KiroCrewConfig, base: dict[str, Any], name: str, source: st
 
     try:
         with agents_spec_lock(paths_mod.mate_agents_dir()):
-            done = _rewrite(cfg, base, name, source)
+            done = _rewrite(cfg, base, name, source, recheck=recheck)
     except OSError:
         logger.warning("crewmate policy repair: %s's file was not repaired", name, exc_info=True)
         return None
@@ -106,12 +132,12 @@ def _repair_one(cfg: KiroCrewConfig, base: dict[str, Any], name: str, source: st
 
 
 def _rewrite(
-    cfg: KiroCrewConfig, base: dict[str, Any], name: str, source: str
+    cfg: KiroCrewConfig, base: dict[str, Any], name: str, source: str, *, recheck: bool = False
 ) -> tuple[list[str], list[dict[str, str]]] | bool | None:
     """:func:`_repair_one`'s read and write of the file: its missing and held limits."""
-    from kiro_crew.mate_config_migration import carry_restrictions
+    from kiro_crew.mate_config_migration import _read_ledger, carry_restrictions
+    from kiro_crew.mate_held_rules import HELD_KEY, _bundle_beside_rules
     from kiro_crew.mate_mount_repair import _old_agent
-    from kiro_crew.mate_restriction_carry import _hold
 
     path = paths_mod.mate_agents_dir() / f"{name}.json"
     try:
@@ -122,11 +148,23 @@ def _rewrite(
     if not isinstance(mate_file, dict) or old is None:
         return None
     missing = _kept(base, old, mate_file)
-    if not missing:
+    if recheck and not _bundle_beside_rules(old.get("permissions")):
+        # The every-call hold is for a limit that really cannot be carried: it stays.
         return False
+    if not missing and not recheck:
+        return False
+    # On a recheck the hold is derived again from the old agent, never assumed
+    # empty: a limit beside the bundle that cannot be carried is still held.
     fixed, held = carry_restrictions(cfg, base, name, old, mate_file)
-    # Recorded before the file changes, so no start runs the worker unguarded.
-    if held and not _hold(name, held):
+    # Keep every recorded hold until the file carries its limits.
+    if recheck:
+        with ledger_lock():
+            entries = _read_ledger().get(HELD_KEY) or {}
+            recorded = entries.get(name, {}).get("rules") or []
+            combined = recorded + [rule for rule in held if rule not in recorded]
+            if combined and not _hold(name, combined):
+                return None
+    elif held and not _hold(name, held):
         return None
     if fixed != mate_file:
         try:
@@ -134,6 +172,11 @@ def _rewrite(
         except MateConfigError:
             logger.warning("crewmate policy repair: %s's file was not written", name)
             return None
+    # The file carries each unheld limit, so its hold can be dropped safely.
+    if recheck and not _hold(name, held):
+        return None
+    if not missing:
+        return False
     return missing, held
 
 
@@ -151,10 +194,15 @@ def restore_dropped_policy(cfg: KiroCrewConfig | None = None) -> list[str]:
         data = _read_ledger()
         threads = data.get("threads")
         done = set(_strings(data.get(CHECKED_KEY)))
+        rechecked = set(_strings(data.get(RESPLIT_KEY)))
+        # A Bot held on every call is read once more (``RESPLIT_KEY``), even when checked.
+        # Only a checked Bot: an unchecked one still owes its first repair, which
+        # writes every carriable deny into its file before anything is marked done.
+        recheck = (_every_call_held(data) - rechecked) & done
         owed = {
             name: entry["from"]
             for name, entry in (threads.items() if isinstance(threads, dict) else ())
-            if name not in done
+            if (name not in done or name in recheck)
             and isinstance(entry, dict)
             and isinstance(entry.get("from"), str)
             and entry["from"]
@@ -175,7 +223,7 @@ def restore_dropped_policy(cfg: KiroCrewConfig | None = None) -> list[str]:
         if not _already_moved(data, name, member_id):
             continue
         try:
-            outcome = _repair_one(cfg, base, name, source)
+            outcome = _repair_one(cfg, base, name, source, recheck=name in recheck)
         except Exception:  # noqa: BLE001 - one Bot's file never stops the others
             logger.warning("crewmate policy repair: %s not checked", name, exc_info=True)
             continue
@@ -184,12 +232,17 @@ def restore_dropped_policy(cfg: KiroCrewConfig | None = None) -> list[str]:
         if outcome:
             repaired.append(name)
         done.add(name)
-    if not done - set(_strings(data.get(CHECKED_KEY))):
+        if name in recheck:
+            rechecked.add(name)
+    if not done - set(_strings(data.get(CHECKED_KEY))) and not rechecked - set(
+        _strings(data.get(RESPLIT_KEY))
+    ):
         return repaired
     try:
         with ledger_lock():
             data = _read_ledger()
             data[CHECKED_KEY] = sorted(done | set(_strings(data.get(CHECKED_KEY))))
+            data[RESPLIT_KEY] = sorted(rechecked | set(_strings(data.get(RESPLIT_KEY))))
             _write_ledger(data)
     except Exception:  # noqa: BLE001 - a repaired file keeps its rules; a re-check is a no-op
         logger.warning("crewmate policy repair: not recorded in the ledger", exc_info=True)
