@@ -920,6 +920,13 @@ def main() -> None:
         # running. Only while SIGALRM is at its default disposition, the same
         # ownership rule the watchdog applies when it arms.
         disarm_inherited_alarm()
+        # The same rule for children: the ones the predecessor started are still
+        # this pid's after the exec, but nothing in this image owns them, so
+        # each would stay a zombie for the gateway's lifetime. Collect only the
+        # pids the predecessor named (reexec_children).
+        from kiro_crew.reexec_children import adopt_inherited_children
+
+        adopt_inherited_children()
         # Install crash breadcrumbs (atexit + excepthook) before asyncio.run
         # so any fatal exception writes to crash.log.
         # The asyncio loop handler is installed later inside run().
