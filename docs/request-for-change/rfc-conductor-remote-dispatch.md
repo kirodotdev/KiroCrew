@@ -264,7 +264,9 @@ How (a) works:
   board and only when it holds an open crew-bound item, so the tick's hold and
   gate read a remote report as they read a local one (open question 1). A board
   with only local items makes no peer call. Each pull is cut off at 10 s and
-  delays only its own conductor's tick.
+  delays only its own conductor's tick. The bound create's hub bind arms the
+  default patrol as a local bind does, and the create reply ends with the same
+  `patrol=` outcome, so a conductor with no patrol is told to arm one.
 - **One call per crew per tick.** The pull reads each crew once, with
   `POST api/chat/work-items/pull` (owner token, read only): per item the hub
   sends its cursor, the peer event ids the crew log holds as filed on that

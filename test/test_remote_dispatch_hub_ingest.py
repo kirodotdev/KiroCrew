@@ -1503,3 +1503,39 @@ def test_a_stalled_peer_revoke_does_not_fail_the_committed_close(recorded, peer,
         assert work_ledger.read_work_item(CONDUCTOR, item_id).state == "abandoned"
 
     asyncio.run(go())
+
+
+@pytest.mark.parametrize(
+    ("outcome", "note"),
+    [
+        (("armed", "no-loop"), None),
+        (("refused", "user-stopped"), "No patrol runs on your session."),
+    ],
+)
+def test_a_bound_create_carries_the_binds_patrol_outcome(
+    recorded, peer, monkeypatch, outcome, note
+):
+    """M4: the hub bind arms the default patrol as a local bind does; the create's
+    payload carries that outcome so the crew create reply can say it."""
+    from kiro_crew import conductor_patrol
+
+    async def ensure(state, key, **_kw):
+        assert key == CONDUCTOR
+        return outcome
+
+    monkeypatch.setattr(conductor_patrol, "ensure_patrol", ensure)
+    monkeypatch.setattr(conductor_patrol, "patrol_note", lambda *a, **k: note)
+
+    async def go() -> None:
+        await _record(CONDUCTOR, {"action": "goal", "goal": "ship it", "round": 1})
+        _s, body = await _record(
+            CONDUCTOR, {"action": "create", "title": "t", "acceptance": ACCEPTANCE}
+        )
+        item_id = body["item"]["item_id"]
+        _slot, payload, _item = await remote_ingest.create_bound(
+            _state(peer), peer, CONDUCTOR, CREW, item_id, {"memory_mode": "persistent"}
+        )
+        assert payload["patrol"] == outcome[0] and payload["patrol_reason"] == outcome[1]
+        assert payload.get("patrol_note") == note
+
+    asyncio.run(go())
