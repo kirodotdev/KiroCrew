@@ -287,6 +287,14 @@ class SecretStorageServer:
         # After a delete this process holds no copy: a repeat delete, before a
         # new read or write, is a no-op rather than an unconditional delete.
         self._seen[key] = None
+        # The only record of a clear: ``get`` and ``store`` log their outcome
+        # for a tokens key, and without this a grant that disappears between a
+        # store and the next read cannot be attributed to an engine's clear.
+        if _is_tokens_key(key):
+            logger.info(
+                "MCP sign-in for server %s: the engine asked to clear it",
+                _server_id(key),
+            )
 
     @staticmethod
     async def _guarded(awaitable: Any) -> Any:
