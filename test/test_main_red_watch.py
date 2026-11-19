@@ -336,7 +336,7 @@ PR_URL = "https://github.com/example/repo/pull/23933"
 
 def _row(**over: Any) -> dict[str, Any]:
     row = {"url": PR_URL, "state": "open", "author": "buluoray", "created": "2026-10-26T07:00:32Z"}
-    return {**row, **over}
+    return {"closes": [77], **row, **over}
 
 
 def test_with_no_fix_pr_the_line_invites_one_and_names_the_issue() -> None:
@@ -346,8 +346,8 @@ def test_with_no_fix_pr_the_line_invites_one_and_names_the_issue() -> None:
     assert "`Fixes #<this issue>`" in mod.fix_line([], None)
 
 
-def test_an_open_pr_that_cross_references_the_issue_becomes_the_line() -> None:
-    prs = mod.fix_prs([_row()], "example/repo")
+def test_an_open_pr_whose_body_closes_the_issue_becomes_the_line() -> None:
+    prs = mod.fix_prs([_row()], "example/repo", 77)
     assert mod.fix_line(prs, 77) == "Fix in progress: #23933 (@buluoray, opened 2026-10-26 07:00Z)"
 
 
@@ -359,11 +359,29 @@ def test_an_open_pr_that_cross_references_the_issue_becomes_the_line() -> None:
         _row(url="https://github.com/example/repo/pull/5x"),
         _row(author="bad name; rm -rf"),
         _row(author=""),
+        _row(closes=[]),
+        _row(closes=[78, 770]),
+        _row(closes=None),
+        {k: v for k, v in _row().items() if k != "closes"},
     ],
-    ids=["closed", "other-repo", "not-a-number", "odd-login", "no-login"],
+    ids=[
+        "closed",
+        "other-repo",
+        "not-a-number",
+        "odd-login",
+        "no-login",
+        "cited-in-a-comment-only",
+        "closes-another-issue",
+        "null-closes",
+        "no-closes",
+    ],
 )
 def test_a_row_that_is_not_an_open_pr_of_this_repo_is_ignored(row: dict) -> None:
-    assert mod.fix_prs([row], "example/repo") == []
+    assert mod.fix_prs([row], "example/repo", 77) == []
+
+
+def test_before_the_issue_has_a_number_no_pr_is_a_fix() -> None:
+    assert mod.fix_prs([_row(), _row(closes=[])], "example/repo", None) == []
 
 
 def test_a_bot_author_is_named_without_a_mention_and_the_list_is_capped_oldest_first() -> None:
@@ -372,9 +390,9 @@ def test_a_bot_author_is_named_without_a_mention_and_the_list_is_capped_oldest_f
         for n in (9, 7, 8, 6)
     ]
     rows[0]["author"] = "dependabot[bot]"
-    prs = mod.fix_prs(rows, "example/repo")
+    prs = mod.fix_prs(rows, "example/repo", 77)
     assert [pr["number"] for pr in prs] == ["6", "7", "8"]
-    prs = mod.fix_prs(rows[:1], "example/repo")
+    prs = mod.fix_prs(rows[:1], "example/repo", 77)
     assert "(dependabot[bot], opened" in mod.fix_line(prs, 1)
 
 
@@ -387,7 +405,7 @@ def test_timeline_output_is_read_whether_one_per_line_or_pretty_printed() -> Non
 
 def test_the_body_carries_the_set_the_first_sha_the_streak_and_the_fix_line() -> None:
     state = _state(failures={"test/a.py::t": "assert 2 == 1", "test/b.py::u": ""})
-    body = mod.render_body(state, mod.fix_prs([_row()], "example/repo"), 77)
+    body = mod.render_body(state, mod.fix_prs([_row()], "example/repo", 77), 77)
     assert "- `test/a.py::t`: `assert 2 == 1`" in body
     assert "- `test/b.py::u`\n" in body
     assert f"First red: [{SHA[:12]}]({RUN_URL})" in body
@@ -597,13 +615,20 @@ REDUCED_GREEN = _jobs(
 )
 
 
-def _cross_reference(*, is_pr: bool = True, url: str = PR_URL) -> dict:
+def _cross_reference(
+    *,
+    is_pr: bool = True,
+    url: str = PR_URL,
+    body: str | None = "What changed.\n\nFixes #5\n",
+    created: str = "2026-10-26T07:00:32Z",
+) -> dict:
     """A ``cross-referenced`` timeline event in the shape the REST API returns."""
     issue = {
         "html_url": url,
         "state": "open",
         "user": {"login": "buluoray"},
-        "created_at": "2026-10-26T07:00:32Z",
+        "created_at": created,
+        "body": body,
     }
     if is_pr:
         issue["pull_request"] = {"url": url}
@@ -956,6 +981,51 @@ def test_a_repeat_red_edits_the_open_issue_and_files_no_second(tmp_path: Path) -
     state = mod.parse_state(body)
     assert (state["first_sha"], state["streak"]) == ("a" * 12, 2)
     assert "test/test_no_message.py::test_bare" in state["failures"]
+
+
+def _pr(number: int, body: str | None) -> dict:
+    url = f"https://github.com/example/repo/pull/{number}"
+    return _cross_reference(url=url, body=body, created=f"2026-10-26T07:00:{number % 60:02d}Z")
+
+
+@_needs_posix
+def test_a_pr_that_only_cites_the_issue_is_not_a_fix_in_progress(tmp_path: Path) -> None:
+    """A comment on a pull request that names the issue cross-references the issue.
+
+    The timeline event is the same as for a fix and carries the pull request's
+    body, not the comment, so a pull request counts only when its own body closes
+    the issue.
+    """
+    timeline = [
+        _pr(1, "fix: an older change\n\nNothing about main here."),
+        _pr(2, None),
+        _pr(3, "See #5 for the red on main."),
+        _pr(4, "Fixes #55"),
+        _pr(5, "Prefixes #5"),
+        _pr(6, "Fixes #6\n\nAlso relates to #5."),
+    ]
+    out, stub = _run_step(tmp_path, issues=[_open_issue()], timeline=timeline)
+    assert out.returncode == 0, out.stderr
+    body = (stub / "edit-5.md").read_text(encoding="utf-8")
+    assert "Fix in progress: none yet." in body and "put `Fixes #5` in its body" in body
+
+
+@_needs_posix
+def test_each_closing_keyword_in_a_pr_body_makes_it_a_fix_in_progress(tmp_path: Path) -> None:
+    timeline = [
+        _pr(1, "Mentioned in passing: #5."),
+        _pr(11, "fixes #5"),
+        _pr(12, "Summary.\r\n\r\nCloses: #5\r\n"),
+        _pr(13, "This RESOLVED #5, and fixed #77."),
+    ]
+    out, stub = _run_step(tmp_path, issues=[_open_issue()], timeline=timeline)
+    assert out.returncode == 0, out.stderr
+    body = (stub / "edit-5.md").read_text(encoding="utf-8")
+    opened = "opened 2026-10-26 07:00Z"
+    assert (
+        f"Fix in progress: #11 (@buluoray, {opened}); #12 (@buluoray, {opened}); "
+        f"#13 (@buluoray, {opened})"
+    ) in body
 
 
 @_needs_posix

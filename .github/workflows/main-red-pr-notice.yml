@@ -137,11 +137,11 @@ jobs:
             exit 0
           fi
 
-          # Open pull requests that cross-reference the issue, for the fix line. The
+          # Open pull requests whose body closes the issue, for the fix line. The
           # issue body's own copy of that line is editable and is not read.
           timeline_args=()
           if gh api "repos/$REPO/issues/$existing/timeline?per_page=100" --paginate \
-            --jq '.[] | select(.event == "cross-referenced" and .source.issue.pull_request != null) | {url: .source.issue.html_url, state: .source.issue.state, author: .source.issue.user.login, created: .source.issue.created_at}' \
+            --jq '.[] | select(.event == "cross-referenced" and .source.issue.pull_request != null) | {url: .source.issue.html_url, state: .source.issue.state, author: .source.issue.user.login, created: .source.issue.created_at, closes: [(.source.issue.body // "") | scan("(?i)\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\\s+#([0-9]{1,9})\\b") | .[0] | tonumber]}' \
             > "$work/timeline.ndjson" 2>/dev/null; then
             timeline_args=(--timeline "$work/timeline.ndjson")
           else

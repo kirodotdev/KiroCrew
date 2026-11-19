@@ -108,12 +108,15 @@ PR_URL = "https://github.com/example/repo/pull/23933"
 
 def _row(**over: Any) -> dict[str, Any]:
     row = {"url": PR_URL, "state": "open", "author": "buluoray", "created": "2026-10-26T07:00:32Z"}
-    return {**row, **over}
+    return {"closes": [5], **row, **over}
 
 
 def test_the_fix_line_is_rebuilt_from_the_timeline_without_a_mention() -> None:
     line = mod.fix_line([_row()], "example/repo", 5)
     assert line == "Fix in progress: #23933 (buluoray, opened 2026-10-26 07:00Z)"
+    assert mod.fix_line([_row(closes=[])], "example/repo", 5).startswith(
+        "Fix in progress: none yet"
+    )
     assert mod.fix_line([_row(state="closed")], "example/repo", 5).startswith(
         "Fix in progress: none yet"
     )
@@ -585,12 +588,13 @@ def test_shell_text_and_mentions_in_a_failure_message_are_neither_run_nor_posted
     assert "- `test/test_a.py::test_x`: `$(touch" in text
 
 
-def _cross_reference(url: str = PR_URL) -> dict:
+def _cross_reference(url: str = PR_URL, body: str | None = "Fixes #5") -> dict:
     issue = {
         "html_url": url,
         "state": "open",
         "user": {"login": "buluoray"},
         "created_at": "2026-10-26T07:00:32Z",
+        "body": body,
         "pull_request": {"url": url},
     }
     return {"event": "cross-referenced", "source": {"type": "issue", "issue": issue}}
@@ -600,7 +604,8 @@ def _cross_reference(url: str = PR_URL) -> dict:
 def test_the_fix_line_comes_from_the_timeline_and_names_no_one_with_a_mention(
     tmp_path: Path,
 ) -> None:
-    out, stub = _run_step(tmp_path, timeline=[{"event": "labeled"}, _cross_reference()])
+    cited = _cross_reference("https://github.com/example/repo/pull/7", "Red on main, see #5.")
+    out, stub = _run_step(tmp_path, timeline=[{"event": "labeled"}, cited, _cross_reference()])
     assert out.returncode == 0, out.stderr
     text = (stub / "posted.md").read_text(encoding="utf-8")
     assert "Fix in progress: #23933 (buluoray, opened 2026-10-26 07:00Z)" in text

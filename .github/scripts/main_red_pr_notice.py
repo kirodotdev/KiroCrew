@@ -96,7 +96,7 @@ def fix_line(timeline_rows: list[dict[str, Any]] | None, repo: str, issue_number
     """
     if timeline_rows is None:
         return "Fix in progress: unknown."
-    line = watch.fix_line(watch.fix_prs(timeline_rows, repo), issue_number)
+    line = watch.fix_line(watch.fix_prs(timeline_rows, repo, issue_number), issue_number)
     return watch.clean(line.replace("@", ""), 300)
 
 

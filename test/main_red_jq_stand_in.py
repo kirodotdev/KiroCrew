@@ -19,9 +19,13 @@ JQ_MODES = ["stand-in"] + (["host"] if shutil.which("jq") else [])
 _PROGRAM = r"""
 import json
 import os
+import re
 import sys
 
 args = sys.argv[1:]
+CLOSES = re.compile(
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#([0-9]{1,9})\b"
+)
 
 
 def fail() -> None:
@@ -73,6 +77,7 @@ elif '.event == "cross-referenced"' in program:
             "state": issue.get("state"),
             "author": (issue.get("user") or {}).get("login"),
             "created": issue.get("created_at"),
+            "closes": [int(n) for n in CLOSES.findall(issue.get("body") or "")],
         }
         print(json.dumps(row, separators=(",", ":")))
 else:

@@ -321,11 +321,11 @@ def pick_issue(issues: list[dict[str, Any]]) -> dict[str, Any] | None:
     return min(ours, key=lambda item: int(item["number"])) if ours else None
 
 
-def fix_prs(rows: list[dict[str, Any]], repo: str) -> list[dict[str, str]]:
-    """Open pull requests of ``repo`` that cross-reference the issue, oldest first."""
+def fix_prs(rows: list[dict[str, Any]], repo: str, issue: int | None) -> list[dict[str, str]]:
+    """Open pull requests of ``repo`` whose body closes ``issue``, oldest first."""
     prefix = f"https://github.com/{repo}/pull/"
     out: list[dict[str, str]] = []
-    for row in rows:
+    for row in (r for r in rows if issue in (r.get("closes") or [])):
         url = str(row.get("url") or "")
         login = str(row.get("author") or "")
         if row.get("state") != "open" or not url.startswith(prefix) or not _LOGIN.match(login):
@@ -525,7 +525,7 @@ def cmd_render(args: argparse.Namespace) -> int:
     if state is None:
         print("An older run finished after a newer red one; nothing to update.")
         return STALE
-    prs = fix_prs(read_json_values(_read_text(args.timeline)), args.repo)
+    prs = fix_prs(read_json_values(_read_text(args.timeline)), args.repo, args.issue_number)
     Path(args.out_title).write_text(title_for(failures), encoding="utf-8")
     body = render_body(state, prs, args.issue_number, runner_os(_red_job_names(args)))
     Path(args.out_body).write_text(body, encoding="utf-8")
