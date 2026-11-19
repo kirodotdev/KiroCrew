@@ -209,8 +209,10 @@ describe('RemoteCrewPanel', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 
-    expect(await screen.findByText(/WXYZ-1234/)).toBeInTheDocument()
-    expect(document.querySelector('a[href="https://device.sso/verify"]')).not.toBeNull()
+    // Scoped to the setup card: the My Crews row behind the modal shows it too.
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText(/WXYZ-1234/)).toBeInTheDocument()
+    expect(dialog.querySelector('a[href="https://device.sso/verify"]')).not.toBeNull()
     await waitFor(() => expect(api.cloudLaunchStatus).toHaveBeenCalledWith('j-signin'))
   })
 
@@ -796,7 +798,7 @@ describe('RemoteCrewPanel', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 
-    const card = (await screen.findByText(/WXYZ-1234/)).closest('div')?.parentElement
+    const card = (await within(await screen.findByRole('dialog')).findByText(/WXYZ-1234/)).closest('div')?.parentElement
     expect(card).toBeTruthy()
     const page = document.body.textContent ?? ''
     expect(page).toMatch(/leave the page or switch crews and it keeps going/i)
