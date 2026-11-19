@@ -13337,6 +13337,7 @@
         "ack_failed": "Não foi possível salvar a confirmação. Tente novamente.",
         "ack_job_gone": "Esta tarefa não existe mais, então não há nada para confirmar. Você pode excluir esta notificação.",
         "delete": "Excluir",
+        "done": "Concluído",
         "delete_failed": "Não foi possível excluir esta notificação. Tente novamente."
       },
       "errorCard": {

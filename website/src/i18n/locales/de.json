@@ -13044,6 +13044,7 @@
         "ack_failed": "Die Bestätigung konnte nicht gespeichert werden. Versuche es erneut.",
         "ack_job_gone": "Dieser Job existiert nicht mehr, daher gibt es nichts zu bestätigen. Du kannst diese Benachrichtigung löschen.",
         "delete": "Löschen",
+        "done": "Erledigt",
         "delete_failed": "Diese Benachrichtigung konnte nicht gelöscht werden. Versuche es erneut."
       },
       "errorCard": {
