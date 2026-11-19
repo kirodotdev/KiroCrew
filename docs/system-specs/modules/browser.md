@@ -715,7 +715,7 @@ failed (the browser tool prints it after the error text too), and a HOLD, an
 interrupted op, a quick ask's answer or a governance deny leaves it pending,
 because their text cannot carry it. While it is pending, an
 op that acts on an element or point of the page (`click`, `drag`, `scroll`,
-`type`, `press_key`, `hover`, `select_option`, `dialog`, `reflex`) is refused
+`type`, `paste`, `press_key`, `hover`, `select_option`, `dialog`, `reflex`) is refused
 with `popup_opened` or `popup_closed` and `ok: false`, because a ref or coordinate
 belongs to the page it came from; every other op still runs on the new tab. A failure caused by the op's own action
 closing its popup is answered `ok` with `popup_closed`. If following the opener then hits the navigate gate (the popup sent the opener to a refused address as it closed), the answer is that refusal, audited `denied`. Any other failure stays an error. `tabs list` claims first,
@@ -1109,8 +1109,9 @@ args, `url`, `start_url` and inside labels, keeps scheme, host, port and path on
 tokens ride), and a scheme other than http(s), ws(s), file, about or chrome keeps
 only `scheme:` (`javascript:` and `data:` carry their payload in the URL); a label
 is cut from its first URL to that URL cleaned, and at any `?` or `#`; a `type`
-whose args say `secret`, or that did not succeed (a password-field refusal, a
-stale ref, an interruption), keeps `chars` and `secret: true` only, and a
+or `paste` (a `type` event, its `html` never kept) whose args say `secret`, or
+that did not succeed (a password-field refusal, a stale ref, an interruption),
+keeps `chars` and `secret: true` only, and a
 `press_key` that did not succeed keeps no single-character key; the person's typed characters are only
 ever counted (one `type` event of `chars` when the typing stops), named keys are
 `key` events, a press-move-release is a `click` (under 4 px) or a `drag` with its
@@ -1160,8 +1161,8 @@ same-origin`.
 
 ### The tool
 
-`browser` is one MCP tool in the `kirocrew-core` shim with fifteen ops
-(`browser_harness.ops.OPS`), not a tool namespace. The shim runs two gates before
+`browser` is one MCP tool in the `kirocrew-core` shim whose ops are
+`browser_harness.ops.OPS`, not a tool namespace. The shim runs two gates before
 anything leaves the process: `capabilities.browse` governance (a denial refuses
 outright; there is no other browser) and the navigate gate (public http(s) only,
 plus the exact loopback `host:port` entries of `dashboard.browser_local_origins`,
@@ -1270,6 +1271,7 @@ the last navigate or snapshot.
 | `click` | a ref or `x`,`y`; `clicks: 2` is a double click. A ref is scrolled into view once, then re-measured without scrolling every 0.1 s until two reads in a row agree within 1 px (at most 6 re-reads), so a page that moves its layout on scroll is clicked where the target settled; a ref that measures empty to the end is refused `ref_stale` |
 | `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers); a ref settles as for `click` |
 | `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land. `type {ref?, steps: [{text} | {key, modifiers?}]}` (`browser_harness/type_steps.py`, reached from `ops.py` by a call-time import) runs its steps in order in one op: `ref` is focused once, each text step runs the focused-field checks above and each key step `press_key`'s guards, and the first refusal, a `dialog_open` included, ends it with the step's 0-based index as `step` and at the front of its `error`. A malformed list (not 1 to `STEPS_CAP` (50) steps, a step that is neither shape, a key step whose key `press_key` would refuse as unknown, `text` or a truthy `submit` beside `steps`) is refused `bad_steps` before anything runs; `TEXT_CAP` bounds the text of all steps together. A `\t` in `text` inserts a tab character, not the Tab key |
+| `paste` | `text` plus optional `html`, behind the same focus refusals as `type`. The walker dispatches one `paste` event on the field carrying both as `text/html` and `text/plain`, so the page's own editor builds the table or headings as it would from a clipboard paste; the clipboard itself is never written, and nothing on Kiro Crew's side parses or inserts the HTML. A script's paste event inserts nothing by itself, so when the page does not cancel it the focus refusals run again (on `ref` focused again, or on whatever then holds focus when no `ref` was given), the plain `text` is typed (`type_text`) and the result says `handled: false`. Focus inside a cross-origin frame is reached only through the field's frame ref (`f<n>e<n>`), else `focus_in_frame` |
 | `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named |
 | `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path |
 | `tabs` | lists and switches `relay.agent_targets()` only, the popups the caller's tabs opened included |
@@ -1288,7 +1290,7 @@ The budgets live in one module (`browser_harness/budgets.py`) that both the rout
 and the tool shim import: the shim's HTTP timeout is DERIVED as the route's worst
 case (browser start + the 10-minute hold + lock wait + bind + op) plus a margin, so the tool never
 reports an op failed while the gateway is still landing it -- a retry of a click
-that landed is a double click. The two focus checks (`type` without a ref,
+that landed is a double click. The focus checks (`type` and `paste` without a ref,
 printable `press_key`) and the frame mask resolve the deepest active element
 through open shadow roots (`document.activeElement` is the shadow HOST for a
 web-component login form). The
@@ -1515,8 +1517,8 @@ key. Link and history landings are checked again before a page read, input or
 live-card follow with the same gate, so an unlisted private destination is blanked
 and refused rather than being operated through a link.
 
-Passwords never pass the model: `type` refuses a password field, the frame masks
-one, and logins happen during takeover.
+Passwords never pass the model: `type` and `paste` refuse a password field, the
+frame masks one, and logins happen during takeover.
 
 **An app's own sites.** A session an app owns whose app holds owner-approved
 `permissions.browserSites` ([app-kit-platform §45](app-kit-platform.md)) gets its
@@ -1708,7 +1710,8 @@ modifies it, and the row is silent when the directory is absent.
 | The relay can reach the user's whole Chrome | the agent gets only the listed ops, on tabs it created; the relay never attaches the user's tabs. **Accepted residual:** CDP is browser-wide, so a bug in the tab filter would let the agent act on a tab the user opened; tests pin the filter and the card always shows which tab is live |
 | Harness sends data out | five environment fences, a pinned version, a test on the fence; no CLI, MCP server or update check runs |
 | Agent claims input | `/api/browser/input/*` and `/api/browser/live/*` refuse the internal secret |
-| Agent types a password | `type` and printable `press_key` refuse password fields, resolved through open shadow roots; the frame masks them (boxes clipped to the frame, shadow roots walked) |
+| Agent types a password | `type`, `paste` and printable `press_key` refuse password fields, resolved through open shadow roots; the frame masks them (boxes clipped to the frame, shadow roots walked) |
+| Agent-written HTML reaches a page | `paste` hands it to the page's own paste handler as clipboard data; Kiro Crew never parses or inserts it, and `evaluate` stays out of the op list. **Accepted residual:** a page whose paste handler puts pasted markup into its DOM unsanitised runs it, exactly as it would for markup a person pastes |
 | Frames show logged-in pages | owner websockets only; never written to disk except as a requested `screenshot` |
 | Another local process uses the relay | loopback, ephemeral port, AND a per-start secret on every path (404 without it); the URL with the secret is given only to the daemon. The sandbox does not fence loopback, so the secret, not the port, is the control |
 | Another local process reaches the browser's own debugging endpoint | Kiro's Chromium on macOS/Linux has none: it speaks CDP over `--remote-debugging-pipe`. **Accepted residual, Windows:** Kiro's Chromium keeps `--remote-debugging-port=0` (Python cannot hand a Windows child fds 3 and 4), so any local process can drive it. **Accepted residual, the user's own Chrome/Edge:** its debugging port is the user's, enabled by them; Chrome 144+ raises a fresh "Allow remote debugging?" sheet for every new connection, so a second client needs a second click the person would see |
