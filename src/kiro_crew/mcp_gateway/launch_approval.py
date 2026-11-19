@@ -483,7 +483,9 @@ class LaunchApprovals:
             )
             return True
         self.names.setdefault(stem, _bounded_name(name))
-        self.refused[stem] = REFUSED_CHANGED if self.approved.get(stem) else REFUSED_UNAPPROVED
+        # A launch already retained before the cap was hit must not hide the cap.
+        if self.refused.get(stem) != REFUSED_TOO_MANY:
+            self.refused[stem] = REFUSED_CHANGED if self.approved.get(stem) else REFUSED_UNAPPROVED
         return False
 
     def refusal_displays(self, stem: str) -> tuple[list[list[str]], list[list[str]]]:
@@ -1337,19 +1339,24 @@ def restore(snapshot: ApprovalSnapshot, path: Path | None = None) -> None:
 
 
 def refused_servers(path: Path | None = None) -> dict[str, dict[str, Any]]:
-    """Display-safe refusal records keyed by server name."""
+    """Display-safe refusal records keyed by server name.
+
+    A ``too_many_launches`` record is display only: it shows the launches the
+    cap kept and the cap itself, and never an ``expected_launch``, because no
+    approval can cover a server past the cap.
+    """
     approvals = load_approvals(path)
     result: dict[str, dict[str, Any]] = {}
     for rec in approvals.stored_refused.values():
-        if rec.get("reason") == REFUSED_TOO_MANY:
-            continue
+        over_cap = rec.get("reason") == REFUSED_TOO_MANY
         commands, _cut_commands, _malformed_commands = _bounded_commands(rec.get("commands"))
         envs, _cut_envs, _malformed_envs = _bounded_envs(rec.get("envs"))
         result[str(rec["name"])] = {
             "reason": str(rec["reason"]),
             "commands": commands,
             "envs": envs,
-            "complete": rec.get("complete") is not False,
+            "complete": rec.get("complete") is not False and not over_cap,
+            **({"launch_cap": _MAX_SERVER_LAUNCHES} if over_cap else {}),
             **(
                 {"approved_commands": rec["approved_commands"]}
                 if rec.get("approved_commands")
@@ -1358,7 +1365,9 @@ def refused_servers(path: Path | None = None) -> dict[str, dict[str, Any]]:
             **({"approved_envs": rec["approved_envs"]} if rec.get("approved_envs") else {}),
             **(
                 {"expected_launch": rec["expected_launch"]}
-                if isinstance(rec.get("expected_launch"), str) and rec["expected_launch"]
+                if not over_cap
+                and isinstance(rec.get("expected_launch"), str)
+                and rec["expected_launch"]
                 else {}
             ),
         }
@@ -1391,10 +1400,16 @@ def refused_share_records(
 def refused_shares(
     asked: Iterable[str], refused: Mapping[str, Mapping[str, Any]]
 ) -> dict[str, str]:
-    """Refusal reason per share-list name, matched as :func:`refused_share_records` does."""
+    """Refusal reason per share-list name, matched as :func:`refused_share_records` does.
+
+    A ``too_many_launches`` name is left out: this feeds the notice that asks for an
+    approval, no approval clears a server over the cap, and its own MCP Management
+    row explains it.
+    """
     return {
         name: str(rec.get("reason", ""))
         for name, rec in refused_share_records(asked, refused).items()
+        if rec.get("reason") != REFUSED_TOO_MANY
     }
 
 
