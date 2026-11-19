@@ -182,6 +182,9 @@ export function RemoteCrewPanel() {
   // Sign in to Kiro on the new crew. On by default; a crew on another agent
   // harness works without it, so the reader may turn it off.
   const [signinOnLaunch, setSigninOnLaunch] = useState(launchDraft?.signinOnLaunch ?? true)
+  // An offered EC2 instance type picked instead of a tier; '' = the tier. Kept
+  // in the held draft with the subnet, so a hand-off to the agent keeps it.
+  const [customType, setCustomType] = useState(launchDraft?.instance_type ?? '')
   const identityTouched = useRef(identityDraft !== null)
   // Render-visible twin of the ref: an explicit choice must re-render the
   // Launch gate even when it re-selects the already-checked default.
@@ -198,14 +201,15 @@ export function RemoteCrewPanel() {
   // Only a sign-in choice the reader made is kept: the inherited preselection
   // is read again on the next visit anyway.
   const currentLaunchDraft = useMemo<CrewLaunchDraft | null>(
-    () => (subnetId || identityChosen || !signinOnLaunch
+    () => (subnetId || identityChosen || !signinOnLaunch || customType
       ? {
           subnet_id: subnetId,
           identity: identityChosen ? { mode: identityMode, start_url: identityStartUrl, region: identityRegion } : null,
           ...(!signinOnLaunch ? { signinOnLaunch: false } : {}),
+          ...(customType ? { instance_type: customType } : {}),
         }
       : null),
-    [subnetId, identityChosen, identityMode, identityStartUrl, identityRegion, signinOnLaunch],
+    [subnetId, identityChosen, identityMode, identityStartUrl, identityRegion, signinOnLaunch, customType],
   )
   // Held on every edit, like the add form, so every exit keeps it.
   useEffect(() => { dispatch(setCrewLaunchDraft(currentLaunchDraft)) }, [dispatch, currentLaunchDraft])
@@ -494,6 +498,13 @@ export function RemoteCrewPanel() {
   const builtinProvisioner =
     selectedProvisioner === null
     || (BUILTIN_REMOTE_PROVISIONER_KINDS as readonly string[]).includes(selectedProvisioner.kind)
+  // A custom type is the built-in lane's alone: the gateway refuses
+  // `instance_type` on any other id, a second `aws_ec2`-kind row included. On
+  // such a lane the picker is hidden and the pick is not sent; it stays in the
+  // draft, so switching back restores it. An UNKNOWN list sends no id, which
+  // the gateway reads as the built-in lane.
+  const customTypeOffered = selectedProvisioner === null || selectedProvisioner.id === BUILTIN_PROVISIONER_ID
+  const launchCustomType = customTypeOffered ? customType : ''
   const registeredProvisioner = builtinProvisioner || selectedProvisioner === null
     ? undefined
     : getRemoteProvisionerRenderer(selectedProvisioner.kind)
@@ -881,7 +892,7 @@ export function RemoteCrewPanel() {
   // registered provisioner's form owns its own inputs, and the core cannot read
   // them. The built-in call site passes the panel's own profile/region/size.
   const launchMutation = useMutation({
-    mutationFn: (body: { provider_id?: string; profile: string; region: string; size_key: string; subnet_id?: string }) =>
+    mutationFn: (body: { provider_id?: string; profile: string; region: string; size_key: string; subnet_id?: string; instance_type?: string }) =>
       api.cloudLaunch(body),
     onMutate: () => { setActionErr(null); setSubnetErr(null) },
     onSuccess: job => {
@@ -1020,6 +1031,7 @@ export function RemoteCrewPanel() {
     region: region.trim(),
     size_key: sizeKey,
     ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}),
+    ...(launchCustomType ? { instance_type: launchCustomType } : {}),
     ...(signinOnLaunch ? loginTargetBody : { skip_signin: true }),
   }
   const builtinLaunchKey = launchGuardKey(builtinLaunchBody)
@@ -1258,7 +1270,7 @@ export function RemoteCrewPanel() {
         />
 
         <LaunchFormCard
-          region={region} sizeKey={sizeKey} setSizeKey={setSizeKey} showMoreSizes={showMoreSizes} setShowMoreSizes={setShowMoreSizes}
+          profile={profile} region={region} customType={launchCustomType} customTypeOffered={customTypeOffered} setCustomType={setCustomType} sizeKey={sizeKey} setSizeKey={setSizeKey} showMoreSizes={showMoreSizes} setShowMoreSizes={setShowMoreSizes}
           subnetId={subnetId} setSubnetId={v => { setSubnetId(v); setSubnetErr(null) }} subnetErr={subnetErr} identityQuery={identityQuery} identityChosen={identityChosen}
           identityUnknownCause={identityUnknownCause} identityRadioShown={identityRadioShown} identityMode={identityMode}
           identityStartUrl={identityStartUrl} identityStartUrlOk={identityStartUrlOk} identityRegion={identityRegion}

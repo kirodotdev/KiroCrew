@@ -271,6 +271,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'RemoteCrewPanelLaunch.tsx': 'instances',
   'RemoteCrewPanelCrewRow.tsx': 'instances',
   'RemoteCrewPanelSetupCards.tsx': 'instances',
+  'RemoteCrewPanelCustomType.tsx': 'instances',
   'RemoteCrewPanelSections.tsx': 'instances',
   'RemoteCrewPanelRestartBanner.tsx': 'instances',
   // Mounted from outside pages/settings, so each is also a root in panelRoots:

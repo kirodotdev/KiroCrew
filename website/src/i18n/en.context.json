@@ -1492,6 +1492,8 @@
     "components.crewMode.midchat_confirm_body": "One short line in the warning color in that confirm dialog, under the conductor mode explanation: once turned on, conductor mode cannot be turned off for this chat.",
     "components.crewMode.midchat_confirm_action": "Confirm button of that dialog: turns conductor mode on for this chat.",
     "utils.agentSwitchFeedback.crew_mode_locked": "One-sentence notice shown when the person tries to switch the agent of a chat that is in conductor mode (agent picker, /agent command or keyboard shortcut) and the gateway refuses it. {{agent}} is the agent they picked. Nothing changed: the chat stays on its agent.",
-    "components.crewMode.midchat_confirm_dont_show": "Checkbox label in the confirm dialog shown before conductor mode turns on in a chat that has messages. Checked and confirmed, the dialog is skipped on later switches."
+    "components.crewMode.midchat_confirm_dont_show": "Checkbox label in the confirm dialog shown before conductor mode turns on in a chat that has messages. Checked and confirmed, the dialog is skipped on later switches.",
+    "pages.settings.remoteCrewPanel.custom_type_cpu_arm": "CPU family of an EC2 instance type in the Remote Crew launch form's custom instance type list (the arm64 / Graviton architecture). A processor family name; keep it as a short name, do not translate.",
+    "pages.settings.remoteCrewPanel.custom_type_cpu_x86": "CPU family of an EC2 instance type in the Remote Crew launch form's custom instance type list (the x86_64 architecture, made by Intel or AMD). Company names joined by a slash; keep them as written."
   }
 }

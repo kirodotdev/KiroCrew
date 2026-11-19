@@ -716,8 +716,10 @@ async def api_cloud_launch_task(request: web.Request) -> web.Response:
 async def api_cloud_launch_create(request: web.Request) -> web.Response:
     """POST /api/cloud/launch — start a launch job.
 
-    Body: ``{provider_id?, profile, region, size_key, subnet_id?, login_target?,
-    confirm_recipient?}``. ``subnet_id`` pins a built-in EC2 launch to that subnet.
+    Body: ``{provider_id?, profile, region, size_key, subnet_id?, instance_type?,
+    login_target?, confirm_recipient?}``. ``subnet_id`` pins a built-in EC2 launch to
+    that subnet; ``instance_type`` launches a type the Region offers instead of the
+    ``size_key`` tier (see ``handlers_cloud_instance_types``).
     ``confirm_recipient`` is the credential recipient the operator confirmed, required by any
     lane whose launch delivers a credential to something its own configuration names (the
     Fargate lane refuses an empty or stale one and names both values); the built-in EC2 lane
@@ -784,6 +786,11 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
     except ValidationError as e:
         _audit("launch_create", "denied", error=f"invalid subnet: {e}")
         return web.json_response({"error": str(e), "code": "invalid_subnet"}, status=400)
+    from kiro_crew.dashboard.handlers_cloud_instance_types import check_requested_instance_type
+
+    instance_type, refused = await check_requested_instance_type(body, provider_id)
+    if refused is not None:
+        return refused
     provisioner = next((p for p in await _in_executor(_provisioners) if p.id == provider_id), None)
     if provisioner is None:
         _audit("launch_create", "denied", error=f"unknown provisioner {provider_id!r}")
@@ -827,17 +834,18 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
             status=400,
         )
     tier = sizes.TIERS_BY_KEY.get(size_key)
-    if subnet_id and tier is not None:
+    if subnet_id and (instance_type or tier is not None):
         # The same check ec2.deploy runs, here so a subnet the launch would refuse is
         # reported under its field before anything is set up. Outside the launch lock:
         # these are AWS calls, and holding it would stall cancel and the sign-in retry.
-        # An unknown size skips it; store.create below refuses that request.
-        instance_type = tier.instance_type
+        # An unknown size skips it; store.create below refuses that request. A custom
+        # type replaces the tier's, so the subnet's zone must offer that one.
+        subnet_type = instance_type or (tier.instance_type if tier else "")
 
         def _check_subnet() -> None:
             region = ec2.validate_region(str(body.get("region", "")) or lj._default_region())
             profile = ec2.validate_profile(str(body.get("profile", "")))
-            ec2.resolve_explicit_subnet(subnet_id, profile, region, instance_type)
+            ec2.resolve_explicit_subnet(subnet_id, profile, region, subnet_type)
 
         try:
             await _in_executor(_check_subnet)
@@ -934,6 +942,7 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
                     login_target=login_target,
                     subnet_id=subnet_id,
                     skip_signin=skip_signin,
+                    instance_type=instance_type,
                 )
             )
         except KeyError as e:  # unknown size

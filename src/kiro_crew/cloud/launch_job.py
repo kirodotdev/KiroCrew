@@ -38,7 +38,7 @@ from typing import Callable, List, Mapping, Optional, Protocol
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.cloud import sizes
+from kiro_crew.cloud import instance_types, sizes
 from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError
 from kiro_crew.config.loader import config_dir
 from kiro_crew.owner_only_files import mkdirs_owner_only
@@ -209,6 +209,9 @@ class LaunchJob:
     # this is a choice, not a failure: the step reads skipped, and the crew is not
     # badged "Needs sign-in". Persisted so the choice survives a restart.
     signin_skipped: bool = False
+    # A custom EC2 instance type the built-in lane launches instead of the
+    # ``size_key`` tier; empty = the tier.
+    instance_type: str = ""
 
     @property
     def terminal(self) -> bool:
@@ -239,6 +242,7 @@ class LaunchJob:
             "login_target": self.login_target.to_dict(),
             "subnet_id": self.subnet_id,
             "signin_skipped": self.signin_skipped,
+            "instance_type": self.instance_type,
         }
 
     @classmethod
@@ -284,6 +288,7 @@ class LaunchJob:
             target_unreadable=target_unreadable,
             subnet_id=str(d.get("subnet_id") or ""),
             signin_skipped=bool(d.get("signin_skipped", False)),
+            instance_type=str(d.get("instance_type") or ""),
         )
 
 
@@ -360,6 +365,7 @@ class LaunchJobStore:
         login_target: Optional[KiroLoginTarget] = None,
         subnet_id: str = "",
         skip_signin: bool = False,
+        instance_type: str = "",
     ) -> LaunchJob:
         """Build + persist a fresh PENDING job.
 
@@ -372,8 +378,14 @@ class LaunchJobStore:
 
         ``login_target`` is the Kiro identity the crew signs in as; ``None`` is
         the default (Builder ID) target, exactly the pre-field behaviour.
+
+        A custom ``instance_type`` is the size the launch uses, so the job records
+        ``size_key`` as ``instance_types.CUSTOM_TIER_KEY`` rather than the tier the
+        form happened to have selected.
         """
-        if provider_id == BUILTIN_PROVISIONER_ID:
+        if instance_type:
+            size_key = instance_types.CUSTOM_TIER_KEY
+        elif provider_id == BUILTIN_PROVISIONER_ID:
             sizes.get_tier(size_key)  # raises KeyError with the valid set if unknown
         job = LaunchJob(
             id=_new_job_id(),
@@ -385,6 +397,7 @@ class LaunchJobStore:
             login_target=login_target or KiroLoginTarget(),
             subnet_id=subnet_id,
             signin_skipped=skip_signin,
+            instance_type=instance_type,
         )
         # Claim ownership BEFORE the file exists. `reap_orphans` spares only jobs this
         # process owns, and it runs off the event loop: a reap already in flight can
@@ -1215,8 +1228,11 @@ def run_launch(
         # 2) Provision (create instance + install; blocks until healthy)
         _check_cancel()
         s = _activate(STEP_PROVISION)
-        # Only the built-in EC2 engine takes a subnet; the handler refuses it elsewhere.
+        # Only the built-in EC2 engine takes a subnet or a custom instance type; the
+        # handler refuses both elsewhere.
         extra: dict = {"subnet_id": job.subnet_id} if job.subnet_id else {}
+        if job.instance_type:
+            extra["instance_type"] = job.instance_type
         show_fallback, show_progress = _provision_detail_writers(job, store, s)
         if _accepts_keyword(engine.provision, "on_network_fallback"):
             # A network the engine picked for the user is named on this step

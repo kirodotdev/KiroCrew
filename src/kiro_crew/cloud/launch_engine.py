@@ -20,7 +20,7 @@ import threading
 from typing import Callable, Optional
 
 from kiro_crew.cloud import connect as connect_mod
-from kiro_crew.cloud import ec2, iam, login, sizes
+from kiro_crew.cloud import ec2, iam, instance_types, login, sizes
 from kiro_crew.cloud.aws import AWSError
 from kiro_crew.cloud.login_target import KiroLoginTarget
 
@@ -235,10 +235,17 @@ class RealLaunchEngine:
         profile: str,
         region: str,
         subnet_id: str = "",
+        instance_type: str = "",
         on_network_fallback: Optional[Callable[[str], None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
     ) -> str:
-        tier = sizes.get_tier(size_key)
+        # A custom type is checked against the Region's offerings again here: the
+        # job may have waited, and its architecture picks the AMI.
+        tier = (
+            instance_types.custom_tier(instance_type, profile, region)
+            if instance_type
+            else sizes.get_tier(size_key)
+        )
         halt = _start_progress_poller(tag, profile, region, on_progress) if on_progress else None
         # No dashboard_port override: the stack binds its own DashboardPort
         # default. A crew once needed a bespoke port here because the tunnel

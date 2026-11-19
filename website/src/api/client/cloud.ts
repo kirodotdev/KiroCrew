@@ -133,6 +133,17 @@ export interface CloudIdentity {
   discovery?: 'read' | 'unknown'
 }
 
+/** One row of `GET /api/cloud/instance-types`: an EC2 instance type the Region
+ *  OFFERS for a Crew host. Offered is not in stock: free capacity is known only
+ *  when the launch runs. `zones` are the Availability Zones that offer it. */
+export interface CloudInstanceType {
+  instance_type: string
+  vcpu: number
+  memory_gib: number
+  arch: 'arm64' | 'x86_64'
+  zones: string[]
+}
+
 export interface LaunchJob {
   id: string
   /** Which provisioner ran this job. A job persisted before the provisioner seam
@@ -144,6 +155,9 @@ export interface LaunchJob {
   profile: string
   region: string
   size_key: string
+  /** A custom EC2 instance type launched instead of the `size_key` tier; empty
+   *  or absent means the tier. */
+  instance_type?: string
   tag: string
   status: LaunchJobStatus
   steps: LaunchStep[]
@@ -222,7 +236,17 @@ export function createCloudEndpoints({ get, post, del, j }: ClientTransport) {
     cloudIdentity: () => get('/api/cloud/identity').then(j) as Promise<CloudIdentity>,
     // `provider_id` is optional on the wire: the server defaults it to "aws_ec2"
     // and answers 400 `unknown_provisioner` for an id it does not offer.
-    cloudLaunch: (body: { provider_id?: string; profile: string; region: string; size_key: string; subnet_id?: string; login_target?: KiroLoginTarget; skip_signin?: boolean }) =>
+    // The instance types the Region offers for a Crew host (cached briefly by the
+    // gateway). 400 for a malformed Region, 502 `aws_call_failed` when AWS could
+    // not be read.
+    cloudInstanceTypes: (profile: string, region: string) => {
+      const p = new URLSearchParams({ region })
+      if (profile) p.set('profile', profile)
+      return get('/api/cloud/instance-types?' + p.toString()).then(j) as Promise<{ region: string; instance_types: CloudInstanceType[] }>
+    },
+    // `instance_type` launches that offered type instead of the `size_key` tier;
+    // 400 `invalid_instance_type` when the Region does not offer it.
+    cloudLaunch: (body: { provider_id?: string; profile: string; region: string; size_key: string; subnet_id?: string; instance_type?: string; login_target?: KiroLoginTarget; skip_signin?: boolean }) =>
       post('/api/cloud/launch', body).then(j) as Promise<LaunchJob>,
     cloudLaunchStatus: (id: string) =>
       get('/api/cloud/launch/' + encodeURIComponent(id)).then(j) as Promise<LaunchJob>,
