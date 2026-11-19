@@ -5154,7 +5154,15 @@ count or the bare fact.
   clears only once the answer arrives or the grace ends, so a turn cancelled while it
   waits, or one that fails to send the cancel, leaves the id set and the next turn
   closes the abandoned turn again. Permission REQUESTS are answered rather than dropped; everything else
-  is discarded. The drain counts the discarded frames, classifies each one, and emits **one** WARNING per turn — one
+  is discarded. Between-turn state notifications are counted apart
+  (`_is_between_turn_state`), by an allowlist measured on KAS: a notification
+  `classify_notification` skips (for example a backend's own MCP status, tool
+  list or sessions report), which no turn reads either, a standard `session/update` of
+  kind `available_commands_update` or `config_option_update`, and a KAS
+  `session_info_update` whose `_meta.kiro.kind` is `context_usage` or
+  `display_error`. KAS sends them after every `session/new` answer and after each
+  prompt's answer, so they get one DEBUG count per turn and never the WARNING.
+  Every frame the allowlist does not name keeps the WARNING, whatever carries it. The drain counts every other discarded frame, classifies each one, and emits **one** WARNING per turn — one
   line regardless of how many frames drained, so a burst cannot flood the log.
   The classification is structural: a JSON-RPC response (`method` is `None`, `id`
   set) whose result carries a non-empty string `stopReason` is by construction
