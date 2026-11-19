@@ -210,8 +210,10 @@ def test_shard_selection_and_checks_stay_intact(jobs):
     )
     assert "continue-on-error" not in job
     step = next(s for s in job["steps"] if s.get("name", "").startswith("Run tests (Windows shard"))
+    # The full-suite arm, the last invocation (the leaf and reduced arms are held
+    # by test_ci_file_shards.py).
     command = re.sub(
-        r"\s+", " ", step["run"].split("python -m pytest", 1)[1].replace("\\\n", " ")
+        r"\s+", " ", step["run"].rsplit("python -m pytest", 1)[1].replace("\\\n", " ")
     ).strip()
     assert command == (
         "-p scripts.ci_pytest_progress -p scripts.ci_file_shards "

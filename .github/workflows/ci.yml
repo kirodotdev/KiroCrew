@@ -106,6 +106,10 @@ jobs:
       # (see "Decide the fork Windows scope"). Every other run reads 'true', and
       # an absent output (this job failed) reads as "run", never as a skip.
       windows_tests: ${{ steps.windows-scope.outputs.windows_tests }}
+      # The raw `windows` path bucket below, for EVERY event. Backend Tests
+      # (Windows) takes the reduced or leaf scope only when this reads 'false';
+      # 'true' or an absent output keeps the full Windows suite.
+      windows_paths: ${{ steps.filter.outputs.windows }}
       # Central runner labels: eligible repository/event/actor combinations
       # use CodeBuild. Any other run EXECUTING in this repository uses the
       # `kirocrew-runners` group's own runner label, and a fork running its own
@@ -222,9 +226,11 @@ jobs:
               - 'packaging/relocate_posix_scripts.py'
               - 'scripts/stamp-distribution.sh'
               - '.github/workflows/build-desktop.yml'
-            # Independent of the buckets above. Read only for a FORK pull
-            # request, to decide whether its Backend Tests (Windows) run: the
-            # files that are Windows code by name, the shared platform shims,
+            # Independent of the buckets above. Read for a FORK pull request, to
+            # decide whether its Backend Tests (Windows) run, and on every run to
+            # decide whether Backend Tests (Windows) may take a reduced or leaf
+            # scope (a hit forces its full suite): the files that are Windows
+            # code by name, the shared platform shims,
             # the PowerShell entry points Windows tests drive, and the inputs
             # that shape every Windows shard (dependencies, every conftest, the
             # setup action, the shard plugins, this workflow).
@@ -1615,14 +1621,97 @@ jobs:
         shell: bash
         run: python .github/actions/setup-windows-tests/probe.py
 
-      # No surface selector here, unlike the POSIX backend-test job. Narrowing
-      # this job to the cross-surface subset on a frontend-only diff was
-      # measured as a PESSIMISATION: 4 shards x ~18 min = 70 job-min for the
-      # subset, against 62-67 job-min for the whole suite (runs 33412618648 vs
-      # 33406565382). The shard's worker count already saturates each runner, so a smaller
-      # file list does not shorten a shard, and the cross-surface files are not
-      # the cheap ones. Running everything is both cheaper and strictly more
-      # coverage, so there is nothing to select.
+      # Same scope rules as backend-test, plus one guard: the reduced and leaf
+      # scopes are taken only when the `changes` job's `windows` path bucket did
+      # NOT hit. The surface and leaf selectors prove a file single-surface or
+      # unaffected on any OS; that bucket names the files that shape Windows
+      # behaviour in particular, so a hit keeps the whole Windows suite. A push
+      # (main or release/**) always runs the full Windows suite, so main keeps
+      # the full Windows backstop it had. Every path that falls back to the
+      # full suite in backend-test falls back here too: selector rc != 0 or
+      # empty output, empty leaf targets, and `ci-full-run` (which leaves
+      # only_frontend and leaf_tests false).
+      #
+      # This replaces the #7337 note that measured the subset as a pessimisation
+      # (4 shards, no pins: 70 job-min vs 62-67 full, runs 33412618648 vs
+      # 33406565382). Re-measured on 8 pinned shards, CodeBuild large runners,
+      # with throwaway draft PRs that forced each scope (#39313, #39314):
+      #   full (main pushes 44376034204, 44365593626): 26.6 min wall, 183-191 job-min
+      #   reduced, 1,342 files (run 44426610212):       8.7 min wall,  60 job-min
+      #   leaf, 1 file + 909 gates (run 44427119854):  13.8 min wall,  64 job-min
+      # No pytest prewarm: a serial `--collect-only` of one shard costs 104-115 s
+      # and saves 42-75 s of worker collection, so it loses on both OSes, with
+      # and without --cov (prewarm probe in run 44426610212).
+      - name: Select test scope
+        id: scope
+        shell: bash
+        env:
+          ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
+          LEAF_TESTS: ${{ needs.changes.outputs.leaf_tests }}
+          LEAF_TARGETS: ${{ needs.changes.outputs.leaf_targets }}
+          LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
+          WINDOWS_PATHS: ${{ needs.changes.outputs.windows_paths }}
+          EVENT: ${{ github.event_name }}
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # The gate list goes to the test step as a FILE: as an env var it is
+          # ~45 KB, past Windows' 32,767-character limit, and every test that
+          # spawns a child with os.environ then fails (measured on #39314).
+          GATES_FILE: ${{ runner.temp }}/leaf-gate-list.txt
+          # Leaf weight budget: the changed files run on EVERY shard, so their
+          # Windows weight must fit the 60-minute job. In run 44376034204 every
+          # file outside scripts/ci_file_shard_pins_windows.txt took <= 30 s on
+          # Windows (40 files <= 1,200 s, ~5 min on 4 workers); pinned files took
+          # up to 1,296 s each (4 of them ~22 min, one xdist group per worker).
+          # Past either cap the full Windows suite runs instead.
+          # shortcut: file counts stand in for per-file seconds; switch to the
+          # measured weights if a leaf run ever nears the timeout.
+          WINDOWS_LEAF_MAX_FILES: "40"
+          WINDOWS_LEAF_MAX_PINNED: "4"
+        run: |
+          if [ "$WINDOWS_PATHS" != "false" ] || [ "$EVENT" = "push" ]; then
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            echo "Full Windows suite: event '$EVENT', windows_paths='$WINDOWS_PATHS' (a push, or a Windows-shaped path)."
+            exit 0
+          fi
+          if [ "$LEAF_TESTS" = "true" ] && [ -n "${LEAF_TARGETS//[[:space:]]/}" ]; then
+            printf '%s\n' "$LEAF_TARGETS" | grep . > "$TARGETS_FILE" || true
+            if [ -s "$TARGETS_FILE" ]; then
+              printf '%s\n' "$LEAF_GATES" | grep . > "$GATES_FILE" || true
+              # The changed files reach pytest as explicit paths, which bypass the
+              # `pytest_ignore_collect` hook, so drop the files Windows never
+              # collects (test/windows-collect-ignore.txt), as the reduced
+              # selector does. Nothing left to run falls back to the full suite.
+              awk 'NR==FNR { sub(/\r$/, ""); sub(/#.*/, ""); gsub(/[[:space:]]/, ""); if ($0 != "") skip["test/" $0] = 1; next } { sub(/\r$/, "") } !($0 in skip)' test/windows-collect-ignore.txt "$TARGETS_FILE" > "$TARGETS_FILE.kept"
+              mv "$TARGETS_FILE.kept" "$TARGETS_FILE"
+              changed="$(grep -vxF -f "$GATES_FILE" "$TARGETS_FILE" || true)"
+              files=$(printf '%s\n' "$changed" | grep -c . || true)
+              pinned=$(printf '%s\n' "$changed" | awk 'NR==FNR { sub(/\r$/, ""); if ($0 !~ /^#/ && NF == 2) pin[$2] = 1; next } { sub(/\r$/, "") } ($0 in pin)' scripts/ci_file_shard_pins_windows.txt - | grep -c . || true)
+              if [ "$files" -ge 1 ] && [ "$files" -le "$WINDOWS_LEAF_MAX_FILES" ] && [ "$pinned" -le "$WINDOWS_LEAF_MAX_PINNED" ]; then
+                echo "reduced=true" >> "$GITHUB_OUTPUT"
+                echo "leaf=true" >> "$GITHUB_OUTPUT"
+                echo "Leaf-test scope: $files changed file(s), $pinned of them pinned heavy."
+                exit 0
+              fi
+              echo "::notice::leaf diff outside the Windows budget ($files Windows-collected changed file(s), $pinned pinned; need 1-$WINDOWS_LEAF_MAX_FILES and <= $WINDOWS_LEAF_MAX_PINNED) -- running the FULL Windows suite."
+              echo "reduced=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::warning::leaf targets arrived empty -- running the FULL Windows suite."
+          fi
+          if [ "$ONLY_FRONTEND" != "true" ]; then
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            echo "Full Windows suite (diff is not frontend-only)."
+            exit 0
+          fi
+          rc=0
+          python scripts/ci-surface-tests.py --surface backend --summary > "$TARGETS_FILE" || rc=$?
+          if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE" ]; then
+            echo "::warning::surface selector unusable (rc=$rc) -- running the FULL Windows suite."
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "reduced=true" >> "$GITHUB_OUTPUT"
+          echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
 
       - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         # bash (Git Bash on windows-latest), not pwsh: the invocation shares
@@ -1655,6 +1744,15 @@ jobs:
         shell: bash
         env:
           PYTHONPATH: ${{ github.workspace }}
+          REDUCED: ${{ steps.scope.outputs.reduced }}
+          LEAF: ${{ steps.scope.outputs.leaf }}
+          # 1, not backend-test's 3: the changed files run on every shard, and
+          # Windows runs them several times slower (the budget in "Select test
+          # scope"). Eight independent shard runs still roll each file 8 times.
+          LEAF_REPEAT: "1"
+          # A file, never the leaf_gates output as env (see "Select test scope").
+          GATES_FILE: ${{ runner.temp }}/leaf-gate-list.txt
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
         run: |
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
@@ -1687,6 +1785,53 @@ jobs:
           ' "$RUNNER_TEMP/mem-peak-mib" > /dev/null 2>&1 &
           MEM_SAMPLER=$!
           trap 'kill "$MEM_SAMPLER" 2>/dev/null || true' EXIT
+          PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir "$RUNNER_TEMP/pytest-progress")
+          # Reduced and leaf arms as in backend-test: subset lists reach pytest
+          # as --file-shard-targets=PATH, never as arguments; the changed leaf
+          # files run unsharded on every job, the corpus gates sharded once.
+          # Pins balance the FULL suite and apply to it alone.
+          TARGETS=()
+          if [ "$REDUCED" = "true" ]; then
+            while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
+          fi
+          if [ "$LEAF" = "true" ]; then
+            GATES=()
+            if [ -s "$GATES_FILE" ]; then
+              while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then GATES+=("$line"); fi; done < "$GATES_FILE"
+            fi
+            CHANGED=()
+            for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
+              keep=1
+              for gate in ${GATES[@]+"${GATES[@]}"}; do
+                if [ "$target" = "$gate" ]; then keep=0; break; fi
+              done
+              if [ "$keep" = "1" ]; then CHANGED+=("$target"); fi
+            done
+            if [ "${#CHANGED[@]}" -eq 0 ]; then
+              echo "::error::leaf run resolved no changed files -- refusing to report green."
+              exit 1
+            fi
+            if [ "${#GATES[@]}" -gt 0 ]; then
+              printf '%s\n' ${GATES[@]+"${GATES[@]}"} > "$RUNNER_TEMP/leaf-gates.txt"
+              echo "::group::leaf corpus gates (${#GATES[@]} file(s), shard ${{ matrix.group }}/$SHARD_COUNT)"
+              python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
+                --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+                --file-shard-targets="$RUNNER_TEMP/leaf-gates.txt"
+              echo "::endgroup::"
+            fi
+            for pass in $(seq 1 "$LEAF_REPEAT"); do
+              echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
+              python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" ${CHANGED[@]+"${CHANGED[@]}"}
+              echo "::endgroup::"
+            done
+            exit 0
+          fi
+          if [ "$REDUCED" = "true" ]; then
+            python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
+              --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+              --file-shard-targets="$TARGETS_FILE"
+            exit 0
+          fi
           python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards \
             --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
             -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \

@@ -765,27 +765,38 @@ class TestFileShards(unittest.TestCase):
             self.assertIn("-p scripts.ci_file_shards", command)
             self.assertIn('--file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}', command)
             self.assertNotIn("--splits", command)
+            pins = (
+                "ci_file_shard_pins.txt"
+                if name == "backend-test"
+                else "ci_file_shard_pins_windows.txt"
+            )
+            leaf = command.split('if [ "$LEAF" = "true" ]; then', 1)[1].split("exit 0", 1)[0]
+            # Corpus gates are sharded; changed files are not (they repeat on every job).
+            self.assertIn("ci_file_shards", leaf)
+            self.assertIn("leaf changed files, pass", leaf)
+            changed_loop = leaf.split("leaf changed files, pass", 1)[1]
+            self.assertNotIn("ci_file_shards", changed_loop)
+            self.assertIn('"${CHANGED[@]}"', leaf)
+            # Subset lists reach pytest as a targets file, never as argv. The
+            # `=` keeps the out-of-checkout path out of rootdir discovery.
+            gates_run = leaf.split("leaf changed files, pass", 1)[0]
+            self.assertIn('--file-shard-targets="$RUNNER_TEMP/leaf-gates.txt"', gates_run)
+            reduced = command.rsplit('if [ "$REDUCED" = "true" ]; then', 1)[1]
+            reduced = reduced.split("exit 0", 1)[0]
+            self.assertIn('--file-shard-targets="$TARGETS_FILE"', reduced)
+            self.assertNotIn("TARGETS[@]", reduced)
+            # Pins are measured on the full suite and apply to it alone; the
+            # leaf and reduced invocations keep pure hash ownership.
+            self.assertEqual(command.count("--file-shard-pins"), 1)
+            full = command.rsplit("exit 0", 1)[1]
+            self.assertIn(f"--file-shard-pins scripts/{pins}", full)
+            run_env = next(s for s in job["steps"] if s.get("name", "").startswith("Run tests"))[
+                "env"
+            ]
+            self.assertEqual(run_env["REDUCED"], "${{ steps.scope.outputs.reduced }}")
+            self.assertEqual(run_env["LEAF"], "${{ steps.scope.outputs.leaf }}")
             if name == "backend-test":
-                leaf = command.split('if [ "$LEAF" = "true" ]; then', 1)[1].split("exit 0", 1)[0]
-                # Corpus gates are sharded; changed files are not (they repeat on every job).
-                self.assertIn("ci_file_shards", leaf)
-                self.assertIn("leaf changed files, pass", leaf)
-                changed_loop = leaf.split("leaf changed files, pass", 1)[1]
-                self.assertNotIn("ci_file_shards", changed_loop)
-                self.assertIn('"${CHANGED[@]}"', leaf)
-                # Subset lists reach pytest as a targets file, never as argv. The
-                # `=` keeps the out-of-checkout path out of rootdir discovery.
-                gates_run = leaf.split("leaf changed files, pass", 1)[0]
-                self.assertIn('--file-shard-targets="$RUNNER_TEMP/leaf-gates.txt"', gates_run)
-                reduced = command.rsplit('if [ "$REDUCED" = "true" ]; then', 1)[1]
-                reduced = reduced.split("exit 0", 1)[0]
-                self.assertIn('--file-shard-targets="$TARGETS_FILE"', reduced)
-                self.assertNotIn("TARGETS[@]", reduced)
-                # Pins are measured on the full suite and apply to it alone; the
-                # leaf and reduced invocations keep pure hash ownership.
-                self.assertEqual(command.count("--file-shard-pins"), 1)
-                full = command.rsplit("exit 0", 1)[1]
-                self.assertIn("--file-shard-pins scripts/ci_file_shard_pins.txt", full)
+                self.assertEqual(run_env["LEAF_REPEAT"], "3")
                 self.assertCountEqual(
                     [word for word in command.split() if word.startswith("--cov=")],
                     [
@@ -796,11 +807,154 @@ class TestFileShards(unittest.TestCase):
                     ],
                 )
             else:
-                self.assertEqual(command.count("--file-shard-pins"), 1)
-                self.assertIn("--file-shard-pins scripts/ci_file_shard_pins_windows.txt", command)
+                # Changed files run unsharded on all eight Windows shards; one
+                # pass each keeps a heavy leaf diff inside the 60-minute job.
+                self.assertEqual(run_env["LEAF_REPEAT"], "1")
+                # The ~45 KB gate list would pass Windows' 32,767-character env
+                # var limit and break every test that spawns a child.
+                self.assertNotIn("LEAF_GATES", run_env)
+                self.assertIn('done < "$GATES_FILE"', leaf)
+                self.assertNotIn("--cov=", command)
+                self.assertIn("--no-cov", command)
         for name, job in workflow["jobs"].items():
             if name not in ("backend-test", "backend-test-windows"):
                 self.assertNotIn("ci_file_shards", json.dumps(job))
+
+    def run_windows_scope(
+        self,
+        selector="printf 'test/test_a.py\\n'",
+        timeout=_DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
+        **env,
+    ):
+        """Execute backend-test-windows' "Select test scope" step; return (reduced, leaf)."""
+        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+        step = next(
+            s for s in workflow["jobs"]["backend-test-windows"]["steps"] if s.get("id") == "scope"
+        )
+        call = "python scripts/ci-surface-tests.py --surface backend --summary"
+        self.assertEqual(step["run"].count(call), 1)
+        out = self.root / "github-output"
+        out.write_text("", encoding="utf-8")
+        caps = {k: v for k, v in step["env"].items() if not v.startswith("${{")}
+        inputs = {
+            "EVENT": "pull_request",
+            "WINDOWS_PATHS": "false",
+            "ONLY_FRONTEND": "false",
+            "LEAF_TESTS": "false",
+            "LEAF_TARGETS": "",
+            "LEAF_GATES": "",
+            **env,
+        }
+        result = subprocess.run(
+            # The shell flags Actions uses for `shell: bash`.
+            [
+                "bash",
+                "--noprofile",
+                "--norc",
+                "-eo",
+                "pipefail",
+                "-c",
+                step["run"].replace(call, selector),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "GITHUB_OUTPUT": str(out),
+                "TARGETS_FILE": str(self.root / "targets.txt"),
+                "GATES_FILE": str(self.root / "gates.txt"),
+                **caps,
+                **inputs,
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        outputs = dict(
+            line.split("=", 1)
+            for line in out.read_text(encoding="utf-8").splitlines()
+            if "=" in line
+        )
+        return outputs.get("reduced"), outputs.get("leaf")
+
+    # The step is OS-independent bash; on a Windows host `bash` on PATH can be the
+    # WSL launcher (test/ai_review_workflows_helpers.py), so the Linux shards run it.
+    @unittest.skipIf(os.name == "nt", "runs the workflow's bash; PATH bash may be WSL on Windows")
+    def test_windows_scope_reduces_only_where_linux_does_and_no_windows_path_hit(self):
+        leaf = {
+            "LEAF_TESTS": "true",
+            "LEAF_TARGETS": "test/test_a.py\ntest/test_gate.py\n",
+            "LEAF_GATES": "test/test_gate.py\n",
+        }
+        frontend = {"ONLY_FRONTEND": "true"}
+        # Frontend-only and leaf-only diffs take the reduced and leaf scopes.
+        self.assertEqual(self.run_windows_scope(**frontend), ("true", None))
+        self.assertEqual(self.run_windows_scope(**leaf), ("true", "true"))
+        # A hit (or an absent) `windows` bucket keeps the full suite on both.
+        for paths in ("true", ""):
+            self.assertEqual(
+                self.run_windows_scope(WINDOWS_PATHS=paths, **frontend), ("false", None)
+            )
+            self.assertEqual(self.run_windows_scope(WINDOWS_PATHS=paths, **leaf), ("false", None))
+        # A push (main, release/**) always runs the full Windows suite.
+        self.assertEqual(self.run_windows_scope(EVENT="push", **frontend), ("false", None))
+        self.assertEqual(self.run_windows_scope(EVENT="push", **leaf), ("false", None))
+        # A backend change, and `ci-full-run` (which forces only_frontend and
+        # leaf_tests false in the `changes` job), run the full suite.
+        self.assertEqual(self.run_windows_scope(), ("false", None))
+        # Selector failure or empty output falls back to the full suite.
+        self.assertEqual(self.run_windows_scope("false", **frontend), ("false", None))
+        self.assertEqual(self.run_windows_scope("true", **frontend), ("false", None))
+        # Empty leaf targets fall through to the frontend/backend decision.
+        self.assertEqual(
+            self.run_windows_scope(LEAF_TESTS="true", LEAF_TARGETS=" \n"), ("false", None)
+        )
+        # Leaf weight budget: past either cap the full suite runs instead.
+        many = "".join(f"test/test_leaf_{i}.py\n" for i in range(41))
+        self.assertEqual(
+            self.run_windows_scope(LEAF_TESTS="true", LEAF_TARGETS=many), ("false", None)
+        )
+        heavy = sorted(read_pins(ROOT / "scripts/ci_file_shard_pins_windows.txt", 8))
+        five = "".join(f"{name}\n" for name in heavy[:5])
+        self.assertEqual(
+            self.run_windows_scope(LEAF_TESTS="true", LEAF_TARGETS=five), ("false", None)
+        )
+        four = "".join(f"{name}\n" for name in heavy[:4])
+        self.assertEqual(
+            self.run_windows_scope(LEAF_TESTS="true", LEAF_TARGETS=four), ("true", "true")
+        )
+        # A file Windows never collects is dropped from the explicit changed list
+        # (explicit paths bypass pytest_ignore_collect); none left runs full.
+        listed = (ROOT / "test/windows-collect-ignore.txt").read_text(encoding="utf-8")
+        ignored = next(n for n in (ln.split("#", 1)[0].strip() for ln in listed.splitlines()) if n)
+        both = f"test/{ignored}\ntest/test_a.py\n"
+        self.assertEqual(
+            self.run_windows_scope(LEAF_TESTS="true", LEAF_TARGETS=both), ("true", "true")
+        )
+        kept = (self.root / "targets.txt").read_text(encoding="utf-8").split()
+        self.assertEqual(kept, ["test/test_a.py"])
+        self.assertEqual(
+            self.run_windows_scope(LEAF_TESTS="true", LEAF_TARGETS=f"test/{ignored}\n"),
+            ("false", None),
+        )
+
+    def test_full_run_and_push_leave_the_windows_scope_inputs_false(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+        changes = workflow["jobs"]["changes"]
+        self.assertEqual(changes["outputs"]["windows_paths"], "${{ steps.filter.outputs.windows }}")
+        steps = {s.get("id"): s for s in changes["steps"]}
+        full_run = "${{ contains(github.event.pull_request.labels.*.name, 'ci-full-run') }}"
+        for step_id in ("decide", "leaf"):
+            self.assertEqual(steps[step_id]["env"]["FULL_RUN"], full_run)
+        self.assertIn('[ "$FULL_RUN" != "true" ]', steps["decide"]["run"])
+        self.assertIn('[ "$FULL_RUN" = "true" ] || [ -z "${BASE_SHA:-}" ]', steps["leaf"]["run"])
+        windows = workflow["jobs"]["backend-test-windows"]
+        scope = next(s for s in windows["steps"] if s.get("id") == "scope")
+        self.assertEqual(
+            scope["env"]["WINDOWS_PATHS"], "${{ needs.changes.outputs.windows_paths }}"
+        )
+        self.assertEqual(scope["env"]["EVENT"], "${{ github.event_name }}")
 
 
 if __name__ == "__main__":
