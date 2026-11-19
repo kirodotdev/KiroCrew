@@ -10681,7 +10681,8 @@
       "status_running": "en cours",
       "status_unread": "non lu",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "Désépingle cet onglet. Un onglet épinglé ne peut pas être fermé."
+      "unpin_tab_hint": "Désépingle cet onglet. Un onglet épinglé ne peut pas être fermé.",
+      "status_action": "action pour toi · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Utiliser {{productName}} sur votre téléphone",
@@ -11895,6 +11896,36 @@
       "discarded_many": "Brouillon supprimé. {{count}} brouillons restent mis de côté.",
       "discarded_one": "Brouillon supprimé. {{count}} brouillon reste mis de côté.",
       "discarded_other": "Brouillon supprimé. {{count}} brouillons restent mis de côté."
+    },
+    "waitingOnYou": {
+      "header": "Action pour toi",
+      "stack_label": "Ce dont l’agent a besoin de toi",
+      "pinned_ago": "Épinglé {{time}}",
+      "show_fewer": "Afficher moins",
+      "show_more": "Afficher plus",
+      "show_less": "Afficher moins",
+      "done": "C’est fait",
+      "note_label": "Note pour l’agent",
+      "note_placeholder": "Ajoute une note (facultatif)",
+      "dismiss_aria": "Ignorer cette demande",
+      "read_only": "Seul le propriétaire de la session peut répondre.",
+      "uncertain": "Ta réponse a peut-être déjà été envoyée. Regarde la conversation plus haut.",
+      "answered_elsewhere": "Réponse donnée ailleurs.",
+      "superseded": "L’agent a remplacé cette demande.",
+      "cleared": "L’agent a retiré cette demande.",
+      "returned_to_composer": "Ta réponse est dans la zone de message. Rien n’a été envoyé.",
+      "closed": "Cette demande a été fermée.",
+      "closed_draft": "Ta note n’a pas été envoyée.",
+      "copy_to_composer": "Déplacer la note dans la zone de message",
+      "discard": "Supprimer",
+      "answer_failed": "Ta réponse n’est pas arrivée à la session. Réessaie.",
+      "answer_invalid": "Cette réponse ne fait plus partie des options.",
+      "answer_refused": "La session n’a pas accepté la réponse, la demande reste donc épinglée.",
+      "dismiss_failed": "Impossible d’ignorer cette demande. Réessaie.",
+      "status_line": "Action pour toi · {{title}}",
+      "more_count_one": "+{{n}} de plus",
+      "more_count_many": "+{{n}} de plus",
+      "more_count_other": "+{{n}} de plus"
     }
   },
   "hooks": {

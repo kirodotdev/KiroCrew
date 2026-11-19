@@ -8,6 +8,8 @@ When the call has no attested session identity, or nothing can show the card (no
 
 Use `ask_question` when a dashboard user needs to choose or supply an answer before the work can continue. Prefer `[OPTIONS: a | b | c]` when the turn is ending and the answer should work on every chat surface.
 
+When the agent is blocked on the user across turns (a watch loop waiting on an action only the user can take), it pins the ask with [`waiting_on_you`](waiting-on-you.md) instead: the card stays above the composer until it is answered, cleared or expires, and the turn does not block.
+
 `ask_question` is available only to sessions with a dashboard surface. On other surfaces (Slack, Discord, Webex and the rest), use `[OPTIONS:]` instead; the user's answer there still arrives as their next chat message, not as a tool result.
 
 ## Tool input

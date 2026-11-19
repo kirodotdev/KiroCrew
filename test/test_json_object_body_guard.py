@@ -556,12 +556,15 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "file_api/dashboard_config.py::api_dashboard_config": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # a parent directory and one folder name
     "file_api/browse.py::api_browse_create_dir": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    # The four module-local body guards, which read through the helper.
+    # The five module-local body guards, which read through the helper.
     # A channel message carries user prose and these routes never had a cap below
     # client_max_size; adding one would be a new limit, not this convergence.
     "handlers_channel.py::_json_object": ("None", _UNBOUNDED_USER_CONTENT),
     # Hook/webhook control fields, capped at the external webhook's own ceiling.
     "handlers/hooks_webhook_intake.py::_json_object": ("_HOOK_BODY_MAX_BYTES", _BOUNDED_EXPLICIT),
+    # An ask declaration or an owner's answer: ids, a key and short text fields, each
+    # capped by waiting_on_you_contract far below the shared ceiling.
+    "handlers/waiting_on_you.py::_json_object": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # A trash selection of up to _MAX_SELECTION uids, sized from the uid grammar.
     "handlers/session_storage.py::_json_body": ("_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
     # Artifact content (25 MiB) plus envelope: the module's existing cap, which

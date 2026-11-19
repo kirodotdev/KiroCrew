@@ -1466,6 +1466,13 @@
     "components.sharedCrews.section_title": "Section heading on Settings > Remote Crew over the Shared Crews the person can open.",
     "components.sharedCrews.open": "Visible label of a Shared Crew row's open action. A verb.",
     "components.appstore.marketStore.add": "Button on a Kiro Space store row in the App Store's Sources popover: adds that store as a source of apps. A verb, the imperative.",
-    "components.appstore.marketStore.err_account_changed": "Error in the Install from Kiro Space dialog: the account signed in to Kiro Space is not the one the page loaded under, so the install was refused. Tells the reader to reload the page and try again."
+    "components.appstore.marketStore.err_account_changed": "Error in the Install from Kiro Space dialog: the account signed in to Kiro Space is not the one the page loaded under, so the install was refused. Tells the reader to reload the page and try again.",
+    "components.waitingOnYou.header": "Label of a card above the chat composer, and of the session status, for something the agent asked the person to do or decide and pinned until it is answered. Must read differently from \"Waiting on you\", which means a live question or approval.",
+    "components.waitingOnYou.done": "Button on a pinned action card that the person presses to tell the agent they did the requested action. \"I have done it\", not \"finished\" as a state.",
+    "components.waitingOnYou.pinned_ago": "Age line on a pinned ask card. {{time}} is a relative time such as \"3 hr. ago\", so the whole reads \"Pinned 3 hr. ago\".",
+    "components.waitingOnYou.discard": "Button that throws away a note the person had typed into an ask card that has since closed. A verb.",
+    "components.waitingOnYou.copy_to_composer": "Button on a closed ask card that moves the person's unsent note into the chat's text field, where they type messages. Use the same everyday word for that field as the rest of the app, never a technical term like \"composer\" or \"editor\". A verb phrase.",
+    "components.waitingOnYou.returned_to_composer": "Notice on an ask the agent replaced or withdrew before the person's answer landed: the answer now waits, unsent, in the chat's text field where they type messages. Use the same everyday word for that field as the rest of the app.",
+    "components.sessionTabStrip.status_action": "Status word added to a session tab name and tooltip while the agent has an ask pinned; {{title}} is the ask in the agent's words. Lower case like the other tab statuses."
   }
 }

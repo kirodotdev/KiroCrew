@@ -10199,7 +10199,8 @@
       "status_running": "작업 중",
       "status_unread": "읽지 않음",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "이 탭의 고정을 해제합니다. 고정된 탭은 닫을 수 없습니다."
+      "unpin_tab_hint": "이 탭의 고정을 해제합니다. 고정된 탭은 닫을 수 없습니다.",
+      "status_action": "내 할 일 · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "휴대폰에서 {{productName}} 사용",
@@ -11355,6 +11356,34 @@
       "discard_failed": "초안을 삭제하지 못했습니다. 브라우저 저장소를 사용할 수 없습니다. 초안은 그대로 보관되어 있습니다.",
       "undo_failed": "초안을 다시 보관하지 못했습니다. 보관함이 가득 찼거나 브라우저 저장소를 사용할 수 없습니다.",
       "discarded_other": "보관한 초안을 삭제했습니다. {{count}}개가 남아 있습니다."
+    },
+    "waitingOnYou": {
+      "header": "내 할 일",
+      "stack_label": "에이전트가 요청한 작업",
+      "pinned_ago": "{{time}} 고정됨",
+      "show_fewer": "접기",
+      "show_more": "더 보기",
+      "show_less": "간략히 보기",
+      "done": "완료",
+      "note_label": "에이전트에게 남길 메모",
+      "note_placeholder": "메모 추가(선택)",
+      "dismiss_aria": "이 요청 닫기",
+      "read_only": "세션 소유자만 답할 수 있습니다.",
+      "uncertain": "답이 이미 전송되었을 수 있습니다. 위의 채팅을 확인하세요.",
+      "answered_elsewhere": "다른 곳에서 이미 답했습니다.",
+      "superseded": "에이전트가 이 요청을 바꿨습니다.",
+      "cleared": "에이전트가 이 요청을 철회했습니다.",
+      "returned_to_composer": "답은 메시지 입력창에 있습니다. 아무것도 전송되지 않았습니다.",
+      "closed": "이 요청은 닫혔습니다.",
+      "closed_draft": "메모는 전송되지 않았습니다.",
+      "copy_to_composer": "메시지 입력창으로 메모 옮기기",
+      "discard": "버리기",
+      "answer_failed": "답이 세션에 전달되지 않았습니다. 다시 시도하세요.",
+      "answer_invalid": "이 답은 더 이상 선택지에 없습니다.",
+      "answer_refused": "세션이 답을 받지 않아 요청이 고정된 채로 남아 있습니다.",
+      "dismiss_failed": "이 요청을 닫지 못했습니다. 다시 시도하세요.",
+      "status_line": "내 할 일 · {{title}}",
+      "more_count_other": "+{{n}}개 더"
     }
   },
   "hooks": {

@@ -691,6 +691,8 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 or (item.get("meta") or {}).get(AUTOMATION_STEER_META)
                 # A decision's receipt names one message; a merged row has one meta.
                 or (item.get("meta") or {}).get("decisions_strip")
+                # A card answer retires only its own ask, so its row holds it alone.
+                or (item.get("meta") or {}).get("waitingOnYou")
             ):
                 break
             if to_merge and _stamped_turn_actor(item) != _stamped_turn_actor(to_merge[0]):

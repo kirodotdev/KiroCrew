@@ -157,7 +157,9 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/sessions/clearable/count", handlers.api_sessions_clearable_count)
     app.router.add_get("/api/sessions/{key}", handlers.api_session_detail)
     app.router.add_get("/api/sessions/{key}/meta", handlers.api_session_meta)
-    app.router.add_delete("/api/sessions/{key}", handlers.api_session_delete)
+    from kiro_crew.dashboard.waiting_on_you_events import forgetting_on_success
+
+    app.router.add_delete("/api/sessions/{key}", forgetting_on_success(handlers.api_session_delete))
     app.router.add_get("/api/logs", handlers.api_logs)
     app.router.add_get("/api/logs/level", handlers.api_log_level_get)
     app.router.add_post("/api/logs/level", handlers.api_log_level)

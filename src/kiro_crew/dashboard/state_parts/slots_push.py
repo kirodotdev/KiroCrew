@@ -73,7 +73,7 @@ logger = logging.getLogger("kiro_crew.dashboard.state")
 #: are deliberately NOT here: they are derived from the sub-agent manager rather
 #: than the slot row, so ``push_subagent_patch`` re-states them on lifecycle flushes.
 _SLOT_PATCH_FIELDS = frozenset(
-    {"pinned", "mutes_opened", "muted", "title", "folder_id", "work_aggregate"}
+    {"pinned", "mutes_opened", "muted", "title", "folder_id", "work_aggregate", "waiting_on_you"}
 )
 
 

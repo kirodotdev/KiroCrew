@@ -10681,7 +10681,8 @@
       "status_running": "trabalhando",
       "status_unread": "não lida",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "Desafixa esta aba. Uma aba fixada não pode ser fechada."
+      "unpin_tab_hint": "Desafixa esta aba. Uma aba fixada não pode ser fechada.",
+      "status_action": "ação para você · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Usar o {{productName}} no seu telefone",
@@ -11895,6 +11896,36 @@
       "discarded_many": "Rascunho descartado. Restam {{count}} rascunhos guardados.",
       "discarded_one": "Rascunho descartado. Resta {{count}} rascunho guardado.",
       "discarded_other": "Rascunho descartado. Restam {{count}} rascunhos guardados."
+    },
+    "waitingOnYou": {
+      "header": "Ação para você",
+      "stack_label": "O que o agente precisa de você",
+      "pinned_ago": "Fixado {{time}}",
+      "show_fewer": "Mostrar menos",
+      "show_more": "Mostrar mais",
+      "show_less": "Mostrar menos",
+      "done": "Feito",
+      "note_label": "Nota para o agente",
+      "note_placeholder": "Adicione uma nota (opcional)",
+      "dismiss_aria": "Dispensar este pedido",
+      "read_only": "Só o dono da sessão pode responder.",
+      "uncertain": "Sua resposta pode já ter sido enviada. Confira o chat acima.",
+      "answered_elsewhere": "Respondido em outro lugar.",
+      "superseded": "O agente substituiu este pedido.",
+      "cleared": "O agente retirou este pedido.",
+      "returned_to_composer": "Sua resposta está na caixa de mensagem. Nada foi enviado.",
+      "closed": "Este pedido foi encerrado.",
+      "closed_draft": "Sua nota não foi enviada.",
+      "copy_to_composer": "Mover nota para a caixa de mensagem",
+      "discard": "Descartar",
+      "answer_failed": "Sua resposta não chegou à sessão. Tente novamente.",
+      "answer_invalid": "Essa resposta não está mais entre as opções.",
+      "answer_refused": "A sessão não aceitou a resposta, então o pedido continua fixado.",
+      "dismiss_failed": "Não foi possível dispensar este pedido. Tente novamente.",
+      "status_line": "Ação para você · {{title}}",
+      "more_count_one": "+{{n}} mais",
+      "more_count_many": "+{{n}} mais",
+      "more_count_other": "+{{n}} mais"
     }
   },
   "hooks": {

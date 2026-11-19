@@ -64,6 +64,8 @@ export { crewRowOwnState, type CrewRowOwnState } from './CrewRowState'
 import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
 import { crewWaitingApprovals, openedSessionRunning } from '../chat/command-center/model'
 import ErrorNotice from '../../components/ErrorNotice'
+import { actionForYouRowEntry, needsInputRowEntry } from './rowAskEntries'
+import { actionForYouLabel } from '../../components/waitingOnYou/ActionForYouStatus'
 import { MemberRowHead } from './MemberRowFace'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { useInterruptedRowLabel } from './interruptedRowLabel'
@@ -146,7 +148,7 @@ const ROW_ICON_PX = 10
 const LIVE_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['running', 'subagents', 'snapshot_live_work'])
 /** The row states that are a decision the session itself owes the person: a crew
  *  member's waiting approval never takes the line from one of them. */
-const OWED_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['pending_approval', 'subagent_awaiting', 'needs_input', 'loop_waiting'])
+const OWED_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['pending_approval', 'subagent_awaiting', 'needs_input', 'waiting_on_you', 'loop_waiting'])
 
 /** A slot's running-status line. A compaction says the chat footer's word, whatever
  *  phase the status detail still holds. Every other phase resolves through
@@ -832,26 +834,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           </div>
         ),
       },
-      {
-        // An unanswered question card. Above every "working" signal for the
-        // same reason as the approval branches — and a blocking card keeps
-        // `s.running` true, so without this the row would show "Thinking…"
-        // while nothing can advance. Info-coloured and static-glyphed to stay
-        // distinct from the warn-coloured approval rows above.
-        //
-        // A card is a websocket broadcast with no transcript row, so
-        // `last_message` is whatever the agent last said BEFORE the ask — not
-        // the question. Trailing it after "Needs your answer ·" would read as
-        // the question itself, so the label stands alone.
-        key: 'needs_input',
-        when: !!s.needs_input,
-        build: () => (
-          <div className={ROW_STATUS_LINE_CLS} title={needsInputLabel}>
-            <MessageCircleQuestionMark size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--info)' }} aria-hidden />
-            <span className="truncate font-medium" style={{ color: 'var(--info)' }}>{needsInputLabel}</span>
-          </div>
-        ),
-      },
+      needsInputRowEntry(!!s.needs_input, needsInputLabel, ROW_STATUS_LINE_CLS, ROW_ICON_PX),
+      actionForYouRowEntry(s, ROW_STATUS_LINE_CLS, ROW_ICON_PX),
       {
         // An armed loop (goal loop or structured monitor) whose newest reply is
         // an `[OPTIONS:]` ask. Ranked with the owed-decision cluster, above
@@ -1138,6 +1122,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         case 'subagent_awaiting': return subagentApprovalLabel
         case 'crew_approval': return i18nT('components.crewMode.summary_approval', { n: crewWaiting })
         case 'needs_input': return needsInputLabel
+        case 'waiting_on_you': return actionForYouLabel(s)
         case 'loop_waiting': return !goalLoop && !monitorOwnsRunning ? i18nT('pages.chatSidebar.loop_waiting_on_you') : `${i18nT('pages.chatSidebar.loop_waiting_on_you')} · ${goalLoop
           ? (goalLoop.maxCycles > 0
             ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: fmtNumber(goalLoop.cycleCount), total: fmtNumber(goalLoop.maxCycles) })

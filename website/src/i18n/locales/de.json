@@ -10440,7 +10440,8 @@
       "status_running": "arbeitet",
       "status_unread": "ungelesen",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "Löst diesen Tab. Ein angepinnter Tab kann nicht geschlossen werden."
+      "unpin_tab_hint": "Löst diesen Tab. Ein angepinnter Tab kann nicht geschlossen werden.",
+      "status_action": "Aktion für dich · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "{{productName}} auf dem Telefon nutzen",
@@ -11625,6 +11626,35 @@
       "undo_failed": "Der Entwurf konnte nicht zurückgelegt werden: Es ist kein Platz mehr oder der Browser-Speicher ist nicht verfügbar.",
       "discarded_one": "Zurückgelegter Entwurf verworfen. {{count}} Entwurf ist noch zurückgelegt.",
       "discarded_other": "Zurückgelegter Entwurf verworfen. {{count}} Entwürfe sind noch zurückgelegt."
+    },
+    "waitingOnYou": {
+      "header": "Aktion für dich",
+      "stack_label": "Was der Agent von dir braucht",
+      "pinned_ago": "Angepinnt {{time}}",
+      "show_fewer": "Weniger anzeigen",
+      "show_more": "Mehr anzeigen",
+      "show_less": "Weniger anzeigen",
+      "done": "Erledigt",
+      "note_label": "Notiz für den Agenten",
+      "note_placeholder": "Notiz hinzufügen (optional)",
+      "dismiss_aria": "Diese Anfrage schließen",
+      "read_only": "Nur der Besitzer der Sitzung kann antworten.",
+      "uncertain": "Deine Antwort wurde vielleicht schon gesendet. Sieh im Chat oben nach.",
+      "answered_elsewhere": "Bereits woanders beantwortet.",
+      "superseded": "Der Agent hat diese Anfrage ersetzt.",
+      "cleared": "Der Agent hat diese Anfrage zurückgezogen.",
+      "returned_to_composer": "Deine Antwort steht im Nachrichtenfeld. Es wurde nichts gesendet.",
+      "closed": "Diese Anfrage wurde geschlossen.",
+      "closed_draft": "Deine Notiz wurde nicht gesendet.",
+      "copy_to_composer": "Notiz ins Nachrichtenfeld verschieben",
+      "discard": "Verwerfen",
+      "answer_failed": "Deine Antwort ist nicht bei der Sitzung angekommen. Versuche es erneut.",
+      "answer_invalid": "Diese Antwort gehört nicht mehr zu den Optionen.",
+      "answer_refused": "Die Sitzung hat die Antwort nicht angenommen, deshalb bleibt die Anfrage angepinnt.",
+      "dismiss_failed": "Diese Anfrage konnte nicht geschlossen werden. Versuche es erneut.",
+      "status_line": "Aktion für dich · {{title}}",
+      "more_count_one": "+{{n}} mehr",
+      "more_count_other": "+{{n}} mehr"
     }
   },
   "hooks": {

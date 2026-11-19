@@ -30,6 +30,8 @@ type Slot = {
   /** The agent asked something and is waiting on the answer: sorted and marked
    *  with the owed decisions rather than with idle sessions. */
   needs_input?: boolean
+  /** Asks the agent pinned for the person: marked in their own ink, below a live question. */
+  waiting_on_you?: readonly unknown[]
   messages?: number
   agent?: string
   last_activity_ts?: string
@@ -335,6 +337,7 @@ function PlaceholderPane({
       // running sessions: this list is what a user picks a pane's session from,
       // and the ones waiting on them are the ones worth opening first.
       if (!!a.needs_input !== !!b.needs_input) return a.needs_input ? -1 : 1
+      if (!!a.waiting_on_you?.length !== !!b.waiting_on_you?.length) return a.waiting_on_you?.length ? -1 : 1
       if (!!a.running !== !!b.running) return a.running ? -1 : 1
       // Compare INSTANTS, not the timestamp text: `last_activity_ts` is the raw
       // transcript `ts`, which is not guaranteed to be one format, so a string
@@ -430,7 +433,7 @@ function PlaceholderPane({
             >
               <Circle
                 size={10}
-                className={`shrink-0 ${s.pending_approval ? 'fill-warn text-warn' : s.needs_input ? 'fill-info text-info' : s.running ? 'fill-ok text-ok' : 'fill-muted text-muted'}`}
+                className={`shrink-0 ${s.pending_approval ? 'fill-warn text-warn' : s.needs_input ? 'fill-info text-info' : s.waiting_on_you?.length ? 'fill-aim text-aim' : s.running ? 'fill-ok text-ok' : 'fill-muted text-muted'}`}
               />
               <span className="truncate flex-1">{sessionDisplayTitle(s)}</span>
               <span className="text-[11px] text-muted shrink-0">{s.messages ?? 0} {i18nT('components.sessionGridView.msgs')}</span>

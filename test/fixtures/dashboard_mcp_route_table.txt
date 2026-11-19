@@ -268,6 +268,10 @@ POST /api/ask-question/{ask_id}/answer api_ask_question_answer
 POST /api/agent-ask/open api_agent_ask_open
 POST /api/agent-ask/{ask_id}/wait api_agent_ask_wait
 POST /api/agent-ask/{ask_id}/withdraw api_agent_ask_withdraw
+POST /api/agent-waiting/set api_agent_waiting_set
+POST /api/agent-waiting/clear api_agent_waiting_clear
+POST /api/chat/slots/{slot}/waiting-on-you/{key}/answer api_waiting_on_you_answer
+POST /api/chat/slots/{slot}/waiting-on-you/{key}/dismiss api_waiting_on_you_dismiss
 HEAD /api/artifacts api_artifacts_list
 GET /api/artifacts api_artifacts_list
 POST /api/workflows/author api_workflow_author

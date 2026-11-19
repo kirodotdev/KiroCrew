@@ -63,6 +63,8 @@ import KiroSignInPrompt from '../../../components/KiroSignInPrompt'
 import { pinIsWithheld } from '../../../lib/model'
 import FollowUpCard, { type FollowupStartMode } from '../../../components/FollowUpCard'
 import PendingQuestionCard from '../../../components/PendingQuestionCard'
+import WaitingOnYouStack from '../../../components/waitingOnYou/WaitingOnYouStack'
+import { pinnedAsks } from '../../../lib/waitingOnYou'
 import FlyingQuote from '../../../components/FlyingQuote'
 import QueueStack, { SubagentDeliveryProgress } from '../../../components/QueueStack'
 import McpLoadingBar from '../McpLoadingBar'
@@ -285,6 +287,8 @@ interface ComposerDockViewProps {
   handleInterruptQueued: (queueId: string) => void
   handleReorderQueued: (queueId: string, direction: 'next' | 'later') => void
   keepQuestionAnswer: (text: string, questions?: { question: string; }[]) => void
+  /** Add text after the composer's draft, unsent: a pinned ask's answer the agent replaced or withdrew. */
+  returnToComposer?: (text: string) => void
   queuedMessages: ChatMessage[]
   queuePendingIds: ReadonlySet<string>
   steer: (opts?: { auto?: boolean; text?: string; }) => void
@@ -352,7 +356,7 @@ export default function ComposerDockView({
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
   effortSupported, effortAutoNote = false, ultracode, fastMode, fastUnavailable, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, resumeAfterSignIn, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
-  endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
+  endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, returnToComposer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
   composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
@@ -562,6 +566,13 @@ export default function ComposerDockView({
                     onFallbackSend={keepQuestionAnswer}
                     onDirectSend={answerQuestionCard}
                   />
+                </div>
+              )}
+              {/* Below the question card, which takes keyboard focus first. Keyed by
+                  slot so one session's unsent notices never show in another's. */}
+              {activeSlot && (
+                <div className="px-4 pb-2 mx-auto w-full empty:hidden" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+                  <WaitingOnYouStack key={activeSlot} slotKey={activeSlot} asks={pinnedAsks(currentSlot)} agent={agentOrDefaultLabel(currentSlot?.agent, defaultAgent, currentSlot?.agent_kind)} onReturnToComposer={returnToComposer} />
                 </div>
               )}
               {pendingFollowup && activeSlot && (

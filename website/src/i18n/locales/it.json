@@ -10681,7 +10681,8 @@
       "status_running": "in corso",
       "status_unread": "non letta",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "Rimuove il fissaggio di questa scheda. Una scheda fissata non si può chiudere."
+      "unpin_tab_hint": "Rimuove il fissaggio di questa scheda. Una scheda fissata non si può chiudere.",
+      "status_action": "azione per te · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Usa {{productName}} sul telefono",
@@ -11895,6 +11896,36 @@
       "discarded_many": "Bozza scartata. Restano {{count}} bozze messe da parte.",
       "discarded_one": "Bozza scartata. Resta {{count}} bozza messa da parte.",
       "discarded_other": "Bozza scartata. Restano {{count}} bozze messe da parte."
+    },
+    "waitingOnYou": {
+      "header": "Azione per te",
+      "stack_label": "Ciò che l’agente ti chiede",
+      "pinned_ago": "Fissato {{time}}",
+      "show_fewer": "Mostra meno",
+      "show_more": "Mostra altro",
+      "show_less": "Mostra meno",
+      "done": "Fatto",
+      "note_label": "Nota per l’agente",
+      "note_placeholder": "Aggiungi una nota (facoltativa)",
+      "dismiss_aria": "Ignora questa richiesta",
+      "read_only": "Solo il proprietario della sessione può rispondere.",
+      "uncertain": "La tua risposta potrebbe essere già stata inviata. Controlla la chat qui sopra.",
+      "answered_elsewhere": "Risposta già data altrove.",
+      "superseded": "L’agente ha sostituito questa richiesta.",
+      "cleared": "L’agente ha ritirato questa richiesta.",
+      "returned_to_composer": "La tua risposta è nella casella del messaggio. Non è stato inviato nulla.",
+      "closed": "Questa richiesta è stata chiusa.",
+      "closed_draft": "La tua nota non è stata inviata.",
+      "copy_to_composer": "Sposta la nota nella casella del messaggio",
+      "discard": "Scarta",
+      "answer_failed": "La tua risposta non è arrivata alla sessione. Riprova.",
+      "answer_invalid": "Questa risposta non è più tra le opzioni.",
+      "answer_refused": "La sessione non ha accettato la risposta, quindi la richiesta resta fissata.",
+      "dismiss_failed": "Impossibile ignorare questa richiesta. Riprova.",
+      "status_line": "Azione per te · {{title}}",
+      "more_count_one": "+{{n}} altro",
+      "more_count_many": "+{{n}} altri",
+      "more_count_other": "+{{n}} altri"
     }
   },
   "hooks": {

@@ -136,6 +136,10 @@ from kiro_crew.validation_parts.messaging_session_schemas import (
     WAIT_SCHEMA,
     WORK_DISPATCH_SCHEMA,
 )
+from kiro_crew.waiting_on_you_contract import (
+    WAITING_ON_YOU_CLEAR_SCHEMA,
+    WAITING_ON_YOU_SCHEMA,
+)
 
 # ── Schema Registry ──
 
@@ -172,6 +176,8 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "monitor_start": MONITOR_START_SCHEMA,
     "monitor_update": MONITOR_UPDATE_SCHEMA,
     "ask_question": ASK_QUESTION_SCHEMA,
+    "waiting_on_you": WAITING_ON_YOU_SCHEMA,
+    "waiting_on_you_clear": WAITING_ON_YOU_CLEAR_SCHEMA,
     "nothing_to_do": NOTHING_TO_DO_SCHEMA,
     "delete_message": DELETE_MESSAGE_SCHEMA,
     "update_message": UPDATE_MESSAGE_SCHEMA,

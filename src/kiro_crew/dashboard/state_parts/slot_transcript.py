@@ -413,6 +413,14 @@ def append(
         # reopening a session is not writing in it.
         if note_participant:
             note_author(self, meta)
+        # The owner writing in the chat retires every waiting-on-you ask: the server
+        # cannot tell which one the message answers (``waiting_on_you_events``).
+        try:
+            from kiro_crew.dashboard.waiting_on_you_events import on_live_user_row
+
+            on_live_user_row(getattr(self._on_message, "__self__", None), self.key, meta)
+        except Exception:
+            logger.debug("waiting-on-you retirement failed for %s", self.key, exc_info=True)
     if meta:
         msg["meta"] = meta
     # Stamp a per-row delivery identity. A client sees the SAME row through

@@ -833,6 +833,8 @@ RESERVED_ROW_META_KEYS = frozenset(
         # Redirects a pin or link on a superseded row (`_retire_superseded_steer_row`).
         "supersededBy",
         REQUEUED_STEER_ROW_MID_META,
+        # Names the waiting-on-you ask a row answers; only its answer route sets it.
+        "waitingOnYou",
     }
 )
 

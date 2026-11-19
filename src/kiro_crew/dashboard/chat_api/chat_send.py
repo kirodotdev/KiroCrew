@@ -386,6 +386,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     """The send itself; :func:`api_chat` adds the Crew Mode worker steer record."""
     # Imported here: this module's bodies run in the chat_handlers namespace.
     from kiro_crew.dashboard import card_send, channel_prompt, redaction_audience
+    from kiro_crew.dashboard.waiting_on_you_events import answer_meta as _wy_meta
 
     _timing_t0 = turn_timing.now()
     state: DashboardState = request.app["state"]
@@ -1292,6 +1293,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             quote=quote_meta(user_meta).get("quote"),
             banner=banner,
             knowledge=knowledge_meta(user_meta),
+            waiting_on_you=_wy_meta(request),
             # The receipt travels whichever way the send went, including the one
             # case where the two disagree: `auto` answered steer and the steer was
             # UNAVAILABLE, so this path runs with a record saying steer. That is the
@@ -1394,6 +1396,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _hold_meta.update(quote_meta(user_meta))
         _hold_knowledge = knowledge_meta(user_meta)
         _hold_meta.update(_hold_knowledge)
+        _hold_meta.update(_wy_meta(request))
         if banner:
             _hold_meta[CHAT_BANNER_META_KEY] = banner
         if request_app or cron_creator or _agent_origin:
@@ -1659,7 +1662,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # reply so every pane sees the user row in order, independently of when the
         # HTTP receipt arrives. sendId/mid reconcile an existing optimistic bubble;
         # callers without a correlation id keep their existing delivery contract.
-        _user_row_meta = _redact_meta(user_meta) if user_meta else {}
+        _user_row_meta = {**(_redact_meta(user_meta) if user_meta else {}), **_wy_meta(request)}
         if (
             user_meta
             and _person_send

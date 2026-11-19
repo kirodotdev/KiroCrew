@@ -1303,6 +1303,7 @@ def queue_for_next_turn(
     banner: str = "",
     queued_work: Any = None,
     knowledge: dict[str, Any] | None = None,
+    waiting_on_you: dict[str, Any] | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -1425,6 +1426,10 @@ def queue_for_next_turn(
         meta[CHAT_BANNER_META_KEY] = banner
     if knowledge:
         meta.update(knowledge)
+    if waiting_on_you:
+        # A card answer's ``waitingOnYou`` claim, set only by its answer route. The
+        # drain never merges such an entry, so its row answers exactly one ask.
+        meta.update(waiting_on_you)
     qid = slot.queue_append(
         message,
         meta=meta,

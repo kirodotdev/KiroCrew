@@ -308,6 +308,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _isolate_display_verdicts,
     _isolate_kiro_window_cache,
     _isolate_member_identity_cache,
+    _isolate_waiting_on_you_stores,
     _ledger_create_ignores_live_memory,
     _no_boot_heap_freeze,
     _no_boot_sandbox_sweep,

@@ -89,10 +89,19 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/nav/resolve-links", chat.api_chat_nav_resolve_links)
     app.router.add_post("/api/chat/slots/{slot}/generate-title", chat.api_chat_slot_generate_title)
     app.router.add_patch("/api/chat/slots/{slot}/title", chat.api_chat_slot_rename)
-    app.router.add_post("/api/chat/slots/{slot}/regenerate", chat.api_chat_slot_regenerate)
+    # A rewind, regenerate or edit-resend clears the slot's waiting-on-you asks.
+    from kiro_crew.dashboard.waiting_on_you_events import clearing_on_success
+
+    app.router.add_post(
+        "/api/chat/slots/{slot}/regenerate", clearing_on_success(chat.api_chat_slot_regenerate)
+    )
     app.router.add_post("/api/chat/slots/{slot}/switch-variant", chat.api_chat_slot_switch_variant)
-    app.router.add_post("/api/chat/slots/{slot}/edit-resend", chat.api_chat_slot_edit_resend)
-    app.router.add_post("/api/chat/slots/{slot}/rewind", chat.api_chat_slot_rewind)
+    app.router.add_post(
+        "/api/chat/slots/{slot}/edit-resend", clearing_on_success(chat.api_chat_slot_edit_resend)
+    )
+    app.router.add_post(
+        "/api/chat/slots/{slot}/rewind", clearing_on_success(chat.api_chat_slot_rewind)
+    )
     # Folders
     app.router.add_get("/api/chat/folders", chat.api_chat_folders)
     app.router.add_post("/api/chat/folders", chat.api_chat_folder_create)

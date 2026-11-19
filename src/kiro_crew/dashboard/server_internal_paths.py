@@ -90,6 +90,10 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # the browser half of /api/ask-question is not swept in by the
         # prefix-matched strict check.
         "/api/agent-ask",
+        # The waiting_on_you / waiting_on_you_clear tools: set and clear. STRICT for
+        # the agent-ask reason above -- the ask is pinned on the attested
+        # X-Session-Key's own slot, which a browser bearer must not assert.
+        "/api/agent-waiting",
         # Session directives: the provider-neutral leg of the directive
         # protocol. STRICT for the same reasons as its sibling above — the
         # only legitimate caller is a Kiro Crew directive tool in an MCP

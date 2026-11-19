@@ -10199,7 +10199,8 @@
       "status_running": "処理中",
       "status_unread": "未読",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "このタブのピン留めを解除します。ピン留めしたタブは閉じられません。"
+      "unpin_tab_hint": "このタブのピン留めを解除します。ピン留めしたタブは閉じられません。",
+      "status_action": "あなたへの依頼 · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "スマホで {{productName}} を使う",
@@ -11355,6 +11356,34 @@
       "discard_failed": "下書きを破棄できませんでした。ブラウザーのストレージを利用できません。下書きは一時保存されたままです。",
       "undo_failed": "下書きを一時保存に戻せませんでした。一時保存がいっぱいか、ブラウザーのストレージを利用できません。",
       "discarded_other": "一時保存した下書きを破棄しました。残りは {{count}} 件です。"
+    },
+    "waitingOnYou": {
+      "header": "あなたへの依頼",
+      "stack_label": "エージェントからの依頼",
+      "pinned_ago": "{{time}}にピン留め",
+      "show_fewer": "折りたたむ",
+      "show_more": "もっと表示",
+      "show_less": "表示を減らす",
+      "done": "完了",
+      "note_label": "エージェントへのメモ",
+      "note_placeholder": "メモを追加（任意）",
+      "dismiss_aria": "この依頼を閉じる",
+      "read_only": "セッションの所有者だけが回答できます。",
+      "uncertain": "回答はすでに送信されている可能性があります。上のチャットを確認してください。",
+      "answered_elsewhere": "別の場所で回答済みです。",
+      "superseded": "エージェントがこの依頼を差し替えました。",
+      "cleared": "エージェントがこの依頼を取り下げました。",
+      "returned_to_composer": "回答はメッセージ欄にあります。何も送信されていません。",
+      "closed": "この依頼は終了しました。",
+      "closed_draft": "メモは送信されていません。",
+      "copy_to_composer": "メモをメッセージ欄に移動",
+      "discard": "破棄",
+      "answer_failed": "回答がセッションに届きませんでした。もう一度お試しください。",
+      "answer_invalid": "この回答はもう選択肢にありません。",
+      "answer_refused": "セッションが回答を受け付けなかったため、依頼はピン留めされたままです。",
+      "dismiss_failed": "この依頼を閉じられませんでした。もう一度お試しください。",
+      "status_line": "あなたへの依頼 · {{title}}",
+      "more_count_other": "ほか {{n}} 件"
     }
   },
   "hooks": {

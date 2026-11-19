@@ -75,6 +75,7 @@ _TO_DICT_KEYS = (
     "last_agent_ts",
     "waiting_for_input",
     "needs_input",
+    "waiting_on_you",
     "interrupted",
     "interrupted_stale",
     "interrupted_by_sign_in",

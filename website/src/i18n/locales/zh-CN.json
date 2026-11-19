@@ -10199,7 +10199,8 @@
       "status_running": "正在处理",
       "status_unread": "未读",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "取消置顶此标签页。已置顶的标签页无法关闭。"
+      "unpin_tab_hint": "取消置顶此标签页。已置顶的标签页无法关闭。",
+      "status_action": "待你操作 · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "在手机上使用 {{productName}}",
@@ -11355,6 +11356,34 @@
       "discard_failed": "无法丢弃草稿：浏览器存储不可用。草稿仍在暂存区中。",
       "undo_failed": "无法将草稿放回暂存区：暂存区已满或浏览器存储不可用。",
       "discarded_other": "已丢弃暂存的草稿。仍有 {{count}} 条暂存。"
+    },
+    "waitingOnYou": {
+      "header": "待你操作",
+      "stack_label": "代理需要你处理的事项",
+      "pinned_ago": "{{time}}固定",
+      "show_fewer": "收起",
+      "show_more": "展开更多",
+      "show_less": "收起",
+      "done": "完成",
+      "note_label": "给代理的备注",
+      "note_placeholder": "添加备注（可选）",
+      "dismiss_aria": "关闭这项请求",
+      "read_only": "只有会话所有者可以回答。",
+      "uncertain": "你的回答可能已经发出。查看上方的聊天。",
+      "answered_elsewhere": "已在别处回答。",
+      "superseded": "代理替换了这项请求。",
+      "cleared": "代理撤回了这项请求。",
+      "returned_to_composer": "你的回答在消息框中。没有发送任何内容。",
+      "closed": "这项请求已关闭。",
+      "closed_draft": "你的备注没有发送。",
+      "copy_to_composer": "把备注移到消息框",
+      "discard": "丢弃",
+      "answer_failed": "回答没有送达会话。再试一次。",
+      "answer_invalid": "这个回答已不在选项中。",
+      "answer_refused": "会话没有接受这个回答，请求仍然固定。",
+      "dismiss_failed": "无法关闭这项请求。再试一次。",
+      "status_line": "待你操作 · {{title}}",
+      "more_count_other": "另外 {{n}} 个"
     }
   },
   "hooks": {

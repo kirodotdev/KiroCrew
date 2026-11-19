@@ -854,6 +854,22 @@ def _isolate_member_identity_cache(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_waiting_on_you_stores(_floor_monkeypatch):
+    """Keep the waiting-on-you store a test caches per data home inside that test.
+
+    ``store_for`` caches one ``WaitingStore`` per store path for the process, and a
+    store holds its loaded asks in memory. Without a reset, a later test whose data
+    home resolves to the same path reads the earlier test's asks. Only a module
+    already imported can hold a cached store, so a run that never imports it pays
+    nothing. Each test gets a COPY, and the undo puts the original back.
+    """
+    waiting = sys.modules.get("kiro_crew.dashboard.waiting_on_you")
+    if waiting is None:
+        return
+    _floor_monkeypatch.setattr(waiting, "_STORES", dict(waiting._STORES))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_advertised_model_cache(_floor_monkeypatch):
     """Keep one session's advertised model spellings and labels inside its own test."""
     from kiro_crew import model_registry

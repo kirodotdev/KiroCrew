@@ -16,6 +16,9 @@ import AttentionCard, { RestoredQuestionNotice } from './AttentionCard'
 import { APPROVAL_MODE_KEYS, isRootSession, runTitle } from './model'
 import { PANEL_HEADING_ATTR } from './panelHeading'
 import { slotRowByKey } from '../../../store/slotIndex'
+import WaitingOnYouStack from '../../../components/waitingOnYou/WaitingOnYouStack'
+import { pinnedAsks } from '../../../lib/waitingOnYou'
+import { restoreToComposer } from '../../../utils/composerRestore'
 
 // The Overview chunk is lazy-loaded. A chunk that fails to load (a 404 after a
 // frontend rebuild on an open tab) shows its notice in the Overview region, with
@@ -85,6 +88,15 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
   // one predicate for that.
   const owner = useAppSelector(s => slot ? slotRowByKey(s.dashboard.slots, slot) : undefined)
   const root = !!slot && isRootSession(owner)
+  // Asks the agents pinned, per session in this panel's scope, listed beside
+  // the question cards. Each is answered by the same stack the composer shows.
+  const allSlots = useAppSelector(s => s.dashboard.slots)
+  const waiting = data.nodes
+    .filter(n => n.kind === 'session')
+    .map(n => ({ node: n, row: slotRowByKey(allSlots, n.slot) }))
+    .map(w => ({ ...w, asks: pinnedAsks(w.row) }))
+    .filter(w => w.asks.length > 0)
+  const waitingCount = waiting.reduce((sum, w) => sum + w.asks.length, 0)
   // A crewmate's DM slot is a root too, but its agent writes the CREWMATE's page,
   // not a session page, so the Overview shows that page. Decided by the roster's
   // own slot binding; until the roster answers, nothing is mounted rather than a
@@ -122,7 +134,7 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
       <div hidden={!sessionReady} className="space-y-3">
       <SegmentedControl value={section} onChange={setSection} collapse={false} wrap layoutId={`task-dashboard-section-${slot}`} segments={[
         ...(root ? [{ key: 'dashboard' as const, label: t('commandCenter.dashboard'), icon: <LayoutDashboard size={14} /> }] : []),
-        { key: 'attention', label: t('commandCenter.needs_input'), icon: <MessageSquare size={14} />, count: data.attention.length - data.approvalCount },
+        { key: 'attention', label: t('commandCenter.needs_input'), icon: <MessageSquare size={14} />, count: data.attention.length - data.approvalCount + waitingCount },
         { key: 'approvals', label: t('commandCenter.approvals'), icon: <ShieldCheck size={14} />, count: data.approvalCount },
       ]} />
       {/* No hand-off: pending QuestionCard answer drafts remain mounted below. */}
@@ -144,6 +156,7 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
       {!data.stale
         && !data.attention.some(a => section === 'approvals' ? a.kind === 'approval' : a.kind !== 'approval')
         && (section === 'approvals' || !data.restoredQuestionNotices.length)
+        && (section === 'approvals' || waiting.length === 0)
         && <p className="text-sm text-muted p-3">{t('commandCenter.no_input')}</p>}
       {data.attention.map(item => {
         const node = data.nodes.find(n => n.id === `session:${item.slot}`)!
@@ -151,6 +164,12 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
           <AttentionCard item={item} title={runTitle(node)} context={node.detail} onOpenSession={onOpenSession} onDraftChange={item.question ? answers => data.onQuestionDraftChange(item.question!, answers) : undefined} />
         </div>
       })}
+      {waiting.map(({ node, row, asks }) => (
+        <div key={`waiting:${node.slot}`} hidden={section === 'approvals'} data-testid="command-center-waiting">
+          <div className="mb-1 text-[12px] font-medium text-text-strong truncate">{runTitle(node)}</div>
+          <WaitingOnYouStack slotKey={node.slot} asks={asks} agent={row?.agent} layout="list" onReturnToComposer={text => restoreToComposer(node.slot, text)} />
+        </div>
+      ))}
       {data.restoredQuestionNotices.map(notice => {
         const node = data.nodes.find(n => n.id === `session:${notice.slot}`)
         return <div key={notice.id} hidden={section === 'approvals'}>

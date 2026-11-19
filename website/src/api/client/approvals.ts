@@ -35,6 +35,16 @@ export function decideApprovalPath(target: ApprovalTarget, action: 'approve' | '
     : '/api/chat/slots/' + encodeURIComponent(target.slot) + '/approve'
 }
 
+/** A decision card is answered with one of its labels, an action card with
+ *  a note that may be empty. Never both. */
+export type WaitingOnYouAnswer =
+  | { ask_id: string; answer_id: string; label: string }
+  | { ask_id: string; answer_id: string; text: string }
+
+function waitingOnYouPath(slot: string, key: string, action: 'answer' | 'dismiss'): string {
+  return '/api/chat/slots/' + encodeURIComponent(slot) + '/waiting-on-you/' + encodeURIComponent(key) + '/' + action
+}
+
 export function createApprovalsEndpoints({ post, j, jfetch: fetch }: ClientTransport) {
   const requests = {
     approvals: (): Promise<{ id: string; instance?: string; source?: string; tool?: string; tool_input?: string; tool_purpose?: string; tool_call_id?: string; slot?: string; ts?: number; run_task_id?: string; task_index?: number }[]> => fetch('/api/approvals').then(j),
@@ -87,6 +97,15 @@ export function createApprovalsEndpoints({ post, j, jfetch: fetch }: ClientTrans
      *  it lands, and the server refuses rather than retiring the wrong ask. */
     dismissQuestionCard: (slot: string, cardId: string) =>
       post('/api/ask-question/dismiss', { slot, card_id: cardId }).then(j),
+    /** Answer a pinned waiting-on-you ask: the route sends one ordinary turn
+     *  holding only `label` or `text`, and retires the ask once that send is
+     *  accepted. `answerId` names one click, so a retry of that click gets the
+     *  first outcome back instead of a second turn. A refusal rejects with an
+     *  `ApiError` whose body carries the `code` (`waitingRefusalCode`). */
+    answerWaitingOnYou: (slot: string, key: string, answer: WaitingOnYouAnswer) =>
+      post(waitingOnYouPath(slot, key, 'answer'), answer).then(j) as Promise<{ ok: true; outcome: 'sent' | 'queued'; answer_id: string }>,
+    dismissWaitingOnYou: (slot: string, key: string, askId: string) =>
+      post(waitingOnYouPath(slot, key, 'dismiss'), { ask_id: askId }).then(j) as Promise<{ ok: true }>,
   }
 
   return { requests }

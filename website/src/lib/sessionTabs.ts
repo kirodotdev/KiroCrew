@@ -270,7 +270,7 @@ export function removeTabAt<T>(
 }
 
 /** What a tab's status dot reports. Ordered by which state a user must see first. */
-export type TabStatus = 'idle' | 'running' | 'unread' | 'permission' | 'question'
+export type TabStatus = 'idle' | 'running' | 'unread' | 'permission' | 'question' | 'action'
 
 /**
  * The one status mapping both strips draw from.
@@ -278,17 +278,20 @@ export type TabStatus = 'idle' | 'running' | 'unread' | 'permission' | 'question
  * The ORDER is the contract, not an implementation detail. `permission` and
  * `question` outrank `running` because both mean the turn is parked on the
  * user: a tab pulsing "working" is exactly what makes someone leave it alone,
- * so a blocked session that reads as busy is never looked at. `unread` is last
+ * so a blocked session that reads as busy is never looked at. `action` (an
+ * ask the agent pinned) ranks below both, which a live question or approval
+ * must win over, and above `running` for the same reason. `unread` is last
  * because it is true of anything that merely finished.
  */
 export function tabStatus(
-  slot: { running?: boolean; pending_approval?: boolean; needs_input?: boolean } | undefined,
+  slot: { running?: boolean; pending_approval?: boolean; needs_input?: boolean; waiting_on_you?: readonly unknown[] } | undefined,
   unreadKeys: readonly string[] | ReadonlySet<string>,
   key: string,
 ): TabStatus {
   if (!slot) return 'idle'
   if (slot.pending_approval) return 'permission'
   if (slot.needs_input) return 'question'
+  if (slot.waiting_on_you?.length) return 'action'
   if (slot.running) return 'running'
   const unread = unreadKeys instanceof Set ? unreadKeys.has(key) : (unreadKeys as readonly string[]).includes(key)
   return unread ? 'unread' : 'idle'
@@ -307,6 +310,7 @@ export const TAB_STATUS_COLOR: Record<TabStatus, string> = {
   unread: 'var(--ok)',
   permission: 'var(--warn)',
   question: 'var(--info)',
+  action: 'var(--aim)',
 }
 
 /**
