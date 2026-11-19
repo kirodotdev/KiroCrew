@@ -742,3 +742,25 @@ describe('InstanceTabBar — relay Crew tabs', () => {
     expect((await screen.findAllByText('Team One')).length).toBeGreaterThan(0)
   })
 })
+
+describe('InstanceTabBar — a crew turned Off', () => {
+  it('lists no row and no tunnel error for a crew turned Off in Remote Crew', async () => {
+    // Off keeps `was_connected`, and the refused connect leaves an error status.
+    const main = conn({ id: 'main', name: 'Main Crew', was_connected: true })
+    const off = conn({
+      id: 'demo',
+      name: 'Demo Crew',
+      via_instance_id: 'main',
+      was_connected: true,
+      disabled: true,
+      status: { instance_id: 'demo', state: 'error', error: 'instance is disabled' },
+    })
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([main, off]))
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />)
+
+    await openSwitcher(u, /Main Crew/i)
+    expect(screen.queryByRole('menuitemradio', { name: /Demo Crew/i })).toBeNull()
+    expect(screen.queryByText(/tunnel error/i)).toBeNull()
+  })
+})

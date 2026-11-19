@@ -67,9 +67,32 @@ export function visibleInstanceTabs(
   instances: InstanceView[],
   warm: Record<string, WarmConn>,
 ): InstanceView[] {
+  const byId = new Map(instances.map(i => [i.id, i]))
   return instances.filter(
-    i => hasDashboardPane(i) && (i.was_connected || i.status?.state === 'connected' || !!warm[i.id]),
+    i =>
+      hasDashboardPane(i) &&
+      !isTurnedOff(i, byId) &&
+      (i.was_connected || i.status?.state === 'connected' || !!warm[i.id]),
   )
+}
+
+/**
+ * Whether the owner turned this crew Off in Settings -> Remote Crew, or turned off
+ * a crew it is reached through. Off keeps `was_connected`, so the tab rule alone
+ * would keep the row and show the refused connect as a tunnel error. The gateway
+ * refuses to connect such a crew (`instance_disabled`), so it has no pane to
+ * switch to; the Remote Crew panel is where it reads Off and is turned back on.
+ * Visit-guarded, so a registry holding a loop terminates.
+ */
+function isTurnedOff(inst: InstanceView, byId: Map<string, InstanceView>): boolean {
+  const seen = new Set<string>()
+  let cur: InstanceView | undefined = inst
+  while (cur && !seen.has(cur.id)) {
+    if (cur.disabled) return true
+    seen.add(cur.id)
+    cur = cur.via_instance_id ? byId.get(cur.via_instance_id) : undefined
+  }
+  return false
 }
 
 /** One switcher row's place in the chain: how deep, under whom, and whether the
@@ -1397,6 +1420,7 @@ export default function InstanceTabBar({
   // per-entry visual state, NOT whether the entry exists, so a crew survives a
   // gateway restart or a failed auto-reconnect (rendered with an error dot)
   // instead of vanishing and forcing the user back to Settings → Remote Crew.
+  // A crew the owner turned Off there (or one reached through it) has no entry.
   const tabInstances = useMemo(() => visibleInstanceTabs(instances, warm), [instances, warm])
 
   // Select-and-maybe-reconnect semantics live in the shared useSelectInstance
