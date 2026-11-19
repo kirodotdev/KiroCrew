@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useSyncExternalStore, createContext, lazy, memo, Suspense, type ReactNode } from 'react'
+import { useEffect, useState, useCallback, useRef, createContext, lazy, memo, Suspense, type ReactNode } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from './store'
 import { setUpdateProgress } from './store/dashboardSlice'
@@ -11,7 +11,8 @@ import { GuideProvider } from './guide/GuideContext'
 import { metricColor } from './utils/metricColor'
 import { railWidthFor } from './hooks/useRailWidth'
 import { FOCUS_INSET } from './hooks/useFocusMode'
-import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registerThemeDecorBehindSlot, registerThemeDecorSlot } from './lib/themeDecorLayer'
+import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registerThemeDecorBehindSlot, registerThemeDecorSlot, useThemeDecorSlot } from './lib/themeDecorLayer'
+import RegisteredThemeOverlays from './shell/RegisteredThemeOverlays'
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
@@ -77,7 +78,6 @@ import { usePinnedScrollOrigin } from './hooks/usePinnedScrollOrigin'
 import './utils/terminalExitClose'
 import { focusPopout as focusTerminalPopout } from './utils/terminalPopout'
 import { mainStackingClass } from './utils/terminalFullscreen'
-import { REGISTERED_OVERLAYS_PACK, readExperience, subscribeExperience } from './utils/themeConsent'
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
 import { relayPaneBridge } from './lib/relayCrewPanes'
@@ -443,11 +443,7 @@ export default function App() {
   // pane can take its rect, but hidden and inert under it.
   const relayActive = useAppSelector(s => s.instances.relayActive ?? null)
   const [relayPanesOn] = useState(() => relayPaneBridge() !== null)
-  // Read during render, so turning the part off never mounts an overlay for one frame.
-  const overlaysOn = useSyncExternalStore(
-    useCallback((onChange: () => void) => subscribeExperience(colorTheme, onChange), [colorTheme]),
-    () => readExperience(colorTheme, REGISTERED_OVERLAYS_PACK).overlays,
-  )
+  const decorSlot = useThemeDecorSlot()
 
   /**
    * Phone chat page: the main navigation as a 72px icon rail.
@@ -1069,17 +1065,9 @@ export default function App() {
     />
     {/* Search all chats (⌘⇧F / Ctrl+Shift+F, the sidebar button). */}
     <GlobalChatSearchDialog />
-    {/* Theme decoration: decorative overlays (widgets, transitions)
-        contributed by the active theme's branding. Absent unless a registered
-        theme declares them, and while the user has turned that theme's
-        Overlays part off. Each overlay is isolated in its own
-        ErrorBoundary (fallback=null) so a throwing overlay disables only itself,
-        not the shell or its siblings. */}
-    {overlaysOn && branding?.overlays?.map((Overlay, i) => (
-      <ErrorBoundary key={`${colorTheme}:${i}`} scope={`theme-overlay:${i}`} fallback={null}>
-        <Overlay />
-      </ErrorBoundary>
-    ))}
+    {/* A registered theme's decorative overlays, and the composer clip on the
+        decor slot (shell/RegisteredThemeOverlays.tsx). */}
+    <RegisteredThemeOverlays colorTheme={colorTheme} overlays={branding?.overlays} slot={decorSlot} />
     {(isPopout || isEmbed) && <Lightbox />}
     </ZoomProvider>
   )

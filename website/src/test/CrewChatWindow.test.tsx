@@ -219,6 +219,7 @@ describe('CrewChatWindow', () => {
     for (const el of chrome) expect(el.className).not.toMatch(/(^|\s)(liquid-glass|border-t|p[ytb]?-\S+)(?=\s|$)/)
     const notices = screen.getByTestId('crew-window-notices')
     expect(notices).toHaveClass('empty:hidden')
+    expect(notices).toHaveAttribute('data-guide-keep-clear')
     await waitFor(() => expect(notices.childElementCount).toBe(0))
   })
 

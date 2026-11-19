@@ -59,6 +59,7 @@ import { useStableCallbackProps } from '../useStableCallbackProps'
 import type { ComposerTypingLock } from '../shared-crew/useComposerTypingLock'
 import SessionControlHost from '../../../components/SessionControlHost'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { GUIDE_KEEP_CLEAR } from '../../../guide/trustRoot'
 import KiroSignInPrompt from '../../../components/KiroSignInPrompt'
 import { pinIsWithheld } from '../../../lib/model'
 import FollowUpCard, { type FollowupStartMode } from '../../../components/FollowUpCard'
@@ -491,6 +492,7 @@ export default function ComposerDockView({
                   className="px-4 mb-1.5 mx-auto w-full"
                   style={{ maxWidth: 'var(--mc-content-width, 900px)' }}
                   data-testid="refused-press-error"
+                  {...GUIDE_KEEP_CLEAR}
                 >
                   <ErrorNotice
                     title={i18nT(REFUSED_PRESS_TITLE_KEYS[refusedPress.action])}
@@ -869,7 +871,7 @@ export default function ComposerDockView({
               connected={connected}
             />
               </Composer>
-              {steerWorker !== undefined && steerTooLong && <p role="alert" className="mt-1 px-4 mx-auto w-full text-[12px] text-danger-text" style={{ maxWidth: 'var(--mc-content-width, 900px)' }} data-testid="crew-steer-too-long">{i18nT('components.crewMode.steer_too_long', { name: steerWorker, max: fmtNumber(CREW_STEER_MAX_CHARS) })}</p>}
+              {steerWorker !== undefined && steerTooLong && <p role="alert" className="mt-1 px-4 mx-auto w-full text-[12px] text-danger-text" style={{ maxWidth: 'var(--mc-content-width, 900px)' }} data-testid="crew-steer-too-long" {...GUIDE_KEEP_CLEAR}>{i18nT('components.crewMode.steer_too_long', { name: steerWorker, max: fmtNumber(CREW_STEER_MAX_CHARS) })}</p>}
               </div>
             </div>
             {/* Agent dropdown portal — triggered from input bar */}

@@ -387,6 +387,13 @@ export default [
       // Stated as a false-negative class: copy added to THIS path will not be
       // reported, so keep it CSS values in, CSS strings out.
       'src/components/canvas/canvasPaint.ts',
+      // The theme decor slot's `clip-path` builder: every literal is polygon
+      // text (`polygon(evenodd, ...)`, `0px 0px`) handed to the CSS parser,
+      // never read as words. Its DOM reader, `themeDecorKeepClear.ts`, stays
+      // fully gated. Same mechanical boundary as `themeCss.ts` above: no
+      // `i18nT` / `useTranslation` import, no JSX, no DOM access. Stated as a
+      // false-negative class: copy added to THIS path will not be reported.
+      'src/lib/decorClipPath.ts',
       // The Kiro-ghost avatar generator's art tables. Every literal in the module
       // is SVG handed to the SVG parser: the shipped mark's `d` path data, the
       // per-part fragments built from it, and the hex tile colors. Translating any

@@ -64,9 +64,11 @@ export function useGuideTrustRootAttrs(): Partial<typeof guideTrustRoot> {
 }
 
 /**
- * Marks a region the guide's panel never covers (the chat composer): the
- * person types there while a step is shown, and the end of the reply sits
- * right above it. Read by `pageChromeBoxes`.
+ * Marks a region the guide's panel never covers (the chat composer, and the
+ * notice rows its host draws beside it): the person types there while a step
+ * is shown, and the end of the reply sits right above it. Read by
+ * `pageChromeBoxes`, and by the theme decor slot,
+ * which cuts it out of every theme overlay (lib/themeDecorKeepClear.ts).
  */
 export const GUIDE_KEEP_CLEAR_ATTR = 'data-guide-keep-clear'
 export const GUIDE_KEEP_CLEAR = { [GUIDE_KEEP_CLEAR_ATTR]: '' } as const
