@@ -623,6 +623,10 @@ def _is_ssh_auth_refusal(low: str) -> bool:
 # output — so no credential-bearing or path-bearing stderr can reach the
 # banner (PR-1418 lesson: free-text stderr passthrough cannot be closed by
 # shape enumeration). Matched case-insensitively; first match wins.
+#: The fixed label a redacted fetch keeps for GitHub's "Repository not found", so
+#: the private-repository check in ``gh_credential`` can still read it.
+_GIT_REPOSITORY_NOT_FOUND_LABEL = "the repository was not found"
+
 _GIT_FAILURE_CLASS_LABELS: tuple[tuple[str, str], ...] = (
     # libcurl's proxy phrasings ("Could not resolve proxy: …", "Received HTTP code
     # 407 from proxy after CONNECT", "CONNECT tunnel failed, response 407", "Proxy
@@ -665,6 +669,10 @@ _GIT_FAILURE_CLASS_LABELS: tuple[tuple[str, str], ...] = (
     ("ssl backend", "a TLS/SSL error occurred"),
     ("gnutls_handshake", "a TLS/SSL error occurred"),
     ("tls handshake", "a TLS/SSL error occurred"),
+    # GitHub's "remote: Repository not found." phrase contains spaces that no
+    # repo URL path can match. Last so it cannot shadow a more specific failure;
+    # deliberately not bare "not found" or git's URL-bearing fatal line.
+    ("repository not found", _GIT_REPOSITORY_NOT_FOUND_LABEL),
 )
 
 
@@ -761,6 +769,23 @@ _FETCH_CAUSE_AUTH = "auth"
 _FETCH_CAUSE_NETWORK = "network"
 _FETCH_CAUSE_TIMEOUT = "timeout"
 _FETCH_CAUSE_OTHER = "other"
+# A private ``https://github.com`` source that failed the first attempt and could
+# not be read through the host's ``gh`` either (see ``gh_credential.py``):
+# ``gh_missing`` no trusted ``gh`` on this computer, ``gh_signed_out`` ``gh`` is not
+# signed in to github.com, ``gh_no_access`` the signed-in account cannot read the
+# repository, ``gh_strict_mode`` the provider-binary policy refuses the retry.
+_FETCH_CAUSE_GH_MISSING = "gh_missing"
+_FETCH_CAUSE_GH_SIGNED_OUT = "gh_signed_out"
+_FETCH_CAUSE_GH_NO_ACCESS = "gh_no_access"
+_FETCH_CAUSE_GH_STRICT = "gh_strict_mode"
+_GH_FETCH_CAUSES = frozenset(
+    {
+        _FETCH_CAUSE_GH_MISSING,
+        _FETCH_CAUSE_GH_SIGNED_OUT,
+        _FETCH_CAUSE_GH_NO_ACCESS,
+        _FETCH_CAUSE_GH_STRICT,
+    }
+)
 _REGISTRY_FETCH_CAUSES = frozenset(
     {
         _FETCH_CAUSE_DNS,
@@ -769,6 +794,7 @@ _REGISTRY_FETCH_CAUSES = frozenset(
         _FETCH_CAUSE_NETWORK,
         _FETCH_CAUSE_TIMEOUT,
         _FETCH_CAUSE_OTHER,
+        *_GH_FETCH_CAUSES,
     }
 )
 
