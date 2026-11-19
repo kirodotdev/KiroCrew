@@ -109,6 +109,37 @@ own eval home, and scores them PASSED / FAILED / VOID (`tasks.py`, `arms.py`).
 `--check` proves each case without a model. See
 [`evals/tasks/README.md`](../../../evals/tasks/README.md).
 
+## Save a chat as a scenario
+
+```bash
+# Write ./evals/captured_<key>.json from a recorded chat
+kirocrew eval capture chat-3-1700000000
+
+# Choose the file; --force replaces one that exists
+kirocrew eval capture chat-3-1700000000 --out ./evals/refund_bug.json --force
+
+kirocrew eval --file ./evals/refund_bug.json
+```
+
+Each user message of the chat becomes a turn. Every turn is seeded with a
+`tool_called` assertion for each distinct tool the agent called, a `tool_order`
+assertion when it called two or more, and a `judge` criterion that `--judge` scores
+(without `--judge` it passes). Edit them before you rely on the file: the seeds record
+what happened, not what should have. A call counts once even when it left an approval
+or refusal row too. A tool call whose row recorded no tool name is left out and counted
+in the command's output. A turn that a scheduled delivery, an auto-nudge or a subagent's
+completion opened is not a user message: its tool calls are never given to the user turn
+before it, and the output counts how many were left out.
+
+Credentials are redacted from every message before it is written. An incognito or
+temporary chat, or one that cannot be read right now, is never captured: the command
+prints one warning and writes nothing. It also writes nothing for a chat with no user
+message, and it keeps an existing file unless `--force` is given. An `--out` that
+names an existing folder gets the default file name inside it; any other path is
+written as given. Only the first 200 user messages are kept, each cut to 4,000
+characters, and the first 50 tool calls of a turn; the output says how many were left
+out or cut.
+
 ## Available Scenarios
 
 | Name | Turns | Sessions | Dimensions | Time est. |

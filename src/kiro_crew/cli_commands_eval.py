@@ -260,7 +260,17 @@ async def _run_eval(args: argparse.Namespace) -> None:
 
     Exits 1 when a scenario name is unknown (nothing runs) or when any scenario
     fails (after the report is written); returns normally when every one passes.
+    ``capture KEY`` as the first name saves a recorded chat as a scenario instead
+    (``eval.capture``) and exits with that command's code.
     """
+
+    if (getattr(args, "scenarios", None) or [])[:1] == ["capture"] and not getattr(
+        args, "all_scenarios", False
+    ):
+        # `kirocrew eval capture KEY` saves a recorded chat as a scenario file; it runs nothing.
+        from kiro_crew.eval.capture import run_capture
+
+        sys.exit(await asyncio.to_thread(run_capture, args))
 
     scenarios = await asyncio.to_thread(_load_eval_scenarios, args)
     if scenarios is None:
@@ -408,7 +418,12 @@ def _eval_run_flag_refusal(args: argparse.Namespace) -> str:
         if stray:
             return f"kirocrew eval run does not take --{stray[0].replace('_', '-')}"
         return ""
-    stray = [n for n in _EVAL_RUN_ONLY if getattr(args, n, None)]
+    stray = [
+        n
+        for n in _EVAL_RUN_ONLY
+        # `capture KEY --out FILE` names the scenario file it writes.
+        if getattr(args, n, None) and not (n == "out" and names[:1] == ["capture"])
+    ]
     if stray:
         return f"--{stray[0].replace('_', '-')} needs kirocrew eval run"
     return ""

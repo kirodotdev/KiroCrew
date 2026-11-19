@@ -173,6 +173,7 @@ def register_eval_parser(sub: _Commands, _jail_opts: argparse.ArgumentParser) ->
 Examples:
   kirocrew eval                         # smoke test (~30s)
   kirocrew eval memory_recall_basic     # specific scenario
+  kirocrew eval capture chat-3-1700000000   # save a recorded chat as ./evals/captured_<key>.json
   kirocrew eval --all                   # all scenarios (slow)
   kirocrew eval --dir ./evals           # your own scenario files (.json, .yaml, .yml)
   kirocrew eval --file ./evals/a.yaml --agent reviewer --model my-model-id --repeat 3
@@ -187,12 +188,19 @@ Examples:
         "scenarios",
         nargs="*",
         default=[],
-        help="Scenario names to run (without extension). Default: smoke_test",
+        help="Scenario names to run (without extension). Default: smoke_test. "
+        "'capture KEY' saves the recorded chat KEY as a scenario file instead",
     )
     eval_parser.add_argument(
         "--all", action="store_true", dest="all_scenarios", help="Run all scenarios"
     )
     eval_parser.add_argument("--judge", action="store_true", help="Enable LLM judge scoring")
+    eval_parser.add_argument(
+        "--force",
+        action="store_true",
+        dest="eval_force",
+        help="With 'capture': replace the file if it exists",
+    )
     eval_parser.add_argument(
         "--dir",
         dest="eval_dir",
@@ -255,7 +263,12 @@ Examples:
         metavar="DIR",
         help="Root for the per-run isolated homes (required to run arms)",
     )
-    run.add_argument("--out", metavar="DIR", help="Results directory (default: ./eval_results)")
+    run.add_argument(
+        "--out",
+        metavar="PATH",
+        help="Results directory (default: ./eval_results). With 'capture': the scenario "
+        "file, or a folder to put it in (default: ./evals/captured_<key>.json)",
+    )
     run.add_argument("--json", action="store_true", help="Print the summary as one JSON object")
     run.add_argument(
         "--check",
