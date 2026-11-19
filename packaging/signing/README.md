@@ -76,7 +76,11 @@ warnings).
 
   The mounted-volume phase races Spotlight and XProtect, which start reading
   the freshly-copied app and can hold the volume against ejection ("Resource
-  busy") — the same transient class electron-builder retries on. The script
+  busy"). electron-builder's own dmgbuild step hits the same race, so
+  `run_electron_builder_with_retry` in `packaging/build-desktop.sh` treats an
+  hdiutil "Resource busy" as transient: it detaches the device dmgbuild left
+  attached through `hdiutil-detach.sh`, then retries within its three-attempt
+  budget. The script
   layers its defenses: `-nobrowse` keeps the volume out of Finder, and the
   eject gets bounded retries with a synced force fallback (see
   `hdiutil-detach.sh`). hdiutil calls run without `-quiet`, because

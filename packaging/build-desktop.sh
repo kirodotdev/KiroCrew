@@ -438,8 +438,27 @@ _eb_invoke() {
   CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "$@"
 }
 
+# Detach the disk image dmgbuild left attached when its eject reported
+# "Resource busy" (device read from the log line, e.g. "disk5"). Only a device
+# hdiutil still lists is touched. Never fails: if the device stays held, the
+# retry fails on its own and the bounded budget ends the build. Split out so a
+# test of the retry loop can shadow it.
+_eb_release_busy_dmg() {
+  local disk
+  disk="$(grep -oE 'couldn.t (eject|unmount) "disk[0-9]+"' "$1" | head -n 1 | grep -oE 'disk[0-9]+' || true)"
+  [ -n "$disk" ] || return 0
+  (
+    # shellcheck source=signing/hdiutil-detach.sh
+    . "$ROOT/packaging/signing/hdiutil-detach.sh"
+    if dmg_device_attached "/dev/$disk"; then
+      sync
+      dmg_detach_device "/dev/$disk"
+    fi
+  ) || true
+}
+
 # Run electron-builder (EB_ARGS as "$@"), retrying a bounded number of times
-# on two transient failure classes -- and still failing the build on anything
+# on three transient failure classes -- and still failing the build on anything
 # else, or once the retry budget is exhausted:
 #
 #   - macOS .DS_Store/ENOTEMPTY temp-dir race (electron-userland/electron-builder#6890):
@@ -456,6 +475,13 @@ _eb_invoke() {
 #     per-execution network events, not build errors -- the same commit
 #     passes on a plain re-run, and one matrix leg can fail while its
 #     siblings go green in the same attempt (#3088, #6795).
+#   - macOS dmgbuild eject race: dmgbuild's final `hdiutil detach` fails with
+#     "couldn't eject "diskN" - Resource busy" when Spotlight or XProtect still
+#     hold the freshly written volume (the same race packaging/signing/
+#     build-dmg.sh handles for its own mounts). Before the retry the device
+#     dmgbuild left behind is detached through hdiutil-detach.sh, which waits
+#     with bounded retries and a force fallback, so the next attempt does not
+#     mount a second copy beside it.
 #
 # Split out of the packaging step (rather than left inline) so the
 # retry/classification logic is testable in isolation, mirroring
@@ -475,6 +501,8 @@ run_electron_builder_with_retry() {
     eb_transient=""
     if grep -q "ENOTEMPTY" "$eb_log"; then
       eb_transient="ds_store"
+    elif grep -qE "hdiutil: couldn.t (eject|unmount) .*Resource busy" "$eb_log"; then
+      eb_transient="dmg_busy"
     # Socket-level errno strings and HTTP-level statuses share ONE class
     # because the class boundary here is cleanup, not protocol layer (see the
     # header comment): both arise in the same `got` fetches, and both recover
@@ -493,6 +521,10 @@ run_electron_builder_with_retry() {
         find dist -name .DS_Store -delete 2>/dev/null || true
         rm -rf dist/*-temp 2>/dev/null || true
         eb_backoff=2
+      elif [ "$eb_transient" = "dmg_busy" ]; then
+        echo "  ⚠ dmgbuild could not eject its disk image (Resource busy, attempt $attempt/$max_attempts); detaching it and retrying…" >&2
+        _eb_release_busy_dmg "$eb_log"
+        eb_backoff=5
       else
         echo "  ⚠ transient network/TLS/HTTP failure in an electron-builder fetch (attempt $attempt/$max_attempts); retrying…" >&2
         eb_backoff=$((attempt * 10))

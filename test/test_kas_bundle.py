@@ -1087,6 +1087,40 @@ class TestUniversalNode:
         assert [p.name for p in root.iterdir()] == ["0.66.33"]
         assert [p.name for p in installed.node_bin.parent.iterdir()] == ["node"]
 
+    def test_a_slice_probe_that_times_out_once_is_rerun(self, tmp_path, monkeypatch):
+        # Rosetta's first translation of the x86_64 slice can outlast the probe
+        # timeout; the rerun then starts fast. Only the timed-out slice reruns.
+        src = _darwin_source(tmp_path)
+        installed = _darwin_install(src, tmp_path / "kas")
+        log = tmp_path / "arch.log"
+        first = tmp_path / "first-x86_64"
+        arch = _tool(
+            tmp_path / "arch",
+            f'echo "$1" >> "{log}"\n'
+            f'if [ "$1" = "-x86_64" ] && [ ! -e "{first}" ]; then : > "{first}"; exec sleep 5; fi\n'
+            'shift\nexec "$@"\n',
+        )
+        monkeypatch.setattr(kas_bundle, "_NODE_PROBE_TIMEOUT_SECS", 1)
+        kas_bundle.make_universal_node(
+            _manifest(src), installed, source=str(src), lipo=_fake_lipo(tmp_path), arch=arch
+        )
+        assert sorted(log.read_text().split()) == ["-arm64", "-x86_64", "-x86_64"]
+
+    def test_a_slice_probe_that_keeps_timing_out_fails(self, tmp_path, monkeypatch):
+        src = _darwin_source(tmp_path)
+        installed = _darwin_install(src, tmp_path / "kas")
+        log = tmp_path / "arch.log"
+        arch = _tool(
+            tmp_path / "arch",
+            f'echo "$1" >> "{log}"\nif [ "$1" = "-x86_64" ]; then exec sleep 5; fi\nshift\nexec "$@"\n',
+        )
+        monkeypatch.setattr(kas_bundle, "_NODE_PROBE_TIMEOUT_SECS", 1)
+        with pytest.raises(kas_bundle.KasBundleError, match="timed out"):
+            kas_bundle.make_universal_node(
+                _manifest(src), installed, source=str(src), lipo=_fake_lipo(tmp_path), arch=arch
+            )
+        assert log.read_text().split().count("-x86_64") == 2
+
     def test_a_non_mac_install_is_refused(self, source_dir, tmp_path):
         installed = _install(source_dir, tmp_path / "kas")
         with pytest.raises(kas_bundle.KasBundleError, match="linux-x64"):

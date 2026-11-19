@@ -21,9 +21,9 @@ land in that class too; every other ``4xx`` deliberately does not, because a
 401/403/404 is a configuration fault that fails identically on all three
 attempts.
 
-``run_electron_builder_with_retry`` classifies a failure into one of two
+``run_electron_builder_with_retry`` classifies a failure into one of three
 transient classes (each with its own cleanup/backoff) or "unknown", and only
-the two known classes get a bounded retry; anything else — or the budget
+the three known classes get a bounded retry; anything else — or the budget
 being exhausted — still fails the build, exactly as before.
 
 Why this test exists
@@ -188,7 +188,7 @@ class TestTransientClassesRetry:
     )
     def test_does_not_retry_an_unrecognised_failure(self, tmp_path: Path, error_line: str) -> None:
         """A genuine build error (e.g. a real packaging/config mistake) must
-        abort on its FIRST occurrence with no retries -- only the two known
+        abort on its FIRST occurrence with no retries -- only the three known
         transient classes get a second chance."""
         (tmp_path / "dist").mkdir()
         stub, counter = _counting_stub(tmp_path, fail_times=99, error_line=error_line)
@@ -214,3 +214,64 @@ _eb_invoke() {{
         )
         assert "EXIT=0" in proc.stdout, proc.stdout + proc.stderr
         assert seen.read_text().splitlines() == ["--mac", "-c.extraMetadata.version=1.2.3"]
+
+
+_DMG_BUSY_LINE = (
+    'dmgbuild.core.DMGError: Unable to detach device cleanly: '
+    'hdiutil: couldn\'t eject "disk5" - Resource busy'
+)
+
+
+class TestDmgbuildEjectBusy:
+    """dmgbuild's final eject losing to Spotlight/XProtect ("Resource busy")
+    is retried after the leftover device is detached."""
+
+    def test_retries_after_releasing_the_busy_device(self, tmp_path: Path) -> None:
+        counter = tmp_path / "calls"
+        counter.write_text("")
+        released = tmp_path / "released"
+        line = tmp_path / "line"
+        line.write_text(_DMG_BUSY_LINE + "\n")
+        stub = f"""
+_eb_invoke() {{
+  printf 'x' >> "{counter}"
+  if [ "$(wc -c < "{counter}" | tr -d ' ')" -le 1 ]; then cat "{line}" >&2; return 1; fi
+  return 0
+}}
+_eb_release_busy_dmg() {{ grep -c 'Resource busy' "$1" > "{released}"; }}
+"""
+        proc = _run(stub, 'run_electron_builder_with_retry; echo "EXIT=$?"', tmp_path)
+        assert "EXIT=0" in proc.stdout, proc.stdout + proc.stderr
+        assert len(counter.read_text()) == 2, "must retry exactly once then succeed"
+        assert released.read_text().strip() == "1", "the busy device must be released before the retry"
+
+    def test_release_detaches_the_device_named_in_the_log(self, tmp_path: Path) -> None:
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        calls = tmp_path / "hdiutil.calls"
+        hdiutil = bindir / "hdiutil"
+        hdiutil.write_text(
+            "#!/bin/sh\n"
+            f'echo "$*" >> "{calls}"\n'
+            'if [ "$1" = "info" ]; then\n'
+            '  grep -q "^detach" "' + str(calls) + '" || echo "<string>/dev/disk5</string>"\n'
+            "fi\n"
+            "exit 0\n"
+        )
+        hdiutil.chmod(0o755)
+        log = tmp_path / "eb.log"
+        log.write_text(_DMG_BUSY_LINE + "\n")
+        root = SCRIPT.parent.parent
+        script = (
+            "set -uo pipefail\n"
+            "sleep() { :; }\n"
+            f'ROOT="{root}"\n'
+            f'PATH="{bindir}:$PATH"\n'
+            f"{_extract_function('_eb_release_busy_dmg')}\n"
+            f'_eb_release_busy_dmg "{log}"; echo "EXIT=$?"\n'
+        )
+        proc = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, encoding="utf-8", timeout=30
+        )
+        assert "EXIT=0" in proc.stdout, proc.stdout + proc.stderr
+        assert "detach /dev/disk5" in calls.read_text().splitlines()
