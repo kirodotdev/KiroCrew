@@ -286,6 +286,27 @@ async def create_bound(
         code = _response_code(refusal) if refusal is not None else ""
         raise err(409, code or "crew_log_off", "this conductor has no crew log unit to record into")
     item = await open_unbound_item(board, item_id)
+    from kiro_crew.dashboard.handlers import remote_reclaim
+
+    # Marked before the POST, so a reply lost on the way back (or a hub killed
+    # before the bind) leaves the pull a crew to reclaim the worker from.
+    async with remote_reclaim.creating(board, item.item_id, instance_id) as mark:
+        return await _create_bound_sent(state, mgr, board, instance_id, unit, item, create, mark)
+
+
+async def _create_bound_sent(
+    state: "DashboardState",
+    mgr: Any,
+    board: str,
+    instance_id: str,
+    unit: str,
+    item: work_ledger.WorkItem,
+    create: dict[str, Any],
+    mark: Any,
+) -> tuple[str, Any, work_ledger.WorkItem]:
+    """:func:`create_bound` from the POST on, under its create mark (*mark*)."""
+    routes = _routes()
+    err = routes.CrewCallError
     body = dict(create)
     body["work_item"] = {
         "conductor_key": board,
@@ -333,8 +354,10 @@ async def create_bound(
     assert isinstance(slot, str)
     if payload.get("work_item_id") != item.item_id:
         # A peer that ignored ``work_item`` made a plain session: closed at once, so
-        # a worker never runs unbound (RFC §5, version skew).
+        # a worker never runs unbound (RFC §5, version skew). It stored no copy of
+        # the item, nor of any earlier one, so nothing there is left to reclaim.
         await _close_peer_slot(mgr, instance_id, slot)
+        mark.settle()
         raise err(
             409,
             CODE_PEER_LACKS_WORK_ITEMS,
@@ -363,6 +386,7 @@ async def create_bound(
         await _close_peer_slot(mgr, instance_id, slot)
         code = _response_code(resp) or "bind_failed"
         raise err(409 if resp.status < 500 else 503, code, "the bind did not record; closed")
+    mark.settle()
     # A decide recorded while the create was in flight found the item unbound and
     # forwarded nothing, so the peer may hold an older decision than the hub. The
     # comparison runs on the SETTLED item, inside the forward's own locks.
@@ -513,13 +537,18 @@ async def _reset_if_stale(board: str, item: work_ledger.WorkItem) -> bool:
         record = await asyncio.to_thread(_stored, board, item.item_id)
         if record.binding is None or record.binding == work_ledger.binding_id(item):
             return False
-        await asyncio.to_thread(_store, board, item.item_id, _fresh_record())
+        await asyncio.to_thread(_store, board, item.item_id, _fresh_record(record))
     return True
 
 
-def _fresh_record() -> work_ledger.RemoteState:
-    """The record a new binding starts from: no floor, no outage, no owner."""
-    return work_ledger.RemoteState(report_floor_known=True)
+def _fresh_record(old: work_ledger.RemoteState | None = None) -> work_ledger.RemoteState:
+    """The record a new binding starts from: no floor, no outage, no owner. A create
+    still to reclaim on *old* (``create_tried``) is not the binding's, and is kept."""
+    return work_ledger.RemoteState(
+        report_floor_known=True,
+        create_tried=list(old.create_tried) if old else [],
+        create_tried_at=old.create_tried_at if old else None,
+    )
 
 
 async def _mark_error(board: str, item_id: str, error: str) -> None:
@@ -569,13 +598,15 @@ async def ingest_board(state: "DashboardState", board: str) -> None:
     )
     open_remote.sort(key=lambda item: _stamp(last_pull.get(item.item_id)) or _EPOCH)
     remote = open_remote[:MAX_ITEMS_PER_READ]
-    if not remote:
+    # Items whose create a crew may have made without the hub binding it (M1).
+    tried = await asyncio.to_thread(work_ledger.creates_to_reclaim, board)
+    if not remote and not tried:
         return
     if board in _PULLING:
         return
     _PULLING.add(board)
     try:
-        await _pull_all(state, board, remote)
+        await _pull_all(state, board, remote, tried)
         # Wave 8: retire what has been unreachable too long (RFC §5b).
         await _retire_overdue(state, board, remote, open_remote)
     finally:
@@ -586,12 +617,13 @@ async def _pull_all(
     state: "DashboardState",
     board: str,
     remote: list[work_ledger.WorkItem],
+    tried: dict[str, list[str]] | None = None,
 ) -> None:
     mgr = getattr(state, "instances_manager", None)
     slot_lists: dict[str, dict[str, dict[str, bool]] | None] = {}
     loop = asyncio.get_running_loop()
     deadline = loop.time() + READ_DEADLINE_SECS
-    rows = await remote_batch_pull.pull_batches(state, mgr, board, remote, deadline)
+    rows, batches = await remote_batch_pull.pull_batches(state, mgr, board, remote, deadline, tried)
     # Rows a crew already answered need no peer call: filed first, so a stalled
     # crew's per-item fallback never spends the deadline they were fetched within.
     for item in sorted(remote, key=lambda i: i.item_id not in rows):
@@ -615,6 +647,12 @@ async def _pull_all(
         except Exception:  # noqa: BLE001 - a pull must never fail the read
             logger.warning("remote ingest failed for %s", item.item_id, exc_info=True)
             await _mark_error(board, item.item_id, "crew_pull_failed")
+    if tried:
+        # After the reports are filed, so a slow reclaim never costs a report its
+        # read; with its own budget, so it never runs past the read's caller.
+        from kiro_crew.dashboard.handlers import remote_reclaim
+
+        await remote_reclaim.reclaim_all(state, board, batches, tried)
 
 
 async def _slot_list(
@@ -1077,7 +1115,8 @@ async def _commit_retire(
     # that fails leaves the old record naming the retired pair, which fences the
     # item (no ingest, no bind) until a later read stores it (_reset_if_stale).
     async with _board_lock(board):
-        await asyncio.to_thread(_store, board, item.item_id, _fresh_record())
+        old = await asyncio.to_thread(_stored, board, item.item_id)
+        await asyncio.to_thread(_store, board, item.item_id, _fresh_record(old))
     return resp
 
 

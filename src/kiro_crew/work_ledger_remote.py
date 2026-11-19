@@ -25,7 +25,7 @@ fetches and calls these.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -142,6 +142,16 @@ class RemoteState:
     #: another pair than the item's is stale: nothing is ingested on it and no
     #: replacement may bind until a fresh one is stored.
     binding: str | None = None
+    #: Crews a create for this item was sent to whose answer the hub never turned
+    #: into a bind (a reply lost in transit, a hub killed mid-create). Written
+    #: before the create is sent, so a crash leaves it; the pull asks each of these
+    #: crews which worker it holds for the item and reclaims it
+    #: (``remote_reclaim``). Kept across a retire's fresh record.
+    create_tried: list[str] = field(default_factory=list)
+    #: When the newest crew joined ``create_tried`` (hub clock). A crew that lists
+    #: no copy clears its mark only once this is older than the longest a create
+    #: can still be landing (``remote_reclaim.CREATE_GRACE_SECS``).
+    create_tried_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -159,6 +169,8 @@ class RemoteState:
             "report_floor": self.report_floor,
             "report_floor_known": self.report_floor_known,
             "binding": self.binding,
+            "create_tried": list(self.create_tried),
+            "create_tried_at": self.create_tried_at,
         }
 
     @classmethod
@@ -190,7 +202,31 @@ class RemoteState:
             report_floor=_text("report_floor"),
             report_floor_known=_flag("report_floor_known"),
             binding=_binding(raw.get("binding")),
+            create_tried=_crews(raw.get("create_tried")),
+            create_tried_at=_text("create_tried_at"),
         )
+
+
+#: Most crews one item's ``create_tried`` holds; the oldest go first.
+MAX_CREATE_TRIED = 8
+
+
+def _crews(value: Any) -> list[str]:
+    """A stored ``create_tried`` list: crew ids at the id cap, deduplicated, newest kept."""
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for crew in value:
+        if (
+            isinstance(crew, str)
+            and 0 < len(crew) <= MAX_INSTANCE_ID_CHARS
+            and "/" not in crew
+            and "\\" not in crew
+            and "\0" not in crew
+            and crew not in out
+        ):
+            out.append(crew)
+    return out[-MAX_CREATE_TRIED:]
 
 
 def _binding(value: Any) -> str | None:
@@ -351,7 +387,9 @@ def board_has_open_remote(slot_key: str) -> bool:
     """Whether *slot_key*'s ledger needs a pull from its crews. BLOCKING.
 
     A ledger qualifies with an open crew-bound item, or with a retired binding
-    whose peer slot is not yet closed (wave 8), so a reconnect closes it. Such an
+    whose peer slot is not yet closed (wave 8), so a reconnect closes it, or with
+    an item whose create a crew may have made without the hub binding it
+    (:attr:`RemoteState.create_tried`), so the pull reclaims that worker. Such an
     entry reserves nothing (:func:`open_remote_bindings`). A ledger with only local
     items answers ``False``, so its patrol tick makes no peer call. Never raises.
     """
@@ -359,7 +397,31 @@ def board_has_open_remote(slot_key: str) -> bool:
         board = conductor_dir(slot_key)
     except WorkLedgerError:
         return False
-    return bool(_open_remote_items(board)) or _has_pending_close(board)
+    return (
+        bool(_open_remote_items(board))
+        or _has_pending_close(board)
+        or bool(creates_to_reclaim(slot_key))
+    )
+
+
+def creates_to_reclaim(slot_key: str) -> dict[str, list[str]]:
+    """``{item id: crews}`` for every item on *slot_key*'s ledger whose record holds
+    ``create_tried``. Local file reads only. BLOCKING; never raises."""
+    try:
+        root = resolved_within(remote_dir(), _store_name(slot_key))
+        entries = sorted(root.glob("it_*.json")) if root is not None and root.is_dir() else []
+    except (OSError, WorkLedgerError):
+        return {}
+    out: dict[str, list[str]] = {}
+    for entry in entries:
+        try:
+            raw = _read_json_record(entry)
+        except Exception:  # noqa: BLE001 - one torn file must not hide the rest
+            raw = None
+        crews = RemoteState.from_dict(raw).create_tried if isinstance(raw, dict) else []
+        if crews:
+            out[entry.stem] = crews
+    return out
 
 
 def boards_with_pending_close() -> list[str]:
@@ -513,7 +575,19 @@ def apply_remote_retire(
         # other reason needs the item open.
         if item.is_terminal != (checked_reason in CLOSE_RETIRE_REASONS):
             raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
-        if item.worker_session_key != slot or item.worker_instance_id != crew:
+        # A closed item bound to nothing takes the pair of a worker a crew made
+        # for it whose create reply never reached the hub (``remote_reclaim``):
+        # recorded ``retired`` so it is closed as the item's own binding would be.
+        orphan = (
+            item.is_terminal
+            and not item.worker_session_key
+            and not item.worker_instance_id
+            and not any(
+                b["worker_session_key"] == slot and b["worker_instance_id"] == crew
+                for b in item.retired_bindings
+            )
+        )
+        if not orphan and (item.worker_session_key != slot or item.worker_instance_id != crew):
             raise WorkLedgerError(
                 f"item {checked_id!r} is not bound to that crew session",
                 code=CODE_INVALID_VALUE,
@@ -523,7 +597,8 @@ def apply_remote_retire(
             {
                 "worker_session_key": slot,
                 "worker_instance_id": crew,
-                "branch": item.artifacts.get("branch") or None,
+                # An orphan never worked this item: the item's branch is not its.
+                "branch": None if orphan else (item.artifacts.get("branch") or None),
                 "state": "retired",
                 "reason": checked_reason,
                 "retired_at": _now_iso(),

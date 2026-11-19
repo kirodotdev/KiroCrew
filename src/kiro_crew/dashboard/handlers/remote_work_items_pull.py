@@ -8,6 +8,10 @@ crew in one call:
   ``pending_approval`` / ``trust_active``, and its peer copy and events only when
   something is new since the hub's cursor (``changes``). Nothing new, no copy: a
   tick with no news carries only booleans.
+* ``workers`` -- every OPEN copy of that conductor's items on this crew the hub did
+  not name, as ``(item_id, key)``, with ``workers_complete`` false when the list is
+  cut at :data:`MAX_WORKERS`, so a hub whose create reply was lost can find the
+  worker it never bound (``remote_reclaim``).
 
 The cursor is the hub's, folded from its crew log: per item it sends the peer event
 ids it filed on that binding (newest last) and the newest peer stamp it filed. This
@@ -60,6 +64,9 @@ MAX_PULL_ITEMS = 32
 #: Most filed peer ids the hub sends per item. Only the tail matters: the peer
 #: coalesces only its newest ``progress``.
 MAX_AFTER_IDS = 16
+
+#: Most unnamed open copies listed in ``workers``.
+MAX_WORKERS = 64
 
 #: Bytes of ``changes`` one reply carries before the rest are only flagged
 #: ``more``, well under the hub's 8 MiB reply cap; the hub reads those one by one.
@@ -148,9 +155,17 @@ def _since(
     return (events[at:] if at is not None else events), newest
 
 
-def _read(board: str, hints: list[_Hint], flags: dict[str, dict[str, bool]]) -> dict[str, Any]:
+def _read(
+    board: str,
+    hints: list[_Hint],
+    flags: dict[str, dict[str, bool]],
+    live: frozenset[str] | None = frozenset(),
+) -> dict[str, Any]:
     """The reply body. BLOCKING; hold the board lock. *flags* are each named item's
-    slot booleans, read on the event loop (:func:`_flags`)."""
+    slot booleans, read on the event loop (:func:`_flags`). *live* is the ledger keys
+    of this crew's live slots, read there too, or ``None`` before the startup restore
+    has run: only a copy whose worker is live is listed, and before the restore no
+    list is complete, since absence proves nothing yet."""
     items: dict[str, Any] = {}
     budget = MAX_CHANGES_BYTES
     for item_id, slot, after, stamp, digest in hints:
@@ -179,7 +194,22 @@ def _read(board: str, hints: list[_Hint], flags: dict[str, dict[str, bool]]) -> 
             budget -= size
             row["change"] = change
         items[item_id] = row
-    return {"items": items}
+    named = {h[0] for h in hints}
+    workers: list[dict[str, str]] = []
+    complete = live is not None
+    for copy in work_ledger.list_work_items(board):
+        if copy.item_id in named or copy.is_terminal or not copy.worker_session_key:
+            continue
+        if live is None or copy.worker_session_key not in live:
+            # No live worker (yet): a copy the peer's own stranded-copy cleanup
+            # frees, never one to bind.
+            continue
+        if len(workers) >= MAX_WORKERS:
+            # Cut at the cap: the hub must not read a copy missing here as absent.
+            complete = False
+            break
+        workers.append({"item_id": copy.item_id, "key": copy.worker_session_key})
+    return {"items": items, "workers": workers, "workers_complete": complete}
 
 
 def _redacted(doc: dict[str, Any]) -> Any:
@@ -224,7 +254,12 @@ async def api_chat_work_items_pull(request: web.Request) -> web.Response:
         if dirty is not None:
             return dirty
         try:
-            doc = await asyncio.to_thread(_read, board, hints, _flags(state, hints))
+            live = (
+                frozenset(ledger_key(k) for k in state._slots)
+                if getattr(state, "open_slots_restored", False)
+                else None
+            )
+            doc = await asyncio.to_thread(_read, board, hints, _flags(state, hints), live)
         except (OSError, work_ledger.WorkLedgerError):
             logger.warning("remote work items pull: mailbox read failed", exc_info=True)
             return web.json_response(

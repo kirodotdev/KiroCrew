@@ -9,8 +9,8 @@ report is filed as an ordinary recorded report, so the hold and the gate see it
 on that same tick and wake the conductor exactly as for a local one. The pull
 itself spends no model turn.
 
-Only a board with an open crew-bound item (or a retired slot still to close) is
-pulled; a board with only local items makes no peer call. Each crew is read in one batch call per tick
+Only a board with an open crew-bound item (or a retired slot still to close, or a
+create whose worker may still need reclaiming) is pulled; a board with only local items makes no peer call. Each crew is read in one batch call per tick
 (``remote_batch_pull``). Nothing new crosses the
 tunnel: the hub still pulls and the peer never connects back, through the same
 ``peer_call`` (path fence, byte cap, ``_redact_peer_payload``).

@@ -208,3 +208,40 @@ def test_slot_flags_read_running_and_pending_approval():
         "running": True,
         "pending_approval": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_open_copies_not_named_are_listed_and_a_cut_list_says_so(state, preview, monkeypatch):
+    state.open_slots_restored = True
+    named = await _bound(state)
+    status, created = await _call(
+        state, "POST", "/api/chat/slots", {"work_item": _work_item("it_0000beef")}
+    )
+    assert status == 200, created
+    other = created["key"]
+    status, body = await _pull(state, _hint(named))
+    assert status == 200
+    assert body["workers"] == [{"item_id": "it_0000beef", "key": other}]
+    assert body["workers_complete"] is True
+    monkeypatch.setattr(remote_work_items_pull, "MAX_WORKERS", 0)
+    status, body = await _pull(state, _hint(named))
+    assert body["workers"] == [] and body["workers_complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_copy_without_a_live_worker_is_not_listed_and_before_restore_none_is(
+    state, preview
+):
+    state.open_slots_restored = True
+    named = await _bound(state)
+    status, created = await _call(
+        state, "POST", "/api/chat/slots", {"work_item": _work_item("it_0000beef")}
+    )
+    assert status == 200, created
+    other = created["key"]
+    state._slots.pop(other)
+    status, body = await _pull(state, _hint(named))
+    assert body["workers"] == [] and body["workers_complete"] is True
+    state.open_slots_restored = False
+    status, body = await _pull(state, _hint(named))
+    assert body["workers"] == [] and body["workers_complete"] is False

@@ -33,6 +33,9 @@ BATCH_PATH = "api/chat/work-items/pull"
 #: Filed ids sent per item: the peer route's own cap.
 MAX_AFTER_IDS = remote_work_items_pull.MAX_AFTER_IDS
 
+#: Most ``workers`` rows read from one reply: the peer route's own cap.
+MAX_WORKERS = remote_work_items_pull.MAX_WORKERS
+
 _FLAGS = ("live", "running", "pending_approval", "trust_active", "found", "more")
 
 
@@ -43,6 +46,18 @@ class CrewBatch:
     #: item id -> ``{live, running, pending_approval, trust_active, found, more}``
     #: plus ``change`` (``{work_item, events}``) when there is news.
     rows: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: ``(item id, slot key)`` of the crew's open copies of items not asked for,
+    #: for ``remote_reclaim``.
+    workers: list[tuple[str, str]] = field(default_factory=list)
+    #: Whether ``workers`` is every such copy (not cut at the crew's cap).
+    complete: bool = False
+    #: The crew serves no batch route (a plain 404, or a reply that is not a
+    #: batch): it is read per item, and lists no copies to reclaim.
+    unsupported: bool = False
+
+
+#: The answer of a crew that serves no batch route.
+UNSUPPORTED = CrewBatch(unsupported=True)
 
 
 async def _hint(board: str, item: work_ledger.WorkItem) -> dict[str, Any]:
@@ -93,7 +108,19 @@ def _parse(payload: Any, named: set[str]) -> CrewBatch | None:
                 continue
             row["change"] = {"work_item": change["work_item"], "events": change["events"]}
         rows[item_id] = row
-    return CrewBatch(rows)
+    workers: list[tuple[str, str]] = []
+    raw_workers = payload.get("workers")
+    for raw in raw_workers[:MAX_WORKERS] if isinstance(raw_workers, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        item_id, key = raw.get("item_id"), raw.get("key")
+        if isinstance(item_id, str) and isinstance(key, str) and item_id not in named:
+            try:
+                workers.append((work_ledger._require_item_id(item_id), key))
+            except work_ledger.WorkLedgerError:
+                continue
+    complete = isinstance(raw_workers, list) and payload.get("workers_complete") is True
+    return CrewBatch(rows, workers, complete)
 
 
 async def pull_crew(
@@ -101,8 +128,9 @@ async def pull_crew(
 ) -> CrewBatch | None:
     """One batch read of *items*, all bound to *crew*.
 
-    ``None`` when the crew does not serve the route or the reply is unreadable; a
-    tunnel or proxy failure raises ``CrewCallError`` as ``peer_call`` does.
+    :data:`UNSUPPORTED` when the crew does not serve the route (a 404, or a 2xx that
+    is not a batch reply); ``None`` for any other refusal; a tunnel or proxy failure
+    raises ``CrewCallError`` as ``peer_call`` does.
     """
     from kiro_crew.dashboard.handlers import remote_ingest
 
@@ -111,9 +139,11 @@ async def pull_crew(
     status, payload = await routes.peer_call(
         mgr, crew, "POST", BATCH_PATH, body={"conductor_key": board, "items": hints}
     )
+    if status == 404:
+        return UNSUPPORTED
     if not 200 <= status < 300:
         return None
-    return _parse(payload, set(hints))
+    return _parse(payload, set(hints)) or UNSUPPORTED
 
 
 def payload_of(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -164,10 +194,13 @@ async def pull_batches(
     board: str,
     remote: list[work_ledger.WorkItem],
     deadline: float,
-) -> dict[str, dict[str, Any]]:
-    """One batch read per crew; ``{item id: row}`` for each item it answered.
+    tried: dict[str, list[str]] | None = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, CrewBatch]]:
+    """One batch read per crew: ``({item id: row}, {crew: its batch})``.
 
-    An item a crew did not answer, or one flagged ``more``, is read on its own.
+    An item a crew did not answer, or one flagged ``more``, is read on its own. A
+    crew a create was tried on (*tried*, ``remote_reclaim``) is read too, with no
+    item of its own when it holds none bound here, for the copies it lists.
     """
     from kiro_crew.dashboard.handlers import remote_ingest as ri
 
@@ -175,6 +208,9 @@ async def pull_batches(
     by_crew: dict[str, list[work_ledger.WorkItem]] = {}
     for item in remote:
         by_crew.setdefault(str(item.worker_instance_id), []).append(item)
+    for crews in (tried or {}).values():
+        for crew in crews:
+            by_crew.setdefault(crew, [])
     # Every crew at once, each cut off at one item's pull budget, so a stalled
     # crew costs the read that budget once and never the rows another crew sent.
     budget = min(ri.PULL_TIMEOUT_SECS, max(deadline - loop.time(), 0.0))
@@ -189,11 +225,13 @@ async def pull_batches(
     crews = list(by_crew)
     batches = await asyncio.gather(*(one(crew, by_crew[crew]) for crew in crews))
     rows: dict[str, dict[str, Any]] = {}
+    answered: dict[str, CrewBatch] = {}
     for crew, batch in zip(crews, batches):
         if batch is None:
             continue
+        answered[crew] = batch
         rows.update({k: v for k, v in batch.rows.items() if not v["more"]})
-    return rows
+    return rows, answered
 
 
 async def _ready_then_pull(

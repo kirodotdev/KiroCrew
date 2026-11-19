@@ -427,6 +427,23 @@ construction, and needs no cross-gateway ownership record.
   as `sessionRowIdentity` is in the sidebar. No local binding file is written:
   no local worker exists.
 - `bind` with a remote key is refused with a pointer to `session_create(work_item=)`.
+- **A lost create reply.** The peer makes the slot, binds and arms Trust before
+  it answers, so a reply lost in transit (or a hub that dies before recording
+  the bind) leaves a worker no hub item names. The hub records the crew and the
+  time in the item's remote record (`create_tried`, `create_tried_at`) before it
+  sends the create. Only an answer that says what the crew holds clears it (the
+  bind recorded, or a crew that ignored `work_item`), and only once no other
+  create of the item is open; a refusal never does. A crew that serves no batch
+  route has its marks cleared, since it lists no copies to reclaim. The batch reply also lists the crew's other open copies of that
+  conductor's items whose worker slot is live. After the pull has filed its reports, and within its own
+  3 s budget, the hub binds each such copy when its item is open and unbound
+  (then sends its current decision), records it `retired` with `item_closed`
+  when the item is closed (§5c: Trust ends at once, the DELETE waits until the
+  slot is idle and its copy reported `done`), and only ends its Trust when the
+  item is bound to another worker. A crew that lists no copy clears the mark
+  only once the create has had 15 minutes to land, so a hub that restarted
+  mid-create keeps it. The pull never sends a DELETE for it, and never touches
+  an item whose create is still in flight.
 
 Flags for a remote item:
 
