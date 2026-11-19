@@ -2093,10 +2093,18 @@ the 2026-11-10 decision "updates never restart a running gateway"):
 - **An apply the quit left behind is finished at the next app start.** If the
   quit-time apply was interrupted or failed, the arm stays. The next start runs
   it in Electron main (`startup-apply.js`) before the gateway spawns and before
-  any window opens, clears the arm, and relaunches once into the new bundle.
-  First it checks governance: the last recorded verdict, and the policy file
-  read again now (`policy-source.js`: a pinned `updates` check or apply command
-  governs), so a provider installed since the last run is not bypassed. A
+  the main window opens, clears the arm, and relaunches once into the new bundle.
+  While the update command runs, the boot splash shows in its own window
+  (`install-splash.js`) with an "Installing update <version>" line. Closing it
+  only hides it (a quit of the app still quits), and launching the app again
+  (on macOS, reopening it) brings it forward and logs
+  `[update] a launch arrived during the start-time apply`. It is hidden when
+  the apply finishes, before the relaunch or the start of the installed
+  version, and destroyed once the main window opens.
+  First the start-time apply checks governance: the last recorded verdict, and
+  the policy file read again now (`policy-source.js`: a pinned `updates` check
+  or apply command governs), so a provider installed since the last run is not
+  bypassed. A
   provider-governed install, or a policy file that cannot be read, runs no
   marker command at start either; the arm stays and the outcome is `governed`.
   Then it probes whether a gateway is still running (a gateway that outlived the

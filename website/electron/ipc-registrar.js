@@ -1629,7 +1629,7 @@ function createIpcRegistrar({
               && (await gateway.ownsLocalListener()) === true;
           } catch { return false; }
         },
-        // A start-time apply that failed (main.js runs it before any window).
+        // A start-time apply that failed (main.js runs it before the main window).
         startupApplyError: updateArm.takeApplyError(),
         // electron-updater's AppUpdater, NOT Electron's built-in autoUpdater:
         // it generates/verifies feed metadata and also supports Linux.
