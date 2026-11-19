@@ -36,6 +36,10 @@ _MAX_GRANT_NAME_LEN = 128
 _MAX_GRANT_ENTRIES = 512
 APP_NAME_RE = re.compile(rf"[a-z0-9][a-z0-9_-]{{0,{_MAX_GRANT_NAME_LEN - 1}}}")
 
+#: Longest ``installedAt`` a record that names an install keeps; an ISO timestamp is
+#: far shorter. The value comes from the app's own ``installed.json``.
+INSTALLED_AT_MAX_CHARS = 64
+
 
 def _builtin_manifest_sources() -> tuple[Path, ...]:
     """Return resolved builtin-manifest roots from core and the active edition.

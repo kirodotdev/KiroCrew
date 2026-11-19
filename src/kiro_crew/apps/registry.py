@@ -781,6 +781,7 @@ if _typing.TYPE_CHECKING:
         Callable,
         StreamingLogLines,
         _adoption_pending,
+        _clear_earlier_memory_consent,
         _install_script_platform_refusal,
         _official_entry,
         _redact_log_via_context,
