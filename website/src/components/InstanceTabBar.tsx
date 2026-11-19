@@ -912,7 +912,12 @@ function SwitcherChip({
           ellipsises from the right, which would eat this crew's own name and leave
           a chip reading as its parent's duplicate; giving the parent segment the
           `min-w-0` and the crew's name `shrink-0` spends the squeeze on the half
-          that is context and keeps the half that identifies the tab. */}
+          that is context and keeps the half that identifies the tab.
+
+          The crew's name is capped too, at the box minus the separator and its two
+          gaps, so a name longer than the whole box ellipsises inside it. Uncapped,
+          a `shrink-0` name overflows the 140px box and paints under the unread
+          badge and past the chip's border; its full text is in `title`. */}
       {entry.pathParent ? (
         <span className="tb-drop-crew-name flex items-center gap-1 max-w-[140px] min-w-0">
           <span className="truncate min-w-0">{entry.pathParent}</span>
@@ -924,7 +929,7 @@ function SwitcherChip({
           <span aria-hidden className="shrink-0 text-muted">
             {'\u203a'}
           </span>
-          <span className="shrink-0">{entry.name}</span>
+          <span className="shrink-0 truncate max-w-[calc(100%-1em-8px)]">{entry.name}</span>
         </span>
       ) : (
         <span className="tb-drop-crew-name truncate max-w-[140px]">
