@@ -1,7 +1,6 @@
 /**
- * The desktop app's relay Crew list as the Crew switcher's Remote Crews group:
- * hidden unless the desktop bridge exists, the crews route answers and it lists
- * a Crew or a refusal (sign-in and load failures stay on screen), offline
+ * The relay Crew list as the Crew switcher's Remote Crews group: shown only
+ * while a list is loaded (a refusal or a failed first read hides it), offline
  * Crews shown greyed (not hidden), each typed refusal shown as its plain text,
  * and Open handing the shell the endpoint ID only.
  */
@@ -16,7 +15,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { api, ApiError, type InstanceView, type RelayCrewEntry, type SsoStatus } from '../api/client'
 import TeamCrewsSwitcher from './TeamCrewsGroup'
 import { setCrewPins, setStableOrder } from './InstanceTabBar'
-import { RELAY_VIEWER_CREWS_KEY, openRelayCrewTab, relayRefusalText, relayRetryable } from '../hooks/useRelayViewerCrews'
+import { RELAY_VIEWER_CREWS_KEY, openRelayCrewTab, relayRefusalText } from '../hooks/useRelayViewerCrews'
 import { relayPaneClosed, setActiveId } from '../store/instancesSlice'
 import { timeAgo } from '../utils/timeAgo'
 import { renderWithProviders, createTestStore } from '../test/helpers'
@@ -568,18 +567,6 @@ describe('TeamCrewsGroup', () => {
     }
   })
 
-  it('offers Ask the agent as a menu item tied to the list refusal', async () => {
-    withBridge()
-    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
-      new ApiError(503, 'down', JSON.stringify({ error: 'down', code: 'SERVICE_ERROR' })),
-    )
-    mount()
-    await openGroup(userEvent.setup())
-    const item = await screen.findByRole('menuitem', { name: 'Ask the agent' })
-    expect(item.getAttribute('aria-describedby')).toBe('relay-crews-list-refusal')
-    expect(document.getElementById('relay-crews-list-refusal')?.textContent).toContain("Couldn't load your Shared Crews.")
-  })
-
   it('arrow keys skip the refusal notice under a row and reach its Ask the agent item', async () => {
     withBridge(vi.fn(async () => ({ ok: false, error: 'SERVICE_ERROR' })))
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({
@@ -599,181 +586,55 @@ describe('TeamCrewsGroup', () => {
     expect(document.activeElement).toBe(row('Build box'))
   })
 
-  it('shows a list-level refusal in place of the rows', async () => {
-    withBridge()
-    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
-      new ApiError(401, 'signed out', JSON.stringify({ error: 'signed out', code: 'SIGNED_OUT' })),
-    )
-    mount()
-    await openGroup(userEvent.setup())
-    expect((await screen.findByTestId('relay-crews-list-refusal')).textContent)
-      .toContain('Sign in to Kiro to see your Shared Crews.')
-    expect(screen.queryByTestId('relay-crew-row')).toBeNull()
-    // Signing in is the fix, so it comes first; the agent hand-off stays after it
-    // for a backend that does not run on the Kiro sign-in.
-    const items = screen.getAllByRole('menuitem').map(i => i.textContent ?? '')
-    expect(screen.getByTestId('relay-crews-list-sign-in').textContent).toContain('Sign in to Kiro')
-    expect(screen.getByTestId('relay-crews-list-sign-in').getAttribute('aria-describedby')).toBe('relay-crews-list-refusal')
-    const signIn = items.findIndex(t => t.includes('Sign in to Kiro'))
-    const handoff = items.findIndex(t => /ask the agent/i.test(t))
-    expect(signIn).toBeGreaterThan(-1)
-    expect(handoff).toBeGreaterThan(signIn)
-  })
-
-  it('keeps the agent hand-off for a refusal signing in does not fix', async () => {
-    withBridge()
-    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
-      new ApiError(403, 'denied', JSON.stringify({ error: 'denied', code: 'ACCESS_DENIED' })),
-    )
-    mount()
-    await openGroup(userEvent.setup())
-    await screen.findByTestId('relay-crews-list-refusal')
-    expect(screen.queryByTestId('relay-crews-list-sign-in')).toBeNull()
-    expect(screen.getByRole('menuitem', { name: /ask the agent/i })).toBeTruthy()
-  })
-
-  it.each([
-    ['a remote Crew pane', { activeId: 'remote-1', relayActive: null }],
-    ['a relay Crew pane', { activeId: null, relayActive: 'relay-1' }],
-  ] as const)('offers the way to Settings > Kiro account on a signed-out list refusal, over %s', async (_name, cover) => {
-    withBridge()
-    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
-      new ApiError(401, 'signed out', JSON.stringify({ error: 'signed out', code: 'SIGNED_OUT' })),
-    )
-    vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
-    const history = createMemoryHistory({ initialEntries: ['/chat'] })
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    const store = createTestStore({ instances: { warm: {}, mru: [], unread: {}, ...cover } })
-    function Routed() {
-      const [loc, setLoc] = React.useState(history.location)
-      React.useEffect(() => history.listen(({ location }) => setLoc(location)), [])
-      return <Router location={loc} navigator={history}><TeamCrewsSwitcher variant="inline" /></Router>
-    }
-    render(
-      <QueryClientProvider client={queryClient}>
-        <Provider store={store}>
-          <ThemeProvider><Routed /></ThemeProvider>
-        </Provider>
-      </QueryClientProvider>,
-    )
-    const u = userEvent.setup()
-    await openGroup(u)
-    await u.click(await screen.findByRole('menuitem', { name: 'Sign in to Kiro' }))
-    expect(history.location.pathname).toBe('/settings/kiro-account')
-    // A remote pane covered the local Crew: it is brought forward, so the tab is seen.
-    expect(store.getState().instances.activeId).toBeNull()
-    expect(store.getState().instances.relayActive ?? null).toBeNull()
-  })
-
-  it('offers no Kiro account item on a list refusal that is not about sign-in', async () => {
-    withBridge()
-    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
-      new ApiError(503, 'down', JSON.stringify({ error: 'down', code: 'SERVICE_ERROR' })),
-    )
-    mount()
-    await openGroup(userEvent.setup())
-    await screen.findByTestId('relay-crews-list-refusal')
-    expect(screen.queryByTestId('relay-crews-list-sign-in')).toBeNull()
-  })
-
-  it('shows a load failure, not an Open failure, when the list read fails with no known code', async () => {
-    withBridge()
-    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
-      new ApiError(503, 'down', JSON.stringify({ error: 'down', code: 'SERVICE_ERROR' })),
-    )
-    mount()
-    await openGroup(userEvent.setup())
-    expect((await screen.findByTestId('relay-crews-list-refusal')).textContent)
-      .toContain("Couldn't load your Shared Crews.")
-  })
-
   const refused = (status: number, body: Record<string, unknown>) =>
     new ApiError(status, 'refused', JSON.stringify({ error: 'refused', ...body }))
 
-  it('shows the request ID and a Try again that reads the list again', async () => {
+  it.each([
+    [409, 'SIGNED_OUT'], [403, 'REMOTE_ACCESS_DISABLED'],
+    [403, 'CREW_ACCESS_NOT_GRANTED'], [403, 'ACCESS_DENIED'],
+  ])('leaves the bar as today, with no notice, when the first read answers %i %s', async (status, code) => {
     withBridge()
-    const spy = vi.spyOn(api, 'relayViewerCrews')
-      .mockRejectedValueOnce(refused(502, { code: 'SERVICE_ERROR', requestId: 'req-0000-example' }))
-      .mockResolvedValueOnce({ crews: [crew({})] })
-    mount()
-    const u = userEvent.setup()
-    await openGroup(u)
-    const details = await screen.findByTestId('relay-crews-list-details')
-    expect(details.textContent).toContain('Request ID: req-0000-example')
-    await u.click(screen.getByRole('menuitem', { name: 'Try again' }))
-    await waitFor(() => expect(spy).toHaveBeenCalledTimes(2))
-    expect(await screen.findByTestId('relay-crew-row')).toBeTruthy()
+    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(refused(status, { code }))
+    const client = mount()
+    await waitFor(() => expect(client.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('error'))
+    await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
+    expect(screen.queryByRole('button', { name: /Switch crew/i })).toBeNull()
   })
 
-  it('shows no request ID when the refusal has none', async () => {
-    withBridge()
-    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(refused(502, { code: 'SERVICE_ERROR' }))
-    mount()
-    await openGroup(userEvent.setup())
-    await screen.findByTestId('relay-crews-list-refusal')
-    expect(screen.queryByTestId('relay-crews-list-details')).toBeNull()
-    expect(screen.getByRole('menuitem', { name: 'Try again' })).toBeTruthy()
-  })
-
-  it.each(['CREW_ACCESS_NOT_GRANTED', 'REMOTE_ACCESS_DISABLED', 'ACCESS_DENIED', 'SIGNED_OUT', 'NOT_SET_UP', 'INVALID_REQUEST'])(
-    'offers no Try again for %s, where the same request fails again',
-    async code => {
+  it.each([[503, 'SERVICE_ERROR'], [429, 'THROTTLED'], [409, 'NOT_SET_UP']])(
+    'says the list could not be read when the first read answers %i %s',
+    async (status, code) => {
       withBridge()
-      vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(refused(403, { code, requestId: 'req-0000-example' }))
+      vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(refused(status, { code }))
       mount()
-      await openGroup(userEvent.setup())
-      await screen.findByTestId('relay-crews-list-details')
-      expect(screen.queryByTestId('relay-crews-list-retry')).toBeNull()
+      const group = await openGroup(userEvent.setup())
+      expect(within(group).getByTestId('relay-crews-refresh-failed').textContent).toContain("Couldn't load your Shared Crews.")
+      expect(within(group).getByRole('menuitem', { name: 'Ask the agent' })).toBeTruthy()
+      expect(within(group).queryByText('No Shared Crews to open.')).toBeNull()
     },
   )
 
-  it('keeps Try again off until a throttle\'s Retry-After passes', async () => {
-    // A fake clock: the 30 s wait passes only when the test moves it, so a slow
-    // runner cannot reach the deadline first. shouldAdvanceTime keeps findBy and
-    // react-query moving between the steps.
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    withBridge()
-    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(refused(429, { code: 'THROTTLED', retryAfter: 30 }))
+  it('in a browser with no desktop bridge, reads and lists the Crews', async () => {
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
     mount()
-    await openGroup(userEvent.setup({ advanceTimers: vi.advanceTimersByTime }))
-    const retry = await screen.findByTestId('relay-crews-list-retry')
-    expect(retry.getAttribute('aria-disabled')).toBe('true')
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
-    expect(retry.getAttribute('aria-disabled')).toBeNull()
+    await openGroup(userEvent.setup())
+    expect(row('Build box')).toBeTruthy()
   })
 
-  it('keeps Try again off while the list is being read again', async () => {
+  it('keeps the loaded list through a later failed read, says the read failed, and hides it on a later sign-out', async () => {
     withBridge()
-    vi.spyOn(api, 'relayViewerCrews')
-      .mockRejectedValueOnce(refused(502, { code: 'SERVICE_ERROR' }))
-      .mockReturnValueOnce(new Promise<never>(() => {}))
-    mount()
-    const u = userEvent.setup()
-    await openGroup(u)
-    const retry = await screen.findByTestId('relay-crews-list-retry')
-    expect(retry.getAttribute('aria-disabled')).toBeNull()
-    await u.click(retry)
-    await waitFor(() => expect(screen.getByTestId('relay-crews-list-retry').getAttribute('aria-disabled')).toBe('true'))
-    // The refusal Try again was clicked from stays up during its own read.
-    expect(screen.getByTestId('relay-crews-list-refusal').textContent).toContain("Couldn't load your Shared Crews.")
-  })
-
-  it('does not bring back an older request ID on a later read once a retry failed again', async () => {
-    withBridge()
-    vi.spyOn(api, 'relayViewerCrews')
-      .mockRejectedValueOnce(refused(502, { code: 'SERVICE_ERROR', requestId: 'req-old' }))
-      .mockRejectedValueOnce(refused(502, { code: 'SERVICE_ERROR', requestId: 'req-new' }))
-      .mockReturnValueOnce(new Promise<never>(() => {}))
+    const spy = vi.spyOn(api, 'relayViewerCrews').mockResolvedValueOnce({ crews: [crew({})] })
     const client = mount()
     const u = userEvent.setup()
     await openGroup(u)
-    expect((await screen.findByTestId('relay-crews-list-details')).textContent).toContain('req-old')
-    await u.click(screen.getByTestId('relay-crews-list-retry'))
-    await waitFor(() => expect(screen.getByTestId('relay-crews-list-details').textContent).toContain('req-new'))
-    // A later read with no list loaded (the 60 s re-read, here started by hand).
-    act(() => { void client.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY }) })
-    await waitFor(() => expect(client.getQueryState(RELAY_VIEWER_CREWS_KEY)?.fetchStatus).toBe('fetching'))
-    expect(screen.queryByText(/req-old/)).toBeNull()
+    spy.mockRejectedValueOnce(refused(502, { code: 'SERVICE_ERROR' }))
+    await act(async () => { await client.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY }) })
+    expect(client.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('error')
+    expect(row('Build box')).toBeTruthy()
+    expect((await screen.findByTestId('relay-crews-refresh-failed')).textContent).toContain("Couldn't refresh your Shared Crews. This is the last list loaded.")
+    spy.mockRejectedValueOnce(refused(409, { code: 'SIGNED_OUT' }))
+    await act(async () => { await client.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY }) })
+    await waitFor(() => expect(screen.queryByTestId('team-crews-group')).toBeNull())
   })
 
   describe('re-reading the list', () => {
@@ -816,6 +677,28 @@ describe('TeamCrewsGroup', () => {
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(2))
     })
 
+    it('after a refusal or sign-out, reads again only after 15 minutes', async () => {
+      withBridge()
+      const spy = vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(refused(409, { code: 'SIGNED_OUT' }))
+      mount()
+      await waitFor(() => expect(spy).toHaveBeenCalledTimes(1))
+      await act(async () => { await vi.advanceTimersByTimeAsync(14 * 60_000) })
+      expect(spy).toHaveBeenCalledTimes(1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+      await waitFor(() => expect(spy).toHaveBeenCalledTimes(2))
+    })
+
+    it('waits out a Retry-After longer than its own pace', async () => {
+      withBridge()
+      const spy = vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(refused(429, { code: 'THROTTLED', retryAfter: 120 }))
+      mount()
+      await waitFor(() => expect(spy).toHaveBeenCalledTimes(1))
+      await act(async () => { await vi.advanceTimersByTimeAsync(119_000) })
+      expect(spy).toHaveBeenCalledTimes(1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+      await waitFor(() => expect(spy).toHaveBeenCalledTimes(2))
+    })
+
     it('stops re-reading once the crews route answers 404', async () => {
       withBridge()
       const spy = vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(new ApiError(404, 'off', '{}'))
@@ -824,14 +707,6 @@ describe('TeamCrewsGroup', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(120_000) })
       expect(spy).toHaveBeenCalledTimes(1)
     })
-  })
-
-  it('marks only the resend-safe codes retryable', () => {
-    expect(['SERVICE_ERROR', 'THROTTLED', 'UNREACHABLE', 'BAD_ANSWER', 'CREW_OFFLINE', 'UNAVAILABLE', 'service_error']
-      .every(relayRetryable)).toBe(true)
-    expect(['CREW_ACCESS_NOT_GRANTED', 'SIGN_IN_CHANGED', 'INVALID_ENDPOINT', 'something_new', '']
-      .some(c => relayRetryable(c))).toBe(false)
-    expect(relayRetryable(undefined)).toBe(false)
   })
 
   it('maps an unknown code to the generic text', () => {
@@ -1054,17 +929,6 @@ describe('TeamCrewsGroup account line', () => {
     expect(await accountLine({ accountType: '' })).toBeNull()
   })
 
-  it('leaves the line out on a list refusal', async () => {
-    withBridge()
-    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
-      new ApiError(409, 'signed out', JSON.stringify({ error: 'signed out', code: 'SIGNED_OUT' })),
-    )
-    mount()
-    const group = await openGroup(userEvent.setup())
-    await within(group).findByTestId('relay-crews-list-refusal')
-    expect(within(group).queryByTestId('team-crews-account')).toBeNull()
-  })
-
   it('shows no e-mail even if one were sent', async () => {
     const text = await accountLine({ accountType: 'BuilderId', email: 'someone@example.test' })
     expect(text).toBe('Signed in with Builder ID')
@@ -1104,7 +968,7 @@ describe('TeamCrewsSwitcher with an empty list', () => {
 
   it('mounts nothing while hidden, even with an account', async () => {
     // The real hook never pairs hidden with an account, so this pins the guard itself.
-    hookOverride.value = { hidden: true, crews: [], account: { accountType: 'BuilderId' }, refusal: null, retry: () => {}, retrying: false }
+    hookOverride.value = { hidden: true, crews: [], account: { accountType: 'BuilderId' }, failed: false, refreshOnOpen: () => {} }
     mount([sshCrew({ was_connected: true })])
     await userEvent.setup().click(await screen.findByRole('button', { name: /Switch crew/i }))
     await screen.findByRole('menuitemradio', { name: /Cloud One/ })

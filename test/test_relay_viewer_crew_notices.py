@@ -123,7 +123,7 @@ async def test_first_read_with_several_crews_rings_one_summary(viewer) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failed_read_or_the_viewer_off_never_rings(viewer) -> None:
+async def test_a_failed_read_or_the_viewer_off_never_rings(viewer, monkeypatch) -> None:
     viewer.crews = (TEAM_A,)
     viewer.refuse = cps.CpsRefused(cps.SIGNED_OUT, "signed out")
     state = _State()
@@ -131,7 +131,7 @@ async def test_a_failed_read_or_the_viewer_off_never_rings(viewer) -> None:
         status, _ = await _read(client)
         assert status == 409
         viewer.refuse = None
-        viewer.enabled = False
+        monkeypatch.setattr(rv, "local_enable_locked", lambda control: True)
         status, _ = await _read(client)
         assert status == 404
     assert state.notes == []

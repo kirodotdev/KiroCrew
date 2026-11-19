@@ -444,6 +444,39 @@ async def test_browser_open_answers_only_the_tabs_url(viewer) -> None:  # noqa: 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("host", "opened"),
+    [
+        (f"{EP}.us-east-1.relay.kiro.dev", True),
+        (f"{EP}.evil.example.test", False),
+        (f"{EP}.us-east-1.relay.kiro.dev.evil.example.test", False),
+    ],
+)
+async def test_with_no_setting_the_browser_opens_only_a_crew_in_kiros_relay_zone(
+    viewer, monkeypatch, host, opened  # noqa: F811
+) -> None:
+    """The list's host rule holds for the browser open too: no mint off the zone."""
+    viewer.enabled = False
+    raw = {"endpointId": EP, "crewUrl": f"https://{host}", "name": "Box", "crewType": "TEAM"}
+
+    async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
+        crew = cps._crew_endpoint(raw, crew_domain)
+        return () if crew is None else (crew,)
+
+    monkeypatch.setattr(cps, "list_crew_endpoints", _list)
+    async with _route_client() as client:
+        resp = await client.post("/api/relay-viewer/browser-open", json={"endpointId": EP})
+        body = await resp.json()
+    minted = [c for c in viewer.calls if c[0] == "mint"]
+    if opened:
+        assert resp.status == 200 and set(body) == {"url"}
+        assert minted == [("mint", EP)] and len(bo._opens) == 1
+    else:
+        assert (resp.status, body["code"]) == (403, "CREW_ACCESS_NOT_GRANTED")
+        assert minted == [] and bo._opens == {}
+
+
+@pytest.mark.asyncio
 async def test_browser_open_on_a_port_the_dashboard_does_not_serve_mints_nothing(
     viewer,  # noqa: F811
 ) -> None:
@@ -456,7 +489,7 @@ async def test_browser_open_on_a_port_the_dashboard_does_not_serve_mints_nothing
 
 
 @pytest.mark.asyncio
-async def test_browser_open_is_owner_only_local_only_and_off_by_default(
+async def test_browser_open_is_owner_only_local_only_and_off_in_a_locked_build(
     viewer,  # noqa: F811
 ) -> None:
     async with _route_client() as client:
@@ -472,7 +505,7 @@ async def test_browser_open_is_owner_only_local_only_and_off_by_default(
         )
         assert forwarded.status == 403
         assert (await forwarded.json())["code"] == "BROWSER_NOT_LOCAL"
-        viewer.enabled = False
+        viewer.locked = True
         off = await client.post("/api/relay-viewer/browser-open", json={"endpointId": EP})
         assert off.status == 404
     assert viewer.calls == [] and bo._opens == {}
@@ -548,14 +581,14 @@ async def test_close_all_cuts_a_response_still_streaming(gateway: TestClient) ->
 
 
 @pytest.mark.asyncio
-async def test_a_renewal_after_the_viewer_was_turned_off_ends_the_open(
+async def test_a_renewal_once_the_viewer_is_locked_off_ends_the_open(
     viewer,  # noqa: F811
 ) -> None:
     async with _route_client() as client:
         resp = await client.post("/api/relay-viewer/browser-open", json={"endpointId": EP})
         sid = bo.parse_relay_host((await resp.json())["url"].split("//", 1)[1].rstrip("/"))[0]  # type: ignore[index]
     opened = bo._opens[sid]
-    viewer.enabled = False
+    viewer.locked = True
     with pytest.raises(cps.CpsRefused) as refused:
         await opened.renew(opened.marker)
     assert refused.value.code == cps.NOT_SET_UP

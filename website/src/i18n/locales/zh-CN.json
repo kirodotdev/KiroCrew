@@ -5836,9 +5836,6 @@
       "empty": "你还没有可以打开的共享 Crew。",
       "managed_by_admin": "共享 Crew 由你的管理员在 AWS Management Console 中管理。",
       "open_console": "打开 AWS Management Console",
-      "refusal_list_generic": "无法加载你的共享 Crew。",
-      "refusal_not_configured": "尚未设置通过中继访问的共享 Crew。",
-      "refusal_signed_out": "登录 Kiro 以查看你的共享 Crew。",
       "setup_desc": "共享 Crew 由管理员在 AWS Management Console 中创建和管理。请让你的管理员为你的团队设置一个。",
       "setup_title": "设置新的共享 Crew",
       "section_title": "与我共享",
@@ -7611,14 +7608,12 @@
       "refusal_popup_blocked": "浏览器拦截了新标签页。请允许此页面弹出窗口后重试。",
       "refusal_generic": "无法打开此 Crew。",
       "refusal_list_generic": "无法加载你的共享 Crew。",
-      "try_again": "重试",
-      "request_id": "请求 ID：{{id}}",
+      "refresh_failed": "无法刷新你的共享 Crew。这是上次加载的列表。",
       "group_team_crews": "远程 Crew",
       "opens_own_window": "在单独的窗口中打开",
       "new_crew": "新",
       "seen_not_saved": "无法保存你已查看的状态，它会再次显示为新的。",
       "open_crew_failed": "无法打开 {{name}}。",
-      "sign_in": "登录 Kiro",
       "connect": "连接",
       "connect_crew": "连接 {{name}}"
     },
@@ -21100,7 +21095,8 @@
         "turn_off_failed": "无法关闭远程控制",
         "load_failed": "无法读取远程控制设置",
         "on_teammate": "远程控制已开启。有访问权限的人可以通过 Kiro 中继访问这个 Crew。",
-        "owner_only": "只有 Crew 所有者可以关闭远程控制。"
+        "owner_only": "只有 Crew 所有者可以关闭远程控制。",
+        "local_only": "请在运行 {{productName}} 的机器上关闭远程控制。无法通过中继关闭。"
       },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",

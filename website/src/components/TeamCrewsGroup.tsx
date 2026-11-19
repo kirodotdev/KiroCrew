@@ -4,8 +4,8 @@
  * row reads "<type> · <status>", the type Shared (group icon) or Private (lock
  * icon), and its action reads Connect.
  *
- * Renders nothing unless the gateway's crews route answers (it 404s while
- * `tunnel.relay_viewer_enabled` is off), so the default switcher is unchanged.
+ * Renders nothing until a list is loaded: a signed-out, refused or failed read
+ * hides it quietly (`useRelayViewerCrews`), so the switcher is unchanged then.
  * Connect hands only the endpoint ID on: in the desktop app to the shell, which
  * shows that Crew as a tab in the main window (a shell without the pane calls
  * opens a window of its own); in a browser to the gateway, which answers the URL
@@ -22,11 +22,11 @@ import { useTranslation } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
 import { useSearchParams } from 'react-router-dom'
-import { ExternalLink, Lock, LogIn, Users, X } from 'lucide-react'
+import { ExternalLink, Lock, Users, X } from 'lucide-react'
 import type { RelayCrewEntry, RelayViewerAccount } from '../api/client'
 import {
   clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText,
-  relayRefusalText, relayRetryable, useRelayViewerCrews, type RelayListRefusal,
+  relayRefusalText, useRelayViewerCrews,
 } from '../hooks/useRelayViewerCrews'
 import { useAppDispatch } from '../store'
 import { relayOpenRequests, relayPaneBridge, useRelayTabs } from '../lib/relayCrewPanes'
@@ -34,7 +34,6 @@ import InstanceTabBar from './InstanceTabBar'
 import { DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from './ui/dropdown-menu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 import { i18nT } from '../i18n/t'
-import { useOpenKiroSignIn } from '../pages/developer/useOpenKiroSignIn'
 import { joinSentences } from '../i18n/format'
 import { accountProviderLabel } from './kasProviderLabel'
 
@@ -141,82 +140,12 @@ function TeamCrewItem({ crew, refusal, onOpen, onClose, onShow }: {
   )
 }
 
-/** The list's refusal: its plain text, Try again where a resend can help (off
- *  until a throttle's Retry-After passes), and CPS's request ID when CPS sent one,
- *  so a server failure can be reported. Try again is a menu item so the keyboard
- *  reaches it, and the request ID is shown open, not under a collapsed Details. */
-function RelayListRefusalNotice({ refusal, onRetry, retrying, close }: {
-  refusal: RelayListRefusal
-  onRetry: () => void
-  /** A read is in flight: Try again stays off until it answers. */
-  retrying: boolean
-  /** Closes the switcher's menu, before the way to the Kiro account tab leaves the page. */
-  close: () => void
-}) {
-  const { t } = useTranslation()
-  const openKiroSignIn = useOpenKiroSignIn()
-  const { retryAt } = refusal
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (retryAt === null) return
-    const ms = retryAt - Date.now()
-    if (ms <= 0) return
-    // At least retryAt, so a timer that fires a little early still turns the button on.
-    const timer = setTimeout(() => setNow(Math.max(Date.now(), retryAt)), ms)
-    return () => clearTimeout(timer)
-  }, [retryAt])
-  const waiting = retryAt !== null && retryAt > now
-  return (
-    <>
-      <div className="px-3 pb-1">
-        <ErrorNotice id="relay-crews-list-refusal" variant="inline" message={refusal.text} testId="relay-crews-list-refusal" />
-      </div>
-      {/* Signed out of Kiro: Sign in first, on Settings > Kiro account. It brings
-          the local Crew forward and asks its leave guard (useOpenKiroSignIn).
-          The agent hand-off stays too, since a backend that does not run on
-          the Kiro sign-in can still take it. */}
-      {refusal.code === 'SIGNED_OUT' && (
-        <DropdownMenuItem
-          data-testid="relay-crews-list-sign-in"
-          aria-describedby="relay-crews-list-refusal"
-          onSelect={() => {
-            close()
-            openKiroSignIn()
-          }}
-        >
-          <LogIn size={14} aria-hidden="true" />
-          {t('components.relayCrews.sign_in')}
-        </DropdownMenuItem>
-      )}
-      <ErrorNoticeMenuItem Item={DropdownMenuItem} message={refusal.text} describedBy="relay-crews-list-refusal" />
-      {refusal.requestId && (
-        <div className="px-3 pb-1 text-[11px] text-muted font-mono select-all" data-testid="relay-crews-list-details">
-          {t('components.relayCrews.request_id', { id: refusal.requestId })}
-        </div>
-      )}
-      {relayRetryable(refusal.code) && (
-        <DropdownMenuItem
-          disabled={waiting || retrying}
-          data-testid="relay-crews-list-retry"
-          onSelect={(e: Event) => {
-            e.preventDefault()
-            onRetry()
-          }}
-        >
-          {t('components.relayCrews.try_again')}
-        </DropdownMenuItem>
-      )}
-    </>
-  )
-}
-
-export function TeamCrewsGroup({ crews, account, refusal, retry, retrying, refreshOnOpen, close }: {
+export function TeamCrewsGroup({ crews, account, failed = false, refreshOnOpen, close }: {
   crews: RelayCrewEntry[]
   /** The account the list was read for, shown as one muted line while the list is loaded. */
   account?: RelayViewerAccount | null
-  refusal: RelayListRefusal | null
-  retry: () => void
-  retrying: boolean
+  /** The latest read failed; the rows are the last list loaded. */
+  failed?: boolean
   /** Reads the list again; the group mounts each time the menu opens. */
   refreshOnOpen: () => void
   /** Closes the switcher's menu. */
@@ -226,8 +155,10 @@ export function TeamCrewsGroup({ crews, account, refusal, retry, retrying, refre
   // The menu shows what it last read, so a Crew that came online since would still read offline.
   useEffect(() => { refreshOnOpen() }, [refreshOnOpen])
   const queryClient = useQueryClient()
-  // Left out on a refusal and for an account with no label. No e-mail: the gateway sends none.
-  const provider = !refusal && account ? accountProviderLabel(account.accountType, account.startUrl) : ''
+  // Left out for an account with no label. No e-mail: the gateway sends none.
+  const provider = account ? accountProviderLabel(account.accountType, account.startUrl) : ''
+  // With rows kept, say they are the last list rather than that nothing loaded.
+  const failedText = t(crews.length > 0 ? 'components.relayCrews.refresh_failed' : 'components.relayCrews.refusal_list_generic')
   const dispatch = useAppDispatch()
   const [refusals, setRefusals] = useState<Record<string, string>>({})
   // The group renders only while the menu is open, so showing it is seeing its
@@ -284,6 +215,14 @@ export function TeamCrewsGroup({ crews, account, refusal, retry, retrying, refre
           {t('app.signed_in_with', { provider })}
         </div>
       )}
+      {failed && (
+        <>
+          <div className="px-3 pb-1">
+            <ErrorNotice id="relay-crews-refresh-failed" variant="inline" message={failedText} testId="relay-crews-refresh-failed" />
+          </div>
+          <ErrorNoticeMenuItem Item={DropdownMenuItem} message={failedText} describedBy="relay-crews-refresh-failed" />
+        </>
+      )}
       {seenFailed && (
         <>
           <div className="px-3 pb-1">
@@ -292,11 +231,8 @@ export function TeamCrewsGroup({ crews, account, refusal, retry, retrying, refre
           <ErrorNoticeMenuItem Item={DropdownMenuItem} message={t('components.relayCrews.seen_not_saved')} describedBy="relay-crews-seen-failed" />
         </>
       )}
-      {refusal
-        ? <RelayListRefusalNotice refusal={refusal} onRetry={retry} retrying={retrying} close={close} />
-        : crews.length === 0
-          ? <div className="px-3 py-1.5 text-[12px] text-muted">{t('components.relayCrews.empty')}</div>
-          : crews.map(c => (
+      {crews.length === 0 && !failed && <div className="px-3 py-1.5 text-[12px] text-muted">{t('components.relayCrews.empty')}</div>}
+      {crews.length > 0 && crews.map(c => (
             <TeamCrewItem
               key={c.endpointId} crew={c} refusal={refusals[c.endpointId]} onOpen={onOpen}
               onClose={relayTabs.tabs.some(tab => tab.id === c.endpointId) ? () => relayTabs.close(c.endpointId) : undefined}
@@ -307,27 +243,27 @@ export function TeamCrewsGroup({ crews, account, refusal, retry, retrying, refre
   )
 }
 
-/** The top bar's Crew switcher with the Team Crews group, while the relay viewer is on
- *  and the group has a Crew, a notice (sign-in, setup or load failure) or the signed-in account to show. */
+/** The top bar's Crew switcher with the Team Crews group, while a list is loaded and
+ *  the group has a Crew or the signed-in account to show. */
 export default function TeamCrewsSwitcher({ variant }: { variant: 'strip' | 'inline' }) {
-  const { hidden, crews, account, refusal, retry, retrying, refreshOnOpen } = useRelayViewerCrews()
+  const { hidden, crews, account, failed, refreshOnOpen } = useRelayViewerCrews()
   const [openRefusal, dismissOpenRefusal] = useOpenFromNote(crews)
   // The same label the group's line shows; the hook sends an account only with a loaded list.
   const accountLabel = account ? accountProviderLabel(account.accountType, account.startUrl) : ''
-  const showGroup = !(hidden || (refusal === null && crews.length === 0 && !accountLabel))
-  // The rows the group draws; a refusal draws none, so an open Crew keeps the bar's row.
-  const listedKey = showGroup && refusal === null ? crews.map(c => c.endpointId).join('\n') : ''
+  const showGroup = !(hidden || (crews.length === 0 && !accountLabel && !failed))
+  // The rows the group draws; while hidden it draws none, so an open Crew keeps the bar's row.
+  const listedKey = showGroup ? crews.map(c => c.endpointId).join('\n') : ''
   const listedRelayCrews = useMemo(() => new Set(listedKey ? listedKey.split('\n') : []), [listedKey])
   return (
     <InstanceTabBar
       variant={variant}
       listedRelayCrews={listedRelayCrews}
-      extraNew={!hidden && refusal === null && crews.some(c => c.unseen)}
-      // Nothing while hidden or loading, or for an empty list with no notice and no account
+      extraNew={!hidden && crews.some(c => c.unseen)}
+      // Nothing while hidden or loading, or for an empty list with no account
       // label, so the bar stays as it is without the relay. A loaded empty list with an
       // account label still mounts the group, so it says who is signed in.
       extraGroups={!showGroup ? undefined : close => (
-        <TeamCrewsGroup crews={crews} account={account} refusal={refusal} retry={retry} retrying={retrying} refreshOnOpen={refreshOnOpen} close={close} />
+        <TeamCrewsGroup crews={crews} account={account} failed={failed} refreshOnOpen={refreshOnOpen} close={close} />
       )}
       extraNotice={openRefusal ? (
         <ErrorNotice

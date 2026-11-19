@@ -189,6 +189,19 @@ def kiro_cli_signed_out(*, environ: Mapping[str, str], home: Path) -> bool:
     return fingerprint == "" and definitive == [True]
 
 
+def _crew_holds_usable_sign_in() -> bool:
+    """Whether Kiro Crew's own sign-in can serve a spawn. Raises on an unreadable vault.
+
+    A workload-identity host (:mod:`kiro_crew.workload_identity`) answers True
+    without reading the vault: its JWT-SVID is the Crew's sign-in.
+    """
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
+        return True
+    return sign_in.resolve(policy=sign_in.OSS).source is sign_in.Source.VAULT
+
+
 def relay_unusable_reason(
     *,
     kiro_bin: str | None,
@@ -275,7 +288,7 @@ def sharing_preview_selects_bundle(
     if not automatic_switch_allowed(pin):
         return False
     try:
-        crew_signed_in = sign_in.resolve(policy=sign_in.OSS).source is sign_in.Source.VAULT
+        crew_signed_in = _crew_holds_usable_sign_in()
     except Exception:  # noqa: BLE001 - an unreadable vault proves no Crew sign-in
         crew_signed_in = False
     if not crew_signed_in:
@@ -484,7 +497,7 @@ def crew_sign_in_starts_spawn(
     environ = os.environ if environ is None else environ
     home = Path.home() if home is None else home
     try:
-        if sign_in.resolve(policy=sign_in.OSS).source is not sign_in.Source.VAULT:
+        if not _crew_holds_usable_sign_in():
             return False
         # Local, as in resolve_kas_route: this module loads while acp.client imports.
         from kiro_crew.acp.client import _resolve_kiro_bin
@@ -511,7 +524,7 @@ def bundle_route_lacks_sign_in(
     """
     try:
         try:
-            if sign_in.resolve(policy=sign_in.OSS).source is sign_in.Source.VAULT:
+            if _crew_holds_usable_sign_in():
                 return False
         except sign_in.SignInError:
             pass  # no usable sign-in: the route decides

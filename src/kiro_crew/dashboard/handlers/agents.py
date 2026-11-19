@@ -42,11 +42,12 @@ from aiohttp import BodyPartReader, web  # noqa: F401
 
 from kiro_crew import agent_state  # noqa: F401
 from kiro_crew import crew_teams as teams_mod  # noqa: F401
-from kiro_crew import model_registry, model_scope
+from kiro_crew import model_registry, model_scope, workload_identity
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (  # noqa: F401 - selectable_backend_values is a facade name
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_PROMPT_HANDLER_COMMANDS,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
@@ -341,6 +342,7 @@ from kiro_crew.dashboard.handlers.agents_session_commands import (
 from kiro_crew.dashboard.handlers.models_kas_bundle import (
     api_models_kas_bundle,
     api_models_kas_crew_relay,
+    api_models_kas_workload,
 )
 from kiro_crew.dashboard.handlers.source_providers import owner_view_for_request  # noqa: F401
 from kiro_crew.dashboard.kas_local_commands import local_harness_menu
@@ -1392,6 +1394,9 @@ async def api_models(request: web.Request) -> web.Response:
     # backend, which is why it is not a capability-set branch like the one above.
     if bundle_route:
         return await api_models_kas_bundle(request)
+    # No kiro-cli sign-in on a workload-identity host: the engine's own list, as above.
+    if backend == ACP_BACKEND_KAS and workload_identity.active():
+        return await api_models_kas_workload(request)
     # kiro-cli opens a browser login for ANY subcommand run signed out, and the
     # frontend polls here every 8s while degraded, so no spawn below may run unless
     # reject_if_kiro_unverified passes (tight 30 s bound: the only server-side

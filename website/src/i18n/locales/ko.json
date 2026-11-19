@@ -5836,9 +5836,6 @@
       "empty": "아직 열 수 있는 공유 Crew가 없습니다.",
       "managed_by_admin": "공유 Crew는 관리자가 AWS Management Console에서 관리합니다.",
       "open_console": "AWS Management Console 열기",
-      "refusal_list_generic": "공유 Crew를 불러오지 못했습니다.",
-      "refusal_not_configured": "릴레이를 통한 공유 Crew가 설정되어 있지 않습니다.",
-      "refusal_signed_out": "공유 Crew를 보려면 Kiro에 로그인하세요.",
       "setup_desc": "공유 Crew는 관리자가 AWS Management Console에서 만들고 관리합니다. 팀용 공유 Crew를 설정해 달라고 관리자에게 요청하세요.",
       "setup_title": "새 공유 Crew 설정",
       "section_title": "나와 공유됨",
@@ -7611,14 +7608,12 @@
       "refusal_popup_blocked": "브라우저가 새 탭을 차단했습니다. 이 페이지의 팝업을 허용한 후 다시 시도하세요.",
       "refusal_generic": "이 크루를 열 수 없습니다.",
       "refusal_list_generic": "공유 Crew를 불러올 수 없어요.",
-      "try_again": "다시 시도",
-      "request_id": "요청 ID: {{id}}",
+      "refresh_failed": "공유 Crew를 새로 고칠 수 없어요. 마지막으로 불러온 목록이에요.",
       "group_team_crews": "원격 Crew",
       "opens_own_window": "별도 창에서 열립니다",
       "new_crew": "새 항목",
       "seen_not_saved": "확인한 것으로 저장하지 못했습니다. 다시 새 항목으로 표시됩니다.",
       "open_crew_failed": "{{name}}을(를) 열 수 없습니다.",
-      "sign_in": "Kiro에 로그인",
       "connect": "연결",
       "connect_crew": "{{name}} 연결"
     },
@@ -21100,7 +21095,8 @@
         "turn_off_failed": "원격 제어를 끄지 못했습니다",
         "load_failed": "원격 제어 설정을 읽지 못했습니다",
         "on_teammate": "원격 제어가 켜져 있습니다. 액세스 권한이 있는 사람은 Kiro 릴레이를 통해 이 Crew에 접속할 수 있습니다.",
-        "owner_only": "원격 제어는 Crew 소유자만 끌 수 있습니다."
+        "owner_only": "원격 제어는 Crew 소유자만 끌 수 있습니다.",
+        "local_only": "원격 제어는 {{productName}}을(를) 실행 중인 기기에서 끄세요. 릴레이를 통해서는 끌 수 없습니다."
       },
       "remoteCrewPanel": {
         "added_by_you": "내가 추가함",

@@ -6006,9 +6006,6 @@
       "empty": "Du hast noch keine geteilten Crews, die du öffnen kannst.",
       "managed_by_admin": "Geteilte Crews verwaltet dein Admin in der AWS Management Console.",
       "open_console": "AWS Management Console öffnen",
-      "refusal_list_generic": "Deine geteilten Crews konnten nicht geladen werden.",
-      "refusal_not_configured": "Geteilte Crews über das Relay sind nicht eingerichtet.",
-      "refusal_signed_out": "Melde dich bei Kiro an, um deine geteilten Crews zu sehen.",
       "setup_desc": "Geteilte Crews werden von einem Admin in der AWS Management Console erstellt und verwaltet. Bitte deinen Admin, eine für dein Team einzurichten.",
       "setup_title": "Neue geteilte Crew einrichten",
       "section_title": "Mit mir geteilt",
@@ -7820,14 +7817,12 @@
       "refusal_popup_blocked": "Dein Browser hat den neuen Tab blockiert. Erlaube Pop-ups für diese Seite und versuche es erneut.",
       "refusal_generic": "Diese Crew konnte nicht geöffnet werden.",
       "refusal_list_generic": "Deine geteilten Crews konnten nicht geladen werden.",
-      "try_again": "Erneut versuchen",
-      "request_id": "Anfrage-ID: {{id}}",
+      "refresh_failed": "Deine geteilten Crews konnten nicht aktualisiert werden. Das ist die zuletzt geladene Liste.",
       "group_team_crews": "Remote-Crews",
       "opens_own_window": "Öffnet sich in einem eigenen Fenster",
       "new_crew": "Neu",
       "seen_not_saved": "Konnte nicht speichern, dass du das gesehen hast. Es wird wieder als neu angezeigt.",
       "open_crew_failed": "{{name}} konnte nicht geöffnet werden.",
-      "sign_in": "Bei Kiro anmelden",
       "connect": "Verbinden",
       "connect_crew": "{{name}} verbinden"
     },
@@ -21646,7 +21641,8 @@
         "turn_off_failed": "Die Fernsteuerung konnte nicht ausgeschaltet werden",
         "load_failed": "Die Einstellung für die Fernsteuerung konnte nicht gelesen werden",
         "on_teammate": "Die Fernsteuerung ist an. Personen mit Zugriff erreichen diese Crew über das Kiro-Relay.",
-        "owner_only": "Nur der Besitzer der Crew kann die Fernsteuerung ausschalten."
+        "owner_only": "Nur der Besitzer der Crew kann die Fernsteuerung ausschalten.",
+        "local_only": "Schalte die Fernsteuerung auf dem Rechner aus, auf dem {{productName}} läuft. Über das Relay lässt sie sich nicht ausschalten."
       },
       "remoteCrewPanel": {
         "added_by_you": "Von dir hinzugefügt",

@@ -19,7 +19,12 @@ from aiohttp.test_utils import TestServer
 from relay_client_helpers import fixture
 
 from kiro_crew.relay_viewer import cps
-from kiro_crew.relay_viewer.cps import CpsRefused, create_crew_access_token, list_crew_endpoints
+from kiro_crew.relay_viewer.cps import (
+    RELAY_ZONE,
+    CpsRefused,
+    create_crew_access_token,
+    list_crew_endpoints,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -466,16 +471,26 @@ async def test_a_crew_exactly_under_the_relay_domain_is_kept(fake: FakeCps, crew
     assert [c.endpoint_id for c in crews] == [TEAM, PERSONAL]
 
 
+def _in_zone(body: Dict[str, Any]) -> Dict[str, Any]:
+    """*body* with each entry's address moved into Kiro's relay zone."""
+    for entry in body["crewEndpoints"]:
+        entry["crewUrl"] = f"https://{entry['endpointId']}.us-east-1.{RELAY_ZONE}"
+    return body
+
+
 @pytest.mark.parametrize(
-    "crew_url", [f"https://{TEAM}.evil.example.test", f"https://{TEAM}.{DOMAIN}"]
+    "crew_url",
+    [
+        f"https://{TEAM}.us-east-1.{RELAY_ZONE}",
+        f"https://{TEAM}.eu-central-1.{RELAY_ZONE}/",
+        f"HTTPS://{TEAM.upper()}.US-EAST-1.RELAY.KIRO.DEV",
+    ],
 )
-async def test_with_no_relay_domain_the_endpoint_prefix_check_still_applies(
+async def test_with_no_relay_domain_a_crew_in_kiros_relay_zone_is_kept(
     fake: FakeCps, crew_url: str
 ) -> None:
-    body = page(1)
-    other = dict(page(0)["crewEndpoints"][0], crewUrl=crew_url)
-    wrong = dict(other, endpointId="otherccccccccccccccccccccccccccc")
-    body["crewEndpoints"][0:0] = [other, wrong]
+    body = _in_zone(page(1))
+    body["crewEndpoints"].insert(0, dict(page(0)["crewEndpoints"][0], crewUrl=crew_url))
     fake.answer(200, body)
     crews = await list_crew_endpoints(fake.url, BEARER)
     assert [c.endpoint_id for c in crews] == [TEAM, PERSONAL]
@@ -483,13 +498,26 @@ async def test_with_no_relay_domain_the_endpoint_prefix_check_still_applies(
 
 @pytest.mark.parametrize(
     "crew_url",
-    [f"https://{TEAM}.{DOMAIN}:8443/", f"https://{TEAM}.{DOMAIN}:443", f"https://{TEAM}."],
+    [
+        f"https://{TEAM}.evil.example.test",
+        f"https://{TEAM}.{DOMAIN}",
+        f"https://{TEAM}.{RELAY_ZONE}",
+        f"https://{TEAM}.a.b.{RELAY_ZONE}",
+        f"https://{TEAM}.us-east-1.{RELAY_ZONE}.evil.example.test",
+        f"https://{TEAM}.us-east-1.evil{RELAY_ZONE}",
+        f"https://{TEAM}.-us.{RELAY_ZONE}",
+        f"https://{TEAM}.us_east.{RELAY_ZONE}",
+        f"https://{TEAM}.us-east-1.{RELAY_ZONE}:8443/",
+        f"https://{TEAM}.us-east-1.{RELAY_ZONE}:443",
+        f"https://otherccccccccccccccccccccccccccc.us-east-1.{RELAY_ZONE}",
+        f"https://{TEAM}.",
+    ],
 )
-async def test_with_no_relay_domain_a_crew_on_a_port_or_with_no_domain_is_left_out(
+async def test_with_no_relay_domain_a_crew_outside_kiros_relay_zone_is_left_out(
     fake: FakeCps, crew_url: str
 ) -> None:
-    # The desktop app pins the window to the listed host on the default port.
-    body = page(1)
+    # No token goes to a host outside the zone; the desktop app pins the listed host.
+    body = _in_zone(page(1))
     body["crewEndpoints"].insert(0, dict(page(0)["crewEndpoints"][0], crewUrl=crew_url))
     fake.answer(200, body)
     crews = await list_crew_endpoints(fake.url, BEARER)

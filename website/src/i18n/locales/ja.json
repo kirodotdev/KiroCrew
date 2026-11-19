@@ -5836,9 +5836,6 @@
       "empty": "開ける共有 Crew はまだありません。",
       "managed_by_admin": "共有 Crew は管理者が AWS Management Console で管理します。",
       "open_console": "AWS Management Console を開く",
-      "refusal_list_generic": "共有 Crew を読み込めませんでした。",
-      "refusal_not_configured": "リレー経由の共有 Crew は設定されていません。",
-      "refusal_signed_out": "共有 Crew を表示するには Kiro にサインインしてください。",
       "setup_desc": "共有 Crew は管理者が AWS Management Console で作成・管理します。チーム用に設定するよう管理者に依頼してください。",
       "setup_title": "新しい共有 Crew を設定",
       "section_title": "自分と共有",
@@ -7611,14 +7608,12 @@
       "refusal_popup_blocked": "ブラウザーが新しいタブをブロックしました。このページのポップアップを許可して、もう一度お試しください。",
       "refusal_generic": "このクルーを開けませんでした。",
       "refusal_list_generic": "共有 Crew を読み込めませんでした。",
-      "try_again": "もう一度試してください",
-      "request_id": "リクエスト ID: {{id}}",
+      "refresh_failed": "共有 Crew を更新できませんでした。これは最後に読み込んだ一覧です。",
       "group_team_crews": "リモート Crew",
       "opens_own_window": "専用のウィンドウで開きます",
       "new_crew": "新規",
       "seen_not_saved": "確認済みとして保存できませんでした。また新規として表示されます。",
       "open_crew_failed": "{{name}} を開けませんでした。",
-      "sign_in": "Kiro にサインイン",
       "connect": "接続",
       "connect_crew": "{{name}} に接続"
     },
@@ -21100,7 +21095,8 @@
         "turn_off_failed": "リモートコントロールをオフにできませんでした",
         "load_failed": "リモートコントロールの設定を読み込めませんでした",
         "on_teammate": "リモートコントロールはオンです。アクセス権のある人は Kiro リレー経由でこの Crew にアクセスできます。",
-        "owner_only": "リモートコントロールをオフにできるのは Crew のオーナーだけです。"
+        "owner_only": "リモートコントロールをオフにできるのは Crew のオーナーだけです。",
+        "local_only": "リモートコントロールは {{productName}} を実行しているマシンでオフにしてください。リレー経由ではオフにできません。"
       },
       "remoteCrewPanel": {
         "added_by_you": "自分で追加",

@@ -229,6 +229,44 @@ def _kas_bundle_turn_sync(session_key: str | None, config: object = None) -> boo
         return False
 
 
+def _workload_active() -> bool:
+    from kiro_crew import workload_identity
+
+    return workload_identity.active()
+
+
+def _kas_turn_sync(session_key: str | None, config: object = None) -> bool:
+    """True when the turn on *session_key* starts on the KAS harness and can start.
+
+    The backend and the route are chosen as :func:`_kas_bundle_turn_sync` chooses
+    them. The relay route needs nothing more here; the bundle route also needs an
+    installed engine, as there. Blocking (config reads and a stat); never raises,
+    and an unreadable answer is False.
+    """
+    try:
+        from kiro_crew.agent_sdk import kas_bundle
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.crewmate_harness import route_pin
+        from kiro_crew.dashboard.chat_handlers import configured_backend_for_session
+        from kiro_crew.members import session_backend_pick
+
+        on_disk = KiroCrewConfig.load()
+        if config is None:
+            config = on_disk
+        if configured_backend_for_session(session_key, config) == ACP_BACKEND_KAS:
+            pick = session_backend_pick(session_key)
+            if not kas_bundle.kas_spawn_takes_bundle(
+                on_disk.agent, route_pin(config, session_key, pick)
+            ):
+                return True
+            return kas_bundle.installed_bundle() is not None  # type: ignore[misc]
+        return False
+    except Exception as exc:  # noqa: BLE001 - an unreadable answer keeps the kiro-cli gate
+        logger.debug("Kiro readiness: KAS route probe failed (%s)", type(exc).__name__)
+        return False
+
+
 def turn_gate_target(state: object, slot_key: object) -> tuple[bool, str | None]:
     """``(harness_turn, session_key)`` for a gate in front of a turn on *slot_key*.
 
@@ -264,7 +302,8 @@ def live_turn_route(state: object, session_key: str | None) -> bool | None:
     * ``None``: no live session (no session map, no key, no provider). The turn
       cold-starts, and the configured selection decides its route.
     * ``True``: the live process is the engine bundle, so its turn spawns no
-      kiro-cli.
+      kiro-cli; or, on a workload host, any KAS runtime, whose token Crew answers
+      with the Crew's JWT-SVID.
     * ``False``: a live session on any other route, or one whose route cannot be
       read (another provider type, a runtime not spawned yet). It keeps the
       kiro-cli gate: a retained kiro-cli session would fail auth after the
@@ -291,6 +330,10 @@ def live_turn_route(state: object, session_key: str | None) -> bool | None:
             inner = getattr(provider, "client", None)
         runtime = getattr(inner, "_runtime", None)
         on_kas = getattr(runtime, "acp_backend", None) == ACP_BACKEND_KAS
+        if on_kas and _workload_active():
+            # On a workload host every KAS runtime, relay included, asks Crew for
+            # its token, which is the Crew's JWT-SVID (``kiro_crew.workload_identity``).
+            return True
         return on_kas and getattr(runtime, "_kas_engine_bundle", False) is True
     except Exception as exc:  # noqa: BLE001 - an unreadable live session keeps the gate
         logger.debug("Kiro readiness: live session route unreadable (%s)", type(exc).__name__)
@@ -319,8 +362,17 @@ async def kas_crew_signin_ready(
     refused before history is rewritten. Fresh on every call: there is no latch
     to go stale. Never raises.
     """
+    from kiro_crew import workload_identity
+
     if live_route is False:
         return False
+    if workload_identity.active():
+        # On a workload host every KAS route asks Crew for the token, relay
+        # included, and Crew answers with the Crew's JWT-SVID, never the vault.
+        # A turn on any other harness, live or cold, keeps the kiro-cli gate.
+        if live_route is None and not await asyncio.to_thread(_kas_turn_sync, session_key, config):
+            return False
+        return await asyncio.to_thread(workload_identity.ready)
     if live_route is None and not await asyncio.to_thread(
         _kas_bundle_turn_sync, session_key, config
     ):

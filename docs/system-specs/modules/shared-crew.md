@@ -679,7 +679,9 @@ the access card or switch the preview; the mobile setup (`tailnet_mobile`, whose
 hands back a credential in the owner's own name) asks
 `is_host_owner_dashboard_request`; turning Remote Control off (`PUT
 /api/remote-control`, `REMOTE_ACCESS_WRITES`) refuses a teammate, since only the host
-machine can turn it back on and a teammate would shut every person out; and `PATCH
+machine can turn it back on and a teammate would shut every person out (the handler
+refuses the owner too on a relayed request, 403 `relay_remote_control_refused`, for
+the same reason); and `PATCH
 /api/config/kirocrew` refuses a teammate 403 `owner_only` on an admission key
 (`is_admission_config_key`: the `dashboard.shared_crew`, `dashboard.tailscale`,
 `instances` and `tunnel` subtrees, and any key segment starting `allow` or equal to

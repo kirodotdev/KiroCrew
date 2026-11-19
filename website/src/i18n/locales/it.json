@@ -6176,9 +6176,6 @@
       "empty": "Non hai ancora Crew condivise da aprire.",
       "managed_by_admin": "Le Crew condivise sono gestite dal tuo amministratore nella AWS Management Console.",
       "open_console": "Apri la AWS Management Console",
-      "refusal_list_generic": "Impossibile caricare le tue Crew condivise.",
-      "refusal_not_configured": "Le Crew condivise tramite il relay non sono configurate.",
-      "refusal_signed_out": "Accedi a Kiro per vedere le tue Crew condivise.",
       "setup_desc": "Le Crew condivise vengono create e gestite da un amministratore nella AWS Management Console. Chiedi al tuo amministratore di configurarne una per il tuo team.",
       "setup_title": "Configura una nuova Crew condivisa",
       "section_title": "Condivise con me",
@@ -8029,14 +8026,12 @@
       "refusal_popup_blocked": "Il browser ha bloccato la nuova scheda. Consenti i pop-up per questa pagina e riprova.",
       "refusal_generic": "Impossibile aprire questa crew.",
       "refusal_list_generic": "Impossibile caricare le tue Crew condivise.",
-      "try_again": "Riprova",
-      "request_id": "ID richiesta: {{id}}",
+      "refresh_failed": "Impossibile aggiornare le tue Crew condivise. Questo è l'ultimo elenco caricato.",
       "group_team_crews": "Crew remote",
       "opens_own_window": "Si apre in una finestra a sé",
       "new_crew": "Nuovo",
       "seen_not_saved": "Impossibile salvare che l’hai visto. Verrà mostrato di nuovo come nuovo.",
       "open_crew_failed": "Impossibile aprire {{name}}.",
-      "sign_in": "Accedi a Kiro",
       "connect": "Connetti",
       "connect_crew": "Connetti {{name}}"
     },
@@ -22192,7 +22187,8 @@
         "turn_off_failed": "Impossibile disattivare il controllo remoto",
         "load_failed": "Impossibile leggere l'impostazione del controllo remoto",
         "on_teammate": "Il controllo remoto è attivo. Le persone con accesso possono raggiungere questa Crew tramite il relay di Kiro.",
-        "owner_only": "Solo il proprietario della Crew può disattivare il controllo remoto."
+        "owner_only": "Solo il proprietario della Crew può disattivare il controllo remoto.",
+        "local_only": "Disattiva il controllo remoto sulla macchina che esegue {{productName}}. Non si può disattivare tramite il relay."
       },
       "remoteCrewPanel": {
         "added_by_you": "Aggiunta da te",

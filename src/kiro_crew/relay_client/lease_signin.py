@@ -10,9 +10,10 @@ writes a file or keeps a copy.
 
 Only an IAM Identity Center or external identity provider sign-in that names a
 Kiro profile can own a personal Crew, so anything else is refused here, before a
-request is sent. Every failure is a :class:`LeaseCredentialError`, which the lease
-client reads again on its backoff steps: signing in again resumes hosting without
-a restart. No message carries a token, a refresh token or the profile ARN.
+request is sent, as :class:`LeaseSignInCannotHost`: the lease client holds quietly
+on that and checks again on a slow fixed step. Every other failure is a
+:class:`LeaseCredentialError`, which the lease client reads again on its backoff
+steps. Either way signing in again resumes hosting without a restart. No message carries a token, a refresh token or the profile ARN.
 
 The Crew's sign-in looks up Kiro profiles only on the production control plane,
 so a sign-in made against a pre-production one stores no profile and is refused
@@ -24,7 +25,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from kiro_crew.relay_client.lease import TOKEN_TYPE_EXTERNAL_IDP, LeaseCredentialError
+from kiro_crew.relay_client.lease import (
+    TOKEN_TYPE_EXTERNAL_IDP,
+    LeaseCredentialError,
+    LeaseSignInCannotHost,
+)
 
 #: The stored identity kinds that can own a personal Crew.
 PERSONAL_OWNER_IDENTITIES = frozenset({"identity_center", "external_idp"})
@@ -75,7 +80,7 @@ async def read_lease_sign_in(
             f"the Kiro sign-in could not be refreshed ({type(exc).__name__})"
         ) from None
     if token.identity not in PERSONAL_OWNER_IDENTITIES:
-        raise LeaseCredentialError(
+        raise LeaseSignInCannotHost(
             "the Crew's Kiro sign-in can't host a personal Crew; sign in with IAM "
             "Identity Center or your organization's identity provider, and sign out of "
             "Builder ID or any social sign-in on this Crew"

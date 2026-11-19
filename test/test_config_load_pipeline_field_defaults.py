@@ -42,6 +42,9 @@ _READ_STAGE_DEPARTURES = {
     ("agent", "crew_panel"): False,
     # Fail closed the same way: a malformed value must not start storing MCP tokens.
     ("agent", "kas_persist_mcp_sign_in"): False,
+    # Fail closed: a malformed relay switch reads as off, never as unset, so it cannot
+    # let a team key start hosting (``config/section_builders._relay_enabled``).
+    ("tunnel", "relay_enabled"): False,
     # Fail closed: a malformed value must not auto-approve conductor sends.
     ("agent", "conductor_own_child_verbs"): False,
     # Fail closed: a malformed value must not move kiro-cli's KAS extract.

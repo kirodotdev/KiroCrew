@@ -227,6 +227,19 @@ describe('RemoteControlCard', () => {
     expect(put).not.toHaveBeenCalled()
   })
 
+  it('shows the owner the status read-only over the relay, with no Turn off', async () => {
+    get.mockResolvedValue(state({ requested: true, running: true, relayed: true }))
+    ownerOk.mockResolvedValue(true)
+    renderWithProviders(<RemoteControlCard />)
+    expect(await screen.findByTestId('remote-control-local-only')).toHaveTextContent(
+      "It can't be turned off through the relay.",
+    )
+    expect(screen.getByText(/Remote Control is on\./)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Turn off' })).toBeNull()
+    expect(screen.queryByTestId('remote-control-off-effect')).toBeNull()
+    expect(put).not.toHaveBeenCalled()
+  })
+
   it('keeps Turn off for the owner', async () => {
     get.mockResolvedValue(state({ requested: true, running: true }))
     ownerOk.mockResolvedValue(true)
