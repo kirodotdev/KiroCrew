@@ -2277,6 +2277,19 @@ measures, never above.
   `test_crewmate_worktree.py`'s `sandboxed_git` fixture does. The wrapper itself is
   tested in `test_worktree_create.py`.
 
+- **Scan only the cases whose subject is the hook scan.** Every git call through
+  `worktree._run_git` (so every `git_ops` read) first runs `git_config_hooks`' scan: three
+  more gits (`config`, `rev-parse --show-toplevel`, `ls-files -s`), plus one per
+  submodule. Windows process start is slow on a loaded runner, so a test that drives a
+  service refresh after refresh pays four spawns per read. MEASURED (#39484):
+  `test_slack_code_channel_bar_budget.py` tests took 58-107 s each on
+  `Backend Tests (Windows) (8)`, and the six-refresh
+  `test_the_bar_is_resent_only_when_its_items_change` took 91-95 s at four xdist workers
+  and 145-174 s at six, so it ran past `--timeout=180` on unrelated PRs and on main. A
+  test of logic ABOVE git, over repositories with no config hooks, stubs
+  `worktree.config_hook_disable_args_sandboxed` next to its `sandboxed_spawn_argv` stub
+  (#39505); the scan and `_run_git`'s use of it are tested in `test_git_config_hooks.py`.
+
 - **If you stub the only thing that releases a resource, the fixture owes the release.**
   A permit, an in-flight claim, a lock: when the green-path test replaces the runner
   whose `finally` gives it back, the resource is gone for the life of the worker. The
