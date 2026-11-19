@@ -30,6 +30,7 @@ from kiro_crew.testing.synthetic_credentials import github_classic
 
 CANARY = "sk-canary-3f9a2b7c1d8e-DO-NOT-LEAK"
 OPAQUE_CREDENTIAL = "opaque-7a9c2d4e6f8b1a3c5e7d9f0b2a4c6e8f"
+BASIC_CREDENTIAL = "ZmFrZXVzZXI6ZmFrZXBhc3MtMTIzNDU2Nw=="
 ORIGIN = "https://api.weather.example"
 PUBLIC_IP = "93.184.216.34"
 #: The real pad, captured before the autouse fixture stubs it.
@@ -327,12 +328,12 @@ def test_a_flagged_url_payload_is_refused_whatever_the_redaction_setting(
     ("request_fields", "contextual_text"),
     [
         (
-            {"json_body": {"Authorization": f"Bearer {OPAQUE_CREDENTIAL}"}},
-            json.dumps({"Authorization": f"Bearer {OPAQUE_CREDENTIAL}"}),
+            {"json_body": {"Authorization": f"Basic {BASIC_CREDENTIAL}"}},
+            json.dumps({"Authorization": f"Basic {BASIC_CREDENTIAL}"}),
         ),
         (
-            {"headers": {"X-Authorization": f"Bearer {OPAQUE_CREDENTIAL}"}},
-            f"X-Authorization: Bearer {OPAQUE_CREDENTIAL}",
+            {"headers": {"X-Authorization": f"Basic {BASIC_CREDENTIAL}"}},
+            f"X-Authorization: Basic {BASIC_CREDENTIAL}",
         ),
         (
             {"query": {"token": OPAQUE_CREDENTIAL}},
