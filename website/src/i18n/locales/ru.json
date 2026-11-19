@@ -297,6 +297,7 @@
     "resource_posture_tooltip_critical": "На этом компьютере очень мало памяти (свободно {{gb}} ГБ). Избегай тяжёлых параллельных задач.",
     "resource_posture_tooltip_tight": "На этом компьютере мало памяти (свободно {{gb}} ГБ). Тяжёлые задачи могут работать медленнее.",
     "resource_tight": "Мало памяти",
+    "sidebar_compact_while_folded": "Боковая панель остаётся компактной, пока устройство сложено",
     "subagent_cap": "лимит: {{cap}}",
     "notifications": "Уведомления",
     "notifications_failed_to_load": "Не удалось загрузить уведомления",

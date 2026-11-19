@@ -273,6 +273,7 @@
     "resource_posture_tooltip_critical": "এই কম্পিউটারে মেমরি খুব কম ({{gb}} GB খালি)। একসাথে ভারী কাজ চালানো এড়িয়ে চলো।",
     "resource_posture_tooltip_tight": "এই কম্পিউটারে মেমরি কম ({{gb}} GB খালি)। ভারী কাজ ধীর হতে পারে।",
     "resource_tight": "মেমরি কম",
+    "sidebar_compact_while_folded": "ডিভাইস ভাঁজ করা থাকলে সাইডবার সংকুচিত থাকে",
     "subagent_cap": "সীমা: {{cap}}",
     "notifications": "বিজ্ঞপ্তি",
     "notifications_failed_to_load": "বিজ্ঞপ্তি লোড করা যায়নি",

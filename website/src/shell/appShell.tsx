@@ -33,6 +33,11 @@ import { useShellBranding } from './branding'
 import { useRumPageView } from '../hooks/useRumPageView'
 import { useFocusRouteRelay } from '../hooks/useFocusRouteRelay'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useViewportSegments } from '../hooks/useViewportSegments'
+import { useSessionsListOnScreen } from '../hooks/useSessionsListOnScreen'
+import { foldHoldsRailCompact } from '../pages/chat/sidebarWidth'
+import { leadingEdge } from '../lib/layoutFormTransition'
+import { useLayoutRouteSignal } from '../lib/touchLayoutForm'
 import { useKeyboardViewportReset } from '../hooks/useKeyboardViewportReset'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
 import { useAppRailOrder } from './nav/appRail'
@@ -519,6 +524,18 @@ export function useAppShell() {
     return () => window.removeEventListener(PREVIEW_EXPAND_EVENT, onPreviewExpand)
   }, [])
   const isMobile = useIsMobile()
+  // Beside a reported fold the sessions list ends at the fold, so the rail is
+  // held compact only while that list is on screen beside the fold and an
+  // expanded rail would push it across; the toggle does nothing while it holds.
+  // With the list closed, or off the chat page, the rail is the person's.
+  const foldSegments = useViewportSegments()
+  const sessionsListOnScreen = useSessionsListOnScreen()
+  // The sessions list beside a fold is sized from the rail width at once, so
+  // the shell's rail track snaps here (App.tsx) rather than animating under it.
+  const foldBesideList = !isMobile && foldSegments !== null && sessionsListOnScreen
+  const foldCompactRail = foldBesideList && foldHoldsRailCompact({
+    segments: foldSegments, expandedRailW: railWidthFor({ isMobile: false, collapsed: false }), leading: leadingEdge(),
+  })
   const [sidePanelDock] = useSidePanelDock()
   // Side panel docked to the bottom (desktop only) swaps the shell from a
   // 3-column grid with a full-height right rail to a 2-column grid with an
@@ -532,7 +549,7 @@ export function useAppShell() {
   const {
     focusMode, toggleFocusMode, focusActive, topPeek, railPeek, topPeekTrigger, topPeekSurface,
     railPeekTrigger, railPeekSurface, topChromeShown, localHeaderDragGaps,
-  } = useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topReservePx })
+  } = useFocusChrome({ isMobile, navCollapsed: navCollapsed || foldCompactRail, activeInstanceId, topReservePx })
   // Whether the shell's one-shot entrance animation has already played.
   //
   // The local pane is HIDDEN, not unmounted, while a remote instance tab is
@@ -1009,7 +1026,7 @@ export function useAppShell() {
 
   const toggleNav = () => {
     if (isMobile) { if (mobileNavPhaseRef.current === 'open') closeMobileNavDrawer(); else openMobileNav() }
-    else {
+    else if (!foldCompactRail) {
       // The user has taken ownership of the rail: leaving preview expand mode
       // must not overwrite this with the pre-expand state.
       navAutoCollapsed.current = null
@@ -1018,6 +1035,9 @@ export function useAppShell() {
   }
   // Close mobile nav on route change
   useEffect(() => { if (isMobile) closeMobileNavDrawer() }, [location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
+  // A fold's two-pane form holds on the chat route only (touchLayoutForm), so
+  // useIsMobile re-reads the form when the route changes, before it paints.
+  useLayoutRouteSignal(location.pathname)
   // Escape closes the open drawer — the keyboard's dismissal path. The scrim's
   // click-to-dismiss is pointer-only (it is aria-hidden and unfocusable, so a
   // full-screen tab stop never appears in the tab order).
@@ -1032,13 +1052,15 @@ export function useAppShell() {
   useEffect(() => { if (!isMobile) { setMobileNavPhase('closed'); takeOverDrawer(mobileNavX) } }, [isMobile, mobileNavX])
   // Focus mode honours the collapse preference too: the overlay rail is as wide
   // as the docked rail would be, and the collapse control toggles it the same way.
-  const effectiveCollapsed = navCollapsed && !isMobile
+  const effectiveCollapsed = (navCollapsed || foldCompactRail) && !isMobile
   // Publish the rail track so consumers outside the shell can size against the
   // space actually left for content — ChatPage's activity panel decides
   // beside-vs-fill from it. Kept in sync with the gridTemplateColumns value
   // in App's shell grid; railWidthFor is the single source for both. An embed
   // document and every pop-out window draw no rail, so they publish none.
-  useEffect(() => {
+  // A layout effect, so the width is current before paint: the sessions list
+  // sizes from it, and a stale first frame would cross a fold.
+  useLayoutEffect(() => {
     setRailWidth(focusActive || isEmbed || isPopout ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
   }, [isMobile, effectiveCollapsed, focusActive, isEmbed, isPopout])
   // The header's three grid tracks (see `.topbar` in index.css) size themselves:
@@ -1128,7 +1150,7 @@ export function useAppShell() {
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,
     subscribeLogs, subscribeSubagents, forceReconnect, updateFlow, updating, setUpdating, showUpdateModal,
     setShowUpdateModal, showChangelog, updateError, setUpdateError, reportProblemOpen,
-    setReportProblemOpen, requestFeature, toggleNav, effectiveCollapsed, closeMobileNav, activePath,
+    setReportProblemOpen, requestFeature, toggleNav, effectiveCollapsed, foldCompactRail, foldBesideList, closeMobileNav, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
     membersBarPending, mobileNavOpen, topbarSearch,
   }

@@ -24,8 +24,9 @@ import { openModalDialog } from '../guide/openModalDialog'
  * The animation runs only for a form change a live resize caused, while the page
  * is visible, with no modal dialog open, outside `prefers-reduced-motion:
  * reduce`, and outside the embedded view. Anything else (the API missing, a change noticed on `pageshow` or
- * `visibilitychange`, first load) swaps instantly as before. Route changes and
- * sidebar toggles never reach this function.
+ * `visibilitychange`, first load) swaps instantly as before. A route change
+ * reaches it (the fold's two-pane form holds on the chat route only) and swaps
+ * instantly, inside the shell's layout effect; sidebar toggles never reach it.
  */
 
 /** Signals that mean the viewport is resizing in front of the reader. */

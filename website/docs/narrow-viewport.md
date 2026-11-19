@@ -176,6 +176,14 @@ phone form below). The choice is saved on this browser only (`kc-touch-layout`),
 only after the touch-first test so a mouse device never sees it, and takes effect at
 once because `useIsMobile` re-reads the form on its change event.
 
+**A reported fold is one more rung, on the chat route only.** When the window matches
+`(min-width: 640px) and (horizontal-viewport-segments: 2)` (`FOLD_TWO_PANE_QUERY` in
+`hooks/useViewportSegments.ts`) and the route is the dashboard's own chat page,
+`useIsMobile()` gives the desktop form with the sessions list ending at the fold, below
+768px too and whatever the browser's mode. On a touch-first device the Phone layout choice
+still wins (`touchFirstForm` in `lib/touchLayoutForm.ts`). Every other route, an embedded chat page
+included, keeps the rules above, and an embedded chat's list keeps its own width.
+
 **The shell is an application, not a zoomable document — page zoom is off on touch.**
 Pinching magnifies a `position: fixed` / `h-dvh` layout whose scrollers are all
 *inner*, so there is no axis left to reach what the magnification pushed outside the

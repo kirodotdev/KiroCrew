@@ -285,6 +285,7 @@
     "resource_posture_tooltip_critical": "La memoria di questo computer è molto scarsa ({{gb}} GB liberi). Evita il lavoro pesante in parallelo.",
     "resource_posture_tooltip_tight": "La memoria di questo computer è scarsa ({{gb}} GB liberi). Il lavoro pesante può rallentare.",
     "resource_tight": "Memoria scarsa",
+    "sidebar_compact_while_folded": "La barra laterale resta compatta finché il dispositivo è piegato",
     "subagent_cap": "limite: {{cap}}",
     "notifications": "Notifiche",
     "notifications_failed_to_load": "Impossibile caricare le notifiche",

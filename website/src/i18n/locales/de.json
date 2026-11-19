@@ -273,6 +273,7 @@
     "resource_posture_tooltip_critical": "Auf diesem Computer ist der Arbeitsspeicher sehr knapp ({{gb}} GB frei). Vermeide aufwendige parallele Arbeit.",
     "resource_posture_tooltip_tight": "Auf diesem Computer ist der Arbeitsspeicher knapp ({{gb}} GB frei). Aufwendige Arbeit kann langsamer laufen.",
     "resource_tight": "Wenig Speicher",
+    "sidebar_compact_while_folded": "Seitenleiste bleibt kompakt, solange das Gerät gefaltet ist",
     "subagent_cap": "Limit: {{cap}}",
     "notifications": "Benachrichtigungen",
     "notifications_failed_to_load": "Benachrichtigungen konnten nicht geladen werden",

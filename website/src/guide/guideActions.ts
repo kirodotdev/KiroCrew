@@ -32,7 +32,8 @@ import { registeredCopies, registeredId, registeredWithin } from '../uiLocations
 import { GUIDE_GATE_TEXT_KEYS, GUIDE_SELECTION_TEXT_KEYS, isGate, isSelectionScope } from './guidePredicates'
 import { findKey, isFindRole, normalizeName, type FindQuery } from './findByName'
 import { isSensitiveSetting, isTrustRootLocationId, isTrustRootPath } from './findTargetPolicy'
-import { touchFirstForm } from '../lib/touchLayoutForm'
+import { LAYOUT_ROUTE_CHANGED_EVENT, touchFirstForm } from '../lib/touchLayoutForm'
+import { FOLD_TWO_PANE_QUERY } from '../hooks/useViewportSegments'
 
 /** Stable `data-guide-anchor` values. A control opts in by carrying one. */
 export const GUIDE_ANCHORS = {
@@ -277,14 +278,20 @@ export function currentGuideViewport(): 'desktop' | 'mobile' {
   return phone ? 'mobile' : 'desktop'
 }
 
-/** Subscribe to the viewport class changing (for `useSyncExternalStore`). */
+/** Subscribe to the viewport class changing (for `useSyncExternalStore`). A
+ *  fold at the same width, or a route change while folded, moves the form
+ *  (touchLayoutForm) with no width change, so both wake it too. */
 export function subscribeGuideViewport(onChange: () => void): () => void {
   const mm = typeof window !== 'undefined' ? window.matchMedia : undefined
   if (typeof mm !== 'function') return () => undefined
-  const list = mm.call(window, PHONE_QUERY)
-  if (typeof list?.addEventListener !== 'function') return () => undefined
-  list.addEventListener('change', onChange)
-  return () => list.removeEventListener('change', onChange)
+  const lists = [mm.call(window, PHONE_QUERY), mm.call(window, FOLD_TWO_PANE_QUERY)]
+    .filter(list => typeof list?.addEventListener === 'function')
+  for (const list of lists) list.addEventListener('change', onChange)
+  window.addEventListener(LAYOUT_ROUTE_CHANGED_EVENT, onChange)
+  return () => {
+    for (const list of lists) list.removeEventListener('change', onChange)
+    window.removeEventListener(LAYOUT_ROUTE_CHANGED_EVENT, onChange)
+  }
 }
 
 /**

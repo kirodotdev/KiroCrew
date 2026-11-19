@@ -261,6 +261,7 @@
     "resource_posture_tooltip_critical": "这台电脑内存严重不足（剩余 {{gb}} GB）。避免繁重的并行工作。",
     "resource_posture_tooltip_tight": "这台电脑内存不足（剩余 {{gb}} GB）。繁重的工作可能会变慢。",
     "resource_tight": "内存紧张",
+    "sidebar_compact_while_folded": "设备折叠时，侧边栏保持紧凑",
     "subagent_cap": "上限：{{cap}}",
     "notifications": "通知",
     "notifications_failed_to_load": "通知加载失败",

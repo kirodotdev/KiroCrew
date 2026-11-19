@@ -261,6 +261,7 @@
     "resource_posture_tooltip_critical": "이 컴퓨터의 메모리가 매우 부족합니다(여유 {{gb}}GB). 무거운 병렬 작업은 피하세요.",
     "resource_posture_tooltip_tight": "이 컴퓨터의 메모리가 부족합니다(여유 {{gb}}GB). 무거운 작업이 느려질 수 있습니다.",
     "resource_tight": "메모리 부족",
+    "sidebar_compact_while_folded": "기기를 접은 동안에는 사이드바가 좁게 유지됩니다",
     "subagent_cap": "상한: {{cap}}",
     "notifications": "알림",
     "notifications_failed_to_load": "알림을 불러오지 못했습니다",

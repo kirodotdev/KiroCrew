@@ -261,6 +261,7 @@
     "resource_posture_tooltip_critical": "このコンピューターのメモリが大幅に不足しています（空き {{gb}} GB）。重い作業を並行して動かさないことをおすすめします。",
     "resource_posture_tooltip_tight": "このコンピューターのメモリが不足しています（空き {{gb}} GB）。重い作業は遅くなることがあります。",
     "resource_tight": "メモリ不足",
+    "sidebar_compact_while_folded": "端末を折りたたんでいる間はサイドバーがコンパクトのままです",
     "subagent_cap": "上限: {{cap}}",
     "notifications": "通知",
     "notifications_failed_to_load": "通知の読み込みに失敗しました",
