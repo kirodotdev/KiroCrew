@@ -355,11 +355,15 @@ def _frame_url_allowed(ctx: OpContext, url: str) -> bool:
 async def _refuse_current_url(ctx: OpContext) -> dict[str, Any] | None:
     """Judge the active tab before reading it, including a link's landing."""
     tab = await ctx.helper("current_tab")
-    url = str(tab.get("url") or "") if isinstance(tab, dict) else ""
-    # The gateway's empty recovery/new tab has no page content to expose.
-    if url == "about:blank":
+    reported = tab.get("url") if isinstance(tab, dict) else None
+    # The gateway's empty recovery/new tab has no page content to expose, and a
+    # popup that has not committed its first document yet reports url "": sending
+    # it to about:blank would cancel the navigation its opener started. Only those
+    # exact strings pass; a malformed answer (no dict, no url, a non-string) is
+    # still judged, and refused.
+    if reported in ("about:blank", ""):
         return None
-    return await _refuse_committed_url(ctx, url)
+    return await _refuse_committed_url(ctx, str(reported or ""))
 
 
 #: The walker counts the screenshot guards read: fields the person filled through a

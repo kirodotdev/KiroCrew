@@ -684,7 +684,18 @@ bind and again after the op, a popup that chat has not claimed yet becomes its
 current tab (`follow_popup`, `switch_tab` with `activate=False`), and the op's
 answer carries `popup: {target_id, url, title, hint}`, with `url` and `title`
 left out when the navigate gate refuses the address, and capped at 2048 and 300
-characters (the live hub's page caps) when it admits it. When the bound tab is gone
+characters (the live hub's page caps) when it admits it. After a `click` or
+`press_key` (`POPUP_LATE_OPS`), a popup the first look after the op missed (a
+`window.open` after a fetch) gets `POPUP_LATE_READS` (3) more looks,
+`POPUP_LATE_POLL_S` (0.15 s) apart, stopping when one is found or the person
+holds the tab (asked again after each wait, and before the card follows the tab); a click that opens nothing therefore answers up to about 0.45 s
+later, still under the op's locks. A tab whose url is still `""` (a popup before its first document
+commits) is left to load: neither the op's own gate (`_refuse_current_url`) nor
+the card's follow (`follow_current_tab`) sends it to `about:blank`. The card does
+not stream it either: the follow stops the session's stream, so no frame of the
+page it lands on is published or recorded before a later follow judges that
+committed URL. Only the exact string passes: an answer with no url, or a url that is not a string, is
+still judged and refused. When the bound tab is gone
 and it was a popup, the bind walks the opener links back to the nearest tab the
 chat still has instead of opening a blank one, so a sign-in window that closes
 itself returns the agent to the page that opened it. When the op's own action

@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
@@ -297,6 +297,58 @@ async def test_follow_current_tab_swallows_a_failing_helper(
     streams = _no_stream(monkeypatch)
     await mod.follow_current_tab(hub, "k", _Boom())
     assert streams == []
+
+
+@pytest.mark.asyncio
+async def test_follow_current_tab_leaves_a_tab_with_no_document_yet_to_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A popup that has not committed its first page reports url "": it is not sent
+    to about:blank, and no frame of it is streamed until a committed URL is judged."""
+    hub = hub_mod.LiveHub()
+    sup = _Supervisor()
+    sup.tab = {"targetId": "P1", "url": "", "title": ""}
+    streams = _no_stream(monkeypatch)
+    opener_stream = MagicMock(target_id="T1", stop=AsyncMock())
+    hub._session("k").stream = opener_stream
+    judged: list[str] = []
+
+    async def _refuse(_ctx: Any, url: str) -> dict[str, Any] | None:
+        assert url, "an empty url must not be judged"
+        judged.append(url)
+        return harness_ops.refusal("redirect_refused", "refused")
+
+    monkeypatch.setattr(mod.harness_ops, "_refuse_committed_url", _refuse)
+    assert await mod.follow_current_tab(hub, "k", sup) is None
+    assert ("goto", {"url": "about:blank"}) not in sup.calls
+    assert streams == [], "no frame of the loading popup is published"
+    opener_stream.stop.assert_awaited_once()
+    # It commits to an address the gate refuses: the next follow refuses it, still unstreamed.
+    sup.tab = {"targetId": "P1", "url": "http://127.0.0.1:9/", "title": ""}
+    refused = await mod.follow_current_tab(hub, "k", sup)
+    assert refused is not None and judged == ["http://127.0.0.1:9/"]
+    assert streams == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tab", [{"targetId": "P1"}, {"targetId": "P1", "url": None}])
+async def test_follow_current_tab_still_judges_a_tab_with_no_url_string(
+    monkeypatch: pytest.MonkeyPatch, tab: dict[str, Any]
+) -> None:
+    hub = hub_mod.LiveHub()
+    sup = _Supervisor()
+    sup.tab = tab
+    _no_stream(monkeypatch)
+    judged: list[str] = []
+
+    async def _refuse(_ctx: Any, url: str) -> dict[str, Any]:
+        judged.append(url)
+        return harness_ops.refusal("redirect_refused", "refused")
+
+    monkeypatch.setattr(mod.harness_ops, "_refuse_committed_url", _refuse)
+    refused = await mod.follow_current_tab(hub, "k", sup)
+    assert refused is not None and refused["code"] == "redirect_refused"
+    assert judged == [""]
 
 
 @pytest.mark.asyncio
@@ -854,6 +906,158 @@ async def test_a_popup_that_opened_after_the_answer_is_followed_by_the_next_op(
     answer = (await _op("chat-a"))["result"]
     assert answer["popup"]["target_id"] == "P1"
     assert hub.target_of("chat-a") == "P1" and sup.current == "P1"
+
+
+def _late_popup(
+    monkeypatch: pytest.MonkeyPatch, sup: _PopupSupervisor, on_look: int, after: str
+) -> list[str]:
+    """Open P1 from T1 on the *on_look*-th popup look after the *after* helper ran.
+
+    Returns the key of each look taken after it, so a test counts them. No clock:
+    the look itself is the point the popup lands at.
+    """
+    looks: list[str] = []
+    real = mod.follow_popup
+
+    async def _follow(hub: Any, key: str, *a: Any, **kw: Any) -> Any:
+        if any(h == after for h, _ in sup.calls):
+            looks.append(key)
+            if len(looks) == on_look:
+                sup.open_popup("P1", "T1")
+        return await real(hub, key, *a, **kw)
+
+    monkeypatch.setattr(mod, "follow_popup", _follow)
+    monkeypatch.setattr(mod, "POPUP_LATE_POLL_S", 0)
+    return looks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("op", "args", "helper"),
+    [("click", {"x": 1, "y": 2}, "click"), ("press_key", {"key": "Enter"}, "press_key")],
+)
+async def test_a_popup_that_opens_a_moment_after_a_click_is_followed_by_that_op(
+    monkeypatch: pytest.MonkeyPatch, op: str, args: dict[str, Any], helper: str
+) -> None:
+    """``window.open`` after a fetch: the first look after the click finds nothing."""
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.calls.clear()
+    looks = _late_popup(monkeypatch, sup, on_look=2, after=helper)
+    resp = await mod.api_browser_op(_request({"op": op, "args": args, "session_key": "chat-a"}))
+    answer = json.loads(resp.body)
+    assert answer["ok"] is True
+    assert answer["result"]["popup"]["target_id"] == "P1"
+    assert hub.target_of("chat-a") == "P1" and looks == ["chat-a", "chat-a"]
+
+
+@pytest.mark.asyncio
+async def test_an_op_that_cannot_open_a_popup_looks_for_one_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    await _op("chat-a")
+    sup.calls.clear()
+    looks = _late_popup(monkeypatch, sup, on_look=0, after="js")
+    assert (await _op("chat-a", "snapshot"))["ok"] is True
+    assert looks == ["chat-a"]
+
+
+@pytest.mark.asyncio
+async def test_no_popup_after_a_click_takes_a_bounded_number_of_looks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    await _op("chat-a")
+    sup.calls.clear()
+    looks = _late_popup(monkeypatch, sup, on_look=0, after="click")
+    assert (await _op("chat-a", "click", x=1, y=2))["ok"] is True
+    assert len(looks) == 1 + mod.POPUP_LATE_READS
+
+
+@pytest.mark.asyncio
+async def test_the_late_looks_stop_once_the_person_holds_the_tab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    await _op("chat-a")
+    sup.calls.clear()
+    looks = _late_popup(monkeypatch, sup, on_look=0, after="click")
+    real = mod.follow_popup
+
+    held: list[str] = []
+    monkeypatch.setattr(hub_mod.LiveHub, "in_control", lambda _self, key: key in held)
+
+    async def _claim_then_look(h: Any, key: str, *a: Any, **kw: Any) -> Any:
+        answer = await real(h, key, *a, **kw)
+        if looks:
+            held.append(key)  # the person takes the tab after the first late look
+        return answer
+
+    monkeypatch.setattr(mod, "follow_popup", _claim_then_look)
+    await _op("chat-a", "click", x=1, y=2)
+    assert looks == ["chat-a"], "no look after the person took the tab"
+
+
+@pytest.mark.asyncio
+async def test_a_takeover_during_the_late_wait_keeps_the_persons_tab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The person takes over while the poll waits and the opener's popup opens then:
+    the session stays on the tab the person took, and its stream is not replaced."""
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    streams = _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.calls.clear()
+    streams.clear()
+    looks = _late_popup(monkeypatch, sup, on_look=2, after="click")
+    asked: list[bool] = []
+
+    def _in_control(_self: Any, key: str) -> bool:
+        # After the first late look, the first ask is the one before the wait and
+        # says free; every later ask comes after the wait, once the person took over.
+        if not looks:
+            return False
+        asked.append(len(asked) > 0)
+        return asked[-1]
+
+    monkeypatch.setattr(hub_mod.LiveHub, "in_control", _in_control)
+    await _op("chat-a", "click", x=1, y=2)
+    assert looks == ["chat-a"], "no look after the wait the person took over in"
+    assert hub.target_of("chat-a") == "T1" and sup.current == "T1"
+    assert ("switch_tab", {"target": "P1", "activate": False}) not in sup.calls
+    assert streams == [], "the stream the person took over is left alone"
+
+
+@pytest.mark.asyncio
+async def test_a_late_popup_from_chat_as_click_is_never_claimed_by_chat_b(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sup = _PopupSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    await _op("chat-b")  # B is on T-new1
+    await _op("chat-a")
+    sup.calls.clear()
+    _late_popup(monkeypatch, sup, on_look=2, after="click")
+    clicked = await _op("chat-a", "click", x=1, y=2)
+    assert clicked["result"]["popup"]["target_id"] == "P1"
+    answer = await _op("chat-b")
+    assert "popup" not in answer["result"]
+    assert hub.owner_of_target("P1") == "chat-a" and "P1" not in hub.targets_of("chat-b")
 
 
 class _LongTitledPopupSupervisor(_PopupSupervisor):
