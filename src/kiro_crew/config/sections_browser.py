@@ -264,14 +264,24 @@ class BrowserRecordingConfig:
         )
 
 
-#: ``browser.run.max_repeats`` ceiling. 0 is off; the bound keeps a hand-edited value sane.
+#: ``browser.run`` ceilings. 0 is off; the bounds keep a hand-edited value sane.
+RUN_MAX_OPS_CAP = 1_000_000
 RUN_MAX_REPEATS_CAP = 10_000
 
 
 @dataclass
 class BrowserRunConfig:
-    """``browser.run``: a stop for a browser task that goes round in circles."""
+    """``browser.run``: a stop for a browser task that runs on or goes round in circles."""
 
+    max_ops: int = field(
+        default=0,
+        metadata=_meta(
+            "Most browser steps per chat",
+            "After this many browser steps in one chat, the next one is not run and "
+            "the agent is told why. Taking over the browser or starting a new chat "
+            "counts again from zero. 0 (the default) sets no limit.",
+        ),
+    )
     max_repeats: int = field(
         default=0,
         metadata=_meta(
@@ -288,7 +298,10 @@ class BrowserRunConfig:
         if not isinstance(section, dict):
             return cls()
         reader = SectionReader(cls, section)
-        return cls(max_repeats=reader.read("max_repeats", _safe_int, 0, RUN_MAX_REPEATS_CAP))
+        return cls(
+            max_ops=reader.read("max_ops", _safe_int, 0, RUN_MAX_OPS_CAP),
+            max_repeats=reader.read("max_repeats", _safe_int, 0, RUN_MAX_REPEATS_CAP),
+        )
 
 
 #: Most ``browser.credentials.domains`` entries kept; an allowlist is a handful of

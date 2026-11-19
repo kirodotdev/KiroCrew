@@ -208,6 +208,7 @@ from kiro_crew.config.sections_browser import (  # noqa: F401
     RECORDING_MB_MIN,
     RECORDING_SESSION_MB_DEFAULT,
     RECORDING_TOTAL_MB_DEFAULT,
+    RUN_MAX_OPS_CAP,
     RUN_MAX_REPEATS_CAP,
     BrowserConfig,
     BrowserCredentialsConfig,

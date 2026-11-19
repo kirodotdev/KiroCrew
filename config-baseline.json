@@ -6571,6 +6571,7 @@
           "max_total_mb": 1024
         },
         "run": {
+          "max_ops": 0,
           "max_repeats": 0
         }
       }
@@ -6842,8 +6843,23 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
+        "max_ops": 0,
         "max_repeats": 0
       }
+    },
+    {
+      "path": "browser.run.max_ops",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Most browser steps per chat",
+      "help": "After this many browser steps in one chat, the next one is not run and the agent is told why. Taking over the browser or starting a new chat counts again from zero. 0 (the default) sets no limit.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "browser.run.max_repeats",

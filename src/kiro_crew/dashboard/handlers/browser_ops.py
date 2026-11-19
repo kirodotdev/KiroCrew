@@ -416,14 +416,15 @@ def _report_changes() -> bool:
         return False
 
 
-def _run_limits() -> int:
-    """``browser.run.max_repeats``, read fresh for each op. Off (0) when it cannot be read."""
+def _run_limits() -> tuple[int, int]:
+    """``browser.run.max_ops`` and ``max_repeats``, read fresh for each op. Off (0) when unreadable."""
     try:
         from kiro_crew.config import KiroCrewConfig
 
-        return KiroCrewConfig.load().browser.run.max_repeats
+        run = KiroCrewConfig.load().browser.run
+        return run.max_ops, run.max_repeats
     except Exception:  # noqa: BLE001 - an unreadable setting leaves every op as it was
-        return 0
+        return 0, 0
 
 
 def frame_ops(hub: LiveHub, key: str, *, caller_key: str | None = None) -> Any:
@@ -1449,11 +1450,13 @@ async def _bound_op(
             # The ref or point the agent sent belongs to the page it left.
             result = moved
         else:
-            max_repeats = _run_limits()
-            if max_repeats:
+            max_ops, max_repeats = _run_limits()
+            if max_ops or max_repeats:
                 sess = hub.get(key)
                 if sess is not None:
-                    stopped = run_budget.check(sess.run, op, args, max_repeats=max_repeats)
+                    stopped = run_budget.check(
+                        sess.run, op, args, max_ops=max_ops, max_repeats=max_repeats
+                    )
                     if stopped is not None:
                         _audit(request, "denied", run_budget.CODE)
                         return stopped

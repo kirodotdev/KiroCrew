@@ -201,7 +201,7 @@ class TestRoundTrip:
             # Unset: ``None`` and ``[]`` both mean "follow the edition's default".
             "credentials": {"enabled": None, "domains": []},
             "recording": {"enabled": True, "max_session_mb": 200, "max_total_mb": 1024},
-            "run": {"max_repeats": 0},
+            "run": {"max_ops": 0, "max_repeats": 0},
         }
 
     def test_the_retired_first_run_flag_is_dropped_on_save(self, cfg_home):
