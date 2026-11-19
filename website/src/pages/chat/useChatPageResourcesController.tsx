@@ -25,7 +25,7 @@ import {
 } from '../../hooks/useScreenSnip'
 import { useTheme } from '../../hooks/useTheme'
 import { i18nT } from '../../i18n/t'
-import type { AppDispatch } from '../../store'
+import { store, type AppDispatch } from '../../store'
 import { openActivityPanel, switchSlot } from '../../store/chatSlice'
 import { openCrewSession } from './command-center/CrewWorkerList'
 import type { ChatMessage } from '../../types'
@@ -588,9 +588,13 @@ export function useChatPageResourcesController({
   // not change during the read, so this compares against the chat that was
   // active at the click. An open the user walked away from never pulls them
   // back. Switching only here, after the tab is open, means a failed read
-  // (offline, say) never switches the panel and blanks a pane until reconnect.
+  // never switches the panel. A read can still succeed offline from the
+  // query cache, so the switch also waits for a live gateway: offline its
+  // fetch is rejected and blanks the pane until reconnect (the reason
+  // ChatPage withholds the folder opener offline). Read at call time from the
+  // store, so the callback keeps one identity across connection changes.
   const revealDockAfterOpen = useCallback((slot?: string | null) => {
-    if (slot != null && slot !== activeSlotRef.current) showPaneChat(slot)
+    if (slot != null && slot !== activeSlotRef.current && store.getState().dashboard.connected) showPaneChat(slot)
     dispatch(openActivityPanel())
     search.close()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `search.close` is a useCallback([]) in useMessageSearch, so the listed member already pins everything this body calls; depending on the enclosing object instead would churn the onFileOpen prop on every transcript row each render
