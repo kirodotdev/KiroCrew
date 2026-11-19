@@ -110,6 +110,17 @@ def _hook_capability(event: Any, entry: Any) -> str:
     return _capability_of_tool(matcher) or ANY
 
 
+def _bundle_beside_rules(perms: Any) -> bool:
+    """Whether *perms* is ``rules`` plus a ``policies`` list of bundle ids, and nothing else."""
+    return (
+        isinstance(perms, dict)
+        and set(perms) == {"rules", "policies"}
+        and isinstance(perms.get("rules"), list)
+        and isinstance(perms.get("policies"), list)
+        and all(isinstance(p, str) for p in perms["policies"])
+    )
+
+
 def _pieces(policy: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     """Each restriction in *policy*, as ``(capability, the policy holding it alone)``."""
     out: list[tuple[str, dict[str, Any]]] = []
@@ -128,6 +139,12 @@ def _pieces(policy: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     elif "hooks" in policy:
         out.append((ANY, {"hooks": hooks}))
     perms = policy.get("permissions")
+    if isinstance(perms, dict) and _bundle_beside_rules(perms):
+        # A named bundle (``policies``) only expands into ``allow`` rules on KAS's
+        # side: a grant, not a limit. Leaving it behind narrows, and each rule
+        # beside it is carried or held under its own capability, as in a block
+        # of rules alone. Read whole, one deny there made every call ask.
+        perms = {"rules": perms["rules"]}
     if isinstance(perms, dict) and set(perms) <= {"rules"} and isinstance(perms.get("rules"), list):
         for rule in perms["rules"]:
             cap = rule.get("capability") if isinstance(rule, dict) else None

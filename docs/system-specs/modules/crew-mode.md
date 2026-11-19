@@ -5329,7 +5329,14 @@ share one Kiro home), so one writer cannot erase a hold another records. A Bot w
 enforces its own limits, so the hold the move recorded for it is cleared again,
 only when the entry still carries the `member_id` it was recorded under
 (`mate_held_rules.drop_held`); the next start that moves it holds them again. A repaired Bot is
-checked once (`migrated.json` `policy_checked`). The two loosenings are cured
+checked once (`migrated.json` `policy_checked`). A `permissions` block that names a
+bundle (`policies`) beside its `rules` is read as those rules alone: KAS expands a
+bundle into allow rules on its own side, so leaving it behind only narrows, and
+each rule is carried or held under its own capability (`mate_held_rules._pieces`).
+An earlier release held such a whole block under every capability (`ANY`), so one
+deny in it made every call of the Bot ask, Trust included; a Bot held on every call
+is checked once more (`migrated.json` `held_every_call_rechecked`), and a hold that
+read no longer needs is dropped after its deny is written into the file. The two loosenings are cured
 first: a server the source switched off is written `{"disabled": true}`, and a
 grant the worker would gain is taken out of the file (`_strip_grants`), so
 nothing the old agent lacked is ever granted; the user gets it only through
