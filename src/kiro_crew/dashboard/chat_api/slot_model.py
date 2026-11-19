@@ -761,6 +761,12 @@ async def switch_slot_model(
         # the pop: the switch is committed, the response carries an advisory
         # warning (agent-handler precedent via _reset_slot_session_or_warn).
         teardown_incomplete = False
+        # The traced session a live switch would land on, read before its RPCs.
+        from kiro_crew.dashboard.trace_binding import registry_key
+        from kiro_crew.tracing import sessions as trace_sessions
+
+        traced_key = registry_key(state.sessions, session_key)
+        live_generation = trace_sessions.current(traced_key)
         try:
             went_live = await _try_live_model_switch(name, slot, provider, model_name)
         except AcpModelUnavailable as exc:
@@ -803,6 +809,7 @@ async def switch_slot_model(
             # The live session runs the pick; refresh the slot's served-model
             # cache from it so an inheriting chip ("auto") does not keep naming
             # the model the session was spawned with.
+            trace_sessions.switched(traced_key, "model", generation=live_generation)
             _sync_served_model(slot, provider)
             _broadcast_context_reset(state, slot.key, provider)
         else:
