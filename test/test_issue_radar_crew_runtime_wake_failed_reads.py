@@ -8,11 +8,10 @@ the same way as in ``test_issue_radar_crew_runtime_wake.py``: a fake forge clien
 fake gateway state, a real crew store.
 """
 
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
+import pytest
 from issue_radar_crew_runtime_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     OWNER,
     REPO,
@@ -44,10 +43,12 @@ def _rate_limited(*_args, **_kwargs):
 
 
 class TestFailedReadsInTheWakeSweep(unittest.IsolatedAsyncioTestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        """The radar store root, in ``tmp_path`` for the reason ``TestNewWorkWakes`` gives."""
+        self.root = tmp_path
+
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
         cs.write_settings(
             OWNER,
             REPO,
