@@ -5,7 +5,8 @@
  */
 import { notifyManager } from '@tanstack/react-query'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { ApiError } from '../api/apiError'
 import KiroPrerequisiteGate from '../components/KiroPrerequisiteGate'
 import { renderWithProviders } from './helpers'
 
@@ -24,6 +25,7 @@ vi.mock('../api/client', async () => ({
     acpBackendRecheck: vi.fn(),
     patchConfig: vi.fn(),
     kasLoginStatus: vi.fn(),
+    kasLoginBeginLoopback: vi.fn(),
   },
 }))
 
@@ -43,6 +45,14 @@ const renderGate = () =>
   renderWithProviders(
     <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
   )
+
+// Observers are notified on a timer by default, so a render caused by a read can
+// land after the test moves on. Notifying synchronously makes `act` see every
+// render a read causes; the default is put back when the test ends.
+function notifySynchronously() {
+  notifyManager.setScheduler((cb) => cb())
+  onTestFinished(() => notifyManager.setScheduler((cb) => setTimeout(cb, 0)))
+}
 
 // The status request has answered and React has rendered from it.
 async function settledStatus() {
@@ -141,6 +151,18 @@ describe('KiroPrerequisiteGate with Crew-owned sign-in', () => {
     expect(screen.queryByRole('button', { name: 'Continue with Google' })).not.toBeInTheDocument()
   })
 
+  it('cannot be skipped while a sign-in request is still in flight', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ ...established, crew_sign_in: true }))
+    vi.mocked(api.kasLoginStatus).mockResolvedValue(signedOut)
+    // Never answers: the begin stays in flight for the whole test.
+    vi.mocked(api.kasLoginBeginLoopback).mockReturnValue(new Promise(() => {}))
+    renderGate()
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }, CHAIN))
+    await waitFor(() => expect(api.kasLoginBeginLoopback).toHaveBeenCalledTimes(1), CHAIN)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Skip for now' })).toBeDisabled(), CHAIN)
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
   it('lets the owner skip the sign-in, and keeps the dashboard open afterwards', async () => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ ...established, crew_sign_in: true }))
     vi.mocked(api.kasLoginStatus).mockResolvedValue(signedOut)
@@ -171,20 +193,35 @@ describe('KiroPrerequisiteGate with Crew-owned sign-in', () => {
   it('keeps a dashboard admitted with the hold off when the switch turns on mid-session', async () => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ ...established, crew_sign_in: false }))
     vi.mocked(api.kasLoginStatus).mockResolvedValue(signedOut)
+    notifySynchronously()
     const { queryClient } = renderGate()
     await settledStatus()
     const admitted = screen.getByText('Dashboard loaded')
     // The owner turns the engine switch on in Settings; the next status poll
     // reports it before any restart. Replacing the app would lose its drafts.
-    notifyManager.setScheduler((cb) => cb())
-    try {
-      vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ ...established, crew_sign_in: true }))
-      await act(async () => {
-        await queryClient.refetchQueries({ queryKey: ['kiro-prerequisite'] })
-      })
-    } finally {
-      notifyManager.setScheduler((cb) => setTimeout(cb, 0))
-    }
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ ...established, crew_sign_in: true }))
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['kiro-prerequisite'] })
+    })
+    expect(queryClient.getQueryData(['kiro-prerequisite'])).toMatchObject({ crew_sign_in: true })
+    expect(screen.getByText('Dashboard loaded')).toBe(admitted)
+    expect(screen.queryByRole('button', { name: 'Continue with Google' })).not.toBeInTheDocument()
+    expect(api.kasLoginStatus).not.toHaveBeenCalled()
+  })
+
+  it('keeps a dashboard admitted after a failed status read when the switch turns on later', async () => {
+    localStorage.setItem('kirocrew:kiro-setup-complete', '1')
+    vi.mocked(api.kiroPrerequisite).mockRejectedValue(new ApiError(500, 'Probe failed'))
+    vi.mocked(api.kasLoginStatus).mockResolvedValue(signedOut)
+    notifySynchronously()
+    const { queryClient } = renderGate()
+    // A returning browser keeps its app while the status cannot be read.
+    const admitted = await screen.findByText('Dashboard loaded', undefined, CHAIN)
+    await waitFor(() => expect(queryClient.getQueryState(['kiro-prerequisite'])?.status).toBe('error'), CHAIN)
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ ...established, crew_sign_in: true }))
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['kiro-prerequisite'] })
+    })
     expect(queryClient.getQueryData(['kiro-prerequisite'])).toMatchObject({ crew_sign_in: true })
     expect(screen.getByText('Dashboard loaded')).toBe(admitted)
     expect(screen.queryByRole('button', { name: 'Continue with Google' })).not.toBeInTheDocument()

@@ -677,7 +677,9 @@ function Chooser({
       )}
       {onSkip ? (
         <div className="mt-4">
-          <Btn type="button" onClick={onSkip}>
+          {/* Not while a begin is in flight: its answer would start a session nobody
+              watches, and a refusal would lose its notice with this screen. */}
+          <Btn type="button" disabled={busy} onClick={onSkip}>
             {i18nT('components.kasLogin.skip_for_now')}
           </Btn>
         </div>

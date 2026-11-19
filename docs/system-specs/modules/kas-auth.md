@@ -914,7 +914,7 @@ engine instead ([aws-control.md](aws-control.md)).
   (`GET /api/kas-login` failing, for example a token store it cannot open) is
   unknown, not signed out: the hold renders the app. And the signed-out chooser
   carries a "Skip for now" button (`components.kasLogin.skip_for_now`) that
-  renders the app for that page load; the next load holds again.
+  renders the app for that page load (disabled while a sign-in request is in flight, so no unwatched session starts); the next load holds again.
 - **One sign-in flow, many places.** The flow's state and actions (status read,
   begin loopback or device code, poll, the loopback-to-device fallback, cancel and
   its settle, the landed result) live in `website/src/hooks/useKasLogin.ts`

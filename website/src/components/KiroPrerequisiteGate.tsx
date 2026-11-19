@@ -1345,10 +1345,11 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     && !signInOnly
   // The gate stays mounted with the hold off for everyone else, so the app keeps
   // its place in the tree when a status that turns the hold on arrives. The hold
-  // applies only to a page load whose first shown app was held.
+  // applies only to a page load whose first settled app was held; a failed read
+  // that lets a returning browser in counts as settled with the hold off.
   const app = (extra?: ReactNode) => {
     if (!statusQuery.isPending) appShown.current = true
-    if (statusQuery.data && !crewSignIn) shownUnheld.current = true
+    if (!statusQuery.isPending && !crewSignIn) shownUnheld.current = true
     return (
       <KasLoginGate hold={crewSignIn && !shownUnheld.current} escapable>
         {children}{extra}
