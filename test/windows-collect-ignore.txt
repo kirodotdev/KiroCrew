@@ -87,8 +87,6 @@ test_acp_client_tool_hooks.py      # a test_acp_client.py topic part; same suite
 test_acp_client_transient_errors.py  # a test_acp_client.py topic part; same suite
 test_app_backend_stale_reap.py     # getpgid/killpg reaping semantics
 test_env.py                        # krb5 ccache resolver is Linux-only (getuid paths)
-test_outbox_notify_broadcast.py    # hardcoded /tmp outbox paths
-test_outbox_binary.py              # hardcoded /tmp outbox paths
 test_deploy_web_handlers.py        # deploy staging is POSIX-shaped (/tmp, uid)
 test_deploy_web_handlers_manifest_reaper.py  # a test_deploy_web_handlers.py topic part; same suite
 test_deploy_web_handlers_webapp.py  # a test_deploy_web_handlers.py topic part; same suite

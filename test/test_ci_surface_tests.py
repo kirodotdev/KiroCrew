@@ -404,8 +404,6 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_acp_client_transient_errors.py",
         "test_app_backend_stale_reap.py",
         "test_env.py",
-        "test_outbox_notify_broadcast.py",
-        "test_outbox_binary.py",
         "test_deploy_web_handlers.py",
         "test_deploy_web_handlers_manifest_reaper.py",
         "test_deploy_web_handlers_webapp.py",
