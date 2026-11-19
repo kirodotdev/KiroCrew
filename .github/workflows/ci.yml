@@ -1369,9 +1369,9 @@ jobs:
         # Hash assignment is stable, not duration-balanced. Every file's tests
         # and parameters stay together; xdist still uses loadgroup within a job.
         # The full-suite run (not the reduced or leaf ones) also reads
-        # scripts/ci_file_shard_pins.txt, which moves the heaviest files to fixed
-        # shards so the shards' test time comes out even; the slowest shard sets
-        # this job's time. scripts/ci_file_shard_pins.py regenerates it.
+        # scripts/ci_file_shard_pins.txt, which gives every measured file a fixed
+        # shard so the shards' test time comes out even; the slowest shard sets
+        # this job's time. scripts/ci_file_shard_pins.py --every-file regenerates it.
         #
         # Coverage runs on every shard: since the floor moved to >= 3.12 the
         # matrix has a single Python, so there is no --no-cov lane left. Each

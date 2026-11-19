@@ -6979,19 +6979,27 @@ path, not a duration or test-count balance. Other shards skip the file before
 import, while discovery patterns and platform ignores remain pytest's own.
 
 The Linux full-suite run adds `--file-shard-pins scripts/ci_file_shard_pins.txt`:
-the heaviest files (about 800) get a fixed shard, placed so the eight shards'
-summed test seconds come out even, and every other file keeps its hash owner. A
-pin only changes which shard owns a file, so a new or renamed file is still
-collected, on its hash shard. `scripts/ci_file_shard_pins.py` regenerates the pin
-file from the `linux-pytest-progress-<N>` artifacts of several green `main` runs;
-regenerate it when the Linux shards' `Run tests` times drift apart again. The
-Windows run adds its own pin file, `--file-shard-pins
-scripts/ci_file_shard_pins_windows.txt`, generated the same way with
-`--platform windows` from the `windows-pytest-progress-<N>` artifacts. Windows
-keeps a separate file because a file's share of the time differs there: the
-Linux pins cut the slowest Windows shard by a median 12% of its summed test
-seconds over six held-out green runs, the Windows pins by 20%. macOS, release
-and the reduced and leaf scopes keep pure hash ownership.
+every file with a measured weight gets a fixed shard, placed so the eight shards'
+summed test seconds come out even, and a file with no weight keeps its hash
+owner. A pin only changes which shard owns a file, so a new or renamed file is
+still collected, on its hash shard. `scripts/ci_file_shard_pins.py --every-file`
+regenerates the pin file from the `linux-pytest-progress-<N>` artifacts of
+several green `main` runs; regenerate it when the Linux shards' `Run tests` times
+drift apart again. Without `--every-file` the script pins the 800 heaviest files
+and hashes the rest, and the hashed rest is uneven: planned from 11 green runs
+and replayed on the one held out (12 runs, 2026-11-18), the heaviest Linux shard
+carried a median 1.07x the mean test seconds with 800 pins and 1.02x with every
+file planned. The Windows run adds its own pin file, `--file-shard-pins
+scripts/ci_file_shard_pins_windows.txt`, generated with `--platform windows`
+from the `windows-pytest-progress-<N>` artifacts. Windows keeps a separate file
+because a file's share of the time differs there: the Linux pins cut the slowest
+Windows shard by a median 12% of its summed test seconds over six held-out green
+runs, the Windows pins by 20%. The Windows file stays at the 800 heaviest
+(1.06x held out, against 1.02x with every file) because the Windows leaf scope
+in `ci.yml` reads that file as its list of heavy files (`WINDOWS_LEAF_MAX_PINNED`);
+listing every file there would send any leaf diff of five or more files to the
+full suite. macOS, release and the reduced and leaf scopes keep pure hash
+ownership.
 
 macOS assigns whole files like the other platforms, in eight shards. The shard
 count is the knob to reach for when the suite grows, not the 60-minute cap,
