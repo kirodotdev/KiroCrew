@@ -356,6 +356,29 @@ class TestApiCompletionsBlocking:
         assert data["choices"][0]["message"]["content"] == "hey there"
         assert data["choices"][0]["finish_reason"] == "stop"
 
+    async def test_turn_start_pushes_the_slot_list(self):
+        """The started turn is pushed while it holds the slot, so the
+        Sessions list shows it running instead of idle until it ends."""
+        slot = _make_slot()
+        state = _make_state(slot)
+        task_at_push: list[object] = []
+        state.push_slots_update = MagicMock(side_effect=lambda: task_at_push.append(slot.task))
+        request = _make_request(
+            {"model": "vanellope", "messages": [{"role": "user", "content": "hi"}]},
+            state,
+        )
+
+        async def fake_run_chat(s, sl, prompt, **_kwargs):
+            slot._pending.append({"role": "assistant", "content": "hey"})
+            slot._pending.append({"cls": "done"})
+            slot.event.set()
+
+        with patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat):
+            resp = await api_completions(request)
+
+        assert resp.status == 200
+        assert task_at_push and task_at_push[0] is not None
+
     async def test_missing_messages_returns_400(self):
         slot = _make_slot()
         state = _make_state(slot)

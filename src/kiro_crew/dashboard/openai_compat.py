@@ -803,6 +803,10 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
         slot.task = task
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
+        # The slot reads running now; push it, as the dashboard send does.
+        # The suspend block logs a failing flush, so it cannot fail the request.
+        with state.suspend_slots_push():
+            state.push_slots_update()
 
         created = int(time.time())
         ephemeral = not slot_id

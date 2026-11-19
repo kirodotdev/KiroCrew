@@ -1634,4 +1634,11 @@ async def _start_next_queued_turn(
         # row's CONTENT, which is what a pre-consumption retry re-queues: its
         # queue-entry id is freshly minted and would match no debt.
         _arm_queued_delivery_settlement(state, slot, task, _settleable, _consumed)
+    # The slot now reads running. A turn started on an IDLE slot has no other
+    # push until its own end (``_finish_queue_cycle``), so the Sessions list
+    # would show it idle for the whole turn. Coalesced per window, so
+    # a caller that also pushes adds no extra broadcast. The suspend block logs
+    # a failing flush instead of raising it: the turn has already started.
+    with state.suspend_slots_push():
+        state.push_slots_update()
     return True
