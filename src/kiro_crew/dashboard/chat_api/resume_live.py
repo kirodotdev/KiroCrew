@@ -122,12 +122,14 @@ async def _live_slot_resume_payload(state, existing) -> dict:
         live_child=_live_child_instance(state, existing),
         workspace=existing.workspace,
     )
+    from kiro_crew.dashboard.responsive_chat import written_queue_ids
+
     return {
         "ok": True,
         "key": existing.key,
         "history_key": slot_history_key(existing),
         "messages": prepared,
-        "queue": queue_view(existing._queue),
+        "queue": queue_view(existing._queue, written=written_queue_ids(existing)),
         "total": total,
         "has_more": next_before > 0 and not floor_reached,
         "next_before": next_before,

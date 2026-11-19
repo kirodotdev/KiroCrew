@@ -527,6 +527,9 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             # card only: the entry and the row it drains into never carry it.
             _push_meta["requeuedSteer"] = True
             _push["meta"] = _push_meta
+            from kiro_crew.dashboard import responsive_chat as _rc
+
+            _rc.mark_written_on_push(slot, qid, _push)
             state.broadcast_ws("queue_push", _push)
         except Exception:
             # Broadcast is best-effort — the message is already safely in the
