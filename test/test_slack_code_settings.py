@@ -1477,13 +1477,18 @@ def test_the_slack_mcp_details_count_the_user_scopes_it_asks_for(catalog: Path) 
     # Same rule as Code channels: the number in the copy follows the manifest.
     # It is the user scopes the manifest lists with the switch on (they replace
     # the older list), and it lives in the row's "What this adds" disclosure;
-    # the description itself stays in plain words and states no number.
-    count = len(slack_manifest.requirements(frozenset({slack_manifest.SLACK_MCP})).user_scopes)
+    # the description itself stays in plain words and states no number. The
+    # second number is how many of them are new to an app without the switch,
+    # the same count the update panel's Slack tools box titles itself with.
+    on = slack_manifest.requirements(frozenset({slack_manifest.SLACK_MCP})).user_scopes
+    off = slack_manifest.requirements(frozenset()).user_scopes
+    count, new = len(on), len(on - off)
     copy = json.loads(catalog.read_text(encoding="utf-8"))["pages"]["settings"]["slackPanel"][
         "slackCode"
     ]
     details = copy["slack_mcp_details"]
     assert re.findall(r"\d+", details) == [
-        str(count)
-    ], f"{catalog.name}: {details!r} should say {count} and no other number"
+        str(count),
+        str(new),
+    ], f"{catalog.name}: {details!r} should say {count} ({new} new) and no other number"
     assert re.findall(r"\d+", copy["slack_mcp_desc"]) == [], catalog.name

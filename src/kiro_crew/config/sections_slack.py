@@ -435,7 +435,7 @@ class SlackConfig:
     slack_mcp: bool = field(
         default=False,
         metadata=_meta(
-            "Slack Tools For Your Agent",
+            "Slack Tools For Your Agents",
             "Let the same Slack app serve Slack's MCP server, so each person can "
             "connect their agents to Slack as themselves. Adds "
             "settings.is_mcp_enabled, oauth_config.pkce_enabled and the redirect URL "

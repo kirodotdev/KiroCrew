@@ -620,8 +620,8 @@ describe('the Slack tools switch follows what Settings > Slack draws', () => {
     return hook
   }
   const offersSlackTools = (provider: ResourceProvider) =>
-    (provider.search('Slack tools for your agent') as { id?: string }[])
-      .some(r => (r.id ?? '').endsWith('channels.slack-tools-for-your-agent-slack'))
+    (provider.search('Slack tools for your agents') as { id?: string }[])
+      .some(r => (r.id ?? '').endsWith('channels.slack-tools-for-your-agents-slack'))
 
   it.each([
     ['Connections offers the Slack card', { slack_mcp_card: true, slack_mcp: false }, true],

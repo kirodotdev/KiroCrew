@@ -182,7 +182,7 @@ gateway itself uses the bot token; the user token is for a separately configured
 Slack MCP/search integration that lets an agent search Slack as that user. Store
 and configure that token only in the integration that consumes it.
 
-Turning on **Slack tools for your agent** (see
+Turning on **Slack tools for your agents** (see
 [Slack Code](#slack-code-agent-sessions-code-channels-and-slack-tools) below)
 replaces this list in the generated manifest with the 18 read-only user scopes
 Slack's MCP server needs: `search:read` goes, and the granular `search:read.*`
@@ -328,7 +328,7 @@ Set `reactions_enabled` to `false` to disable both. Valid keys: `queued` (the ac
 ## Slack Code: Agent Sessions, Code Channels and Slack Tools
 
 Settings → Messaging Channels → Slack → **Slack Code** has three opt-in switches, **Agent
-sessions**, **Code channels** and **Slack tools for your agent**. Turning one on needs a few
+sessions**, **Code channels** and **Slack tools for your agents**. Turning one on needs a few
 more permissions or settings for your Slack app, so an app you already installed needs an
 update and a reinstall. Until the app has the new permissions, Agent sessions and Code
 channels change nothing even when on, and the **Update your Slack app** panel says what is
@@ -358,12 +358,12 @@ enabled** in the panel, and Slack keeps working as before.
 |---|---|
 | Agent sessions (`slack.agent_sessions`) | `features.agent_view`; bot scope `assistant:write`; events `agent_session_stopped`, `agent_session_title_changed` |
 | Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` (the work board pins itself); event `agent_session_stopped`, plus `channel_archive`, `channel_unarchive`, `channel_rename`, `group_archive`, `group_unarchive` and `group_rename`, which keep a code channel's archived state and `#name` in step on its session badge. Slack's manifest editor refuses `code_channel_action` as a bot event, so the manifest does not list it; whether a click on the context bar's Create PR or Stop reaches the app is not yet confirmed in a live workspace. `/create-pr`, `!stop` and Slack's own Stop button do not depend on it |
-| Slack tools for your agent (`slack.slack_mcp`) | `settings.is_mcp_enabled: true`; `oauth_config.pkce_enabled: true`; redirect URL `http://localhost:48106/callback`; the user scopes become exactly these read-only ones, replacing the list from Step 4 (`search:read` goes): `search:read.public`, `search:read.private`, `search:read.mpim`, `search:read.im`, `search:read.files`, `search:read.users`, `channels:history`, `groups:history`, `mpim:history`, `im:history`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `users:read`, `files:read`, `canvases:read`, `lists:read`. No bot scope or event |
+| Slack tools for your agents (`slack.slack_mcp`) | `settings.is_mcp_enabled: true`; `oauth_config.pkce_enabled: true`; redirect URL `http://localhost:48106/callback`; the user scopes become exactly these read-only ones, replacing the list from Step 4 (`search:read` goes): `search:read.public`, `search:read.private`, `search:read.mpim`, `search:read.im`, `search:read.files`, `search:read.users`, `channels:history`, `groups:history`, `mpim:history`, `im:history`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `users:read`, `files:read`, `canvases:read`, `lists:read`. No bot scope or event |
 
 > **Agent view is one-way.** Slack cannot switch an app from `agent_view` back to
 > `assistant_view` once the manifest is saved in Slack.
 
-> **Before you save a manifest with Slack tools for your agent on.** The switch lets this
+> **Before you save a manifest with Slack tools for your agents on.** The switch lets this
 > one Slack app also serve Slack's MCP server (`https://mcp.slack.com/mcp`), so each person
 > can connect their agents to Slack as themselves. The switch itself only changes the
 > generated manifest, and you can turn it off again. Saving that manifest in Slack is the
@@ -379,12 +379,11 @@ enabled** in the panel, and Slack keeps working as before.
 > - On a PKCE app Slack expires refresh tokens 30 days after sign-in, so each person
 >   reconnects about once a month.
 >
-> **Not yet tested against Slack.** That guide registers a separate Slack app and says to
-> leave its Bot Token Scopes empty, because Slack does not let a PKCE `localhost` sign-in
-> request bot scopes. This switch keeps the bot scopes on the same app, and the sign-in
-> itself asks only for user scopes. Whether Slack accepts that has not been confirmed in a
-> real workspace. If **Connect** is refused over bot scopes, turn this switch off and
-> register a separate app as the guide describes; PKCE stays on for this app either way.
+> **One app for both.** The Slack card's sign-in asks only for user scopes, which is all a
+> PKCE `localhost` sign-in may ask for, so this app keeps its bot scopes and **Install to
+> Workspace** still issues the bot token. The guide above also registers a separate app
+> for the MCP side only, which can leave its Bot Token Scopes empty. Never remove them
+> from an app the bot uses: the bot stops working.
 >
 > Settings shows this switch only while Connections offers a Slack card (the Connections
 > gallery is on), or while the switch is on (with a note, so you can turn it off). The
@@ -394,7 +393,7 @@ enabled** in the panel, and Slack keeps working as before.
 To update an existing app:
 
 1. Turn the switch on in Settings and **Save**.
-2. In the **Update your Slack app** panel, select **Copy manifest YAML**, then **Open App
+2. In the **Update your Slack app** panel, select **Copy manifest**, then **Open App
    Manifest** (or **App Config → App Manifest** on <https://api.slack.com/apps>).
 3. Replace the YAML with the copied manifest and select **Save Changes**. The copied
    manifest keeps your app's slash command. Only if you edited the app in Slack by hand:
