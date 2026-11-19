@@ -137,6 +137,10 @@ cross-home flake three tests later.
      every app manifest the boot's spawns read, keyed on the home's paths.
    * ``apps.manager_records._recorded_names_cache`` -- the apps folder's
      recorded entry names that a boot's listings reuse, keyed on its path.
+   * ``apps.routes_proxy`` app-secret cache and its invalidation counts -- the
+     secret the reverse proxy signs each app's requests with, keyed by app name
+     only. A later home with an app of the same name would have its requests
+     signed with the earlier home's secret, which its backend refuses.
    * ``config.loader`` materialized-agent snapshot (``_MATERIALIZED_AGENTS``,
      ``_MATERIALIZED_STEMS``, ``_MATERIALIZED_SEEN``, ``_MATERIALIZED_COMPLETE``, ``_MATERIALIZED_MEMO``,
      ``_MATERIALIZED_AGENTS_READY``) -- the declared names, file-name map,
@@ -315,7 +319,13 @@ from kiro_crew import (
 )
 from kiro_crew.acp import client as acp_client
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.apps import credential_masks, execution, hidden_sessions, manager_records
+from kiro_crew.apps import (
+    credential_masks,
+    execution,
+    hidden_sessions,
+    manager_records,
+    routes_proxy,
+)
 from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV, load_adoption_pins
 from kiro_crew.config import live as config_live
 from kiro_crew.config import loader as config_loader
@@ -836,6 +846,9 @@ def _reset_home_bound_globals() -> None:
     sandbox._SHIM_ARGV_CACHE.clear()
     credential_masks.clear_cache()
     manager_records._recorded_names_cache.clear()
+    with routes_proxy._app_secret_lock:
+        routes_proxy._app_secret_cache.clear()
+        routes_proxy._app_secret_generation.clear()
     execution.invalidate_shipped_builtin_apps()
     vector_memory_member._IDENTITY_CACHE.clear()
     # Under the refresh lock, so a refresh still publishing finishes first and
@@ -916,6 +929,7 @@ def home_bound_globals_are_clear() -> bool:
         and token_auth._revoked_store_singleton is None
         and revocation_gen._gen is None
         and not token_auth._app_perms_cache
+        and not routes_proxy._app_secret_cache
         and crash_guard._CRASH_LOG is None
         and autonudge._INSTANCE is None
         and platform_context._ACTIVE is None
