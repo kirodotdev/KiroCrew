@@ -1184,17 +1184,20 @@ describe('App routing', () => {
     expect(trigger.style.width).toBe('')
     // Header children, in order: left group · centre cell · actions group. The
     // three-track grid depends on that being exactly three in-flow children.
-    const centre = trigger.parentElement!
+    // The trigger's HoverTip wrapper is the cell's item and takes the track.
+    expect(trigger.parentElement).toHaveClass('flex-1')
+    const centre = trigger.parentElement!.parentElement!
     const header = centre.parentElement!
     const flow = [...header.children].filter(el => !el.className.includes('absolute'))
     expect(flow[0]).toHaveClass('tb-left')
     expect(flow[1]).toBe(centre)
     expect(flow[2]).toHaveClass('tb-right')
-    // The centre cell holds the trigger and the focus-mode toggle, and nothing
-    // else: a third control there is what website/AUTOSDE.yaml's
-    // max-two-buttons-per-row rule forbids.
+    // The centre cell holds the trigger and the focus-mode toggle (each inside
+    // its hint's wrapper), and nothing else: a third control there is what
+    // website/AUTOSDE.yaml's max-two-buttons-per-row rule forbids.
     expect([...centre.children]).toHaveLength(2)
-    expect(centre.children[1]).toBe(screen.getByTestId('focus-mode-toggle'))
+    expect(centre.children[1]).toBe(screen.getByTestId('focus-mode-toggle').parentElement)
+    expect(centre.children[1]).toHaveAttribute('data-hover-tip')
     return shellSettled()
   })
 
