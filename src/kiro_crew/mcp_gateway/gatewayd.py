@@ -1268,6 +1268,12 @@ async def _acquire_backend(
             raise
         if admission is not None and charge is not None and permit is not None:
             admission.track_process(charge, backend.process.wait)
+            admission.track_initialize(
+                pool_key,
+                init_done=backend._init_done_event,
+                outcome=lambda: (backend._init_state, backend._dead_reason),
+                process_exited=backend.process.wait,
+            )
             if prewarm:
                 permit.settle(OUTCOME_NEUTRAL)
                 permit.release()
@@ -1482,7 +1488,7 @@ async def _acquire_backend(
             declared_temp_keys=accepted_temp_keys,
             secret_env_keys=tuple(_secret_keys),
             **(
-                {"initialize_timeout_secs": admission.initialize_timeout_secs}
+                {"initialize_timeout_secs": admission.initialize_timeout_for(pool_key)}
                 if admission is not None
                 else {}
             ),
