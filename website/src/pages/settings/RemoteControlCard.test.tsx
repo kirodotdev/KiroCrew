@@ -71,6 +71,16 @@ describe('RemoteControlCard', () => {
     expect(screen.getByTestId('remote-control-card')).not.toHaveTextContent(/sign/i)
   })
 
+  it("says why config keeps the relay from starting, not restart-to-connect", async () => {
+    const problem = 'A stand-in reason: set tunnel.relay_lease_region.'
+    get.mockResolvedValue(state({ requested: true, running: false, problem }))
+    renderWithProviders(<RemoteControlCard />)
+    expect(await screen.findByText(problem)).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(problem)
+    expect(screen.queryByText(/Restart/)).toBeNull()
+    expect(screen.queryByText(/Remote Control is on\./)).toBeNull()
+  })
+
   it('shows a later read failure even while an earlier read is cached', async () => {
     get.mockResolvedValueOnce(state({ requested: true, running: true }))
     const { queryClient } = renderWithProviders(<RemoteControlCard />)

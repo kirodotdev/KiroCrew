@@ -12757,6 +12757,7 @@
         "name_override": "",
         "relay_enabled": null,
         "relay_lease_url": "",
+        "relay_lease_region": "",
         "relay_lease_credential": "",
         "relay_lease_token_type": "",
         "relay_handle_email_domains": [],
@@ -12840,9 +12841,29 @@
       "sensitive": false,
       "tags": [],
       "label": "Relay Lease Service URL",
-      "help": "The base URL of the lease service this Crew calls RenewCrewLease on, to hold its lease and get host tokens. Empty (the default) uses the built-in Kiro control plane URL: the one for the sign-in profile's region on the Kiro sign-in, and us-east-1 otherwise. Must be https:// (http:// only for a loopback port-forward).",
+      "help": "The base URL of the lease service this Crew calls RenewCrewLease on, to hold its lease and get host tokens. Empty (the default) uses the built-in Kiro control plane URL for the Crew's Region: the sign-in profile's on the Kiro sign-in, and Relay Lease Region otherwise, us-east-1 when that is empty. Must be https:// (http:// only for a loopback port-forward).",
       "hasChildren": false,
       "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_lease_region",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Lease Region",
+      "help": "The built-in lease service's Region for a Crew on a stored credential, such as a team Crew's crew API key, which names no Region. Empty (the default) uses us-east-1; a Crew registered in another Region must name it, with kirocrew config set tunnel.relay_lease_region <Region>. Ignored on the Kiro sign-in. A workload identity's JWT-SVID lease uses it too.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "eu-central-1",
+        "eu-west-1",
+        "us-east-1"
+      ],
       "defaultValue": "",
       "requiresRestart": true
     },

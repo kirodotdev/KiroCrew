@@ -209,6 +209,9 @@ set, even to a bad value:
   one re-read) or a `ValidationException` waits 15 minutes and tries again
   instead of stopping, since a stage that does not admit the JWT-SVID yet refuses
   it that way. An empty credential is refused by name, never the sign-in lease.
+  With no `tunnel.relay_lease_url`, a JWT-SVID lease goes to the built-in lease
+  service of `tunnel.relay_lease_region`, else us-east-1, as a crew key does; the
+  profile ARN does not pick the Region.
 
 Known limit: where the agent runs unsandboxed (a Restricted pod has no user
 namespaces), the agent can read the JWT-SVID file, as it can any file the

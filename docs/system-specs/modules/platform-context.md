@@ -1151,8 +1151,13 @@ Wired sites:
   answer's schedule with the credential `tunnel.relay_lease_credential` points at
   (`secret://NAME` or a file, never the value), and hands each new host token to
   the client. When it is empty and no edition names the relay, the lease client
-  calls the built-in control plane URL (`lease.py::built_in_lease_url`) for the
-  sign-in profile's region, us-east-1 otherwise. With `kiro-sign-in`, or with the
+  calls the built-in control plane URL for the Crew's Region: the sign-in
+  profile's (`lease.py::built_in_lease_url`), else
+  `provider.py::RelaySettings.built_in_lease_url`: `tunnel.relay_lease_region`,
+  us-east-1 when that is empty, for a crew key and a JWT-SVID lease alike. A value the person did not give (absent, null, empty or
+  blank) leases from us-east-1; any value they gave must be a known Region, or the
+  relay refuses and sends nothing. A Region outside
+  the table refuses to start the relay, never another Region. With `kiro-sign-in`, or with the
   credential and `tunnel.relay_lease_token_type` both empty while neither
   `KIROCREW_WORKLOAD_IDENTITY` (`kiro_crew/workload_identity.py`) nor the
   `agent_identity` seam names a workload identity (`provider.py::RelaySettings.validate`), a
