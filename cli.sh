@@ -167,6 +167,20 @@ EOF
 done
 FEED_BASE="${FEED_BASE%/}"
 ARTIFACT_BASE="${ARTIFACT_BASE%/}"
+# Relative locations are joined to the physical directory the installer runs in
+# (pwd -P, not $PWD: the ${VENV}-current writer's os.path.abspath drops `..` as
+# text), and a KIROCREW_HOME of ~ or ~/... is taken from $HOME as kirocrew
+# expands it, so the ~/.local/bin/kirocrew symlink made from them never resolves
+# against ~/.local/bin.
+case "${KIROCREW_HOME:-/}" in
+  /*) ;;
+  '~'|'~/'*) KIROCREW_HOME="$HOME${KIROCREW_HOME#?}" ;;
+  *) _KC_CWD="$(pwd -P)"; KIROCREW_HOME="${_KC_CWD%/}/$KIROCREW_HOME" ;;
+esac
+case "${KIROCREW_VENV:-/}" in
+  /*) ;;
+  *) _KC_CWD="$(pwd -P)"; KIROCREW_VENV="${_KC_CWD%/}/$KIROCREW_VENV" ;;
+esac
 
 err() { echo "kirocrew-install: $*" >&2; exit 1; }
 
