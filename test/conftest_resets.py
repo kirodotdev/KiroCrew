@@ -959,6 +959,27 @@ def _reset_live_execution_records():
 
 
 @pytest.fixture(autouse=True)
+def _reset_subagent_not_due_memo():
+    """Start each test with no remembered not-yet-due runs from the tombstone sweep.
+
+    The memo is keyed by agent id and a tombstone's inode, size and mtime. Tests
+    reuse agent ids and temporary paths, so a verdict one test left could let the
+    next test's sweep skip a run it should evaluate.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.subagent_persistence")
+        if module is not None:
+            module._NOT_DUE_MEMO.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_runtime_ownership_tables(request):
     """A kill gate must answer for THIS test's leases, not a neighbour's.
 
