@@ -28,6 +28,8 @@ import type { SessionRef } from '../../../utils/sessionRefs'
 import type { SlotApprovalMode } from '../../../utils/slotApprovalMode'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../../../hooks/useSettingHighlight'
 import { settingsPath } from '../../../components/settingsPath'
+import { useKiroCliCanRunHere, useKiroCliSignInInTerminal } from '../../../components/KiroCliSignInInTerminal'
+import { useModelsAuthRequired } from '../../../providers/modelListHealth'
 import { agentOrDefaultLabel } from '../../../utils/agentLabel'
 import { isUntitledSession, sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { sessionMemoryTag } from '../../../lib/agentMemorySource'
@@ -57,6 +59,7 @@ import { useStableCallbackProps } from '../useStableCallbackProps'
 import type { ComposerTypingLock } from '../shared-crew/useComposerTypingLock'
 import SessionControlHost from '../../../components/SessionControlHost'
 import ErrorNotice from '../../../components/ErrorNotice'
+import KiroSignInPrompt from '../../../components/KiroSignInPrompt'
 import { pinIsWithheld } from '../../../lib/model'
 import FollowUpCard, { type FollowupStartMode } from '../../../components/FollowUpCard'
 import PendingQuestionCard from '../../../components/PendingQuestionCard'
@@ -383,6 +386,14 @@ export default function ComposerDockView({
   // A worker's steer is refused past the steer route's limit BEFORE the draft is
   // cleared, so an over-long paste stays in the box with the reason beside it.
   const [steerTooLong, setSteerTooLong] = useState(false)
+  // The configured list is short because kiro-cli's own login is missing: the
+  // picker says so and signs kiro-cli in through the Terminal panel. The flag
+  // speaks only for the configured list, never a harness's own (`modelsBackend`).
+  const kiroCliSignedOut = useModelsAuthRequired(provider.id) && modelsBackend === undefined
+  const kiroCliSignIn = useKiroCliSignInInTerminal()
+  // An embedded chat has no dock to run it in, and a chat that is not known to
+  // run here refuses a local run: those copy the command instead.
+  const kiroCliCanRun = useKiroCliCanRunHere(!embedded && currentSlot?.executor !== 'remote' ? runsHere : false)
   const steerFits = (text?: string): boolean => {
     if (steerWorker === undefined) return true
     const fits = (text ?? composerDraft.get()).length <= CREW_STEER_MAX_CHARS
@@ -436,6 +447,11 @@ export default function ComposerDockView({
                   still fuses. Layout-neutral when the queue is empty: the pair
                   cancels. */}
               <div ref={composerBandRef} className="max-h-[50svh] overflow-y-auto overscroll-contain pb-[11px] mb-[-11px] dock-inert" data-testid="composer-status-stack">
+              {/* The Kiro sign-in, before a send fails for the lack of one: the
+                  gateway decides when a new chat needs it, and the flow inside
+                  is the same one Settings renders. In this capped stack so the
+                  Company SSO form stays scrollable on a short phone pane. */}
+              <KiroSignInPrompt />
               {/* Topmost, furthest from the composer: it is about the session's
                   setup, not about the work in hand, and is gone once every MCP
                   server has connected. */}
@@ -769,8 +785,6 @@ export default function ComposerDockView({
               contextUsedTokens={contextTokens?.used}
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
               derivePctFromUsed={contextTokens?.used != null && contextTokens.window == null}
-              showContextPct={chatConfig.showContextPct}
-              showContextTokens={chatConfig.showContextTokens}
               environmentSlot={activeSlot}
               isRunning={composerBusy}
               projectTurnKey={projectTurnKey}
@@ -851,7 +865,6 @@ export default function ComposerDockView({
                 if (tryQuickSend(o, dashCfg?.quick_send, e.shiftKey, slotRunning, followUpPickedRef.current.size, sendNow)) return
                 toggleFollowUpOption(o)
               }}
-              showFullPastes={chatConfig.showFullPastes}
               knowledgeChip={knowledgeFetch.pendingKnowledge ? <div className="flex items-start gap-1"><KnowledgeBubbleChip knowledge={{ items: knowledgeFetch.pendingKnowledge.items.length, tokens: knowledgeFetch.pendingKnowledge.totalTokens, titles: knowledgeFetch.pendingKnowledge.items.map(i => i.title), content: knowledgeFetch.pendingKnowledge.items.map(i => ({ title: i.title, text: i.content.slice(0, 2000) })) }} /><button type="button" onClick={() => knowledgeFetch.clearPending()} className="shrink-0 mt-0.5 p-0.5 text-muted hover:text-danger-text bg-transparent border-none cursor-pointer rounded hover:bg-danger/10 transition-colors" aria-label={i18nT('pages.chatPage.remove_knowledge_context')} title={i18nT('pages.chatPage.remove_knowledge_context')}>&times;</button></div> : undefined}
               connected={connected}
             />
@@ -895,6 +908,7 @@ export default function ComposerDockView({
                 modelsFailedMessage={i18nT('components.modelEffortDropdown.harness_models_failed', { harness: acpBackendName({ id: modelsBackend ?? '' }) })}
                 retryingModels={ownModelsFetching}
                 onRetryModels={retryOwnModels}
+                kiroCliSignIn={kiroCliSignedOut ? { run: () => { setModelDropdown(false); kiroCliSignIn.askToSignIn() }, command: kiroCliSignIn.command, canRun: kiroCliCanRun } : undefined}
                 filter={modelFilter}
                 setFilter={setModelFilter}
                 onClose={() => setModelDropdown(false)}
@@ -937,6 +951,8 @@ export default function ComposerDockView({
                 }}
               />
             </OverlayPortal>}
+            {/* Outside the model picker's portal: the picker closes before it opens. */}
+            {kiroCliSignIn.dialog}
             {/* Project picker — triggered from input bar */}
             <ProjectPicker
               open={projectPickerOpen}

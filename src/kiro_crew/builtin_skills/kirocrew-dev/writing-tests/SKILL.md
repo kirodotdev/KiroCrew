@@ -637,6 +637,10 @@ naming the shape; the contract line holds the detail and its numbers. The helper
 - [ ] A collection-time probe that can construct a process singleton (`sel()`, a config
       loader) RETIRES it before its temp home is removed — the session floor only resets
       singletons at the first test's setup, and a live one re-creates the deleted path
+- [ ] A constructor-less `AcpSessionHandle` comes from `bare_session_handle()`
+      (`test/session_handle_helpers.py`), never `AcpSessionHandle.__new__` — a bare
+      handle built by hand breaks on merge when a handle method starts reading a new
+      runtime attribute (`test_bare_session_handle_guard.py` enforces it)
 - [ ] Every `MagicMock` attribute the code under test converts or compares (`int()`,
       `len()`, `bool()`, `<`) is set explicitly in the mock helper — `int(MagicMock())`
       is 1, and a drain loop reads that as "one still pending" until its deadline. A

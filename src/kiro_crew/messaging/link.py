@@ -665,12 +665,12 @@ def release_conversation_location(
     while being unreachable by any spelling of *key*. Unlink means "nothing
     mirrors into this conversation": clear the conversation's own binding
     (current + legacy spelling), then sweep every binding targeting the exact
-    *location*, so success is only reported when the conversation is actually free.
+    *location*, so ✅ is only reported when the conversation is actually free.
 
     A swept key can belong to ANOTHER (dashboard) session — a cross-session
     write triggered by a one-word channel command — so the sweep is INFO-logged
     and the reply reports the count when more than one binding fell, rather
-    than a bare success that reads as "just yours".
+    than a bare ✅ that reads as "just yours".
 
     Returns ``(reply_text, swept_keys)``. A non-empty sweep is the caller's
     cue to refresh any dashboard projection of the cleared bindings.
@@ -679,7 +679,7 @@ def release_conversation_location(
     one user-visible action ("nothing mirrors here anymore"), and each of them
     would otherwise rewrite the entire map and be individually interruptible, so
     a failure or a concurrent writer partway through could leave the location
-    half-freed while the reply already claimed success. Nesting is counted, so a
+    half-freed while the reply already claimed ✅. Nesting is counted, so a
     caller that batches a wider sequence around this one (Telegram pairs it with
     the opt-out write) still gets a single write.
     """
@@ -700,9 +700,9 @@ def release_conversation_location(
         )
     cleared += len(swept)
     if cleared > 1:
-        return f"Unlinked ({cleared} bindings).", swept
+        return f"✅ Unlinked ({cleared} bindings).", swept
     if cleared == 1:
-        return "Unlinked.", swept
+        return "✅ Unlinked.", swept
     return "This conversation wasn't linked.", swept
 
 
@@ -766,7 +766,7 @@ def rebind_conversation_location(
             legacy_dashboard_mirror_key(key), reason=UNBIND_REASON_ORIGIN_REBIND
         )
     return (
-        "Linked. Replies from the dashboard for this conversation will also "
+        "✅ Linked. Replies from the dashboard for this conversation will also "
         f"show up here. Send {unlink_command} to stop."
     )
 

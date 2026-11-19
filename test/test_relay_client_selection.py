@@ -75,7 +75,8 @@ class _EditionTunnel(DefaultTunnelProvider):
 class TestSelection:
     def test_off_by_default(self) -> None:
         cfg = KiroCrewConfig()
-        assert cfg.tunnel.relay_enabled is False
+        # Unset, and with no team key or workload identity that is off.
+        assert cfg.tunnel.relay_enabled is None
         assert type(build_default_context(cfg).tunnel) is DefaultTunnelProvider
 
     def test_relay_enabled_puts_the_relay_client_in_the_slot(self) -> None:
@@ -584,8 +585,11 @@ class TestTheRelaySwitch:
     def test_only_the_json_boolean_true_turns_it_on(self) -> None:
         from kiro_crew.config.section_builders import _build_tunnel_config
 
-        assert _build_tunnel_config({}).relay_enabled is False
-        for hand_edit in ("true", 1, "yes", None):
+        # Absent and null are unset (the credential decides); any other non-boolean
+        # left by a hand edit is off.
+        assert _build_tunnel_config({}).relay_enabled is None
+        assert _build_tunnel_config({"relay_enabled": None}).relay_enabled is None
+        for hand_edit in ("true", 1, "yes"):
             assert _build_tunnel_config({"relay_enabled": hand_edit}).relay_enabled is False
         assert _build_tunnel_config({"relay_enabled": True}).relay_enabled is True
 

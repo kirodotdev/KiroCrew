@@ -165,7 +165,7 @@ class TestRunChatTransientRetryBindingMismatch:
         state.sessions.discard_conversation.assert_not_awaited()
         assert not slot.replays.armed(ReplayFamily.THINKING_BINDING)
         assert any(
-            m.get("role") == "error" and m.get("content", "").startswith("❌")
+            m.get("role") == "error" and m.get("content", "").startswith("Error:")
             for m in slot.messages
         )
 

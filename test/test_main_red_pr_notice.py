@@ -29,6 +29,7 @@ from typing import Any
 
 import pytest
 import yaml
+from main_red_jq_stand_in import JQ_MODES, install_jq
 from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -136,7 +137,9 @@ def test_event_values_are_printed_only_when_they_match() -> None:
 def test_a_hostile_issue_body_is_read_in_linear_time() -> None:
     body = "Fix in progress: " * 20000 + "<!-- main-red-state " + "{" * 50000
     assert mod.watch.parse_state(body) is None
-    assert mod.watch.pick_issue([{"number": 1, "title": "Main is red: x", "body": body}]) is None
+    assert (
+        mod.watch.pick_issue([{"number": 1, "title": "ci: Main is red: x", "body": body}]) is None
+    )
 
 
 def test_the_comment_has_the_marker_both_lists_and_never_excuses_the_pull_request() -> None:
@@ -196,6 +199,7 @@ def test_the_permissions_equal_the_watchers_and_the_job_cannot_fail() -> None:
     assert _load(NOTICE)["permissions"] == _load(WATCHER)["permissions"]
     assert _load(NOTICE)["permissions"] == {
         "actions": "read",
+        "checks": "read",
         "contents": "read",
         "issues": "write",
     }
@@ -213,11 +217,15 @@ def test_it_writes_one_comment_and_nothing_else() -> None:
         "issue close",
         "issue edit",
         "statuses",
-        "check-runs",
         "pulls/",
         "--search",
     ):
         assert banned not in script
+    # A check run is only ever read, and only for a failed job's annotations.
+    uses = [line for line in script.splitlines() if "check-runs" in line]
+    assert uses and all(
+        'gh api "repos/$REPO/check-runs/$job_id/annotations?per_page=100"' in line for line in uses
+    )
     assert script.count("--method POST") == 1 and script.count("--method PATCH") == 1
     assert 'issues/$PR_NUMBER/comments"' in script and "issues/comments/$comment_id" in script
 
@@ -256,10 +264,25 @@ def test_the_scripts_the_step_runs_exist_and_the_notice_is_small() -> None:
 
 # ── The step, executed with gh stubbed ───────────────────────────────────────
 
-_needs_posix = pytest.mark.skipif(
-    os.name == "nt" or shutil.which("bash") is None or shutil.which("jq") is None,
-    reason="requires a POSIX bash and jq to execute the step script",
+_needs_bash = pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="requires a POSIX bash to execute the step script",
 )
+# Which `jq` the step under test finds; set per test by the fixture below.
+_JQ = {"mode": JQ_MODES[-1]}
+
+
+@pytest.fixture(params=JQ_MODES)
+def jq_instrument(request: pytest.FixtureRequest) -> Any:
+    """Run the step with the `jq` stand-in, and with the host's `jq` when it has one."""
+    _JQ["mode"] = request.param
+    yield request.param
+    _JQ["mode"] = JQ_MODES[-1]
+
+
+def _needs_posix(test: Any) -> Any:
+    return pytest.mark.usefixtures("jq_instrument")(_needs_bash(test))
+
 
 _GH_STUB = r"""#!/usr/bin/env bash
 d="$STUB_DIR"
@@ -275,7 +298,15 @@ case "$2" in
       PATCH) cp "$(body_file "$@")" "$d/patched.md"; exit 0 ;;
     esac ;;
   */actions/runs/1000/jobs*) jq -r "$(filter "$@")" < "$d/jobs.json"; exit $? ;;
-  */actions/jobs/*/logs) id="${2#*/actions/jobs/}"; id="${id%%/*}"; cat "$d/logs-$id.log"; exit $? ;;
+  */check-runs/*/annotations*)
+    id="${2#*/check-runs/}"; id="${id%%/*}"
+    [ -f "$d/rate-limited" ] && { echo "gh: API rate limit exceeded for installation. (HTTP 403)" >&2; exit 1; }
+    [ -f "$d/annotations-$id.json" ] || { echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1; }
+    cat "$d/annotations-$id.json"; exit $? ;;
+  */actions/jobs/*/logs)
+    id="${2#*/actions/jobs/}"; id="${id%%/*}"
+    [ -f "$d/logs-$id.log" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    cat "$d/logs-$id.log"; exit $? ;;
   */actions/runs/950) [ -f "$d/red-run-refused" ] && exit 1; printf '%s\n' "$RED_SHA"; exit 0 ;;
   *compare/*per_page=100*) [ -f "$d/files-refused" ] && exit 1; cat "$d/files.txt"; exit 0 ;;
   *compare/*) [ -f "$d/relation-refused" ] && exit 1; cat "$d/relation.txt"; exit 0 ;;
@@ -304,7 +335,7 @@ def _open_issue() -> dict[str, Any]:
     state = watch.next_state(first, MAIN, LAST, 950, RUN_URL)
     return {
         "number": 5,
-        "title": "Main is red: test/test_a.py::test_x",
+        "title": "ci: Main is red: test/test_a.py::test_x",
         "body": watch.render_body(state, [], 5),
         "author": {"login": "app/github-actions"},
     }
@@ -313,7 +344,8 @@ def _open_issue() -> dict[str, Any]:
 def _run_step(
     tmp_path: Path,
     *,
-    log: str = PR_LOG,
+    log: str | None = PR_LOG,
+    annotations: str | None = None,
     issues: list | None = None,
     files: str = "src/x.py\n",
     relation: str = "ahead",
@@ -327,7 +359,11 @@ def _run_step(
     runner_temp = tmp_path / "runner"
     runner_temp.mkdir()
     (stub / "jobs.json").write_text(PR_JOBS, encoding="utf-8")
-    (stub / "logs-11.log").write_text(log, encoding="utf-8")
+    # ``None`` is a read that fails: the log, or the annotations tried before it.
+    if log is not None:
+        (stub / "logs-11.log").write_text(log, encoding="utf-8")
+    if annotations is not None:
+        (stub / "annotations-11.json").write_text(annotations, encoding="utf-8")
     (stub / "issues.json").write_text(
         json.dumps([_open_issue()] if issues is None else issues), encoding="utf-8"
     )
@@ -342,6 +378,7 @@ def _run_step(
     gh = bin_dir / "gh"
     gh.write_text(_GH_STUB, encoding="utf-8", newline="\n")
     gh.chmod(0o755)
+    install_jq(bin_dir, _JQ["mode"])
     env = dict(os.environ)
     env.update(
         {
@@ -423,6 +460,64 @@ def test_with_no_open_main_red_issue_nothing_is_read_or_written(tmp_path: Path) 
     out, stub = _run_step(tmp_path, issues=[])
     assert out.returncode == 0, out.stderr
     assert _writes(stub) == [] and not any("actions/" in c for c in _calls(stub))
+
+
+def _annotation(nodeid: str, reason: str) -> dict[str, Any]:
+    """One failing test as the check-run annotations API returns it."""
+    return {
+        "path": nodeid.split("::", 1)[0],
+        "start_line": 7,
+        "end_line": 7,
+        "annotation_level": "failure",
+        "title": nodeid,
+        "message": f"{nodeid} - {reason}",
+        "raw_details": "",
+    }
+
+
+PR_ANNOTATIONS = json.dumps(
+    [
+        {"path": ".github", "annotation_level": "failure", "title": "", "message": "exit code 1."},
+        _annotation("test/test_a.py::test_x", "assert 2 == 1"),
+        _annotation("test/test_mine.py::test_y", "boom"),
+    ]
+)
+
+
+@_needs_posix
+def test_the_failing_tests_are_read_from_annotations_and_no_log_is_asked_for(
+    tmp_path: Path,
+) -> None:
+    out, stub = _run_step(tmp_path, log=None, annotations=PR_ANNOTATIONS)
+    assert out.returncode == 0, out.stderr
+    text = (stub / "posted.md").read_text(encoding="utf-8")
+    same = _section(text, "Failing here and on main with the same message start:")
+    assert "- `test/test_a.py::test_x`: `assert 2 == 1`" in same
+    assert "test/test_mine.py::test_y" in _section(
+        text, "Failing here and not shown to be on main."
+    )
+    assert "api repos/example/repo/check-runs/11/annotations?per_page=100" in _calls(stub)
+    assert not any(c.endswith("/logs") for c in _calls(stub))
+
+
+@_needs_posix
+def test_a_run_with_no_readable_failed_job_warns_and_writes_nothing(tmp_path: Path) -> None:
+    out, stub = _run_step(tmp_path, log=None)
+    assert out.returncode == 0, out.stderr
+    assert "::warning::Could not read the annotations or the log of any of the 1 failed job(s)" in (
+        out.stdout
+    )
+    assert "Could not read the log of job 11 (gh: Not Found (HTTP 404)" in out.stdout
+    assert _writes(stub) == []
+
+
+@_needs_posix
+def test_a_rate_limited_read_is_named_and_followed_by_no_log_read(tmp_path: Path) -> None:
+    out, stub = _run_step(tmp_path, refuse=("rate-limited",))
+    assert out.returncode == 0, out.stderr
+    assert "::warning::The API rate limit of this token is used up" in out.stdout
+    assert not any(c.endswith("/logs") for c in _calls(stub))
+    assert _writes(stub) == []
 
 
 @_needs_posix

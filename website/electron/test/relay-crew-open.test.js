@@ -221,6 +221,19 @@ test("the preload bridge carries only the endpoint ID, a rect and its viewport, 
       + '    });\n'
       + '    ipcRenderer.on("relay-crew:pane-event", handler);\n'
       + '    return () => ipcRenderer.removeListener("relay-crew:pane-event", handler);\n'
+      + '  },\n'
+      + '  onOpenRequest: (cb) => {\n'
+      + '    const handler = (_e, endpointId) => { if (typeof endpointId === "string") cb(endpointId); };\n'
+      + '    if (openRequestHandler) ipcRenderer.removeListener("relay-crew:open-request", openRequestHandler);\n'
+      + '    openRequestHandler = handler;\n'
+      + '    ipcRenderer.on("relay-crew:open-request", handler);\n'
+      + '    void ipcRenderer.invoke("relay-crew:open-requests", true, ++openRequestSeq).catch(() => {});\n'
+      + '    return () => {\n'
+      + '      if (openRequestHandler !== handler) return;\n'
+      + '      openRequestHandler = null;\n'
+      + '      ipcRenderer.removeListener("relay-crew:open-request", handler);\n'
+      + '      void ipcRenderer.invoke("relay-crew:open-requests", false, ++openRequestSeq).catch(() => {});\n'
+      + '    };\n'
       + '  },',
   );
 });
@@ -566,7 +579,7 @@ test("a first open sends no marker and each window's renewal sends its own", asy
   for (const w of s.win.opened) w.close();
 });
 
-test("SIGN_IN_CHANGED on one window's renewal closes only that window", async () => {
+test("SIGN_IN_CHANGED on one page's renewal closes every relay Crew: the account is the app's", async () => {
   const { made, createRenewal } = recordedRenewals();
   const s = setup({
     createRenewal,
@@ -580,14 +593,13 @@ test("SIGN_IN_CHANGED on one window's renewal closes only that window", async ()
   assert.equal(a.closed, true);
   assert.equal(a.opts.getToken(), null);
   assert.equal(made[0].isStopped(), true);
-  assert.equal(b.closed, false, "the other window stays open");
-  assert.equal(b.opts.getToken(), `${TOKEN}-b`, "and keeps its token");
-  assert.equal(made[1].isStopped(), false);
-  assert.deepEqual(changedLogs(s), [`relay crew ${ID}: open -> closed (SIGN_IN_CHANGED)`]);
+  assert.equal(b.closed, true, "the other page, opened as the same account, closes too");
+  assert.equal(b.opts.getToken(), null);
+  assert.equal(made[1].isStopped(), true);
+  assert.deepEqual(changedLogs(s).sort(), [`relay crew ${ID}: open -> closed (SIGN_IN_CHANGED)`, `relay crew ${OTHER}: open -> closed (SIGN_IN_CHANGED)`].sort());
   assert.ok(noMarkerLogged(s));
   assertNoSecrets([...s.logs]);
   await assertReopensFresh(s, [ID]);
-  b.close();
 });
 
 test("a restart after a switch sends the window's marker, closes the window and answers SIGN_IN_CHANGED", async () => {
@@ -637,13 +649,13 @@ test("a late answer for a renewal stopped by a hand close changes nothing", asyn
 // --- The window's notices: an offline host, lost access, Check again ---
 
 const UNAVAILABLE_TEXT = {
-  title: "Team Crew is currently unavailable", body: "", check: "Check again", close: "Close window",
+  title: "Team Crew is currently unavailable", body: "", check: "Check again", close: "Close",
 };
 const NO_ACCESS_TEXT = {
   title: "You no longer have access to Team Crew.",
   body: "To get access back, ask your admin.",
   check: "",
-  close: "Close window",
+  close: "Close",
 };
 
 test("a CREW_OFFLINE renewal stop shows the unavailable notice in that window and closes nothing", async () => {
@@ -726,6 +738,27 @@ test("Check again mints a new token and reloads when the host is back", async ()
   assert.equal(w.opts.getToken(), `${TOKEN}-2`);
   assert.equal(w.notices.length, 1, "no second notice");
   w.close();
+});
+
+test("the menu's Reload with the notice up mints first, so the page never loads with no token; a refusal keeps the notice", async () => {
+  const { createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), refusal("CREW_OFFLINE"), okFor(`${TOKEN}-2`)] });
+  await s.opener.open(ID);
+  const w = s.win.opened[0];
+  const reloads = [];
+  w.reload = (o) => { reloads.push({ token: w.opts.getToken(), ...o }); };
+  w.cbs.unreachable.forEach((cb) => cb());
+  assert.equal(w.opts.getToken(), null, "the notice is up and its renewal stopped");
+  assert.deepEqual(await s.opener.reload(ID, { ignoreCache: false }), { ok: false, error: "CREW_OFFLINE" });
+  assert.deepEqual(reloads, [], "a refused mint loads nothing");
+  assert.deepEqual(w.notices, [UNAVAILABLE_TEXT, UNAVAILABLE_TEXT]);
+  assert.deepEqual(await s.opener.reload(ID, { ignoreCache: true }), { ok: true });
+  assert.deepEqual(reloads, [{ token: `${TOKEN}-2`, ignoreCache: true }], "loaded only with the new token, Force Reload's flag kept");
+  assert.deepEqual(await s.opener.reload(ID), { ok: true });
+  assert.equal(reloads.length, 2, "a live renewal reloads at once");
+  assert.equal(s.requests.length, 3, "and mints nothing");
+  w.close();
+  assert.deepEqual(await s.opener.reload(ID), { ok: false, error: "UNAVAILABLE" });
 });
 
 test("Check again while the host is still gone shows the notice again and does not retry on its own", async () => {
@@ -909,4 +942,26 @@ test("a pane's chord and close reach only the dashboard that opened it, and a wi
   await s.opener.open(ID);
   assert.equal(s.win.opened[0].cbs.chord.length, 0, "a window registers no chord listener");
   assertNoSecrets([...sent.mine]);
+});
+
+test("a reopen waits for the last page's partition wipe before it builds the page", async () => {
+  let wiped;
+  const wipe = new Promise((resolve) => { wiped = resolve; });
+  const win = fakeWindowModule();
+  const opener = createRelayCrewOpener({
+    requestToken: async () => okFor(TOKEN),
+    openWindow: win.openWindow,
+    openPane: win.openWindow,
+    createRenewal: createRelayCrewRenewal,
+    createTokenHolder,
+    partitionCleared: (id) => (id === ID ? wipe : Promise.resolve()),
+    log: () => {},
+  });
+  const opening = opener.open(ID);
+  await settle();
+  assert.equal(win.opened.length, 0, "no page while the wipe runs");
+  wiped();
+  assert.deepEqual(await opening, { ok: true });
+  assert.equal(win.opened.length, 1);
+  win.opened[0].close();
 });

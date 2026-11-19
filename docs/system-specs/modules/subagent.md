@@ -136,6 +136,24 @@ switch after the parent started never sends the child's reads or writes to anoth
 provider. A child already frozen keeps its own choice. Detail:
 [memory-skills-hooks](memory-skills-hooks.md), "Memory providers".
 
+## Parent execution activity
+
+`SubagentManager.has_current_execution_for(parent_session_key)` is the loop-safe,
+in-memory execution predicate for session activity. It includes unfinished run
+records except parked spawn approvals, live outer run tasks, live follow-up watchers
+and unfinished owned terminal reports. Each actual `_run` outer asyncio task
+registers its `(run id, parent)` ownership after the approval wait, and a task
+completion callback removes it. Task-keyed ownership survives completed-record
+eviction and removal from the run-id task index, covering both the inner
+done-to-report gap and remote or late cleanup after report settlement; overlapping
+attempts of the same run id retain independent owners. The report and watcher
+ownership maps also survive completed-record eviction. Completed tasks do not
+count even while their done callbacks have not removed them. Queue entries alone
+are not execution: `published_queued_depths()` supplies the independent queued
+activity from the producer's latest published frame. Neither probe reads the store.
+The synthesis arm's `has_in_memory_pending_work_for` retains its own broader terms;
+it is not a queued-only predicate.
+
 ## Composition
 
 `kiro_crew/subagent.py` is the facade and the one namespace of the subagent family:
@@ -1577,8 +1595,8 @@ made; no gate reads it back. Two consumers:
   `{"status": "queued", ...}` record for a member that had not started when its
   wait ended (and reports it only there, never also as an error), `kirocrew spawn run` prints `Queued subagent <id> …`, and the
   channel `spawn <task>` keyword (`messaging/commands.py`) replies
-  `Queued subagent …` with the reason instead of `Spawned subagent …`, and
-  `Warning: Subagent … was not started: <error>` for a refusal (a terminal record, not
+  `⏳ Queued subagent …` with the reason instead of `🚀 Spawned subagent …`, and
+  `⚠️ Subagent … was not started: <error>` for a refusal (a terminal record, not
   None). A
   `concurrency_limit` wait keeps `status: "spawned"`: it is the ordinary wave
   shape and clears within seconds. Neither the admission verdicts nor the memory
@@ -4839,9 +4857,18 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   the run costs three stats; a change to any of them, or the window ending,
   evaluates it in full. A failure on a provider that has a route is not
   remembered and is tried on every sweep. The table (`_UNRECLAIMABLE_MEMO`) is
-  process memory only, so a restarted gateway evaluates every run once. A legacy SID present
-  only in agent-folder state/tombstone likewise preserves the folder inside that
-  window: it cannot authorize deletion, but the lookup gives a later trusted
+  process memory only, so a restarted gateway evaluates every run once. A run a
+  full evaluation found still inside its window is skipped the same way
+  (`_NOT_DUE_MEMO`): the sweep keeps the tombstone's inode, size and modification
+  time, sampled before that read, with the death time and whether the cause is
+  `delivered`, and skips the run while the tombstone is unchanged and the death
+  time is later than THIS sweep's cutoff for that cause. The cutoff is recomputed
+  every sweep, so a shortened window applies on the next one; a rewritten
+  tombstone evaluates the run in full and a missing one drops its entry; that
+  table is process memory too, and the first sweep after a restart reads every
+  tombstone. A legacy SID present
+  only in agent-folder state/tombstone likewise preserves the folder inside the
+  90-day window: it cannot authorize deletion, but the lookup gives a later trusted
   migration time to reclaim the transcript. At the hard ceiling, only the run
   folder and protected metadata are reaped; untrusted identity is never used for
   provider-file deletion. Restart registry rebuild likewise accepts only literal

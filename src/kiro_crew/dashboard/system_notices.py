@@ -115,7 +115,7 @@ def session_reload_failed_notice(error: BaseException) -> str:
 
     detail = redact_and_truncate(str(error), _SESSION_RELOAD_ERROR_MAX_CHARS)
     return (
-        "⚠️ The reloaded agent did not start. The next message starts it again. "
+        "Warning: The reloaded agent did not start. The next message starts it again. "
         f"Last error: {detail or type(error).__name__}"
     )
 
@@ -158,10 +158,15 @@ _SUBAGENT_AGENT_HEADER_RE = re.compile(r"^Agent `[^`\n]+`(?: \([^)\n]*\))?([^\n]
 #: The card refuses a per-agent header with no outcome glyph beside the id
 #: ("degrade to normal rendering rather than guessing an outcome"), so a user who
 #: pastes `[Subagent completion event]\nAgent \`demo\`` back into the chat is
-#: drawn -- and must be quoted here too. Same glyph set as the frontend.
-_SUBAGENT_OUTCOME_GLYPH_RE = re.compile("[✅❌⏹⚠]")
+#: drawn -- and must be quoted here too. Same glyph set as the frontend: the
+#: glyphs are what saved history carries, the leading outcome word what current
+#: gateways write.
+_SUBAGENT_OUTCOME_GLYPH_RE = re.compile("[\u2705\u274c\u23f9\u26a0]")  # emoji-ok: old saved lead
+_SUBAGENT_OUTCOME_WORD_RE = re.compile(r"^\s*(?:completed|failed|stopped|interrupted)\b")
 _SUBAGENT_WAVE_RE = re.compile(
-    r"^Batch results \d+/\d+ — wave finished: \d+ ✅ · \d+ ❌ · \d+ ⏹ of \d+ agents\.", re.M
+    r"^Batch results \d+/\d+ — wave finished: \d+ (?:\u2705|completed) · \d+ (?:\u274c|failed)"
+    r" · \d+ (?:\u23f9|stopped) of \d+ agents\.",
+    re.M,
 )
 _SUBAGENT_CHUNK_RE = re.compile(
     r"^Batch results \d+/\d+ — \d+ of \d+ delivered, \d+ still running\.", re.M
@@ -198,7 +203,12 @@ def is_subagent_completion_row(content: object, meta: object) -> bool:
     if batch:
         return bool(_SUBAGENT_WAVE_RE.search(head) or _SUBAGENT_CHUNK_RE.search(head))
     header = _SUBAGENT_AGENT_HEADER_RE.search(head)
-    return header is not None and _SUBAGENT_OUTCOME_GLYPH_RE.search(header.group(1)) is not None
+    if header is None:
+        return False
+    status = header.group(1)
+    return bool(
+        _SUBAGENT_OUTCOME_GLYPH_RE.search(status) or _SUBAGENT_OUTCOME_WORD_RE.match(status)
+    )
 
 
 #: Roles whose text is something a person or the agent SAID to the other.

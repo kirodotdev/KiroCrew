@@ -65,16 +65,16 @@ OPERATION = "slack.code_channel.agent"
 PICKER_LABEL = "*Agent* for this channel"
 PICKER_PLACEHOLDER = "Choose an agent"
 SWITCHED_NOTE = "Agent set to `{agent}` by <@{user}>."
-UNKNOWN_AGENT_TEXT = (
-    "Error: No agent named `{agent}` is available here. Agents you can pick:{names}"
-)
+UNKNOWN_AGENT_TEXT = "❌ No agent named `{agent}` is available here. Agents you can pick:{names}"
 NO_AGENTS_TEXT = "I couldn't list the agents just now. Try again in a moment."
 NO_SESSION_TEXT = "This channel's session isn't open right now. Try again in a moment."
-SAME_AGENT_TEXT = "Note: This channel already runs `{agent}`."
-SWITCHED_TEXT = "This channel now runs `{agent}`."
-BUSY_TEXT = "A turn is running. Try again to switch to `{agent}` when this turn ends."
-SUBAGENTS_BUSY_TEXT = "Sub-agents are running. Try again to switch to `{agent}` when they finish."
-FAILED_TEXT = "Warning: Could not switch to `{agent}`: {reason}"
+SAME_AGENT_TEXT = "ℹ️ This channel already runs `{agent}`."
+SWITCHED_TEXT = "✅ This channel now runs `{agent}`."
+BUSY_TEXT = "⏳ A turn is running. Try again to switch to `{agent}` when this turn ends."
+SUBAGENTS_BUSY_TEXT = (
+    "⏳ Sub-agents are running. Try again to switch to `{agent}` when they finish."
+)
+FAILED_TEXT = "⚠️ Could not switch to `{agent}`: {reason}"
 SWITCH_FAILED_REASON = "the switch failed"
 STALE_PICKER_TEXT = (
     "This picker is out of date. Use the channel's latest kickoff message or "
@@ -84,10 +84,10 @@ CURRENT_TEXT = (
     "This channel runs `{agent}`. Agents you can pick:{names}\n"
     "Switch with `/{command} agent <name>`."
 )
-NOT_ALLOWED_TEXT = "Blocked: You can't change this channel's agent."
+NOT_ALLOWED_TEXT = "⛔ You can't change this channel's agent."
 #: The refusal for someone who is not Kiro Crew's owner (the only person Slack
 #: controls answer); the other gates keep :data:`NOT_ALLOWED_TEXT`.
-OWNER_ONLY_TEXT = "Blocked: Only Kiro Crew's owner can change this channel's agent."
+OWNER_ONLY_TEXT = "⛔ Only Kiro Crew's owner can change this channel's agent."
 
 #: The code from ``switch_slot_agent`` that means "a turn holds the session right
 #: now": the pick is refused with :data:`BUSY_TEXT`, for the person to retry.

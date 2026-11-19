@@ -675,7 +675,9 @@ describe('PromptsTab feedback', () => {
     // always on screen, and a blank detail pane reads as a broken tab.
     await waitFor(() => expect(mockApi.promptDetail).toHaveBeenCalled())
     expect(screen.getByRole('listbox')).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: /my-prompt/ })).toHaveAttribute('aria-selected', 'true')
+    // The selection effect fires the read before React commits the selected
+    // row, so wait for the row itself.
+    await waitFor(() => expect(screen.getByRole('option', { name: /my-prompt/ })).toHaveAttribute('aria-selected', 'true'))
     expect(screen.getByRole('option', { name: /sop/ })).toHaveAttribute('aria-selected', 'false')
   })
 

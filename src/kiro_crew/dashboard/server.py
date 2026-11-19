@@ -348,6 +348,7 @@ from kiro_crew.dashboard.server_runtime.middleware_chain import (  # noqa: F401
     _insert_lts_gate,
     _install_api_middlewares,
     _install_dashboard_middlewares,
+    _relay_origin_middleware,
     _resolve_tailnet_trust,
     _tailnet_origin_enabled,
 )
@@ -708,7 +709,7 @@ SECONDARY_LOOPBACK_FOR = {"127.0.0.1": "::1", "::1": "127.0.0.1"}
 AMBIGUOUS_LOOPBACK_HOSTS = frozenset({"localhost", "kirocrew.localhost"})
 
 
-_UNATTENDED_EXPIRY_TITLE = "🔒 Auto-approve expired while an unattended run was in progress"
+_UNATTENDED_EXPIRY_TITLE = "Auto-approve expired while an unattended run was in progress"
 
 
 # How long a mutating request waits for the startup crewmate prune before it is

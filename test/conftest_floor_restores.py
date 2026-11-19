@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import contextlib
+import functools
 import gc
 import logging
 import sys
@@ -693,6 +694,123 @@ def _restore_logger_levels():
         logger.disabled = disabled
     if logging.Logger.manager.disable != before_disable:
         logging.disable(before_disable)
+
+
+#: Ceiling for joining a closed loader's ``skill-catalog-refresh`` worker; it exits on
+#: its next wake, which ``close()`` triggers.
+_SKILL_CATALOG_JOIN_SECS = 5.0
+
+
+def _live_skills_loaders() -> list:
+    """Every ``SkillsLoader`` alive in this process, read from production's weak registry.
+
+    Empty until something has imported ``kiro_crew.skill_live_loaders``, which is also
+    the only way a loader can exist, so a test that never touches skills pays one dict
+    lookup.
+    """
+    live = sys.modules.get("kiro_crew.skill_live_loaders")
+    if live is None:
+        return []
+    with live._LIVE_LOCK:
+        return list(live._LIVE)
+
+
+def close_skills_loaders_opened_since(before: "set[int]") -> int:
+    """Close every open loader whose ``id`` is not in *before*; return how many it closed.
+
+    ``close()`` releases the skill search index (``skill_search_index.sqlite3`` with its
+    ``-wal`` and ``-shm``: three descriptors) and wakes the catalog worker. The workers
+    share one ``_SKILL_CATALOG_JOIN_SECS`` budget, best-effort: a build still walking when
+    its share runs out keeps its index handle, which the index pass then closes. An
+    ``id`` reused by a loader built after an older one was collected is missed, never
+    over-closed.
+    """
+    opened = [
+        loader
+        for loader in _live_skills_loaders()
+        if id(loader) not in before and not loader._closed
+    ]
+    for loader in opened:
+        loader.close()
+    workers = [loader._catalog_worker for loader in opened]
+    workers = [worker for worker in workers if worker is not None]
+    for worker in workers:
+        worker.join(timeout=_SKILL_CATALOG_JOIN_SECS / len(workers))
+    return len(opened)
+
+
+#: Every ``SkillSearchIndex`` built since the current test's floor fixture set up, held
+#: strongly so an index whose loader was already collected can still be closed.
+_SKILL_INDEXES_BUILT: list = []
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _record_skill_search_indexes():
+    """Record every ``SkillSearchIndex`` built in this session, for the per-test close.
+
+    The live-loader registry is weak, so a loader the test dropped is gone from it by
+    teardown, while its index's connection, a reference cycle, still holds its
+    descriptors. Recording the index itself is what lets the floor close that
+    connection. Patched once per session, through ``MonkeyPatch.context`` so it is put
+    back at the end.
+    """
+    from kiro_crew.skill_search_index import SkillSearchIndex
+
+    original = SkillSearchIndex.__init__
+
+    @functools.wraps(original)
+    def _recording_init(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        _SKILL_INDEXES_BUILT.append(self)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SkillSearchIndex, "__init__", _recording_init)
+        yield
+    _SKILL_INDEXES_BUILT.clear()
+
+
+def close_skill_indexes_built_this_test() -> int:
+    """Close every recorded index that still has a connection, and forget them all.
+
+    ``close()`` is idempotent and takes the index's own lock, and a closed index answers
+    later calls as unusable, so closing one whose loader is still building is safe.
+    """
+    built = list(_SKILL_INDEXES_BUILT)
+    _SKILL_INDEXES_BUILT.clear()
+    open_indexes = [index for index in built if index._conn is not None]
+    for index in open_indexes:
+        index.close()
+    return len(open_indexes)
+
+
+@pytest.fixture(autouse=True)
+def _close_skills_loaders_the_test_opened(_isolate_kirocrew_home, _record_skill_search_indexes):
+    """Close every ``SkillsLoader`` this test built, wherever it was built.
+
+    A loader holds an open SQLite connection, and an unclosed ``sqlite3.Connection`` is
+    a reference cycle on CPython 3.11+, so a dropped loader keeps its three descriptors
+    until the cyclic collector happens to run. Loaders come from test bodies, helpers,
+    function fixtures and production defaults the test only drives
+    (``ContextBuilder``'s ``SkillsLoader()``, the dashboard's standalone loader), so a
+    per-module opt-in cannot reach them all. Measured on macOS, where the default soft
+    ``ulimit -n`` is 256: one xdist worker ended a backend shard with up to 335 such
+    descriptors open, and from the 256th on every test on that worker failed with
+    ``EMFILE``. GitHub's macOS runners allow 10240, which is why CI never showed it.
+
+    Two passes: the loaders still alive are closed and their catalog workers joined,
+    then every search index built during the test is closed, which also reaches the
+    index of a loader the test dropped before teardown.
+
+    The snapshot is taken after every broader-scoped fixture is set up, so a loader a
+    module or session fixture shares across tests stays open. Depending on
+    ``_isolate_kirocrew_home`` orders the teardown before that pin lifts, so the joined
+    worker finishes under this test's data home.
+    """
+    before = {id(loader) for loader in _live_skills_loaders()}
+    _SKILL_INDEXES_BUILT.clear()
+    yield
+    close_skills_loaders_opened_since(before)
+    close_skill_indexes_built_this_test()
 
 
 def _drain_windows_proactor_finalizers() -> None:

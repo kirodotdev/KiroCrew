@@ -26,6 +26,7 @@ import type { useHistoryPane } from './history'
 import type { useHoverHold } from './hoverHold'
 import type { useLaneCycle, useSidebarLane } from './lanes'
 import type { useSidebarModels } from './models'
+import type { CreatorFilterMenuView } from './creatorFilterMenu'
 import type { usePinnedKeyboardReorder, usePinnedSessionOrder } from './pinnedOrder'
 import type { useFolderRename, useSessionAutoTitle, useSessionRename } from './rename'
 import type { useSidebarResize } from './resize'
@@ -224,6 +225,8 @@ export interface SidebarScope {
   foldersError: Error | null
   refetchFolders: UseQueryResult<ChatFolder[]>['refetch']
   modelFilterInverted: boolean
+  /** The "Sort & filter" menu's "Started by" section and chip. */
+  creatorFilter: CreatorFilterMenuView
   shownCrewGroups: CrewGroup[]
   sidebarRows: SidebarRows
   listNarrowed: SidebarRows['listNarrowed']
@@ -446,6 +449,10 @@ export interface SidebarScope {
 
   // From `useColumnMatches`
   columnMatches: ReturnType<typeof useColumnMatches>['columnMatches']
+
+  /** Every folder that a live session of the full slot store is filed in,
+   *  including the sessions this list leaves out (`selectFoldersHoldingSessions`). */
+  foldersHoldingSessions: ReadonlySet<string>
 
   // From `useFolderVisibility`
   slotFolders: ReturnType<typeof useFolderVisibility>['slotFolders']

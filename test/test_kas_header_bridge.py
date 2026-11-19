@@ -11,6 +11,8 @@ HTTP requests and must appear in nothing that crosses the wire.
 
 from __future__ import annotations
 
+import errno
+import http.client
 import io
 import json
 import os
@@ -20,6 +22,7 @@ import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from kas_agents_helpers import _spec
@@ -383,10 +386,29 @@ class TestBridge:
         assert [r["path"] for r in handler.seen] == ["/moved"], "the header went nowhere else"
         assert "redirect" in _lines(out)[0]["error"]["message"]
 
-    def test_an_unreachable_server_answers_the_request(self):
-        bridge, out, _err = _bridge(f"http://127.0.0.1:{_closed_port()}/mcp")
+    def test_an_unreachable_server_answers_the_request_with_the_cause(self):
+        bridge, out, err = _bridge(f"http://127.0.0.1:{_closed_port()}/mcp")
         bridge.send(_msg(id=4, method="tools/list"))
-        assert "could not be reached" in _lines(out)[0]["error"]["message"]
+        message = "kirocrew: MCP server 'jira' could not be reached (connection refused)"
+        assert _lines(out)[0]["error"]["message"] == message
+        assert err.getvalue() == message + "\n", "no [Errno ...] socket text"
+
+    def test_an_answer_the_network_cuts_off_is_reported_with_the_cause(self):
+        class _TimedOut(io.BytesIO):
+            status, headers = 200, http.client.HTTPMessage()
+
+            def read(self, *_args):
+                raise TimeoutError(errno.ETIMEDOUT, "Connection timed out")
+
+        out, err = io.BytesIO(), io.StringIO()
+        opener = SimpleNamespace(open=lambda _request, timeout: _TimedOut())
+        bridge = Bridge(
+            "https://example.test/mcp", {}, server="jira", out=out, err=err, opener=opener
+        )
+        bridge.send(_msg(id=6, method="tools/list"))
+        message = "kirocrew: MCP server 'jira' stopped answering (timed out)"
+        assert _lines(out)[0]["error"]["message"] == message
+        assert err.getvalue() == message + "\n", "no [Errno ...] socket text"
 
     @pytest.mark.parametrize(
         ("answer", "reason"),

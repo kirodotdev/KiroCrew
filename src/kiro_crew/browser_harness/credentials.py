@@ -110,6 +110,8 @@ class CredentialStatus:
     reason: str | None = None
     applied: int = 0
     applied_domains: tuple[str, ...] = ()
+    #: Cookies landed per context written, in the order asked; one entry per context.
+    applied_per_context: tuple[int, ...] = ()
     applied_at: float | None = None
     provider_status: dict[str, Any] | None = None
 
@@ -121,6 +123,7 @@ class CredentialStatus:
             "state": self.state,
             "reason": self.reason,
             "applied": self.applied,
+            "applied_per_context": list(self.applied_per_context),
             "applied_at": self.applied_at,
             "provider_status": self.provider_status,
         }
@@ -312,19 +315,26 @@ async def _provider_cookies(
     return kept, ("source_expired" if raw and not kept else None)
 
 
-async def _set_cookies(relay: _Relay, cookies: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """``Storage.setCookies``; on a refused batch, one at a time. Returns those that landed."""
+async def _set_cookies(
+    relay: _Relay, cookies: list[dict[str, Any]], browser_context_id: str = ""
+) -> list[dict[str, Any]]:
+    """``Storage.setCookies``; on a refused batch, one at a time. Returns those that landed.
+
+    With *browser_context_id* the cookies go into that browser context only, never
+    into the default one the person's tabs share.
+    """
     if not cookies:
         return []
+    scope = {"browserContextId": browser_context_id} if browser_context_id else {}
     try:
-        await relay.send("Storage.setCookies", {"cookies": cookies})
+        await relay.send("Storage.setCookies", {"cookies": cookies, **scope})
         return cookies
     except Exception:  # noqa: BLE001 - one cookie Chromium refuses fails the batch; find it
         pass
     landed = []
     for cookie in cookies:
         try:
-            await relay.send("Storage.setCookies", {"cookies": [cookie]})
+            await relay.send("Storage.setCookies", {"cookies": [cookie], **scope})
             landed.append(cookie)
         except Exception:  # noqa: BLE001 - left out; the CDP text is not repeated
             pass
@@ -337,11 +347,16 @@ async def apply(
     provider: Any,
     target: Target,
     settings: CredentialSettings,
+    contexts: Sequence[str] = ("",),
 ) -> CredentialStatus:
     """Write the provider's cookies into the browser behind *relay*, if enabled.
 
-    Never raises for a provider or a CDP failure: the browser is still useful without
-    the cookies, so the outcome is a status, not an exception. Cancellation propagates.
+    *contexts* are the browser contexts to fill, ``""`` being the default one and
+    any other a per-chat context (``browser.isolation``); the provider is asked
+    ONCE and the same cookies go into each. ``applied`` counts the first context's
+    landing; ``applied_per_context`` keeps every context's. Never raises for a provider or a CDP failure: the browser is still
+    useful without the cookies, so the outcome is a status, not an exception.
+    Cancellation propagates.
     """
     name = provider_name(provider)
     status = CredentialStatus(provider=name, enabled=settings.enabled, domains=settings.domains)
@@ -354,8 +369,15 @@ async def apply(
         status.state, status.reason = STATE_DISABLED, "disabled"
         return status
     cookies, error = await _provider_cookies(provider, target, settings)
-    landed = await _set_cookies(relay, cookies)
+    landed: list[dict[str, Any]] = []
+    per_context: list[int] = []
+    for index, context in enumerate(contexts):
+        placed = await _set_cookies(relay, cookies, context)
+        per_context.append(len(placed))
+        if index == 0:
+            landed = placed
     status.applied = len(landed)
+    status.applied_per_context = tuple(per_context)
     status.applied_domains = tuple(sorted({cookie_host(c["domain"]) for c in landed}))
     status.provider_status = await _provider_status(provider)
     status.reason = error

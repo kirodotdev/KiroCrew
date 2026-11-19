@@ -9,7 +9,9 @@ failed is retried).
 
 It never starts the relay. Turning Remote Control on takes a gateway restart, as
 ``restart=True`` on the field says. The guard does nothing when the relay was not
-selected at boot. It reads only the setting.
+selected at boot. It reads only the setting. The gateway may also hand it one
+callback to run the first time the relay connects
+(:mod:`~kiro_crew.remote_control.default_notice`).
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Awaitable, Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -83,16 +85,24 @@ class RemoteControlGuard:
         self._draining = False
         self._stop_reservations = 0
         self._subscription: Any = None
+        #: Run once, the first time the poll sees the relay connected
+        #: (:meth:`on_first_connect`); cleared when it runs.
+        self._first_connect: Optional[Callable[[], Awaitable[Any]]] = None
 
     def on_config(self, change: Any) -> None:
-        """The ``tunnel`` applier on the live config watcher: adopt ``relay_enabled``.
+        """The ``tunnel`` applier on the live config watcher: adopt what config asks.
+
+        That is ``remote_control.hosting.relay_requested``, so clearing a team key
+        from a Crew that hosts only by default stops the relay too.
 
         The off edge of ``tunnel.relay_enabled`` is deliberately live; the on edge
         is boot-only. This applier only records the value, and the guard acts on it
         only to stop the relay (:meth:`_act`), never to start it, so ``restart=True``
         on the field stays true for turning it on.
         """
-        self._requested = change.new.tunnel.relay_enabled is True
+        from kiro_crew.remote_control.hosting import relay_requested
+
+        self._requested = relay_requested(change.new.tunnel)
 
     async def running(self) -> bool:
         """Whether a relay client exists now, connected, starting or failed.
@@ -195,10 +205,22 @@ class RemoteControlGuard:
         except Exception:  # noqa: BLE001 - the poll retries a stop that failed
             logger.warning("Remote Control off: stopping the relay failed", exc_info=True)
 
+    def on_first_connect(self, callback: Callable[[], Awaitable[Any]]) -> None:
+        """Run *callback* once, on the first poll that finds the relay connected."""
+        self._first_connect = callback
+
+    async def _maybe_first_connect(self) -> None:
+        callback = self._first_connect
+        if callback is None or not self._requested or not await self.connected():
+            return
+        self._first_connect = None
+        await callback()
+
     async def _loop(self) -> None:
         while True:
             try:
                 await self.tick()
+                await self._maybe_first_connect()
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - one bad tick must not end the guard

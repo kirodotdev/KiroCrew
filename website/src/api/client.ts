@@ -278,6 +278,8 @@ export type {
 export type {
   SlackConfigData,
   SlackConfigSave,
+  SlackSharedAccessData,
+  SlackSharedUser,
   SlackCapability,
   SlackCodeSwitchKey,
   SlackCodeChannelDefaults,
@@ -940,7 +942,7 @@ export const isAuthExpiredError = (e: unknown): boolean =>
  * `e.message`. `utils/errorReport` then lets a shared error banner recover that
  * context from the message alone — see AskAgentButton / ErrorNotice.
  */
-const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiError => {
+const apiFailure = (r: Response, errText: string, benign?: Benign): ApiError => {
   // An auth denial's own reason text ("invalid signature") describes HMAC
   // verification, not anything the user can act on, and every card that renders
   // it hides the fact that one re-auth clears all of them at once. Substitute
@@ -991,8 +993,7 @@ const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiErr
   // ours, so it cannot match `benign`, but the term is kept explicit because each of
   // the three needs a person and none may ever be opted out by a call site.
   const expectedBenign = !!benign
-    && r.status === benign.status
-    && code === benign.code
+    && (Array.isArray(benign) ? benign : [benign]).some(b => r.status === b.status && code === b.code)
     && !authRequired
     && !staleOwnerSession
     && !edgeAuthExpired
@@ -1159,6 +1160,8 @@ export interface SlotEnvironment {
  * emits for exactly that case, so both must match before anything is opted out.
  */
 type BenignDenial = { readonly status: number; readonly code: string }
+/** One benign denial, or the few one endpoint answers routinely (the relay viewer's list). */
+type Benign = BenignDenial | readonly BenignDenial[]
 
 /**
  * The one parser body behind `j`, `jNullable` and `jInstancesDisabled`.
@@ -1167,7 +1170,7 @@ type BenignDenial = { readonly status: number; readonly code: string }
  * share this rather than holding copies that drift as the auth-recovery steps
  * above change.
  */
-const parseJson = async (r: Response, benign?: BenignDenial, nullOn204 = false) => {
+const parseJson = async (r: Response, benign?: Benign, nullOn204 = false) => {
   checkSessionExpired(r)
   if (r.ok) removeAuthBanner()
   // Before the !r.ok branch, because 204 IS ok: the banner clear above still runs,
@@ -1315,13 +1318,24 @@ const APPS_RELAY_TEAMMATE: BenignDenial = { status: 403, code: 'relay_apps_teamm
 const jApps = (r: Response) => parseJson(r, APPS_RELAY_TEAMMATE)
 
 /**
- * The eighth: `GET /api/relay-viewer/crews` answering 404 `RELAY_VIEWER_OFF` while
- * `tunnel.relay_viewer_enabled` is off, which is every install by default. The desktop
- * app's relay Crew list reads it on every load and hides itself on that answer, so
- * journaling it would file one error report per load. Any other failure journals.
+ * The eighth: the relay viewer's routine answers. Every dashboard reads
+ * `GET /api/relay-viewer/crews` on load and every 15 minutes after a refusal, and
+ * hides its list on each of these, so journaling them would file one error report
+ * per read for a person whose dashboard works: 404 `RELAY_VIEWER_OFF` in a build that
+ * keeps the viewer off, a signed-out sign-in, an organization with remote access off,
+ * an account with no relay access, and a session that is not the owner. A server or network failure, a throttle and
+ * `NOT_SET_UP` (a dev setting that is wrong) still journal.
  */
-const RELAY_VIEWER_OFF: BenignDenial = { status: 404, code: 'RELAY_VIEWER_OFF' }
-const jRelayViewer = (r: Response) => parseJson(r, RELAY_VIEWER_OFF)
+const RELAY_VIEWER_ROUTINE: readonly BenignDenial[] = [
+  { status: 404, code: 'RELAY_VIEWER_OFF' },
+  { status: 409, code: 'SIGNED_OUT' },
+  { status: 403, code: 'REMOTE_ACCESS_DISABLED' },
+  { status: 403, code: 'CREW_ACCESS_NOT_GRANTED' },
+  { status: 403, code: 'ACCESS_DENIED' },
+  // A dashboard session that is not the owner: the list hides itself there.
+  { status: 403, code: 'owner_only' },
+]
+const jRelayViewer = (r: Response) => parseJson(r, RELAY_VIEWER_ROUTINE)
 
 /**
  * The ninth: `GET /api/security/config-pending` answering `owner_only` to a caller that is

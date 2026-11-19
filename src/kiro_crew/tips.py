@@ -496,6 +496,10 @@ class TipsCache:
     # user-facing pool. Empty by default so unit tests that build TipsCache()
     # directly are unaffected; populated only by get_tips_cache in production.
     curated: list[dict] = field(default_factory=list)  # type: ignore[type-arg]
+    # Edition curated tip ids the feedback counter may name (see
+    # ``TipsPool.metric_tip_ids``); empty for the public pool, whose shipped ids
+    # the counter already knows.
+    metric_tip_ids: frozenset[str] = frozenset()
     state: TipsState = field(default_factory=TipsState)
     # LoopBoundLock, not asyncio.Lock: the cache is stored on the
     # long-lived DashboardState, which outlives any single event loop.
@@ -691,6 +695,31 @@ def _sanitize_pool(pool: TipsPool) -> tuple[list[dict], list[CatalogEntry]]:  # 
     return curated, catalog
 
 
+# A tip id the feedback counter may carry as a name: a lowercase slug, the shape
+# every shipped curated id has.
+_METRIC_TIP_ID_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_METRIC_TIP_ID_MAX_CHARS = 64
+
+
+def _pool_metric_tip_ids(pool: TipsPool, curated: list[dict]) -> frozenset[str]:  # type: ignore[type-arg]
+    """The ids in ``pool.metric_tip_ids`` that the feedback counter may name.
+
+    Kept only when the id is a short slug AND a curated tip of this pool that
+    passed validation, so the edition cannot name a tip it does not serve and
+    the value is always one the edition ships. Anything else is dropped, never
+    an error: a bad entry costs one name in the metrics, not the pool.
+    """
+    served = {t.get("id") for t in curated}
+    return frozenset(
+        i
+        for i in pool.metric_tip_ids
+        if isinstance(i, str)
+        and len(i) <= _METRIC_TIP_ID_MAX_CHARS
+        and _METRIC_TIP_ID_RE.fullmatch(i)
+        and i in served
+    )
+
+
 def _reconcile_pool(st: TipsState, pool_id: str) -> bool:
     """Drop cached tips that were generated against a DIFFERENT pool.
 
@@ -742,6 +771,7 @@ async def get_tips_cache(state: DashboardState) -> TipsCache:
                 loop = asyncio.get_running_loop()
                 pool = await loop.run_in_executor(None, _resolve_pool)
                 catalog: list[CatalogEntry]
+                metric_tip_ids: frozenset[str] = frozenset()
                 if pool is not None:
                     # Full replacement: neither the bundled/scanned public
                     # catalog nor the bundled curated file is consulted, so no
@@ -749,6 +779,7 @@ async def get_tips_cache(state: DashboardState) -> TipsCache:
                     # through the same validation as the public pool's.
                     curated, catalog = await loop.run_in_executor(None, _sanitize_pool, pool)
                     pool_id = pool.pool_id
+                    metric_tip_ids = _pool_metric_tip_ids(pool, curated)
                     logger.debug(
                         "Tips pool %r composed by the edition (%d curated, %d catalog)",
                         pool_id,
@@ -790,6 +821,7 @@ async def get_tips_cache(state: DashboardState) -> TipsCache:
                 cache = TipsCache()
                 cache.catalog = catalog
                 cache.curated = curated
+                cache.metric_tip_ids = metric_tip_ids
                 cache.state = st
                 if st.load_failed:
                     # Serve this request from defaults, but keep nothing: the
@@ -1587,5 +1619,5 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _save_state, st)
-    record_tip_feedback_metric(action, tip_source, tip_doc, tip_id)
+    record_tip_feedback_metric(action, tip_source, tip_doc, tip_id, cache.metric_tip_ids)
     return web.json_response({"ok": True})

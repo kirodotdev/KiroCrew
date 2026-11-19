@@ -44,6 +44,7 @@ import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 import { i18nT } from '../../i18n/t'
 import { useProvider } from '../../providers'
 import { useModelsAuthRequired, useModelsDegradedReason } from '../../providers/modelListHealth'
+import { KiroCliSignInButton, useKiroCliCanRunHere, useKiroCliSignInInTerminal } from '../../components/KiroCliSignInInTerminal'
 import ErrorNotice from '../../components/ErrorNotice'
 import { parseWholeNumber } from '../../utils/wholeNumber'
 
@@ -325,8 +326,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   }
 
   const dashDisabled = !dashQ.isSuccess
-  // The conductor mode default is shown wherever conductor mode is: in an LTS build
-  // no chat offers it, so the setting would change nothing.
+  // The conductor mode settings are shown wherever conductor mode is: in an LTS
+  // build no chat offers it, so they would change nothing.
   const crewModeOffered = useCrewMode()
 
   // Second-level rail groups. Order = rail order; the first item (Transcript)
@@ -354,14 +355,20 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   // one happened to host them when the page was one scroll.
   // When the model list is degraded because kiro-cli's login expired or is
   // signed out, the MODEL-LIST banner's notice says the one thing that fixes it
-  // (run `kiro-cli login`) instead of the generic "Failed to load config." The
+  // (sign kiro-cli in, through the button beside it that runs the sign-in in the
+  // Terminal panel) instead of the generic "Failed to load config." The
   // flag is set where the /api/models error is formed (providers/adapters/acp.ts),
   // so this reads one boolean rather than the refusal code; it feeds only the
   // availableModelsQ banner, since the dashboard/roster reads do not carry it.
   const kiroSignInRequired = useModelsAuthRequired(provider.id)
   const modelsDegradedReason = useModelsDegradedReason(provider.id)
+  const kiroCliSignIn = useKiroCliSignInInTerminal()
+  // Settings runs outside every chat, so the app-wide Terminal receiver answers.
+  const kiroCliCanRun = useKiroCliCanRunHere(true)
   const configLoadMessage = kiroSignInRequired
-    ? i18nT('pages.settings.chatPanel.failed_to_load_config_kiro_signed_out')
+    ? kiroCliCanRun
+      ? i18nT('pages.settings.chatPanel.failed_to_load_config_kiro_signed_out')
+      : i18nT('pages.settings.chatPanel.failed_to_load_config_kiro_signed_out_copy')
     : i18nT('pages.settings.chatPanel.failed_to_load_config')
   const banner = (
     <>
@@ -423,13 +430,15 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           {/* No hand-off: the editable drafts in this panel stay mounted while
               the catalog retry runs; navigating away could discard them. This is
               the one banner whose cause the sign-in flag describes, so it shows
-              the "run kiro-cli login" message when the model list is degraded by
-              an expired / signed-out login. The failed fetch's own error sits
-              under either lead. */}
+              the kiro-cli sign-in message and its button when the model list is
+              degraded by an expired / signed-out login. Other failures keep
+              the failed fetch's own error under the generic lead. */}
           <ErrorNotice
             className="flex-1 min-w-[16rem]"
-            {...loadFailure(configLoadMessage, modelsDegradedReason)}
+            {...loadFailure(configLoadMessage, kiroSignInRequired ? '' : modelsDegradedReason)}
           />
+          {kiroSignInRequired && <KiroCliSignInButton signIn={{ run: kiroCliSignIn.askToSignIn, command: kiroCliSignIn.command, canRun: kiroCliCanRun }} />}
+          {kiroCliSignIn.dialog}
           <Btn onClick={() => availableModelsQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</Btn>
         </div>
       )}
@@ -1052,6 +1061,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_git_panel')} hint={i18nT('pages.settings.chatPanel.expand_the_side_panel_to_the_git_tab_each_time_yo')} checked={dashCfg.auto_open_git_panel} onChange={v => setDash({ auto_open_git_panel: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_always_open')} hint={i18nT('pages.settings.chatPanel.side_panel_always_open_hint')} configKey="dashboard.side_panel_always_open" checked={dashCfg.side_panel_always_open ?? false} onChange={v => setDash({ side_panel_always_open: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_pin_summary')} description={pinSummaryNeedsSummaries ? i18nT('pages.settings.chatPanel.side_panel_pin_summary_needs_session_summaries') : undefined} hint={i18nT('pages.settings.chatPanel.side_panel_pin_summary_hint')} configKey="dashboard.side_panel_pin_summary" checked={dashCfg.side_panel_pin_summary ?? false} onChange={v => setDash({ side_panel_pin_summary: v })} disabled={dashDisabled} />
+          {crewModeOffered && (
+            <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_conductor_board')} hint={i18nT('pages.settings.chatPanel.auto_open_conductor_board_hint')} configKey="dashboard.auto_open_conductor_board" checked={dashCfg.auto_open_conductor_board ?? true} onChange={v => setDash({ auto_open_conductor_board: v })} disabled={dashDisabled} />
+          )}
         </SettingsCard>
           )
 

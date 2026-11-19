@@ -202,7 +202,7 @@ def signing_key_preflight() -> None:
         " ".join(steps),
     )
     print(
-        f"Error: Truncated token signing key at {key_path}. Repair it by hand:",
+        f"❌ Truncated token signing key at {key_path}. Repair it by hand:",
         *(f"   {step}" for step in steps),
         sep="\n",
         file=sys.stderr,
@@ -719,22 +719,12 @@ async def run_gateway(
     # reasoning in embeddings_download.py). Errors are swallowed inside ``send``; a failed
     # heartbeat is invisible by design. ``test_mode`` skips it entirely so the
     # offline E2E gate can never make an outbound request.
-    #
-    # ``acked`` withholds the FIRST heartbeat until the user has actually been
-    # shown the disclosure and its opt-out. Boot runs before the dashboard has
-    # ever rendered, so on a fresh install this thread would otherwise ping
-    # before the user could possibly decline, making the opt-out an offer
-    # arriving after the fact. Established installs are unaffected: the gate
-    # applies only while `is_first_send()` holds.
     if not test_mode:
         with contextlib.suppress(Exception):
             threading.Thread(
                 target=beacon.send,
                 args=(cfg.telemetry.beacon_endpoint, kiro_crew.__version__),
-                kwargs={
-                    "enabled": cfg.telemetry.beacon_enabled,
-                    "acked": cfg.dashboard.privacy_acked,
-                },
+                kwargs={"enabled": cfg.telemetry.beacon_enabled},
                 name="kirocrew-beacon",
                 daemon=True,
             ).start()

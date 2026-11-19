@@ -41,7 +41,7 @@ kirocrew cron list --folder "Veille"                # only that folder; --folder
 kirocrew cron remove <id>
 ```
 
-`--folder` takes a Schedule-page folder name or id, as the `cron_add` and `cron_update` tools do. A missing name is created, then the job is filed in it; an unknown id and a name several folders share are refused. The folder is created through the running gateway (the dashboard owns the folder list), so with no gateway running only an existing folder can be named. `cron list` shows each job's folder, and its `--folder` filter only reads: it never creates one. The `cron_list` tool's `json` output carries the same `folder` field (`{id, name}`, or `null` when ungrouped).
+`--folder` takes a Schedule-page folder name or id, as the `cron_add` and `cron_update` tools do. A missing name is created, then the job is filed in it; an unknown id and a name several folders share are refused. The folder is created through the running gateway (the dashboard owns the folder list), so with no gateway running only an existing folder can be named. `cron list` shows each job's folder, and its `--folder` filter only reads: it never creates one. A job whose run is still going shows `[running since HH:MM UTC]`, because its last run time and status are written only when the run ends. The `cron_list` tool's `json` output carries the same `folder` field (`{id, name}`, or `null` when ungrouped).
 
 A `--script` file must already live under `~/.kiro/crew/crons/`; the CLI registers it, it does not copy it. `--script`/`--command` and `--agent` are mutually exclusive, as are `--every`/`--cron`/`--at`. Every refusal prints on stderr and exits non-zero with nothing written (2 for a flag-combination error, 1 for a validation, security or store refusal), so an installer can register a job headlessly.
 
@@ -238,6 +238,16 @@ cron_add(
 ```
 
 It implies `persistent_session: false` when that is omitted, and `persistent_session: true` turns it off. It applies to a single-agent (message) job; a script, command or multi-agent job refuses it. `hide_in_chat` still wins, and a run whose result is a duplicate or that is `silent` opens no tab. A run's tab is kept like any other chat; a run that opened none is removed with the other stateless run transcripts after 7 days. It is for infrequent jobs, because every run keeps a tab: a schedule that can run twice within 24 hours is refused, on create and on an update that turns the switch on or changes the schedule.
+
+### A Fresh Tab After You Close It (`on_tab_close`)
+
+A job's tab, `Cron: <name>`, keeps the job's conversation. Close it and, by default (`on_tab_close: "resume"`), the next run reopens it with that history. Set `on_tab_close: "fresh"` for a report-style job whose tab you close because it grew too long: the next run reopens the tab empty and keeps posting there until you close it again.
+
+```
+cron_update(job_id="<id>", on_tab_close="fresh")
+```
+
+It changes only what the tab shows. Nothing is deleted: the job's agent keeps what `persistent_session` gives it, and a reply in the reopened tab still has the earlier runs as context. The earlier messages are not shown in the tab, and History does not list them as a chat of their own yet. It applies to the job's own tab (a persistent job that is not `hide_in_chat`), and only a run reopens the tab fresh, after you closed it yourself: a tab archived automatically because it sat idle comes back with its history. `cron_add`, `cron_update` and the REST routes take it; the CLI and the Schedule page do not yet.
 
 ## Skipping Dates
 

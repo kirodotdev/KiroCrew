@@ -470,7 +470,7 @@ class TestRunLaunch:
             ),
         )
         out = lj.run_launch(job, s, eng)
-        assert "Added to Your crews" not in out.step(lj.STEP_CONNECT).detail
+        assert "Added to My Crews" not in out.step(lj.STEP_CONNECT).detail
 
     def test_a_refused_signin_still_outranks_a_registration_failure(self, tmp_path):
         """Two things went wrong and only one is reported as the job's status. The

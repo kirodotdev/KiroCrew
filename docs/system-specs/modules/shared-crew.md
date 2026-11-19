@@ -72,6 +72,9 @@ else is 400 `invalid_body`. Each PUT is written to the SEL
 - Gate off also keeps question cards owner-only: `collaborators.is_collaborator_actor` admits no one and no collaborator socket receives a card, so `/api/ask-question` reads, answers and dismissals refuse non-owners as before.
 - Gate on: config decides, as every section below describes.
 
+Connected computers are off while Shared Crew is on, because ownership checks do
+not yet prevent a teammate's chat from reaching another person's computer.
+
 `GET /api/shared-crew/capabilities` reports the gate as `shared_crew_preview` (true or false).
 Each field's help in the Settings schema says it needs Shared Crew turned on in Feature Previews.
 
@@ -124,7 +127,7 @@ Evidence, strongest first (`identity.derive_principal`):
 | Tailnet peer on the direct tailnet listener, admitted by daemon `whois` of its own TCP `ip:port` (`tailnet_direct.DirectGate`) | `human` keyed by tailnet login (the stable user id is an alias); `machine` keyed by node for a tagged node | `tailscale_listener` |
 | Tailnet peer reaching a widened bind on its tailnet address, no forwarding header, resolved by daemon `whois` of the socket address (`tailnet.resolve_direct_peer`) | `human` keyed by tailnet login; `machine` keyed by node | `tailscale_direct` |
 | A request on the SSM listener's loopback port, admitted by a Crew invite (`dashboard.ssm_gate`) | `human` keyed by the invite id | `ssm_invite` |
-| Loopback socket with no forwarding header at all | `human`, the local operator, keyed by the token subject; labelled with this machine's name when the subject is one of the owner's (see Owner label) | `local_operator` |
+| Loopback socket with no forwarding header at all | `human`, the local operator, keyed by the token subject; labelled `owner.owner_name` when the subject is one of the owner's (see Owner label) | `local_operator` |
 | Anything else auth admitted | `Principal.unknown()` | `none` |
 
 A relayed principal's email and name are display only. Its display `login` is always
@@ -332,9 +335,29 @@ subjects `local-app` and `local-startup`, the configured owner id
 person (`owner.owner_principal_ids`). Principal ids never change: they come from
 the token subject or the login alone.
 
-The label shown for the owner's local principals is this machine's name
-(`owner.machine_name`, applied in `identity.local_operator_principal` to the
-owner's subjects only): macOS `ComputerName` read once through the fixed path
+The one name shown for the owner is `owner.owner_name`, read from caches only
+(never a spawn or a daemon read on the request), first non-empty wins:
+
+1. A name the Kiro relay or control plane gives the owner. None exists in this
+   build: a relay stream names only its caller (`userName`/`userEmail`) and the
+   lease names the Crew, not its owner, so the step has no source.
+2. The e-mail of the Kiro account this machine is signed in to
+   (`owner.login_email`). The gateway reads it once after the bind
+   (`owner.warm_login_email`, started by `lifecycle.install_lifecycle`'s
+   maintenance starter) from `sessions.fetch_local_identity`: `kiro-cli whoami` on
+   the kiro-cli route; the vault stores no e-mail, so on Crew's own sign-in the
+   first usage reading brings it. Every usage reading the dashboard publishes
+   (`sessions._publish_usage`) records the e-mail it names, or none, so a sign-in
+   change moves the label with the next reading. A value that is not an e-mail
+   (`relay_client.protocol.is_display_email`) records none.
+3. The owner's Tailscale `DisplayName` (`SelfNode.display_name`, from the status
+   `User` entry of `Self.UserID`, published with the owner), else their Tailscale
+   login (`access_set.owner_login`).
+4. This machine's name, `owner.machine_name`.
+
+It labels the owner's local principals (`identity.local_operator_principal`, the
+owner's subjects only) and the mode route's `owner_label`, so the Sessions creator
+filter and the host sandbox line show the same name. `owner.machine_name` is macOS `ComputerName` read once through the fixed path
 `/usr/sbin/scutil` (never `PATH`), else the Tailscale daemon's `Self.HostName`
 (`SelfNode.host_name`, published when the owner is learned), else the OS host
 name, else the token subject. It never raises. The `scutil` lookup never runs on an
@@ -389,14 +412,33 @@ id; an owner local-token row reports the sum over every id in
 ### People and setup modes
 
 `crew_mode` puts every Crew in exactly one mode, served by `GET
-/api/shared-crew/mode` (dashboard user only, 403 otherwise). The People surface,
-setup guidance and session list follow it, and the modes never mix:
+/api/shared-crew/mode` (dashboard user only, 403 otherwise). The session list and
+the error state follow it, and the modes never mix:
 
 | Mode | When | People shows | Session list |
 |---|---|---|---|
-| `personal` | no setup path is available or degraded, and no principal but the local operator viewing has been seen (the operator's bootstrap subjects `local-app`, `local-startup` and the configured owner are the same person; session creators are matched by id, never by a stored provenance) | setup guidance with each adapter's honest status, personal Remote Control | no creator bylines, no All/Mine control |
-| `network` | a Tailscale or SSM path is on, or a network person or another operator has been seen | the share card with the Tailscale path's status (first on the page), who has been seen (labelled as seen), personal Remote Control | bylines, filter |
-| `invalid` | the tailnet login allowlist could not be read | one error state with the reason code | bylines, filter |
+| `personal` | no setup path is available or degraded, the Crew is not a team Crew on the Kiro relay, and no principal but the local operator viewing has been seen (the operator's bootstrap subjects `local-app`, `local-startup` and the configured owner are the same person; session creators are matched by id, never by a stored provenance) | the connection sources (Tailscale and AWS SSM as dashed "not set up" cards for the owner) and the People list | no creator bylines, no All/Mine control |
+| `network` | a Tailscale or SSM path is on, the Crew is a team Crew on the Kiro relay (`relay_team`), or a network person or another operator has been seen | the connection sources and the People list | bylines, filter |
+| `invalid` | the tailnet login allowlist could not be read | one error state with the reason code, in place of the sources and the list | bylines, filter |
+
+The connection sources are not exclusive: the mode body's `sources`
+(`crew_mode.sources_view`) lists every source at once, in this order, each as
+`{id, state, reason, people}`:
+
+| `id` | `state` |
+|---|---|
+| `tailscale` | the Tailscale setup path's state |
+| `ssm` | the AWS SSM setup path's state |
+| `organization` | `available` only while an organization Console manages access; `unavailable` with `not_offered` in this build |
+| `kiro_login` | `available` while the relay client holds a host connection as a team Crew (`routes_identity._relay_team_crew`, from the relay ingress's `HostBinding`), else `unavailable` with `not_configured` |
+
+`people` counts the distinct principals this process saw come in through the
+source, read from the provenance the server derived (`crew_mode.viewer_via`). A
+person the Tailscale daemon lists who never connected has not come in, and a
+session creator carries no provenance, so neither is counted; the count resets on
+restart with the observed list. A gateway that sends no `sources` gets them in the
+browser from its setup paths and mode (`sharedCrewMode.connectionSources`), each
+counted from the People rows of that source.
 
 The session list's bylines and filter, message bylines and presence chips are all
 part of the Shared Crew preview. They show only when the
@@ -410,6 +452,15 @@ again. One rule decides it for every surface
 (`sharedCrewMode.showsTeamAttribution`, read through `useTeamAttribution` and
 `useSharedCrewListView`); with the preview off the browser reads no mode or People
 for them. Until then the dashboard looks as it does for one person.
+
+The same rule shows the sidebar's identity row (`SidebarIdentityRow`, under the
+header): "<name> via Kiro Login", "via Tailscale" or "via Systems Manager" (the
+name alone at this machine or on an unnamed path, from the mode body's
+`viewer_via`), naming who this tab's sends are recorded as before they are sent,
+and a read-only "Shared · N here now", where N counts People rows with an open tab
+plus the viewer (`sharedCrewUi.isHereNow`). It has no toggle. Because it follows
+the same rule, a relay teammate on a Crew whose preview is off sees no identity
+row, as they see no bylines.
 
 A team configuration is refused (`crew_mode.team_config_problem`) with reason
 `network_identity_config_unreadable` while the tailnet login allowlist could not be
@@ -425,30 +476,83 @@ The mode body: `mode`, `crew_id` (the gateway id; it keys the browser's remember
 list filter), `viewer`, `viewer_ids` (every principal id that names the viewer:
 the owner's are `owner.owner_principal_ids`, anyone else's is their own), `team_config` (`state` `not_configured` | `invalid`, with
 `reason`, `capability`, `cause`), `console` (always `not_offered`), `adapters` (the
-setup paths) and `workload_identity_ref` (always `unavailable`). The Tailscale link
+setup paths), `sources` (above) and `workload_identity_ref` (always `unavailable`). It also carries
+`viewer_via` (the viewer's path, `crew_mode.viewer_via`: `kiro_login`,
+`tailscale`, `ssm`, `local` or `unknown`) and `owner_label` (`owner.owner_name`). Display only: none of them
+grants or refuses anything.
+The Tailscale link
 is a fixed public documentation page.
 Identity is never inferred from the OS user or a typed label, and loopback alone
 yields the local operator only together with a dashboard token.
 
-People has no role control in any mode. Its one invite entry is the `Invite…` button
-(`InviteEntry`), shown in `personal` and `network` mode to the owner only; it opens
-the one invite dialog (§7). Inviting adds a person to the tailnet, which is the
-sharing step. People has no access card, no approval list and no Approve or Dismiss
-control; its one removal verb is the owner's "Remove". Each person is one row. Invites whose person is not a row yet are
-listed under their own "Invites · N" sub-heading, below the people they are not
-counted in (`sharedCrewUi.waitingInvites`, which takes invites from any sharing path by
+People has no role control in any mode. The page is the connection sources, then
+one People list, then the owner's Advanced section (`PeoplePanel.tsx`).
+
+**Connection sources** (`PeopleSources.tsx`): one card per source in `sources`, the
+ones that are on first. Each shows its status badge ("Connected", "On, but not
+reachable") and "People: N" from its `people`.
+
+- Tailscale: "Reachable at <host>" from the direct link, the owner's "Invite…"
+  and "Manage people in Tailscale", and the Crew link with its Copy (the owner
+  copies the whole invite message, a teammate the link).
+- AWS SSM: the listening port from the owner's SSM status, and the owner's "Make
+  invite link".
+- Your organization: shown only while `available`; "Managed by admin", read-only,
+  with the server-validated Console link ("Open console"; `consoleUrl`, any mode).
+- Kiro Login: shown only while `available`; read-only, with no invite button,
+  since that sharing is managed outside Kiro Crew.
+
+Tailscale or AWS SSM not set up is a dashed card for the owner with its setup
+button, which opens the source's guide (`SharedAccessSetup.tsx`); a Tailscale card
+not set up keeps the owner's "Invite…" when the invite read answered. A teammate
+(`useViewerIsNotOwner`) sees only the sources that are on, and each invite button
+there disabled with a lock and "Only the owner of this Crew can invite people."
+
+Each invite button is the one invite entry (`InviteEntry` with the card's
+`transport`), and every one opens the one invite dialog (§7) on its own pane.
+Inviting adds a person to the source, which is the sharing step. People has no
+access card, no approval list and no Approve or Dismiss control.
+
+**People list** (`PeopleCrew.tsx`): one list, "People · N". Each row carries the
+chip of the source it came in through (`sharedCrewUi.personSource`: Tailscale for a
+`tailscale_*` provenance or a `tailscale_share` row, AWS SSM for `ssm_invite`, Kiro
+Login for `kiro_relay`, Your organization for a `directory` row or, while the mode
+is `console`, any row not at this machine); the local operator carries none, and
+a session creator with no provenance takes the one source that is on, else none
+(`sharedCrewUi.soleSource`; Remove still reads only the derived provenance). The
+same person can be a row once per source, so N counts distinct people by login,
+else by an e-mail label, else by id, never by a bare display name
+(`sharedCrewUi.distinctPeopleCount`), and a line under the heading says so. The
+owner's local rows read `owner.owner_name` for every reader (`people_view`), so
+the owner and their own relay row count once. Once the rows are read, each
+source card counts the distinct people under its chip, so a card and the list
+agree. "You", "You · Owner" and "Crew owner" mark
+rows as before.
+
+Remove sits only where it works, for the owner: an SSM person (Remove revokes the
+invite they opened); a person or invite of a single-use Tailscale invite (Remove);
+any other Tailscale person links to Tailscale's users page ("Manage in Tailscale"),
+since revoking a reusable link would remove everyone who used it. A person your
+organization manages reads "Managed by admin", read-only, for every viewer. A Kiro
+Login person has no control.
+
+Invites whose person is not a row yet are rows of the same list, with their
+source chip, after the people, and are not counted in N
+(`sharedCrewUi.waitingInvites`, which takes invites from any sharing path by
 their `transport`): every pending email invite the server returns, and an accepted email invite
-whose accepting login is no current member's, so a share that outlives its person's removal stays removable. A row that is
+whose accepting login is no current member's, so a share that outlives its person's removal stays removable. An SSM
+invite nobody has opened has "Revoke invite". A row that is
 only seen or named by the daemon is not a member: its invite is live at Tailscale and stays
 listed, revocable. The client never decides that a pending invite is superseded: `sync` deletes
-it, and one whose delete failed is still live, so it is listed and removable.
+it, and one whose delete failed is still live, so it is listed and removable. A
+Crew that cannot say who people are lists only the invites under the sources.
 
 Settings reports a failed capabilities read with an error notice and retry even
 when the unknown preview gate hides People. With cached preview capabilities,
-People owns that notice while open, keeping its drafts mounted. The network
-invite entry owns invite-status failures (including a successful response with a
-sync error); an open invite dialog owns the same notice instead, with retry and
-its draft retained. Failed invite reads never become an empty People list.
+People owns that notice while open, keeping its drafts mounted. The connection
+sources section owns invite-status failures, once for the page (including a
+successful response with a sync error); an open invite dialog owns the same notice
+instead, with retry and its draft retained. Failed invite reads never become an empty People list.
 Missing optional routes and initial owner-only refusals still hide invite controls.
 
 ### Who gets in
@@ -575,7 +679,9 @@ the access card or switch the preview; the mobile setup (`tailnet_mobile`, whose
 hands back a credential in the owner's own name) asks
 `is_host_owner_dashboard_request`; turning Remote Control off (`PUT
 /api/remote-control`, `REMOTE_ACCESS_WRITES`) refuses a teammate, since only the host
-machine can turn it back on and a teammate would shut every person out; and `PATCH
+machine can turn it back on and a teammate would shut every person out (the handler
+refuses the owner too on a relayed request, 403 `relay_remote_control_refused`, for
+the same reason); and `PATCH
 /api/config/kirocrew` refuses a teammate 403 `owner_only` on an admission key
 (`is_admission_config_key`: the `dashboard.shared_crew`, `dashboard.tailscale`,
 `instances` and `tunnel` subtrees, and any key segment starting `allow` or equal to
@@ -601,6 +707,39 @@ view is the machine owner's. A teammate's owner socket carries
 reads: the hub's fan-out, its awaited owner deliveries (`deliver_ws_owners`: question,
 change and guide cards), the connect snapshot, the browser-live snapshot and the
 subagent replay all send it every frame redacted in full while the switch is off.
+The same edges hand a teammate the plain copy of a chat the host could not start
+for want of an OS sandbox, whatever the switch reads: no backend
+(`SandboxUnavailableError`) or a launcher that failed as the agent started
+(`AcpSandboxInitFailed`). That row's text is the machine owner's runbook for the
+host (the probe's errno, the kernel sysctl, the OS family, the launcher's stderr,
+`kirocrew service install`, the owner's config key), so `_on_error`, the ACP error
+card and the background-start stop row type it: `meta.code` `host_sandbox_unavailable` with the
+failure time `meta.at` (and `meta.retryable` for a momentary refusal), and the
+content prefix `host_sandbox_unavailable: `, which the chat SSE stream carries
+since it sends no row meta. An error row a build without that typing stored is
+read as the same row when its content holds either raiser's fixed wording, "Sandbox backend unavailable" (every `SandboxUnavailableError`) or
+"sandbox failed to initialize, so the agent process could not start"
+(`AcpSandboxInitFailed`), wherever it sits: the whole row, behind the card's lead,
+or as the last error of the background-start stop notice. A transcript from before
+still reaches a teammate as the one line. `_on_error` looks for the refusal in the cause chain
+before its capability arms, so one wrapped in a `CapabilityError` or
+`CapabilityStartupError` is typed too. `dashboard.host_sandbox_refusal.for_non_owner` replaces
+such a row's content with one fixed line and drops its gateway-notice meta for
+every reader who is not the machine owner: on a non-owner socket (`for_socket`),
+the status stream (`for_reader`), the chat SSE stream (`SseEvents`) and every JSON
+buffered response body of a non-owner request (`redaction_audience_middleware`),
+whatever its content type: one JSON document or JSON lines (an archived transcript,
+`/api/session/archive/{name}`), and a body the handler gzipped
+(`conditional_json_response`), which is read decompressed and sent gzipped again
+with an `ETag` of the scrubbed body. The
+audience is the host-owner split above (`is_host_owner_dashboard_request`, and
+`redaction_audience.socket_reads_as_owner` for a socket), never the owner gate,
+which admits a teammate. The owner's socket, stream and reads keep the whole
+diagnostic, and the persisted row keeps it. A session export (`GET
+/api/chat/slots/{slot}/export`, either format) carries user and assistant turns
+only, so no reader's file holds the row. Session search (`_searchable_contents`) and the
+session-list preview (`last_message_info`, the `preview` of `GET /api/sessions?preview=1`)
+skip the row for every reader: neither string carries a row type to redact by.
 The machine owner is never a teammate, whichever path they came in on: the owner on
 a tailnet path carries a `tailscale_*` actor too, and keeps the Terminal.
 
@@ -940,17 +1079,32 @@ that id; when it names any local owner principal folded into the People row, it
 matches every local owner principal id represented by that row. Filters change
 visibility only; every session stays reachable with All.
 
-The browser shows All by default, Mine, each person seen and Unattributed, labels
-the verified viewer You, and remembers the choice per Crew in local storage keyed
-by the mode route's `crew_id` (`kc.shared-crew.creator-filter.<crew id>`). A
-personal Crew, one that cannot attribute, one with the preview off or one nobody
-else has joined hides the control and the bylines (`useSharedCrewListView`,
-`SharedCrewBylineContext`; see People and setup modes). A creator-filtered row
-matches its catalog key against the full local live-slot roster by normalized
-session identity, including slots outside the chat-only sidebar projection.
-A live Bot conversation opens its owning surface through `opensElsewhereOf`;
-a live chat switches with the actual slot key and passes that key to the host.
-Only a catalog row with no live match goes through `resumeFromHistory`.
+The dashboard sidebar does not call this route. Its creator filter is the
+**Started by** section of the session list's Sort & filter menu, one more
+client-side filter dimension beside tags and models (`chat-sidebar/creators.ts`,
+the `creators` dimension of `chat-sidebar/rows.ts`): it narrows the rows the
+list already holds, live and peer rows alike, from each row's own
+`attribution`, so closed sessions are reached through Older Sessions as before.
+The section lists You (the verified viewer), each person in People (named
+through `principalName`, so the owner reads `owner.owner_name`), anyone a row
+names that People does not, and Unattributed, each with its session count over
+every row; a long name or e-mail is cut with an ellipsis and shown in full on
+hover. Rows are checkboxes and ticked rows OR together. A row reads as the
+byline does: the viewer's creator id is You, a human creator is that person, a
+creator nobody can name with no trigger is Unattributed, a triggered session is
+no one's, and a row with no attribution (a peer row) is hidden while the filter
+narrows. You matches every id in the mode route's `viewer_ids`, so the
+owner's sessions under another local id are theirs too. While any row is ticked, a chip under the search box
+names the selection ("Started by You or Bob") and its line says how many
+sessions it keeps and how many it leaves out, counted over the rows every other
+filter keeps ("3 matching · 3 hidden by this filter"); its × clears the
+selection. The selection is remembered per Crew in local storage keyed by the
+mode route's `crew_id` (`kc.shared-crew.creator-filter.<crew id>`, a JSON array;
+the one key the older single-choice filter stored reads as a one-key
+selection); a stored person no longer listed is ignored rather than allowed to
+blank the list. A personal Crew, one that cannot attribute, one with the preview
+off or one nobody else has joined hides the section, the chip and the bylines
+(`useSharedCrewListView`, `SharedCrewBylineContext`; see People and setup modes).
 
 ### Audit
 
@@ -1524,9 +1678,24 @@ the viewer wrote carries no extra label and keeps the filled bubble; a message
 anyone else wrote, the session's creator included, is drawn in an outlined bubble
 (`OtherSenderBubble`) and carries the sender's name (`MessageByline`,
 `sharedCrewUi.bylineFor`), so a filled message without a name is always the
-reader's own. The name is shown once per run of one person's consecutive messages
+reader's own. The side follows the same rule, decided per viewer: only the
+viewer's own messages sit on the end side; another person's message sits on the
+start side with the agent's replies, keeping its outlined bubble and name so it
+does not read as the agent's, and its actions and timestamp go with it. The row
+marks itself `data-user-side="start"` and the transcript's row wrappers follow it
+(`has-[[data-user-side=start]]:items-start`, in `ChatPage`'s transcript and the
+SDK `ChatMessageList` that split panes, embeds and the crew window draw
+through). The sides are logical, so a right-to-left locale mirrors them. The name
+is shown once per run of one person's consecutive messages
 (`sharedCrewUi.continuesAuthorRun`): a different author, a steer, or any drawn row
-between them, such as an agent reply, starts a new run. Until the viewer read lands, the session's recorded creator stands in
+between them, such as an agent reply, starts a new run. A queued send reaches open
+tabs only as the drain's `queue_pop` frame, which the client rebuilds the row
+from, so that frame carries the entry's server-stamped author too
+(`chat_turn.queue_drain`); without it a teammate's queued message showed no name
+until a reload. A send steered into a running turn carries the author the same way:
+on its row, on its `steer_push` frame and on the entry a requeue drains
+(`chat_delivery.steer_into_running_turn`'s `author`, set by `chat_send` for a
+person's send). Until the viewer read lands, the session's recorded creator stands in
 for the viewer (`sharedCrewUi.bylineSelfId`); with neither known nothing is
 labelled. A single-operator transcript is unchanged, and a personal Crew, one with
 the preview off or one nobody else has joined shows no bylines at all. An Unknown author reads as Unknown.
@@ -1705,7 +1874,8 @@ that never learned a revision sends none and is not compared.
 | `GET /api/shared-crew/capabilities` | `Capabilities` |
 | `GET /api/auth/me` | gains `principal` (`Principal.to_public_dict`) |
 | `GET /api/shared-crew/sessions?creator=&q=&cursor=&limit=` | `SessionPage`; each item carries `attribution` |
-| `GET /api/shared-crew/people` | observed collaborators with usage (`is_owner` per row, `tailscale_share` rows), and the directory state |
+| `GET /api/shared-crew/people` | observed collaborators with usage (`is_owner` per row, `tailscale_share` rows), and the directory state. With the preview off it reads no session catalogue and no Tailscale daemon, so it lists no session creators and no sharees, only people this process saw; the dashboard does not request it then |
+| `GET /api/shared-crew/mode` | the mode body (§2 People and setup modes), with `viewer_via` and `owner_label`. With the preview off it reads no session catalogue, so no session creator makes the mode `network`; it is `network` then only through a set-up sharing path, a relay team Crew or another person seen on a request, which is what `sharedCrewInUse` reads from the cache the chat strip fills (the strip reads the mode with the preview off, once per chat) |
 | `GET` / `PUT /api/shared-crew/preview` `{enabled}` | owner only, registered with the preview off: `{enabled, active, env_override, restart_required}` (Release gate) |
 | `GET /api/shared-crew/capacity` | `CapacityResponse` for the viewer |
 | `GET /api/shared-crew/work?session_key=` | public `AcceptedWork` list |
@@ -1760,28 +1930,30 @@ authoritative. Send-state snapshots are not cancelled by send-state frames: a se
 already waiting on the snapshot keeps its original revision, while revision-aware
 structural sharing retains the newest value in the query cache. Presence and work
 frames invalidate People, and sidebar slot, history and catalog changes invalidate
-People and every creator-filter page, including inactive cached queries.
+People.
 The client never resubmits a send on its own.
 
 ## 7. UI states
 
 The sharing surfaces require the Feature preview on the gateway (the variable or the owner's stored choice):
-the Settings > People tab (with its share card and invite dialog) and the
+the Settings > People tab (with its connection sources and invite dialog) and the
 direct tailnet link in the phone dialog render only while
 `GET /api/shared-crew/capabilities` reports `shared_crew_preview: true`
 (`sharedCrewUi.sharedCrewPreviewOn`). A missing field, an older gateway or a
-failed read keeps them hidden, and no browser setting turns them on.
+failed read keeps them hidden, and no browser setting turns them on. The sidebar
+identity row follows the team-attribution rule of §2 People and setup modes; it
+owns no read failure (the read notices at the top of the session list do).
 
 Shared Crew query failures render through `ErrorNotice`. A failed refresh keeps
 cached content mounted, including invite emails, name, picture and API-key drafts,
-creator filters, queued sends and collaboration state. An
+the "Started by" selection, queued sends and collaboration state. An
 initial failure without data shows the error alone; optional routes returning
 404/null still mean unavailable, not failed. An unreadable mode remains an error.
 
 People and the invite dialog offer retry beside cached form content and
 omit the agent hand-off to protect its drafts. Initial failures and read-only
 surfaces offer the hand-off. The phone dialog owns its capability-read failure;
-the creator-filter bar owns capabilities, mode and People failures for the sidebar.
+the session list's read notices (`SharedCrewReadNotices`) own capabilities, mode and People failures for the sidebar.
 The open chat's collaboration strip also owns those reads for message bylines and
 the viewer/typing-lease reads for the composer, including when the sidebar is
 closed, so notices never repeat per message. The one queued-send label owns work
@@ -1809,6 +1981,23 @@ tooltip names the personal or Crew-wide limit. Cancel sends `POST
 /api/shared-crew/work/{id}/cancel` at the shown revision once; a stale click adopts
 the current record. A busy session's queued sends stay the queue stack's rows.
 
+A chat the Crew's host cannot start because it has no OS sandbox
+(`meta.code: host_sandbox_unavailable`) renders for the machine owner as any other
+error row: the full diagnostic, with Resume. For anyone else
+(`useViewerIsNotOwner`, the host-owner split of §2, never the owner gate) the row
+is one line, "This Crew's computer can't start chats right now. Ask <owner> to
+check it.", where <owner> is "<name> (Crew owner)" with the mode route's
+`owner_label`, or "the Crew's owner" when the route is unavailable, and a Copy
+details button that copies only the code and the failure time
+(`host_sandbox_unavailable <ISO time>`). The row offers Resume to a teammate only
+when the refusal was momentary (`meta.retryable`); otherwise the next start meets
+the same host and fails the same way. A momentary row's line says so instead of
+naming whom to ask: "This Crew couldn't start this chat just now. Press Resume to
+try again." For the same reason the composer withholds
+its own Resume while the newest error row is a non-retryable
+`host_sandbox_unavailable` one (`transcriptRenderers.newestErrorOwnsRecovery`).
+The sidebar's interrupted-session count is unchanged.
+
 | State | Shown as | Draft |
 |---|---|---|
 | `submitted` | the sent bubble | sent |
@@ -1826,10 +2015,11 @@ A memory change in a shared Crew shows in its session as one info notice row
 ("Bob changed a Crew preference: Always reply in English"). The frame is kept in
 the client cache, newest first, at most 20 (`sharedCrewKeys.memoryChanges`).
 
-People names everyone by their Tailscale identity under Seen in this Crew and
-has no approval list and no Approve or Dismiss control: Tailscale access
-rules decide who gets in. The owner-only invite flow (`InviteEntry` and its dialog
-in `TailscaleInvites.tsx`, theme tokens, rows wrap at narrow widths):
+People names everyone by the identity their source verified, each row with that
+source's chip (§2 People and setup modes), and has no approval list and no Approve
+or Dismiss control: each source decides who gets in. The owner-only invite flow
+(`InviteEntry` on each source card and its dialog in `TailscaleInvites.tsx`, theme
+tokens, rows wrap at narrow widths):
 
 | State | Shown as |
 |---|---|
@@ -1837,7 +2027,36 @@ in `TailscaleInvites.tsx`, theme tokens, rows wrap at narrow widths):
 | the first-share acknowledgement fails | the invite still runs; its row shows the server's `first_share_ack_required` refusal |
 | the direct link's Copy is refused by the browser | an inline `ErrorNotice` with the agent hand-off; the link stays selectable in its field |
 | Remove key | a confirm, then `DELETE .../credential` with the irreversible-confirm header |
-| teammate or a gateway without the routes | nothing |
+| teammate | the card's invite button disabled, with a lock and "Only the owner of this Crew can invite people." |
+| a gateway without the routes | nothing |
+
+### Team Crews in the Crew switcher
+
+The Crew switcher's relay group is headed "Remote Crews"
+(`components.relayCrews.group_team_crews`); the Notifications page names the
+relay channel (`system.relay`) with the same string. Each row's second line reads
+"<type> · <status>": a `TEAM` Crew is "Shared" with a group icon (lucide `Users`),
+a `PERSONAL` Crew is "Private" with a lock icon (lucide `Lock`), and any other type
+shows its raw value with no icon. The "Shared with me" section on Remote Crew reads the
+same two type strings. The signed-in account line ("Signed in with ...") sits
+under the heading. Each online row's one visible action is a small
+Connect (accessible name "Connect <name>"); an offline row shows none. Connect
+hands only the endpoint ID on. In the desktop app the shell (`relayCrewAPI.openPane`)
+shows the Crew as a tab in the main window, under the local top bar; another
+dashboard window hands the open to the main window, and a shell without the pane
+calls opens a window of its own. In a browser the dashboard opens a new tab and
+the gateway (`POST /api/relay-viewer/browser-open`, owner-only, direct local
+request only) mints the token, keeps it, and relays the Crew on an origin of its
+own per open, `http://kcr-<sid>.localhost:<port>` (`relay_viewer/browser_origin.py`).
+Each relayed page gets one gateway-served same-origin script (`/.kcr/watch.js`)
+that holds `/.kcr/alive` open; the gateway answers it the moment the open is
+dropped (sign-out, sign-in, account change), or the sign-in it compares on each
+hold has changed, and the tab then loads the closed page in place of the old
+one. The dashboard cannot close the tab itself: it cut the tab's `opener`.
+The gateway's shared relay session keeps no cookie jar, so no upstream cookie
+reaches another Crew, app or account.
+Only a click connects one: nothing connects when the list loads, when the menu
+opens or when the dashboard reloads.
 
 ## 8. Capabilities
 
@@ -1884,44 +2103,43 @@ A source answers from state it already holds; it does no I/O on the request path
   `unknown`), from `host_power.note_host`, which `host_power.probe_after_start`
   runs in a background task after the listener is up (see Who gets in, Keep awake).
 
-In network mode the People page (`PeopleCrew.tsx`) reads, top to bottom:
+The People page (`PeoplePanel.tsx`) reads, top to bottom, in every mode but `invalid`:
 
-1. The share card, one bordered card, labels and states only. A green dot and "Shared
-   on your tailnet" while `tailnet_direct.state` is `active`, else the Tailscale setup
-   path's status badge; it reports the gateway's own listener and never claims the
-   viewer can reach it. On the right, the faces of the people connected now and "N
-   here now", from presence; the viewer counts as here, since they are on this page.
-   Below, for the owner only (the invite read answered), the one "Invite…" button and
-   "Manage people in Tailscale" (`https://login.tailscale.com/admin/users`, a fixed
-   URL, new tab, `noopener noreferrer`): removing a person is removing them in
-   Tailscale. Then the share link with "Copy Tailscale invite" for the owner and "Copy
-   link" for a teammate.
-2. "People · N", N being the rows listed (each person once). Under the heading, one plain line
+1. "Connection sources" (`PeopleSources.tsx`, §2 People and setup modes): one card
+   per source, labels and states only. The Tailscale card's body says "Reachable at
+   <host>" from the direct link while `tailnet_direct.state` is `active`; it reports
+   the gateway's own listener and never claims the viewer can reach it. Below, for
+   the owner only (the invite read answered), "Invite…" and "Manage people in
+   Tailscale" (`https://login.tailscale.com/admin/users`, a fixed URL, new tab,
+   `noopener noreferrer`). Then the share link with "Copy Tailscale invite" for the
+   owner and "Copy link" for a teammate. The AWS SSM card has "Make invite link".
+2. "People · N" (`PeopleCrew.tsx`), N being the distinct people listed. Under the
+   heading, the line that one person can appear once per source, then one plain line
    each when Tailscale was not running at start (`daemon_not_found`) and when this Crew cannot
    report work per person (`usage_available` false and `usage_off` false); no tip icon. Each row:
-   picture, name (with You), the login and one activity (typing in a session from
+   picture, name (with You), its source chip, the login and one activity (typing in a session from
    presence, else the running count, else here now or last seen), a green dot while
    connected (always on the viewer's own row), and ✎ when the row has a
    `tailscale_user_id`. A local operator row is the person who runs this Crew and
    carries this machine's own Tailscale user id (`access_set.owner_user_id`) once
    the daemon reported it, so everyone, the owner included, can rename themselves. Invites nobody accepted
-   yet follow under "Invites · N", their text faded and their buttons not, offering
-   Resend (pending email invites) and Remove. The heading names the object, never a state; each row
-   carries only its own tag, "Sent" or "Accepted, not connected yet", so no tag contradicts the heading. A link row dates itself "Created", an email invite "Sent". Remove on a link row says
+   yet follow as rows of the same list with their source chip, their text faded and their buttons not, offering
+   Resend (pending email invites) and Remove ("Revoke invite" on an SSM invite). Each row
+   carries only its own tag, "Sent" or "Accepted, not connected yet". A link row dates itself "Created", an email invite "Sent". Remove on a link row says
    everyone who joined with the link loses access. N counts people, not those rows. A current member's invite is not a second row (matched by
-   email, case-insensitively). To the owner, a member or invited person other than the owner and the
-   viewer carries one verb, "Remove": the revoke route (single-use invite) or a link, "Remove in Tailscale", to the Tailscale
-   users page; the confirm follows the row: "{name} loses access." on a connected person, "{name} loses access through this invite." on an unaccepted invite, "{name} can't connect." on an accepted share not connected yet, and the link sentence on a link; none promises anything about running work; when they came in under another address than the one invited, the
+   email, case-insensitively). To the owner, a person other than the owner and the
+   viewer carries the one control of §2 (Remove, "Manage in Tailscale", or none); a
+   person your organization manages reads "Managed by admin" for everyone; the confirm follows the row: "{name} loses access." on a connected person, "{name} loses access through this invite." on an unaccepted invite, "{name} can't connect." on an accepted share not connected yet, and the link sentence on a link; none promises anything about running work; when they came in under another address than the one invited, the
    row says "Invited as <email>, accepted with another account."
-3. Remote Control with an ⓘ and its "Set up" button.
+3. Advanced, collapsed, for the owner.
 
-"Invite…" opens the one invite dialog with the invite form (email or link, name,
-picture); no other control on the page holds the form or makes an invite. Without a
+Each source card's invite button opens the one invite dialog on that source's pane
+with its form; no other control on the page holds the form or makes an invite. Without a
 connected Tailscale API key the dialog asks for the key first, beside the by-hand
 share path. Links the owner holds (a reusable link, or a single-use link nobody has
 used) are listed in the dialog, not in People. A sharing path adds its own pane to the
-dialog and its own `transport` to its invite rows. In `personal` mode, which has no People list, the email-invite rows follow the entry (`PersonalWaiting`). The People page has no Kiro login row and no Assigned users section; the
-capability code for those is unchanged. An accepted invite is not listed once its
+dialog and its own `transport` to its invite rows. A Crew that cannot say who people are has no People list, so the invite rows follow the sources (`PersonalWaiting`). The People page has no Assigned users section; the
+capability code for it is unchanged. An accepted invite is not listed once its
 person is a current member.
 
 ✎ opens a name-and-picture dialog. Any admitted person may change any person's

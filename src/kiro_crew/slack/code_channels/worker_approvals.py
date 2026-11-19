@@ -57,24 +57,24 @@ ACTION_IDS = frozenset({APPROVE_ACTION_ID, REJECT_ACTION_ID, TRUST_ACTION_ID})
 AUDIT_CALLER = "slack-code-channels"
 OPERATION = "slack.code_channel.worker_approval"
 
-HEADER = "*A helper session this channel started ({title})* wants to run:"
+HEADER = "🔐 *A helper session this channel started ({title})* wants to run:"
 FALLBACK = "A helper session this channel started ({title}) is waiting for a tool approval"
-NOT_LIVE_TEXT = "Blocked: That approval isn't waiting any more, or isn't this channel's."
-APPROVED_BY = "Approved by <@{user}>."
-REJECTED_BY = "Rejected by <@{user}>."
-TRUSTED_BY = "Approved, and this channel is now on Trust (<@{user}>)."
+NOT_LIVE_TEXT = "⛔ That approval isn't waiting any more, or isn't this channel's."
+APPROVED_BY = "✅ Approved by <@{user}>."
+REJECTED_BY = "❌ Rejected by <@{user}>."
+TRUSTED_BY = "🤝 Approved, and this channel is now on Trust (<@{user}>)."
 ANSWERED_ELSEWHERE = {
-    "approved": "Approved in the dashboard.",
-    "rejected": "Declined in the dashboard.",
-    "timeout": "No answer in time, so it was declined.",
-    "ended": "The worker stopped before anyone answered.",
+    "approved": "✅ Approved in the dashboard.",
+    "rejected": "❌ Declined in the dashboard.",
+    "timeout": "⌛ No answer in time, so it was declined.",
+    "ended": "⏹ The worker stopped before anyone answered.",
 }
 #: A claimed card's ending when nothing says who answered it (the dashboard, a
 #: Stop, a timeout): what happened, never a guess at where.
 CLAIMED_ENDED = {
-    "approved": "Approved.",
-    "rejected": "Declined.",
-    "ended": "Ended before anyone answered.",
+    "approved": "✅ Approved.",
+    "rejected": "❌ Declined.",
+    "ended": "⏹ Ended before anyone answered.",
 }
 _TITLE_LIMIT = 120
 

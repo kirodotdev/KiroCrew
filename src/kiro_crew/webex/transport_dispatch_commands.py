@@ -109,7 +109,7 @@ async def _handle_model(self: WebexDispatcher, inbound: "WebexInbound") -> None:
     if not numeric or not 1 <= int(arg) <= len(choices):
         await self._reply(
             inbound,
-            f"Error: Pick a number between 1 and {len(choices)} — send `/model` for the list.",
+            f"❌ Pick a number between 1 and {len(choices)} — send `/model` for the list.",
         )
         return
     model_id, label = choices[int(arg) - 1]
@@ -146,9 +146,9 @@ async def _apply_model(
     # CREATION: ``get_or_create`` returns a reused session from its fast path
     # before it consults ``model=``. With nothing live the next message starts
     # the session, so it genuinely lands then.
-    deferred = f"Model set to **{label}** — it applies to your next message."
+    deferred = f"✅ Model set to **{label}** — it applies to your next message."
     next_new = (
-        f"Model set to **{label}** — this conversation keeps its current "
+        f"✅ Model set to **{label}** — this conversation keeps its current "
         f"model; the switch applies to your next one (`/new`)."
     )
     # "Auto" has no ACP id meaning "let the backend choose", so it can only be
@@ -167,7 +167,7 @@ async def _apply_model(
         if not self.sessions.has_session(session_key) or self.sessions.is_retiring(session_key):
             return deferred
         return (
-            f"Model set to **{label}**, but a reply is still running — this "
+            f"✅ Model set to **{label}**, but a reply is still running — this "
             f"conversation keeps its current model; the switch applies to your "
             f"next one (`/new`)."
         )
@@ -187,13 +187,13 @@ async def _apply_model(
         # The stored preference still stands, so the next session gets it —
         # but do not claim the running conversation switched when it did not.
         return (
-            f"Warning: Couldn't switch this conversation to **{label}** "
+            f"⚠️ Couldn't switch this conversation to **{label}** "
             f"({type(exc).__name__}) — it applies to your next conversation "
             f"(`/new`)."
         )
     finally:
         self.sessions.release(session_key)
-    return f"Now using **{label}**."
+    return f"✅ Now using **{label}**."
 
 
 def _model_label(choices: list[tuple[str, str]], model_id: str) -> str:
@@ -238,7 +238,7 @@ async def _handle_sessions(self: WebexDispatcher, inbound: "WebexInbound") -> No
     transports that currently declare it.
     """
     if self.conv_log is None:
-        await self._reply(inbound, "Note: Conversation history is not available.")
+        await self._reply(inbound, "ℹ️ Conversation history is not available.")
         return
     route = _route_of(inbound)
     stem = self._bucket_stem(route)
@@ -253,7 +253,7 @@ async def _handle_sessions(self: WebexDispatcher, inbound: "WebexInbound") -> No
         ]
     except Exception:
         logger.warning("Webex /sessions: listing failed", exc_info=True)
-        await self._reply(inbound, "Warning: Couldn't read the conversation list.")
+        await self._reply(inbound, "⚠️ Couldn't read the conversation list.")
         return
     sel().log_api_access(
         caller=f"webex:{inbound.person_email}",
@@ -263,7 +263,7 @@ async def _handle_sessions(self: WebexDispatcher, inbound: "WebexInbound") -> No
         resources=f"bucket={stem} rows={len(rows)}",
     )
     if not rows:
-        await self._reply(inbound, "Note: No earlier conversations here yet.")
+        await self._reply(inbound, "ℹ️ No earlier conversations here yet.")
         return
     current = transcript_stem(self._session_key(route))
     lines = ["**This conversation's history**", ""]
@@ -302,14 +302,14 @@ async def _handle_yolo(self: WebexDispatcher, inbound: "WebexInbound") -> None:
         outcome = "allowed"
         if action == "on":
             if so.is_active():
-                reply = f"YOLO is already ON ({describe_grant_lifetime()})."
+                reply = f"🟢 YOLO is already ON ({describe_grant_lifetime()})."
             elif (await asyncio.to_thread(so.activate, "webex")).active:
                 reply = (
-                    f"YOLO ON ({describe_grant_lifetime()}) — every tool "
+                    f"🟢 YOLO ON ({describe_grant_lifetime()}) — every tool "
                     f"auto-approves. Denied-by-policy tools are still blocked."
                 )
             else:
-                reply = "Error: Couldn't turn YOLO on (audit system unavailable)."
+                reply = "❌ Couldn't turn YOLO on (audit system unavailable)."
                 outcome = "denied"
         elif action == "off":
             # Unconditional: deactivate() also zeroes the deadline of a grant
@@ -317,13 +317,13 @@ async def _handle_yolo(self: WebexDispatcher, inbound: "WebexInbound") -> None:
             # later "/yolo renew" cannot resurrect it, and records the
             # operator's decision either way.
             await asyncio.to_thread(so.deactivate, "webex")
-            reply = "YOLO OFF — tools ask for approval again."
+            reply = "🔴 YOLO OFF — tools ask for approval again."
         else:
             renewed = (await asyncio.to_thread(so.renew, "webex")).renewed
             reply = (
-                f"YOLO renewed ({describe_grant_lifetime()})."
+                f"🟢 YOLO renewed ({describe_grant_lifetime()})."
                 if renewed
-                else "YOLO is not active — use `/yolo on` first."
+                else "🔴 YOLO is not active — use `/yolo on` first."
             )
         sel().log_api_access(
             caller=f"webex:{inbound.person_email}",
@@ -335,7 +335,7 @@ async def _handle_yolo(self: WebexDispatcher, inbound: "WebexInbound") -> None:
         await self._reply(inbound, reply)
         return
 
-    status = f"ON ({describe_grant_lifetime()})" if so.is_active() else "OFF"
+    status = f"ON 🟢 ({describe_grant_lifetime()})" if so.is_active() else "OFF 🔴"
     await self._reply(
         inbound,
         f"YOLO is {status}.\nUsage: `/yolo on | off | renew`",
@@ -373,7 +373,7 @@ async def _handle_dashboard(self: WebexDispatcher, inbound: "WebexInbound") -> N
     if inbound.room_type != ROOM_DIRECT:
         await self._reply(
             inbound,
-            "Dashboard links are only sent in a direct message.",
+            "🔒 Dashboard links are only sent in a direct message.",
         )
         return
     arg = parse_command_argument(inbound.text).lower()
@@ -410,7 +410,7 @@ async def _handle_dashboard(self: WebexDispatcher, inbound: "WebexInbound") -> N
         # that cannot log in. Nothing here passed through the model.
         await self._reply(
             inbound,
-            f"Dashboard link (valid {_format_ttl(ttl_secs)}):\n" f"{origin}/?token={token}",
+            f"🔗 Dashboard link (valid {_format_ttl(ttl_secs)}):\n" f"{origin}/?token={token}",
             self_minted=True,
         )
     except Exception as exc:
@@ -429,7 +429,7 @@ async def _handle_dashboard(self: WebexDispatcher, inbound: "WebexInbound") -> N
             pass
         await self._reply(
             inbound,
-            f"Warning: Could not generate dashboard link: {type(exc).__name__}",
+            f"⚠️ Could not generate dashboard link: {type(exc).__name__}",
         )
 
 

@@ -273,7 +273,7 @@ async def _connect_slack(self: GatewayOrchestrator) -> bool:
         return False
     try:
         await self._socket_client.connect()
-        print("Kiro Crew gateway connected to Slack")
+        print("👻 Kiro Crew gateway connected to Slack")
         return True
     except Exception as exc:
         # Keep a short reason for status surfaces (settings badge). Slack
@@ -295,7 +295,7 @@ async def _connect_slack(self: GatewayOrchestrator) -> bool:
             exc_info=True,
         )
         print(
-            "Warning: Slack connect failed — running dashboard-only "
+            "⚠️  Slack connect failed — running dashboard-only "
             "(check network/proxy; details in gateway.log)"
         )
         return False
@@ -728,10 +728,9 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
 
         await asyncio.to_thread(slack_enterprise.reload_allowed_team_ids)
     if "slack.command" in slack_paths:
-        logger.warning(
-            "slack.command changed in config; the slash command is registered in "
-            "the Slack app manifest, so this takes effect on the next gateway start"
-        )
+        # The name help text shows and the router answers beside the manifest
+        # names; Slack's routing is the app manifest's, so nothing reconnects.
+        self.slack_command = new.slack.command
 
 
 def _on_default_agent_config_change(self: GatewayOrchestrator, change: ConfigChange) -> None:
@@ -851,9 +850,13 @@ async def _replay_spooled_inbound(self: GatewayOrchestrator, *, spool: Path | No
         # local prevents every other shared send ladder from discovering a
         # Slack transport it was never designed to route through.
         if self.slack is not None:
+            from kiro_crew.slack import shared_access
+
+            # A shared user (slack.shared_access) the owner still lists is owed the
+            # notice for their own refused message, in the conversation it came from.
             transports["slack"] = SlackTransport(
                 self.slack,
-                allowed_users=self._allowed_users,
+                allowed_users=set(self._allowed_users) | set(shared_access.listed_ids(self._cfg)),
             )
         await inbound_spool.replay_spooled(transports=transports, path=spool)
     except asyncio.CancelledError:

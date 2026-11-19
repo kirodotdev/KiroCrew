@@ -1683,8 +1683,24 @@ until a result prints it. Native
 set is fed from every prompt and steer text the transport sends (`note_prompt`),
 every member's arguments and result (`printed(call_id, output)` for each update
 that carries output, `settled` for the terminal one, which alone ends the call)
-and the model's streamed text (`note_text`); any of these texts longer than
-256 KiB, a call's arguments included, marks the set incomplete; arguments, results and text join the set when their
+and the model's streamed text (`note_text`). A non-terminal update's text is
+cumulative, so `printed` reads only the part after what it already read, with a
+64-character overlap (and the two characters before it, a separator's or an
+escape's context) so a token split there is read whole. Times are read from
+there, a `:` in front refusing one at its first character, whose left neighbour
+the cut lost, since a time can be glued to a word (`..._at_12:34:56`). Word
+tokens are read from past a word cut at the overlap's front, so its tail is not
+read as a token: a word running from before the overlap past it is longer than
+any token on every read. Every other detector matches inside a window no longer
+than the overlap and its two characters of context; the one
+that does not, the JSON `"pr"` field parse (`json_pr_numbers`), runs on the whole
+text on every update, gated as `tokens_of` gates it, and never on the cut, so a
+`"pr"` nested in a JSON string is learned even when the terminal update carries
+no output. `printed` reads the whole text when the update does not continue the
+text read (a delta, a rewritten result), which a hash of the read prefix
+decides, and the terminal update is always read whole. Any of these texts longer than
+256 KiB, a call's arguments included, marks the set incomplete, a result by its
+full length whatever part of it is read; arguments, results and text join the set when their
 batch ends, so a value the model writes while composing a batch does not count
 for it. A member's arguments are read from the frame's raw arguments
 (`raw_tool_params`), not from `tool_input`, which can be a rendered edit diff
@@ -2910,7 +2926,9 @@ ends (`runtime_session_load._wait_managed_mcp`, for `session/new` and
 `kirocrew-lite` mounts nothing. A server in its block was written into the spec
 by another tool, and a background turn on it is closed right after such a start
 (`llm_helpers_parts/background_turns.py`), so its start does not wait for that
-server first.
+server first. On KAS, a block whose only change is an injection an edition-registered
+filter removes exactly is sent as the template instead
+(`service_agents.lite_view_without_registered_injection`), and the turn runs.
 
 `person_waits` is the one predicate, and WHO IS WAITING decides it, not the
 queue the start waited in. A person is waiting when the start claimed
@@ -3491,6 +3509,8 @@ A remote OAuth MCP server that KAS cannot reach without a token reports a `faile
 
 The session handle tracks, from its own status snapshots, which servers need a sign-in: added on `failedAuthorization`, removed once the server connects, is disabled, or leaves the snapshot. A `failed` entry without `failedAuthorization` is added too when its `errorMessage` says the OAuth server refused the saved sign-in (`acp/mcp_reattempt.is_refused_sign_in`). KAS deletes a server's saved tokens, and reports `failedAuthorization`, only when the token endpoint refuses a refresh with `invalid_grant`, `invalid_client` or `unauthorized_client`. Any other refusal keeps the tokens and reports one of two texts, read against a KAS 3.2.1 engine: `Sign-in for <name> could not be refreshed (token endpoint answered <4xx>)` when the answer carries no OAuth error code, and the bare code (`invalid_token`, `unknown_error`) when it carries one. A 408, 425, 429, any 5xx, `server_error`, `temporarily_unavailable` and an unreachable token endpoint stay ordinary failures and are not added: a later attempt may succeed with the same tokens, and a sign-in reset deletes them. The session MCP report reads the same entry the same way (`acp/mcp_report_bound.read_status_snapshot`) and lists the server under `awaiting_auth`, not `failed`. shortcut: a refusal whose answer also carries an `error_description` was not captured, so its text is not read here; add its shape when one is reported. A timed-out attempt reports `failedAuthorization: false` with a timeout error, so the server stays tracked. The tracker reads at most the report's `STATUS_CAP` entries, as far into a snapshot as the report itself reads, and skips a name over `NAME_CAP`.
 
+KAS can also report a remote OAuth server it holds no grant for with the error of its legacy SSE fallback (`SSE error: Non-200 status code (405)`, #34673) and no `failedAuthorization`. A `failed` entry without `failedAuthorization` whose error is that fallback's non-200 answer, with any status code (`mcp_reattempt.is_sse_fallback_failure`), is therefore checked once per server per session, in the background and only on a host that runs sign-ins (`session_handle_mcp._probe_mcp_sign_in`, at most `BUCKET_CAP` servers), with the MCP Servers page's tokenless `initialize` probe: `mcp_discovery.probe_server` on the `list_servers` row of that name, so its SSRF vet, consent gate, header handling, probe-cache write and grant-presence audit apply. Any other failure, a credential failure included (the re-attempt below), is never probed. Only a name the session declared with a `url` (the spec's `mcpServers` or the wire array, the wire entry winning: `mcp_network_urls`, which leaves out a name declared as a local command and keeps a url entry with a placeholder `command`) is probed, and only when the `list_servers` row of that name has that url. A name KAS mounts from an `mcp.json` file alone, under the spec's opt-in, is never probed and reads as failed, as before: `list_servers` ranks Crew's own `mcp.json` first and does not read the checkout's `.kiro/settings/mcp.json`, so its row of that name need not be the server KAS mounts. A name with no remote row is never probed, so no local server is spawned; nor is a row with headers (KAS withholds them, so it reaches that server through Crew's local bridge or without them, never as the probe asks), or a Crew-owned Connection this session runs as Crew's bridge (`crew_oauth_proxy.is_connection_server`), which the engine's sign-in cannot serve. A `needs_auth` answer (a 401, or a 403 carrying a `WWW-Authenticate` header, with no static `Authorization` header) for a url the KAS grant vault holds no grant for (`mcp_grant_kas.kas_grant_observed`, read for that answer only) tracks the server like a `failedAuthorization` entry while its entries read `failed`, and the session MCP report lists it under `awaiting_auth` (`McpSessionReport.set_unauthorized`), announcing that move through the report's `on_change` when the answer lands, so a dashboard following the session shows it waiting for sign-in without another frame. The answer usually lands after the turn-start match, so it is matched against the turn's held ask when it lands and offered at once while a turn is reading. A tokenless probe answers the same with or without a grant, so the answer is spent once the server connects or is disabled this session (at most `BUCKET_CAP` names): a probe in flight is cancelled, one that lands later is ignored, none starts again, and its later failure reads as it is. Any other answer leaves the failure as it reads. The fallback itself, and which error KAS reports after it, are the engine's.
+
 Needing a sign-in never starts one. An unsigned KAS server's tools are invisible to the model (exposure needs the catalog of a `connected` entry, above), so the agent can never call one, and a tool call cannot be the trigger. The trigger is the user's own message: before each user turn, the dashboard runner hands what the person asked (`user_typed_message`: captured before `@prompt`/`$skill` expansion, with no cancelled-turn preamble, sub-agent failure text or app context, any of which could name a server the message did not; only a turn with `_directive_user_origin` from a person's dashboard/channel send or human app-chat hands text over; a generated app dispatch, an OpenAI-compatible request (its prompt is the flattened conversation), a Spec Builder decision answer (composed from the agent's title and options), or a Regenerate replay of a stored row, all `_message_is_typed=False`, a turn restored from the on-disk queue (`_turn_provenance_restored`), synthetic turn, self-wake, slash command, `/prompts get` re-entry, or turn with a `_turn_actor` hands nothing) to the provider's declared `LLMProvider.note_user_message` (a no-op by default; the direct kiro-cli client has no trigger). `AcpProvider.note_user_message` holds the text only until that provider's next `stream()` or `stream_command()`, which takes and clears it at entry before anything can fail; `stream_command()` discards it. For `stream()`, the text then travels as an argument into that one attempt's handle `prompt`/`_run_turn`, after any pending MCP re-injection, so it never outlives the attempt or reaches a later automated turn. After the pre-turn drain, `_run_turn` calls `want_mcp_sign_in_named` with that attempt's text to mark each tracked server it names as wanted. The handle holds the text for that one turn and matches it on each mid-turn status snapshot, each server at most once, so a server whose `failedAuthorization` status was still queued or arrives mid-turn is found; the turn's end clears it, so a later cron or sub-agent turn never matches an old message. A server is named by its configured name or an obvious alias (`mcp_server_aliases`: the words split at separators, the part after a `namespace:` prefix (a one-word part only when it repeats the namespace), a Kiro Power's name without its `power-` prefix with repeated words collapsed (`power-figma-figma` gives `figma`, but a multi-word name's last word alone, such as `search` from `power-aws-docs-search`, never counts), each without a trailing `mcp` or `server` word, repeated words collapsed, derived aliases under three characters or only `mcp`/`server` dropped, while the configured name itself always counts, so a server named `gh` or `mcp` can still be named), or by a registry provider's `sign_in_words` when its slug is the server name (`atlassian`: `jira`, `confluence`), case-insensitive and as whole words only. So a chat that never names an unsigned server shows no Authorize card for it, at session start or later. An accepted start removes the server from the wanted set, so one ask starts at most one sign-in. A message that names a server whose sign-in this session already holds in the runtime asks for nothing, which keeps one live card per server. Once an attempt ends (signed in, timed out, or left by the user), only a later message naming the server offers it again; unrelated messages and status snapshots never do.
 
 A task that needs an unsigned server without naming it ("check my design files") gets no card: the user names the server to be offered its sign-in. The chat still says so once: when the session MCP report is published with a server under `awaiting_auth` that has no open sign-in card in the chat, the dashboard adds one `notice` row (`meta.kind` `mcp_sign_in_needed`, `chat_turn/mcp_session._notice_mcp_sign_in_needed`) naming up to five such servers (`meta.servers`, the rest counted in `meta.more`), and an example message that signs in from the chat; the chat page draws that sentence in the reader's language from the meta. A card counts as open only while it has its link, none of `completed`, `failed`, `superseded` or `expired` is set (a finished card keeps its `oauth_url`), and the read gate `_expire_dead_child_oauth_meta` still judges it live against `_live_child_instance`: a card whose child is gone (a gateway restart, an exited child) is expired only at read time and never saved so. A server with a rejected-link banner (`meta.rejected_url`) counts as covered too: that banner already says why its sign-in did not start. The row starts no sign-in. It is shown once per chat per gateway run (`_ChatSlot._mcp_sign_in_notice_shown`, in memory), and only on a backend where naming a server starts its sign-in: the chat provider's backend is in `ACP_BACKENDS_OPEN_EXTERNAL_URL`, the same set `begin_mcp_sign_in` checks first. kiro-cli is not in it, so a kiro-cli chat never gets this row. A start the runtime refuses (its one slot is held) leaves the server wanted for the next offer point, in name order. The wanted set holds at most `BUCKET_CAP` names, and a refused name is logged. With `agent.kas_persist_mcp_sign_in` on, a sign-in from Settings > MCP or a Connections card made while chats run on KAS runs on a KAS engine process of its own (`connections/mint_kas.py`): the same `resetServer` and `openExternalUrl` exchange, with the engine's tokens kept in the `kas/mcp-grants` vault below, so every later KAS chat finds them at its first `_kiro/secret/get` without naming the server ([connections](connections.md#while-chats-run-on-kas-the-sign-in-runs-on-the-kas-engine)). With persistence off that sign-in runs on kiro-cli and lands in its own OAuth cache, which no KAS engine reads; the chat card is then the only sign-in path on KAS, and its grant lasts as long as that chat's KAS process. On kiro-cli, `begin_mcp_sign_in` refuses every start (the host opens no external URLs) and the engine sends its own `_kiro.dev/mcp/oauth_request` frames, so none of this changes it.
@@ -3511,7 +3531,7 @@ KAS reads no `cli.json`, so Crew reads kiro-cli's opt-out from `<kiro home>/sett
 
 ### kiro-cli `chat.defaultModel` on KAS (`acp/kas_cli_settings.py`)
 
-kiro-cli starts a chat on its `cli.json` `chat.defaultModel` when nothing pins a model; KAS reads no `cli.json`, so Crew applies the setting itself. A KAS cold start whose configured model is empty or `auto` reads the setting off the loop (workspace file first, then global; a value that is not a plain model id, `auto`, or an unreadable file, is skipped) and, when it names a model, applies it with `AcpSessionHandle.set_model(model, inherit=True)`. An inherited model is not a pin: the switch goes through the same KAS spelling fold and served-list resolution as any substitute, then lands in `_resolved_model_id` (so `served_model` reports it) and in `AcpSessionHandle.inherited_model` (the applied spelling, never the raw setting), while `_model` keeps its unpinned value. Every reader that asks whether a session is pinned (`_bind_unbound_effort`, `_effort_model`, the engine-fallback promotion) therefore still reads it as unpinned, so a reasoning effort asked for with no pin binds to the inherited model, and nothing persists it into the slot's model. The mark lives on the handle: any other `set_model` call (an explicit pick, a pool post-claim switch, a served-default move) clears it, so a pick away and back is a real pin across a restart; an engine-fallback promotion clears it; `new_conversation` re-applies it with `inherit=True` (a failure there leaves KAS's default and is not fatal), and the MCP re-injection swap carries it to the reloaded handle. A cold restart re-reads `cli.json`, since nothing pinned it. When the inherited model does not land (the account does not serve it, or KAS refused it) the session provider records a notice (`kas_default_model_notice`), which the new session's notice rows (`_notice_steer_upgrade`, via `AcpProvider.kiro_cli_model_notice`) show once: it names the model and says to pick it in the model picker or set it as Crew's default model. shortcut: a warm-pool process started in another folder and a subagent session on a shared runtime do not read their own folder's `cli.json`; they keep KAS's default until a start path for them reads it.
+kiro-cli starts a chat on its `cli.json` `chat.defaultModel` when nothing pins a model; KAS reads no `cli.json`, so Crew applies the setting itself. A KAS cold start whose configured model is empty or `auto` reads the setting off the loop (workspace file first, then global; a value that is not a plain model id, `auto`, or an unreadable file, is skipped) and, when it names a model, applies it with `AcpSessionHandle.set_model(model, inherit=True)`. An inherited model is not a pin: the switch goes through the same KAS spelling fold and served-list resolution as any substitute, then lands in `_resolved_model_id` (so `served_model` reports it) and in `AcpSessionHandle.inherited_model` (the applied spelling, never the raw setting), while `_model` keeps its unpinned value. Every reader that asks whether a session is pinned (`_bind_unbound_effort`, `_effort_model`, the engine-fallback promotion) therefore still reads it as unpinned, so a reasoning effort asked for with no pin binds to the inherited model, and nothing persists it into the slot's model. The mark lives on the handle: any other `set_model` call (an explicit pick, a pool post-claim switch, a served-default move) clears it, so a pick away and back is a real pin across a restart; an engine-fallback promotion clears it; `new_conversation` re-applies it with `inherit=True` (a failure there leaves KAS's default and is not fatal), and the MCP re-injection swap carries it to the reloaded handle. A cold restart re-reads `cli.json`, since nothing pinned it. When the inherited model does not land (the account does not serve it, or KAS refused it) the session provider records a notice (`kas_default_model_notice`), which the new session's notice rows (`_notice_steer_upgrade`, via `AcpProvider.kiro_cli_model_notice`) show once: it names the model and says to pick it in the model picker or set it as Crew's default model. A sub-agent session on its parent's shared runtime (`subagent_manager/run_start.py`, after the bind, on the direct and the late-adopted start alike) and a workflow run's planner, step or review session on the run's runtime (`SessionManager.open_task_session`, once the session holds its turn semaphore, so no turn runs before it) read the setting for the folder they run in (the runtime's own when they name none) the same way, through `agent_sdk/kas_default_model.serve_kiro_cli_default_model`: on a KAS runtime only, only when Crew pins the starting agent no model (`KiroCrewConfig.acp_effective_model(agent, None)` answers empty: no model in the agent's spec and no Crew default model, the chat start's `configured_model` test), inherited rather than pinned, and a refusal is logged and leaves KAS's default; they show no notice. A session Crew does pin a model for is left on KAS's default at these two sites. Any other runtime sends nothing there. shortcut: a warm-pool process started in another folder does not read its own folder's `cli.json`; it keeps KAS's default until a start path for it reads it.
 
 ### KAS MCP credential re-attempt
 
@@ -5031,7 +5051,7 @@ The `audit_source` constructor param of `AcpClient` (default `None`) tags a clie
 4. Shrinks further while the base64 payload still exceeds `MAX_IMAGE_B64_BYTES` (5 MiB), stopping at `MIN_IMAGE_EDGE_PX` (256 px)
 5. Base64-encodes the (possibly downscaled) bytes
 6. Appends an image content block with the content-derived `mimeType`
-7. Replaces the path in the text with `[image: filename.png]`
+7. Replaces the path in the text with `[image: filename.png]`; when the file sits directly in the data home's `uploads/` (a picture the person pasted), the marker keeps its absolute path after it (`[image: filename.png] /abs/uploads/<id>_filename.png`), so a conductor can hand the picture on to a worker by path. Both paths go through `validate_file_path` first, so a UNC host is never probed; a picture anywhere else keeps the bare marker
 8. Sends both text and image blocks in the `prompt` array
 
 **Only the user's own segment is upgraded** (`kiro_crew.prompt_segments`). A prompt is a `SegmentedPrompt`: a `str` whose value is the concatenation of `(source, text)` segments, where `user` is the turn's own text and `injected` is everything the assembly added (memory, lessons, a member's rules and notes, steering, replayed history, a ledger snapshot, a cron job's previous result, the blocks re-sent after a compaction). `build_prompt_blocks` builds extra blocks (an image today; a file, PDF or `resource_link` later goes through the same gate) only from text inside a `user` segment, and sends every `injected` segment as written: no path or rule in it is rewritten. The one edit made in every segment is the backslash before a typed `[image` marker, because an unescaped one reads to the model as a picture attached to this request. A plain `str` is one `user` segment, so a caller that has not moved to segments behaves as before. `ContextBuilder.build_message` returns the segmented prompt, with the measured user span as the `user` segment (or the whole turn part when the caller gave no range), so every channel that sends its result unchanged is covered; when nothing attributable was typed (an `@prompt` body or a quick-prompt expansion), the `user` segment runs from where the typed text stood to the end of the turn, so a prefixed envelope stays injected. The dashboard runner keeps `build_message`'s segments on the turn and re-applies them under its own prefixes, never sending a plain string once segments exist: if the sent tail no longer matches, the whole prompt is marked injected and nothing is upgraded. The subagent run keeps the builder's segments under its hook prefix with `prepend_injected`, marking only the added prefix injected (an empty prefix leaves the prompt object unchanged); initial sends and zero-activity resends reuse that segmented prompt. And the provider's essential-envelope dedup rewrites through `replace_in_injected`, which keeps the segments. A path written as literal text inside a `user` segment -- fenced or inline code, a 4-space-indented line, escaped `\![x](...)` markup -- attaches nothing (`image_refs.mask_literal_spans`, the view the replay scrubber reads too), and each `user` segment is judged on its own: injected text that ends inside a fence it never closes (a cancelled turn's partial answer, a Slack thread root) cannot pair with the user's next fence line and turn the picture between them into code.
@@ -5358,11 +5378,11 @@ and the manual-handling state an unbounded tree lands in, are owned by
 
 `AcpClient._kill_process` keeps the same reaped-root window **on POSIX**, and
 there it is known and
-deferred, not closed here. The client holds no spawn of its own and therefore no
-`KIROCREW_SPAWN_INSTANCE`, so the vouched group path refuses for it by
-construction; reaching its tree needs the client to mint and carry an
-incarnation token at spawn time, which is a change to the client's own spawn
-path. What it has instead is the descendant snapshot it takes at spawn, which
+deferred, not closed here. The client now mints its `process_instance` before
+launch and writes it to the child as `KIROCREW_SPAWN_INSTANCE`, which is the
+spawn-path half of reaching its tree; `_kill_process` does not yet pass that
+token to the vouched group path, so the path still refuses for a client root
+and the window stays open until it does. What it has instead is the descendant snapshot it takes at spawn, which
 covers every client root that dies after its first scan; the uncovered case is a
 client root that dies before it, and the cost there is the same bounded leak the
 orphan sweep reports. On Windows the client needs neither the token nor the scan:
@@ -5437,7 +5457,12 @@ the refusal names its cause on an offline host too and a spawn that asks again m
 no network round trip. Which
 version runs is the release's pin, not a file on disk: `acp/kas_pin.py` holds
 `KAS_PIN_VERSION` and `KAS_PIN_MANIFEST_SHA256` (the sha256 of that version's
-published `manifest.json`, which in turn pins every artifact), `kirocrew kas
+published `manifest.json`, which in turn pins every artifact). The version is
+an engine release, optionally followed by `-node<N>` when the same engine build
+is republished with a different bundled Node runtime (a Node security fix is
+never an overwrite of a published `kas/<version>/` key); `KAS_PIN_ENGINE_RELEASE`
+is the part before the suffix, and anything comparing engine versions reads that,
+never the directory name. `kirocrew kas
 install` installs exactly that and refuses a manifest whose bytes do not hash to
 the pin, and `installed_bundle()` looks up exactly that version's directory --
 under the data home's `engines/kas` first, then under the desktop app's staged
@@ -5481,6 +5506,10 @@ minus kiro-cli. There is no `--auth-method` on this route, so the plan carries
 `host_auth=True` unconditionally: Crew's vault is the only credential
 ([kas-auth.md](kas-auth.md)), and an empty vault surfaces as the engine's own
 "not signed in" prompt failure, which maps to a sign-in prompt as on the relay.
+From engine 3.4 that failure is `-32000` "Sign in to Kiro to send a prompt." with
+`data.errorType` `SignInRequiredError` and no expiry wording; `_RE_SESSION_EXPIRED`
+matches that type name, so the row is tagged `auth_required` and its card offers
+Sign in rather than Resume.
 The spawn is labelled `kas-bundle` (a Node program names no engine). Every seam
 after the spawn is unchanged — measured: `initialize`, the
 `_kiro/auth/getAccessToken` callback answered from the vault, and the
@@ -5732,7 +5761,12 @@ while zero sessions are registered (sentinel `_DROP_NO_SESSION`) — through
 `_note_dropped_frame()`, which also emits the `kirocrew.acp.dropped_frames`
 counter (`method_class` label), which tallies `(sessionId, method)` and emits
 one `DEBUG` summary carrying the accumulated count at most every
-`_DROP_SUMMARY_INTERVAL_SECS` (60s). The key stays **per session** deliberately:
+`_DROP_SUMMARY_INTERVAL_SECS` (60s). A turn the engine replays for a
+`session/load` that asked for its replay (`require_replay`, the KAS resume) and is
+still in flight (`_load_replay_frames`) is counted `method_class=replay` and leaves
+`unrouted_child_frames` alone: the load drops its own replay by design, so a KAS
+resume never reads as a lost update. A load that does not ask (kiro-cli, the KAS MCP
+re-injection load) keeps no such count, so its replay is still counted `update`. The key stays **per session** deliberately:
 the decisive signal in the incident was that two *different* session UUIDs were
 flooding at once, which a single global tally would hide. The level stays `DEBUG`
 — the goal is far fewer lines, not louder ones. The roster-truncation warning above
@@ -5931,9 +5965,19 @@ writes anything to the agent's stdin:
 with `_CLIENT_SCOPE_UNIT_PREFIX`), and keeps the unit systemd received in
 `_scope_unit`. The prefix is not the runtime's, so the readers of `kirocrew-rt-*`
 scopes (`session_scope_reap.kept_scopes`, `containment.populated_scopes`) do not
-count a client process. The token is the client's `process_instance`. The client
-does not write it to the child's environment, so a client child keeps the
-`KIROCREW_SPAWN_INSTANCE` it inherited. Both `initialize` sites call
+count a client process. The token is the client's `process_instance`, and the
+client writes it to the child's environment as `KIROCREW_SPAWN_INSTANCE` (with
+`KIROCREW_SPAWN_HOME`) through `LaunchRequest.env_after_marker`, as the runtime
+does. A client child therefore carries its own client's token, not one it
+inherited. That is what lets `runtime_reconcile`'s live-owner condition anchor a
+harness an agent starts from a client session's shell tool to the recorded client
+root; without it the harness read as unowned and was reclaimed while the session
+was still serving (#38809). A client can run under a runtime-stamped parent (a
+`kirocrew chat` started from an agent's shell builds its providers in that
+process), but replacing the inherited token removes nothing the outer runtime's
+teardown reached: the client spawn is `start_new_session=True` on POSIX, so its
+children lead their own process group, and the vouched group path signals only
+members of the runtime's own group. Both `initialize` sites call
 `_admit_scope` before they write the request: `_initialize_session` and the
 entitlement probe's `_entitlement_probe_answer`. The client's window is
 `_INIT_TIMEOUT` (240 s) with the same 30 s reserve, so admission can use 210 s
@@ -6237,6 +6281,20 @@ deletes the kiro-cli replay log (`agent_sdk/codex_transcripts.py`,
 - the shutdown of an incognito or temporary chat, and every other caller of
   `AcpProvider.cleanup_session` (`providers/acp_lifecycle.py`, on
   `is_codex_backend`, off the loop);
+- every caller of `AcpSessionProvider.cleanup_session`, such as the crewmate
+  lessons draft (`acp/session_handle_lifecycle.py`, `delete_native_record`, through
+  the same `TeardownPolicy.delete_disposable_record` with the runtime's `extra_env`),
+  and `SessionManager.release(key, cleanup=True)` through `_safe_cleanup` for a key
+  that cannot be continued. That call deletes the record whatever the memory mode,
+  as kiro-cli's unlink does, since nothing can load the key again. On KAS the same
+  call sends `_kiro/session/delete` on the session's runtime, and when that runtime
+  is gone it schedules the delete due now in `released_sessions`, whose sweep sends
+  it on the background runtime. A KAS `AcpProvider.cleanup_session` hands the call
+  to the `AcpSessionProvider` its runtime start put in `_client`, so a provider
+  `get_or_create` hands out unshared takes the same path after its shutdown.
+  `AcpProvider.shutdown` does not make that call on KAS: a non-persistent session's
+  `destroy` has sent `_kiro/session/delete` already, and a persistent one keeps its
+  record;
 - the subagent tombstone prune and `spawn_release`
   (`subagent_persistence._cleanup_session_files_sync` for `PROVIDER_LABEL_CODEX`);
 - the teardown of a session handle on the shared runtime

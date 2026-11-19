@@ -59,12 +59,20 @@ def _report(item_id: str, status: str, summary: str = "here is where it is", **k
 
 
 def _slot(*, running: bool = False):
-    return SimpleNamespace(running=running)
+    return SimpleNamespace(key="", linked_session_key="", running=running)
 
 
 def _state(slots: dict | None = None):
     table = dict(slots or {})
-    return SimpleNamespace(_slots=table, get_slot=lambda key: table.get(key), owner_id=OWNER)
+    for key, slot in table.items():
+        slot.key = key
+    return SimpleNamespace(
+        _slots=table,
+        get_slot=lambda key: table.get(key),
+        owner_id=OWNER,
+        subagents=None,
+        workflow_service=None,
+    )
 
 
 def _as_owner(request, caller: str | None = None, app_token: str = ""):
@@ -306,6 +314,83 @@ async def test_alive_is_joined_server_side_from_the_worker_slot():
 
 
 @pytest.mark.asyncio
+async def test_the_board_reports_workflow_activity_owned_by_its_conductor():
+    _item()
+    state = _state({CONDUCTOR: _slot()})
+    state.workflow_service = SimpleNamespace(
+        registry=SimpleNamespace(has_pending_work_for=lambda key: key == f"dashboard:{CONDUCTOR}")
+    )
+    body, _ = await _call(state, CONDUCTOR)
+    assert body["conductor_working"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_worker_workflow_keeps_its_milestone_live(monkeypatch):
+    item_id = _item()
+    _bind(item_id)
+    _report(item_id, "progress")
+    state = _state({WORKER: _slot()})
+    state.workflow_service = SimpleNamespace(
+        registry=SimpleNamespace(has_pending_work_for=lambda key: key == f"dashboard:{WORKER}")
+    )
+    real = wl.is_stale
+    monkeypatch.setattr(
+        board.work_ledger,
+        "is_stale",
+        lambda item, **kwargs: real(item, **{**kwargs, "window_secs": 0}),
+    )
+    body, _ = await _call(state, CONDUCTOR)
+    assert body["items"][0]["alive"] == "running"
+    assert body["items"][0]["stale"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("turn", "awaits"),
+    [(False, True), (True, False)],
+    ids=["background-work", "model-turn"],
+)
+async def test_only_a_model_turn_clears_the_persons_ask_on_the_board(turn, awaits):
+    """The page's Needs you reads the board's ``awaits_person`` alone: a worker's
+    workflow keeps the item running without answering the person; its next
+    model turn means it moved on."""
+    item_id = _item()
+    _bind(item_id)
+    _report(item_id, "question", "pick a region", reason="needs_human")
+    worker = SimpleNamespace(key="", linked_session_key="", running=turn, turn_running=turn)
+    state = _state({WORKER: worker})
+    state.workflow_service = SimpleNamespace(
+        registry=SimpleNamespace(has_pending_work_for=lambda key: key == f"dashboard:{WORKER}")
+    )
+    body, _ = await _call(state, CONDUCTOR)
+    row = body["items"][0]
+    assert row["alive"] == "running"
+    assert row["awaits_person"] is awaits
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_activity_probe_does_not_hide_a_stale_worker(monkeypatch):
+    item_id = _item()
+    _bind(item_id)
+    _report(item_id, "progress")
+    state = _state({WORKER: _slot()})
+
+    def unreadable(_key):
+        raise RuntimeError("unreadable")
+
+    state.subagents = SimpleNamespace(running_agents_for=unreadable)
+    real = wl.is_stale
+    monkeypatch.setattr(
+        board.work_ledger,
+        "is_stale",
+        lambda item, **kwargs: real(item, **{**kwargs, "window_secs": 0}),
+    )
+    body, _ = await _call(state, CONDUCTOR)
+    assert body["items"][0]["alive"] == "idle"
+    assert body["items"][0]["stale"] is True
+
+
+@pytest.mark.asyncio
 async def test_a_reported_worker_whose_session_closed_reads_stale_at_once():
     """The badge reads the gate's own resolver, so it does not wait out the window.
 
@@ -408,6 +493,17 @@ async def test_a_report_the_harness_never_delivered_is_on_the_board_without_the_
     flag = body["items"][0]["report_undelivered"]
     assert set(flag) == {"tool", "at"} and flag["tool"] == "work_report"
     assert WORKER not in response.body.decode()
+
+
+@pytest.mark.asyncio
+async def test_a_hosted_discussion_reaches_the_board_row():
+    """The Board's "discussing" row reads `discussion` from this payload."""
+    item_id = _item()
+    _bind(item_id)
+    _report(item_id, "progress", discussion={"phase": "talking", "round": 2, "agreed": ["ship A"]})
+    body, _ = await _call(_state({WORKER: _slot(running=True)}), CONDUCTOR)
+    talk = body["items"][0]["discussion"]
+    assert (talk["phase"], talk["round"], talk["agreed"]) == ("talking", 2, ["ship A"])
 
 
 @pytest.mark.asyncio

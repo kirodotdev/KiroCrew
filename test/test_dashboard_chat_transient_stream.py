@@ -51,7 +51,7 @@ class TestRunChatTransientRetryStreamFailure:
         assert call_count == 2  # initial transient failure + one retry
         # Recovered: the response is persisted, no ❌ error surfaced.
         assert any("ok-result" in t for t in self._assistant_texts(slot))
-        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        assert not any(t.startswith("Error:") for t in self._err_texts(slot))
         # The transient branch fired (status surfaced) ...
         assert any("Connection unstable" in t for t in self._err_texts(slot))
         # ... and the notice is TAGGED, which is the only thing telling the UI a
@@ -112,7 +112,7 @@ class TestRunChatTransientRetryStreamFailure:
         assert call_count == 2  # one post-token retry
         # The recovery notice surfaced and no ❌ error was raised.
         assert any("Connection unstable" in t for t in self._err_texts(slot))
-        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        assert not any(t.startswith("Error:") for t in self._err_texts(slot))
         # APPEND-ONLY: the partial is PRESERVED as a finalized assistant message,
         # AND the continued retry answer is appended below it. Both are present;
         # the live chunk placeholders are finalized away.
@@ -185,7 +185,7 @@ class TestRunChatTransientRetryStreamFailure:
         # The retry notice is shown (append-only: partial + notice regardless of
         # eligibility); no ❌ terminal error is raised here.
         assert any("Connection unstable" in t for t in self._err_texts(slot))
-        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        assert not any(t.startswith("Error:") for t in self._err_texts(slot))
         # No chat_stream_reset broadcast — that event was removed entirely.
         assert not any(
             c.args and c.args[0] == "chat_stream_reset" for c in state.broadcast_ws.call_args_list
@@ -244,7 +244,7 @@ class TestRunChatTransientRetryStreamFailure:
         assert call_count == 2  # post-tool transient now RECOVERS via continue
         # Recovery notice surfaced, no ❌ terminal error.
         assert any("Connection unstable" in t for t in self._err_texts(slot))
-        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        assert not any(t.startswith("Error:") for t in self._err_texts(slot))
         # The partial text is preserved and the continued answer appended below.
         assert any("working" in t for t in self._assistant_texts(slot)), "partial must be preserved"
         assert any(
@@ -332,7 +332,7 @@ class TestRunChatTransientRetryStreamFailure:
         # The later real turn recovered: it re-ran once and produced the answer.
         assert call_count == 2
         assert any("ok-result" in t for t in self._assistant_texts(slot))
-        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        assert not any(t.startswith("Error:") for t in self._err_texts(slot))
 
     @pytest.mark.asyncio
     async def test_posttoken_recovery_turn_refailure_does_not_loop(self, tmp_path, monkeypatch):
@@ -374,7 +374,7 @@ class TestRunChatTransientRetryStreamFailure:
         # The flag was NOT refreshed by the recovery turn (stays consumed).
         assert slot._posttoken_retry_used is True
         # A clean terminal error surfaced (branch skipped, fell to else:).
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         # The partial from the recovery turn is still preserved (append-only).
         assert any("still-failing" in t for t in self._assistant_texts(slot))
         state.sessions.reset.assert_not_awaited()
@@ -406,7 +406,7 @@ class TestRunChatTransientRetryStreamFailure:
 
         assert call_count == 1  # fail-fast, no retry
         assert slot._transient_5xx_retries == 0
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         assert not any("Connection unstable" in t for t in self._err_texts(slot))
         state.sessions.reset.assert_not_awaited()
 
@@ -498,7 +498,7 @@ class TestRunChatTransientRetryStreamFailure:
         # Initial attempt + TRANSIENT_RETRIES re-prompts, then it gives up.
         assert call_count == TRANSIENT_RETRIES + 1
         # Clean error surfaced; session left resumable (no reset).
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         state.sessions.reset.assert_not_awaited()
         # The terminal ❌ ENDS the cycle, so the budget is refreshed for the
         # next one — the Continue press the error message invites must get the
@@ -581,7 +581,7 @@ class TestRunChatTransientRetryStreamFailure:
 
         assert call_count == drop_attempts + 1
         assert any("back-online" in t for t in self._assistant_texts(slot))
-        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        assert not any(t.startswith("Error:") for t in self._err_texts(slot))
         state.sessions.reset.assert_not_awaited()
         retrying = [
             m
@@ -675,7 +675,7 @@ class TestRunChatTransientRetryStreamFailure:
             await self._drain_bg(state)
 
         assert call_count == TRANSIENT_RETRIES + 1
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
 
     @pytest.mark.asyncio
     async def test_transient_budget_refreshed_after_terminal_error(self, tmp_path, monkeypatch):
@@ -702,7 +702,7 @@ class TestRunChatTransientRetryStreamFailure:
             await _run_chat(state, slot, "first question")
             await self._drain_bg(state)
 
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         assert slot._transient_5xx_retries == 0
         n_before = len(slot.messages)
 
@@ -730,7 +730,7 @@ class TestRunChatTransientRetryStreamFailure:
         tail_errs = [m["content"] for m in tail if m.get("role") == "error"]
         tail_answers = [m["content"] for m in tail if m.get("role") == "assistant"]
         assert any("Connection unstable" in t for t in tail_errs)
-        assert not any(t.startswith("❌") for t in tail_errs)
+        assert not any(t.startswith("Error:") for t in tail_errs)
         assert any("ok-result" in t for t in tail_answers)
         # Completed cycle → budget back to 0 via the happy-path reset.
         assert slot._transient_5xx_retries == 0

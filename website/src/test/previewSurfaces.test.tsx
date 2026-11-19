@@ -11,6 +11,8 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ReactElement } from 'react'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { render, screen, renderHook, act, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation, useNavigationType } from 'react-router-dom'
@@ -60,6 +62,7 @@ import {
 import { usePreviewFlag, usePreviewFlagRevision } from '../hooks/usePreviewFlag'
 import { createPagesProvider } from '../components/commandPalette/providers/pagesProvider'
 import { api } from '../api/client'
+import { i18nT } from '../i18n/t'
 import { FeaturePreviewsSection, FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from '../pages/settings/FeaturePreviewsSection'
 import { __resetPreviewFlagServerSyncForTests, usePreviewFlagServerSync } from '../hooks/usePreviewFlagServerSync'
 import DeveloperPage from '../pages/DeveloperPage'
@@ -365,45 +368,85 @@ describe('Settings > Developer > Feature Previews', () => {
     )
 
   /**
-   * Every switch row this tab draws in the stubbed state, keyed by its label;
-   * the value says whether the row carries an InfoTip (a `hint`). One line per
-   * row, so two changes that each add a row edit different lines and the merged
-   * tree passes, where one shared switch total let both write the same new
-   * number and break `main` (testing-conventions.md § Merge-safe ratchets and
-   * counts). Totals the tests below need are computed from this table.
+   * Every `<SettingsToggle>` the section's own sources declare, keyed by its
+   * rendered label; the value says whether it passes a `hint`. Read from
+   * `FeaturePreviewsSection.tsx` and every module under `pages/settings` it
+   * imports, so a row added to the section is covered without editing this file.
    */
-  const FEATURE_PREVIEW_ROWS: Record<string, boolean> = {
-    'Chat on a crew': true,
-    'Folder conductor': true,
-    'Quick worker check before a hard choice': true,
-    'Reply threads on bot chat messages': true,
-    'Explore': true,
-    'Mark out-of-date Dashboard fields': true,
-    'Send pending approvals to chat apps': true,
-    'Agent Harness for worker chats': true,
-    'Session Environments': true,
-    'Connected computers': true,
-    'ACP runtime sharing': true,
-    'Artifact Deploy': true,
-    'Webhooks': true,
-    'MCP sign-in by Kiro Crew': true,
-    'Decisions': true,
+  const declaredToggles = (): Map<string, boolean> => {
+    const settingsDir = resolve(process.cwd(), 'src/pages/settings')
+    const seen = new Set<string>()
+    const declared = new Map<string, boolean>()
+    const walk = (file: string) => {
+      if (seen.has(file)) return
+      seen.add(file)
+      const text = readFileSync(file, 'utf-8')
+      for (const [, spec] of text.matchAll(/from '(\.[^']+)'/g)) {
+        const base = resolve(dirname(file), spec)
+        if (!base.startsWith(settingsDir)) continue
+        const hit = ['.tsx', '.ts'].map(ext => base + ext).find(existsSync)
+        if (hit) walk(hit)
+      }
+      for (const [, props] of text.matchAll(/<SettingsToggle\b([\s\S]*?)\/>/g)) {
+        const key = props.match(/label=\{i18nT\('([^']+)'\)\}/)?.[1]
+        if (key) declared.set(i18nT(key), /\bhint=/.test(props))
+      }
+    }
+    walk(resolve(settingsDir, 'FeaturePreviewsSection.tsx'))
+    return declared
   }
-  /** The drawn rows in the table's shape: label -> carries an InfoTip. */
+  /** The drawn rows: label -> carries an InfoTip. */
   const renderedRows = () =>
-    Object.fromEntries(
+    new Map(
       screen.getAllByRole('switch').map(sw => {
         const row = sw.closest('[data-setting-label]')
-        return [sw.getAttribute('aria-label') ?? '?', !!row?.querySelector('[data-settings-hint] button')]
+        return [sw.getAttribute('aria-label') ?? '?', !!row?.querySelector('[data-settings-hint] button')] as const
       }),
     )
   /**
    * Awaited: the Decisions card is not drawn until the governance read
-   * (`decisions_enabled`) lands, so its row arrives a tick late. A row the
-   * table does not name, or a named row that is missing, never converges.
+   * (`decisions_enabled`) lands, so its row arrives a tick late.
    */
   const expectAllRows = () =>
-    waitFor(() => { expect(renderedRows()).toEqual(FEATURE_PREVIEW_ROWS) })
+    waitFor(() => { expect(screen.getByRole('switch', { name: 'Decisions' })).toBeTruthy() })
+
+  /** Declared rows the stubbed state does not draw, because their gate is closed. */
+  const ROWS_GATED_OFF_IN_STUB = new Set(['Remote dispatch', 'Shared Crew', 'Wake bots to update out-of-date fields'])
+
+  it('gives every drawn row the InfoTip its declaration asks for', async () => {
+    // A `hint` the row was given but does not show leaves an unfinished feature
+    // with no explanation; an InfoTip with no declared hint is a stray button.
+    renderTab()
+    await expectAllRows()
+    const declared = declaredToggles()
+    const rows = renderedRows()
+    expect([...declared.values()].filter(Boolean).length, 'no declared row carries a hint').toBeGreaterThan(0)
+    expect(rows.size).toBeGreaterThan(0)
+    // Every declared row is drawn in this stubbed state except the ones whose
+    // gate is closed here; a row that stops rendering fails.
+    expect([...declared.keys()].filter(label => !rows.has(label)).sort()).toEqual([...ROWS_GATED_OFF_IN_STUB].sort())
+    for (const [label, hasTip] of rows) {
+      expect(declared.has(label), `drawn row "${label}" is not a SettingsToggle the section's sources declare`)
+        .toBe(true)
+      expect(hasTip, `row "${label}" InfoTip`).toBe(declared.get(label))
+    }
+  })
+
+  /**
+   * Ratchet: preview rows that ship without a `hint`. Every other row explains its
+   * unfinished feature, so a row that loses its hint, or a new row added without
+   * one, fails. May only shrink.
+   */
+  const ROWS_WITHOUT_HINT = new Set(['Shared Crew'])
+
+  it('explains every preview row except the recorded ones', () => {
+    const declared = declaredToggles()
+    expect(declared.size, 'the section declares no SettingsToggle').toBeGreaterThan(0)
+    const missing = [...declared].filter(([label, hint]) => !hint && !ROWS_WITHOUT_HINT.has(label))
+    expect(missing.map(([label]) => label), 'preview rows with no hint').toEqual([])
+    const stale = [...ROWS_WITHOUT_HINT].filter(label => declared.get(label) !== false)
+    expect(stale, 'ROWS_WITHOUT_HINT names a row that now has a hint or is gone').toEqual([])
+  })
 
   /** `aria-checked` via the ATTRIBUTE: the Toggle is a `div role="switch"`, and
    *  the reflected `ariaChecked` DOM property is not populated for one. */
@@ -539,9 +582,9 @@ describe('Settings > Developer > Feature Previews', () => {
     // an unexpected button lands in `ingress`, an extra or missing tip
     // changes `tips` -- while saying what each half protects.
     const INFO_TIP = 'More information'
-    // One per row carrying a `hint`, outside the Decisions card (its own row's tip
-    // is in the Decisions set below). Computed, so a new row edits only its table line.
-    const INFO_TIP_COUNT = Object.entries(FEATURE_PREVIEW_ROWS)
+    // One per drawn row carrying a tip, outside the Decisions card (its own row's
+    // tip is in the Decisions set below), so a tip outside any row lands here.
+    const INFO_TIP_COUNT = [...renderedRows()]
       .filter(([label, hint]) => hint && label !== 'Decisions').length
     const partition = () => {
       const all = ingressButtons()

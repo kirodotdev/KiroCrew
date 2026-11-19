@@ -235,7 +235,7 @@ _DETACH_EXEMPT_COMMANDS = frozenset({"new", "unlink", "sessions", "help", "statu
 #: One constant, two gate sites (pre-busy and post-rotation), so the wording
 #: cannot drift between them.
 _STALE_OPTIONS_REFUSAL = (
-    "These buttons belong to a conversation this chat has since moved away "
+    "🔘 These buttons belong to a conversation this chat has since moved away "
     "from, so your choice was NOT applied. Type it as a message instead, or "
     "run `!sessions` to reattach the session that asked."
 )
@@ -247,7 +247,7 @@ _STALE_OPTIONS_REFUSAL = (
 #: the tag never named. Refusing is the only shape that keeps the provenance
 #: guarantee end to end.
 _BUSY_OPTIONS_REFUSAL = (
-    "That conversation is busy with another turn, so your choice was NOT "
+    "🔘 That conversation is busy with another turn, so your choice was NOT "
     "applied. Type it as a message once the turn finishes."
 )
 
@@ -632,11 +632,11 @@ class DiscordDispatcher:
                 new_session_key,
                 channel_type="Discord",
             )
-            message = "New conversation started."
+            message = "✅ New conversation started."
             if left_resumed is not None:
-                message = "New conversation started — left the resumed session."
+                message = "✅ New conversation started — left the resumed session."
             if not saved:
-                message += "\nWarning: The new conversation could not be saved for restart."
+                message += "\n⚠️ The new conversation could not be saved for restart."
             await self.client.send_message(channel_id, message)
             return monitor_result
         if cmd == "compact":
@@ -653,7 +653,7 @@ class DiscordDispatcher:
             if thread_id:
                 await self.client.send_message(
                     channel_id,
-                    "`!sessions` works only in a direct message — it lists and "
+                    "🔒 `!sessions` works only in a direct message — it lists and "
                     "replays private conversations, so it will not post "
                     "them into a shared thread. DM me instead.",
                 )
@@ -698,7 +698,7 @@ class DiscordDispatcher:
         if cmd == "agent":
             if route.resumed_key is not None:
                 reply = (
-                    "Note: This conversation continues a dashboard session, so its agent "
+                    "ℹ️ This conversation continues a dashboard session, so its agent "
                     "is changed from the dashboard. Send `!new` to start one here."
                 )
             else:
@@ -1217,7 +1217,7 @@ class DiscordDispatcher:
         *,
         owner: str,
     ) -> None:
-        """Flip the receipt to a durable "Now answering" record. Caller MUST
+        """Flip the receipt to a durable "▶️ Now answering" record. Caller MUST
         hold ``self._queue.lock``.
 
         ``owner`` is WHOSE messages this turn answers, and the flip needs it because one
@@ -1479,7 +1479,7 @@ class DiscordDispatcher:
             assert self.client is not None
             await self.client.send_message(
                 channel_id,
-                "Warning: Context is getting long. Use `!compact` to compress or "
+                "⚠️ Context is getting long. Use `!compact` to compress or "
                 "`!new` to start fresh.",
             )
 

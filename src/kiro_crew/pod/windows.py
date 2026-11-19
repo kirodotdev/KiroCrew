@@ -109,10 +109,14 @@ from kiro_crew.platform_compat import (
 from kiro_crew.pod import _windows_job as jobs
 from kiro_crew.pod import _windows_run as runs
 from kiro_crew.pod import log_mark
-from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, PodConfig, environment_vars
+from kiro_crew.pod.config import (
+    EXIT_REFUSED_UNRECOVERABLE,
+    POD_HEALTH_WAIT_SECS_DEFAULT,
+    PodConfig,
+    environment_vars,
+)
 from kiro_crew.pod.unit import _kirocrew_argv as _shared_kirocrew_argv
 from kiro_crew.sandbox import apply_windows_resource_ceiling
-from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Task Scheduler folder every pod task lives in. One folder per pod plane, so a
 # hermetic test plane (KIROCREW_POD_UNIT_PREFIX) cannot collide with a
@@ -179,11 +183,17 @@ def _unlink_waiting_out_sharing(
 #: pod's gateway sidecar after the process it supervised exits. Bounds how long a
 #: pod can report itself alive after its LAST gateway is gone, so it is a
 #: correctness ceiling rather than a comfort setting: too short and an in-app
-#: restart is misread as a stop (the fail-OPEN direction — `pod down` would then
-#: reclaim a live pod), too long and a genuinely stopped pod lingers as running.
+#: restart is misread as a stop (the supervisor drains its lifetime Job with the
+#: booting successor inside it, so the pod goes down), too long and a genuinely
+#: stopped pod lingers as running.
+#:
+#: The successor writes that sidecar only once its listener is bound, which is
+#: the END of a full gateway boot, so the window has to fit a whole boot. It is
+#: therefore the same budget `pod up` gives a first boot to answer health, not a
+#: shorter one: a restart successor does the same work on the same host.
 #: The wait is only ever entered while the exited gateway still has a live
 #: attributed child, so an ordinary shutdown never pays it.
-SUCCESSOR_ADOPT_TIMEOUT_SECS = 30.0
+SUCCESSOR_ADOPT_TIMEOUT_SECS = float(POD_HEALTH_WAIT_SECS_DEFAULT)
 
 
 class WindowsTaskError(RuntimeError):
@@ -451,12 +461,14 @@ def render_task_script(cfg: PodConfig, name: str) -> str:
 
 
 def _script_encoding() -> str:
-    """The codec ``cmd.exe`` reads a batch file with.
+    """The codec ``cmd.exe`` reads a batch file with, and ``schtasks.exe`` writes with.
 
     ``cmd.exe`` decodes a ``.cmd`` in the console's OEM code page (``chcp``),
     never UTF-8, so the wrapper is written in that code page: Python's ``oem``
-    codec is exactly that page on Windows. Elsewhere (the render tests run on
-    Linux) there is no OEM page and UTF-8 stands in.
+    codec is exactly that page on Windows. ``schtasks.exe`` writes its messages
+    to a redirected pipe in the same page, so :func:`_schtasks_raw` reads them
+    with it. Elsewhere (the render tests run on Linux) there is no OEM page and
+    UTF-8 stands in.
     """
     return "oem" if IS_WINDOWS else "utf-8"
 
@@ -533,13 +545,19 @@ def render_task_xml(script: Path) -> str:
 
 # Talking to schtasks
 def _schtasks_raw(exe: str, *args: str) -> subprocess.CompletedProcess:
-    """Run *exe* with *args*, no gate — used by the gate's own probe."""
-    return subprocess.run(
+    """Run *exe* with *args*, no gate — used by the gate's own probe.
+
+    Output is decoded in the OEM code page, not UTF-8: a localized refusal
+    would otherwise reach the operator as U+FFFD.
+    """
+    return subprocess.run(  # subprocess-encoding: locale
         [exe, *args],
         capture_output=True,
         timeout=30,
         check=False,
-        **UTF8_TEXT,
+        text=True,
+        encoding=_script_encoding(),
+        errors="replace",
     )
 
 
@@ -1133,6 +1151,16 @@ def _await_successor(record: Path, reaped_pid: int, reaped_token: str) -> int | 
         if not _live_children_of(reaped_pid, reaped_token):
             return None
         time.sleep(0.2)
+    if not _live_children_of(reaped_pid, reaped_token):
+        return None
+    # A live child outlived the whole window without claiming the pod, and the
+    # caller now drains the Job it is in. Said once, in the pod's own log, so a
+    # restart that went down reads as this and not as a successor that crashed.
+    print(
+        f"kirocrew-pod: no restart successor claimed the pod within "
+        f"{SUCCESSOR_ADOPT_TIMEOUT_SECS:.0f}s of gateway pid {reaped_pid} exiting; "
+        "stopping the processes it left"
+    )
     return None
 
 

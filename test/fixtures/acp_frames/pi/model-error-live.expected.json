@@ -1,0 +1,187 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": false,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "delete": {},
+        "list": {}
+      }
+    },
+    "agent_version": "0.0.34",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
+        "description": "Select the model for this session",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": null,
+            "name": "amazon-bedrock/Claude Opus 4.6 (US)",
+            "value": "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "medium",
+        "description": "Set the reasoning effort for this session",
+        "id": "thought_level",
+        "name": "Thinking",
+        "options": [
+          {
+            "description": null,
+            "name": "Thinking: medium",
+            "value": "medium"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "medium",
+      "ids": [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "max"
+      ]
+    },
+    "session_id": "pi-session-1"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      0,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "current_mode_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      0,
+      128000
+    ],
+    "usage_cost": null
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "amazon-bedrock/amazon.nova-micro-v1:0",
+        "description": "Select the model for this session",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": null,
+            "name": "amazon-bedrock/Nova Micro",
+            "value": "amazon-bedrock/amazon.nova-micro-v1:0"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "off",
+        "description": "Set the reasoning effort for this session",
+        "id": "thought_level",
+        "name": "Thinking",
+        "options": [
+          {
+            "description": null,
+            "name": "Thinking: off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "{\"kiro-crew-model-error\":1,\"nonce\":\"28691d4ea166409686b3fbf55703bee8\",\"provider\":\"amazon-bedrock\",\"model\":\"amazon.nova-micro-v1:0\",\"error\":\"Could not load credentials from any providers\"}"
+      }
+    ],
+    "frame": "session/update",
+    "pi_model_error": "pi's model call failed (amazon-bedrock/amazon.nova-micro-v1:0): Could not load credentials from any providers",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "{\"kiro-crew-model-error\":1,\"nonce\":\"28691d4ea166409686b3fbf55703bee8\",\"provider\":\"amazon-bedrock\",\"model\":\"amazon.nova-micro-v1:0\",\"error\":\"Could not load credentials from any providers\"}",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      9064,
+      128000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "end_turn"
+  }
+]

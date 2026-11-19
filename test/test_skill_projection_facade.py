@@ -150,32 +150,16 @@ def test_a_global_its_owner_rebinds_has_that_owner_as_its_one_holder() -> None:
         assert skill_projection._UNLINK_WARNING_SUPPRESSED == 7
 
 
-#: The owner modules, one per line, so two changes that each add an owner edit
-#: different lines (testing-conventions.md § Merge-safe ratchets and counts).
-_OWNER_MODULES = (
-    "kiro_crew.acp.skill_projection_parts.alias_reclaim",
-    "kiro_crew.acp.skill_projection_parts.inheritance_overlay",
-    "kiro_crew.acp.skill_projection_parts.native_projection",
-    "kiro_crew.acp.skill_projection_parts.preparation",
-    "kiro_crew.acp.skill_projection_parts.side_files",
-    "kiro_crew.acp.skill_projection_parts.view_ownership",
-    "kiro_crew.acp.skill_projection_parts.view_publication",
-    "kiro_crew.acp.skill_projection_parts.view_sources",
-)
-
-
 def test_the_owners_are_the_parts_package_in_layer_order() -> None:
     """``_OWNERS`` names every module of ``skill_projection_parts``, and each owner imports only
     owners listed before it: the order the facade loads them and a read resolves in."""
     owners = list(_index().owners)
+    assert owners, "the facade composes no owner"
     on_disk = {
         f"kiro_crew.acp.skill_projection_parts.{p.stem}": p
         for p in PARTS_DIR.glob("*.py")
         if p.name != "__init__.py"
     }
-    assert sorted(on_disk) == list(
-        _OWNER_MODULES
-    ), f"the owner modules changed; write one line per module in _OWNER_MODULES: {sorted(on_disk)}"
     assert sorted(owners) == sorted(on_disk)
     late: dict[str, list[str]] = {}
     for position, owner in enumerate(owners):

@@ -28,9 +28,8 @@ logger = logging.getLogger("kiro_crew.metrics.provider")
 # disable, unset/blank => defer to the ``telemetry.enabled`` config flag (itself
 # default True). A truthy value is also an explicit opt-in to export
 # (:func:`outbound_consented`): the default provider names the configured
-# ``telemetry.otlp_endpoint(s)``, which export once this var is truthy, and the
-# built-in Kiro telemetry destination (``metrics/kiro_export.py``), which also
-# needs its privacy notice shown.
+# ``telemetry.otlp_endpoint(s)``, which export once this var is truthy. The
+# built-in Kiro telemetry destination (``metrics/kiro_export.py``) needs no opt-in.
 # Public: a UI control over ``telemetry.enabled`` names this variable when it
 # reports the setting as pinned, and naming it from here keeps the message and the
 # lookup from drifting apart.
@@ -129,10 +128,8 @@ def outbound_consented(cfg: KiroCrewConfig) -> bool:
     alone never permits export, so a host with an export destination configured
     cannot start exporting just because the default changed.
 
-    The Privacy chapter's acknowledgement (``dashboard.privacy_ack_version``) is
-    deliberately NOT enough: today's notice text says recorded data stays on this
-    machine, so agreeing to it is not agreeing to export. A notice that names the
-    export destination would have to bump the version before it could count.
+    A stored ``dashboard.privacy_ack_version`` (written by builds that showed a
+    dashboard notice) does not count either: it records a notice, not an opt-in.
 
     Fails closed: anything unreadable answers False.
     """

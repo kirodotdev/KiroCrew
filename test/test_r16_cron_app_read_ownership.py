@@ -292,3 +292,26 @@ async def test_all_history_owner_sees_every_job(svc) -> None:
     assert status == 200
     assert body["total"] == 3
     assert {r["job_id"] for r in body["runs"]} == {ids[k][0] for k in ("owner", "a", "b")}
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+async def test_all_history_serves_own_runs_that_left_the_index(svc, tmp_path, filtered) -> None:
+    # A busy job pushes an app's runs out of the capped shared index; the app
+    # still lists every run its own job file keeps.
+    ids = await _seed(svc)
+    own_job = ids["a"][0]
+    for i in range(3):
+        await svc.get_history().append(
+            CronRunRecord(job_id=own_job, started_at=i, finished_at=i, summary=f"own-{i}")
+        )
+    index = tmp_path / "cron-history" / "_index.jsonl"
+    kept = [ln for ln in index.read_text().splitlines() if json.loads(ln)["job_id"] != own_job]
+    index.write_text("\n".join(kept) + "\n")
+
+    query = f"?job_id={own_job}" if filtered else ""
+    status, text = await _call(svc, APP_A, "GET", f"/api/crons/history{query}")
+    body = json.loads(text)
+    assert status == 200, text
+    assert body["total"] == 4
+    assert [r["job_id"] for r in body["runs"]] == [own_job] * 4
+    assert f"{MARK}-summary-owner" not in text and f"{MARK}-summary-b" not in text

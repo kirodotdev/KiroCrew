@@ -460,6 +460,11 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # lives under .github/scripts). Network orchestration with no verdict of
         # its own, for the same reason as the barrier it probes.
         "scripts/cancel-superseded-run.sh",
+        # Reads the AI review lanes' check-runs for the pull request head over
+        # the GitHub API and holds ci.yml's heavy jobs on a published BLOCK (it
+        # lives under .github/scripts). It judges no code and its input exists
+        # only once the review workflows have run on a pushed head.
+        "scripts/ai-block-hold.sh",
         # Computes which test_*.py files a non-leaf PR added or modified (via git
         # diff against base.sha from the pull_request event payload). The scope
         # depends on the PR base commit, which only exists once the PR event

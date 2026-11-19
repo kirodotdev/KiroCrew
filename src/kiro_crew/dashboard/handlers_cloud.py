@@ -979,22 +979,24 @@ async def api_cloud_launch_cancel(request: web.Request) -> web.Response:
     return web.json_response(updated.to_dict())
 
 
-def _preserved_code_may_be_approved(job: lj.LaunchJob) -> bool:
-    """Is this the one shape where the box can be signed in behind our back?
+def _unsigned_crew_may_be_reprobed(job: lj.LaunchJob) -> bool:
+    """Is this a crew whose recorded "not signed in" may be out of date?
 
-    A sign-in that ran out of time deliberately KEEPS its device code and leaves
-    the remote login polling, so the user can still approve it from the browser
-    tab that is already open. Nothing re-probes the instance after that, so an
-    approval that lands then signs the crew in while the job still reads
-    ``signin_detected=False`` — badged "Needs sign-in" forever, with Connect held.
+    ``signin_detected`` is written once, when the launch (or a retry) ends. The
+    box can be signed in after that by paths this job never sees: a preserved
+    device code approved from the open browser tab, a sign-in on the crew's own
+    dashboard, ``kirocrew kas login`` or ``kiro-cli login`` in a shell on it.
+    Nothing re-probes the instance afterwards, so such a crew read
+    ``signin_detected=False`` -- badged "Needs sign-in" forever while it served
+    chats. The dashboard asks once per unsigned crew row (the route below), so
+    the badge shows only what the box says now.
 
     True only for: terminal (no worker owns it, so nothing else is writing it),
-    registered with an instance to probe, not already signed in, and still
-    holding the surviving prompt that makes the approval possible. Deliberately
-    narrow — this must never become a blanket poll of every job, and never touch
-    a job a worker is driving.
+    registered with an instance to probe, and not already signed in. Never a job
+    a worker is driving, and never a signed-in one: this is one probe per unsigned
+    crew the owner is looking at, not a poll of every job.
     """
-    if not job.terminal or job.signin_detected or not job.instance_id or not job.signin:
+    if not job.terminal or job.signin_detected or not job.instance_id:
         return False
     if lj.target_is_unreadable(job):
         # `from_dict` substituted the DEFAULT identity for one it could not parse,
@@ -1019,10 +1021,11 @@ def _probe_signin_on_box(state: "DashboardState", job: lj.LaunchJob) -> Optional
     :func:`_record_probed_signin` owns the write -- on the loop, under the lock.
     """
     try:
-        return bool(
-            login_mod.is_logged_in(
-                job.instance_id, job.profile, job.region, target=job.login_target
-            )
+        # `signin_state`, not `is_logged_in`: the latter answers False for a box it
+        # could not reach, and the row would then tell the owner a crew it never
+        # asked is signed out.
+        return login_mod.signin_state(
+            job.instance_id, job.profile, job.region, target=job.login_target
         )
     except Exception:  # noqa: BLE001 - a probe failure is not a launch failure
         logger.info("could not re-probe the Kiro sign-in for %s", job.id, exc_info=True)
@@ -1046,7 +1049,7 @@ async def _record_probed_signin(state: "DashboardState", job: lj.LaunchJob) -> b
         fresh = await _in_executor(store.get, job.id)
         if fresh is None:
             return False
-        if not _preserved_code_may_be_approved(fresh):
+        if not _unsigned_crew_may_be_reprobed(fresh):
             logger.info("dropping a stale sign-in probe result for %s: the job moved on", job.id)
             return False
         lj.mark_signed_in(fresh)
@@ -1062,12 +1065,15 @@ async def api_cloud_launch_signin(request: web.Request) -> web.Response:
     The job auto-polls for approval; this returns the URL + code to display (and
     409 when no sign-in is pending), so the UI has a dedicated fetch for it.
 
-    A terminal job that still holds a PRESERVED code is re-probed first: nothing
-    else re-checks the box after the job goes terminal, so a code approved out of
-    band left the crew signed in while the job said it was not. The probe runs
-    only on that narrow shape (see :func:`_preserved_code_may_be_approved`) and
-    answers ``signin_already_complete``, with the corrected job, instead of the
-    bare "no sign-in pending" that hid it.
+    A terminal, registered, unsigned job is re-probed first, with or without a
+    preserved code: nothing else re-checks the box after the job goes terminal,
+    so a crew signed in later (an approved code, a sign-in on the crew itself)
+    stayed "not signed in" here. The probe runs only on that shape (see
+    :func:`_unsigned_crew_may_be_reprobed`). Three answers: signed in ->
+    ``signin_already_complete`` with the corrected job; the box said it is NOT
+    signed in -> ``no_signin_pending``; the box could not be asked ->
+    ``signin_probe_failed`` (502), which the dashboard shows as unknown, never as
+    "Needs sign-in".
     """
     denied = _guard(request, "launch_signin")
     if denied is not None:
@@ -1078,7 +1084,7 @@ async def api_cloud_launch_signin(request: web.Request) -> web.Response:
     if job is None:
         return web.json_response({"error": "not found", "code": "launch_job_not_found"}, status=404)
     if job.status != lj.AWAITING_SIGNIN or not job.signin:
-        if _preserved_code_may_be_approved(job):
+        if _unsigned_crew_may_be_reprobed(job):
             # Query off the loop, write on it under the lock. Both halves must
             # succeed to report the crew signed in: a probe that says yes but whose
             # write is dropped means another writer moved the job on, and the

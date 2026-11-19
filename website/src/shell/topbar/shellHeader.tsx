@@ -31,20 +31,19 @@ import MilestonesIndicator, { MilestonesPill } from '../../components/milestones
 import MilestonesSheet from '../../components/milestones/MilestonesSheet'
 import { useExplorePreviewSwitch } from '../../components/milestones/useMilestones'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
+import { isEmbeddedPane } from '../../lib/embedded'
 
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
 const UpdatePill = lazy(() => import('../../components/UpdatePill'))
 // The switcher with its Team Crews group, lazy so the relay list's code stays
-// out of the app core. Only the desktop app has the bridge it needs.
+// out of the app core. The group renders nothing while the relay viewer is off.
 const TeamCrewsSwitcher = lazy(() => import('../../components/TeamCrewsGroup'))
-const hasRelayCrewBridge = () =>
-  typeof (window as { relayCrewAPI?: { open?: unknown } }).relayCrewAPI?.open === 'function'
 
-/** The Crew switcher: with Team Crews in the desktop app (the plain one until its
- *  code loads), the plain one everywhere else. */
+/** The Crew switcher with Team Crews (the plain one until its code loads); an SSH
+ *  pane's own bar is the plain one, as it never lists Team Crews. */
 function CrewSwitcher() {
-  return hasRelayCrewBridge() ? (
+  return !isEmbeddedPane() ? (
     <Suspense fallback={<InstanceTabBar variant="inline" />}>
       <TeamCrewsSwitcher variant="inline" />
     </Suspense>

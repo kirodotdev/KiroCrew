@@ -64,6 +64,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "agent.orchestrator_memory"
   },
   {
+    "id": "browser.browser-isolation",
+    "label": "Browser isolation",
+    "labelKey": "pages.settings.browserPanel.isolation_label",
+    "hint": "Isolated gives each chat its own browser container: separate cookies, site storage and cache, that no other chat can see, discarded when the chat ends. On a desktop its tabs open in their own window. Shared lets every chat use the one browser as it is.",
+    "tab": "browser",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "browser.isolation"
+  },
+  {
     "id": "browser.max-frame-rate",
     "label": "Max frame rate",
     "labelKey": "pages.settings.browserPanel.max_fps_label",
@@ -833,6 +843,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.share-slack-access-slack",
+    "label": "Share Slack access (Slack)",
+    "labelKey": "pages.settings.slackSharedAccess.toggle_label",
+    "labelSuffix": "Slack",
+    "description": "Let the people listed below use this Crew from Slack.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.shared_access.enabled"
+  },
+  {
     "id": "channels.show-slack-conversations-in-the-session-list-slack",
     "label": "Show Slack conversations in the session list (Slack)",
     "labelKey": "pages.settings.slackPanel.show_in_session_list",
@@ -1097,6 +1121,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "advanced"
     },
     "configKey": "session.autocompact_pct"
+  },
+  {
+    "id": "chat.auto-open-board-in-side-panel",
+    "label": "Auto-Open Board in Side Panel",
+    "labelKey": "pages.settings.chatPanel.auto_open_conductor_board",
+    "hint": "Opens the side panel on the Board the first time you open a conductor mode chat. When this is off, the chat opens like any other chat, with its panel closed unless Keep Side Panel Open is on. Turning on conductor mode in a chat still opens the Board. This setting does not apply on a phone.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidepanel"
+    },
+    "configKey": "dashboard.auto_open_conductor_board"
   },
   {
     "id": "chat.auto-open-git-in-side-panel",
@@ -2941,6 +2978,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.reopen-where-i-left-off",
+    "label": "Reopen where I left off",
+    "labelKey": "pages.settings.displayPanel.reopen_last_page",
+    "hint": "Opening the installed app from its icon returns to the last page you had open on this device, such as one crewmate's chat, instead of Sessions. A link or notification that names a page still opens that page.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
+  },
+  {
     "id": "display.reuse-the-current-terminal",
     "label": "Reuse the current terminal",
     "labelKey": "pages.settings.displayPanel.terminal_reuse_current",
@@ -3368,7 +3417,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "privacy.send-anonymous-usage-heartbeat",
     "label": "Send anonymous usage heartbeat",
     "labelKey": "privacyDisclosure.toggleLabel",
-    "description": "Saved for future launches.",
+    "description": "One anonymous ping a day, plus a receipt when you install an official app. Off stops both.",
     "tab": "privacy",
     "type": "toggle",
     "occurrence": 1,

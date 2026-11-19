@@ -27,7 +27,7 @@ from kiro_crew.subagent_manager.admission import (
 from kiro_crew.taskq import model
 from kiro_crew.taskq.store import TaskStore, TaskStoreUnavailable
 
-pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
 
 
 def _sessions() -> MagicMock:

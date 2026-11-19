@@ -1545,6 +1545,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query cancelQueries ["pull-request-statuses"]',
     'query setQueriesData ["pull-request-statuses"]',
     'action dashboard/patchSlotSourceLinks {"url":"https://example.test/pr/1","state":"merged","ci":"passed"}',
+    'query setQueriesData ["session-source-links"]',
     'query invalidateQueries ["pull-request-source","https://example.test/pr/1"]',
     'query invalidateQueries ["pull-request-checks","https://example.test/pr/1"]',
   ],

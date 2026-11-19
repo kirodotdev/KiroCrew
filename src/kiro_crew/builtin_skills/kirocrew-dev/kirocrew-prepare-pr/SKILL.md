@@ -255,7 +255,7 @@ their module docstring instead.
 | `pre_push_gate.py` | 2 / 3 | **optional, advisory**: runs the cheap CI gates on the diff, prints every failure, records a proof for the tree; nothing refuses a push (`references/pre-push-gate.md`) | **0 proof written · 50 a gate failed · 51 a gate could not run, no skip, or a dirty tree · 52 `--verify` found no proof · 2 env** |
 | `pr_status.py [pr#]` | 3 | readiness, rollup, threads, current-head runs and reviewer stamps; `--reviewers` pins the fleet; `--json` appends a machine line | **0 clean · 10 running · 20 failing/findings · 2 env** |
 | `regen_shared.py [base]` | 1 | rebuild shared generated files after the rebase (`references/split-and-regen.md`) | **0 · 20 rewrote · 2 env** |
-| `green_age.py [--base B] [--pr N]` | 3 | has the base moved in this PR's files since its CI ran? Information, never a gate | **0 fresh · 30 STALE · 31 STALE but the re-sync cap is spent, hand over · 2 env** |
+| `green_age.py [--base B] [--pr N]` | 3 | has the base moved in this PR's files since its CI ran? Information, never a gate | **0 fresh · 30 STALE · 2 env** |
 | `pr_findings.py [pr#]` | 3 | failing log tails, unresolved threads, reviewer findings with stable `span=` ids, whole-design items first | 0 · 2 env |
 | `pr_findings.py [pr#] --rounds` | 1 / 3 | the loop's cross-round memory, read from the PR thread: goal, dispositions per judged head, spans, self-added code, mechanisms, recurrence | **0 · 30 retrospective due · 2 env** |
 | `local_review.py --base origin/<base>` | 2 | writes one review brief per profile reviewer, extracted from CI's own workflow | 0 · 40 parity failure · 2 env |
@@ -307,8 +307,8 @@ error (exit 2). So an **uncommitted `.prepare-pr.toml` edit is ignored**.
 
 **`single_commit` governs history handling in one place.** When `true`, run the
 squash (Phase 1.4) and the post-squash guard (Phase 3.1); when `false`, skip both
-and keep the branch's history. Kiro Crew allows at most **two** commits per PR:
-squash to one unless a mechanical follow-up is worth keeping separable.
+and keep the branch's history. PRs are squash-merged by default; CI does not count
+commits; the squash makes each push one reviewed commit.
 
 Design + `.prepare-pr.toml` schema: `docs/request-for-change/rfc-prepare-pr-portability.md`.
 
@@ -382,7 +382,7 @@ may edit it.
    **0** → the per-round spans and self-added counts feed question 3.
 1. **Commit, only if there are changes.** Commit by name through the guard: `python3 $SKILL_DIR/scripts/push_guard.py --commit -m "<subject>" -- <path>...` (or `-F <file>`), listing every path you changed: new, removed, and both sides of a move. It refuses (41) while anything you did not name is staged. Never `git commit -a` or a bare `git commit`. Use a Conventional-Commits subject (`feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert`).
 2. **Sync base.** `git fetch origin` — **this MUST succeed**; on failure, STOP and report it. Then `git rebase refs/remotes/origin/<base>` (full name: a local `origin/<base>` branch would win). Resolve unambiguous conflicts yourself; ask about an ambiguous large one. Before each `git rebase --continue`, `push_guard.py --check-index` must exit **0**.
-3. **Pre-squash guard** (`single_commit` only). `--squash` (step 4) runs it first, before the commit-count signal is gone.
+3. **Pre-squash guard** (`single_commit` only). `--squash` (step 4) runs it first, while foreign commits can still be seen.
 4. **Squash to one commit** (`single_commit` only). Write the message (subject, then detail) to `$(git rev-parse --absolute-git-dir)/prepare-pr-commit-msg-<branch>.txt` (`/` as `-`; consumed), or pass `--squash FILE` (kept), then `python3 $SKILL_DIR/scripts/push_guard.py --base <base> --squash`. It commits the branch's **tree**, never an index, with hooks and signing. **0** → squashed; **40** → STOP, read stderr: commits ahead, all yours → its `--max-ahead N`, once; paths it did not commit → read each diff, name them after `--` only if all yours; **41**/**64** → follow the remedy; **2** → env.
 5. **Reconcile code and description.** Run `python3 $SKILL_DIR/scripts/diff_signals.py` and `git diff origin/<base>...HEAD`. **First read *Writing register: Age 5* below** — the body says what changed and why; the diff is the evidence, and the body never restates it. Make the body **complete** (covers every flagged `!` signal), **accurate** (no claim the diff does not support), and shaped to the PR description contract. **Scaffold it from the template:** `cat "$(git rev-parse --show-toplevel)/.github/PULL_REQUEST_TEMPLATE.md"`, fill every section, never from memory; drop the CLA placeholder. A `fix`/`revert` PR fills `## Pattern harvest`; a `fix:` PR runs `prove.py` and pastes the `Proof:` line it prints under `## Tests`; a diff that takes something away lists one `Reader:` line per reader — PR Hygiene checks both and `--check-body` does not. **A tightening diff makes `## Backwards compatibility` a `Breaking:` line with a writer sweep re-run on fresh `origin/<base>` before the final push.** Write the body to `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — the one file the check reads, never committed — then run `python3 $SKILL_DIR/scripts/diff_signals.py --check-body`: **20** names a changed area the body never mentions — name it or drop it from the diff, never pad the prose to hide it. **21** means `What changed` has too many words or table rows — cut the recital, not the facts. **22**: add the template sections it names. **24**: fix or re-run `prove.py` for the `Proof:` line it prints. If the diff itself is wrong, fix it and amend by name: `push_guard.py --amend -- <path>...`.
 
@@ -524,19 +524,6 @@ comes after a record, never instead of one:
    tests for the files the line names, push with the SHA-pinned lease, and post ONE
    comment: `Rebased: main moved in <files> since this head went green (<old-base> -> <new-base>); CI re-running.`
    Exit 30 does NOT override the no-push-while-runs-are-in-flight rule above.
-   **31** → the re-sync cap is spent: do NOT rebase, report which files the base
-   keeps moving in, and hand the PR to the user. The script decides that from the
-   count of the `Rebased: main moved in` comments posted by the PR's author or by
-   a member of the project, so after three
-   green-age re-syncs on one PR it stops being your judgement call. Each re-sync
-   discards a green the PR had already earned, which is the cost the cap exists to
-   bound. **The way back is a member of the project commenting `Re-sync budget
-   reset`**, which restarts the count and grants another three. The PR's author
-   cannot: the loop drives a PR as its author, so a budget it could re-arm bounds
-   nothing. The account you run as may be such a member, so **ask for the reset,
-   never post one** — one you wrote is the cap deciding nothing. Do not clear the
-   count by deleting the `Rebased: main moved in` comments either; they are the
-   record it is read from.
 
    Then `python3 $SKILL_DIR/scripts/pr_status.py <pr#> --reviewers <profile reviewer names>`.
    **Always pin the fleet** (Kiro Crew: `--reviewers gpt,opus`): bare `pr_status.py`

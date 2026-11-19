@@ -65,15 +65,12 @@ _BASE_BOT_EVENTS = [
     "message.im",
 ]
 #: A code channel shows Slack's Stop button only when the app subscribes to it,
-#: its dashboard badge follows the channel's archive state and name, and a click
-#: on a context-bar action item (Create PR, Stop) reaches the app as
-#: ``code_channel_action`` (code channel properties: ``item_type: "action"``).
+#: and its dashboard badge follows the channel's archive state and name.
 _CODE_CHANNEL_EVENTS = [
     "agent_session_stopped",
     "channel_archive",
     "channel_rename",
     "channel_unarchive",
-    "code_channel_action",
     "group_archive",
     "group_rename",
     "group_unarchive",
@@ -216,6 +213,15 @@ class TestCodeChannelMessageDelivery:
             events = set(_bot_events(_manifest(combo)))
             assert {"message.channels", "message.groups"} <= events, combo
             assert "message.session" not in events, combo
+
+    def test_context_bar_click_is_not_a_bot_event_subscription(self) -> None:
+        # Slack's App Manifest editor refuses the whole manifest over it: "Scopes
+        # could not be verified for `code_channel_action` as it is not a valid bot
+        # user event type". Slack's events reference lists no such event.
+        on = [combo for combo in _COMBOS if slack_manifest.CODE_CHANNELS in combo]
+        assert on
+        for combo in on:
+            assert "code_channel_action" not in _bot_events(_manifest(combo)), combo
 
     def test_no_slash_command_url_because_socket_mode_routes_agent_commands(self) -> None:
         # Socket Mode delivers runtime-registered agent commands without a URL, and

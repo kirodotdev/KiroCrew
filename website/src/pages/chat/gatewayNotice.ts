@@ -628,6 +628,28 @@ const LEGACY: readonly Legacy[] = [
 ]
 
 /**
+ * The lead a notice may open with. Older gateways baked a status glyph into the
+ * text (U+2139 info, U+26A0 warning, U+26D4 no-entry, U+274C cross, U+27F3
+ * retry, U+1F4CC pin, U+23F1 stopwatch); current ones write a word (`Note:`,
+ * `Warning:`, `Blocked:`, `Error:`, `Stopped:`) or nothing. The table above is
+ * written in the glyph form, so the table and the content are both matched with
+ * the lead removed, and one row reads every spelling: saved history keeps the
+ * glyph forever.
+ */
+const NOTICE_LEAD_RE =
+  /^(?:(?:\u2139|\u26A0|\u26D4|\u274C|\u27F3|\u{1F4CC}|\u23F1)\uFE0F*\s*|(?:Note|Warning|Blocked|Error|Stopped):\s*)/u
+const SOURCE_LEAD_RE = /^\^(?:\u2139|\u26A0|\u26D4|\u274C|\u27F3|\u{1F4CC}|\u23F1)(?:\\uFE0F\?)? /u
+const LEGACY_LEADLESS: readonly Legacy[] = LEGACY.map(entry => ({
+  ...entry,
+  re: new RegExp(entry.re.source.replace(SOURCE_LEAD_RE, '^'), entry.re.flags),
+}))
+
+/** `content` without its lead glyph or lead word, if it has one. */
+export function stripNoticeLead(content: string): string {
+  return content.replace(NOTICE_LEAD_RE, '')
+}
+
+/**
  * The KAS signed-out sentences a row carries without their token: rows stored
  * before the token existed, and side-panel rows. Fixed text, so they are matched
  * as text: the bare sentence, the relay-led one, and the one led by "KAS runs on
@@ -660,8 +682,9 @@ function isToken(value: unknown): value is GatewayNoticeToken {
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(NOTICE_FAMILIES, value)
 }
 
-function legacyShape(content: string, m?: ChatMessage): Shape | null {
-  for (const entry of LEGACY) {
+function legacyShape(raw: string, m?: ChatMessage): Shape | null {
+  const content = stripNoticeLead(raw)
+  for (const entry of LEGACY_LEADLESS) {
     const match = entry.re.exec(content)
     if (!match) continue
     const token = entry.pendingWithRetryKind && m && isRetryNotice(m) ? entry.pendingWithRetryKind : entry.token
@@ -723,8 +746,8 @@ function copyOf({ token, args }: Shape): string {
 
 /**
  * *message* led by the route the KAS engine took, in plain words, when the row
- * names one: every KAS prompt names the real route
- * (docs/decisions/2026-10-30-choosing-kas-runs-kiro-crews-own-engine-when-kiro-cli-cannot.md).
+ * names one, where the row is shown as text. The sign-in prompts with a button
+ * name no route (the recorded decision on signed-out sign-in prompts).
  */
 function withKasRoute(args: Args, message: string): string {
   const route =
@@ -805,17 +828,6 @@ function outcomeAfter(messages: readonly ChatMessage[], index: number): Outcome 
     }
   }
   return 'pending'
-}
-
-/**
- * Copy for a KAS signed-out row drawn with the sign-in button under it, or null
- * for any other row. The row's own copy names the Settings path, for a surface
- * with no button; next to the button, the button is the way.
- */
-export function kasSignedOutBesideButton(m: ChatMessage): string | null {
-  const shape = shapeOf(m)
-  if (shape?.token !== 'kas_signed_out') return null
-  return withKasRoute(shape.args, i18nT('pages.chat.gatewayNotice.kas_signed_out_sign_in_below'))
 }
 
 /**

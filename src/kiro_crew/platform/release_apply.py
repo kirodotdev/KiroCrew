@@ -17,14 +17,14 @@ The order is fixed:
    venv, or the shadow tree the wheel engine builds beside the running one);
 2. the NEW release's own ``kirocrew kas install --if-in-use`` runs, on the new
    code's interpreter, so the pin it installs is the new release's and not the
-   one this process imported. The child decides how much the install needs the
-   engine: ``agent.kas_bundle`` is on, or an engine is on disk and KAS takes the
-   bundle route on its own (a failure fails the update), an engine
-   version is only on disk (a failure, or a download still running at
+   one this process imported. Every update puts the pinned engine on disk;
+   the child decides only how much a failure matters:
+   ``agent.kas_bundle`` is on, or an engine is on disk and KAS takes the
+   bundle route on its own (a failure fails the update), or anything else,
+   including no engine on disk at all (a failure, or a download still running at
    :data:`ENGINE_OPTIONAL_DEADLINE_SECS`, exits :data:`ENGINE_OPTIONAL_FAILED_EXIT`,
-   and the update goes on with the retry command reported), or neither (nothing
-   to do), so a relay-route host that cannot fetch the engine, or fetches it
-   slowly, keeps updating;
+   and the update goes on with the retry command reported), so a relay-route
+   host that cannot fetch the engine, or fetches it slowly, keeps updating;
 3. only then is the release switched to: the wheel engine promotes the stable
    link, the git callers restart. A failed or timed-out engine install fails the
    update before that switch, and the old version keeps running.
@@ -79,8 +79,8 @@ ENGINE_INSTALL_TIMEOUT_SECS = 900.0
 #: ``-P`` like every self-launch of ``-m kiro_crew``.
 ENGINE_INSTALL_ARGS = ("-I", "-P", "-m", "kiro_crew", "kas", "install", "--if-in-use")
 
-#: What ``kas install --if-in-use`` exits with when it refreshed nothing for an
-#: engine that is only on disk (``agent.kas_bundle`` is off). Not a failure of the
+#: What ``kas install --if-in-use`` exits with when it installed nothing for an
+#: engine nothing here runs (``agent.kas_bundle`` is off). Not a failure of the
 #: update: nothing runs that engine, so the release still switches.
 ENGINE_OPTIONAL_FAILED_EXIT = 4
 
@@ -108,7 +108,7 @@ ENGINE_SKIPPED_MESSAGE = (
 DATA_HOME_ENV = "KIROCREW_HOME"
 
 #: The progress line both routes show while the engine step runs.
-ENGINE_STEP_MESSAGE = "Installing the KAS engine the new version pins (when this install runs it)…"
+ENGINE_STEP_MESSAGE = "Installing the KAS engine the new version pins…"
 
 
 #: What argparse prints when the target release predates the engine step: one with
@@ -177,8 +177,8 @@ def _install_engine(python: Path, ctx: _BuildContext) -> str | None:
     Returns ``None`` when the engine is in place (or not needed), and
     :data:`ENGINE_SKIPPED_MESSAGE` when the child exited
     :data:`ENGINE_OPTIONAL_FAILED_EXIT`, or exited any other nonzero way after
-    printing :data:`ENGINE_OPTIONAL_MARKER`: an engine only on disk was not
-    refreshed, which the caller reports and does not fail on. An optional child
+    printing :data:`ENGINE_OPTIONAL_MARKER`: an engine nothing here runs was not
+    installed, which the caller reports and does not fail on. An optional child
     ends itself by :data:`ENGINE_OPTIONAL_HARD_STOP_SECS`, so this process's own
     timeout only ends a required install. Raises :class:`EngineInstallError` on a nonzero exit, and the spawn's own
     :class:`WheelUpdateError` (timeout, could not start) or

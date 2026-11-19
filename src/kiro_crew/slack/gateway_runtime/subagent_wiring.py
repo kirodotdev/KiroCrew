@@ -204,7 +204,7 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                 "agents": agents,
             }
             logger.info(
-                "subagent_status WS: event=%s slot=%s running=%d agents=%d",
+                "📡 subagent_status WS: event=%s slot=%s running=%d agents=%d",
                 event,
                 slot,
                 running,
@@ -493,11 +493,11 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                 slot.append(
                     "assistant",
                     f"{SUBAGENT_COMPLETION_PREFIX}\n"
-                    f"Agent `{info.id}` ❌\n"
+                    f"Agent `{info.id}` failed: result delivery failed\n"
                     f"Task: {task_preview}\n\n"
                     f"Usage: {usage}\n\n"
                     f"Error: {error_text}\n"
-                    f"⚠️ Result delivery failed — {outcome_line}",
+                    f"Warning: Result delivery failed — {outcome_line}",
                     "msg msg-a",
                     meta={
                         SUBAGENT_COMPLETION_META_KEY: single_completion_meta(

@@ -109,6 +109,8 @@ BASELINE_UNGATED: Dict[str, str] = {
     "sandbox.min_level": "ordinal; unnamed keeps Crew's sandbox default, and the organisation's "
     "crew_sandbox_min_level can only raise it (RFC D7)",
     "mcp": _OPEN + "MCP servers are meant to be governed by KAS and KGL",
+    "unattended_web_tools": _OPEN
+    + "with no `ask` rule on `web_fetch` or `web_search`, trust approves them as before",
     "tools": _OPEN + "a remote policy that names tools still decides; each call meets its own rows",
     "commands": _OPEN
     + "under the default `normal` mode a command that is not read-only still asks",

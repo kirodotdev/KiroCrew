@@ -271,7 +271,26 @@ def pin_seal_parents(launch):
     :func:`seal_readonly`, so every seal lands on its pin. An absent name is skipped; a
     name that reaches another object after the bind refuses the spawn.
     """
-    for d in sorted(launch.parent_pins, key=lambda p: (p.count("/"), p)):
+    _pin_over_themselves(launch, launch.parent_pins, "a parent of a read-only seal")
+
+
+def pin_mask_parents(launch):
+    """Bind the folder of each app that declares a credential mask over itself, last.
+
+    The same pin as :func:`pin_seal_parents`, for the same kernel rule, at the other end
+    of the stages. An update replaces ``apps/<app>`` from the gateway's namespace and
+    renames ``data/`` into the new folder. A mount stays on the mount it was placed
+    through, so a mask or a ``data/`` pin placed through a pin of the old folder would sit
+    on a mount no later lookup reaches. Left unpinned until now, the app folder keeps
+    those on the outer mount, which the rename keeps, and its recursive pin here only adds
+    one copy of them. These folders never nest, so the order does not matter.
+    """
+    _pin_over_themselves(launch, launch.mask_parent_pins, "the folder of a credential-masking app")
+
+
+def _pin_over_themselves(launch, pins, what):
+    """Bind each of *pins* over itself, shallowest first; refuse if one moves meanwhile."""
+    for d in sorted(pins, key=lambda p: (p.count("/"), p)):
         target = d.encode()
         _pin_fd, _pin_target = _hold_seal_parent(launch, target)
         if _pin_target is None:
@@ -279,7 +298,7 @@ def pin_seal_parents(launch):
         try:
             _pin_id = os.fstat(_pin_fd)
             _mount_or_die(
-                launch, _pin_target, _pin_target, _MS_BIND | _MS_REC, "pinning seal parent %s" % d
+                launch, _pin_target, _pin_target, _MS_BIND | _MS_REC, "pinning %s %s" % (what, d)
             )
         finally:
             os.close(_pin_fd)
@@ -293,8 +312,8 @@ def pin_seal_parents(launch):
                 os.close(_post_fd)
         if not _same:
             sys.exit(
-                "sandbox: BLOCKED -- %s changed while it was being pinned, so a parent of a "
-                "read-only seal could not be held in place." % d
+                "sandbox: BLOCKED -- %s changed while it was being pinned, so %s could not "
+                "be held in place." % (d, what)
             )
 
 

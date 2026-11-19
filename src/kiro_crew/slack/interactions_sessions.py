@@ -32,7 +32,7 @@ from kiro_crew.session_lifecycle import (
     consume_stop_declined,
     decline_stop,
 )
-from kiro_crew.slack.handler import is_allowed_user, is_owner
+from kiro_crew.slack.handler import is_allowed_user, is_owner, is_shared_listed, is_shared_user
 from kiro_crew.slack.interactions_context import _orch, ack_button
 
 logger = logging.getLogger("kiro_crew.slack.interactions")
@@ -49,7 +49,7 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
     if not _orch or not _orch.sessions:
         await ack_button(payload, channel, msg_ts)
         return
-    if not is_allowed_user(user_id):
+    if not (is_allowed_user(user_id) or is_shared_user(user_id)):
         logger.warning("stop_confirm denied for unauthorized user %s", user_id or "unknown")
         sel().log_api_access(
             caller=user_id or "unknown",
@@ -64,6 +64,9 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
 
     # Find the active session in this channel/thread
     thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
+    if await _shared_stop_refused(user_id, thread_ts, payload, channel):
+        await ack_button(payload, channel, msg_ts)
+        return
     has_session = _orch.sessions.has_session(thread_ts)
     # READ, not popped: removed below only once the cancel went through.
     active_task = _orch._session_tasks.get(thread_ts)
@@ -99,17 +102,17 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
         async def _on_soft() -> None:
             from kiro_crew.slack.blocks import build_stopped_blocks
 
-            await _update_ephemeral(build_stopped_blocks(), "[Stopped]")
+            await _update_ephemeral(build_stopped_blocks(), "⏹ [Stopped]")
             if _orch and _orch.slack:
-                await _orch.slack.post_message(channel, "Execution stopped.", thread_ts)
+                await _orch.slack.post_message(channel, "⏹ Execution stopped.", thread_ts)
 
         async def _on_hard() -> None:
             from kiro_crew.slack.blocks import build_stop_failed_blocks
 
-            await _update_ephemeral(build_stop_failed_blocks(), "[Stop Failed, Session Reset]")
+            await _update_ephemeral(build_stop_failed_blocks(), "⛔ [Stop Failed, Session Reset]")
             if _orch and _orch.slack:
                 await _orch.slack.post_message(
-                    channel, "Execution stopped — session reset.", thread_ts
+                    channel, "⛔ Execution stopped — session reset.", thread_ts
                 )
 
         # A repeat press within the window by the same presser, while the
@@ -237,7 +240,7 @@ async def _handle_stop_kill_now(
     """
     if not _orch or not _orch.sessions:
         return
-    if not is_allowed_user(user_id):
+    if not (is_allowed_user(user_id) or is_shared_user(user_id)):
         logger.warning("stop_kill_now denied for unauthorized user %s", user_id or "unknown")
         sel().log_api_access(
             caller=user_id or "unknown",
@@ -250,6 +253,8 @@ async def _handle_stop_kill_now(
         return
     session_key = action.get("value", "")
     if not session_key:
+        return
+    if await _shared_stop_refused(user_id, session_key, payload, channel):
         return
 
     response_url = payload.get("response_url", "")
@@ -265,7 +270,7 @@ async def _handle_stop_kill_now(
                         proxy=resolve_proxy(response_url),
                         json={
                             "replace_original": True,
-                            "text": "[Stop Failed, Session Reset]",
+                            "text": "⛔ [Stop Failed, Session Reset]",
                             "blocks": build_stop_failed_blocks(),
                         },
                     )
@@ -276,9 +281,15 @@ async def _handle_stop_kill_now(
             # rather than session_key: for linked dashboard sessions these
             # differ, and session_key would not be a valid Slack thread.
             thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
-            await _orch.slack.post_message(channel, "Execution stopped — session reset.", thread_ts)
+            await _orch.slack.post_message(
+                channel, "⛔ Execution stopped — session reset.", thread_ts
+            )
 
-    outcome = await _orch.sessions.stop_turn(session_key, force=True, on_hard=_on_hard)
+    # A shared user's Kill Now keeps the thread's queue (the owner's messages in it
+    # included) for the successor session, as the forced `!stop` does.
+    outcome = await _orch.sessions.stop_turn(
+        session_key, force=True, preserve_queue=is_shared_listed(user_id), on_hard=_on_hard
+    )
     sel().log_tool_invocation(
         session_key=session_key,
         source="slack",
@@ -337,7 +348,7 @@ async def _handle_session_resume(
 
     if existing_thread and existing_channel:
         link = f"https://slack.com/archives/{existing_channel}/p{existing_thread.replace('.', '')}"
-        label = f"This session is already active: <{link}|Go to conversation>"
+        label = f"\U0001f9f5 This session is already active: <{link}|Go to conversation>"
         response_url = payload.get("response_url", "")
         if response_url:
             try:
@@ -366,7 +377,7 @@ async def _handle_session_resume(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"Resume *{title}*\nWhere would you like to continue?",
+                "text": f"\U0001f504 Resume *{title}*\nWhere would you like to continue?",
             },
         },
         {
@@ -374,13 +385,13 @@ async def _handle_session_resume(
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Thread"},
+                    "text": {"type": "plain_text", "text": "\U0001f4ce Thread"},
                     "action_id": f"mc_resume_thread_{short_id}",
                     "value": choice_value,
                 },
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "DM"},
+                    "text": {"type": "plain_text", "text": "\U0001f4ac DM"},
                     "action_id": f"mc_resume_dm_{short_id}",
                     "value": choice_value,
                 },
@@ -533,7 +544,7 @@ async def _handle_session_end(
     await _record_session_dismissed(key_to_remove or session_id)
 
     response_url = payload.get("response_url", "")
-    label = f"Session `{session_id[:12]}…` ended."
+    label = f"🛑 Session `{session_id[:12]}…` ended."
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:
@@ -554,11 +565,44 @@ async def _handle_session_end(
             pass
 
 
+async def _outside_code_channel(channel: str) -> bool:
+    """Whether a shared user may act in *channel*: not a code channel of the owner's,
+    bound or revoked (a DM never is one, so the store is not read for it)."""
+    from kiro_crew.slack.code_channels.routing import (
+        shared_user_refused_in,
+        shared_user_refused_unbound,
+    )
+
+    if await asyncio.to_thread(shared_user_refused_in, channel):
+        return False
+    return not await shared_user_refused_unbound(getattr(_orch, "slack", None), channel)
+
+
+async def _shared_stop_refused(user_id: str, session_key: str, payload: dict, channel: str) -> bool:
+    """A shared user's Stop button naming a code channel's session, from any channel:
+    refused and audited (code channels stay the owner's)."""
+    from kiro_crew.slack.handler import shared_user_refused_for_session
+
+    message = payload.get("message", {}) or {}
+    thread_ts = str(message.get("thread_ts") or message.get("ts") or "")
+    return await shared_user_refused_for_session(user_id, session_key, thread_ts, channel)
+
+
 async def _handle_inline_stop(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
-    """Stop the active turn for a session via the inline stop button."""
-    if not is_owner(user_id):
+    """Stop the active turn for a session via the inline stop button.
+
+    The owner, or an admitted shared user (``slack.shared_access``) outside a code
+    channel: code channels stay the owner's.
+    """
+    if not (
+        is_owner(user_id)
+        or (
+            (is_allowed_user(user_id) or is_shared_user(user_id))
+            and await _outside_code_channel(channel)
+        )
+    ):
         sel().log_api_access(
             caller=user_id,
             operation="slack.inline_stop",
@@ -577,6 +621,8 @@ async def _handle_inline_stop(
             resources=session_key,
         )
         return
+    if await _shared_stop_refused(user_id, session_key, payload, channel):
+        return
 
     sel().log_api_access(
         caller=user_id,
@@ -589,7 +635,7 @@ async def _handle_inline_stop(
     # Immediate feedback — update the working message to show stopping
     if _orch.slack and channel and msg_ts:
         try:
-            await _orch.slack.update_message(channel, msg_ts, text="_Stopping…_")
+            await _orch.slack.update_message(channel, msg_ts, text="⏹ _Stopping…_")
         except Exception:
             # The "Stopping" text is cosmetic; the stop runs either way.
             pass
@@ -597,7 +643,7 @@ async def _handle_inline_stop(
     async def _on_soft() -> None:
         if _orch.slack and channel and msg_ts:
             try:
-                await _orch.slack.update_message(channel, msg_ts, text="Execution stopped.")
+                await _orch.slack.update_message(channel, msg_ts, text="⏹ Execution stopped.")
             except Exception:
                 # The status text is cosmetic.
                 pass
@@ -606,7 +652,7 @@ async def _handle_inline_stop(
         if _orch.slack and channel and msg_ts:
             try:
                 await _orch.slack.update_message(
-                    channel, msg_ts, text="Execution stopped — session reset."
+                    channel, msg_ts, text="⛔ Execution stopped — session reset."
                 )
             except Exception:
                 # The status text is cosmetic.
@@ -651,7 +697,7 @@ async def _handle_inline_stop(
         await decline_stop(session_key, user_id, _say_declined)
     elif outcome == "idle" and _orch.slack and channel and msg_ts:
         try:
-            await _orch.slack.update_message(channel, msg_ts, text="Nothing running.")
+            await _orch.slack.update_message(channel, msg_ts, text="⏹ Nothing running.")
         except Exception:
             # The status text is cosmetic.
             pass
@@ -685,7 +731,7 @@ async def _handle_session_new(
     # Post a new message that starts a fresh thread
     try:
         await _orch.slack.post_message(
-            channel, "New session started. Send your first message here."
+            channel, "✨ New session started. Send your first message here."
         )
     except Exception:
         logger.debug("Failed to create new session message", exc_info=True)
@@ -693,7 +739,7 @@ async def _handle_session_new(
 
     # Ack the button
     response_url = payload.get("response_url", "")
-    label = "New session created."
+    label = "✨ New session created."
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:

@@ -28,7 +28,7 @@ async def test_unrecognized_bang_returns_error():
     assert result == ""
     slack.post_message.assert_called_once_with(
         "C1",
-        "Error: Unknown command `!foo`. Type `/kirocrew help` for available commands.",
+        "❌ Unknown command `!foo`. Type `/kirocrew help` for available commands.",
         "t1",
     )
 
@@ -67,6 +67,6 @@ async def test_bare_exclamation_returns_error():
     assert result == ""
     slack.post_message.assert_called_once_with(
         "C1",
-        "Error: Unknown command `!`. Type `/kirocrew help` for available commands.",
+        "❌ Unknown command `!`. Type `/kirocrew help` for available commands.",
         "t1",
     )

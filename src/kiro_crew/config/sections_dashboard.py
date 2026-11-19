@@ -269,6 +269,15 @@ class DashboardConfig:
             "30 seconds in the MCP gateway process).",
         ),
     )
+    turn_cache_estimate: bool = field(
+        default=False,
+        metadata=_meta(
+            "Estimate cache rebuilds",
+            'Mark a reply in its footer as "Cache likely rebuilt" when the backend reports '
+            "no cache counts and the turn started after a pause longer than the model keeps "
+            "the conversation cached. Backends that report cache counts are unaffected.",
+        ),
+    )
     crewmate_threads: bool = field(
         default=False,
         metadata=_meta(
@@ -717,6 +726,18 @@ class DashboardConfig:
             "closed, and show it each time the panel opens. A panel opened for "
             "something specific, such as a file, still shows that. Works only "
             "while session summaries are on.",
+        ),
+    )
+    auto_open_conductor_board: bool = field(
+        default=True,
+        metadata=_meta(
+            "Auto-open the Board in the side panel",
+            "Open the right side panel on the Board tab the first time you open a "
+            "conductor mode chat. With this off, a conductor mode chat opens like "
+            "any other chat: its panel stays closed unless Keep the side panel "
+            "open is on, and the Board is still the panel's first tab. Turning "
+            "conductor mode on in a chat still opens the Board. This setting "
+            "does not apply on a phone.",
         ),
     )
     # Default TRUE: the chip strip shipped unconditionally before this switch

@@ -23,6 +23,7 @@ import os
 import socket
 import stat
 import sys
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -777,12 +778,42 @@ UNRESOLVABLE = [
 ]
 
 
-def _open_fds() -> set[str] | None:
-    """The descriptors this process holds, or ``None`` where they cannot be listed."""
-    try:
-        return set(os.listdir("/proc/self/fd"))
-    except OSError:
-        return None
+@contextmanager
+def _descriptors_left_open(monkeypatch: pytest.MonkeyPatch) -> Iterator[set[int]]:
+    """The descriptors ``os.open`` hands this thread inside the block that ``os.close`` has not closed.
+
+    The worker's other threads open and close descriptors of their own, so
+    only this thread's ``os.open`` calls are counted. A descriptor handed to
+    ``os.fdopen`` is closed by its file object, not ``os.close``; every call
+    checked here refuses or raises before any writer reaches that step.
+    A descriptor made another way (``os.dup``, ``os.pipe``) is not seen; the
+    member-folder walk makes every descriptor it holds with ``os.open``.
+    """
+    outstanding: set[int] = set()
+    caller = threading.get_ident()
+    real_open, real_close = os.open, os.close
+
+    def spy_open(*args: Any, **kwargs: Any) -> int:
+        fd = real_open(*args, **kwargs)
+        if threading.get_ident() == caller:
+            outstanding.add(fd)
+        return fd
+
+    def spy_close(fd: int) -> None:
+        try:
+            real_close(fd)
+        finally:
+            outstanding.discard(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", spy_open)
+        patch.setattr(os, "close", spy_close)
+        # The code asks ``os.open in os.supports_dir_fd`` before it walks by
+        # descriptor; the spies stand in for the real functions there too.
+        spies = {real_open: spy_open, real_close: spy_close}
+        for name in ("supports_dir_fd", "supports_fd", "supports_follow_symlinks"):
+            patch.setattr(os, name, {spies.get(f, f) for f in getattr(os, name)})
+        yield outstanding
 
 
 NEEDS_A_USER_WHO_CAN_BE_REFUSED = (
@@ -866,10 +897,10 @@ def test_a_members_that_leads_to_no_existing_folder_is_refused_and_creates_nothi
         for p in (tmp_path / "locked", tmp_path / "target", tmp_path / "readonly")
         if p.exists()
     }
-    fds = _open_fds()
-    result = _run(site)
+    with _descriptors_left_open(monkeypatch) as left_open:
+        result = _run(site)
     assert isinstance(result, members.MemberSlugError), result
-    assert _open_fds() == fds
+    assert left_open == set()
     assert _snapshot(watched) == before
     assert not (tmp_path / "missing").exists()
     assert not (tmp_path / "nowhere").exists()
@@ -1004,14 +1035,14 @@ def test_the_helper_raises_nothing_but_the_refusal_and_its_message_names_no_path
     from kiro_crew import member_folder
 
     _unresolvable(kind, tmp_path, monkeypatch)
-    fds = _open_fds()
-    with pytest.raises(members.MemberSlugError) as refused:
-        with member_folder.open_member_folder(members.member_slug(SLUG)):
-            pytest.fail("the helper opened a folder behind a link that leads nowhere")
+    with _descriptors_left_open(monkeypatch) as left_open:
+        with pytest.raises(members.MemberSlugError) as refused:
+            with member_folder.open_member_folder(members.member_slug(SLUG)):
+                pytest.fail("the helper opened a folder behind a link that leads nowhere")
     message = str(refused.value)
     assert str(tmp_path) not in message
     assert "hop-" not in message and "folder-" not in message and "nowhere" not in message
-    assert _open_fds() == fds
+    assert left_open == set()
 
 
 @pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "no_pin"])
@@ -1063,15 +1094,15 @@ def test_an_interrupt_before_the_folder_is_handed_out_is_not_turned_into_the_ref
         raise raised
 
     monkeypatch.setattr(members, "members_root", members_root)
-    fds = _open_fds()
-    with pytest.raises(type(raised)) as at_the_helper:
-        with member_folder.open_member_folder(members.member_slug(SLUG)):
-            pytest.fail("the helper opened a folder it could not make")
-    assert at_the_helper.value is raised
-    with pytest.raises(type(raised)) as at_a_writer:
-        SITES[0].call()
-    assert at_a_writer.value is raised
-    assert _open_fds() == fds
+    with _descriptors_left_open(monkeypatch) as left_open:
+        with pytest.raises(type(raised)) as at_the_helper:
+            with member_folder.open_member_folder(members.member_slug(SLUG)):
+                pytest.fail("the helper opened a folder it could not make")
+        assert at_the_helper.value is raised
+        with pytest.raises(type(raised)) as at_a_writer:
+            SITES[0].call()
+        assert at_a_writer.value is raised
+    assert left_open == set()
 
 
 @pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "no_pin"])
@@ -1087,12 +1118,12 @@ def test_what_the_callers_body_raises_inside_the_with_reaches_the_caller_unchang
 
     if not pinned:
         monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
-    fds = _open_fds()
-    with pytest.raises(type(raised)) as caught:
-        with member_folder.open_member_folder(members.member_slug(SLUG)):
-            raise raised
+    with _descriptors_left_open(monkeypatch) as left_open:
+        with pytest.raises(type(raised)) as caught:
+            with member_folder.open_member_folder(members.member_slug(SLUG)):
+                raise raised
     assert caught.value is raised
-    assert _open_fds() == fds
+    assert left_open == set()
 
 
 @requires_symlinks

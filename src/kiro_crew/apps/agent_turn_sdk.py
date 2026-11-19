@@ -13,8 +13,12 @@ it fixes the parts an app must not choose:
   gate (``HOOK_BASED``); :meth:`AgentTurnSDK.run_oneshot` rejects every tool
   (``REJECT_ALL``). No method takes an approval policy, so an app cannot ask for
   auto-approval. A call the gate neither denies nor grants goes to the owner's
-  approval prompt, the one cron jobs use (:func:`set_turn_approver`), never
-  straight to an approve.
+  approval prompt, the one cron jobs use (:func:`set_turn_approver`), never to
+  the caller-less default approve; under the gateway's ``auto`` approval mode that
+  prompt approves it without asking, as a channel turn's does, but only when the
+  session runs one of the app's own agents (``<app>--<agent>.json``). That is
+  judged once, when the SDK starts the session; a reused session keeps the
+  verdict, and one the SDK did not start in this process is not own.
 * **Admission.** Every turn is admitted as Crew automation
   (``OperationKind.BACKGROUND``); a refusal raises ``TurnRefused`` and the work
   never runs.
@@ -68,25 +72,71 @@ class AgentTurnRefused(PermissionError):
     """The app's ``capabilities.spawn`` ceiling refuses the agent this turn runs."""
 
 
-#: The gateway's approval prompt for app turns: called with the app's name, it
-#: returns the ``on_tool_approval`` callback a turn of that app asks. ``None``
-#: until a gateway registers one (a bare test application).
-_turn_approver: Callable[[str], Any] | None = None
+#: The gateway's approval prompt for app turns: called with the app's name and
+#: whether the turn runs one of that app's own agents (``own_agent``), it returns
+#: the ``on_tool_approval`` callback the turn asks. ``None`` until a gateway
+#: registers one (a bare test application).
+_turn_approver: Callable[..., Any] | None = None
 
 
-def set_turn_approver(factory: Callable[[str], Any] | None) -> None:
+def set_turn_approver(factory: Callable[..., Any] | None) -> None:
     """Register the gateway's approval prompt for every app turn (``None`` clears it).
 
     Without one, a call the hook gate neither denies nor grants is refused; with
-    one it asks the owner, as a cron job's call does.
+    one it asks the owner, as a cron job's call does. *factory* is called as
+    ``factory(app, own_agent=...)``.
     """
     global _turn_approver
     _turn_approver = factory
 
 
-def _approver_for(app: str) -> Any:
+#: Whether a session runs one of its app's own agents, judged once when this SDK
+#: created the session: session key -> (app, recorded agent, verdict). The spec
+#: file a live session loaded does not change when the owner re-pins the name
+#: later, so a reused session keeps the verdict from its start. A key with no
+#: entry (a session this process did not start through the SDK) is not own.
+#: shortcut: an entry is dropped only when the SDK resets the session; a session
+#: closed elsewhere leaves a small stale entry that its next new start replaces.
+_own_agent_by_session: dict[str, tuple[str, str, bool]] = {}
+
+
+def _recorded_own_agent(key: str, app: str, agent: str) -> bool:
+    """The verdict stored for session *key*, or False when none matches *app* and *agent*."""
+    entry = _own_agent_by_session.get(key)
+    return entry is not None and entry[:2] == (app, agent) and entry[2]
+
+
+def _approver_for(app: str, *, own_agent: bool) -> Any:
     factory = _turn_approver
-    return factory(app) if factory is not None else None
+    return factory(app, own_agent=own_agent) if factory is not None else None
+
+
+def _is_own_agent(app: str, agent: str) -> bool:
+    """Whether *agent* is one of *app*'s own agents. Blocking; fails closed.
+
+    Asks ``session_agent_spec_path`` for the file a session of *agent* will load.
+    That resolver reads the mate conductor and worker from the crewmate folder,
+    follows ``agent.spec_pins``, refuses links, and raises when two files claim
+    the name with no pin or the pin is broken. The agent is the app's own only
+    when that file sits directly in the user agents folder and is named
+    ``<app>--<agent>.json``, the name the app bridge writes. No file, any other
+    file, and any error are not own.
+    """
+    from kiro_crew.agent import session_agent_spec_path
+    from kiro_crew.apps.bridges import _namespace, _safe_link_name
+    from kiro_crew.config.paths import kiro_agents_dir
+
+    try:
+        path = session_agent_spec_path(agent)
+        if path is None:
+            return False
+        return (
+            path.parent.resolve() == kiro_agents_dir().resolve()
+            and path.name == _safe_link_name(_namespace(app, agent)) + ".json"
+        )
+    except Exception:
+        logger.warning("%s: agent spec unresolved; app turn is not own-agent", app, exc_info=True)
+        return False
 
 
 async def _refuse_unsettled(_event: Any) -> bool:
@@ -261,17 +311,29 @@ class AgentTurnSDK:
         # ``owning_app`` is the app the gate below judges this session's calls
         # under, so the session's own governance reads (its KAS projection among
         # them) judge under the same app.
-        provider, _is_new, _resumed = await sessions.get_or_create(
+        provider, is_new, _resumed = await sessions.get_or_create(
             key, agent=asked, owning_app=self._app
         )
         try:
             running = await self._require_recorded_agent(sessions, key, asked)
+            # Only a turn on one of the app's own agents may follow the gateway's
+            # ``auto`` mode: the host default agent or another app's agent asked
+            # by an app is the escalation ``ctx.spawn`` refuses, so it is asked.
+            # The file is judged when the session starts, the moment it loads that
+            # file; a reused session keeps that verdict, because a later re-pin
+            # does not change what it runs. Inside this guard, so a cancel during
+            # the read releases the lease.
+            if is_new:
+                own_agent = await asyncio.to_thread(_is_own_agent, self._app, running)
+                _own_agent_by_session[key] = (self._app, running, own_agent)
+            else:
+                own_agent = _recorded_own_agent(key, self._app, running)
         except BaseException:
             sessions.release(key)
             raise
         app = self._app
         hooks = self._hooks()
-        approver = _approver_for(app) or _refuse_unsettled
+        approver = _approver_for(app, own_agent=own_agent) or _refuse_unsettled
 
         async def _run_turn() -> str:
             from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
@@ -354,6 +416,8 @@ class AgentTurnSDK:
                     key,
                     exc_info=True,
                 )
+            # The next turn starts a new session, which is judged again then.
+            _own_agent_by_session.pop(key, None)
 
     async def run_oneshot(self, prompt: str, *, label: str = "oneshot") -> str:
         """One tool-less model call in a throwaway session; the raw reply.

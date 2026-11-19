@@ -280,7 +280,7 @@ def bot_command_payload() -> list[dict[str, str]]:
     return rows
 
 
-_HELP_HEADER = "Kiro Crew — Telegram"
+_HELP_HEADER = "🦞 Kiro Crew — Telegram"
 _HELP_FOOTER = (
     "/title <text> — rename this conversation\n"
     "/spawn <task> — run it in a background subagent (alias: /bg)\n"

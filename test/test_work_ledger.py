@@ -1687,6 +1687,14 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # own board holds an open crew-bound item (``board_has_open_remote``) and
         # hands it to ``remote_ingest.ingest_board``, which files exactly as on a read.
         "dashboard/handlers/remote_puller.py",
+        # Its batch pull: the same per-item read for every item one crew holds, in
+        # one call. It reads the conductor's own board's fold and remote records to
+        # build the cursor, takes no identity and writes nothing itself.
+        "dashboard/handlers/remote_batch_pull.py",
+        # The peer's batch read for one hub conductor, the owner-gated sibling of
+        # ``remote_work_item.py``: it reads that conductor's ``hub:`` mailbox board
+        # only, and writes nothing.
+        "dashboard/handlers/remote_work_items_pull.py",
         # ``conductor_wake.py`` was listed here while it resolved a worker slot to its
         # conductor's binding for the close and turn-end triggers. Both triggers are
         # gone and the one that remains is a crew-log bus subscription whose event

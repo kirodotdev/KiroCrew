@@ -596,7 +596,7 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     if action == "decide" and resp.status == 200:
         resp = await _forward_remote_decide(state, key, cleaned, resp)
     elif resp.status == 200 and cleaned.get("item_id"):
-        await _revoke_closed_remote_trust(state, key, str(cleaned["item_id"]))
+        await _close_remote_item(state, key, str(cleaned["item_id"]), request)
     return resp
 
 
@@ -650,15 +650,38 @@ async def _record_conductor_retire(
     )
 
 
-async def _revoke_closed_remote_trust(state: DashboardState, key: str, item_id: str) -> None:
-    """A write that closed a REMOTE item also ends its worker's remote grant (RFC §4)."""
+async def _close_remote_item(
+    state: DashboardState, key: str, item_id: str, request: web.Request
+) -> None:
+    """A write that closed a REMOTE item ends its worker's grant and leaves its slot to close.
+
+    RFC §5c (:func:`remote_ingest.close_remote_item`). Whether the peer slot may be
+    DELETEd at once is the gate ``session_close(crew=)`` and ``action=retire``
+    pass (``agent.session_control`` and
+    :func:`remote_dispatch_routes.authorize_remote_dispatch`): only a turn the owner
+    sent. Any other turn, a patrol wake included, only ends the grant and records
+    the close as pending, so it never kills a worker that is still running.
+    Asked only for a closed item still bound to a crew, so no other write pays
+    for the gate or leaves its audit row. Never raises past the write.
+    """
     from kiro_crew.dashboard.handlers.work_ledger_read import _remote_dispatch_on
 
     if not await asyncio.to_thread(_remote_dispatch_on):
         return
-    from kiro_crew.dashboard.handlers import remote_ingest
+    from kiro_crew.dashboard import session_control as sc
+    from kiro_crew.dashboard.handlers import remote_dispatch_routes, remote_ingest
 
-    await remote_ingest.revoke_if_closed(state, key, item_id)
+    item = await remote_ingest.settled_item(key, item_id)
+    if item is None or not item.is_terminal or not item.worker_instance_id:
+        return
+    owner_turn = False
+    try:
+        if await asyncio.to_thread(sc.session_control_enabled):
+            await remote_dispatch_routes.authorize_remote_dispatch(request, "item_close")
+            owner_turn = True
+    except Exception:  # noqa: BLE001 - any doubt is not an owner turn (fail closed)
+        owner_turn = False
+    await remote_ingest.close_remote_item(state, key, item_id, owner_turn=owner_turn)
 
 
 async def _forward_remote_decide(

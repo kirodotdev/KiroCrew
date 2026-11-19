@@ -51,7 +51,7 @@ from kiro_crew.agent_discovery import (
     project_agent_name,
     read_agent_spec_strict,
 )
-from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
+from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION, capabilities_of
 from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - read by the owners
     continue_timed_out_calls,
 )
@@ -59,6 +59,10 @@ from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
 from kiro_crew.agent_switch_command import (  # noqa: F401 - read by the owners
     agent_switch_target,
 )
+from kiro_crew.channel_spec_hooks import (  # noqa: F401 - read by the owners
+    pre_tool_refusal as spec_pre_tool_refusal,
+)
+from kiro_crew.channel_spec_hooks import turn_spec as spec_turn  # noqa: F401 - read by the owners
 from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     ACTIVATION_REVIEW,
     KIRO_CLI_BUILTIN_AGENTS,
@@ -174,6 +178,7 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.mrkdwn_title import slack_title_text  # noqa: F401 - read by the owners
+from kiro_crew.option_marker_scan import LINE_BREAKS, line_start  # noqa: F401 - read by the owners
 from kiro_crew.parent_turns import note_turn_landed, settle_turn
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
@@ -272,6 +277,8 @@ from kiro_crew.slack.handler_runtime.access import (  # noqa: F401
     is_allowed_user,
     is_open_channel,
     is_owner,
+    is_shared_listed,
+    is_shared_user,
     is_slack_session_trusted,
     is_tracked_channel,
     is_yolo_mode,
@@ -374,6 +381,7 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     maybe_route_linked_thread,
     read_link_record,
     route_linked_thread,
+    shared_user_refused_for_session,
 )
 from kiro_crew.slack.handler_runtime.permission_ladder import (  # noqa: F401
     _answer_permission_request,
@@ -428,6 +436,10 @@ from kiro_crew.slack.sessions_view import (  # noqa: F401 - read by the owners
     _collect_recent_sessions_off_loop,
     _message_surface_limit,
     sessions_include_ended,
+)
+from kiro_crew.slack.shared_access import (  # noqa: F401 - read by the owners
+    SHARED_OWNER_ONLY_TEXT,
+    shared_command_refused,
 )
 from kiro_crew.slack.thread_parent import (  # noqa: F401 - read by the owners
     fetch_thread_parent,
@@ -522,7 +534,7 @@ _IDENTITY_NAME_MAX = 200
 
 # Slack UX strings
 _THINKING = "_Thinking…_"
-_THINKING_PLACEHOLDER = "*Thinking…*"
+_THINKING_PLACEHOLDER = "💭 _Thinking…_"
 _WORKING = "Working…"
 #: Row meta key naming the Slack message a thread import read the row from.
 _SLACK_TS_META = "slack_ts"
@@ -554,7 +566,7 @@ DELIVERY_DEBT_NOTICE = (
 )
 
 # Max chars of reasoning to surface inline in Slack before truncating. Keeps
-# the Thinking block from becoming a wall of text; the full
+# the 💭 Thinking block from becoming a wall of text; the full
 # reasoning remains available in the dashboard Activity panel.
 _THINKING_PREVIEW_LIMIT = 600
 
@@ -571,7 +583,7 @@ def _condense_thinking(mrkdwn: str, *, limit: int = _THINKING_PREVIEW_LIMIT) -> 
         limit: Soft character cap before truncation.
 
     Returns:
-        A Slack-mrkdwn string headed by ``*Thinking*``.
+        A Slack-mrkdwn string headed by ``💭 *Thinking*``.
     """
     text = mrkdwn.strip()
     truncated = False
@@ -587,7 +599,7 @@ def _condense_thinking(mrkdwn: str, *, limit: int = _THINKING_PREVIEW_LIMIT) -> 
         truncated = True
     quoted = "\n".join(f"> {ln}" if ln.strip() else ">" for ln in text.splitlines())
     suffix = "\n> _…full reasoning in dashboard Activity_" if truncated else ""
-    return f"*Thinking*\n{quoted}{suffix}"
+    return f"💭 *Thinking*\n{quoted}{suffix}"
 
 
 # Pending approvals: keyed by f"{channel}:{approval_msg_ts}"
@@ -771,7 +783,7 @@ _COMPACTION_FAILED_RETRIES = 2
 # directly, never through the turn's own reply path: the abandoned attempt
 # persists nothing and mirrors nothing, so the conversation log records the
 # message once, with the reply the replay produces.
-_COMPACTION_RETRY_NOTICE = "Compaction failed — retrying…"
+_COMPACTION_RETRY_NOTICE = "⟳ Compaction failed — retrying…"
 
 # Terminals the session handle synthesizes for a turn the backend never
 # finished: its own turn ceiling ("timeout") and a stale turn its probe
@@ -779,7 +791,7 @@ _COMPACTION_RETRY_NOTICE = "Compaction failed — retrying…"
 # is failed, the thread is told, and the session is reset so the next message
 # starts a fresh runtime.
 _UNFINISHED_STOP_REASONS = frozenset({"timeout", STOP_REASON_STALE_RECOVER})
-_TIMEOUT_REPLY = "Error: Request timed out. Please try again."
+_TIMEOUT_REPLY = "⏱️ Request timed out. Please try again."
 
 
 @dataclass(frozen=True)

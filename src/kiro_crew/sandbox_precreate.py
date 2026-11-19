@@ -538,6 +538,9 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: any clone, so materialising it early changes nothing it relies on.
 _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
+    # Kiro Space store sign-ins: the store CLI creates the folder on the first sign-in,
+    # usually while sessions already run, so it is made empty before the first spawn.
+    "market-registries",
     # Browser Harness's runtime directory and Kiro's Chromium profile. Both are
     # created on the FIRST connect (``browser_harness.supervisor``), so a sandbox
     # spawned before the owner's first browse finds them absent, the

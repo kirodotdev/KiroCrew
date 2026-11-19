@@ -232,7 +232,19 @@ hover.
 replays for a tap are ignored, because a hint appearing mid-tap can cost the click
 (a real mouse on a touch device still hovers). An anchor whose bubble outranks its
 click — one with no click action, or whose tip carries a warning the user must see
-before acting — opts in with `openOnTap`.
+before acting — opts in with `openOnTap`. Its hint then opens from the replayed
+hover/focus, before the click, exactly as it always has (FeedbackPill's usage
+warning, #13342).
+
+An anchor with no click action at all can instead pass `openOnTouchRelease`,
+false by default, which opens the hint on the touch pointerup itself. It still
+ignores the replayed mouseenter/focus, so it works on a first tap that delivers
+no focus event (Safari need not focus a tapped button) and on a retap of a
+still-focused anchor after a scroll. That hint survives the replay's trailing
+mouseleave and closes on blur, Escape, an anchor-moving scroll or a
+capture-phase pointerdown outside its anchor; a held outcome keeps its hold.
+Only the read-only Conductor mode bolt (`CrewModeMarks`) uses it, and it changes
+nothing for `openOnTap` consumers.
 
 ### The markdown renderer
 

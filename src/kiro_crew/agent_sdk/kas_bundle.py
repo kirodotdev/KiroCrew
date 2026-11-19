@@ -113,6 +113,7 @@ __all__ = [
     "kas_route",
     "kas_spawn_takes_bundle",
     "last_kas_route",
+    "last_relay_takes_crew_sign_in",
     "pinned_version",
     "require_loadable_host",
     "sha256_bytes",
@@ -297,6 +298,17 @@ def route_chosen_by_sharing_preview(route: Any) -> bool:
     )
 
 
+def bundle_route_lacks_sign_in() -> bool:
+    """Whether the next KAS spawn takes the bundle route with no usable Crew sign-in.
+
+    ``acp.kas_route.bundle_route_lacks_sign_in``, for the dashboard. Blocking;
+    never raises, and False when it cannot be worked out.
+    """
+    from kiro_crew.acp.kas_route import bundle_route_lacks_sign_in as lacks
+
+    return lacks()
+
+
 def crew_sign_in_starts_spawn() -> bool:
     """Whether the next KAS spawn starts on Kiro Crew's usable sign-in alone.
 
@@ -320,6 +332,21 @@ def relay_runs_on_kiro_cli_sign_in() -> bool:
     from kiro_crew.acp.kas_route import relay_runs_on_kiro_cli_sign_in as runs
 
     return runs(environ=os.environ, home=Path.home())
+
+
+def last_relay_takes_crew_sign_in() -> bool | None:
+    """Whether Crew's own sign-in can start the relay the last KAS spawn took.
+
+    ``None`` when the last spawn took no relay (none yet, or the bundle). A relay
+    pinned to kiro-cli's launcher runs on kiro-cli's sign-in alone unless Crew's
+    vault answers it too (``crew_auth``); any other relay takes either sign-in.
+    """
+    from kiro_crew.acp.kas_route import REASON_KIRO_CLI_LAUNCHER, last_spawn_route
+
+    route = last_spawn_route()
+    if route is None or route.bundle:
+        return None
+    return route.reason != REASON_KIRO_CLI_LAUNCHER or route.crew_auth
 
 
 def last_kas_route() -> dict[str, Any] | None:

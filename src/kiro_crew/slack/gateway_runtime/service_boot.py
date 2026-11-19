@@ -131,7 +131,7 @@ async def _auto_open_dashboard(
         logger.debug("webbrowser.open timed out — skipping")
         shown_url = dashboard_url if print_link else dashboard_url.partition("?")[0]
         print(
-            "Browser was slow to open — skipping auto-open.\n"
+            "👻 Browser was slow to open — skipping auto-open.\n"
             "   Dashboard is running. Open this URL manually:\n"
             f"   {shown_url}\n"
             "   Or run: kirocrew token"
@@ -695,11 +695,15 @@ def _init_task_runner(self: GatewayOrchestrator) -> None:
 
     # An app turn (``AgentTurnSDK.run``: a meeting's agents) passes this prompt as
     # its approver, as a cron job does. Without it a call the hook gate neither
-    # denies nor grants is refused, since nobody can be asked.
+    # denies nor grants is refused, since nobody can be asked. A turn on one of
+    # the app's own agents follows the gateway's approval mode as a channel turn
+    # does: under ``auto`` such a call runs without a prompt.
     from kiro_crew.apps import agent_turn_sdk
 
     agent_turn_sdk.set_turn_approver(
-        lambda app: self._interactive_approval("app", requester=f"app {app}")
+        lambda app, own_agent=False: self._interactive_approval(
+            "app", requester=f"app {app}", follows_approval_mode=own_agent
+        )
     )
 
 
@@ -888,7 +892,7 @@ async def run(self: GatewayOrchestrator) -> None:
             _SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS,
         )
         print(
-            f"Error: The signing key preflight did not finish within "
+            f"❌ The signing key preflight did not finish within "
             f"{_SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS:.0f}s. Check that the data "
             f"home is reachable, then restart: {BOOT_RESTART_HINT}",
             file=sys.stderr,
@@ -904,7 +908,7 @@ async def run(self: GatewayOrchestrator) -> None:
             "event loop: %s",
             exc,
         )
-        print(f"Error: Cannot run the signing key preflight: {exc}", file=sys.stderr)
+        print(f"❌ Cannot run the signing key preflight: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
     # An update a person armed applies HERE, at the start, before the listeners bind
@@ -1215,6 +1219,22 @@ async def run(self: GatewayOrchestrator) -> None:
         self._background_tasks.add(_owner_task)
         _owner_task.add_done_callback(self._background_tasks.discard)
 
+        # A config file that does not parse is run on defaults: say so in the
+        # terminal and the bell, naming the file, the line and the fix. Imported
+        # here like the warnings above: this module's functions run on the
+        # gateway's globals, so a module-level import here would not reach them.
+        from kiro_crew.notifications import config_syntax_note
+
+        async def _report_config_syntax_errors() -> None:
+            try:
+                await config_syntax_note.publish(self.dashboard_state)
+            except Exception:  # a report must never break boot
+                logger.warning("config syntax report failed", exc_info=True)
+
+        _syntax_task = asyncio.create_task(_report_config_syntax_errors())
+        self._background_tasks.add(_syntax_task)
+        _syntax_task.add_done_callback(self._background_tasks.discard)
+
     # Disable and mark pending any app whose sessionApproval grant was never
     # consented to. Past KIROCREW_READY (no-new-work-on-gateway-boot-path):
     # the grant is refused on read already, so readiness need not wait.
@@ -1516,7 +1536,7 @@ async def run(self: GatewayOrchestrator) -> None:
     # Update coordinator — fire-and-forget, NOT awaited. The first cycle runs
     # immediately; later cycles own both checking and automatic application.
     # Registered so shutdown can cancel a stalled network or installer child.
-    print("Checking for updates…")
+    print("👻 Checking for updates…")
     self._update_check_task = asyncio.create_task(self._run_update_checks())
     # Named so the shutdown's did-not-stop warning can say which update task it was.
     self._update_check_task.set_name("update-coordinator")
@@ -1578,7 +1598,7 @@ async def run(self: GatewayOrchestrator) -> None:
             if self._no_open or not self._cfg.dashboard.auto_open_browser:
                 pass  # suppressed via --no-open flag or config
             elif _skip_open:
-                print("Headless remote session — skipping browser auto-open")
+                print("👻 Headless remote session — skipping browser auto-open")
             else:
                 # Runs as a task so a slow browser launch overlaps the MCP
                 # probe instead of delaying it. Tracked so it is not GC'd
@@ -1602,14 +1622,14 @@ async def run(self: GatewayOrchestrator) -> None:
     # start AFTER the probe has synced all servers to mcp.json.
     from kiro_crew.dashboard.handlers import _bg_mcp_probe
 
-    print("Probing MCP servers…")
+    print("👻 Probing MCP servers…")
     # self._cfg is the config this boot already loaded — re-reading it here
     # would pay a deepcopy plus a full nested-dataclass rebuild for one scalar.
     _probe_t = self._cfg.dashboard.mcp_probe_timeout_secs + 15
     try:
         await asyncio.wait_for(_bg_mcp_probe(self.sessions), timeout=_probe_t)
     except asyncio.TimeoutError:
-        print("MCP probe timed out — continuing without full probe")
+        print("👻 MCP probe timed out — continuing without full probe")
 
     # ── Start background session (this IS gated on the probe) ──
     async def _start_bg_session() -> None:
@@ -1724,7 +1744,7 @@ async def run(self: GatewayOrchestrator) -> None:
     # Boot is finished here: the dashboard is bound and the process serves until
     # it is stopped. This is the last line a foreground gateway prints, so it
     # must not read as a step still in progress.
-    print("Kiro Crew gateway running — press Ctrl+C to stop")
+    print("👻 Kiro Crew gateway running — press Ctrl+C to stop")
     await shutdown_event.wait()
     await self._shutdown_and_exit(_watchdog)
 

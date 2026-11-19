@@ -48,6 +48,9 @@ cd "$ROOT"
 
 # The backend bytecode steps (bytecode_coverage_gate, precompile_macos_backend).
 . "$ROOT/packaging/desktop-bytecode.sh"
+# The electron-builder call and its transient-failure retry
+# (run_electron_builder_with_retry).
+. "$ROOT/packaging/desktop-electron-builder.sh"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 # Git Bash / MSYS on Windows reports MINGW64_NT-10.0-... / MSYS_NT-...;
@@ -428,80 +431,6 @@ rm_rf_resilient() {
     fi
     attempt=$((attempt + 1))
     sleep 1
-  done
-}
-
-# Invoke electron-builder. Split into its own function purely so a test can
-# shadow it with a stub -- CSC_IDENTITY_AUTO_DISCOVERY=false disables macOS
-# codesign identity auto-discovery for local/CI builds.
-_eb_invoke() {
-  CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "$@"
-}
-
-# Run electron-builder (EB_ARGS as "$@"), retrying a bounded number of times
-# on two transient failure classes -- and still failing the build on anything
-# else, or once the retry budget is exhausted:
-#
-#   - macOS .DS_Store/ENOTEMPTY temp-dir race (electron-userland/electron-builder#6890):
-#     the universal build's lipo-merge stage removes dist/mac-universal-<arch>-temp
-#     dirs with a recursive fs.rm that has no retries of its own, and Desktop
-#     Services (Finder/Spotlight) can drop a fresh .DS_Store into one mid-removal.
-#   - transient network/TLS failures in electron-builder's OWN mid-build
-#     fetches: the AppImage and NSIS/Squirrel targets pull their own tooling
-#     through `got` AFTER the electron zip has already reported
-#     progress=100%. A dropped connection ("socket hang up"), a
-#     TLS-intercepted response ("self-signed certificate"), or an HTTP-level
-#     answer from the artifact CDN that is retryable rather than final
-#     ("Response code 504") aborts the whole build there. These are
-#     per-execution network events, not build errors -- the same commit
-#     passes on a plain re-run, and one matrix leg can fail while its
-#     siblings go green in the same attempt (#3088, #6795).
-#
-# Split out of the packaging step (rather than left inline) so the
-# retry/classification logic is testable in isolation, mirroring
-# rm_rf_resilient above: a test extracts this function's body, shadows
-# _eb_invoke with a stub that fails N times, and asserts the real retry/
-# classification logic here recovers (or correctly gives up).
-run_electron_builder_with_retry() {
-  local attempt=1 max_attempts=3 eb_log eb_transient eb_backoff
-  while : ; do
-    eb_log="$(mktemp "${TMPDIR:-/tmp}/kc-eb.XXXXXX")"
-    if _eb_invoke "$@" 2>&1 | tee "$eb_log"; then
-      rm -f "$eb_log"; return 0
-    fi
-    # Classify the failure before deciding: each transient class needs its
-    # own cleanup, and anything unrecognised must still abort on the first
-    # failure.
-    eb_transient=""
-    if grep -q "ENOTEMPTY" "$eb_log"; then
-      eb_transient="ds_store"
-    # Socket-level errno strings and HTTP-level statuses share ONE class
-    # because the class boundary here is cleanup, not protocol layer (see the
-    # header comment): both arise in the same `got` fetches, and both recover
-    # by simply re-fetching on the next attempt with nothing to sweep first.
-    # A 5xx is transient by definition and a 429 is a rate limit that clears;
-    # every OTHER 4xx (401/403/404/400) is a configuration or authorisation
-    # fault that would fail identically on all three attempts, so it stays
-    # unrecognised and still aborts on the first one.
-    elif grep -qE "socket hang up|self[- ]signed certificate|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND" "$eb_log" \
-      || grep -qE "Response code (429|5[0-9][0-9])" "$eb_log"; then
-      eb_transient="network"
-    fi
-    if [ -n "$eb_transient" ] && [ "$attempt" -lt "$max_attempts" ]; then
-      if [ "$eb_transient" = "ds_store" ]; then
-        echo "  ⚠ macOS .DS_Store/ENOTEMPTY temp-dir race (attempt $attempt/$max_attempts); sweeping .DS_Store and retrying…" >&2
-        find dist -name .DS_Store -delete 2>/dev/null || true
-        rm -rf dist/*-temp 2>/dev/null || true
-        eb_backoff=2
-      else
-        echo "  ⚠ transient network/TLS/HTTP failure in an electron-builder fetch (attempt $attempt/$max_attempts); retrying…" >&2
-        eb_backoff=$((attempt * 10))
-      fi
-      rm -f "$eb_log"; attempt=$((attempt + 1)); sleep "$eb_backoff"; continue
-    fi
-    rm -f "$eb_log"
-    echo "❌ electron-builder failed (not a known transient class, or retries exhausted)." >&2
-    return 1
   done
 }
 
@@ -1851,10 +1780,10 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
   rm_rf_resilient dist
 
   # Each electron-builder invocation below goes through
-  # run_electron_builder_with_retry (defined above, alongside rm_rf_resilient)
-  # so the macOS .DS_Store/ENOTEMPTY race AND transient network/TLS failures
-  # in electron-builder's own mid-build fetches are both retried, not just
-  # the former.
+  # run_electron_builder_with_retry (packaging/desktop-electron-builder.sh)
+  # so the macOS .DS_Store/ENOTEMPTY race, dmgbuild's "Resource busy" eject
+  # and transient network/TLS failures in electron-builder's own mid-build
+  # fetches are all retried.
   if [ "$OS" = "darwin" ]; then
     EB_ARGS+=( --mac )
     if [ "$UNIVERSAL" = "1" ]; then

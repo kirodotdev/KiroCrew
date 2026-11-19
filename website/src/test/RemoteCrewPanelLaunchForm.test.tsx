@@ -85,8 +85,8 @@ const REGION_REQUIRED = 'Enter an AWS Region, for example us-east-1.'
 const STALE = 'The profile or Region changed since this check. Re-check to update.'
 const PRICE_NOTE = 'Prices are us-east-1 on-demand rates; other Regions may differ.'
 const RETRY = 'Fix the problem shown below, or change the Subnet ID above, then choose Launch to try again.'
-const CHECK_CREWS = 'The launch did not finish. Check Your crews before launching again.'
-const CREW_LISTED = 'The launch did not finish. Its crew is listed in Your crews, where you can fix or delete it.'
+const CHECK_CREWS = 'The launch did not finish. Check My Crews before launching again.'
+const CREW_LISTED = 'The launch did not finish. Its crew is listed in My Crews, where you can fix or delete it.'
 const LAUNCHED_ID = 'i-0abc123456789def0'
 // The registry id is derived from the crew name; the EC2 id the job carries is
 // the crew's SSM target. Distinct here, as they are in a real registry.
@@ -140,7 +140,7 @@ beforeEach(() => {
 
 async function openSetup(u: ReturnType<typeof userEvent.setup>) {
   renderWithProviders(<RemoteCrewPanel />)
-  await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+  await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 }
 
 describe('RemoteCrewPanel launch form', () => {
@@ -251,7 +251,7 @@ describe('RemoteCrewPanel launch form', () => {
   // From provisioning on a stack may still exist: a refused sign-in leaves a
   // registered crew, and a failed provision is rolled back best-effort with no
   // field saying whether the rollback confirmed.
-  // "Listed in Your crews" is said only while the live list holds the instance:
+  // "Listed in My Crews" is said only while the live list holds the instance:
   // the job is a snapshot, so a registered crew deleted since gets the neutral line.
   it.each([
     ['sign-in, with its registered crew in the live list', { instance_id: LAUNCHED_ID, steps: FAILED_AFTER_REGISTER }, [LIVE_CREW], CREW_LISTED],

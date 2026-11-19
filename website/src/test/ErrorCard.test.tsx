@@ -107,6 +107,11 @@ describe('ErrorCard', () => {
       expect(retryProse('⟳ Backend hiccup — please retry.')).toBe('The agent hit a brief problem — resume to pick up where it stopped.')
     })
 
+    it('reads the plain-word form current gateways write the same as the glyph form', () => {
+      expect(retryProse('Connection lost — please retry.')).toBe('Connection lost — resume to pick up where it stopped.')
+      expect(retryProse('Error: Connection lost — please retry.')).toBe('Connection lost — resume to pick up where it stopped.')
+    })
+
     it('keeps the exit-code detail a connection-lost row carries', () => {
       expect(retryProse('⟳ Connection lost (exit 1) — please retry.')).toBe('Connection lost (exit 1) — resume to pick up where it stopped.')
       expect(retryProse('⟳ Connection lost (exit -9) — please retry.')).toBe('Connection lost (exit -9) — resume to pick up where it stopped.')
@@ -114,7 +119,6 @@ describe('ErrorCard', () => {
 
     it('leaves anything else verbatim — an unknown or newer gateway string must still reach the screen', () => {
       expect(retryProse('⟳ Connection lost — please retry')).toBeNull()      // no full stop: not the wire shape
-      expect(retryProse('Connection lost — please retry.')).toBeNull()        // no glyph
       expect(retryProse('⟳ Something new — please retry.')).toBeNull()
       expect(retryProse('boom')).toBeNull()
       render(<ErrorCard content="⟳ Something new — please retry." />)
@@ -299,23 +303,37 @@ describe('ErrorCard — sibling capability refusals', () => {
 })
 
 describe('ErrorCard — agent not signed in', () => {
-  it('offers Sign in to Kiro and NO Continue, even when resumable', () => {
+  it('shows one line and a Sign in button, NO Continue and no raw error text', () => {
     const onContinue = vi.fn()
-    const onOpenSignIn = vi.fn()
     render(
       <ErrorCard
-        content="Your session has expired. Sign in again, then start a new chat."
+        content="Your session has expired. Sign in again, then start a new chat. (request_id: 69c7830a-1b2c-4d5e)"
         onContinue={onContinue}
-        onOpenSignIn={onOpenSignIn}
+        onOpenSignIn={vi.fn()}
       />,
     )
     const card = screen.getByTestId('error-card')
     expect(card).toHaveAttribute('data-auth-required', 'true')
-    expect(card).toHaveTextContent('Your session has expired.')
+    expect(card).toHaveTextContent('Sign in to Kiro to keep chatting')
+    // The wire text and its request id stay out of the row; the id is behind a copy control.
+    expect(card).not.toHaveTextContent('Your session has expired.')
+    expect(card).not.toHaveTextContent('69c7830a')
+    expect(screen.getByTestId('kiro-sign-in-copy-request-id')).toBeInTheDocument()
+    expect(screen.getByTestId('kiro-sign-in-open')).toBeInTheDocument()
     expect(screen.queryByTestId('error-card-continue')).toBeNull()
-    fireEvent.click(screen.getByTestId('error-card-sign-in'))
-    expect(onOpenSignIn).toHaveBeenCalledTimes(1)
     expect(onContinue).not.toHaveBeenCalled()
+    cleanup()
+  })
+
+  it('keeps the request id copy when the shown text is a translated notice', () => {
+    render(
+      <ErrorCard
+        content="Not signed in to Kiro."
+        rawContent="Not signed in to Kiro. (request_id: 69c7830a-1b2c-4d5e)"
+        onOpenSignIn={vi.fn()}
+      />,
+    )
+    expect(screen.getByTestId('kiro-sign-in-copy-request-id')).toBeInTheDocument()
     cleanup()
   })
 
@@ -328,7 +346,7 @@ describe('ErrorCard — agent not signed in', () => {
 
   it('falls back to plain prose on a surface with no settings route', () => {
     render(<ErrorCard content="not signed in" />)
-    expect(screen.queryByTestId('error-card-sign-in')).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-open')).toBeNull()
     expect(screen.getByTestId('error-card')).not.toHaveAttribute('data-auth-required')
   })
 })

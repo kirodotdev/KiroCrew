@@ -332,7 +332,7 @@ async def _check_error_loop(
         return True
     if consecutive >= 1:
         await on_notify(
-            "⚠️ Possible loop",
+            "Warning: Possible loop",
             f"Same error {consecutive + 1}x: {task.error[:100]}",
             run=run,
         )
@@ -380,11 +380,11 @@ async def execute_single_task(
     # Approval gate
     if task.requires_approval or task.force_approval:
         run.last_task_time = _time.time()
-        label = "🚧 GATE" if task.force_approval else "⏸️"
+        label = "GATE: " if task.force_approval else ""
         safe_title, _ = redact_exfiltration_urls(task.title or "")
         safe_title, _ = redact_credentials(safe_title)
         await on_notify(
-            f"{label} Task {task.index} requires approval",
+            f"{label}Task {task.index} requires approval",
             safe_title,
             run=run,
         )
@@ -430,7 +430,7 @@ async def execute_single_task(
                 run.status = "paused"
                 run.error = f"Task {task.index} approval denied — paused for editing"
                 await on_notify(
-                    f"⏸️ Task {task.index} denied",
+                    f"Task {task.index} denied",
                     "Paused for editing. Modify the task and Resume.",
                     run=run,
                 )
@@ -455,7 +455,7 @@ async def execute_single_task(
             run.status = "failed"
             run.error = f"Task {task.index} denied: {task.error}"
             await on_notify(
-                f"❌ Task {task.index} failed",
+                f"Error: Task {task.index} failed",
                 "No approval handler configured for force_approval gate",
                 run=run,
             )
@@ -502,7 +502,7 @@ async def execute_single_task(
             task.status = TaskStatus.FAILED
             success = False
             await on_notify(
-                f"❌ Task {task.index}/{len(run.tasks)} failed",
+                f"Error: Task {task.index}/{len(run.tasks)} failed",
                 f"{task.title}\n{task.error}",
                 run=run,
             )
@@ -538,13 +538,13 @@ async def execute_single_task(
             log_task_fn(history_key, run, task)
             result_preview = (task.result or "")[:500]
             await on_notify(
-                f"✅ Task {task.index}/{len(run.tasks)}",
+                f"Done: Task {task.index}/{len(run.tasks)}",
                 f"{task.title}\n\n{result_preview}" if result_preview else task.title,
                 run=run,
             )
     else:
         await on_notify(
-            f"❌ Task {task.index}/{len(run.tasks)} failed",
+            f"Error: Task {task.index}/{len(run.tasks)} failed",
             f"{task.title}\n{task.error}",
             run=run,
         )
@@ -925,7 +925,7 @@ async def execute_task(
                 spec_keys_noticed = True
                 try:
                     await on_notify(
-                        f"\u2139\ufe0f Task {task.index}: agent settings not applied",
+                        f"Note: Task {task.index}: agent settings not applied",
                         spec_keys_notice(_spec_agent, list(_spec.lost)),
                         run=run,
                     )
@@ -1163,7 +1163,7 @@ async def execute_task(
                     f"{partial[:500]}\n\nContinue from where you left off."
                 )
             await on_notify(
-                f"💀 Task {task.index}: process died",
+                f"Error: Task {task.index}: process died",
                 f"Recovering ({_death_attempts}/{MAX_RECOVERIES})…",
                 run=run,
             )
@@ -1185,7 +1185,7 @@ async def execute_task(
                 task.error = f"Context overflow {compactions} times — giving up"
                 return False
             result_prefix += (
-                f"⚠️ Context window {pct:.0f}% full — compressing conversation history. "
+                f"Warning: Context window {pct:.0f}% full — compressing conversation history. "
                 "Accuracy may degrade due to summarized context.\n\n"
             )
             unsupported = compact_unsupported_backend(client)
@@ -1218,7 +1218,7 @@ async def execute_task(
                     logger.debug("Mid-stream compaction failed, resetting", exc_info=True)
                     await sessions.reset(session_key)
             await on_notify(
-                f"🗜️ Task {task.index}: context compressed",
+                f"Task {task.index}: context compressed",
                 f"Context was {pct:.0f}% full — compacted to continue.",
                 run=run,
             )
@@ -1288,7 +1288,7 @@ async def execute_task(
                         "the durable recovering write did not commit, so no re-run was started",
                     )
                 await on_notify(
-                    f"\u267b\ufe0f Task {task.index}: turn {tnc.stop_class}",
+                    f"Task {task.index}: turn {tnc.stop_class}",
                     f"{tnc.stop_reason} — re-running in {delay:.0f}s (recovery {stop_recoveries})",
                     run=run,
                 )
@@ -1391,7 +1391,7 @@ async def execute_task(
                     )
                     return False
                 await on_notify(
-                    f"\u23f3 Task {task.index}: waiting on {signal.dependency_scope}",
+                    f"Task {task.index}: waiting on {signal.dependency_scope}",
                     f"{signal.kind}: {signal.detail or exc}",
                     run=run,
                 )
@@ -1464,7 +1464,7 @@ async def execute_task(
                 )
                 try:
                     await on_notify(
-                        f"\u26a0\ufe0f Task {task.index}: MCP servers unusable",
+                        f"Warning: Task {task.index}: MCP servers unusable",
                         f"MCP servers unusable in this step: {mcp_problems}",
                         run=run,
                     )
@@ -1581,11 +1581,11 @@ async def build_task_prompt(run: Project, task: Task, attempt: int, work_dir: Pa
         parts.append(label)
         for t in group:
             if t.status == TaskStatus.PASSED:
-                icon = "✅"
+                icon = "[done]"
             elif t.index == task.index:
-                icon = "🔄"
+                icon = "[now]"
             else:
-                icon = "⬜"
+                icon = "[todo]"
             dep_str = (
                 f" (depends on: {', '.join(str(d) for d in t.depends_on)})" if t.depends_on else ""
             )

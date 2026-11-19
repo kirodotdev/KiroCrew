@@ -784,3 +784,118 @@ def test_oauth_redirect_uri_falls_back_to_request_origin_when_unconfigured(
     )
     uri = wt._oauth_redirect_uri(request)
     assert uri == "http://localhost:5476/api/wakatime/oauth/callback"
+
+
+def _forwarded_request(forwarded_host: str, *, allowed: set[str], host: str = "127.0.0.1:5476"):
+    from aiohttp.test_utils import make_mocked_request
+
+    app = web.Application()
+    app["allowed_origins"] = allowed
+    return make_mocked_request(
+        "GET",
+        "/api/wakatime/oauth/authorize",
+        headers={"Host": host, "X-Forwarded-Host": forwarded_host},
+        app=app,
+    )
+
+
+_LOOPBACK_ORIGINS = {"http://127.0.0.1:5476", "http://localhost:5476"}
+
+
+@pytest.mark.parametrize(
+    ("origin", "forwarded", "expected"),
+    [
+        # tailscale serve fronts the dashboard on 443 with its MagicDNS name.
+        ("https://box.tail1234.ts.net", "box.tail1234.ts.net", "box.tail1234.ts.net"),
+        # The built-in tunnel adds its public origin at connect.
+        (
+            "https://abc123.tunnel.example.net",
+            "abc123.tunnel.example.net",
+            "abc123.tunnel.example.net",
+        ),
+        # A managed proxy or KIROCREW_CORS_ORIGINS entry with an explicit port.
+        ("https://kiro.example.com:8443", "kiro.example.com:8443", "kiro.example.com:8443"),
+        # A proxy chain: only the first, client-facing, value counts.
+        (
+            "https://kiro.example.com:8443",
+            "kiro.example.com:8443, 10.0.0.2",
+            "kiro.example.com:8443",
+        ),
+    ],
+)
+def test_oauth_redirect_uri_honors_an_allowed_forwarded_host_and_keeps_its_port(
+    monkeypatch: pytest.MonkeyPatch, origin: str, forwarded: str, expected: str
+) -> None:
+    _mock_config(monkeypatch, "")
+    request = _forwarded_request(forwarded, allowed=_LOOPBACK_ORIGINS | {origin})
+    assert wt._forwarded_host(request) == expected
+    assert wt._oauth_redirect_uri(request) == f"http://{expected}/api/wakatime/oauth/callback"
+
+
+@pytest.mark.parametrize(
+    "forwarded",
+    [
+        "evil.example",
+        "evil.example:8443",
+        "evil.example, box.tail1234.ts.net",  # the allowed host is not first
+        "box.tail1234.ts.net:abc",  # malformed port
+        "[box.tail1234.ts.net]",  # bracketed non-IPv6
+        "box.tail1234.ts.net/@evil.example",
+    ],
+)
+def test_oauth_redirect_uri_ignores_a_forwarded_host_that_is_not_allowed(
+    monkeypatch: pytest.MonkeyPatch, forwarded: str
+) -> None:
+    _mock_config(monkeypatch, "")
+    request = _forwarded_request(
+        forwarded, allowed=_LOOPBACK_ORIGINS | {"https://box.tail1234.ts.net"}
+    )
+    assert wt._oauth_redirect_uri(request) == "http://127.0.0.1:5476/api/wakatime/oauth/callback"
+
+
+def test_oauth_redirect_uri_ignores_a_forwarded_host_without_an_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_config(monkeypatch, "")
+    request = _forwarded_request("localhost:9999", allowed=set())
+    assert wt._oauth_redirect_uri(request) == "http://127.0.0.1:5476/api/wakatime/oauth/callback"
+
+
+def test_forwarded_proto_comes_from_is_https_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.dashboard import origin as origin_mod
+
+    _mock_config(monkeypatch, "")
+    request = _forwarded_request("box.tail1234.ts.net", allowed={"https://box.tail1234.ts.net"})
+    monkeypatch.setattr(origin_mod, "is_https_request", lambda _r: True)
+    assert (
+        wt._oauth_redirect_uri(request) == "https://box.tail1234.ts.net/api/wakatime/oauth/callback"
+    )
+    monkeypatch.setattr(origin_mod, "is_https_request", lambda _r: False)
+    assert (
+        wt._oauth_redirect_uri(request) == "http://box.tail1234.ts.net/api/wakatime/oauth/callback"
+    )
+
+
+@pytest.mark.asyncio
+async def test_authorize_host_check_uses_the_same_forwarded_host_as_the_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A forged X-Forwarded-Host must not be the "start here" host either.
+    _allow_owner(monkeypatch)
+    monkeypatch.setattr(wt, "_pending_oauth_states", {})
+    _mock_config(monkeypatch, "")
+    built: list[str] = []
+    monkeypatch.setattr(
+        wt_oauth, "build_authorize_url", lambda redirect: built.append(redirect) or ("u", "s")
+    )
+    allowed = _LOOPBACK_ORIGINS | {"https://kiro.example.com:8443"}
+    honored = _forwarded_request("kiro.example.com:8443", allowed=allowed)
+    forged = _forwarded_request("evil.example", allowed=allowed)
+    assert (await wt.api_wakatime_oauth_authorize(honored)).status == 200
+    assert (await wt.api_wakatime_oauth_authorize(forged)).status == 200
+    assert built == [
+        "http://kiro.example.com:8443/api/wakatime/oauth/callback",
+        "http://127.0.0.1:5476/api/wakatime/oauth/callback",
+    ]

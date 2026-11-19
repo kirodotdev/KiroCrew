@@ -93,6 +93,10 @@ PREDICATE_SITES = {
     # set its mark yet and the predicate alone would pass an SSM request. The
     # router refuses by listener first (``SsmGate.owns``, the socket's local port).
     "apps/app_web_origin.py": 1,
+    # The relayed-Crew router (a browser tab's relay Crew) sits beside it and
+    # refuses by listener first the same way.
+    "relay_viewer/browser_origin.py": 1,
+    "dashboard/handlers/relay_viewer.py": 1,
     "dashboard/file_api/desktop.py": 1,
     "dashboard/handlers/core.py": 2,
     "dashboard/handlers/external_terminal.py": 1,
@@ -110,6 +114,7 @@ PREDICATE_SITES = {
     "dashboard/messaging_api/telegram_settings.py": 2,
     "dashboard/messaging_api/webex_settings.py": 2,
     "dashboard/messaging_api/wecom_settings.py": 2,
+    "dashboard/slack_shared_access.py": 1,
 }
 
 #: ``is_loopback(request.remote ...)`` call sites per file, and why each is safe.

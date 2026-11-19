@@ -26,6 +26,7 @@ from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers.mcp_agent_sync import _builtin_mcp_server_names
 from kiro_crew.dashboard.handlers.mcp_config_files import (
     _GLOBAL_MCP_JSON,
     _KIRO_GLOBAL_SURFACE,
@@ -308,7 +309,12 @@ def _read_global_mcps() -> Any:
         return {}
 
 
-def _stamp_config_state(d: dict[str, Any], global_mcps: Any, kirocrew_mcps: Any) -> None:
+def _stamp_config_state(
+    d: dict[str, Any],
+    global_mcps: Any,
+    kirocrew_mcps: Any,
+    builtin_names: frozenset[str] = frozenset(),
+) -> None:
     """Stamp the config-derived fields onto one serialized server row.
 
     ``enabled`` folds every place a disable can live -- the Kiro-global
@@ -374,6 +380,8 @@ def _stamp_config_state(d: dict[str, Any], global_mcps: Any, kirocrew_mcps: Any)
     spec = _config_entry_for(global_mcps, name) or {}
     kc_spec = _config_entry_for(kirocrew_mcps, name)
     d["kirocrewManaged"] = kc_spec is not None
+    # One of Kiro Crew's own servers: the table locks its off switch.
+    d["builtin"] = name in builtin_names
     shared_off = mcp_entry_is_muted(spec)
     store_off = mcp_entry_is_muted(kc_spec)
     is_disabled = shared_off or store_off or d.get("disabled") is True
@@ -469,6 +477,7 @@ async def _run_mcp_probe(sessions: SessionManager | None) -> None:
 
         global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
         kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
+        builtin = await asyncio.to_thread(_builtin_mcp_server_names)
 
         # Route through probe_all() so the fan-out is bounded by its
         # PROBE_MAX_CONCURRENCY semaphore. An
@@ -480,7 +489,7 @@ async def _run_mcp_probe(sessions: SessionManager | None) -> None:
         for s in probed:
             d = s.to_dict()
             spec = global_mcps.get(s.name, {})
-            _stamp_config_state(d, global_mcps, kirocrew_mcps)
+            _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin)
             if isinstance(spec, dict) and spec.get("disabledTools"):
                 d["disabledTools"] = spec["disabledTools"]
             result.append(d)
@@ -568,6 +577,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # file I/O (``read_text`` + ``json.loads``), and this handler runs for every
     # page load -- a slow data-home mount would stall the loop and its heartbeat.
     kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
+    builtin = await asyncio.to_thread(_builtin_mcp_server_names)
     result: list[dict] = []
     for s in servers:
         d = s.to_dict()
@@ -594,7 +604,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
             d["status"] = cached.get("status", d["status"])
             d["tools"] = cached.get("tools", d["tools"])
             d["error"] = cached.get("error", d["error"])
-        _stamp_config_state(d, global_mcps, kirocrew_mcps)
+        _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin)
         err = d.get("error")
         if err:
             from kiro_crew.security import redact
@@ -779,11 +789,12 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
             {"error": "MCP config is busy; retry", "code": "mcp_config_busy"}, status=503
         )
     kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
+    builtin = await asyncio.to_thread(_builtin_mcp_server_names)
     result: list[dict[str, Any]] = []
     for s in servers:
         d = s.to_dict()
         spec = global_mcps.get(s.name, {})
-        _stamp_config_state(d, global_mcps, kirocrew_mcps)
+        _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin)
         if isinstance(spec, dict) and spec.get("disabledTools"):
             d["disabledTools"] = spec["disabledTools"]
         result.append(d)

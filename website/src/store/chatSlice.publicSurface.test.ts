@@ -1,13 +1,14 @@
 /**
- * The `chatSlice` module's public surface, pinned name by name.
+ * The `chatSlice` module's public surface.
  *
  * Every consumer imports the chat state through this one module, so what it
- * exports is a contract: the runtime names, what kind of value each one is,
- * every action creator's `type` string, every thunk's `typePrefix` (the
- * dashboard slice matches `chat/createSlot/fulfilled` and the `deleteSlot`
- * lifecycle by string), the exported constants, and the initial state the
- * default reducer produces. A name that moves between modules must still
- * resolve here with the same value.
+ * exports is a contract: every name another module imports from it must resolve,
+ * every action creator's `type` string is `chat/<name>`, every thunk keeps a
+ * `chat/` `typePrefix` (the dashboard slice matches `chat/createSlot/fulfilled`
+ * and the `deleteSlot` lifecycle by string, so each such literal must name a real
+ * action), the exported constants keep the values the backend shares, and the
+ * default reducer produces the declared initial state. The sets are read from the
+ * module and from its importers, so adding an export does not edit this file.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as chatSlice from './chatSlice'
@@ -28,70 +29,11 @@ import reducer, {
   toggleActivity,
 } from './chatSlice'
 import type { RootState } from './index'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 
-const ACTION_CREATORS = [
-  'ageFolderSuggestion', 'appendMessage', 'appendQueuedMessage', 'appendSlotMessage',
-  'cancelQueuedMessage', 'clearFocusToolCallId', 'clearFolderSuggestion', 'clearFollowupCard',
-  'clearMessages', 'clearPendingPermissions', 'clearQuestionCard', 'clearSlotCache', 'clearSlotHydrated',
-  'clearSlotReveal', 'clearSlotState', 'clearSubagentsForSnapshot', 'clearSwitchSlotGone', 'closeActivityPanel',
-  'clearTerminalSubagents', 'clearUndeletableHistory', 'clearUnresumableResume',
-  'clearWorkflowRun', 'confirmOptimisticSend', 'dismissFollowupItem', 'dropActiveSlot', 'dropUnconfirmedRow', 'editQueuedMessage',
-  'endLocalTurn', 'finalizeAssistant', 'forkOpenSettled', 'forkOpenStarted', 'holdHydratedSlotPane', 'hydrateSlotMessages', 'markQuestionSettled', 'markSendUnconfirmed', 'markSubagentApprovalGone', 'markSubagentApproving', 'markToolReturned',
-  'openActivityPanel', 'openActivityToTab', 'openActivityToTool', 'reconcileSubagentApprovalGone', 'reconcileSubagentQueuedFromSlots', 'reconcileWorkflowRuns',
-  'removeAutomation', 'removeByApprovalId', 'removeQueuedMessage', 'removeThinking',
-  'recordSendAttempt', 'reorderQueuedMessages', 'replaceMessages', 'requestFolderReveal', 'requestSlotFolderOpen', 'requestSlotReveal',
-  'resolveApprovalRow', 'resolveElicitationRow', 'resolveNativeApprovalRows', 'resolveOptimisticSteer', 'resolveQuestionCard', 'resolveShownApprovalRow', 'retireSwappedRows', 'selectSubagent',
-  'setActiveSlot', 'setAgentSwitchNotice', 'setAutomations', 'setCloseRefused', 'setFolderSuggestion',
-  'setFollowupCard', 'setPendingInput', 'setQuestionCard', 'setQuestionDraft', 'setQuestionNotice', 'setQuestionRequestInFlight', 'setSidePanelAlwaysOpen', 'setSlotRunning', 'setSubagentApprovalTarget',
-  'setSlotState', 'setSlotStatusDetail', 'setSlotStopping', 'setStopPressedAt', 'setSwitchSlotGone', 'setVoiceAudio',
-  'setVoicePaused', 'setVoicePlaying', 'setVoicePreparing', 'settleStopNotRunning', 'sideClose', 'sideClosedElsewhere', 'sideOptimisticAccepted', 'sideOptimisticAppend',
-  'sideOptimisticRollback', 'sideReleaseConsumed', 'sideRestore', 'sideRestoreReading', 'sideResync', 'sideSendStatus', 'sseActivityEvent', 'sseAutomation',
-  'sseChatMessage', 'sseChatMessagePatchByTs', 'sseChatMessageUpdate', 'sseContextUsage',
-  'sseMcpAppRender', 'sseSideQueue', 'sseSideResult', 'sseSubagentBatchChunks',
-  'sseSubagentBatchUpdate', 'sseSubagentDone', 'sseSubagentPending', 'sseSubagentQueued',
-  'sseSubagentRetrying', 'sseSubagentSnapshot', 'sseSubagentSpawn', 'sseSubagentStalled',
-  'sseSubagentTool', 'sseThinkingChunk', 'sseToolActivity', 'sseToolResult', 'sseWorkflowEvent',
-  'stagePendingSend', 'stageToMainComposer', 'startLocalTurn', 'startServerTurn', 'subagentReplayDone', 'syncSlotRunningFromServer', 'toggleActivity', 'truncateAfterIndex',
-  'updateStreamingMessage',
-]
-
-const THUNKS: Record<string, string> = {
-  awaitSideRestore: 'chat/awaitSideRestore',
-  clearHistorySessions: 'chat/clearHistorySessions',
-  createSlot: 'chat/createSlot',
-  deleteHistorySession: 'chat/deleteHistorySession',
-  deleteSlot: 'chat/deleteSlot',
-  fetchHistory: 'chat/fetchHistory',
-  forkSlot: 'chat/forkSlot',
-  loadOlderMessages: 'chat/loadOlder',
-  loadOlderSlotMessages: 'chat/loadOlderSlot',
-  promoteSlot: 'chat/promoteSlot',
-  refreshSlot: 'chat/refreshSlot',
-  requestStop: 'chat/requestStop',
-  reconcileGoneSubagent: 'chat/reconcileGoneSubagent',
-  restoreSideConversation: 'chat/restoreSideConversation',
-  resyncWaitingSideConversations: 'chat/resyncWaitingSideConversations',
-  resumeFromHistory: 'chat/resumeFromHistory',
-  switchSlot: 'chat/switchSlot',
-  warmSlotCache: 'chat/warmSlotCache',
-}
-
-const FUNCTIONS = [
-  'abortActiveOlderFetch', 'batchedTextAboveFloor', 'beginSideQueueEdit', 'capturePendingAskId', 'clampToolOutput',
-  'countMatchedFetchLimit', 'finishSideQueueEdit', 'floorForGen', 'forgetSideSteerSubmittedText', 'hasSavedActivityOpen', 'hasUnidentifiedDurableRow', 'hydrateQueuedBubbles', 'isActiveSubagent', 'isAnsweredQuestionEnding', 'isAwaitingSpawnApproval', 'isDurableRow', 'isSpawnApprovalGone', 'isSpawnApprovalRetired',
-  'captureForkOrigin', 'forkMayOpen', 'isSupersededPagingRejection', 'isTerminalWorkflowStatus', 'listForkedSlot', 'mcpAppKey', 'missedChunkMarker', 'normalizeQueueEntries',
-  'noteSideQueueCancelWaiting', 'noteSideQueueDroppedByClose', 'openCreatedSlot', 'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'queueEntryBanner', 'queueEntryPastes', 'queueEntryQuote', 'raiseChunkSeq', 'readSideSteerSubmittedText', 'recordSideSteerSubmittedText', 'resumeStillOpening', 'setSideQueueEditDraft',
-  'selectActiveSlotProject', 'selectAutomationForSlot', 'selectComposerBusy', 'selectContinuable',
-  'selectPendingTurn', 'selectProjectChipLocked', 'selectResumeInterrupted', 'selectSendAccepted', 'selectSendAttempts', 'selectSendConfirmed', 'selectSidebarApprovalCounts', 'selectSidebarAutomationRunningKeys',
-  'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSidebarWorkflowActive', 'selectSidebarWorkflowActiveKeys',
-  'selectSlotMessages', 'selectSlotPendingApproval', 'selectSlotPendingSpawnApprovals',
-  'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotSubagents',
-  'selectSlotSubagentsActive', 'selectSlotToolLog', 'selectSubagentActivityCount', 'selectTrailingSendUnconfirmed',
-  'selectSlotTurnFromWake', 'selectTurnInterrupted', 'shouldResolveAskOnSend', 'slotCoverageShortfall',
-  'slotSwitchFetchLimit', 'snapshotChunkGen', 'snapshotChunkSeq', 'switchSlotNoticeCopy', 'takeSideQueueDroppedByClose', 'takeSideQueueDroppedByResyncThenClose', 'takeSideSteerDroppedByClose', 'takeSideQueueEditForClose',
-  'transcriptTsMs', 'wireTurnIdentity',
-]
-
+// Values the backend and the transcript share: page caps the server enforces,
+// the quiet-end tool name, and the workflow terminal statuses on the wire.
 const CONSTANTS: Record<string, unknown> = {
   FOLDER_SUGGESTION_MAX_TURNS: 3,
   OLDER_PAGE_LIMIT: 100,
@@ -107,8 +49,25 @@ const CONSTANTS: Record<string, unknown> = {
   WORKFLOW_TERMINAL_STATUSES: ['finished', 'failed', 'cancelled'],
 }
 
-/** The initial state in its declared key order. `lastChunkSeq` and
- *  `lastChunkGen` are present as `undefined`, which JSON would hide. */
+const surface = chatSlice as unknown as Record<string, unknown>
+type Creator = { type: string; match: (a: unknown) => boolean }
+type Thunk = { typePrefix: string; pending: { type: string }; fulfilled: { type: string }; rejected: { type: string } }
+const exported = Object.entries(surface).filter(([name]) => name !== 'default')
+const isCreator = (v: unknown): v is Creator =>
+  typeof v === 'function' && typeof (v as Creator).type === 'string' && typeof (v as Creator).match === 'function'
+const isThunk = (v: unknown): v is Thunk => typeof v === 'function' && typeof (v as Thunk).typePrefix === 'string'
+const ACTION_CREATORS = exported.filter(([, v]) => isCreator(v)) as [string, Creator][]
+const THUNKS = exported.filter(([, v]) => isThunk(v)) as [string, Thunk][]
+
+const SRC = resolve(process.cwd(), 'src')
+const sourceFiles = (readdirSync(SRC, { recursive: true }) as string[])
+  .filter((f) => /\.tsx?$/.test(f))
+  .map((f) => join(SRC, f))
+
+/** Contract: the reducer's defaults, which the user sees on a fresh load, in their
+ *  declared key order. A changed default is a behaviour change and edits this on
+ *  purpose. `lastChunkSeq` and `lastChunkGen` are present as `undefined`, which JSON
+ *  would hide. */
 const INITIAL_STATE = {
   activeSlot: null, activeSlotMoves: 0, activeSlotAutoMoves: 0, activeSlotRequestMoves: 0, requestSeq: 0, requestBurst: 0, activatedRequestSeq: 0, lastResumeActivation: null, messages: [], slotRunning: false, slotStopping: false, slotState: 'idle',
   slotStatusDetail: {}, slotHasMore: false, slotOldestIndex: 0, slotCursorKey: null,
@@ -130,39 +89,70 @@ const INITIAL_STATE = {
   closeRefused: null,
 }
 
-const surface = chatSlice as unknown as Record<string, unknown>
-
 describe('chatSlice public surface', () => {
-  it('exports exactly the pinned runtime names', () => {
-    const expected = [...ACTION_CREATORS, ...Object.keys(THUNKS), ...FUNCTIONS, ...Object.keys(CONSTANTS), 'default'].sort()
-    expect(Object.keys(chatSlice).sort()).toEqual(expected)
+  it('resolves every runtime name another module imports from it', () => {
+    const wanted = new Map<string, string>()
+    for (const file of sourceFiles) {
+      const text = readFileSync(file, 'utf-8')
+      for (const [, clause] of text.matchAll(/import\s+(?!type\b)((?:[\w$]+\s*,\s*)?\{[^}]*\}|[\w$]+)\s+from\s+'(?:\.\.?\/)+(?:store\/)?chatSlice'/g)) {
+        const named = clause.match(/\{([^}]*)\}/)?.[1] ?? ''
+        for (const raw of named.split(',')) {
+          const part = raw.trim()
+          if (!part || part.startsWith('type ')) continue
+          wanted.set(part.split(/\s+as\s+/)[0], file)
+        }
+      }
+    }
+    expect(wanted.size, 'no importer of chatSlice found under src').toBeGreaterThan(0)
+    for (const [name, file] of wanted) {
+      expect(name in surface, `${file} imports ${name}, which chatSlice does not export`).toBe(true)
+    }
   })
 
   it('every action creator carries its chat/<name> type and matches its own action', () => {
-    for (const name of ACTION_CREATORS) {
-      const creator = surface[name] as { type: string; match: (a: unknown) => boolean }
-      expect(typeof creator, name).toBe('function')
+    expect(ACTION_CREATORS.length).toBeGreaterThan(0)
+    for (const [name, creator] of ACTION_CREATORS) {
       expect(creator.type, name).toBe(`chat/${name}`)
       expect(creator.match({ type: `chat/${name}` }), name).toBe(true)
     }
   })
 
-  it('every thunk keeps its typePrefix and its lifecycle action types', () => {
-    for (const [name, prefix] of Object.entries(THUNKS)) {
-      const thunk = surface[name] as { typePrefix: string; pending: { type: string }; fulfilled: { type: string }; rejected: { type: string } }
-      expect(thunk.typePrefix, name).toBe(prefix)
+  it('every thunk keeps a unique chat/ typePrefix and its lifecycle action types', () => {
+    expect(THUNKS.length).toBeGreaterThan(0)
+    const prefixes = new Set<string>()
+    for (const [name, thunk] of THUNKS) {
+      const prefix = thunk.typePrefix
+      expect(prefix, name).toMatch(/^chat\/\w+$/)
+      expect(prefixes.has(prefix), `${name} reuses ${prefix}`).toBe(false)
+      prefixes.add(prefix)
       expect(thunk.pending.type, name).toBe(`${prefix}/pending`)
       expect(thunk.fulfilled.type, name).toBe(`${prefix}/fulfilled`)
       expect(thunk.rejected.type, name).toBe(`${prefix}/rejected`)
     }
   })
 
+  it('every chat action type another slice matches by string is one chatSlice dispatches', () => {
+    const known = new Set([
+      ...ACTION_CREATORS.map(([, c]) => c.type),
+      ...THUNKS.flatMap(([, t]) => [t.pending.type, t.fulfilled.type, t.rejected.type]),
+    ])
+    const chatDir = join(SRC, 'store', 'chat')
+    let seen = 0
+    for (const file of sourceFiles) {
+      if (/\.test\.tsx?$/.test(file) || file.startsWith(chatDir) || file.endsWith('chatSlice.ts')) continue
+      if (!file.startsWith(join(SRC, 'store'))) continue
+      for (const [, type] of readFileSync(file, 'utf-8').matchAll(/'(chat\/\w+(?:\/(?:pending|fulfilled|rejected))?)'/g)) {
+        seen += 1
+        expect(known.has(type), `${file} matches '${type}', which no chat action or thunk dispatches`).toBe(true)
+      }
+    }
+    expect(seen, 'no cross-slice chat action literal found under src/store').toBeGreaterThan(0)
+  })
+
   it('exported helpers and selectors are plain functions, constants keep their values', () => {
-    for (const name of FUNCTIONS) {
-      const fn = surface[name] as { type?: unknown; typePrefix?: unknown }
-      expect(typeof fn, name).toBe('function')
-      expect(fn.type, name).toBeUndefined()
-      expect(fn.typePrefix, name).toBeUndefined()
+    for (const [name, value] of exported) {
+      if (typeof value !== 'function' || isCreator(value) || isThunk(value)) continue
+      expect((value as { type?: unknown }).type, name).toBeUndefined()
     }
     for (const [name, value] of Object.entries(CONSTANTS)) expect(surface[name], name).toEqual(value)
   })

@@ -15,9 +15,12 @@ itself, which is the only part that needs a disk.
 
 Three facts this probe cannot read for itself and takes as values instead:
 
-* ``worker_running`` -- whether a worker's slot has a turn in flight. That lives
-  in the dashboard's in-process slot table, which a probe running on a worker
-  thread has no handle on, so the driver injects a resolver.
+* ``worker_running`` -- whether the worker's session owns proven current or
+  queued work: a turn, or work that outlives it such as a running or queued
+  sub-agent, a workflow, synthesis, preparation or compaction (the gateway binds
+  ``session_activity.session_work_pending``). That lives in the dashboard's
+  in-process state, which a probe running on a worker thread has no handle on, so
+  the driver injects a resolver.
 * ``worker_closed`` -- whether that slot is GONE. Same table, same reason, and a
   separate question: "not running" is true of a worker thinking between turns as
   well as of one that ended, which is why ``is_stale`` makes the first wait out a
@@ -140,8 +143,8 @@ class WorkLedgerProbe(irq.Probe):
     """Watch one conductor's work ledger.
 
     Args:
-        worker_running: ``session_key -> has a turn in flight``. Defaults to
-            :func:`_always_idle`.
+        worker_running: ``session_key -> owns proven current or queued session
+            work`` (a turn is one kind). Defaults to :func:`_always_idle`.
         worker_closed: ``session_key -> its slot is gone``. Defaults to
             :func:`_always_open`, so a build with no resolver never skips the
             staleness window.

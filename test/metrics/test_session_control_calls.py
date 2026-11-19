@@ -134,8 +134,10 @@ class _State:
 
 
 class TestOpEnum:
-    def test_the_closed_list_is_the_rfcs_nineteen(self):
-        assert len(scc.SESSION_CONTROL_OPS) == 19
+    def test_the_closed_list_is_non_empty_and_excludes_the_fold(self):
+        # Which ops exist is read off the live router in ``TestRouteOps``.
+        assert scc.SESSION_CONTROL_OPS
+        assert scc.OP_OTHER not in scc.SESSION_CONTROL_OPS
 
     @pytest.mark.parametrize("op", sorted(scc.SESSION_CONTROL_OPS))
     def test_a_named_op_passes_through(self, op):
@@ -403,7 +405,7 @@ class TestExactlyOnce:
 class TestRouteOps:
     @pytest.mark.asyncio
     async def test_every_registered_route_counts_its_own_verb(self, rec):
-        """Derived from the live router, so a 21st route or a mistyped op reds here.
+        """Derived from the live router, so a route counting another route's verb reds here.
 
         A decorator carrying the wrong verb is the one error a reader cannot see
         by eye -- it emits a plausible count for a call that never happened.
@@ -434,41 +436,35 @@ class TestRouteOps:
                 assert len(emitted) == 1, f"{path} emitted {len(emitted)} counts, want 1"
                 found[path] = emitted[0]["attrs"]["op"]
 
-        # ``set_color``, ``set_note``, ``revive`` and ``history`` appear here as
-        # ``other``: that IS what the counter records for them, which is the fact
-        # worth pinning.
-        assert found == {
-            "/api/session-control/create": "create",
-            "/api/session-control/fork": "fork",
-            "/api/session-control/stop": "stop",
-            "/api/session-control/end-wait": "end_wait",
-            "/api/session-control/retry": "retry",
-            "/api/session-control/continue": "continue",
-            "/api/session-control/set-model": "set_model",
-            "/api/session-control/reload": "reload",
-            "/api/session-control/rename": "rename",
-            "/api/session-control/generate-title": "generate_title",
-            "/api/session-control/set-color": "other",
-            "/api/session-control/set-note": "other",
-            "/api/session-control/close": "close",
-            "/api/session-control/revive": "other",
-            "/api/session-control/history": "other",
-            "/api/session-control/send": "send",
-            "/api/session-control/broadcast": "broadcast",
-            "/api/session-control/status": "status",
-            "/api/session-control/adopt": "adopt",
-            "/api/session-control/handoff": "handoff",
-            "/api/session-control/release": "release",
-            "/api/session-control/read": "read_message",
-            "/api/session-control/queue": "other",
-            "/api/session-control/crews": "other",
-            "/api/session-control/run-queued": "other",
-            "/api/session-control/summary": "summary",
+        assert found, "no /api/session-control/ route was registered"
+        # Review list: the routes counted as ``other`` on purpose. Every other route
+        # counts its own verb: the path's last segment, ``-`` written ``_``, is the op
+        # or its leading word (``/read`` counts ``read_message``). So an op dropped
+        # from SESSION_CONTROL_OPS, which folds its route into ``other``, fails here.
+        folded_on_purpose = {
+            f"/api/session-control/{verb}"
+            for verb in (
+                "set-color",
+                "set-note",
+                "revive",
+                "history",
+                "queue",
+                "crews",
+                "run-queued",
+            )
         }
+        wrong = {
+            path: op
+            for path, op in found.items()
+            if (op == scc.OP_OTHER) != (path in folded_on_purpose)
+            or (op != scc.OP_OTHER and not op.startswith(path.rsplit("/", 1)[1].replace("-", "_")))
+        }
+        assert wrong == {}, f"route(s) that do not count their own verb: {wrong}"
+        assert folded_on_purpose <= set(found), "a route recorded as folded is gone"
 
     @pytest.mark.asyncio
     async def test_every_named_op_is_reachable_from_a_real_route(self, rec):
-        """The nineteen ops are the routes' own verbs, not an aspiration.
+        """The named ops are the routes' own verbs, not an aspiration.
 
         Reds if an op is named in the enum but no route ever emits it -- a value
         the dashboard would wait for forever.

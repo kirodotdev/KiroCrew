@@ -1042,7 +1042,7 @@ class TestBuildStepPrompt:
             Step(index=2, title="Current", description="c"),
         ]
         prompt = await runner._build_task_prompt(run, run.tasks[1], attempt=1)
-        assert "✅ 1. Done" in prompt
+        assert "[done] 1. Done" in prompt
 
 
 # ── Status ──

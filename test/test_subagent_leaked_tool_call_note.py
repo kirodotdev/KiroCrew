@@ -160,15 +160,15 @@ class TestTheParentIsTold:
     @pytest.mark.asyncio
     async def test_a_lone_leaked_run_carries_the_note(self):
         (event,) = await self._deliver([self._leaked("a1", 2)])
-        assert "completed ✅" in event
-        assert event.rstrip().endswith(f"⚠ Agent `a1` {LEAKED_TOOL_CALL_NOTE}")
+        assert " completed\nTask:" in event
+        assert event.rstrip().endswith(f"Warning: Agent `a1` {LEAKED_TOOL_CALL_NOTE}")
         assert NO_TOOL_CALLS_NOTE not in event
 
     @pytest.mark.asyncio
     async def test_a_leaked_run_with_no_tool_call_carries_both_notes(self):
         (event,) = await self._deliver([self._leaked("a1", 0)])
-        assert f"⚠ Agent `a1` {NO_TOOL_CALLS_NOTE}" in event
-        assert f"⚠ Agent `a1` {LEAKED_TOOL_CALL_NOTE}" in event
+        assert f"Warning: Agent `a1` {NO_TOOL_CALLS_NOTE}" in event
+        assert f"Warning: Agent `a1` {LEAKED_TOOL_CALL_NOTE}" in event
 
     @pytest.mark.asyncio
     async def test_a_failed_run_carries_no_leak_note(self):
@@ -184,7 +184,7 @@ class TestTheParentIsTold:
             [self._leaked("m0", 2, **wave), self._info("m1", 2, **wave)]
         )
         assert digest.count(LEAKED_TOOL_CALL_NOTE) == 1
-        assert f"⚠ Agent `m0` {LEAKED_TOOL_CALL_NOTE}" in digest
+        assert f"Warning: Agent `m0` {LEAKED_TOOL_CALL_NOTE}" in digest
 
 
 class TestStatusAndBlockingWave:

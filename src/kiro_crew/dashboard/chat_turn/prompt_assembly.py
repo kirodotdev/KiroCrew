@@ -464,7 +464,7 @@ def _resolve_prompt_mention(
 
     # Show the user what happened — handed back for the caller to surface on the
     # loop, since this may be running on a worker thread.
-    return expanded, "ok", f"📜 Loaded prompt **@{match['fullName']}** ({len(content):,} chars)"
+    return expanded, "ok", f"Loaded prompt **@{match['fullName']}** ({len(content):,} chars)"
 
 
 def _slot_prompt_project(slot: _ChatSlot, project: str | None = None) -> Path | None:
@@ -612,7 +612,7 @@ def _expand_dollar_skills(
 
     slot.append(
         "system",
-        f"📎 Loaded skill(s) via `$`: **{', '.join(names)}**",
+        f"Loaded skill(s) via `$`: **{', '.join(names)}**",
         "msg msg-info",
         meta={"kind": "skill_load", "skills": snapshots},
     )
@@ -789,7 +789,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 # otherwise neutralize its own (registered) frame.
                 _interrupted_turn_preamble = preamble
                 turn._interrupted_turn_preamble = _interrupted_turn_preamble
-        logger.info("🔍 Chat slot=%s is_new=%s mode=%r", slot.key, is_new, slot.mode)
+        logger.info("Chat slot=%s is_new=%s mode=%r", slot.key, is_new, slot.mode)
         # Drain any pending subagent delivery failures so the LLM knows
         # about timed-out results and can read them from disk. Settled or put
         # back in _turn_settle_debts; a notice the message already carries (a

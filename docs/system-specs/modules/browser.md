@@ -147,6 +147,20 @@ pytest and CI, such as the GUI user test's `gateway --test-mode`; any value but
 empty/`0`/`false`/`no`/`off`); there is no config key. `KIROCREW_SKIP_MODEL_DOWNLOAD`
 does not skip it: a real cloud microVM gateway sets that.
 
+**Repair after an update.** The venv links to the interpreter that built it. A
+packaged runtime that keeps each release in its own directory can remove that
+interpreter while the gateway runs, after the startup check found the install
+whole, so the next status read would show Install with no reason. When a status
+read (`GET /api/browser/status`) or an agent's `browser` op finds the marker but
+no venv Python, `repair_browser_harness` starts the same install job unasked:
+once per gateway process, never over a job that is running or did not succeed,
+and under the same test/CI skip. It checks those conditions again right before
+it starts the job, after its last await, so two callers at once start one job.
+The op that started it, and any op while an install job runs (a repair another
+caller started, or an Install press), answers `browser_repairing` ("being
+installed; try again in a minute"), which the tool passes to the agent as
+written.
+
 The daemon starts with a scrubbed environment built by one function and pinned
 by one test:
 
@@ -241,7 +255,15 @@ registered with `pre_exec_stops`; the cleanup hook unregisters it once its own
 stop has returned; a teardown cut before its last child sets that handle aside,
 never to be reused, so the next stop reaches the children it never got to
 without retrying the tab close; that best-effort close is bounded at 3 s, so a
-stalled CDP connection cannot spend the stop's bound before the children stop), and
+stalled CDP connection cannot spend the stop's bound before the children stop).
+On Windows `terminate_and_reap` has no graceful step, so before the forced stop of
+Kiro's Chromium (`_stop_handle`, `_abandon_start`, and the port launcher's
+`_stop_unowned`) the supervisor sends CDP `Browser.close` over a connection of its
+own (`relay.request_browser_close`, to the URL in `DevToolsActivePort`) and waits up
+to `_STOP_GRACE_SECS` for the process to exit, so Chromium writes its profile
+(`exit_type` `Normal`) and keeps recent cookies. A browser that ignores the request,
+or has no live port, gets the forced tree kill after that wait. macOS and Linux are
+unchanged. The gateway also
 reclaims a stray daemon from a previous life at startup, then runs the startup
 auto-install (see the driver section).
 
@@ -296,6 +318,14 @@ each launch the supervisor removes the profile's session files
 pages from closed chats are not reopened; cookies and logins are kept. The
 user's own Chrome or Edge is never touched. `browser.choice` (`auto|user_chrome|kiro_chromium|headless`)
 overrides the order by hand.
+
+Under `auto`, each start first checks that the person's Chrome or Edge accepts
+debugging connections (a live `DevToolsActivePort`). When it does not (remote
+debugging is off), the start uses Kiro's Chromium, with a window, instead of
+failing, and status reports Kiro's Chromium until a later start finds the
+person's browser usable. If Kiro's Chromium is not downloaded yet, the start
+fails saying so, and Settings shows Install on the main card. A hand pick of
+`user_chrome` never falls back: it fails with the remote-debugging step.
 
 A Kiro's Chromium that exits before the daemon answers fails the start at once
 with `Kiro's Chromium exited with code <n>`. On macOS and Linux its stderr goes
@@ -353,6 +383,18 @@ lock (the person's Chrome can wait on its Allow sheet without deadline) the chec
 waits at most 5 s (`CREDENTIAL_LOCK_WAIT_SECS`) and then lets the page load; the
 next navigation tries again. **The person's own Chrome or Edge is never filled**: a
 start on either records `skipped` / `user_browser` and the provider is not called.
+
+**Per-chat contexts.** Under `browser.isolation: per_session` (The relay, below)
+the default context's cookies do not reach a chat's context, so each new context is
+filled on its own: `seed_context` applies the same provider and settings with
+`Storage.setCookies` carrying the context's `browserContextId` (target reason
+`context`, one SEL row as for any apply). Every re-apply above pulls from the
+provider ONCE and writes the same cookies into the default context and each open
+context (`credentials.apply(contexts=...)`), so the whole refresh stays inside
+the one navigation budget however many chats are open; the status's
+`applied_per_context` and the SEL row's `contexts=` carry each context's landed
+count, so a context the cookies missed stays visible. On the person's own
+Chrome or Edge nothing is filled: the chat signs in through a takeover.
 
 **Session cookies.** Every cookie is set WITHOUT `expires`, so nothing the provider
 supplies is written into Kiro's profile on disk and all of it is gone when the
@@ -442,10 +484,75 @@ undo a page already read.
   closes only those. A chat whose session ends -- its tab closed, archived as
   idle, or its open conversation deleted -- closes the ledgered tabs it owned, in
   the background and after any op still in flight (`browser_ops.close_chat_tabs`);
-  every other chat keeps its own. A chat reopened on the same key before that
-  close runs keeps the tabs. Closing the tab of a chat linked to a channel
-  session (`slack:<ts>`) closes none: that session keeps running and shares the
-  tab's hub key.
+  every other chat keeps its own. The same close drops the chat's hub session
+  (`LiveHub.forget`), so no tab is sent its card again. A chat reopened on the
+  same key before that close runs keeps the tabs and the session, and one reopened
+  while it runs keeps its new session. Closing the
+  tab of a chat linked to a channel session (`slack:<ts>`) closes none: that
+  session keeps running and shares the tab's hub key.
+- **Per-chat browser contexts** (`browser.isolation: per_session`, default
+  `shared`; `browser_harness/session_contexts.py`). A chat's first op creates a
+  browser context for its hub key with `Target.createBrowserContext` on the
+  relay's own connection, seeds it (`HarnessSupervisor.seed_context`, Credentials
+  above; bounded by `NAV_REFRESH_BUDGET_SECS` like a re-pull, past which the
+  context is kept unseeded rather than fail every first op on a hung provider) and
+  sets `CdpRelay.create_context`; the bind calls `ensure()` BEFORE reading the
+  relay, since a helper call restarts a dead daemon onto a fresh relay that has no
+  context and no `create_context` (the tab would open in the default context with
+  isolation on), and records that relay on the session (`LiveHub.bind_context`,
+  `bound_relay`) as the PIN every helper of the op passes to
+  `HarnessSupervisor.call(relay=)` (`caller_checked_call`): a restart between any
+  two steps, the bind's own included, refuses the op (`BrowserRestarted`, route
+  code `browser_restarted`) rather than drive the new browser's default context.
+  The post-op follow (`follow_current_tab`) is pinned too and checks the pin
+  before its `current_tab`, so an op whose own steps read the restart as a failed
+  step still answers `browser_restarted` instead of streaming the new browser's
+  default-context tab on the chat's card; the chat's next op makes a new context;
+  the relay adds that `browserContextId` to every
+  daemon `Target.createTarget` naming none, so the chat's first tab and each
+  `tabs new` open in its context, and the ledger records each tab with the context
+  it opened in (`CdpRelay.context_of`). The op route clears `create_context` when
+  the op ends, so a tab the daemon opens on its own lands in the default context.
+  A chat's tabs are the ledgered ones it owns IN THE CONTEXT ITS BIND PUT IT IN
+  (`LiveHub.context_of`, recorded by `_bind_target`: its own under `per_session`,
+  the default under `shared`; the setting is read once per op, at the bind, so a
+  flip mid-op cannot show `tabs list` another mode): `tabs list` shows only those, `tabs switch` accepts only those, and
+  `_bind_target` keeps only such a tab, so a flip of the setting either way opens
+  a new tab rather than carry one over, and a chat that chose isolation never
+  slides back into the shared cookie jar through a tab it held before (the other
+  side's tabs stay owned and are closed at session end). Under isolation
+  `_bind_target` never adopts the daemon's current tab. `KiroCrewConfig.load`
+  answers a present but unparseable file with defaults (a missing file is a
+  clean default, `shared`), so `per_session()` reads the load's
+  `_base_unreadable` / `_overlay_unreadable` marks and answers such a read with
+  the LAST VALUE READ CLEANLY (`session_contexts._last_clean`): `shared`, or
+  nothing ever read, keeps browsing in the shared browser as before (the default
+  path is not changed by a broken file); `per_session` refuses the op
+  (`IsolationUnknown`, one warning, route code `isolation_unknown`) rather than
+  slide the chat into the shared jar. The map lives on the relay (`ensure_session_context`,
+  `dispose_session_context`, created with `disposeOnDetach`): Chrome disposes a
+  context when the connection that made it closes, so a reconnected relay starts
+  with none and each chat gets a fresh one. Session end closes the chat's
+  ledgered tabs, then `Target.disposeBrowserContext`. A context is in memory
+  only: its sign-ins end with the chat. Headful Chrome shows a context's tabs in
+  a window of their own.
+  The setting is read at each op; turning it off moves a chat to a tab in the
+  default context on its next op, and its context tabs close when the chat ends.
+- **Popups.** A page an agent tab opens itself (`window.open`, a `target=_blank`
+  link, a "Sign in with ..." window) is created by the page, so no create reply
+  names it. At start the relay sends its own `Target.setDiscoverTargets`, and any
+  `page` target whose `openerId` is already ledgered joins the ledger with focus
+  emulation and its opener's browser context (so under `per_session` a
+  popup stays in the chat's context), the relay keeping the popup-to-opener link (`CdpRelay.opener_of`,
+  bounded at 1,024 links, oldest dropped). A page the person's own tab opens has
+  no ledgered opener and stays out. The discovery events
+  (`targetCreated` / `targetInfoChanged` / `targetDestroyed`) reach a daemon
+  client only after that client sends `Target.setDiscoverTargets` itself, so the
+  daemon's event buffer is unchanged. The op route binds first (which records the
+  context this op browses in) and then follows a new popup only if it sits in that
+  context: after a flip of `browser.isolation`, a popup opened by the chat's tab
+  from the other side is still claimed (session end closes it) but never switched
+  to, streamed or described.
 - Late `screencastFrameAck` errors after a stop are swallowed; close is clean.
 
 ### The stream
@@ -538,7 +645,7 @@ tested on a fake clock.
 `browser_live` (`session_key`, `turn_id`, `state`, `url`, `title`, `browser`,
 `headless`, `step`, `steps`, `rung`, `fps`, and `started_at_ms`/`ended_at_ms`,
 the turn's wall-clock start and end in epoch ms, 0 while not yet). A newly
-connected owner socket is sent each chat's last published event
+connected owner socket is sent each open chat's last published event
 (`LiveHub.snapshot_events`, from `dashboard/ws.py`), so a reloaded tab shows the
 card, a waiting quick ask included, without waiting for a change. The card takes
 its turn times from those two fields on first sight, so a restored card still
@@ -583,7 +690,37 @@ daemon moved), adopts the daemon's current tab when no other session owns it,
 and otherwise opens a tab of its own; a daemon whose current tab was closed (an
 ended chat's, or one the person closed) counts as having none. Chat B therefore
 never clicks on chat A's page, `tabs` lists and switches only the caller's own
-tabs, and a takeover in chat A fences A's tab while B keeps browsing. With `browser.live.enabled` off
+tabs, and a takeover in chat A fences A's tab while B keeps browsing. A popup
+belongs to the chat that owns its nearest owned ancestor by opener links, which
+outlive a closed popup, and the walk stops at another chat's tab
+(`browser_ops.claim_popups`): before the
+bind and again after the op, a popup that chat has not claimed yet becomes its
+current tab (`follow_popup`, `switch_tab` with `activate=False`), and the op's
+answer carries `popup: {target_id, url, title, hint}`, with `url` and `title`
+left out when the navigate gate refuses the address, and capped at 2048 and 300
+characters (the live hub's page caps) when it admits it. When the bound tab is gone
+and it was a popup, the bind walks the opener links back to the nearest tab the
+chat still has instead of opening a blank one, so a sign-in window that closes
+itself returns the agent to the page that opened it. When the op's own action
+closes the popup (a "Log in" button that calls `window.close()`), the daemon loses
+its session mid-op; if the bound tab was a popup and leaves the ledger within
+`POPUP_CLOSE_GRACE_S` (1 s), the route returns the session to the opener and the
+op answers `ok` with `popup_closed: {target_id, returned_to, hint}` instead of
+`browser_error`. A bind whose bound popup closed under it binds again onto the
+opener. Every popup move of the chat's tab (following a popup, or going back to
+a closed popup's opener) is kept on the live session until an answer reports it
+(`LiveHub.note_tab_moved`); the route adds it to the next answer it returns, as
+`popup` or `popup_closed` with a hint, whether that answer succeeded, refused or
+failed (the browser tool prints it after the error text too), and a HOLD, an
+interrupted op, a quick ask's answer or a governance deny leaves it pending,
+because their text cannot carry it. While it is pending, an
+op that acts on an element or point of the page (`click`, `drag`, `scroll`,
+`type`, `press_key`, `hover`, `select_option`, `dialog`, `reflex`) is refused
+with `popup_opened` or `popup_closed` and `ok: false`, because a ref or coordinate
+belongs to the page it came from; every other op still runs on the new tab. A failure caused by the op's own action
+closing its popup is answered `ok` with `popup_closed`. If following the opener then hits the navigate gate (the popup sent the opener to a refused address as it closed), the answer is that refusal, audited `denied`. Any other failure stays an error. `tabs list` claims first,
+and a chat's end claims before it closes its tabs, so its popups close with it.
+With `browser.live.enabled` off
 the hub publishes no event at all, so no card is mounted; the ops still run. While the owner's Chrome shows its Allow sheet the op route tells
 the hub `waiting_allow`, bounded at 60 s per op (the Allow sheet itself outlasts
 the op). The session key the shim resolves (`dashboard:<slot>` or the bare slot)
@@ -731,7 +868,7 @@ One card per turn, attached to the turn's first `browser` call (anchor =
 folded. A browser row is recognised by the stamped `tool_name` when there is one
 (`browser` or a server-qualified `…/browser`, `…::browser`, `…___browser`) and
 otherwise by its pill text, which for the managed-MCP tool reads
-`🔧 @kirocrew-core/browser` -- the `@server/tool` form every MCP call arrives in; a new `turn_id` closes the previous record as done. Takeover grows the
+`Tool: @kirocrew-core/browser` (or the older wrench lead) -- the `@server/tool` form every MCP call arrives in; a new `turn_id` closes the previous record as done. Takeover grows the
 same element; it never swaps in another component. Frames are decoded from the
 binary message (the TS mirror of `decode_frame`, every field checked), acked ONCE
 per `(stream, seq)` even when no live turn shows them (so the relay never
@@ -741,7 +878,12 @@ cycle (`createImageBitmap`, newest frame wins, mask boxes after the image); the
 first frame is the one React render, later frames none. Visibility is posted only
 on a change of (any card instance showing the CURRENT turn intersecting) AND
 (document visible): a finished turn's card still on screen does not keep a later
-turn's screencast running while that turn's card is scrolled off. A turn no card
+turn's screencast running while that turn's card is scrolled off. A new turn
+reports its visibility again, since the gateway may hold a fresh session for it
+(a chat reopened on its key). A visibility
+write the gateway refused is sent again on the next change, except a 404
+`unknown_session`: that chat is closed, and resending it would fail on every tab
+switch. A turn no card
 shows (another slot's browsing, a card the virtualised transcript has not
 mounted) is reported hidden after 30 of its frames, so its screencast stops
 instead of streaming into memory nobody looks at, and resumes when a card mounts. A claim is optimistic and reverts on a
@@ -1010,6 +1152,34 @@ never the gateway's port; applied to `navigate` and to the URL a new tab opens
 with). It then posts `{session_key, op, args}` to `POST /api/browser/op` (strict,
 internal-secret only) and renders the gateway's answer. It holds no state.
 
+#### One door: `run_browser_op`
+
+The route's body is `dashboard/handlers/browser_ops.run_browser_op(session_key, op,
+args, *, state, caller)`, which answers `(body, http_status)`. The route only
+authenticates and validates the body, then calls it; an app's `PagePort`
+(`apps/browser_page_port.py`, not yet handed to any app) calls the same function with the slot's own
+runtime key (`dashboard:<slot>`), so the Bot and an app share every gate from one
+copy, in this order: the `capabilities.browse` check for that key; the navigate gate
+on the address the op asks to open (`navigate`, and `tabs new` with a URL), which
+answers `url_blocked` before the browser starts, so a refused address is never
+requested even by a caller inside the gateway that skips the shim; an app slot's
+approved `browserSites`; the takeover hold; the gateway-wide lock (an app's op queues
+behind the Bot's); the second browse check; the per-session
+fence; the tab binding; and the per-caller checks of every helper and frame send.
+
+An in-gateway caller is audited as a `GatewayCaller` (`app:<name>`, path
+`app.browser`). When the person holds the page it is answered `user_in_control`
+without parking the slot: it has no hand-back poll to wait on. It never takes the
+note the person left for the Bot at a hand-back, so that note reaches the Bot's next
+op, and it opens no card turn (it joins one the Bot has open), since only the Bot's
+turn end folds a card.
+
+`LiveHub.aim(key, x, y, label)` sets the cursor an app draws over the live view: the
+`aim` field of the `browser_live` event (`{x, y, label, seq}`, viewport CSS px,
+label at most `MAX_AIM_LABEL` characters), sent only once something aimed and only
+while a stream shows the session. It is for the live view to draw over the frame (the
+component that draws it is the RFC's step 1c), and it never enters the page.
+
 `browser_harness.ops.run_op(op, args, ctx)` runs in the gateway. It reaches the
 browser only through `ctx.helper(name, **kwargs)` -- one allowlisted Harness
 helper over the daemon's IPC -- and the `js` helper is only ever given
@@ -1085,7 +1255,7 @@ the last navigate or snapshot.
 | `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land. `type {ref?, steps: [{text} | {key, modifiers?}]}` (`browser_harness/type_steps.py`, reached from `ops.py` by a call-time import) runs its steps in order in one op: `ref` is focused once, each text step runs the focused-field checks above and each key step `press_key`'s guards, and the first refusal, a `dialog_open` included, ends it with the step's 0-based index as `step` and at the front of its `error`. A malformed list (not 1 to `STEPS_CAP` (50) steps, a step that is neither shape, a key step whose key `press_key` would refuse as unknown, `text` or a truthy `submit` beside `steps`) is refused `bad_steps` before anything runs; `TEXT_CAP` bounds the text of all steps together. A `\t` in `text` inserts a tab character, not the Tab key |
 | `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named |
 | `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path |
-| `tabs` | lists and switches `relay.agent_targets()` only |
+| `tabs` | lists and switches `relay.agent_targets()` only, the popups the caller's tabs opened included |
 | `reflex` | a loop of the ops above over a closed move set, judged by the decision seam, in `step`, `realtime` or `virtual_time` mode; `not_available` when it is off ("The fast loop" below) |
 
 Every op calls `live_hub.step`; `run_op`'s own `in_control` check is the backstop
@@ -1205,7 +1375,7 @@ for `type`, filled only with `values`.
 | Part | What the code does | What the model answers |
 |---|---|---|
 | Observation | ONE walker call, `observe(opts)`: the indexed element table (visible, enabled, in-viewport controls with role, name, current value, checked/selected/expanded state, select options, each with its ref and a guard -- a hash of the element and its row/form/dialog text), the visible text, declarative `read` probes (`name=css@text\|value\|checked\|box\|count\|attr:NAME`, at most 16, 4 KB, a password or secret-named field reads as null; no script), a mutation counter, an animation-frame counter and a fingerprint, all limited to `region` when given. `grid` (+ `grid_items`) adds the cells read by `cells(selector)`. `see: true` adds a masked frame under `browser_images` with the frame rules above | -- |
-| Request | one per decision, `extra.kind = "reflex"`: Choice `operation` over the moves offered (key presses, scrolls, drags, bound typing, WAIT, and one option per targeted operation); per targeted operation a speculative Choice `<op>_target` over the elements that operation fits (a select's options as `eN:i`), at most 100 options in page order, a dropdown that does not fit skipped whole; Choice `value` over `values` (at most 20) when there are several, so with at most 40 moves a request carries at most 465 options, within Laya's 512; Nouls `done`, `stuck`, `off_path`, the agent's `until_noul`, and `risk_i` for at most 8 moves not yet judged. Page words (target option words, risk move labels) ride the fenced state as `target_options` and `risk_moves`; the questions name them by key only | the judgments |
+| Request | one per decision, `extra.kind = "reflex"`: Choice `operation` over the moves offered (key presses, scrolls, drags, bound typing, WAIT, and one option per targeted operation); per targeted operation a speculative Choice `<op>_target` over the elements that operation fits (a select's options as `eN:i`), at most 100 options in page order, counting only the options offered (a risky or withdrawn one takes no room), a dropdown that still does not fit skipped whole; Choice `value` over `values` (at most 20) when there are several, so with at most 40 moves a request carries at most 465 options, within Laya's 512; Nouls `done`, `stuck`, `off_path`, the agent's `until_noul`, and `risk_i` for at most 8 moves not yet judged. Page words (target option words, risk move labels) ride the fenced state as `target_options` and `risk_moves`; the questions name them by key only | the judgments |
 | Use | only the target head matching the picked operation is read; the others are discarded unread, so a target never meets an operation it does not fit | -- |
 | Executor | before input the walker's `check(ref, kind, guard)` re-reads the target: the same guard, enabled, visible, inside the viewport, not covered at its centre (`elementFromPoint`), editable and not secret for typing, the option still offered for a select. A failed check drops that answer (`stale`) and nothing is input. Typing replaces the field's text (`selectText`, then the `type` op). The model's answer is never a selector, a coordinate or script | -- |
 | Settle | after an action, two animation frames (at most 50 ms), or after typing into a combobox until its suggestions show (at most 200 ms); `settle_ms` overrides | -- |
@@ -1358,7 +1528,7 @@ link planted at that name resolves the file elsewhere and fails the pin.
 
 ### Settings → Browser
 
-One card and two controls; everything else is under a collapsed More group.
+One card and three controls; everything else is under a collapsed More group.
 
 - **Main card** (`BrowserStatusCard.tsx`): the browser, a status dot and line, and
   ONE button that follows `primaryState` (`browserStatus.ts`): `installing`
@@ -1377,7 +1547,13 @@ One card and two controls; everything else is under a collapsed More group.
   install is needed (a Redownload) is an `ErrorNotice` on the Engine row, not
   the card. A button whose request is in flight is disabled and `aria-busy`.
 - **Which browser** (`browser.choice`) offers `auto`, `user_chrome`,
-  `kiro_chromium`. **Show the live view in chat** (`browser.live.enabled`).
+  `kiro_chromium`. **Browser isolation** (`browser.isolation`) offers Shared
+  browser and Isolated browser per chat, the gateway's `shared` and `per_session`; the
+  picker's value list is `ISOLATIONS` in `browserStatus.ts`, in the gateway's
+  order, and a stored value outside it reads as `shared`, the gateway's own
+  resolution. A new mode is one entry there plus its label key; the `Record` of
+  labels refuses to compile without it. **Show the live view in chat**
+  (`browser.live.enabled`).
 - **Use \<provider\> sign-in** (`browser.credentials.enabled`), under Show the
   live view in chat and shown only when `status.credentials.provider` is non-null
   (an edition supplies a sign-in provider; the public build never renders it). It
@@ -1445,8 +1621,8 @@ all owner-only and refusing the internal secret; writes go through
 anchors by label, so a `key:browser.choice` link lands on the Which browser
 picker only. Every string is in the i18n catalog (`pages.settings.browserPanel.*`).
 
-The config section is `browser`: `choice`, `live.enabled`, `live.quality`,
-`live.max_fps`, `live.mask_passwords`.
+The config section is `browser`: `choice`, `isolation`, `live.enabled`,
+`live.quality`, `live.max_fps`, `live.mask_passwords`.
 `dashboard.browser_local_origins` stays where it is.
 
 #### Retired keys

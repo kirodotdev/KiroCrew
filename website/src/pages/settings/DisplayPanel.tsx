@@ -54,6 +54,7 @@ import { useCloseAction } from '../../hooks/useCloseAction'
 import { useTrayIcon } from '../../hooks/useTrayIcon'
 import { useMinimizeToTray } from '../../hooks/useMinimizeToTray'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
+import { STANDALONE_REOPEN_KEY, isStandaloneDisplay } from '../../lib/standaloneLastRoute'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
@@ -162,6 +163,10 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // "Show search in the top bar", on by default. useAppShell reads the same key
   // to draw the header, and usePersistedBool keeps the two readers in step.
   const [topbarSearch, setTopbarSearch] = usePersistedBool('mc-topbar-search', true)
+  // "Reopen where I left off", off by default and offered only in the installed
+  // app (#29497 decision). lib/standaloneLastRoute.ts reads the same key.
+  const [reopenLastPage, setReopenLastPage] = usePersistedBool(STANDALONE_REOPEN_KEY, false)
+  const standaloneApp = useMemo(() => isStandaloneDisplay(), [])
   const { botName, directLocal } = useBranding()
   const termFont = useTerminalFont()
   // Probed families become picker rows previewed in their own family, so the
@@ -819,6 +824,17 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             checked={topbarSearch}
             onChange={setTopbarSearch}
           />
+          {/* Per device and off by default: an existing install keeps opening
+              at Sessions until its owner turns this on. A browser tab always
+              opens the URL typed, so the row shows only in the installed app. */}
+          {standaloneApp && (
+            <SettingsToggle
+              label={i18nT('pages.settings.displayPanel.reopen_last_page')}
+              hint={i18nT('pages.settings.displayPanel.reopen_last_page_desc')}
+              checked={reopenLastPage}
+              onChange={setReopenLastPage}
+            />
+          )}
           {/* Saved in config.json, unlike the switch above: it decides which surface
               the shortcut opens for this crew, on every browser. */}
           <SettingsToggle

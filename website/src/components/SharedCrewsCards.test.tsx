@@ -1,7 +1,7 @@
 /**
- * Settings > Remote Crew's Shared Crews cards: hidden while the relay viewer is
- * off (no bridge, or the crews route 404s), the Crews listed with their type,
- * an empty state, a failed read shown inline with Try again, rows opening
+ * Settings > Remote Crew's Shared Crews cards: hidden until a list is loaded (a
+ * 404, a refusal or a failed read shows nothing), the Crews listed with their
+ * type, an empty state, rows opening
  * through the desktop bridge with the endpoint ID only, and the console link.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
@@ -35,14 +35,14 @@ afterEach(() => {
 })
 
 describe('SharedCrewsCards', () => {
-  it('renders nothing and reads nothing without the desktop bridge', async () => {
+  it('lists the Crews in a browser too, with no desktop bridge', async () => {
     const spy = vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
-    const { container } = await act(async () => renderWithProviders(<SharedCrewsCards />))
-    expect(spy).not.toHaveBeenCalled()
-    expect(container).toBeEmptyDOMElement()
+    await act(async () => renderWithProviders(<SharedCrewsCards />))
+    await waitFor(() => expect(spy).toHaveBeenCalled())
+    expect(await screen.findAllByTestId('shared-crew-row')).toHaveLength(1)
   })
 
-  it('renders nothing while the relay viewer is off (the route 404s)', async () => {
+  it('renders nothing in a build that keeps the viewer off (the route 404s)', async () => {
     withBridge()
     const spy = vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(new ApiError(404, 'Not Found'))
     const { container, queryClient } = renderWithProviders(<SharedCrewsCards />)
@@ -61,13 +61,13 @@ describe('SharedCrewsCards', () => {
       ],
     })
     renderWithProviders(<SharedCrewsCards />)
-    expect(await screen.findByText('Shared Crews')).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: 'Shared with me' })).toBeInTheDocument()
     expect(screen.getByText('Shared Crews are managed by your admin in the AWS Management Console.')).toBeInTheDocument()
     const rows = screen.getAllByTestId('shared-crew-row')
     expect(rows).toHaveLength(2)
     expect(rows[0]).toHaveTextContent('Platform team')
-    expect(rows[0]).toHaveTextContent('Team')
-    expect(rows[1]).toHaveTextContent('Personal')
+    expect(rows[0]).toHaveTextContent('Shared')
+    expect(rows[1]).toHaveTextContent('Private')
     expect(rows[1]).toHaveAttribute('aria-disabled', 'true')
 
     const u = userEvent.setup()
@@ -125,39 +125,36 @@ describe('SharedCrewsCards', () => {
     expect(link).toHaveAttribute('rel', 'noreferrer')
   })
 
-  it('shows one inline error with Try again on a failed read, and lists the Crews after a retry', async () => {
+  it.each([[409, 'SIGNED_OUT'], [403, 'REMOTE_ACCESS_DISABLED']])(
+    'renders nothing, with no notice, when the read answers %i %s',
+    async (status, code) => {
+      withBridge()
+      vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(new ApiError(status, 'refused', JSON.stringify({ code })))
+      const { container, queryClient } = renderWithProviders(<SharedCrewsCards />)
+      await waitFor(() => expect(queryClient.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('error'))
+      expect(container).toBeEmptyDOMElement()
+    },
+  )
+
+  it('says the list could not be read when the first read fails', async () => {
     withBridge()
-    const spy = vi.spyOn(api, 'relayViewerCrews')
-      .mockRejectedValueOnce(new ApiError(502, 'Bad Gateway', JSON.stringify({ code: 'SERVICE_ERROR' })))
-      .mockResolvedValue({ crews: [crew({})] })
+    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(new ApiError(502, 'Bad Gateway', JSON.stringify({ code: 'SERVICE_ERROR' })))
     renderWithProviders(<SharedCrewsCards />)
-    expect(await screen.findByTestId('shared-crews-refusal')).toHaveTextContent("Couldn't load your Shared Crews.")
-    expect(screen.getAllByTestId('shared-crews-refusal')).toHaveLength(1)
+    expect(await screen.findByTestId('shared-crews-refresh-failed')).toHaveTextContent("Couldn't load your Shared Crews.")
     expect(screen.getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
-    await userEvent.setup().click(screen.getByTestId('shared-crews-retry'))
+    expect(screen.queryByTestId('shared-crews-empty')).toBeNull()
+  })
+
+  it('keeps the rows through a later failed read and says the read failed', async () => {
+    withBridge()
+    const spy = vi.spyOn(api, 'relayViewerCrews').mockResolvedValueOnce({ crews: [crew({})] })
+    const { queryClient } = renderWithProviders(<SharedCrewsCards />)
     expect(await screen.findByTestId('shared-crew-row')).toHaveTextContent('Platform team')
-    expect(spy).toHaveBeenCalledTimes(2)
-    expect(screen.queryByTestId('shared-crews-refusal')).toBeNull()
-  })
-
-  it('offers no Try again for a refusal a resend cannot fix', async () => {
-    withBridge()
-    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
-      new ApiError(401, 'Unauthorized', JSON.stringify({ code: 'SIGNED_OUT' })),
-    )
-    renderWithProviders(<SharedCrewsCards />)
-    expect(await screen.findByTestId('shared-crews-refusal')).toHaveTextContent('Sign in to Kiro to see your Shared Crews.')
-    expect(screen.queryByTestId('shared-crews-retry')).toBeNull()
-  })
-
-  it('links a signed-out refusal to the Kiro account tab, where the sign-in is', async () => {
-    withBridge()
-    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
-      new ApiError(401, 'Unauthorized', JSON.stringify({ code: 'SIGNED_OUT' })),
-    )
-    renderWithProviders(<SharedCrewsCards />)
-    const link = await screen.findByRole('link', { name: 'Go to Kiro account' })
-    expect(link).toHaveAttribute('href', KIRO_SIGN_IN_PATH)
+    expect(screen.queryByTestId('shared-crews-refresh-failed')).toBeNull()
+    spy.mockRejectedValueOnce(new ApiError(502, 'Bad Gateway', JSON.stringify({ code: 'SERVICE_ERROR' })))
+    await act(async () => { await queryClient.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY }) })
+    expect(await screen.findByTestId('shared-crews-refresh-failed')).toHaveTextContent("Couldn't refresh your Shared Crews. This is the last list loaded.")
+    expect(screen.getByTestId('shared-crew-row')).toHaveTextContent('Platform team')
   })
 
   it('links a signed-out Open refusal under its row, and no other refusal', async () => {
@@ -165,7 +162,7 @@ describe('SharedCrewsCards', () => {
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
     renderWithProviders(<SharedCrewsCards />)
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Open Platform team' }))
-    expect(await screen.findByTestId('shared-crew-refusal')).toHaveTextContent('Sign in to Kiro to see your Team Crews.')
+    expect(await screen.findByTestId('shared-crew-refusal')).toHaveTextContent('Sign in to Kiro to see your Shared Crews.')
     expect(screen.getByRole('link', { name: 'Go to Kiro account' })).toHaveAttribute('href', KIRO_SIGN_IN_PATH)
   })
 })

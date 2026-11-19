@@ -197,6 +197,7 @@ def _src_files(src: Path) -> list[Path]:
     return sorted(src.rglob("*.py"))
 
 
+@source_corpus.untraced()
 def _owner_importers(src: Path, owners: frozenset[str]) -> list[str]:
     """Files under *src* that import one of *owners* at all, the owners and facade aside."""
     found = []
@@ -426,6 +427,7 @@ def _patched_through_the_facade(files: list[Path], spellings: dict[str, str]) ->
 
 
 @functools.lru_cache(maxsize=1)
+@source_corpus.untraced()
 def _corpus_patched_names() -> frozenset[str]:
     """Every name the test trees patch through any spelling of the facade, read once."""
     spellings = _facade_spellings(_REPO_ROOT / "src")

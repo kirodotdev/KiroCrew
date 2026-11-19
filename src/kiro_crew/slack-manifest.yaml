@@ -105,8 +105,6 @@ settings:
       - group_archive  #@code_channels
       - group_rename  #@code_channels
       - group_unarchive  #@code_channels
-      # A click on a code channel's context-bar action (Create PR, Stop).  #@code_channels
-      - code_channel_action  #@code_channels
       - file_change
       - member_joined_channel
   interactivity:

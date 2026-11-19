@@ -544,18 +544,20 @@ def _spawn_run_receipt(
         # A verdict is keyed by (effort, text): a tasks[] object may override
         # the batch-wide level, so each line names the level its tasks asked for.
         for drop_ids, (lvl, drop_reason) in _collapse_effort_verdicts(effort_drops):
-            spawn_lines.append(f"ℹ reasoning_effort='{lvl}' dropped for {drop_ids}: {drop_reason}")
+            spawn_lines.append(
+                f"Note: reasoning_effort='{lvl}' dropped for {drop_ids}: {drop_reason}"
+            )
         for applied_ids, (lvl, applied_note) in _collapse_effort_verdicts(effort_applies):
             spawn_lines.append(
-                f"✓ reasoning_effort='{lvl}' applied for {applied_ids} ({applied_note})"
+                f"reasoning_effort='{lvl}' applied for {applied_ids} ({applied_note})"
             )
-        # Neither a ✓ nor "dropped": the outcome is decided after this result.
+        # Neither "applied" nor "dropped": the outcome is decided after this result.
         for pending_ids, (lvl, pending_note) in _collapse_effort_verdicts(effort_pendings):
-            spawn_lines.append(f"ℹ reasoning_effort='{lvl}' for {pending_ids}: {pending_note}")
+            spawn_lines.append(f"Note: reasoning_effort='{lvl}' for {pending_ids}: {pending_note}")
         # Memory cost of a pin: it is the user's setting, not the call's, that
         # usually carries it, so the receipt is where the caller first sees it.
         for note_ids, (_unused, note) in _collapse_effort_verdicts(runtime_notes or []):
-            spawn_lines.append(f"ℹ {note_ids}: {note}")
+            spawn_lines.append(f"Note: {note_ids}: {note}")
     if not parent_session and agent_ids:
         # Orphan alert: without a parent session key the subagents cannot
         # deliver completion events back to this conversation and will
@@ -564,7 +566,7 @@ def _spawn_run_receipt(
         # loudly so the agent/user can fall back to spawn_list +
         # result.txt polling instead of waiting forever.
         spawn_lines.append(
-            "⚠ parent_session UNRESOLVED — these subagents are orphaned: "
+            "Warning: parent_session UNRESOLVED — these subagents are orphaned: "
             "completion events will NOT arrive in this conversation. "
             "Poll spawn_list and read ~/.kiro/crew/subagents/<id>/result.txt "
             "instead. (Identity plumbing issue — check KIROCREW_HOST_PID / "
@@ -626,7 +628,7 @@ def _spawn_run_receipt(
             )
     if errors:
         if agent_ids:
-            spawn_lines.append(f"\n❌ {len(errors)} task(s) failed to start:")
+            spawn_lines.append(f"\nError: {len(errors)} task(s) failed to start:")
         elif transport_errors:
             # No confirmed starts: retain the Error prefix used by SEL and
             # callers even though other submissions remain uncertain.
@@ -641,7 +643,7 @@ def _spawn_run_receipt(
     if transport_errors:
         if agent_ids or errors:
             spawn_lines.append(
-                f"\n⚠ {len(transport_errors)} task(s) have unknown acceptance status:"
+                f"\nWarning: {len(transport_errors)} task(s) have unknown acceptance status:"
             )
         else:
             spawn_lines.append(

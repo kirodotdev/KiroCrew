@@ -1460,6 +1460,16 @@ describe('useWebSocket frame router', () => {
     expect(steers[1]?.meta?.quote).toBeUndefined()
   })
 
+  it('a teammate steer echo keeps its server-named author, so it draws as theirs', () => {
+    const { ws } = mount()
+    const author = { id: 'kiro_relay:u-7', kind: 'human', display: { name: 'teammate@example.com', login: '', captured_at: null } }
+    act(() => {
+      ws.simulateMessage({ type: 'steer_push', data: { slot: ACTIVE, content: 'B mid-turn', ts: '32', meta: { author } } })
+    })
+    const steer = chat().messages.find(m => m.content === 'B mid-turn')
+    expect(steer?.meta?.author).toEqual(author)
+  })
+
   it('records a tool call and its result against the slot', () => {
     const { ws } = mount()
     act(() => {

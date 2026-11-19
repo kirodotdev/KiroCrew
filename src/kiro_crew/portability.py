@@ -186,7 +186,8 @@ def _read_archive_object(path: Path) -> dict:
 def _move_home_paths(snap: Path, summary: dict) -> frozenset[str]:
     """Move the staged archive's saved folder paths from its home to this one.
 
-    Before either mode copies anything, so both install the moved paths. Returns the
+    Before either mode copies anything, so both install the moved paths. `project_dir` is
+    only read here, to work out the archive's home; a restore never installs it. Returns the
     file names of the staged transcripts whose folder could not be moved: such a chat
     opens in the default workspace, and `_merge_sessions` counts the ones it installs.
     """

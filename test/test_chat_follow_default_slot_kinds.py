@@ -136,6 +136,7 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
 
 #: Sites holding more than one creator call; every other site holds exactly one.
 _CALLS_PER_SITE: dict[tuple[str, str], int] = {
+    ("apps/chat_slot_sdk.py", "open"): 2,
     ("dashboard/handlers/cron_runs.py", "api_cron_to_chat"): 2,
     ("dashboard/handlers/taskrunner.py", "_open_result_slot"): 2,
     ("dashboard/openai_compat.py", "api_completions"): 2,

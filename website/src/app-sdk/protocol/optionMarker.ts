@@ -295,12 +295,52 @@ function markerSpanning(text: string, start: number, end: number): RegExpMatchAr
   return m
 }
 
+/** Each backtick run in `text[start, end)`, by start: its length and its span's end.
+ *
+ * A run of N backticks opens an inline code span that closes at the next run of exactly N,
+ * as Markdown reads it. The span's end is the index past that closing run, or -1 when no such
+ * run follows before `end`, so the run is plain text. A backslash escapes only a run's first
+ * backtick: that backtick is plain text and the N-1 after it may open a span. The whole run still
+ * closes one, because a backslash inside code is literal. */
+function codeSpans(text: string, start: number, end: number): Map<number, [number, number]> {
+  const runs: [number, number, boolean][] = []
+  let slashes = 0
+  for (let i = start; i < end; ) {
+    if (text[i] !== '`') {
+      slashes = text[i] === '\\' ? slashes + 1 : 0
+      i++
+      continue
+    }
+    let j = i + 1
+    while (j < end && text[j] === '`') j++
+    runs.push([i, j - i, slashes % 2 === 1])
+    slashes = 0
+    i = j
+  }
+  const spans = new Map<number, [number, number]>()
+  const nextClose = new Map<number, number>()
+  for (let r = runs.length - 1; r >= 0; r--) {
+    const [pos, width, escaped] = runs[r]
+    if (escaped) {
+      spans.set(pos, [1, -1])
+      if (width > 1) spans.set(pos + 1, [width - 1, nextClose.get(width - 1) ?? -1])
+    } else {
+      spans.set(pos, [width, nextClose.get(width) ?? -1])
+    }
+    nextClose.set(width, pos + width)
+  }
+  return spans
+}
+
 /** The markers that run up to the line-final marker `last` on its line, or null when `last`
  *  sits inside an earlier head that never closed.
  *
  * The pattern needs the line end, so it finds only the LAST marker of
  * `Body [OPTIONS: A] [OPTIONS: B]`. This walks the line once, left to right, with a stack of
  * brackets typed by `PAIR_OPENERS` / `PAIR_CLOSERS`:
+ *   - outside every head, an inline code span (`codeSpans`) is skipped whole, so the head in
+ *     ``The `[OPTIONS:` line goes last. [OPTIONS: A | B]`` is code, not a head; inside a head,
+ *     backticks are label text, as the label grammar reads them;
  *   - a head opens a HEAD frame; a pair opener opens its own frame;
  *   - a closer pops a pair frame only of its own type;
  *   - a closer pops a HEAD frame unless the list goes on after it (`closerContinues`).
@@ -316,7 +356,13 @@ function markersBefore(text: string, last: RegExpMatchArray): RegExpMatchArray[]
   let head = -1
   let run: RegExpMatchArray[] = []
   let runEnd = -1
+  const spans = codeSpans(text, i, end)
   for (; i < end; i++) {
+    const span = depth === 0 && text[i] === '`' ? spans.get(i) : undefined
+    if (span) {
+      i = (span[1] >= 0 ? span[1] : i + span[0]) - 1
+      continue
+    }
     const h = text[i] === '[' ? headAt(text, i) : 0
     if (h > 0) {
       if (depth > 0 || i !== runEnd) run = []
@@ -366,12 +412,14 @@ const HEAD_CAP = 256
  * The pattern finds each line's final candidate; `markersBefore` decides the rest of that
  * line. A line is accepted or refused whole: when its final candidate is refused, nothing on
  * it is a marker, so `[OPTIONS: A] [OPTIONS: B then arr[0]` keeps both as written.
- * Siblings join only when the final marker offers a label, as on every channel. */
+ * Siblings join only when the final marker offers a label, as on every channel. Labels that
+ * cross a line break are refused too, since the pattern's body stops only at `\n`. */
 export function findOptionMarkers(content: string): RegExpMatchArray[] {
   if ([...content.matchAll(new RegExp(HEAD_RE))].length > HEAD_CAP) return []
   const out: RegExpMatchArray[] = []
   for (const m of content.matchAll(new RegExp(OPTION_MARKER_RE))) {
-    if (labelsHaveUnmatchedOpener(labelsOf(m))) continue
+    const labels = labelsOf(m)
+    if (labelsHaveUnmatchedOpener(labels) || [...labels].some(isLineBreak)) continue
     const before = markersBefore(content, m)
     if (!before) continue
     if (optionsOf(m).length > 0) out.push(...before)

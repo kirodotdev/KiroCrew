@@ -68,7 +68,7 @@ const {
 const { capturePySpyDump } = require("./pyspy-dump");
 const { getRemoteHostConfig } = require("./host-config");
 const { createTunnelKeeper } = require("./tunnel-keeper");
-const { loadDashboardWithToken } = require("./token-retry");
+const { dashboardUrlFor, loadDashboardWithToken } = require("./token-retry");
 const {
   remoteCrewAction,
   remoteCrewDraft,
@@ -484,6 +484,7 @@ function createGatewaySupervisor({
     probeGatewayPortBinding, probeGatewayPortOwner, snapshotGatewayPortPids, unverifiedIncumbent,
     waitForIncumbentExit, respawnGateway, showLoadingThenConnect, showUnrecoverableGatewayError,
     probeLockHolderPid, fetchHealthInfo, fetchGatewayReadiness, getGatewayOwnership, setGatewayOwnership,
+    getInstallEpoch: () => installEpoch,
     setGatewayStartFailure: (failure) => { gatewayStartFailure = failure; },
   });
   const {
@@ -1116,10 +1117,7 @@ function createGatewaySupervisor({
   }
 
   function dashboardEntryUrl(targetBackendUrl, initialPath = "") {
-    const target = initialPath
-      ? new URL(initialPath, targetBackendUrl)
-      : new URL(targetBackendUrl);
-    return target.toString();
+    return dashboardUrlFor(targetBackendUrl, initialPath);
   }
 
   /**

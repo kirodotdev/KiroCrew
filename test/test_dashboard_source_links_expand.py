@@ -129,8 +129,19 @@ def _request(slot_key: str, slots: dict, *, app: str = ""):
     return request
 
 
-async def _get(slot_key: str, slots: dict, *, owner: bool = True, app: str = "") -> web.Response:
+async def _get(
+    slot_key: str,
+    slots: dict,
+    *,
+    owner: bool = True,
+    app: str = "",
+    refresh: MagicMock | None = None,
+) -> web.Response:
     with (
+        patch(
+            "kiro_crew.dashboard.source_providers.chip_refresh.schedule_expanded_check_refresh",
+            refresh if refresh is not None else MagicMock(),
+        ),
         patch(
             "kiro_crew.dashboard.handlers.source_providers.ensure_gitlab_hosts_loaded",
             return_value=None,
@@ -172,6 +183,24 @@ class TestSourceLinksEndpoint:
 
         assert all("ci" not in link for link in non_owner["links"])
         assert [link["ci"] for link in owner["links"] if link["kind"] == "change"] == ["passed"] * 4
+
+    @pytest.mark.asyncio
+    async def test_an_owner_expand_refreshes_every_pull_request_it_reveals(self):
+        """Only the first three chips are on the periodic refresh, so a revealed
+        chip would keep whatever status was cached last (often none). The expand
+        must ask for a read of every pull request in the list, issues excluded."""
+        refresh = MagicMock()
+        resp = await _get("s1", {"s1": _slot()}, owner=True, refresh=refresh)
+        assert resp.status == 200
+        refresh.assert_called_once()
+        assert refresh.call_args.args[0] == RECENT_PRS
+
+    @pytest.mark.asyncio
+    async def test_a_non_owner_expand_drives_no_provider_read(self):
+        """The read runs the operator's provider credentials: owner only."""
+        refresh = MagicMock()
+        await _get("s1", {"s1": _slot()}, owner=False, refresh=refresh)
+        refresh.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_cold_gitlab_allowlist_failure_still_answers(self):
@@ -270,6 +299,9 @@ class TestAppTokenIsolation:
             patch(
                 "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
                 return_value=True,
+            ),
+            patch(
+                "kiro_crew.dashboard.source_providers.chip_refresh.schedule_expanded_check_refresh"
             ),
         ):
             resp = await api_chat_slot_source_links(_request("s1", {"s1": slot}, app=""))

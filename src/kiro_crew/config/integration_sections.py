@@ -223,6 +223,36 @@ def _resolve_cwd_use(mcp_gateway_data: dict) -> dict[str, str]:
     }
 
 
+def _resolve_cwd_use_launch(mcp_gateway_data: dict) -> dict[str, str]:
+    """The launch each ``not_used`` answer was given for, non-string entries dropped.
+
+    Value: the sorted, comma-joined command+args hashes of every definition under
+    that name when the operator answered (``launch_approval.serialize_identities``).
+    """
+    raw = _safe_dict(mcp_gateway_data.get("cwd_use_launch", {}))
+    return {
+        name: value
+        for name, value in raw.items()
+        if isinstance(name, str) and name and isinstance(value, str) and value
+    }
+
+
+def effective_cwd_answer(
+    answer: str | None, bound_launch: str | None, current_launch: str | None
+) -> str | None:
+    """The answer that holds for the launch a name declares now.
+
+    A ``not_used`` answer belongs to the launch it was given for: when the name
+    now declares a different launch, the answer reads as unanswered so the
+    operator is asked again. An answer recorded before bindings existed
+    (*bound_launch* ``None``), or a launch that cannot be read now
+    (*current_launch* ``None``), keeps the answer as it is today.
+    """
+    if answer != _CWD_NOT_USED or bound_launch is None or current_launch is None:
+        return answer
+    return answer if bound_launch == current_launch else None
+
+
 @dataclass
 class PublishConfig:
     """Operator-facing controls for artifact publishing.
@@ -725,6 +755,18 @@ class McpGatewayConfig:
             restart=True,
         ),
     )
+    cwd_use_launch: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Working Folder Answer Launches",
+            "Per server, the launch (command and arguments, hashed) a not_used "
+            "answer in cwd_use was given for. When the server is later declared "
+            "with a different command or arguments, MCP Management asks the "
+            "working-folder question again before routing it. An answer with no "
+            "entry here keeps working as given. Written by MCP Management.",
+            restart=True,
+        ),
+    )
     #: The roster EXACTLY as the file states it, carried so a full-file rewrite
     #: can put it back.
     #:
@@ -1180,12 +1222,16 @@ class TunnelConfig:
             restart=True,
         ),
     )
-    relay_enabled: bool = field(
+    relay_enabled: bool | None = field(
         default=REMOTE_CONTROL_ON_BY_DEFAULT,
         metadata=_meta(
             "Kiro Relay",
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
-            "the caller named by the relay. Off by default. It holds a lease (from Relay "
+            "the caller named by the relay. Unset (the default) turns it on only for a "
+            "team Crew (Relay Lease Token Type API_KEY) or a host with a workload "
+            "identity whose Relay Lease Credential names its credential; a Crew on a "
+            "personal sign-in stays off until you run kirocrew remote-control on. True "
+            "is on and false is off, whatever the Crew's credential. It holds a lease (from Relay "
             "Lease Service URL, or the built-in one when that is empty) on Relay Lease "
             "Credential, or on a personal Crew's own Kiro sign-in when that is empty. A "
             "team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity "
@@ -1257,18 +1303,21 @@ class TunnelConfig:
     relay_viewer_enabled: bool = field(
         default=False,
         metadata=_meta(
-            "Relay Viewer",
-            "Let the desktop app list the remote Crews you can reach through the Kiro "
-            "relay and open them. Off by default. This is the viewer side only: a Crew "
-            "you open still needs Kiro Relay on where it runs.",
+            "Relay Viewer Dev Settings",
+            "For testing only: use the dev viewer settings below "
+            "(tunnel.relay_viewer_cps_url, tunnel.relay_viewer_credential and "
+            "tunnel.relay_viewer_relay_domain). Off (the default) ignores them. The "
+            "list of remote Crews you can open through the Kiro relay needs no setting "
+            "and shows either way.",
         ),
     )
     relay_viewer_cps_url: str = field(
         default="",
         metadata=_meta(
             "Relay Viewer Control Plane URL",
-            "The base URL of the control plane the viewer lists remote Crews from and "
-            "gets access tokens from. Empty (the default) uses the built-in Kiro control "
+            "For testing only, read only while tunnel.relay_viewer_enabled is on: the "
+            "base URL of the control plane the viewer lists remote Crews from and gets "
+            "access tokens from. Empty (the default) uses the built-in Kiro control "
             "plane for your sign-in's region. Must be "
             "https:// (http:// only for a loopback port-forward). A value that breaks "
             "that rule is ignored with a warning, and the viewer says it is not set up. "
@@ -1279,7 +1328,8 @@ class TunnelConfig:
         default="",
         metadata=_meta(
             "Relay Viewer Credential",
-            "For testing only: where the viewer reads a test credential to use instead "
+            "For testing only, read only while tunnel.relay_viewer_enabled is on: where "
+            "the viewer reads a test credential to use instead "
             "of your Kiro sign-in, as secret://NAME for a secret stored under Settings "
             "> Secrets or the absolute path of a file holding it. Never the credential "
             "itself. Empty (the default) uses your Kiro sign-in. A value that is not a "
@@ -1304,12 +1354,13 @@ class TunnelConfig:
         default="",
         metadata=_meta(
             "Relay Viewer Relay Domain",
-            "The relay's domain, for example us-east-1.relay.example.invalid. When set, the "
-            "viewer lists a remote Crew, and sends its access token, only when the Crew's "
-            "address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the "
-            "default) lists a Crew whose address is https://<endpoint ID>.<any domain> with no "
-            "port, and the desktop app opens it at exactly that address. Any other value matches "
-            "no Crew address, so no Crew is listed.",
+            "For testing only, read only while tunnel.relay_viewer_enabled is on and "
+            "tunnel.relay_viewer_cps_url is set: a dev relay's domain, for example "
+            "us-east-1.relay.example.invalid. The viewer then lists a remote Crew, and sends "
+            "its access token, only when the Crew's address is exactly "
+            "https://<endpoint ID>.<this domain> with no port. Otherwise a Crew is listed "
+            "only at https://<endpoint ID>.<region>.relay.kiro.dev with no port, and opened at "
+            "exactly that address.",
         ),
     )
 

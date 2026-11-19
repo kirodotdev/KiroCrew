@@ -76,11 +76,10 @@ def add_kas_parser(parser: argparse.ArgumentParser) -> None:
         "--if-in-use",
         action="store_true",
         help=(
-            "Install only when this install runs Kiro Crew's own engine "
-            "(agent.kas_bundle is on, or KAS takes that route on its own with an "
-            "engine on disk), or refresh one already on disk (a failure then only "
-            "prints the retry); otherwise do nothing. Every update runs this from "
-            "the new release"
+            "Install as part of an update: a failure fails only when this install "
+            "runs Kiro Crew's own engine (agent.kas_bundle is on, or KAS takes that "
+            "route on its own with an engine on disk); otherwise it only prints the "
+            "retry. Every update runs this from the new release"
         ),
     )
 
@@ -132,8 +131,8 @@ def _already_installed(version: str, force: bool) -> kas_bundle.InstalledKasBund
 
 #: ``install --if-in-use`` needs the engine: the bundle route runs it.
 ENGINE_REQUIRED = "required"
-#: ``install --if-in-use`` only refreshes an engine already on disk; a failure
-#: must not stop an update (the relay route runs kiro-cli, not the engine).
+#: ``install --if-in-use`` installs the engine nothing runs yet; a failure must
+#: not stop an update (the relay route runs kiro-cli, not the engine).
 ENGINE_OPTIONAL = "optional"
 
 
@@ -168,22 +167,20 @@ def _automatic_bundle_route() -> bool:
         return False
 
 
-def _engine_need() -> str | None:
+def _engine_need() -> str:
     """How much this install needs the pinned engine, for ``install --if-in-use``.
 
+    Every install gets the pinned engine, whether anything runs it or not.
     :data:`ENGINE_REQUIRED` when ``agent.kas_bundle`` is on (:func:`_bundle_switch_on`):
     every KAS session, the default's or a member's or a mate's, runs the engine,
     so an update without it is refused. Also required when an engine version is
     on disk and a KAS spawn here takes the bundle route on its own
     (:func:`_automatic_bundle_route`): KAS already runs on that engine, so a
     release whose pin it lacks would stop sessions that worked.
-    :data:`ENGINE_OPTIONAL` when an engine is only on disk and the spawn runs
-    kiro-cli's relay (the installers lay one down on every default install): the
-    update tries to bring the new pin along, and any failure only prints the
-    retry. ``None`` otherwise, which includes the automatic route with nothing on
-    disk: KAS there never worked before this update either, and the gateway
-    installs the engine at the first spawn. An engines directory that cannot be
-    listed counts as no engine.
+    :data:`ENGINE_OPTIONAL` otherwise, including an install with no engine on
+    disk: the update tries to bring the new pin along, and any failure only
+    prints the retry. An engines directory that cannot be listed counts as no
+    engine.
     """
     if _bundle_switch_on():
         return ENGINE_REQUIRED
@@ -191,21 +188,33 @@ def _engine_need() -> str | None:
         on_disk = bool(kas_bundle.installed_versions())
     except OSError:
         on_disk = False
-    if not on_disk:
-        return None
-    return ENGINE_REQUIRED if _automatic_bundle_route() else ENGINE_OPTIONAL
+    return ENGINE_REQUIRED if on_disk and _automatic_bundle_route() else ENGINE_OPTIONAL
 
 
 def _install(args: argparse.Namespace) -> int:
     if not getattr(args, "if_in_use", False):
         return _install_now(args)
-    need = _engine_need()
-    if need is None:
-        print("The KAS engine bundle is not in use on this install; nothing to install.")
-        return 0
-    if need == ENGINE_REQUIRED:
+    if _engine_need() == ENGINE_REQUIRED:
         return _install_now(args)
+    unsupported = _host_unsupported_reason()
+    if unsupported:
+        # Nothing runs the engine and no retry can install it, so an update
+        # must neither try nor print a retry for it.
+        print(f"{unsupported} agent.kas_bundle is off, so nothing was installed.")
+        return 0
     return _install_optional(args)
+
+
+def _host_unsupported_reason() -> str:
+    """``kas_bundle.host_unsupported_reason()``, or ``''`` when the probe itself fails.
+
+    A probe that fails is not a reason to skip: the optional install then runs
+    and reports whatever stops it, without failing the update.
+    """
+    try:
+        return kas_bundle.host_unsupported_reason()
+    except Exception:  # noqa: BLE001 - an unanswerable probe leaves the install to decide
+        return ""
 
 
 #: ``kirocrew kas install``'s exit code when this host cannot run the engine at
@@ -215,13 +224,13 @@ HOST_UNSUPPORTED_EXIT = 3
 
 #: The line an optional refresh ends with when it did not install the engine.
 _OPTIONAL_RETRY_LINE = (
-    "Warning: The KAS engine for this release was not installed; agent.kas_bundle is off, "
+    "⚠  The KAS engine for this release was not installed; agent.kas_bundle is off, "
     "so the update goes on. Retry with: kirocrew kas install"
 )
 
 #: The line an optional refresh ends with when this host cannot run the engine.
 _OPTIONAL_UNSUPPORTED_LINE = (
-    "Warning: This host cannot run the KAS engine (see above); agent.kas_bundle is off, "
+    "⚠  This host cannot run the KAS engine (see above); agent.kas_bundle is off, "
     "so the update goes on."
 )
 
@@ -236,7 +245,7 @@ def _exit_now(code: int) -> None:
 
 
 def _install_optional(args: argparse.Namespace) -> int:
-    """Refresh an engine only on disk; every way it does not finish exits the optional code.
+    """Install an engine nothing runs yet; any unfinished install exits the optional code.
 
     The switch is off, so nothing runs the engine: a refused fetch, a full or
     unwritable disk, a slow or stalled download are all reported with the retry,
@@ -255,7 +264,7 @@ def _install_optional(args: argparse.Namespace) -> int:
 
     def _hard_stop() -> None:
         print(
-            f"Error: the engine refresh did not finish within "
+            f"❌ the engine refresh did not finish within "
             f"{release_apply.ENGINE_OPTIONAL_HARD_STOP_SECS:.0f}s",
             file=sys.stderr,
         )
@@ -270,7 +279,7 @@ def _install_optional(args: argparse.Namespace) -> int:
             args, deadline=time.monotonic() + release_apply.ENGINE_OPTIONAL_DEADLINE_SECS
         )
     except Exception as exc:  # noqa: BLE001 - an optional refresh never fails the update
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"❌ {exc}", file=sys.stderr)
         rc = 1
     finally:
         timer.cancel()
@@ -315,7 +324,7 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
             source_dir = Path(args.from_dir).expanduser().resolve()
             manifest_path = source_dir / kas_bundle.KAS_BUNDLE_MANIFEST_NAME
             if not manifest_path.is_file():
-                print(f"Error: {manifest_path} not found", file=sys.stderr)
+                print(f"❌ {manifest_path} not found", file=sys.stderr)
                 return 1
             import json
 
@@ -327,16 +336,13 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
                 manifest_bytes = manifest_path.read_bytes()
                 manifest_doc = json.loads(manifest_bytes.decode("utf-8"))
             except (OSError, UnicodeDecodeError, ValueError) as exc:
-                print(
-                    f"Error: {manifest_path} is not a readable JSON manifest: {exc}",
-                    file=sys.stderr,
-                )
+                print(f"❌ {manifest_path} is not a readable JSON manifest: {exc}", file=sys.stderr)
                 return 1
             manifest = kas_bundle.parse_manifest(manifest_doc)
             want = args.version or KAS_PIN_VERSION
             if manifest.version != want:
                 print(
-                    f"Error: {manifest_path} describes KAS {manifest.version}, not {want}",
+                    f"❌ {manifest_path} describes KAS {manifest.version}, not {want}",
                     file=sys.stderr,
                 )
                 return 1
@@ -345,7 +351,7 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
                 or kas_bundle.sha256_bytes(manifest_bytes) != KAS_PIN_MANIFEST_SHA256
             ):
                 print(
-                    f"Error: {manifest_path} is not the manifest this release pins "
+                    f"❌ {manifest_path} is not the manifest this release pins "
                     f"(KAS {KAS_PIN_VERSION}); pass --unpinned to install it anyway",
                     file=sys.stderr,
                 )
@@ -358,7 +364,7 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
             version = args.version or KAS_PIN_VERSION
             if version != KAS_PIN_VERSION and not args.unpinned:
                 print(
-                    f"Error: this release pins KAS {KAS_PIN_VERSION}; pass --unpinned to install "
+                    f"❌ this release pins KAS {KAS_PIN_VERSION}; pass --unpinned to install "
                     f"{version} for testing",
                     file=sys.stderr,
                 )
@@ -386,10 +392,10 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
             manifest, source=source, force=args.force, on_progress=on_progress
         )
     except kas_bundle.KasHostUnsupported as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"❌ {exc}", file=sys.stderr)
         return HOST_UNSUPPORTED_EXIT
     except kas_bundle.KasBundleError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"❌ {exc}", file=sys.stderr)
         return 1
     return _report_installed(installed, already=False)
 
@@ -397,11 +403,11 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
 def _report_installed(installed: kas_bundle.InstalledKasBundle, *, already: bool) -> int:
     if already:
         print(
-            f"Done: KAS {installed.version} is already installed at {installed.root} "
+            f"✅ KAS {installed.version} is already installed at {installed.root} "
             "(use --force to replace it)"
         )
     else:
-        print(f"Done: KAS {installed.version} installed at {installed.root}")
+        print(f"✅ KAS {installed.version} installed at {installed.root}")
     if installed.version != pinned_version():
         print(
             f"   (not the version the harness runs, {pinned_version()}; set "
@@ -473,11 +479,11 @@ def _remove(args: argparse.Namespace) -> int:
     # --version (an unset "$VAR") is refused before anything is read or deleted:
     # read as falsy it would widen a one-version delete to the whole engines root.
     if args.version is not None and not args.version.strip():
-        print("Error: --version is blank; omit it to remove every version", file=sys.stderr)
+        print("❌ --version is blank; omit it to remove every version", file=sys.stderr)
         return 2
     if args.version is not None:
         if args.version not in kas_bundle.installed_versions(root=root):
-            print(f"Error: KAS {args.version} is not installed", file=sys.stderr)
+            print(f"❌ KAS {args.version} is not installed", file=sys.stderr)
             return 1
         root = root / args.version
     if not root.exists():
@@ -503,7 +509,7 @@ def _remove(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     except OSError as exc:
-        print(f"Error: could not remove {root}: {exc}", file=sys.stderr)
+        print(f"❌ could not remove {root}: {exc}", file=sys.stderr)
         return 1
     print(f"removed {root}")
     return 0

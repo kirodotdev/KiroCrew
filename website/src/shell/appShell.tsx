@@ -437,13 +437,10 @@ export function useAppShell() {
     themeVersion,
     onboarded,
     importOnboarded,
-    privacyAcked,
-    privacyAckVersion,
     themeBootReady,
     themeBootRead,
     markOnboarded,
     markImportOnboarded,
-    markPrivacyAcked,
   } = useTheme()
   // First run's chapters write the host's flags, so they wait for the host's own
   // answer. A failed boot read leaves only this browser's flags, which a new
@@ -458,10 +455,10 @@ export function useAppShell() {
   const ownerCheck = useViewerIsNotOwner()
   const hostFlagsReady = themeBootReady && (themeBootRead || onboarded)
   const firstRun = useFirstRunChapters({
-    onboarded, importOnboarded, privacyAcked, privacyAckVersion,
+    onboarded, importOnboarded,
     themeBootReady: hostFlagsReady && ownerCheck.owner,
     hostStateUnread: (themeBootReady && !themeBootRead && !onboarded) || !ownerCheck.owner,
-    ownerCheckFailed: ownerCheck.failed && hostFlagsReady && (!importOnboarded || !privacyAcked || !onboarded),
+    ownerCheckFailed: ownerCheck.failed && hostFlagsReady && (!importOnboarded || !onboarded),
     retryOwnerCheck: ownerCheck.retry,
     markOnboarded,
   })
@@ -837,6 +834,10 @@ export function useAppShell() {
       // otherwise a just-installed registry app keeps rendering a "Get"
       // button until the cache expires.
       queryClient.invalidateQueries({ queryKey: ['registry'] })
+      // Kiro Space rows carry the same server-computed `installed` and
+      // `nameTaken` flags, so an install or uninstall anywhere re-reads them.
+      queryClient.invalidateQueries({ queryKey: ['market-listings'] })
+      queryClient.invalidateQueries({ queryKey: ['market-listing'] })
     }
     window.addEventListener('mc:apps-changed', handler)
     return () => window.removeEventListener('mc:apps-changed', handler)
@@ -1147,7 +1148,7 @@ export function useAppShell() {
     focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
-    colorTheme, resolvedMode, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked,
+    colorTheme, resolvedMode, onboarded, markOnboarded, markImportOnboarded,
     firstRun, lookPreviewFrame, branding, botName, avatar, isMobile, bottomDock, activeInstanceId,
     macFullscreen, macInset, topReservePx, focusMode, toggleFocusMode, focusActive, topPeek, railPeek,
     topPeekTrigger, topPeekSurface, railPeekTrigger, railPeekSurface, topChromeShown, localHeaderDragGaps,

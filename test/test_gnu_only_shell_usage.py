@@ -41,6 +41,9 @@ import yaml
 ROOT = source_corpus.repo_root()
 SELF = Path(__file__).resolve()
 
+# One worker builds ``all_hits``; spread over two, each walks the whole tree.
+pytestmark = pytest.mark.xdist_group(name="tree_scan_gnu_only_shell_usage")
+
 #: The GNU-only forms, matched against one shell line.
 RULES: dict[str, re.Pattern[str]] = {
     "date-d": re.compile(r"\bdate(?:\s+-u)?\s+(?:-d|--date)\b"),
@@ -188,7 +191,8 @@ def _test_hits() -> dict[tuple[str, str], str]:
 
 @pytest.fixture(scope="module")
 def all_hits() -> dict[tuple[str, str], str]:
-    return {**_shell_script_hits(), **_test_hits()}
+    with source_corpus.untraced():
+        return {**_shell_script_hits(), **_test_hits()}
 
 
 def test_no_gnu_only_form_reaches_a_macos_host_unprobed(all_hits) -> None:

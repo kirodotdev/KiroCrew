@@ -63,6 +63,10 @@ _MAX_NATIVE_CARD_ERROR = 200
 
 _RE_TRAILING_REQUEST_ID = re.compile(r"\(request_id:\s*[0-9a-fA-F-]+\)\s*$")
 
+# Leads of the ACP handle's permission-rejection notice: the word current
+# handles write and the U+26D4 no-entry sign older ones did.
+_REJECT_NOTICE_LEADS = ("Blocked:", "\u26d4")  # emoji-ok: old saved lead
+
 
 def _clip_card_error(text: str, limit: int = _MAX_NATIVE_CARD_ERROR) -> str:
     """Clip *text* to *limit* characters, keeping any trailing request id."""
@@ -630,13 +634,14 @@ async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
         turn._native_child_tc.add(event.tool_call_id)
     if _sid in _native_tracker and event.tool_call_id:
         _native_tc_card[event.tool_call_id] = f"native:{_redact_tool_field(_sid)}"
-    # Permission-rejection notices (the handle's own "⛔ …" lines,
+    # Permission-rejection notices (the handle's own "Blocked: …" lines,
+    # or the U+26D4 lead an older handle wrote in its place,
     # e.g. drain-time rejects yielded at turn start) arrive BEFORE
     # any subagent_list populates the per-turn tracker — dropping
     # them here would leave the user watching a child tool fail
     # with no explanation. When the card cannot exist yet, persist
     # the explanation as a slot notice instead.
-    if _sid not in _native_tracker and event.text and event.text.startswith("⛔"):
+    if _sid not in _native_tracker and event.text and event.text.startswith(_REJECT_NOTICE_LEADS):
         # Stays English: the ACP handle composes this permission-rejection line
         # (its fixed reason fused with the redacted tool title) into
         # ``event.text`` at its source, and the event carries no structured

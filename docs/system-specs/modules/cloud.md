@@ -183,7 +183,7 @@ keyword, so downstream provisioners are unchanged) until the step finishes. The
 default-VPC path and `--subnet` say nothing new.
 
 `launch --subnet <subnet-id>` (and the optional Subnet ID field in Settings ›
-Remote Crew › Set up a new one, which reaches the same `ec2.deploy(subnet_id=...)`
+Remote Crew › Add Crew › Set up a new Crew, which reaches the same `ec2.deploy(subnet_id=...)`
 through `launch_engine`) bypasses discovery entirely —
 `resolve_explicit_subnet` pins the launch to the given subnet (the only way to
 target a dedicated/private-subnet VPC while a default VPC exists, since

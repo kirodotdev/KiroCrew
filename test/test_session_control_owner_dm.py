@@ -1421,7 +1421,7 @@ def test_an_owner_dm_stays_admitted_after_it_unlinks_its_own_mirror(
         reply, _swept = release_conversation_location(
             state.sessions, key=DISCORD_DM, location=DISCORD_DM_CONVERSATION, channel="discord"
         )
-    assert reply == "Unlinked."
+    assert reply == "✅ Unlinked."
     # The bucket row is still there -- ``clear_mirror_link`` popped only ``mirror``
     # -- and the store reads it as no mirror, filtering the threadless Slack row
     # at the source rather than handing every reader a link nobody chose.

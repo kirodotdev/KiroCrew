@@ -255,10 +255,25 @@ def _redacted(text: str) -> str:
     return text
 
 
+def _popup_note(result: dict[str, Any]) -> str:
+    """The route's popup fields (``popup``, ``popup_closed``) as one line, or ``""``.
+
+    The snapshot and screenshot branches below print only their own fields, so
+    without this the notice that the tab changed would be lost there.
+    """
+    notes = {k: result[k] for k in ("popup", "popup_closed") if isinstance(result.get(k), dict)}
+    return f"\n{json.dumps(notes, default=str)}" if notes else ""
+
+
 def _result_text(op: str, result: Any) -> str:
     """Concise success text, with untrusted page content redacted."""
     if not isinstance(result, dict):
         return f"Browser {op}: ok"
+    has_payload = "snapshot" in result if op == "snapshot" else "path" in result
+    if isinstance(result.get("popup_closed"), dict) and op in ("snapshot", "screenshot"):
+        if not has_payload:
+            # The popup closed during the op: there is no outline or image to show.
+            return _redacted(f"Browser {op}: popup closed{_popup_note(result)}")[:_RESULT_CAP]
     if op == "screenshot":
         path = str(result.get("path", ""))
         text = f"Browser screenshot saved: {path}\nShow it with ![screenshot]({path})"
@@ -266,7 +281,7 @@ def _result_text(op: str, result: Any) -> str:
         warning = result.get("warning")
         if isinstance(warning, str) and warning:
             text += f"\nWarning: {warning}"
-        return text
+        return text + _redacted(_popup_note(result))[:_RESULT_CAP]
     if op == "ask":
         return _ask_text(str(result.get("outcome") or "refused"), str(result.get("code") or ""))
     if op == "snapshot":
@@ -277,7 +292,8 @@ def _result_text(op: str, result: Any) -> str:
         partial = f"\n(partial: {result['partial']})" if result.get("partial") else ""
         # The gateway's own fixed text (ops.py), never page content.
         note = f"\n(note: {result['note']})" if isinstance(result.get("note"), str) else ""
-        return _redacted(f"{head}{partial}{note}\n{outline}")[:_RESULT_CAP]
+        popup = _popup_note(result)
+        return _redacted(f"{head}{partial}{note}{popup}\n{outline}")[:_RESULT_CAP]
     fields = {k: v for k, v in result.items() if k != "ok" and v is not None}
     if not fields:
         return f"Browser {op}: ok"
@@ -354,7 +370,14 @@ def _settle(op: str, status: int | None, payload: Any) -> str | None:
     if status == 200 and isinstance(payload, dict) and payload.get("ok") is False:
         if payload.get("hold") is True:
             return None
-        return _error_text(str(payload.get("code") or ""), str(payload.get("error") or "")) + said
+        # A refusal or failure can carry the route's popup notice too: it is the
+        # one answer that reports the tab move, so it must reach the agent.
+        note = _redacted(_popup_note(payload))[:_RESULT_CAP]
+        return (
+            _error_text(str(payload.get("code") or ""), str(payload.get("error") or ""))
+            + note
+            + said
+        )
     if status is None:
         return "Error: the gateway did not answer the browser op (is Kiro Crew running?)"
     code = payload.get("code") if isinstance(payload, dict) else None

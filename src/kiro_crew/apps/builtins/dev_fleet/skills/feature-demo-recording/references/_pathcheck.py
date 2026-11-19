@@ -27,6 +27,21 @@ import sys
 # Directory-descriptor operations are POSIX-only: Windows has no O_DIRECTORY and
 # os.open there does not accept dir_fd, so the anchored walk cannot run at all.
 _HAVE_DIRFD = hasattr(os, "O_DIRECTORY") and os.open in getattr(os, "supports_dir_fd", set())
+_NO_DIRFD_DETAIL = (
+    "this platform has no directory-descriptor support, so an output "
+    "cannot be pinned against a link swap -- run the pipeline on a POSIX host"
+)
+
+
+def require_output_support():
+    """Exit 78 up front on a host where safe_open_output refuses every output.
+
+    A script that does costly work (a speech call per line) before its first
+    write calls this first, so the refusal lands before any of that work runs.
+    """
+    if not _HAVE_DIRFD:
+        print(f"FATAL: refusing to run: {_NO_DIRFD_DETAIL}", file=sys.stderr)
+        sys.exit(78)
 
 
 def _sensitive_gate(real_path, write=False):
@@ -291,10 +306,7 @@ def safe_open_output(path, workdir=None, mode="w", replace=False):
         # a concurrent swap can still redirect the write. Refusing keeps the
         # contract honest AND is still a clean, explained exit rather than an
         # opaque AttributeError.
-        _fail(
-            "this platform has no directory-descriptor support, so an output "
-            "cannot be pinned against a link swap -- run the pipeline on a POSIX host"
-        )
+        _fail(_NO_DIRFD_DETAIL)
 
     fd = -1
     dfd = -1

@@ -226,9 +226,11 @@ The installer verifies the wheel's digest against the signed manifest and
 refuses to install on a mismatch; there is no checksum-only fallback. It uses
 `pipx` when available, otherwise it creates a managed venv **beside** the data
 home (`~/.kiro/crew-venv`, override with `KIROCREW_VENV`) and symlinks
-`~/.local/bin/kirocrew` at it. The venv is deliberately not nested inside the
-data home, so no whole-home operation can ever delete the live interpreter. The
-selected channel is recorded to `~/.kiro/crew/channel`.
+`~/.local/bin/kirocrew` at it. A relative `KIROCREW_HOME` or `KIROCREW_VENV` is
+taken from the directory the installer runs in, and a `KIROCREW_HOME` of `~`
+or `~/...` from your home folder. The venv is deliberately not nested
+inside the data home, so no whole-home operation can ever delete the live
+interpreter. The selected channel is recorded to `~/.kiro/crew/channel`.
 
 Before it downloads anything, the installer checks free space. It stops, naming
 the directory, when the disk beside the data home (where the managed venv and
@@ -805,6 +807,12 @@ it. Details: [browser module spec](../system-specs/modules/browser.md).
 | `KIROCREW_EMBED_MODEL_URL` | CDN default | Mirror for the embedding model download |
 | `KIROCREW_EMBED_MODEL_PATH` | unset | Run a local GGUF instead of the bundled model |
 
+Every `kirocrew` command reads `KIROCREW_HOME`, so set it in your shell profile,
+not for the install command alone: a shell without it uses `~/.kiro/crew`. When
+it is set, the installers' Next steps name the data home and print the
+`export KIROCREW_HOME="..."` line to add. A leading `~` in `KIROCREW_HOME` is
+expanded against `$HOME`, as every command does.
+
 `KIROCREW_PORT` is an environment variable validated at CLI entry, not a config
 key. `--port` on the CLI overrides it (`--port auto` binds an OS-assigned
 ephemeral port). Without either, the port in the `dashboard.url` config key is
@@ -1342,7 +1350,9 @@ Updates add versioned trees beside it (`crew-venv-<version>`), the stable link
 `crew-venv.update.lock`, and, after an interrupted update, a hidden
 `.crew-venv-<version>.deleting-<pid>` tree or a `crew-venv-current.<pid>.new`
 link. Remove them (this works the same in `sh`, `bash` and `zsh`, and removes
-nothing when a pattern matches nothing):
+nothing when a pattern matches nothing). If you installed with a relative
+`KIROCREW_HOME` or `KIROCREW_VENV`, or a `~` `KIROCREW_HOME`, set it to its
+absolute path first:
 
 ```bash
 VENV="${KIROCREW_VENV:-${KIROCREW_HOME:-$HOME/.kiro/crew}-venv}"

@@ -15,6 +15,7 @@ which :func:`test_added_line_gate_self_test_passes` runs.
 from __future__ import annotations
 
 import ast
+import glob
 import importlib.util
 import inspect
 import logging
@@ -1367,38 +1368,14 @@ def test_vocabulary_home_exempts_the_vocabulary_module_and_its_listed_owners_onl
 # good -- a reviewer does that -- but it makes adding a seventh site a deliberate
 # act with a written justification instead of a line nobody notices.
 
-_RUNTIME_PATH_MODULES = (
-    "src/kiro_crew/acp/runtime.py",
-    "src/kiro_crew/acp/runtime_tree_kill.py",
-    "src/kiro_crew/acp/runtime_spawn_launch.py",
-    "src/kiro_crew/acp/runtime_spawn_entry.py",
-    "src/kiro_crew/acp/runtime_session_setup.py",
-    "src/kiro_crew/acp/runtime_session_create.py",
-    "src/kiro_crew/acp/runtime_session_load.py",
-    "src/kiro_crew/acp/runtime_session_registry.py",
-    "src/kiro_crew/acp/runtime_mode_activation.py",
-    "src/kiro_crew/acp/runtime_wire.py",
-    "src/kiro_crew/acp/runtime_liveness.py",
-    "src/kiro_crew/acp/runtime_host_requests.py",
-    "src/kiro_crew/acp/runtime_frame_accounting.py",
-    "src/kiro_crew/acp/runtime_reader_loop.py",
-    "src/kiro_crew/acp/runtime_remote_workspace.py",
-    "src/kiro_crew/acp/runtime_class.py",
-    "src/kiro_crew/acp/session_handle.py",
-    "src/kiro_crew/acp/session_handle_runtime_contract.py",
-    "src/kiro_crew/acp/session_handle_watchdog.py",
-    "src/kiro_crew/acp/session_handle_lifecycle.py",
-    "src/kiro_crew/acp/session_handle_compaction.py",
-    "src/kiro_crew/acp/session_handle_turn.py",
-    "src/kiro_crew/acp/session_handle_dispatch.py",
-    "src/kiro_crew/acp/session_handle_mcp.py",
-    "src/kiro_crew/acp/session_handle_kas.py",
-    "src/kiro_crew/acp/session_handle_native_children.py",
-    "src/kiro_crew/acp/session_handle_model_selection.py",
-    "src/kiro_crew/acp/session_handle_steering.py",
-    "src/kiro_crew/acp/session_handle_permissions.py",
-    "src/kiro_crew/acp/session_handle_updates.py",
-    "src/kiro_crew/acp/session_handle_class.py",
+#: The runtime-path modules: every ``runtime*.py`` and ``session_handle*.py`` file in
+#: ``acp/``, read from the tree so a module split off either one is scanned too.
+_RUNTIME_PATH_MODULES = tuple(
+    sorted(
+        os.path.relpath(path, _REPO_ROOT).replace(os.sep, "/")
+        for pattern in ("runtime*.py", "session_handle*.py")
+        for path in glob.glob(os.path.join(_REPO_ROOT, "src", "kiro_crew", "acp", pattern))
+    )
 )
 
 #: Backend-identity comparisons the runtime path is allowed to make, keyed by
@@ -1406,6 +1383,12 @@ _RUNTIME_PATH_MODULES = (
 #: comparison against an ``ACP_BACKEND_*`` constant that is not listed here fails
 #: :func:`test_every_runtime_path_identity_test_is_declared`.
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
+    (
+        "src/kiro_crew/acp/session_handle_tool_silence.py",
+        "note_kas_subtask_frame",
+    ): "Positive KAS gate (H5): only KAS streams a native sub-agent on its parent's own "
+    "session, each frame naming the subtask in ``agentSubtaskId``; kiro-cli streams a "
+    "child under the child's own ``sessionId``, so no table holds this answer.",
     (
         "src/kiro_crew/acp/runtime_session_create.py",
         "create_session",
@@ -1876,6 +1859,9 @@ def test_every_runtime_path_identity_test_is_declared():
     """
     import ast
 
+    assert "src/kiro_crew/acp/runtime.py" in _RUNTIME_PATH_MODULES and any(
+        rel.startswith("src/kiro_crew/acp/session_handle") for rel in _RUNTIME_PATH_MODULES
+    ), f"the runtime-path module glob found neither family: {_RUNTIME_PATH_MODULES}"
     undeclared: list[str] = []
     for rel in _RUNTIME_PATH_MODULES:
         path = os.path.join(_REPO_ROOT, rel)

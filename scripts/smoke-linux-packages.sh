@@ -100,9 +100,45 @@ common_asserts() {
 ASSERTS
 }
 
+# The container's apt uses archive.ubuntu.com alone, the public host every
+# Ubuntu machine shares. When it is overloaded, apt does not fail: it waits up
+# to two minutes per file and moves on (`Ign:`), so a fetch that takes seconds
+# runs until the job's time limit cancels it. A GitHub-hosted runner names its
+# cloud's own Ubuntu mirror first in /etc/apt/apt-mirrors.txt, the list its own
+# apt uses. Probe that list's plain-http entries from the host and give the
+# container the first one that answers; with no list, or no answer, the
+# container keeps archive.ubuntu.com.
+#
+# One mirror, chosen once, rather than the list itself: apt walks a mirror
+# list per file, so a stalled first entry costs its full timeout on every file.
+# And plain http only: the image has no ca-certificates, so an https entry
+# could never answer inside it.
+UBUNTU_MIRROR=""
+if [ -r /etc/apt/apt-mirrors.txt ] && command -v curl >/dev/null 2>&1; then
+  while read -r uri _; do
+    [[ "$uri" =~ ^http://[A-Za-z0-9.-]+(/[A-Za-z0-9._-]+)*/?$ ]] || continue
+    if curl -fsS --max-time 10 -o /dev/null "${uri%/}/dists/noble/InRelease"; then
+      UBUNTU_MIRROR="${uri%/}/"
+      break
+    fi
+  done < /etc/apt/apt-mirrors.txt
+fi
+echo "Ubuntu mirror for the container: ${UBUNTU_MIRROR:-archive.ubuntu.com (image default)}"
+
 echo "▶ Installing '${DEB_NAME}' on Ubuntu 24.04 (the t64 release)…"
 docker run --rm -v "${ABS_DIST}:/dist:ro" -w /dist ubuntu:24.04 bash -euxc "
   export DEBIAN_FRONTEND=noninteractive
+  if [ -n '${UBUNTU_MIRROR}' ]; then
+    src=/etc/apt/sources.list.d/ubuntu.sources
+    sed 's#^URIs: http://archive.ubuntu.com/ubuntu/\$#URIs: ${UBUNTU_MIRROR}#' \"\$src\" > \"\$src.new\"
+    mv \"\$src.new\" \"\$src\"
+    grep -qF 'URIs: ${UBUNTU_MIRROR}' /etc/apt/sources.list.d/ubuntu.sources \
+      || echo 'WARNING: ubuntu.sources has no archive.ubuntu.com entry to replace' >&2
+  fi
+  # A stalled connection is dropped after 30 seconds rather than apt's default
+  # 120, and retried, so one slow request does not hold the whole fetch.
+  printf '%s\n' 'Acquire::Retries \"3\";' 'Acquire::http::Timeout \"30\";' \
+    > /etc/apt/apt.conf.d/80smoke-network
   apt-get update -qq
   # The package's OWN declared name, so a nightly build (kirocrew-nightly) is
   # queried and removed under the identity it actually installed as.

@@ -30,6 +30,8 @@ import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
 import RemoteCrewSetupSkip from './RemoteCrewSetupSkip'
 import { AgentSpecsMissing, AgentSpecsRejected } from './KiroPrerequisiteAgentSpecs'
 import { LtsSignInRequired, SessionSignInRequired, SetupShell } from './KiroPrerequisiteSetupShell'
+import SignInCommands, { KiroCliCheckAgain } from './KiroCliSignInCommands'
+import { KIRO_PREREQUISITE_KEY, kiroPrerequisiteIsBlocking, useKiroPrerequisite } from '../hooks/useKiroPrerequisite'
 import {
   AgentDetailActions,
   AgentInstallDetail,
@@ -40,51 +42,10 @@ import {
 
 import { Trans } from 'react-i18next'
 import { i18nT } from '../i18n/t'
-const QUERY_KEY = ['kiro-prerequisite'] as const
-
-export function kiroPrerequisiteRefetchInterval(
-  status: KiroPrerequisiteStatus | undefined,
-  kiroGated = false,
-): number | false {
-  // A closed LTS login gate keeps the fast poll even with `ready`: the
-  // probe can latch ready a few seconds before the gate itself reopens.
-  if (status?.ready && status.lts_login_required !== true) return 30_000
-  if (status && status.setup_allowed === false) return 3_000
-  if (kiroPrerequisiteIsBlocking(status, kiroGated)) return 5_000
-  return 30_000
-}
-
-// True while the full-screen first-run gate is the only thing the user can see.
-// Two behaviors key off it: the faster poll above, and forcing that poll to probe
-// the HOST rather than read the boot-time latch.
-//
-// Forcing matters because Kiro Crew no longer performs setup — the user installs
-// Kiro CLI from kiro.dev and may sign in from a terminal. Neither of those
-// touches the gateway, and the latched status is refreshed only at boot or on an
-// explicit request, so a latch-reading poll can never observe them and the gate
-// would hold forever behind a Check again button. Bounded deliberately: it costs
-// two short `kiro-cli` spawns per interval, runs ONLY on this blocking screen,
-// and stops the moment `ready` flips. A returning user reaches it only through
-// the out-of-date card below.
-export function kiroPrerequisiteIsBlocking(
-  status: KiroPrerequisiteStatus | undefined,
-  kiroGated = false,
-): boolean {
-  // An LTS gateway whose login gate is closed serves nothing else, so the
-  // sign-in screen blocks and its poll must probe to notice the new sign-in.
-  if (status?.lts_login_required === true) return true
-  if (!status || status.ready) return false
-  // A non-owner cannot probe and is shown the "owner must finish setup" screen.
-  if (status.setup_allowed === false) return false
-  // The out-of-date card blocks an established install too, and its copy says
-  // the page continues once the CLI is updated: a terminal update touches no
-  // gateway, so only a probing poll can see it (the server clears a spawn-proven
-  // too-old latch only when the probe finds a different binary). Only when a
-  // loaded config runs a Kiro harness (*kiroGated*): another harness's user sees
-  // the dashboard, not this card, and must not drive host probes behind it.
-  if (status.acp_supported === false && kiroGated) return true
-  return !status.initial_setup_complete
-}
+// The shared status read: `hooks/useKiroPrerequisite` owns it, the chat's
+// kiro-cli sign-in row reads the same entry.
+const QUERY_KEY = KIRO_PREREQUISITE_KEY
+export { kiroPrerequisiteIsBlocking, kiroPrerequisiteRefetchInterval } from '../hooks/useKiroPrerequisite'
 
 
 // renders them as the first sentence of a paragraph — terminate them so the
@@ -256,107 +217,6 @@ const SANDBOX_DOCS_URL =
  * a shell command is not copy, and `pre` is the i18n gate's documented
  * exemption for a literal that must not be translated.
  */
-/**
- * Split two sign-in commands into the run they share and the tails that differ.
- *
- * On a desktop install the resolved kiro-cli is the app's bundled copy, so both
- * commands open with the same ~100-character quoted absolute path and differ
- * only after `login`. Rendered as two full lines they read as one command shown
- * twice; rendering the shared run muted and only the tail at full weight puts
- * the choice where the eye lands. The cut falls on the last space inside the
- * common prefix so a tail always starts at a word boundary (`login` /
- * `login --use-device-flow ...`). The copied text is still the whole command,
- * read back from the DOM.
- */
-function splitSharedCommandPrefix(a: string, b: string): [string, string, string] {
-  let i = 0
-  while (i < a.length && i < b.length && a[i] === b[i]) i++
-  const cut = a.lastIndexOf(' ', i - 1) + 1
-  return [a.slice(0, cut), a.slice(cut), b.slice(cut)]
-}
-
-/**
- * The two sign-in commands, rendered VERBATIM from the backend constants, never
- * catalog values: a translated command cannot be typed. Shown only once a CLI
- * exists to sign into — before that the install step owns the screen. Kiro Crew
- * does not run them; the footer's Check again reads the result.
- *
- * BOTH tiers are offered, because the sign-in page the bare command opens
- * presents a free Builder ID as a peer of organization SSO: a user on an SSO
- * plan who picks the wrong one authenticates successfully and only discovers
- * the mismatch later, as missing models. Naming the tier here makes it a
- * decision instead of a guess. Kiro Crew does not detect which one applies —
- * that would mean inspecting the host's identity configuration — so the copy
- * describes the choice and lets the user make it.
- *
- * Both commands are click-to-copy, like every other command on this screen: the
- * desktop app's bundled kiro-cli is served as a quoted absolute path that nobody
- * should have to retype into a terminal, and one typo restarts the loop. That
- * path is the same in both boxes, so on a bundled install it is rendered muted,
- * the differing tail carries the weight, and ONE hint before both boxes explains
- * what the path is before a first-time reader meets it.
- */
-/**
- * The executable the desktop app stages as its own Kiro CLI, as the bundled
- * sign-in commands name it (`kiro_cli_bundle.BUNDLED_KIRO_CLI_ENTRY` and
- * `BUNDLED_KIRO_CLI_WINDOWS_ENTRY` on the gateway). Code constants, not catalog
- * values, so a translation cannot change the file name the hint points at.
- */
-const BUNDLED_KIRO_CLI_ENTRY = 'kiro-cli-chat'
-const BUNDLED_KIRO_CLI_WINDOWS_ENTRY = 'kiro-cli.exe'
-
-function SignInCommands({ status }: { status: KiroPrerequisiteStatus }) {
-  const [shared, personalTail, ssoTail] = status.bundled_cli
-    ? splitSharedCommandPrefix(status.login_command, status.sso_login_command)
-    : ['', status.login_command, status.sso_login_command]
-  const prefix = shared ? <span className="text-muted">{shared}</span> : null
-  // On Windows the muted run is a PowerShell wrapper around the bundled
-  // executable, so the hint says what that wrapper is instead of calling it a path.
-  const windows = status.platform === 'Windows'
-  return (
-    <div className="mt-3 space-y-3">
-      {status.bundled_cli && (
-        <p className="text-[12px] leading-relaxed text-muted">
-          {windows
-            ? i18nT('components.kiroPrerequisiteGate.sign_in_bundled_hint_windows', {
-              binary: BUNDLED_KIRO_CLI_WINDOWS_ENTRY,
-            })
-            : i18nT('components.kiroPrerequisiteGate.sign_in_bundled_hint', {
-              binary: BUNDLED_KIRO_CLI_ENTRY,
-            })}
-        </p>
-      )}
-      <div>
-        <p className="text-[13px] font-medium text-text">
-          {i18nT('components.kiroPrerequisiteGate.sign_in_personal_label')}
-        </p>
-        <CopyCommand>
-          <code>
-            {prefix}
-            {personalTail}
-          </code>
-        </CopyCommand>
-      </div>
-      <div>
-        <p className="text-[13px] font-medium text-text">
-          {i18nT('components.kiroPrerequisiteGate.sign_in_sso_label')}
-        </p>
-        <CopyCommand>
-          <code>
-            {prefix}
-            {ssoTail}
-          </code>
-        </CopyCommand>
-        <p className="mt-1.5 text-[12px] leading-relaxed text-muted">
-          {i18nT('components.kiroPrerequisiteGate.sign_in_sso_hint')}
-        </p>
-      </div>
-      <p className="text-[12px] leading-relaxed text-muted">
-        {i18nT('components.kiroPrerequisiteGate.sign_in_method_note')}
-      </p>
-    </div>
-  )
-}
 
 function remedySteps(remedy: string): React.ReactNode {
   switch (remedy) {
@@ -1239,33 +1099,13 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // The gateway probes kiro-cli at boot and on explicit request only, so the
   // background poll below reads latched state for free. A user-driven Refresh
   // must still hit the host, so it arms this flag for exactly one fetch.
-  const forceProbe = useRef(false)
   // Whether a loaded config runs a Kiro harness, for the poll below; written by
   // an effect once the config query resolves.
   const kiroGatedRef = useRef(false)
   // Set once the app has rendered after a status answer. An LTS relock
   // then keeps the app mounted and adds RelockNotice beside it.
   const appShown = useRef(false)
-  const statusQuery = useQuery({
-    queryKey: QUERY_KEY,
-    queryFn: () => {
-      // Probe the host when the user asked (Check again) OR while the blocking
-      // first-run gate is up — see kiroPrerequisiteIsBlocking for why a
-      // latch-reading poll cannot lift that gate on its own. The two are sent as
-      // DIFFERENT modes: the user's click must always probe, while the automatic
-      // poll is coalesced server-side so several open tabs do not multiply the
-      // gateway's kiro-cli spawns.
-      const explicit = forceProbe.current
-      forceProbe.current = false
-      const refresh = explicit
-        ? 'explicit' as const
-        : kiroPrerequisiteIsBlocking(queryClient.getQueryData(QUERY_KEY), kiroGatedRef.current)
-          ? 'auto' as const
-          : false
-      return api.kiroPrerequisite(refresh)
-    },
-    refetchInterval: (query) => kiroPrerequisiteRefetchInterval(query.state.data, kiroGatedRef.current),
-  })
+  const { statusQuery, checkAgain } = useKiroPrerequisite({ kiroGated: () => kiroGatedRef.current })
   const updateStatus = (status: KiroPrerequisiteStatus) => {
     queryClient.setQueryData(QUERY_KEY, status)
   }
@@ -1414,10 +1254,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     return app()
   }
   const retrying = statusQuery.isFetching
-  const retryStatus = () => {
-    forceProbe.current = true
-    void statusQuery.refetch()
-  }
+  const retryStatus = () => { void checkAgain() }
   // A relock of an app already in use keeps that app mounted and visible, and
   // tells the user to sign in again beside it.
   const relockStatus = ltsLocked && appShown.current ? statusQuery.data : undefined
@@ -1790,17 +1627,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                 same-labelled buttons that check different things invite the
                 wrong press. The agent panel's is scoped by the row it sits in. */}
             <div className="mt-4 flex items-center gap-2">
-              <SendBtn
-                type="button"
-                className="inline-flex items-center gap-1.5"
-                disabled={statusQuery.isFetching}
-                onClick={retryStatus}
-              >
-                <RefreshCw className={`lucide-inline ${statusQuery.isFetching ? 'animate-spin' : ''}`} />
-                {status.installed
-                  ? i18nT('components.kiroPrerequisiteGate.check_sign_in_again')
-                  : i18nT('components.kiroPrerequisiteGate.check_again_for_kiro_cli')}
-              </SendBtn>
+              <KiroCliCheckAgain installed={status.installed} busy={statusQuery.isFetching} onClick={retryStatus} />
             </div>
           </Card>
 

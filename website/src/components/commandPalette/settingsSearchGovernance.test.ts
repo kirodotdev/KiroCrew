@@ -41,6 +41,7 @@ import {
   ENABLE_REMOTE_CREWS_SETTING_ID,
   FEATURE_TIPS_SETTING_ID,
   GATEWAY_AUTO_UPDATE_SETTING_ID,
+  REOPEN_LAST_PAGE_SETTING_ID,
   settingEntryOffered,
   type SettingsSearchGovernance,
 } from './settingsSearchCore'
@@ -74,6 +75,7 @@ const CHANNELS_SETTING_ID = 'display.show-channels'
 const GOVERNED_IDS = new Set([
   ...DECISIONS_SETTING_IDS, FEATURE_TIPS_SETTING_ID, GATEWAY_AUTO_UPDATE_SETTING_ID, APP_AUTO_DOWNLOAD_SETTING_ID,
   KIRO_SIGN_IN_SETTING_ID, ENABLE_REMOTE_CREWS_SETTING_ID, AUTO_CONNECT_CREWS_SETTING_ID, CHANNELS_SETTING_ID,
+  REOPEN_LAST_PAGE_SETTING_ID,
 ])
 
 /** Any OTHER entry, as the control: the predicate must gate one card, not the corpus. */
@@ -117,6 +119,18 @@ describe('settingEntryOffered', () => {
     // reader on a page without the toggle.
     expect(settingEntryOffered(tipsEntry(), TIPS_OFF)).toBe(false)
     expect(settingEntryOffered(tipsEntry(), ON)).toBe(true)
+  })
+
+  it('offers Reopen where I left off only in the installed app, where DisplayPanel draws it', () => {
+    const entry = entryById(REOPEN_LAST_PAGE_SETTING_ID)
+    const standalone = (on: boolean) => vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) => ({ matches: on && query === '(display-mode: standalone)', media: query } as unknown as MediaQueryList),
+    )
+    standalone(false)
+    expect(settingEntryOffered(entry, ON)).toBe(false)
+    standalone(true)
+    expect(settingEntryOffered(entry, ON)).toBe(true)
+    vi.restoreAllMocks()
   })
 
   it('offers Start New Chats in conductor mode with no preview on, and not in an LTS build', () => {

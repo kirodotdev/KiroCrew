@@ -71,7 +71,10 @@ CHILD_PERMISSION_ROUTED = "kirocrew.acp.child_permission.routed"
 
 #: Unroutable ACP frames per method class. ``method_class=permission`` is the
 #: hang signature and MUST stay ~0 — any nonzero
-#: value is a routing regression alarm.
+#: value is a routing regression alarm. ``method_class=replay`` counts the
+#: turns replayed for a ``session/load`` that asked for its replay (the KAS
+#: resume) before its session is registered, which
+#: it drops by design, so they stay out of ``update``.
 DROPPED_FRAMES = "kirocrew.acp.dropped_frames"
 
 #: One point per ``session/set_mode`` that did not land on the freshly prepared

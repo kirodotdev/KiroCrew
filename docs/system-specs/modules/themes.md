@@ -37,6 +37,18 @@ and an appearance pack's `manifest.json`) are read with
 editor that writes one (Windows Notepad does) must not turn a valid hand-edited
 file into "not valid JSON" or drop the pack from the list.
 
+A pack's text files (`persona.md`, `styles/overrides.css`, overlay and top-bar
+HTML) are read as bytes and checked with `user_json.wide_bom_reason` before they
+are decoded. A file saved as UTF-16 or UTF-32 (Windows PowerShell 5.1's `>` writes
+UTF-16LE with a mark), marked or, for UTF-16, unmarked, is refused at install with
+`<file>: it is saved as UTF-16; re-save it as UTF-8`. Re-reading a pack that is
+already installed (the theme-detail route) does not apply the refusal, so a pack
+that predates it keeps loading. Decoding it as UTF-8 would
+hand the validators a NUL after every character, so `persona.md` would be refused
+for wording it contains and `overrides.css` would install with no effect. UTF-8
+with or without a mark keeps installing. The asset descriptor does not surface
+`personaInfo` for such a file.
+
 `theme.json` also declares a `level` (0/1/2) that gates which asset categories
 a pack may ship. Validation is tier-scaled to payload trust.
 

@@ -62,7 +62,7 @@ class TestLogout:
         assert req.get_method() == "POST"
         assert req.full_url == "http://127.0.0.1:5476/api/logout"
         assert req.get_header("X-local-secret") == "test-secret"
-        assert capsys.readouterr().out == "Done: All dashboard sessions revoked.\n"
+        assert capsys.readouterr().out == "✅ All dashboard sessions revoked.\n"
 
     def test_logout_gateway_not_running(self, tmp_path, monkeypatch):
         """Missing secret file means gateway not running."""
@@ -95,7 +95,7 @@ class TestLogout:
                 assert False, "should have exited"
             except SystemExit as e:
                 assert e.code == 1
-        assert capsys.readouterr().err == "Failed to revoke sessions: HTTP 403\n"
+        assert capsys.readouterr().err == "❌ Failed to revoke sessions: HTTP 403\n"
 
     @staticmethod
     async def _logout_against_the_real_route(monkeypatch, *, server_secret, cli_secret):
@@ -139,7 +139,7 @@ class TestLogout:
         )
         assert code == 1
         assert capsys.readouterr().err == (
-            "Failed to revoke sessions: HTTP 500: could not persist session "
+            "❌ Failed to revoke sessions: HTTP 500: could not persist session "
             "revocation; logout not completed\n"
         )
 
@@ -152,7 +152,7 @@ class TestLogout:
             monkeypatch, server_secret="the-real-one", cli_secret="a-stale-one"
         )
         assert code == 1
-        assert capsys.readouterr().err == "Failed to revoke sessions: HTTP 403: invalid secret\n"
+        assert capsys.readouterr().err == "❌ Failed to revoke sessions: HTTP 403: invalid secret\n"
         revoke.assert_not_called()
 
     def test_logout_connection_error(self, tmp_path, monkeypatch):

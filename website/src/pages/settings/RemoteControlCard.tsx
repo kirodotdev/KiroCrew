@@ -9,7 +9,9 @@
  * terminal command.
  *
  * A teammate reads the same status about this Crew but gets no Turn off: turning it
- * back on takes the host machine, so the switch is the machine owner's.
+ * back on takes the host machine, so the switch is the machine owner's. For the same
+ * reason the owner gets no Turn off on a page opened through the Kiro relay
+ * (`relayed`); the server refuses that off too.
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -63,7 +65,7 @@ export function RemoteControlCard() {
   // cached: that cached status may be stale, and hiding the error would hide that.
   const readFailed =
     Boolean(loadError) && !(loadError instanceof ApiError && loadError.status === 403)
-  // No hand-off: the Remote Crew panel below this card can hold an unsaved add-crew
+  // No hand-off: the Remote Crew panel above this card can hold an unsaved add-crew
   // form, and opening a chat would unmount it.
   const readError = readFailed ? (
     <ErrorNotice
@@ -73,6 +75,9 @@ export function RemoteControlCard() {
   ) : null
 
   const shown = data?.requested || data?.running
+  // Read-only here: a teammate, or the owner on a page the relay delivered.
+  const relayed = Boolean(data?.relayed)
+  const canTurnOff = !notOwner && !relayed
   if (!data || (!shown && !turnedOff)) {
     if (!readError) return null
     return (
@@ -131,7 +136,14 @@ export function RemoteControlCard() {
               message={i18nT('pages.settings.remoteControlCard.owner_only')}
             />
           )}
-          {shown && !notOwner && (
+          {shown && !notOwner && relayed && (
+            <StatusNotice
+              tone="info"
+              testId="remote-control-local-only"
+              message={i18nT('pages.settings.remoteControlCard.local_only')}
+            />
+          )}
+          {shown && canTurnOff && (
             <Btn onClick={() => off.mutate()} disabled={off.isPending}>
               {off.isPending
                 ? i18nT('pages.settings.remoteControlCard.turning_off')
@@ -141,7 +153,7 @@ export function RemoteControlCard() {
           {/* Says what the click costs: open relayed connections close, and undoing it
               needs the terminal (guard.stop_after_drain drains, then stops the relay). */}
           {/* Locked: `remote-control on` is refused here, so no turn-on hint. */}
-          {shown && !data.locked && !notOwner && (
+          {shown && !data.locked && canTurnOff && (
             <p className="m-0 text-[12px] text-muted" data-testid="remote-control-off-effect">
               {data.running && (
                 <>{i18nT('pages.settings.remoteControlCard.turn_off_disconnects')} </>

@@ -10,6 +10,7 @@ import logging
 import shutil
 from pathlib import Path
 
+from kiro_crew.config import loosening_provenance
 from kiro_crew.config import migration as _migration
 from kiro_crew.config.loader_document import (
     _invalidate_config_cache,
@@ -242,6 +243,9 @@ def _persist_config_migration(
             # Nothing left to migrate -- another writer got here first. Returning
             # None skips the write, so we do not rewrite a file we agree with.
             return None
+        # A pending file's write is refused at publish; refuse before the backup too,
+        # or the .bak is a copy of the outside edit beside a file left as it was.
+        loosening_provenance.refuse_save_if_pending(loosening_provenance.leaf_for(path))
         _write_migration_backup(path)
         applied = True
         return current

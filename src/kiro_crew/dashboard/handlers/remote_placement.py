@@ -2,8 +2,10 @@
 
 RFC §2b option (C): the hub ranks crews from fresh headroom snapshots minus its
 reservations (open remote bindings plus creates in flight here, one estimate each),
-and the peer gate (wave 3) alone admits. ``crew_busy`` tries the next crew; any other
-refusal stops, since that create may have reached the peer. The rules are spelled
+and the peer gate (wave 3) alone admits. ``crew_busy`` tries the next crew, and so
+does a 409 ``duplicate_item`` (that crew already holds a worker for the item, so it
+made nothing; the reply names it under ``skipped``); any other refusal stops, since
+that create may have reached the peer. The rules are spelled
 out in ``docs/system-specs/modules/session-control.md`` ("Wave 5"). Reached only
 while ``work_ledger.remote_dispatch`` is on.
 
@@ -24,6 +26,7 @@ import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
+from kiro_crew.dashboard.handlers.remote_dispatch_routes import CrewCallError
 from kiro_crew.dashboard.remote_dispatch_headroom import (
     CPU_LOAD_THRESHOLD,
     NO_LOGINS_QUERY,
@@ -46,6 +49,13 @@ REQUIRES_INVALID = "requires_invalid"
 
 #: The refusal when connected crews answered but none meets ``requires``.
 CREW_REQUIREMENTS_UNMET = "crew_requirements_unmet"
+
+#: A peer's 409 when it already holds a worker for the item: the store's
+#: ``CODE_DUPLICATE_ITEM``, spelled here because this module may not import the store
+#: (``test_work_ledger.py::test_only_the_phase_2_seams_import_the_module``; the
+#: ``remote_ingest`` family is on that allowlist, placement is not). Pinned equal by
+#: ``test_the_code_matches_the_store``.
+CODE_DUPLICATE_ITEM = "duplicate_item"
 
 #: :func:`_candidate`'s answer for a crew that meets ``requires`` but has no room.
 _NO_ROOM = "no_room"
@@ -193,6 +203,15 @@ def _number(value: object) -> float | None:
     except OverflowError:  # an integer past float range from a hostile peer
         return None
     return number if math.isfinite(number) and number >= 0 else None
+
+
+class DuplicateItemError(CrewCallError):
+    """The peer answered 409 ``duplicate_item`` to a bound create: it already holds
+    a worker for the item (a create whose reply was lost) and made nothing for this
+    one. Raised by ``remote_ingest.create_bound``; placement tries the next crew."""
+
+    def __init__(self) -> None:
+        super().__init__(409, CODE_DUPLICATE_ITEM, "that crew already holds a worker for this item")
 
 
 def _connected(mgr: Any, instance_id: str) -> bool:
@@ -394,6 +413,7 @@ async def place(
         # never fall back to a crew without it.
         raise routes.CrewCallError(503, CREW_REQUIREMENTS_UNMET, unmet_message(unmet))
     busy: list[str] = []
+    duplicate: list[Candidate] = []
     stopped = False
     while pool:
         pick = await _reserve_best(state, pool, mem_gb, disk_gb)
@@ -408,14 +428,29 @@ async def place(
             busy.append(pick.name)
             pool = [c for c in pool if c.instance_id != pick.instance_id]
             continue
+        except DuplicateItemError:
+            # The crew already holds a worker for this item (a create whose reply
+            # was lost). It refused before making anything, so the next crew is
+            # tried; the orphan there is left alone.
+            duplicate.append(pick)
+            pool = [c for c in pool if c.instance_id != pick.instance_id]
+            continue
         finally:
             _release(state, pick.instance_id)
         if item.retired_bindings:
             # The new worker starts from the retired one's last pushed branch and
             # pushes a NEW one; the conductor names both in the seed.
             result["previous_branch"] = item.retired_bindings[-1].get("branch")
+        if duplicate:
+            result["skipped"] = [
+                {"crew": c.instance_id, "crew_name": c.name, "code": CODE_DUPLICATE_ITEM}
+                for c in duplicate
+            ]
         return result, pick.name
     tried = f" ({', '.join(busy)} answered crew_busy)" if busy else ""
+    if duplicate:
+        names = ", ".join(c.name for c in duplicate)
+        tried += f" ({names} answered {CODE_DUPLICATE_ITEM}: already holds a worker for it)"
     if unmet:
         tried += f"; {_lacks(unmet)}"
     if stopped:

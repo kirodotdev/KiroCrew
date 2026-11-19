@@ -26,8 +26,8 @@ if TYPE_CHECKING:
 
 
 def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
-    """Return the OS-appropriate Fix hint (brew on macOS, winget on Windows,
-    else Linux guidance).
+    """Return the OS-appropriate Fix hint (brew on macOS, the *windows* arm on
+    Windows, else Linux guidance).
 
     Without a Windows arm Windows would fall through to the Linux text, telling a
     Windows user to ``pipx``/drop a static build in ``~/.local/bin``, neither of
@@ -62,6 +62,18 @@ _STT_SETTINGS_PATH = "Settings → Voice → Speech-to-Text"
 _FFMPEG_LINUX_HINT = (
     f"download the audio decoder from the dashboard ({_STT_SETTINGS_PATH}), "
     "or install ffmpeg into /usr/local/bin"
+)
+
+# The Windows arm of the same rule. It must not name ``winget install Gyan.FFmpeg``:
+# winget lays that package out under ``%LOCALAPPDATA%\Microsoft\WinGet\Packages\
+# Gyan.FFmpeg_<source>\ffmpeg-<version>-full_build\bin`` with a link in
+# ``WinGet\Links``, and ``_ffmpeg_candidate_dirs`` searches neither (``Links`` holds
+# every portable package's executables, a generic user-writable directory). The
+# download has a pinned windows-x86_64 artifact; on any other ISA it is refused and
+# the second clause, a real ``_FFMPEG_CANDIDATE_DIRS`` entry, is the remedy.
+_FFMPEG_WINDOWS_HINT = (
+    f"download the audio decoder from the dashboard ({_STT_SETTINGS_PATH}), "
+    "or install ffmpeg into %ProgramFiles%\\ffmpeg\\bin"
 )
 
 
@@ -271,7 +283,7 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
                 + _os_fix_hint(
                     "brew install ffmpeg",
                     _FFMPEG_LINUX_HINT,
-                    windows="winget install Gyan.FFmpeg",
+                    windows=_FFMPEG_WINDOWS_HINT,
                 )
             )
         if stt_fatal:

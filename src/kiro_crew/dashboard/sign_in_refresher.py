@@ -159,7 +159,15 @@ class _ShutdownSignal(Protocol):
 
 
 async def run_sign_in_refresher(shutdown_event: _ShutdownSignal) -> None:
-    """Keep the stored sign-in renewed until ``shutdown_event`` is set."""
+    """Keep the stored sign-in renewed until ``shutdown_event`` is set.
+
+    A workload-identity host has no person sign-in to renew, so the tick does
+    not run there and a leftover vault stays as it was.
+    """
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
+        return
     failures = 0
     while not shutdown_event.is_set():
         try:

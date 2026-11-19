@@ -207,6 +207,7 @@ class _ChatSlot:
         "_guarded_history_writes",
         "_last_turn_auth_required",
         "_cycle_reached_provider",
+        "_preparing_turn",
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
@@ -275,6 +276,7 @@ class _ChatSlot:
         "_carried_ttft_clock",
         "_prev_turn_ctx_used",
         "_prev_turn_ctx_session",
+        "_prev_turn_ended_at",
         "_promise_only_retries",
         "_compaction_continue_retries",
         "_batch_rejected",
@@ -617,6 +619,7 @@ class _ChatSlot:
     _stop_escalated_card_id: str | None
     _last_turn_auth_required: bool
     _cycle_reached_provider: bool
+    _preparing_turn: Any
     _subagent_delivery_pending: dict[str, list[SubagentDelivery]]
     _pending_context: list[dict[str, Any]]
     _inflight_merge_contexts: list[dict[str, Any]]
@@ -715,6 +718,7 @@ class _ChatSlot:
     _carried_ttft_clock: Any
     _prev_turn_ctx_used: int
     _prev_turn_ctx_session: str
+    _prev_turn_ended_at: float
     _promise_only_retries: int
     _compaction_continue_retries: int
     _batch_rejected: bool

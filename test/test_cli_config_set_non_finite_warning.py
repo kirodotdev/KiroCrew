@@ -3,7 +3,7 @@
 ``nan``, ``inf`` and an overflowing ``1e999`` parse as floats, pass a number
 key's type check and are written as the JSON tokens ``NaN`` and ``Infinity``.
 The loader's number reader replaces a non-finite value with the key's default,
-so the ``Done:`` line names a value that never takes effect. The write still
+so the ``✅`` line names a value that never takes effect. The write still
 succeeds, as it does today; the warning names the key and says so.
 
 Every test writes under a temp data home; none touches ``~/.kiro/crew``.
@@ -61,14 +61,14 @@ def test_a_non_finite_number_is_saved_with_a_warning_naming_the_key(
     out, err = capsys.readouterr()
     stored = (home / ("config.local.json" if local else "config.json")).read_text(encoding="utf-8")
     assert f'"autocompact_pct": {token}' in stored
-    assert out.startswith("Done: ")
-    assert f"Warning: {KEY} {_WARNING}, so it will not take effect." in err
+    assert out.startswith("✅ ")
+    assert f"⚠️  {KEY} {_WARNING}, so it will not take effect." in err
 
 
 def test_a_non_finite_number_inside_a_section_names_its_path(home, capsys):
     _set(home, "session", json.dumps({"autocompact_pct": 70}).replace("70", "NaN"))
     err = capsys.readouterr().err
-    assert f"Warning: {KEY} {_WARNING}" in err
+    assert f"⚠️  {KEY} {_WARNING}" in err
 
 
 def test_a_finite_number_warns_nothing(home, capsys):

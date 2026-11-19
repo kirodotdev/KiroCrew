@@ -152,7 +152,22 @@ def path_trust_unresolved(path: str) -> bool:
     granted path makes the call ask again rather than write where the link points.
     """
     try:
-        return os.path.realpath(path) != path
+        real = os.path.realpath(path)
+        if real == path:
+            return False
+        # normcase folds letter case on Windows only (identity elsewhere), and
+        # realpath answers the case stored on disk, so a different spelling of
+        # a regular file is not a link. Case folding alone would also pass a
+        # link to a sibling whose name differs only in case (a case-sensitive
+        # NTFS directory), so the path and its ancestors are checked for a link.
+        if os.path.normcase(real) != os.path.normcase(path):
+            return True
+        from kiro_crew import platform_compat
+
+        return (
+            platform_compat.is_link_or_junction(path)
+            or platform_compat.first_linked_ancestor(path) is not None
+        )
     except (OSError, ValueError):
         return True
 

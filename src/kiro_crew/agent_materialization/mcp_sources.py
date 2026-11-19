@@ -567,6 +567,40 @@ def reconcile_raw_key_tool_overrides(config: dict, sources: McpSources) -> None:
             alias_entry.pop("disabledTools", None)
 
 
+def seed_edition_servers(mcp: dict) -> None:
+    """Add each edition server *mcp* does not name yet, with the store's env for it.
+
+    Every spec ``build_agent_config`` builds is seeded here, so one derived from it
+    (a Bot's worker, research, the team lead) runs an edition server with the env
+    the user set on it in ``~/.kiro/crew/mcp.json``, by the rule the default spec's
+    store merge applies above: the store's keys win, and a shipped key the store
+    leaves out is kept. That env is emitted as :func:`resolve_mcp_servers` emits
+    the default spec's.
+
+    A store key holding a ``secret://`` reference is left out, so the shipped
+    value for it, if any, stands. The reference resolves only where the
+    MCP gateway starts the server for a session, and a spec several agents'
+    sessions run cannot know that: some are handed no gateway stub and would start
+    the server with the literal reference. The default spec's rebuild decides it
+    for that spec from its own routing.
+    """
+    pending = {n: s for n, s in agent_mod._extra_mcp_servers().items() if n not in mcp}
+    if not pending:
+        return
+    store = user_json.load_mcp_servers(agent_mod._user_dir() / "mcp.json")
+    for name, shipped in pending.items():
+        entry = dict(shipped)
+        own = store.get(name)
+        store_env = own.get("env") if isinstance(own, dict) else None
+        if isinstance(store_env, dict):
+            vaulted = secret_reference_keys(store_env)
+            user_env = {k: v for k, v in store_env.items() if k not in vaulted}
+            shipped_env = shipped.get("env")
+            merged = {**(shipped_env if isinstance(shipped_env, dict) else {}), **user_env}
+            entry["env"] = emit_env(_expand_env_values(merged, server=name))
+        mcp[name] = entry
+
+
 def _mute_withheld(entry: dict) -> dict:
     """*entry* muted in place, with the record that this rebuild muted it.
 

@@ -97,6 +97,7 @@ from kiro_crew.slack.handler import (
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.renderer_session_status import ApprovalSessionStatus
 from kiro_crew.slack.renderer_stream_debt import StreamDebtNotice
+from kiro_crew.slack.renderer_thinking import ThinkingReply
 from kiro_crew.slack.reply_pieces import (  # noqa: F401 -- re-exported
     _NARRATION_MAX_CHARS,
     _SPLIT_HEADROOM,
@@ -251,9 +252,10 @@ class SlackApprovalDecider:
     #: Retired with the window, so a nonce never outlives the prompt it authorizes.
     _NONCES: dict[str, str] = {}
 
-    def __init__(self, session_key: str = "") -> None:
+    def __init__(self, session_key: str = "", requester: str = "") -> None:
         self._futures: dict[str, asyncio.Future[bool]] = {}
         self.session_key = session_key
+        self.requester = requester  # the asking turn's Slack user (slack.shared_access)
         #: Why the LAST call denied -- see ``messaging.driver.ApprovalDecider``.
         self.last_deny_cause = ""
 
@@ -509,7 +511,7 @@ class SlackApprovalDecider:
         return dec.session_key
 
 
-class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, Renderer):
+class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Renderer):
     """Renders abstract output events onto a Slack thread.
 
     Holds (and exposes) the underlying ``SlackClientOps`` so the inline
@@ -556,11 +558,11 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, Renderer):
         self._react_ts = react_ts or thread_ts or ""
         self._reactions_enabled = reactions_enabled and not code_channel_quiet(channel)
         # When slack.show_thinking is on, surface the model's reasoning as a Thinking
-        # thread reply above the answer (mirrors native handle_message). Off =>
-        # reasoning stays private, only the typing indicator moves.
+        # thread reply above the answer (``ThinkingReply``). Off => reasoning stays
+        # private, only the typing indicator moves.
         self._show_thinking = show_thinking
         self._thinking_accumulated = ""
-        self._thinking_posted = False
+        self._init_thinking()
         self.decider = decider
         # Monotonic clock seam: injectable so tool timing is deterministic
         # in tests and harness-controllable once handle_message drives this.
@@ -712,6 +714,8 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, Renderer):
 
     async def _ensure_stream(self) -> str | None:
         if self._stream_ts is None:
+            # The answer's message opens here, so the Thinking reply goes first.
+            await self._reserve_thinking(opening_answer=True)
             ts = await self._start_stream_if_threaded()
             if ts:
                 self._stream_ts = ts
@@ -1014,7 +1018,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, Renderer):
         covering all call sites (the native handler guards its twin the same
         way): the unguarded ``on_tool_call`` call site runs before any text
         streams, and a propagated Slack error there reaches the transport
-        catch-all in ``transport_dispatch``, which posts a terminal "Error:
+        catch-all in ``transport_dispatch``, which posts a terminal "🔧
         Something went wrong (transport path)" reply on a turn that is still
         live.
         """
@@ -1106,7 +1110,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, Renderer):
         if not self._active_task_id:
             return
         elapsed = self._tool_elapsed_str()
-        title = f"{self._active_task_title} · {elapsed}" if elapsed else self._active_task_title
+        title = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
         outcome = self._tool_outcomes.pop(self._active_tool_call_id, "") or ""
         succeeded = not outcome or outcome == "completed"
         if succeeded:
@@ -1136,8 +1140,8 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, Renderer):
             return ""
         mins, secs = divmod(elapsed, 60)
         if mins:
-            return f"{int(mins)}m {secs:.1f}s"
-        return f"{secs:.1f}s"
+            return f"⏱ {int(mins)}m {secs:.1f}s"
+        return f"⏱ {secs:.1f}s"
 
     async def _tool_elapsed_updater(self) -> None:
         """Every 30s, refresh the active task card's title with elapsed time."""
@@ -1150,7 +1154,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, Renderer):
                 # Elapsed goes in the TITLE (Slack replaces title on same
                 # task_id), never details (which Slack appends).
                 await self._append_task(
-                    self._active_task_id, f"{self._active_task_title} · {time_str}", "in_progress"
+                    self._active_task_id, f"{self._active_task_title}  ⏱ {time_str}", "in_progress"
                 )
 
     def _start_tool_timer(self) -> None:
@@ -1201,6 +1205,12 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, Renderer):
                     "Slack set_thread_status failed at teardown — skipping status clear",
                     exc_info=True,
                 )
+        # A turn that died before on_done must not leave "Thinking…" up. Last,
+        # so a slow Slack does not hold back the reaction and the status clear.
+        try:
+            await self._settle_thinking(post_new=False)
+        except Exception:
+            logger.warning("Slack: settling the thinking reply at teardown failed", exc_info=True)
         self._finalized = True
 
     async def release_held_text(self) -> None:
@@ -1296,9 +1306,9 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, Renderer):
         # a tool call folds it into that call's step (``on_tool_call``), and the
         # end of the turn sends what is left as the reply (``on_done``). The
         # thread status and the plan's steps are the progress signal meanwhile.
-        # Flush any accumulated reasoning as a Thinking reply first so it lands above
-        # the answer (no-op when show_thinking is off or nothing accumulated).
-        await self._maybe_post_thinking()
+        # Post the reasoning so far as the Thinking reply, above the answer
+        # (no-op when show_thinking is off, nothing accumulated, or already up).
+        await self._reserve_thinking(opening_answer=False)
         await self._resume_from_suspended()
         if text.strip() != UNFINISHED_TURN_NOTICE:
             # The driver's cut-off notice is not part of the turn it records.
@@ -1440,39 +1450,10 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, Renderer):
         if self._show_thinking:
             self._thinking_accumulated += text or ""
 
-    async def _maybe_post_thinking(self) -> None:
-        """Post the accumulated reasoning as a Thinking thread reply, once per turn.
-
-        Called lazily when the first answer text arrives so the reasoning lands
-        above the answer (mirrors native). Redacted before posting — reasoning
-        can contain credentials/URLs just like the answer.
-        """
-        if self._thinking_posted or not self._show_thinking:
-            return
-        self._thinking_posted = True
+    def _thinking_text(self) -> str:
+        """The reasoning as the Thinking reply shows it (``ThinkingReply`` sends it)."""
         reasoning = self._thinking_accumulated.strip()
-        if not reasoning:
-            return
-        reasoning = _display_safe(reasoning)
-        # Reasoning is unbounded, and Slack rejects an over-limit message outright
-        # the whole Thinking reply, not its tail. Split it fence-safely so a long
-        # chain of thought arrives as ordered replies instead of vanishing.
-        posted_any = False
-        for chunk in await self._split_for_slack(f"*Thinking*\n{reasoning}"):
-            # Best-effort: MUST NOT raise. Reasoning is a
-            # decorative side channel — the answer is delivered separately.
-            try:
-                await self.slack.post_message(self.channel, chunk, self.thread_ts)
-                posted_any = True
-            except Exception:
-                logger.warning("Failed to post thinking chunk", exc_info=True)
-        if posted_any:
-            # The reasoning reached the reader, so its placeholders count toward
-            # this turn's redaction notice (the native handler tallies its
-            # thinking text the same way).
-            cred_count, url_count = count_redaction_tags(reasoning)
-            self._redacted_creds += cred_count
-            self._redacted_urls += url_count
+        return _display_safe(reasoning) if reasoning else ""
 
     async def on_tool_call(
         self, tool_call_id: str, title: str, tool_kind: str = "", tool_purpose: str = ""
@@ -1647,9 +1628,14 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, Renderer):
             logger.warning("Slack set_thread_status failed — skipping status", exc_info=True)
 
     async def on_done(self, stop_reason: str = "") -> None:
-        # Surface any reasoning not already flushed by the first text chunk
-        # (e.g. a tool-only turn that produced no answer text).
-        await self._maybe_post_thinking()
+        # The Thinking reply gets the whole reasoning, in the messages above the
+        # answer (or posted now, before the answer opens below). What it shows
+        # counts toward this turn's redaction notice.
+        shown_thinking = await self._settle_thinking()
+        if shown_thinking:
+            cred_count, url_count = count_redaction_tags(shown_thinking)
+            self._redacted_creds += cred_count
+            self._redacted_urls += url_count
         if self._controller is not None:
             self._controller.finalize(error=False)
         # ``_finalized`` is set AFTER the answer-carrying delivery below, not

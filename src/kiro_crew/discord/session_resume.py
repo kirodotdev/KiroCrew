@@ -141,20 +141,20 @@ def _picker_components(nonce: str, choices: tuple[SessionChoice, ...]) -> list[d
 
 class _DiscordResumeSurface:
     owner_refusal = (
-        "`!sessions` requires exactly one configured " "`discord.allowed_user_ids` entry."
+        "🔒 `!sessions` requires exactly one configured " "`discord.allowed_user_ids` entry."
     )
-    choice_owner_refusal = "Session resume is owner-only."
-    choice_expired = "This session picker expired. Run `!sessions` again."
+    choice_owner_refusal = "🔒 Session resume is owner-only."
+    choice_expired = "⌛ This session picker expired. Run `!sessions` again."
     choice_missing = "That session is no longer available. Run `!sessions` again."
     choice_expectation_failed = (
-        "Warning: Couldn't save which conversation this channel is linked to, "
+        "⚠️ Couldn't save which conversation this channel is linked to, "
         "so the session was NOT resumed. Run `!sessions` to try again."
     )
     choice_claim_lost = (
-        "Another session just connected here. "
+        "🧵 Another session just connected here. "
         "Run `!unlink`, then `!sessions` to resume this one."
     )
-    choice_binding_failed = "Warning: Couldn't resume that session. Run `!sessions` to try again."
+    choice_binding_failed = "⚠️ Couldn't resume that session. Run `!sessions` to try again."
 
     def __init__(self, client: "DiscordClient", channel_id: str) -> None:
         self.client = client
@@ -186,7 +186,7 @@ class _DiscordResumeSurface:
                     f"{'s' if total != 1 else ''} (maximum {PICKER_LIMIT})"
                 )
             return (
-                "**Session search**\n"
+                "🔎 **Session search**\n"
                 f"{summary} for `{label}`, ranked over titles and message content."
             )
         if total > PICKER_LIMIT:
@@ -196,11 +196,11 @@ class _DiscordResumeSurface:
                 f"Showing {total} most recent session"
                 f"{'s' if total != 1 else ''} (maximum {PICKER_LIMIT})."
             )
-        return f"**Recent sessions**\n{summary}"
+        return f"🧵 **Recent sessions**\n{summary}"
 
     def choice_success(self, choice: SessionChoice) -> str:
         return (
-            f"Resumed: {choice.title}\n"
+            f"🔄 Resumed: {choice.title}\n"
             "Continue here. Send `!unlink` to return to your Discord conversation."
         )
 
@@ -407,7 +407,7 @@ class DiscordSessionResume:
             )
             if role not in {"user", "assistant"} or not content:
                 continue
-            icon = "You:" if role == "user" else "Agent:"
+            icon = "🧑" if role == "user" else "🤖"
             try:
                 # The icon gets its OWN line: on the body's first line it would
                 # sit in front of a fence opener, which must start the line, so a

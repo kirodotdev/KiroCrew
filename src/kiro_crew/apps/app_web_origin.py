@@ -42,7 +42,7 @@ import asyncio
 import functools
 import logging
 import string
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -387,16 +387,32 @@ async def _backend_port(name: str) -> int | None:
     return int(port) if port else None
 
 
+#: The largest HTML answer :func:`_relay_http` edits; a bigger one streams unedited.
+_MAX_HTML_EDIT_BYTES = 2 * 1024 * 1024
+
+
 def _client_session(request: web.Request) -> tuple[aiohttp.ClientSession, bool]:
     session = request.app.get("_proxy_session")
     if session is None or session.closed:
-        return aiohttp.ClientSession(auto_decompress=False), True
+        jar = aiohttp.DummyCookieJar()
+        return aiohttp.ClientSession(auto_decompress=False, cookie_jar=jar), True
     return session, False
 
 
 async def _relay_http(
-    request: web.Request, target: yarl.URL, headers: CIMultiDict[str], ancestors: str
+    request: web.Request,
+    target: yarl.URL,
+    headers: CIMultiDict[str],
+    ancestors: str,
+    rewrite: Callable[[Iterable[tuple[str, str]]], CIMultiDict[str]] | None = None,
+    html: Callable[[bytes], bytes] | None = None,
 ) -> web.StreamResponse:
+    """Relay one HTTP request; *rewrite* replaces :func:`hardened_response_headers`.
+
+    *html* edits a whole ``200`` ``text/html`` answer that is not encoded and fits
+    :data:`_MAX_HTML_EDIT_BYTES`; the edited page goes out with no length,
+    validators or caching. Any other answer streams through unchanged.
+    """
     timeout = aiohttp.ClientTimeout(total=None, connect=_CONNECT_TIMEOUT, sock_read=_IDLE_TIMEOUT)
     session, owns = _client_session(request)
     resp: web.StreamResponse | None = None
@@ -409,13 +425,38 @@ async def _relay_http(
             timeout=timeout,
             allow_redirects=False,
         ) as upstream:
-            resp = web.StreamResponse(
-                status=upstream.status,
-                reason=upstream.reason,
-                headers=hardened_response_headers(upstream.headers.items(), ancestors),
+            out = (
+                rewrite(upstream.headers.items())
+                if rewrite is not None
+                else hardened_response_headers(upstream.headers.items(), ancestors)
             )
+            head = b""
+            if (
+                html is not None
+                and upstream.status == 200
+                and upstream.content_type == "text/html"
+                and not upstream.headers.get("Content-Encoding")
+            ):
+                # read() answers what has arrived, not the whole page: gather to
+                # the end, or past the cap (then the page streams unedited).
+                parts: list[bytes] = []
+                size = 0
+                async for chunk in upstream.content.iter_any():
+                    parts.append(chunk)
+                    size += len(chunk)
+                    if size > _MAX_HTML_EDIT_BYTES:
+                        break
+                head = b"".join(parts)
+                if size <= _MAX_HTML_EDIT_BYTES:
+                    for name in ("Content-Length", "ETag", "Last-Modified"):
+                        out.popall(name, None)
+                    out["Cache-Control"] = "no-store"
+                    return web.Response(status=200, body=html(head), headers=out)
+            resp = web.StreamResponse(status=upstream.status, reason=upstream.reason, headers=out)
             try:
                 await resp.prepare(request)
+                if head:
+                    await resp.write(head)
                 async for chunk in upstream.content.iter_any():
                     await resp.write(chunk)
                 await resp.write_eof()
@@ -513,7 +554,8 @@ async def _relay_websocket(
     try:
         try:
             upstream = await session.ws_connect(
-                target.with_scheme("ws"),
+                # A TLS upstream (a relayed Crew) is dialled over wss.
+                target.with_scheme("wss" if target.scheme == "https" else "ws"),
                 headers=headers,
                 protocols=offered,
                 **_ws_connect_timeouts(),

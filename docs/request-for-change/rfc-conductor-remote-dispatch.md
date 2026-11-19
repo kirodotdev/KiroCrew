@@ -190,11 +190,22 @@ The tunnel only opens hub → peer, so the peer cannot call the hub back.
 |---|---|---|
 | `session_create(crew=, work_item=, title, agent, model)` | `POST api/chat/slots` (+ `work_item`, §3), then `PATCH api/chat/slots/{s}/title` | `api/chat` |
 | `session_send(crew=, target, message)` | `POST api/chat?ws=1` `{message, slot}` | `api/chat` |
-| `session_read_message(crew=, target)` | `GET api/chat/slots/{s}?limit=N` | `api/chat` |
+| `session_read_message(crew=, target, since)` | `GET api/chat/slots/{s}?limit=N`; with `since=S`, `?before=S+N&limit=N` | `api/chat` |
 | `session_stop(crew=, target)` | `POST api/chat/slots/{s}/stop` | `api/chat` |
 | `session_close(crew=, target)` | `DELETE api/chat/slots/{s}` | `api/chat` |
 
 The `api/chat` row alone suffices. `api/stream` is not used: no tool streams.
+
+**The read cursor.** `since` and `next_since` are the crew's own row positions:
+its page answers rows `[next_before, total)`, so row `i` of the page is
+`next_before + i`. `since=S` maps to the crew's older-page read
+`before=S+N&limit=N`, which holds rows `[S, S+N)`; the hub drops any row below
+`S`. The crew's `from`/`since`/`digest` cursor is not used, because only the
+crew can compute its digest. `next_since` stops before the first in-flight row
+(a streaming fold, a pending approval), as the local read's cursor does, and a tail read of a running session returns none, because an in-flight row may sit below its page. A
+`since` past `total` is refused `cursor_unavailable`; a page the crew cut by
+bytes so it starts after `S` is refused `crew_page_cut` (read again with a
+smaller `limit`).
 
 `crew=` takes an instance id or exact name. On
 `session_create(work_item=)` it is optional: omitted, the hub places the item
@@ -254,6 +265,14 @@ How (a) works:
   gate read a remote report as they read a local one (open question 1). A board
   with only local items makes no peer call. Each pull is cut off at 10 s and
   delays only its own conductor's tick.
+- **One call per crew per tick.** The pull reads each crew once, with
+  `POST api/chat/work-items/pull` (owner token, read only): per item the hub
+  sends its cursor, the peer event ids the crew log holds as filed on that
+  binding, the newest filed peer stamp and a digest of its worker fields, so the
+  peer stores nothing. The reply gives each item's slot `live` / `running` /
+  `pending_approval` / `trust_active`, and the copy with its events from the
+  cursor on only when something changed. A crew that does not serve the route
+  is read per item, with the slot list and `GET .../work-item`, as before.
 - **`decide` forwards.** `work_ledger_record action=decide` on a remote item
   writes locally, then PATCHes the peer copy. A failed PATCH is reported in the
   tool reply; the local write stands and the next `decide` carries it again.
@@ -586,6 +605,18 @@ The new event kind needs a matching entry in `WORK_EVENT_KINDS`
 (`work_vocab.py`); the binding history is a list on the item next to
 `worker_instance_id`, and each entry carries the crew id, the slot key, the
 branch, its state (`current`, `retired`, `destroyed`) and its timestamps.
+
+### 5c. Closing a remote item
+
+A peer worker's mailbox item closes only when its slot is deleted, and each open one holds a share of its crew's headroom. So when the hub records a write that closes a crew-bound item, it also leaves the worker's slot to close:
+
+1. **Record the pending close.** The hub records a `retire` on the closed item, with reason `owner_closed` or `item_closed`. The binding moves into the history as `retired`. That entry is durable, so it survives a hub restart: the close sweep finds it, the row counts it in `close_pending`, and the owner's `session_close(crew=)` may still name the slot (§5b). These two reasons are hub-only and are the only reasons a closed item takes. Any retired entry whose reason is not one that closes at once (`crew_unreachable`, the conductor's retire reasons, `owner_closed`) is treated as `item_closed`.
+2. **End the grant.** The hub sends `PATCH .../work-item` with `trust: false` at once (§4), whether or not the record landed.
+3. **Close the slot.** Who may DELETE a live worker follows the `session_close(crew=)` gate:
+   - **A turn the owner sent** (`owner_closed`): the slot is deleted as soon as its crew is connected, at once or by a later sweep.
+   - **Any other turn**, a patrol wake included (`item_closed`): no DELETE while the worker may still be working. The slot is deleted only when a full read of the crew's slot list shows it not running and not waiting on an approval, and the peer's copy of the item last reported `done`. Until then each sweep looks again, past the same backoff a failed close uses. A worker that never reaches `done` stays pending until the owner closes it with `session_close(crew=)`.
+
+No new timer: the sweep that closes retired slots (§5b, at boot and on every work-ledger patrol tick) drains these too. A close whose retire cannot be recorded (for example `retired_history_full`, no crew-log unit, or a hub restart between the close and the retire) still ends the grant, but leaves no pending entry: the slot then ends at its TTL, or by the owner's `session_close(crew=)` while the hub has not restarted. Known gaps: the idle check and the DELETE are two peer calls, so a turn the peer's own owner starts between them is cut off; a wake close that is never seen idle and `done` waits for the owner.
 
 ### 6. Relation to #12821 and #13476
 

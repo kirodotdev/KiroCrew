@@ -187,7 +187,7 @@ class TestDashboardTurnLogsTheFrame:
         slot._titled = True
         await _run_chat(state, slot, "hello")
         await self._drain_bg(state)
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
 
     @pytest.mark.asyncio
     async def test_curated_error_logs_the_frame_beside_the_scanned_line(

@@ -226,6 +226,11 @@ const NON_PORT_SITES = [
     times: 1,
   },
   {
+    what: "the adopted port wait reads an unknown readiness as not serving yet; not an owner verdict",
+    code: 'return readiness !== "shutting-down" && readiness !== "unknown";',
+    times: 1,
+  },
+  {
     what: "classifyStartFailure's own verdict vocabulary, unrelated to any port",
     code: 'if (verdict === "none") {',
     times: 1,

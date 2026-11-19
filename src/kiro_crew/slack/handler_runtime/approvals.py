@@ -47,12 +47,25 @@ if TYPE_CHECKING:
 
 
 class _PendingApproval:
-    __slots__ = ("provider", "request_id", "session_key", "future")
+    """A native tool-approval prompt awaiting its click.
 
-    def __init__(self, provider: LLMProvider, request_id: str | int, session_key: str = "") -> None:
+    ``requester`` is the Slack user whose turn asked; a shared user may answer only
+    a prompt whose requester they are (empty: only the owner may answer it).
+    """
+
+    __slots__ = ("provider", "request_id", "session_key", "future", "requester")
+
+    def __init__(
+        self,
+        provider: LLMProvider,
+        request_id: str | int,
+        session_key: str = "",
+        requester: str = "",
+    ) -> None:
         self.provider = provider
         self.request_id = request_id
         self.session_key = session_key
+        self.requester = requester
         self.future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
 
 
@@ -456,7 +469,7 @@ def _build_approval_blocks(
         # must not carry <!channel>/<@U…> entities into it.
         return escape_mrkdwn(text) if channel_trust else text
 
-    footer = f"{tag}*{_esc(title_safe)}*"
+    footer = f":lock: {tag}*{_esc(title_safe)}*"
     if event.tool_purpose:
         purpose, _ = redact_exfiltration_urls(event.tool_purpose)
         purpose, _ = redact_credentials(purpose)
@@ -469,7 +482,7 @@ def _build_approval_blocks(
         blocks.append(
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*{tag}Tool approval requested:*"},
+                "text": {"type": "mrkdwn", "text": f"🔐 *{tag}Tool approval requested:*"},
             },
         )
         # Security: scan for exfiltration URLs and credentials before posting
@@ -518,7 +531,7 @@ def _build_approval_blocks(
                 # The command is on the card already: the lock line keeps only
                 # the purpose, and goes when there is none. Any other title (an
                 # UNVERIFIED warning above all) stays.
-                footer = f"{tag}{_esc(purpose)}" if event.tool_purpose else ""
+                footer = f":lock: {tag}{_esc(purpose)}" if event.tool_purpose else ""
 
     blocks.append({"type": "actions", "elements": buttons})
     # A code channel's card drops an empty lock line; the identity line stays.
@@ -630,7 +643,7 @@ async def _grant_late_trust(
     audited.
     """
     if not is_allowed_user(user_id):
-        logger.warning("Rejecting late trust click from non-allowed user %s", user_id)
+        logger.warning("Rejecting late trust click from non-owner %s", user_id)
         sel().log_api_access(
             caller=user_id,
             operation="slack.interactive.trust_late",

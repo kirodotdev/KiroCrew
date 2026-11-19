@@ -90,12 +90,12 @@ logger = logging.getLogger(__name__)
 # ── /stop (hard cancel) ──────────────────────────────────────────────────────
 
 #: Sent when the cooperative cancel reached a live turn.
-STOP_REPLY_CANCELLED = "Stopped."
+STOP_REPLY_CANCELLED = "🛑 Stopped."
 
 #: Sent when there was no live turn -- the caller's own queued messages are still
 #: cleared, and saying so is what distinguishes "nothing to stop" from "the stop did
 #: not work".
-STOP_REPLY_IDLE = "Nothing was running — queue cleared."
+STOP_REPLY_IDLE = "🛑 Nothing was running — queue cleared."
 #: The Stop was declined: the session's own automatic ``/compact`` turn holds it,
 #: and cancelling that turn would fail the compaction and restart the session.
 #: Nothing is cancelled and the queue is KEPT -- the caller's messages run after
@@ -170,7 +170,7 @@ async def stop_running_turn(
     ``clear_queue`` and the receipt finalize run under a SINGLE hold of
     :attr:`ReceiptQueue.lock`, which is the same hold the end-of-turn drain takes
     across its dequeue plus flip. Splitting them would let a drain observe a
-    queue already emptied while its receipt bubble still said "Queued",
+    queue already emptied while its receipt bubble still said "⏳ Queued",
     orphaning the bubble as the durable record of a burst that was cancelled.
 
     A cancel that raises is logged and reported as "nothing was running": the
@@ -322,20 +322,20 @@ async def run_yolo_command(
     action = parse_yolo_action(arg)
 
     if action not in YOLO_ACTIONS:
-        status = f"ON ({describe_grant_lifetime()})" if so.is_active() else "OFF"
+        status = f"ON 🟢 ({describe_grant_lifetime()})" if so.is_active() else "OFF 🔴"
         return f"YOLO is {status}.\nUsage: {phrasing.usage}"
 
     outcome = "allowed"
     if action == YOLO_ON:
         if so.is_active():
-            reply = f"YOLO is already ON ({describe_grant_lifetime()})."
+            reply = f"🟢 YOLO is already ON ({describe_grant_lifetime()})."
         elif (await asyncio.to_thread(so.activate, source)).active:
             reply = (
-                f"YOLO ON ({describe_grant_lifetime()}) — every tool auto-approves. "
+                f"🟢 YOLO ON ({describe_grant_lifetime()}) — every tool auto-approves. "
                 f"{YOLO_SCOPE_NOTE} Denied-by-policy tools are still blocked."
             )
         else:
-            reply = "Error: Couldn't turn YOLO on (audit system unavailable)."
+            reply = "❌ Couldn't turn YOLO on (audit system unavailable)."
             outcome = "denied"
     elif action == YOLO_OFF:
         # Unconditional: deactivate() also zeroes the deadline of a grant that
@@ -343,13 +343,13 @@ async def run_yolo_command(
         # "/yolo renew" cannot resurrect it, and records the operator's decision
         # either way.
         await asyncio.to_thread(so.deactivate, source)
-        reply = "YOLO OFF — tools ask for approval again."
+        reply = "🔴 YOLO OFF — tools ask for approval again."
     else:
         renewed = (await asyncio.to_thread(so.renew, source)).renewed
         reply = (
-            f"YOLO renewed ({describe_grant_lifetime()})."
+            f"🟢 YOLO renewed ({describe_grant_lifetime()})."
             if renewed
-            else f"YOLO is not active — use {phrasing.on_command} first."
+            else f"🔴 YOLO is not active — use {phrasing.on_command} first."
         )
     sel().log_api_access(
         caller=caller,
@@ -638,7 +638,7 @@ def context_recycle_warning(new_command: str = "/new") -> str:
     renders one).
     """
     return (
-        "Warning: This conversation's context is getting long. This backend can't compact "
+        "⚠️ This conversation's context is getting long. This backend can't compact "
         "it, so Kiro Crew will start a fresh session when the context fills up: the "
         "chat keeps working, but the agent stops remembering the earlier turns. "
         f"Send {new_command} to start fresh on your own terms first."
@@ -648,7 +648,7 @@ def context_recycle_warning(new_command: str = "/new") -> str:
 def context_recycle_warning_zh() -> str:
     """:func:`context_recycle_warning` for the three Chinese surfaces, said once."""
     return (
-        "警告：对话上下文已较长。当前后端无法压缩上下文，上下文快满时 Kiro Crew 会替你开一个新会话："
+        "⚠️ 对话上下文已较长。当前后端无法压缩上下文，上下文快满时 Kiro Crew 会替你开一个新会话："
         "对话可以继续，但助手不再记得之前的内容。你也可以先发 /new 自己开新会话。"
     )
 
@@ -668,16 +668,16 @@ def compact_unsupported_reply_zh(backend: str) -> str:
     """
     arm = compact_refusal_arm(backend)
     if arm == COMPACT_ARM_HARNESS_MANAGED:
-        return "提示：当前后端会自动压缩上下文，无需手动 /compact。"
+        return "ℹ️ 当前后端会自动压缩上下文，无需手动 /compact。"
     if arm == COMPACT_ARM_RECYCLED:
         return (
-            "提示：当前后端没有压缩上下文的办法：既没有 /compact 可用，"
+            "ℹ️ 当前后端没有压缩上下文的办法：既没有 /compact 可用，"
             "也不会自动摘要。正因为如此，上下文快满时 Kiro Crew 会替你开一个新会话："
             "除此之外，没有别的办法阻止上下文溢出。对话可以继续，"
             "但助手不再记得之前的内容。你也可以在那之前发 /new 自己开新会话。"
         )
     return (
-        "提示：当前后端不支持手动 /compact，Kiro Crew 也无法替它压缩上下文。"
+        "ℹ️ 当前后端不支持手动 /compact，Kiro Crew 也无法替它压缩上下文。"
         "上下文快满之前，请发 /new 开始新会话。"
     )
 
@@ -687,7 +687,7 @@ def compact_unsupported_reply_zh(backend: str) -> str:
 #: returned ``{"type": "timeout"}`` rather than an exception, so it is a receipt
 #: of its own; held here, once, for the same reason as
 #: :func:`compact_unsupported_reply_zh`.
-COMPACT_TIMED_OUT_REPLY_ZH = "警告：压缩超时。"
+COMPACT_TIMED_OUT_REPLY_ZH = "⚠️ 压缩超时。"
 
 
 #: The manual ``/compact`` refusal for a session the Kiro account check flagged
@@ -702,7 +702,7 @@ COMPACT_ACCOUNT_CHANGED_TEXT = (
 )
 #: :data:`COMPACT_ACCOUNT_CHANGED_TEXT` for the three Chinese-language surfaces.
 COMPACT_ACCOUNT_CHANGED_REPLY_ZH = (
-    "提示：Kiro 账号已变更，这段对话会在你发下一条消息时重新开始，在此之前没有可压缩的内容。"
+    "ℹ️ Kiro 账号已变更，这段对话会在你发下一条消息时重新开始，在此之前没有可压缩的内容。"
 )
 
 
@@ -716,7 +716,7 @@ _SPAWN_ECHO_CHARS = 100
 #: The retryable answer for a store another writer currently holds. One string,
 #: because a caller that sees a different wording per verb cannot tell "retry
 #: this" from "this failed".
-_CRON_BUSY = "Cron store busy — try again in a moment."
+_CRON_BUSY = "⏳ Cron store busy — try again in a moment."
 
 
 def _cron_unreadable(exc: CronStoreUnreadable) -> str:
@@ -733,7 +733,7 @@ def _cron_unreadable(exc: CronStoreUnreadable) -> str:
     Distinct from busy on purpose: a client that retries a contended store must
     NOT retry this one, because an unreadable file does not heal on its own.
     """
-    return f"Error: {exc}"
+    return f"⚠️ {exc}"
 
 
 def _redact(text: str) -> str:
@@ -870,7 +870,7 @@ async def spawn_task_reply(
         for agent in running:
             elapsed = int(now - agent.started)
             lines.append(
-                f"- `{agent.id}` | {elapsed}s | {_redact(agent.task)[:_SPAWN_TASK_PREVIEW_CHARS]}"
+                f"🔹 `{agent.id}` | {elapsed}s | {_redact(agent.task)[:_SPAWN_TASK_PREVIEW_CHARS]}"
             )
         return "\n".join(lines)
     from kiro_crew.memory_stores import UnknownMemoryStore
@@ -878,9 +878,9 @@ async def spawn_task_reply(
     try:
         info = await _spawn_off_loop(manager, task, session_key)
     except UnknownMemoryStore as exc:
-        return f"Error: {_redact(str(exc))}"
+        return f"⚠️ {_redact(str(exc))}"
     if not info:
-        return f"Warning: Subagent capacity reached ({manager.max_concurrent}). Try again later."
+        return f"⚠️ Subagent capacity reached ({manager.max_concurrent}). Try again later."
     # A refusal comes back as a terminal record, not as None: it never ran, and
     # a non-batch refusal is announced nowhere else, so this reply is the only
     # place the user learns why.
@@ -889,9 +889,9 @@ async def spawn_task_reply(
         # A refusal's own leading verdict ("spawn refused: ", "never started: ")
         # would stack a second clause on "was not started: ".
         reason = refusal.removeprefix("spawn refused: ").removeprefix("never started: ")
-        return f"Warning: Subagent `{info.id}` was not started: {_redact(reason)}"
+        return f"⚠️ Subagent `{info.id}` was not started: {_redact(reason)}"
     if stopped_before_start(info):
-        return f"Warning: Subagent `{info.id}` was stopped before it started; nothing ran."
+        return f"⚠️ Subagent `{info.id}` was stopped before it started; nothing ran."
     # A row the gate DEFERRED (memory floor, critical posture, paused cap) is
     # accepted under its id but not running, and may not run for a long time;
     # say so with the gate's own sentence instead of announcing a start. The
@@ -901,10 +901,10 @@ async def spawn_task_reply(
     if queued_reason in DEFERRED_QUEUED_REASONS:
         detail = _redact(str(getattr(info, "queued_reason_detail", "") or queued_reason))
         return (
-            f"Queued subagent `{info.id}` — not started yet: {detail}\n"
+            f"⏳ Queued subagent `{info.id}` — not started yet: {detail}\n"
             f"_{_redact(task)[:_SPAWN_ECHO_CHARS]}_"
         )
-    return f"Spawned subagent `{info.id}`\n_{_redact(task)[:_SPAWN_ECHO_CHARS]}_"
+    return f"🚀 Spawned subagent `{info.id}`\n_{_redact(task)[:_SPAWN_ECHO_CHARS]}_"
 
 
 # ── cron ───────────────────────────────────────────────────────────────────
@@ -930,15 +930,15 @@ def _cron_list(cron_service: "CronService | Any") -> str:
     tz_name, _ = get_local_tz()
     lines = ["*Your cron jobs:*"]
     for job in jobs:
-        status = "on" if job.enabled else "paused"
+        status = "✅" if job.enabled else "⏸️"
         schedule = _redact(format_schedule(job.schedule, tz_name=job_zone_name(job) or tz_name))
         last = ""
         if job.last_status == "ok":
-            last = " ok"
+            last = " ✓"
         elif job.last_status == "error":
-            last = " failed"
+            last = " ❌"
         nxt = compute_next_run_ts(job, now=now)
-        next_part = f" | next {_relative(nxt - now)}" if nxt is not None else ""
+        next_part = f" | ⏭ {_relative(nxt - now)}" if nxt is not None else ""
         message = _redact(job.message)[:_CRON_MESSAGE_PREVIEW_CHARS]
         lines.append(f"{status} `{job.id}` | `{schedule}` | {message}{last}{next_part}")
     return "\n".join(lines)
@@ -993,7 +993,7 @@ async def cron_remove_all_reply(
     lines = [f"- `{job.id}` — {_redact(job.name)}" for job in jobs if job.id in gone]
     if not lines:
         return "No cron jobs to remove."
-    return f"Removed {len(lines)} cron job(s):\n" + "\n".join(lines)
+    return f"✅ Removed {len(lines)} cron job(s):\n" + "\n".join(lines)
 
 
 async def cron_command_reply(
@@ -1034,7 +1034,7 @@ async def cron_command_reply(
             # Same "nothing happened, so nothing to audit" reasoning, minus the
             # retry: the store will not become readable by itself.
             return _cron_unreadable(exc)
-        return f"Removed cron job `{job_id}`" if removed else f"Error: Job `{job_id}` not found"
+        return f"✅ Removed cron job `{job_id}`" if removed else f"❌ Job `{job_id}` not found"
     if action in ("pause", "resume"):
         enabled = action == "resume"
         try:
@@ -1044,8 +1044,8 @@ async def cron_command_reply(
         except CronStoreUnreadable as exc:
             return _cron_unreadable(exc)
         if not changed:
-            return f"Error: Job `{job_id}` not found"
-        return f"Resumed cron job `{job_id}`" if enabled else f"Paused cron job `{job_id}`"
+            return f"❌ Job `{job_id}` not found"
+        return f"▶️ Resumed cron job `{job_id}`" if enabled else f"⏸️ Paused cron job `{job_id}`"
     return None
 
 
@@ -1126,13 +1126,13 @@ async def task_arg_reply(
         if not runner.running:
             return "No task running."
         runner.cancel()
-        return "Task cancelled."
+        return "🛑 Task cancelled."
 
     # Same switch as POST /api/taskrunner: turned off means no new runs.
     if (refusal := await asyncio.to_thread(task_runner_off)) is not None:
-        return f"Error: {refusal}"
+        return f"❌ {refusal}"
     if runner.running:
-        return "Warning: Task runner is already running. Use `task run cancel` first."
+        return "⚠️ Task runner is already running. Use `task run cancel` first."
     # The spec is READ and its contents reach the model, so an arbitrary path is
     # an exfiltration primitive: `task run ~/.ssh/id_rsa` would hand a private key
     # to a third-party LLM. Gate it on the shared ``validate_file_path``, which
@@ -1155,10 +1155,10 @@ async def task_arg_reply(
         # Deliberately does not echo the path or say WHY. A refusal that
         # distinguishes "sensitive" from "malformed" is an oracle for probing
         # which roots exist on the host.
-        return "Error: That path cannot be used as a task spec."
+        return "❌ That path cannot be used as a task spec."
     spec_path = Path(canonical)
     if not await asyncio.to_thread(spec_path.exists):
-        return f"Error: Spec file not found: `{_redact(str(spec_path))}`"
+        return f"❌ Spec file not found: `{_redact(str(spec_path))}`"
     try:
         # Widen the call only when there IS a conversation to carry. ``runner``
         # is duck-typed (this module must not import ``TaskRunner`` at runtime),
@@ -1171,5 +1171,7 @@ async def task_arg_reply(
             await runner.start_background(spec_path, source="chat")
     except Exception as exc:
         logger.warning("task run: start_background failed", exc_info=True)
-        return f"Error: Failed to start: {_redact(str(exc))}"
-    return f"Task started: `{_redact(spec_path.name)}`\n" "Use `task run status` to check progress."
+        return f"❌ Failed to start: {_redact(str(exc))}"
+    return (
+        f"🚀 Task started: `{_redact(spec_path.name)}`\n" "Use `task run status` to check progress."
+    )

@@ -9,7 +9,7 @@ refuse to start any provider under ``--no-tunnel`` or without dashboard token au
 
 :func:`public_tunnel_provider` builds this provider for the public composition root,
 which calls it only when ``kiro_crew.edition_locks.relay_selected`` says
-``tunnel.relay_enabled`` is on (off by default) and the build does not lock local
+``tunnel.relay_enabled`` asks for it (``remote_control.hosting``) and the build does not lock local
 enables, and installs the no-op ``DefaultTunnelProvider`` otherwise. That rule lives
 outside this package so a composition with the relay off never imports it. The
 provider's host token source is the lease client, on ``tunnel.relay_lease_url`` or,
@@ -43,6 +43,7 @@ from kiro_crew.relay_client.protocol import (
     is_loopback_host,
 )
 from kiro_crew.relay_client.token_source import HostTokenSource, UnavailableHostTokenSource
+from kiro_crew.remote_control.hosting import relay_requested
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.kiro_relay.ingress import RelayIngress as GatewayRelayIngress
@@ -86,8 +87,9 @@ class RelaySettings:
     def from_config(cls, cfg: Any) -> "RelaySettings":
         tunnel = getattr(cfg, "tunnel", None)
         return cls(
-            # ``is True``: a stand-in config object answers any attribute truthily.
-            enabled=getattr(tunnel, "relay_enabled", False) is True,
+            # A stand-in config object answers any attribute truthily, so only the
+            # one rule's answer turns it on.
+            enabled=relay_requested(tunnel),
             host_url="",
             crew_domain="",
             lease_url=_setting_text(tunnel, "relay_lease_url"),
@@ -133,6 +135,12 @@ class RelaySettings:
             if problem is not None:
                 raise RelaySettingsError(f"tunnel.relay_lease_url: {problem}")
         if self.lease_url or self.uses_built_in_lease:
+            if self.uses_sign_in and self.lease_credential and _workload_identity_named():
+                # A workload host never leases as a person (``kiro_crew.workload_identity``).
+                raise RelaySettingsError(
+                    f"tunnel.relay_lease_credential is {SIGN_IN_CREDENTIAL}, but this Crew "
+                    "runs on its workload identity: name the JWT-SVID file instead"
+                )
             signs_in = self.uses_sign_in and not (
                 # An empty credential is the sign-in only on a personal Crew: a host with
                 # an agent workload identity keeps the refusal by name.
@@ -211,13 +219,26 @@ def _setting_text(tunnel: Any, name: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _agent_identity_enabled() -> bool:
-    """Whether the platform's agent identity seam reports a workload identity.
+def _workload_identity_named() -> bool:
+    from kiro_crew import workload_identity
 
-    Read when the provider starts, never while the context is being composed. A
-    failed lookup counts as a workload identity, so it never falls to the sign-in.
+    return workload_identity.active()
+
+
+def _agent_identity_enabled() -> bool:
+    """Whether this host has a workload identity, so it must not lease as a person.
+
+    True when the deployment names the Crew's own workload identity
+    (:func:`kiro_crew.workload_identity.active`) or the platform's agent identity
+    seam reports one. Read when the provider starts, never while the context is
+    being composed. A failed lookup counts as a workload identity, so it never
+    falls to the sign-in.
     """
+    from kiro_crew import workload_identity
     from kiro_crew.platform.context import current_context, safe_context_call
+
+    if workload_identity.active():
+        return True
 
     return bool(
         safe_context_call(

@@ -18,6 +18,21 @@ import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredB
 import { SlackCodeSection, slackCodeDraftFrom, slackCodePayload, type SlackCodeDraft } from './SlackCodePanel'
 import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
 import { forgetSlackInstallReading } from './SlackManifestUpdate'
+import { lazyRetry } from '../../components/lazyRetry'
+// Its own chunk: only the Slack panel draws this section, and inside the Settings
+// page chunk it put that chunk over its size budget. A failed load shows a notice
+// with Try again in its place and leaves the rest of the form mounted. `inline`:
+// one line whose raw chunk error is read out and shown on hover, never printed.
+// No hand-off: the Slack settings form around this section holds unsaved fields.
+const SlackSharedAccess = lazyRetry<object>(
+  () => import('./SlackSharedAccess').then(m => ({ default: m.SlackSharedAccess })),
+  {
+    layout: 'inline',
+    title: () => i18nT('pages.settings.slackSharedAccess.load_failed'),
+    scope: 'slack-shared-access',
+    askAgent: false,
+  },
+)
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Slack"
 const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/slack-integration.md'
@@ -434,7 +449,13 @@ export function SlackPanel() {
   )
 
   return (
-    <>
+    // Placeholders here are sample IDs (U0123ABC456, E0123ABC456) that look
+    // like real values. The app-wide placeholder colour is --muted, the
+    // secondary-text token, which in light themes sits close to typed text, so
+    // a sample read as a saved ID. 75% of --muted keeps 3:1 on the field in
+    // every built-in palette (SlackPanel.placeholderTone.test.ts) and is clearly
+    // lighter than typed text. `contents` keeps the layout identical.
+    <div className="contents [&_:is(input,textarea)::placeholder]:text-muted/75">
       {/* ── Header ── */}
       <div className="flex items-start gap-3 mb-1 mt-1">
         <div className="w-9 h-9 rounded-lg bg-bg-elevated border border-border flex items-center justify-center flex-none">
@@ -586,6 +607,11 @@ export function SlackPanel() {
             validate={v => /^[ET][A-Z0-9]+$/.test(v)}
             readOnly={ro}
           />
+          {/* Off by default: lets the people listed here drive this Crew as the
+              owner. Applies on its own, outside the Save below. Its own row of the
+              card, so a failed load's one-line notice sits in a padded row; hidden
+              while the section renders nothing. */}
+          <div className="empty:hidden"><SlackSharedAccess /></div>
         </SettingsCard>
       </SettingsSection>
 
@@ -710,6 +736,6 @@ export function SlackPanel() {
             hand-off unmounts this panel and would lose them. */}
         <ErrorNotice message={error} variant="inline" />
       </div>}
-    </>
+    </div>
   )
 }

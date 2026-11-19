@@ -73,7 +73,7 @@ logger = logging.getLogger(__name__)
 _MENTION = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
 
 NOT_AUTHORIZED_TEXT = (
-    "Blocked: You are not authorized to use this bot. Ask the owner to add you to the allowlist."
+    "⛔ You are not authorized to use this bot. Ask the owner to add you to the allowlist."
 )
 
 
@@ -349,6 +349,8 @@ async def _inbound_gate(
 ) -> InboundResult:
     cfg = live_config(orch)
     channel = str(event.get("channel") or "")
+    if not from_trusted_bot and await shared_sender_dropped(sender_id, channel):
+        return DROP
     if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
         return PASS
     binding = store().get_binding(channel)
@@ -725,7 +727,7 @@ def _folder_name(state: Any, folder_id: str) -> str:
 def _kickoff_text(title: str, state: Any, folder_id: str) -> str:
     where = _folder_name(state, folder_id) if folder_id else ""
     dashboard = f"the *{where}* folder of your dashboard" if where else "your dashboard"
-    heading = f"*{title}*\n" if title else ""
+    heading = f"🛠️ *{title}*\n" if title else ""
     return (
         f"{heading}This channel is one Kiro Crew session: reply here, no @mention "
         f"needed, and use Stop to interrupt me. It is also open in {dashboard}."
@@ -986,48 +988,6 @@ async def answer_unroutable(orch: Any, channel: str, user_id: str = "") -> bool:
     except Exception:
         logger.warning("code channel %s: closed-session notice not posted", channel, exc_info=True)
     return True
-
-
-def options_answer_permitted(channel: str, sender: str = "") -> bool:
-    """A button or selection answered in *channel* may reach its session.
-
-    True when *channel* is not a bound code channel (or code channels are
-    off): the ordinary path's own rules apply there. In a bound code channel
-    an answer is a turn like a typed message, so it obeys the same rule as
-    :func:`inbound_gate`: the channel and its origin must both still admit
-    the channel's turns. A control posted before the channel or its origin
-    went to ``review`` or ``off`` is refused (SEL-audited), never dispatched.
-    So is an answer in a channel this gateway unbound because Slack stopped
-    listing us there (:meth:`CodeChannelStore.was_revoked`). A failed lookup
-    refuses too, since it cannot show the channel is unbound.
-    """
-    try:
-        cfg = live_config(None)
-        if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
-            return True
-        binding = store().get_binding(channel)
-        if binding is None and store().is_quarantined(channel):
-            # Its binding row does not read back whole: the channel is fenced, so
-            # nothing in it -- a kickoff-thread control included -- reaches a session.
-            origin, error = "", "code channel binding row unreadable"
-        elif binding is None:
-            if not store().was_revoked(channel):
-                return True
-            # Unbound because Slack does not list us here: a control its
-            # session posted earlier must not run a turn in that session.
-            origin, error = "", "code channel no longer bound"
-        else:
-            origin = _origin_of(channel, binding, None)
-            if channel_and_origin_permit(cfg, channel, origin):
-                return True
-            error = "origin activation does not admit a code channel"
-    except Exception:
-        logger.warning("code channel: options permit lookup failed", exc_info=True)
-        origin, error = "", "permit lookup failed"
-    _audit(
-        sender, "slack.code_channel.options", "denied", f"channel={channel} origin={origin}", error
-    )
-    return False
 
 
 UNROUTED_TEXT = (
@@ -1890,6 +1850,7 @@ async def stop_from_channel(orch: Any, event: dict[str, Any], user: str) -> str 
         return None
     from kiro_crew.slack.handler import is_allowed_user
 
+    # Code channels are the owner's: a shared user (slack.shared_access) stops none.
     if not is_allowed_user(user):
         _audit(
             user, "slack.code_channel.stop", "denied", f"channel={channel}", "unauthorized sender"
@@ -1910,3 +1871,13 @@ async def stop_from_channel(orch: Any, event: dict[str, Any], user: str) -> str 
         orch, binding, user, channel, source="slack.code_channel.stop", say_idle=False
     )
     return CHANNEL_STOP_STOPPED
+
+
+from kiro_crew.slack.code_channels.shared_refusal import (  # noqa: E402,F401 - see the module
+    options_answer_permitted,
+    shared_sender_dropped,
+    shared_user_refused_for_slot,
+    shared_user_refused_here,
+    shared_user_refused_in,
+    shared_user_refused_unbound,
+)

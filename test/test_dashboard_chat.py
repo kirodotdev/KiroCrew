@@ -317,7 +317,7 @@ class TestRunChatTransientRetry:
         assert thinking_seen >= 2
         # Recovered cleanly on the live session (no reset, no ❌).
         assert any("ok-result" in t for t in self._assistant_texts(slot))
-        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        assert not any(t.startswith("Error:") for t in self._err_texts(slot))
         assert any("Connection unstable" in t for t in self._err_texts(slot))
         state.sessions.reset.assert_not_awaited()
         assert slot._transient_5xx_retries == 0
@@ -610,7 +610,7 @@ class TestRunChatModelFallback:
         ), f"expected a fallback notice card, got {notices!r}"
         # Recovered on the candidate; no terminal ❌.
         assert any("fb-result" in t for t in self._assistant_texts(slot))
-        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        assert not any(t.startswith("Error:") for t in self._err_texts(slot))
         # The live session was never reset — same-session recovery.
         state.sessions.reset.assert_not_awaited()
         # Sticky fallback state armed for the next turn's restore probe...
@@ -663,7 +663,7 @@ class TestRunChatModelFallback:
         assert call_count == TRANSIENT_RETRIES + 1
         client.set_model.assert_not_awaited()
         assert not self._notice_texts(slot)
-        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
         assert slot._active_fallback_model == ""
 
     @pytest.mark.asyncio

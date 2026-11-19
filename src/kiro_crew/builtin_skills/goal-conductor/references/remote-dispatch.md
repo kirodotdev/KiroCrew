@@ -67,8 +67,13 @@ tell the user instead of retrying.
 
 **Driving it.** `session_send`, `session_read_message`, `session_stop` and
 `session_close` take the same `crew=` and reach only a crew session you created
-or one an open item of yours is bound to. After a hub restart only the open
-item counts, so close the worker's session before you `close` its item. A
+or one an open item of yours is bound to. Closing a remote item ends its
+worker's Trust and records its session as pending close (`close_pending` on
+the row). In an owner turn the session is closed for you once its crew is
+connected. On a patrol wake it is closed only once its worker is idle and
+reported `done`; otherwise `session_close(crew=)` it in the next owner turn.
+`session_read_message(crew=)` takes `since` like the local read: pass the
+`next_since` it returned to get only what is new. A
 `decide` whose forward fails says it "did NOT reach the worker's crew"; record
 it again to retry. A remote row adds `worker_instance_id`, `crew_state`,
 `crew_down_since`, `pending_approval`, `remote_error` and
@@ -91,7 +96,7 @@ file, or a worker log that rolled past the last pull); above 0, read the
 worker's session for what you missed.
 
 **Follow-ups use `reply`.** To ask a finished worker something, keep its item
-open, `session_send` the question in an owner turn, and tell it to answer with
+open, `session_send` the question with `steer: true` in an owner turn, and tell it to answer with
 `work_report status=reply`. A `reply` wakes you once pulled and claims nothing,
 so it needs no acceptance: relay its summary to the worker that asked. A
 `reply` replaces the item's status like any report, so verify a `done` before
@@ -108,8 +113,9 @@ retired crews, and its reply names the old worker's `previous_branch` when that
 worker reported one. Seed the new worker to start from that branch, if any, and
 push a NEW one. An explicit `crew=` create may still name a retired crew and
 returns no branch. The retired session can only be closed. Once its crew is
-back, a pull tries once to close it; if that fails, `session_close(crew=)` it
-in an owner turn. An item keeps at most 8 retired sessions not yet closed; a
+back, a pull closes it, and retries a failed close later; the row's
+`close_pending` counts the ones still open. To close one now,
+`session_close(crew=)` it in an owner turn. An item keeps at most 8 retired sessions not yet closed; a
 retire past that is refused `retired_history_full` and the binding stays.
 
 **A stuck or wrong crew.** When a crew worker reports `blocked` on a login, or

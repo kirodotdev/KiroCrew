@@ -112,6 +112,7 @@ if TYPE_CHECKING:
         session_stop_generation,
         session_store_for_turn,
         settle_turn,
+        shared_user_refused_for_session,
         slack_script_hooks,
         stop_reason_landed,
         turn_ceiling,
@@ -167,6 +168,7 @@ class _SlackTurn:
     # session's channel link (``test_crew_log_class_recorder`` reads it as one).
     _acquired: "bool"
     _agent: "str | None"
+    spec_agent: "str | None"
     answer: "_AnswerStream"
     client: "LLMProvider | None"
     _had_error: "bool"
@@ -670,7 +672,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                     continue
                 if candidate_key != session_key:
                     logger.info(
-                        "Slack thread %s linked to dashboard session %s — routing there",
+                        "🔗 Slack thread %s linked to dashboard session %s — routing there",
                         session_key,
                         candidate_key,
                     )
@@ -680,6 +682,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             if memory_error is not None:
                 raise memory_error
             break
+        # The owner may have linked this thread to a code channel's session since the
+        # linked-thread check ran: a shared user's turn never runs there.
+        if await shared_user_refused_for_session(user_id, session_key, reply_ts, channel):
+            await turn.clear_working_indicators()
+            return False
         # Re-resolve _agent against (possibly linked) session_key for the main
         # LLM path — linked dashboard sessions may carry a different thread agent.
         _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
@@ -752,7 +759,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             # the cron conversation instead.
             sessions.set_slack_link(session_key, reply_ts, channel)
         logger.info(
-            "session state: key=%s is_new=%s resumed=%s",
+            "🔍 session state: key=%s is_new=%s resumed=%s",
             session_key,
             is_new,
             resumed,
@@ -918,9 +925,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
 
         # The permission ladder reads the routed conversation, its agent and this
         # turn's presentation off the turn (``_answer_permission_request``); none of
-        # them is rebound past this point.
+        # them is rebound past this point. Its spec hooks are the template's, so a
+        # channel bound to a Crew record is gated by the agent the record runs.
         turn.session_key = session_key
         turn._agent = _agent
+        turn.spec_agent = _context_agent
         turn.answer = answer
         turn.task = task
 
@@ -1172,7 +1181,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 )
     except AcpProcessDied:
         _had_error = True
-        answer.accumulated = answer.accumulated or "Error: Agent process died. Please try again."
+        answer.accumulated = answer.accumulated or "💀 Agent process died. Please try again."
         task.fail("process_died")
         # The circuit breaker counts a session's OWN consecutive failures, and
         # trips into a reset. A process this session was sharing dying is not
@@ -1239,7 +1248,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             await sessions.reset(session_key)
         except Exception:
             logger.debug("Failed to reset session %s after prompt-busy", session_key, exc_info=True)
-        answer.accumulated = f"Error: {e}"
+        answer.accumulated = f"❌ {e}"
         task.fail(str(e))
         await sessions.record_failure(session_key)
         Stats().inc_message_failed()
@@ -1298,20 +1307,20 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             if _session_lost:
                 sessions.close_replay_gap(session_key)
             if _session_lost and (answer.accumulated or answer.task_counter):
-                answer.accumulated = SESSION_NOT_FOUND_NOT_REPLAYED_TEXT
+                answer.accumulated = f"⟳ {SESSION_NOT_FOUND_NOT_REPLAYED_TEXT}"
             elif _session_lost and acp_error_needs_fresh_credentials(e):
                 # A broken helper fails the fresh process too: a new thread
                 # would fail alike, so the provider's remedy is the message.
                 answer.accumulated = (
-                    f"Error: {credential_give_up_text(e)} Then send your message again."
+                    f"❌ {credential_give_up_text(e)} Then send your message again."
                 )
             elif _session_lost:
                 answer.accumulated = (
-                    f"Error: {SESSION_NOT_FOUND_GIVE_UP_TEXT} Send your message again, "
+                    f"❌ {SESSION_NOT_FOUND_GIVE_UP_TEXT} Send your message again, "
                     "or start a new thread if this keeps happening."
                 )
             else:
-                answer.accumulated = f"Error: {e}"
+                answer.accumulated = f"❌ {e}"
             task.fail(str(e))
             await sessions.record_failure(session_key)
             Stats().inc_message_failed()
@@ -1337,7 +1346,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
     except Exception:
         _had_error = True
         logger.exception("Unexpected error handling message")
-        answer.accumulated = answer.accumulated or "Error: Something went wrong. Please try again."
+        answer.accumulated = answer.accumulated or "🔧 Something went wrong. Please try again."
         task.fail("unexpected")
         await sessions.record_failure(session_key)
         Stats().inc_message_failed()

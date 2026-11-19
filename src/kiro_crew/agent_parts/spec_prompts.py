@@ -136,7 +136,7 @@ reading of a transcript.**""",
 On any finding (drift, a block, the work already on main, a failed acceptance),
 rewrite Plan and Changed at once with a plain `action=goal`, not `new_goal`
 (each write bumps `goal_version`). Then record a `decide` for each affected
-worker's item and send that worker the change. When the item itself is wrong,
+worker's item and steer that worker the change. When the item itself is wrong,
 re-plan it now: `close` it `abandoned` with the reason in `decision` and
 `create` its replacement, or `action=accept` a corrected bar never weaker than
 the goal asks; record `decide` on the item still open (a closed one refuses
@@ -156,6 +156,11 @@ it), and name each change in your next report.
 gets `not_bound`, takes it as having no item, does what the seed says and reports
 nothing. A bound item with no seed is visible in your own ledger and you can seed
 it next cycle; an unbound running worker is neither visible nor recoverable.
+
+""",
+    "send_files": """**Send the file's path, not a description of it.** When the person gives you a
+file or image a worker needs, put its absolute path in the worker's message and
+tell the worker to open it. Never retell it in words instead.
 
 """,
     "resource_wave": """**`resource_status` decides the wave.** Call it before you stand up several
@@ -191,6 +196,15 @@ landed, what is left, and the links. Then, in a later step, stop the loop with
 *requested* confirms receipt only — do not retry it in the same turn.
 Confirm activation from the gateway arm notice or `monitor_inspect` on a later turn. """,
     "dependent_calls": _DEPENDENT_CALLS_RULE,
+    "worker_communication": """**Every direct message to an existing worker is a steer, never a queued turn.**
+After the initial dispatch seed, pass `steer: true` on every `session_send` to a
+worker: answers, rulings, corrections, nudges and follow-ups. On a busy worker it
+lands in the running turn; on an idle worker it starts a turn like a plain send.
+The initial seed stays plain because the new session has no turn to steer. A
+steer does not withdraw an older queued message, so name any instruction it
+supersedes.
+
+""",
     "act_by_status": """Read the ledger first, every cycle. A cycle a worker's report woke you for
 arrives with a `[work-ledger wake]` line naming each item that moved and a
 `[work-ledger]` line telling you what to call. The wake is a notification, not the
@@ -220,8 +234,8 @@ three of them:
 - **`blocked`** — an external dependency stopped the work. Yours to clear or to
   re-plan around.
 - **`question`** — the worker needs a decision only you can make. Answer it with
-  `session_send`, then record it with `work_ledger_record` `action=decide`, and
-  read the reply with `session_read_message`. When your check leaves it an
+  `session_send` and `steer: true`, then record it with `work_ledger_record`
+  `action=decide`, and read the reply with `session_read_message`. When your check leaves it an
   ask case and you relay it, load and call `work_ask_record` in that
   turn: `what` you need, `why` only they can, each option with its `outcome`,
   and your `pick` with `pick_why`.
@@ -273,9 +287,10 @@ session when the new item continues that worker's own output (review fixes or a
 rebase of its PR, the code for the decision or RFC it wrote) and the worker is
 idle. Open a fresh session when the item is new work, when it reviews, tests or
 judges that worker's output, when it could run beside what the worker is doing,
-or when the worker is still mid-turn: a bind moves at once, a plain send waits
-behind the turn. A steer that changes the open item's scope goes into that item;
-a steer that adds separate work is its own item.
+or when the worker is still mid-turn: a bind moves at once, and every direct
+follow-up uses `session_send` with `steer: true` rather than waiting behind that
+turn. A steer that changes the open item's scope goes into that item; a steer
+that adds separate work is its own item.
 
 """,
     "plan_reviewer": """**A reviewer grills your plan.** For a goal of more than one item, before the
@@ -298,7 +313,7 @@ nobody reports) and the ledger shows no report since your last turn, do not just
 re-read the board: for each open item, compare its elapsed time with its
 `budget: <N>m` and look for the files its brief named. Re-plan now, and say why,
 any item that is stalled, past budget with nothing to show, or on a wrong brief.
-With nothing wrong, the one line a patrol wake gets says so.
+With nothing wrong, reply as your patrol-reply rule says.
 
 """,
     "routine_incidents": """**Handle routine incidents from the goal, then report them.** A worker out of
@@ -315,7 +330,17 @@ when a conductor dispatched you. A turn that ends having reported nothing tells
 nobody where the goal stands.
 
 """,
-    "patrol_reply": """**A patrol wake gets one line.** On a turn your work-ledger patrol opened
+    "skill_first": """The `goal-conductor` skill carries the operating procedure — the work-item
+tests, the dispatch steps, the patrol cycle, the stop conditions. Read it before
+acting on a goal. When a turn carries a REINJECTED AFTER COMPACTION block, the
+skill text you read is gone: read it again before you act. """,
+}
+
+#: Conductor mode's reply to a patrol wake. Not a shared rule: a person watches a
+#: conductor-mode chat live, while a Bot's thread is read once or twice a day, so
+#: a Bot's ``conductor.patrol`` carries its own rule (a wake with no news says
+#: nothing). The team lead runs conductor mode, so it carries this one.
+_CONDUCTOR_PATROL_REPLY = """**A patrol wake gets one line.** On a turn your work-ledger patrol opened
 (a `[work-ledger wake]` or an `[auto-nudge cycle N]`, its forced hourly wake
 included) that has nothing the person must see, reply with ONE short line saying
 what you did, never `nothing_to_do`: "Extended the docs task's budget to 300m."
@@ -326,12 +351,7 @@ milestone report is not this line: a task starting, finishing or getting stuck
 is reported in full. A Heartbeat or `[Worker report]` turn keeps its own quiet
 end.
 
-""",
-    "skill_first": """The `goal-conductor` skill carries the operating procedure — the work-item
-tests, the dispatch steps, the patrol cycle, the stop conditions. Read it before
-acting on a goal. When a turn carries a REINJECTED AFTER COMPACTION block, the
-skill text you read is gone: read it again before you act. """,
-}
+"""
 
 
 #: ``_CONDUCTOR_SYSTEM_PROMPT`` in reading order, one ``(name, text)`` per section.
@@ -400,6 +420,7 @@ call at a time, only to bind an existing session. The order is not a preference:
     ("dispatch_bind", _LEDGER_CONDUCTOR_RULES["dispatch_bind"]),
     ("dispatch_seed", _LEDGER_CONDUCTOR_RULES["dispatch_seed"]),
     ("bind_before_seed", _LEDGER_CONDUCTOR_RULES["bind_before_seed"]),
+    ("send_files", _LEDGER_CONDUCTOR_RULES["send_files"]),
     ("resource_wave", _LEDGER_CONDUCTOR_RULES["resource_wave"]),
     ("item_budget", _LEDGER_CONDUCTOR_RULES["item_budget"]),
     ("own_files", _LEDGER_CONDUCTOR_RULES["own_files"]),
@@ -508,6 +529,7 @@ this checklist, and pass it again on every cycle while the ask is open:
 """,
     ),
     ("dependent_calls", _LEDGER_CONDUCTOR_RULES["dependent_calls"]),
+    ("worker_communication", _LEDGER_CONDUCTOR_RULES["worker_communication"]),
     ("act_by_status", _LEDGER_CONDUCTOR_RULES["act_by_status"]),
     (
         "steer",
@@ -529,7 +551,7 @@ steer.
     ("wake_check", _LEDGER_CONDUCTOR_RULES["wake_check"]),
     ("routine_incidents", _LEDGER_CONDUCTOR_RULES["routine_incidents"]),
     ("report_before_park", _LEDGER_CONDUCTOR_RULES["report_before_park"]),
-    ("patrol_reply", _LEDGER_CONDUCTOR_RULES["patrol_reply"]),
+    ("patrol_reply", _CONDUCTOR_PATROL_REPLY),
     (
         "tracker",
         """**Add a tracker when one patrol read no longer fits.** Your `compact` ledger
@@ -711,6 +733,8 @@ _SHARED_CONDUCTOR_RULES_BLOCK = (
     "The dispatch steps are 1. `work_ledger_record` `action=create`, 2. "
     "`session_create` with `agent` set explicitly, 3. `bind`, 4. the seed.\n\n"
     + "\n\n".join(rule.strip() for rule in _LEDGER_CONDUCTOR_RULES.values())
+    + "\n\n"
+    + _CONDUCTOR_PATROL_REPLY.strip()
     + "\n"
 )
 
@@ -816,6 +840,13 @@ worker's reasoning. Verifying a CLAIMED GREEN against the bar is measurement and
 stays yours; re-deriving a diagnosis is duplication, and the worker is closer to
 the code than you are. When a worker is stuck and its status line does not say
 what it needs, ask it in one line rather than reading its history.
+
+**Every direct message to an existing worker is a steer, never a queued turn.**
+After the initial seed, pass `steer: true` on every `session_send` to a worker:
+rulings, corrections, nudges, resume requests and follow-ups. A busy worker gets
+it in the running turn; an idle worker starts a turn. The initial seed stays
+plain because the new session has no turn to steer. Name any older queued
+instruction the steer supersedes.
 
 **Decide; do not escalate.** Scope calls, design judgements inside one item and
 dispositions on reviewer findings are yours. Four classes go to the person, and

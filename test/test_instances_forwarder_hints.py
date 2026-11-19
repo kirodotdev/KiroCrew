@@ -5,9 +5,12 @@ from __future__ import annotations
 import os
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 from instances_helpers import _FakeTunnel
 
 from kiro_crew.testing.ids import unallocatable_pids
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 
 class TestForwarderPidHints:

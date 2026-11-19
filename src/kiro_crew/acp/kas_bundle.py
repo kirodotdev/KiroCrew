@@ -627,7 +627,13 @@ def _locate_node(node_dir: Path) -> Path:
 _NODE_PROBE_TIMEOUT_SECS = 30
 
 
-def _probe_node(node_bin: Path, expected_version: str, *, launcher: tuple[str, ...] = ()) -> None:
+def _probe_node(
+    node_bin: Path,
+    expected_version: str,
+    *,
+    launcher: tuple[str, ...] = (),
+    timeout_retries: int = 0,
+) -> None:
     """Run the extracted Node once, the way the harness will, and check its version.
 
     One probe covers every way an archive can be dead on this host: the wrong
@@ -635,20 +641,32 @@ def _probe_node(node_bin: Path, expected_version: str, *, launcher: tuple[str, .
     Failing here keeps a broken runtime from being published at its version's name instead of
     surfacing as a handshake timeout on the first session. *launcher* is prepended
     to the argv (``arch -x86_64``, to run one slice of a universal binary).
+    *timeout_retries* reruns the probe that many more times when it times out;
+    any other failure is raised at once.
     """
-    try:
-        proc = subprocess.run(
-            [*launcher, str(node_bin), "--version"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_NODE_PROBE_TIMEOUT_SECS,
-            cwd=str(node_bin.parent),
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise KasBundleError(
-            f"the extracted Node runtime does not run on this host: {exc}"
-        ) from exc
+    attempt = 0
+    while True:
+        try:
+            proc = subprocess.run(
+                [*launcher, str(node_bin), "--version"],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_NODE_PROBE_TIMEOUT_SECS,
+                cwd=str(node_bin.parent),
+            )
+            break
+        except subprocess.TimeoutExpired as exc:
+            if attempt < timeout_retries:
+                attempt += 1
+                continue
+            raise KasBundleError(
+                f"the extracted Node runtime does not run on this host: {exc}"
+            ) from exc
+        except OSError as exc:
+            raise KasBundleError(
+                f"the extracted Node runtime does not run on this host: {exc}"
+            ) from exc
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip().splitlines()
         raise KasBundleError(
@@ -1027,8 +1045,19 @@ def make_universal_node(
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
+    # The slice that is not the host's runs under Rosetta. Its first launch of
+    # this freshly written binary waits for Rosetta to translate the whole
+    # Node (about 100 MB) ahead of time, which on a loaded macOS runner can
+    # take longer than the probe's timeout. Rosetta's translation daemon
+    # caches what it translated, so one rerun after a timeout usually starts
+    # fast. Only a timeout is rerun, once; any other probe failure fails at once.
     for slice_name in sorted(want):
-        _probe_node(node_bin, manifest.node_version, launcher=(arch, f"-{slice_name}"))
+        _probe_node(
+            node_bin,
+            manifest.node_version,
+            launcher=(arch, f"-{slice_name}"),
+            timeout_retries=1,
+        )
     again = _read_installed(home.parent, installed.version, bundled=installed.bundled)
     if again is None or again.node_bin != node_bin:
         raise KasBundleError(f"{home} does not read back after the universal Node was written")

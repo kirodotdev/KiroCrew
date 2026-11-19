@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from session_handle_helpers import bare_session_handle
 from turn_harness import ScriptedProvider, TurnScript, run_turn
 
 from kiro_crew.acp.runtime import AcpRuntime
@@ -200,7 +201,7 @@ def test_a_foreign_shape_is_unknown_never_kiro():
 
 def _bare_handle(backend: str) -> AcpSessionHandle:
     """A runtime-owned session handle, the shape ``get_bg_session`` returns."""
-    handle = object.__new__(AcpSessionHandle)
+    handle = bare_session_handle()
     runtime = MagicMock(spec=AcpRuntime)
     runtime.acp_backend = backend
     handle._runtime = runtime

@@ -346,8 +346,10 @@ def _home_refusals() -> list[str]:
             or entry.pw_dir in ("", "/", me.pw_dir)
         ):
             continue
-        if entry.pw_shell.endswith(("nologin", "false")):
-            continue  # a service account, not a person who could hold credentials
+        if os.path.basename(entry.pw_shell) in ("nologin", "false", "true"):
+            # A service account (nologin, false or true as its shell), not a
+            # person who could log in and hold credentials.
+            continue
         try:
             os.listdir(entry.pw_dir)
         except OSError:
@@ -666,11 +668,12 @@ def run_one(
         if arm.needs_gateway:
             _copy_transcript(ran.stdout, dirs)
         verdict, why = score(outcome, check, ran.wall_s, caps, audit_run(dirs, suite_dir))
-        first_pass = (
-            ran.first_pass_s
-            if ran.first_pass_s is not None
-            else (ran.wall_s if check["pass"] else None)
-        )
+        if ran.first_pass_s is not None:
+            first_pass = ran.first_pass_s
+        elif check["pass"]:
+            first_pass = ran.wall_s
+        else:
+            first_pass = None
         record.update(
             verdict=verdict,
             reason=why,

@@ -111,6 +111,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "spec_shell_allowlist": ("data", False, "", ""),
     "spec_write_allowlist": ("data", False, "", ""),
     "spec_write_cwd": ("data", False, "", ""),
+    "_agent_turn_hold_end": ("data", False, "", ""),
     "_agent_turn_reading": ("data", False, "", ""),
     "_agent_turn_start": ("data", False, "", ""),
     "_on_agent_turn": ("data", False, "", ""),
@@ -260,6 +261,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "b60c5fea256e",
         "session_handle_model_selection",
     ),
+    "_probe_mcp_sign_in": ("function", False, "e1215a3a5237", "session_handle_mcp"),
     "_push_model_config_option": (
         "function",
         True,

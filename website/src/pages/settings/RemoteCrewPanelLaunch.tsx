@@ -1,6 +1,7 @@
 /**
- * Settings -> Remote Crew -> Set up a new one: the size and provisioner cards,
- * the prerequisite rows, the launch progress card, the "Setting up" row, the
+ * Settings -> Remote Crew -> Add Crew -> Set up a new Crew: the size and
+ * provisioner cards, the prerequisite rows, the launch progress card, the
+ * "Setting up" row of My Crews (its status opens the steps and Cancel), the
  * launch cancel, and the device-code sign-in block that both the progress card
  * and a crew row render. One of the owners `RemoteCrewPanel.tsx` composes.
  */
@@ -16,6 +17,7 @@ import {
   ExternalLink,
   Loader2,
   KeyRound,
+  ChevronDown,
   X,
 } from 'lucide-react'
 import {
@@ -23,6 +25,7 @@ import {
   type RemoteProvisioner,
 } from '../../api/client'
 import { Card, Btn, Badge } from '../../components/ui'
+import { BUILTIN_PROVISIONER_ID } from '../../utils/remoteCrew'
 import ErrorNotice from '../../components/ErrorNotice'
 import type { ErrorReport } from '../../utils/errorReport'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -117,7 +120,7 @@ export function SigninPromptBlock({ job, onRestart, restarting, onFetch, fetchin
   notice?: SigninNotice | null
   compact?: boolean
   /** The crew this block belongs to, when nothing directly above the block names
-   *  it. In `Your crews` the block sits among several rows, and an unnamed
+   *  it. In `My Crews` the block sits among several rows, and an unnamed
    *  "This crew" there attributes the sign-in to whichever row the reader
    *  happened to be looking at. The setup card names the crew in its own header,
    *  so it passes nothing and keeps the shorter title. */
@@ -487,50 +490,90 @@ function CancelLaunchBtn({ job, onCancel, cancelling, className }: {
 export function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; onCancel: (id: string) => void; cancelling: boolean }) {
   const total = job.steps.length || 4
   const current = Math.min(total, job.steps.filter(s => s.state === 'done').length + 1)
-  const active = job.steps.find(s => s.state === 'active')
+  const [open, setOpen] = useState(false)
+  const name = i18nT('pages.settings.remoteCrewPanel.cloud_crew_name', { tag: job.tag })
+  const nameId = useId()
+  const stepsId = useId()
   return (
-    // Stacked below `sm`, side by side above it. The cancel label names its blast
-    // radius ("Cancel and remove the crew"), and that long string in a
-    // `shrink-0` slot left the crew name and the step line one word per line on a
-    // phone -- for the whole provisioning wait. Wrapping the label instead would
-    // keep the squeeze; the button gets its own line.
-    <div className="flex flex-col sm:flex-row items-stretch sm:items-start sm:justify-between gap-2 sm:gap-3 py-2.5 border-b border-border last:border-b-0">
-      <div className="flex items-start gap-3 min-w-0">
+    <div className="py-2.5 border-b border-border last:border-b-0" data-testid="setting-up-row">
+      <div className="flex items-start gap-3 min-w-0 pl-[1.875rem]">
         <span className="mt-0.5 w-8 h-8 shrink-0 grid place-items-center rounded-md bg-accent-subtle text-accent">
           <Rocket size={16} />
         </span>
         <div className="min-w-0">
-          <div className="text-text-strong text-sm font-medium flex items-center gap-2 flex-wrap">
-            <span className="inline-block w-2 h-2 rounded-full bg-accent" aria-hidden />
-            {i18nT('pages.settings.remoteCrewPanel.cloud_crew_name', { tag: job.tag })}
-            <Badge variant="aim">{i18nT('pages.settings.remoteCrewPanel.setting_up')}</Badge>
-          </div>
-          <div className="text-[12px] text-muted mt-0.5">
-            {job.region}
-            {job.instance_id ? ` · ${job.instance_id}` : ''}
-          </div>
-          <div className="mt-1.5 rounded-md border border-accent-subtle bg-bg-elevated px-2.5 py-2">
-            <div className="text-[12px] text-text-strong font-medium flex items-center gap-1.5">
-              <RefreshCw size={12} className="animate-spin" />
-              {i18nT('pages.settings.remoteCrewPanel.step_progress', { current, total })}
-              {active?.label ? ` — ${active.label}` : ''}
-            </div>
-            <div className="text-[11px] text-muted mt-0.5">{i18nT('pages.settings.remoteCrewPanel.keeps_running')}</div>
+          <div id={nameId} className="text-text-strong text-sm font-medium truncate">{name}</div>
+          <div className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[12px] text-muted">
+            {/* The status is the disclosure: it opens the launch steps and Cancel. */}
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={stepsId}
+              aria-describedby={nameId}
+              onClick={() => setOpen(v => !v)}
+              className="inline-flex items-center gap-1 rounded-full bg-accent-subtle text-accent font-semibold px-2 py-px focus-ring"
+            >
+              {i18nT('pages.settings.remoteCrewPanel.setting_up_progress', { current, total })}
+              <ChevronDown size={12} aria-hidden className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+            </button>
+            {/* The built-in lane makes an EC2 crew reached over SSM; another lane's
+                transport is its own, so it names none here. */}
+            {(job.provider_id ?? BUILTIN_PROVISIONER_ID) === BUILTIN_PROVISIONER_ID && (
+              <>
+                <span aria-hidden>·</span>
+                <Badge variant="muted">{i18nT('pages.settings.remoteCrewPanel.source_ec2')} · {i18nT('pages.settings.remoteCrewPanel.type_ssm')}</Badge>
+              </>
+            )}
+            <span>{job.region}{job.instance_id ? ` · ${job.instance_id}` : ''}</span>
           </div>
         </div>
       </div>
-      <div className="sm:shrink-0 flex items-center gap-2 flex-wrap">
-        {/* Names what it removes. Only unregistered launches reach this row (a
-            sign-in retry is a crew row below), so this is always the teardown
-            case — but it reads the same test as the card rather than hardcoding
-            the answer, so the copy cannot drift from the filter above it. */}
-        <CancelLaunchBtn job={job} onCancel={onCancel} cancelling={cancelling} />
-      </div>
+      {open && (
+        <div id={stepsId} className="mt-2 ml-[4.25rem] text-[12px]">
+          <div className="text-[13px] text-text-strong font-medium mb-1.5">
+            {i18nT('pages.settings.remoteCrewPanel.launching_crew', { name })}
+          </div>
+          <ol className="m-0 p-0 list-none space-y-1">
+            {job.steps.map(step => (
+              <li key={step.key} className="flex items-center gap-2">
+                {step.state === 'done'
+                  ? <CheckCircle size={13} className="text-ok shrink-0" />
+                  : step.state === 'failed'
+                    ? <AlertTriangle size={13} className="text-danger shrink-0" />
+                    : step.state === 'active'
+                      ? <Loader2 size={13} className="text-accent animate-spin shrink-0" />
+                      : <span className="inline-block w-[13px] h-[13px] rounded-full border border-border-strong shrink-0" />}
+                <span className={step.state === 'pending' ? 'text-muted' : 'text-text'}>{step.label}</span>
+              </li>
+            ))}
+          </ol>
+          <div className="text-[11px] text-muted mt-1.5">{i18nT('pages.settings.remoteCrewPanel.keeps_running')}</div>
+          {/* Names what it removes. Only unregistered launches reach this row (a
+              sign-in retry is a crew row above), so this is always the teardown
+              case — but it reads the same test as the card rather than hardcoding
+              the answer, so the copy cannot drift from the filter around it. */}
+          <CancelLaunchBtn className="mt-2" job={job} onCancel={onCancel} cancelling={cancelling} />
+        </div>
+      )}
     </div>
   )
 }
 
-/** One AWS prerequisite row (ok / failed) with optional command + actions.
+/** A prerequisite row's next step: plain text, then an optional external link. */
+function RowSteps({ steps }: { steps?: { text: string; link?: { href: string; label: string } } }) {
+  if (!steps) return null
+  return (
+    <>
+      <p className="mt-1.5 text-[12px] text-text">{steps.text}</p>
+      {steps.link ? (
+        <a className="mt-1 w-fit flex items-center gap-1 text-[12px] text-accent font-medium hover:underline" href={steps.link.href} target="_blank" rel="noreferrer">
+          {steps.link.label} <ExternalLink size={12} aria-hidden="true" />
+        </a>
+      ) : null}
+    </>
+  )
+}
+
+/** One AWS prerequisite row (ok / failed / not checked) with optional command + actions.
  *  Every row gates Launch, so a failed one is drawn as an error, not a warning. */
 export function PrereqRow({
   ok,
@@ -550,7 +593,9 @@ export function PrereqRow({
   steps,
   commandNote,
 }: {
-  ok: boolean
+  /** `null`: not checked, because a check it depends on failed. Drawn as a
+   *  hollow ring, also while `stale`: there is no verdict to grey out. */
+  ok: boolean | null
   /** The profile or Region changed since this verdict: its mark is greyed,
    *  while its text and actions stay readable and live. */
   stale?: boolean
@@ -587,8 +632,8 @@ export function PrereqRow({
 }) {
   return (
     <li className="flex items-start gap-3 py-2.5 border-b border-border last:border-b-0">
-      <span className={`mt-0.5 w-[18px] h-[18px] shrink-0 grid place-items-center rounded-full ${stale ? 'bg-border-strong text-muted' : ok ? 'bg-ok text-ok-fg' : 'bg-danger text-danger-fg'}`}>
-        {ok ? <Check size={11} /> : <X size={11} />}
+      <span className={`mt-0.5 w-[18px] h-[18px] shrink-0 grid place-items-center rounded-full ${ok === null ? 'border border-border-strong' : stale ? 'bg-border-strong text-muted' : ok ? 'bg-ok text-ok-fg' : 'bg-danger text-danger-fg'}`}>
+        {ok === null ? null : ok ? <Check size={11} /> : <X size={11} />}
       </span>
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-text-strong">{title}</div>
@@ -612,18 +657,14 @@ export function PrereqRow({
             ) : (
               <ErrorNotice variant="inline" showIcon={false} messageClassName="whitespace-pre-wrap" message={failure} report={failureReport} askAgent />
             )}
-            {steps ? (
-              <>
-                <p className="mt-1.5 text-[12px] text-text">{steps.text}</p>
-                {steps.link ? (
-                  <a className="mt-1 w-fit flex items-center gap-1 text-[12px] text-accent font-medium hover:underline" href={steps.link.href} target="_blank" rel="noreferrer">
-                    {steps.link.label} <ExternalLink size={12} aria-hidden="true" />
-                  </a>
-                ) : null}
-              </>
-            ) : null}
+            <RowSteps steps={steps} />
           </div>
-        ) : detail ? <div className="text-[12px] text-muted mt-0.5 whitespace-pre-wrap">{detail}</div> : null}
+        ) : (
+          <>
+            {detail ? <div className="text-[12px] text-muted mt-0.5 whitespace-pre-wrap">{detail}</div> : null}
+            <RowSteps steps={steps} />
+          </>
+        )}
         {command ? (
           <code className="block mt-1.5 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 font-mono text-[12px] text-accent overflow-x-auto">
             {command}

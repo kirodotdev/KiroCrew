@@ -516,9 +516,13 @@ class TestFetchAppManifest:
             owner_designated=True,
         )
         assert got == {"name": "demo"}
-        # Exactly the builder's env plus the network entries the git spawn may add.
+        # Exactly the builder's env plus the network entries the git spawn may add,
+        # with the English locale the private-repo classifier reads git's output in.
         assert seen_env == [
-            registry._git_network_env({"SENTINEL": "owner"}, "https://github.com/o/demo.git")
+            {
+                **registry._git_network_env({"SENTINEL": "owner"}, "https://github.com/o/demo.git"),
+                "LC_ALL": registry._GIT_CLONE_LOCALE,
+            }
         ]
         assert grants == ["fetch_app_manifest"]
 
@@ -547,9 +551,13 @@ class TestFetchAppManifest:
         await registry._fetch_app_manifest(
             "o/demo", "main", git_url="https://github.com/o/demo.git"
         )
-        # Exactly the builder's env plus the network entries the git spawn may add.
+        # Exactly the builder's env plus the network entries the git spawn may add,
+        # with the English locale the private-repo classifier reads git's output in.
         assert seen_env == [
-            registry._git_network_env({"SENTINEL": "anon"}, "https://github.com/o/demo.git")
+            {
+                **registry._git_network_env({"SENTINEL": "anon"}, "https://github.com/o/demo.git"),
+                "LC_ALL": registry._GIT_CLONE_LOCALE,
+            }
         ]
         assert modes == ["strict"]
 

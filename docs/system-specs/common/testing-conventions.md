@@ -144,7 +144,9 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   `exec_module` (a `@dataclass` module needs it), never under the real name.
   A `sys.modules` eviction restores the entry AND its parent package's attribute in the
   same scope (the rootdir package-attribute floor puts back a `kiro_crew` one a test
-  left changed, and names the test), and a new process-global ships its floor entry.
+  left changed, and names the test), and a new process-global ships its floor entry
+  (`test/test_process_cache_floor_ratchet.py` fails a new module-level cache in
+  `src/kiro_crew` that no floor resets).
   [Class 4](#4-order-dependence-and-shared-state).
 - **D12. Prove it.** Each new or changed test passes 20 times at `-n0`, 10 times at
   `-n 4` beside its neighbours, and in a shuffled order. A FIX to a flaky test also
@@ -597,6 +599,18 @@ that patches a store read and then inspects the index does it inside
 `_eager_folder_held()` (drain, then `eager.paused()`), the way the two unprovable-header
 tests in `test_issue_radar_crew_store_write_refusal.py` do.
 
+**Probe a crew log's write lease only after the eager folder settles.** The folder
+writes a fold's savepoint under this process's share of the unit's lease, on its own
+thread, and a `session/closed` always triggers one (the seal). `assert_drained()`
+waits for the WRITER only, so a test that probes the kernel lock from a second
+descriptor right after it can land inside that write and read "this process still
+owns the log" although the emitter let go. A slow runner widens the window: macOS
+reported `a torn-down session with no live turn kept the log` about once a day.
+Probe through `_owned_elsewhere` / `_can_take_ownership` in
+`test/crew_log_emit_helpers.py`, which call `eager.drain()` first -- the barrier the
+history-delete funnel waits on before it claims the lease sole -- or call it yourself
+before any other lock probe.
+
 **Hold the crew-log writer for a burst the test counts.** `CrewLogWriter` claims a
 unit's whole bucket after its batching pause (`WriterLimits.batch_deadline_seconds`,
 20 ms) and the claim takes those entries OUT of the pending count, so blocking
@@ -869,7 +883,13 @@ Rules that decide whether one is worth having:
   its write order proves nothing about ranking.
 - **Mark the module `xdist_group`** when the subsystem holds module globals
   (`context._memory_stores` / `_lesson_stores` behind `_stores_lock`), and reset those
-  globals through `monkeypatch`, never raw assignment.
+  globals through `monkeypatch`, never raw assignment. The floor
+  (`conftest_resets._isolate_context_store_caches`) hands every test its own copy of
+  both caches and puts the original back after it, because `ContextBuilder.__init__`
+  makes its `MemoryStore` the process default: without it, a test that builds one (the
+  eval runner, over a temporary directory it deletes) aims every later test's
+  default-store writes at its workspace, and on Windows a change-card history write
+  re-created the deleted `kirocrew_eval_*` directory and failed the temp-residue floor.
 
 ### Refusal tests: assert the refusal, name the rule only at its own bound
 
@@ -1104,6 +1124,47 @@ async def load_session(self, session_file, resume_sid, *, cwd=None, channel_id="
   disagree, so a call through a differently named alias is not seen. It costs 6 to
   8 s, because it parses single defs, not whole files (see the module docstring).
 
+### Bare session handles: one factory, so a new runtime read lands in one place
+
+A unit test of one `AcpSessionHandle` method often skips `__init__` and sets only the
+fields that method reads. Such a handle breaks as soon as the method starts reading
+something new. On 2026-11-17 #38228 made the KAS start barrier await
+`settle_kas_model_select()`, which reads `self._runtime`, and stubbed it in the bare
+handles that existed then. #38761, cut before #38228, added a new file with its own
+bare handle. Each was green on its base. Merged, both of the new file's barrier tests
+raised `AttributeError: 'AcpSessionHandle' object has no attribute '_runtime'` and
+held 15 PRs red (fixed in #38961).
+
+```python
+# WRONG: the handle has exactly the fields this file knew about on its base. A
+# handle method that reads a new runtime attribute breaks this file on merge.
+handle = AcpSessionHandle.__new__(AcpSessionHandle)
+handle._session_id = _SID
+handle._mcp_report = McpSessionReport()
+
+# RIGHT: the factory gives a real, never-spawning AcpRuntime and stubs the steps
+# tests of one method do not exercise; the change that adds a read updates it once.
+from session_handle_helpers import bare_session_handle
+
+handle = bare_session_handle(_SID)
+handle._mcp_report = McpSessionReport()
+```
+
+- **Build every constructor-less handle with `bare_session_handle()`**
+  (`test/session_handle_helpers.py`). Its default `_runtime` is a real `AcpRuntime`,
+  so every attribute a handle method reads exists with its real default. Pass
+  `runtime=<double>` to steer it, or `runtime=None` for a handle with none.
+- **A change that adds a handle step a bare test should not run stubs it in the
+  factory**, not in each test file.
+- **Enforced by `test/test_bare_session_handle_guard.py`.** It parses every file under
+  `test/` and fails on `AcpSessionHandle.__new__(...)` or
+  `object.__new__(AcpSessionHandle)` outside the factory. An exemption is one row in
+  `_EXEMPT` with its reason; a row naming a missing file fails.
+- **Measured:** on `f588907dcc` (both changes, no fix) the file failed 2 of 10. With
+  only its `_handle()` switched to the factory, 10 of 10 passed, with or without the
+  factory's `settle_kas_model_select` stub: the real runtime alone is enough. On a
+  branch where #38761's file still used `__new__`, the guard failed and named it.
+
 ### Channel wire fakes: borrow the library's read side, do not model it
 
 `kiro_crew.testing.fake_channel_wire` fakes a channel's `aiohttp` session one layer
@@ -1170,6 +1231,49 @@ atomic replace. That is shipped and correct, but its inputs are test-authored st
 inside a single-user trust boundary, so it sets no expectation that test utilities
 carry attacker-grade path containment. Spend that review effort on the governance and
 keystone paths instead.
+
+### Close the SQLite handles and skills loaders a test opens
+
+Every object that opens SQLite in its constructor holds three descriptors (`db`,
+`-wal`, `-shm`) until it is closed. On CPython 3.11+ an unclosed `sqlite3.Connection`
+is a reference cycle, so dropping the object does not free them: they stay open until
+the cyclic collector happens to run. Across one xdist worker's share of a shard they
+add up.
+
+The limit they hit depends on the host:
+
+| Host | Default soft `ulimit -n` |
+|---|---|
+| macOS (a laptop, a CodeBuild Mac) | 256 |
+| GitHub `macos-15-arm64` and `macos-26-arm64` runners | 10240 |
+| GitHub Linux runners | 65536 |
+
+So CI does not show these leaks. Measured on a 256 host: one worker ended a backend
+shard with up to 335 leaked descriptors, and from the 256th on every test on that
+worker failed with `EMFILE` or `sqlite3.OperationalError: unable to open database
+file`, in files that had nothing to do with the leak. Raising the limit hides the
+leak and is not the fix.
+
+The fix depends on the owner:
+
+| Owner | What opens SQLite | How it is closed |
+|---|---|---|
+| `SkillsLoader` (also built inside `ContextBuilder` and the dashboard's standalone loader) | `skill_search_index.sqlite3` | The rootdir conftest's autouse `_close_skills_loaders_the_test_opened`, for every test: it closes each loader built after it sets up, joins the catalog worker, and closes every search index built during the test, including one whose loader was already dropped. Nothing to request. |
+| `SubagentManager` | `tasks.db` | Request `close_subagent_managers` (a module-level `pytestmark` usefixtures entry). |
+| `VectorMemoryStore`, `KnowledgeStore`, a `SkillsLoader` from an earlier-ordered autouse fixture | their own databases | Wrap the object in `opened(...)`. |
+| A new class that opens SQLite in `__init__` | its database | Give it a `close()`. Its tests close it through `opened(...)` or an opt-in fixture shaped like `close_subagent_managers`. |
+
+A loader that a module- or session-scoped fixture shares across tests is set up before
+the floor takes its snapshot, so it stays open. A loader the test body builds and
+stores in a module global is closed at that test's teardown. A closed loader serves
+only what it had already cached, and an empty list for any scope it had not built, so
+a later test must not reuse it: such a cache already points at a deleted `tmp_path`,
+and the test that reads it sets its own loader.
+
+To find a leak, record `os.listdir("/dev/fd")` (`/proc/self/fd` on Linux) before and
+after each test from a throwaway `-p` plugin. Charge every new descriptor to the test
+that opened it, and list the ones still open when the worker ends. A run with
+`ulimit -n 256` on macOS confirms that the leak is gone.
 
 ## Which conftest you are standing on
 
@@ -1275,6 +1379,13 @@ one scope down:
   pytest's own `catching_logs` adds one per test phase and removes it at the phase
   boundary, so writing back a setup-phase snapshot during teardown would drop the handler
   the teardown phase is capturing through.
+* `_close_skills_loaders_the_test_opened` closes every `SkillsLoader` the test built,
+  through production's weak registry of live loaders, and joins each one's catalog
+  worker. It then closes every `SkillSearchIndex` built during the test (the
+  session-scoped `_record_skill_search_indexes` records them), which reaches the index
+  of a loader the test dropped before teardown. A dropped loader keeps its SQLite descriptors until the cyclic collector runs,
+  and on a macOS host with the default `ulimit -n 256` that runs a worker out of
+  descriptors (§ Close the SQLite handles and skills loaders a test opens).
 * `_restore_autonudge_singleton` puts `autonudge._INSTANCE` back to whatever the test
   inherited. It lives in `test/conftest_resets.py`, bound by `test/conftest.py`, rather
   than the rootdir floor, because only the `test/` suites drive the service; it is
@@ -2158,6 +2269,13 @@ measures, never above.
   undefined before Node 20.11, so two tests ran and failed on a host whose `PATH` led
   with Node 18 while the repo declares `engines.node >= 22.12.0`. Gate on the floor the code
   under test actually needs, and probe it the way the tests will experience it.
+
+- **Sandbox only the cases whose subject is the sandbox.** On macOS each sandboxed
+  spawn costs about 0.3 s (`sandbox-exec` compiles the Seatbelt profile on every exec),
+  and one git call is several spawns. A test of worktree or git logic runs plain git;
+  only a case that tests the sandbox composition asks for it, the way
+  `test_crewmate_worktree.py`'s `sandboxed_git` fixture does. The wrapper itself is
+  tested in `test_worktree_create.py`.
 
 - **If you stub the only thing that releases a resource, the fixture owes the release.**
   A permit, an in-flight claim, a lock: when the green-path test replaces the runner
@@ -3921,9 +4039,10 @@ went red, or the fix lands in the wrong file and the leak stays.
   `_learn` re-inits the store it is handed, so every learn test paid this). Tests route
   every inline construction through `test/conftest.py`'s `opened` register-and-close
   fixture (one definition, not one per module: a `KnowledgeStore` is closed through its
-  test-only every-thread seam, everything else through `close()`), modules that build
-  `ContextBuilder`s request the conftest's opt-in `close_skills_loaders` from a one-line
-  module autouse fixture, and managers get `manager.close()` before `sessions.close_all()`.
+  test-only every-thread seam, everything else through `close()`), every `SkillsLoader` a
+  test builds is closed by the rootdir conftest's autouse
+  `_close_skills_loaders_the_test_opened` (§ Close the SQLite handles and skills loaders a
+  test opens), and managers get `manager.close()` before `sessions.close_all()`.
   The one descriptor the probe still sees
   is pytest-asyncio 0.21.2's replacement loop: +3, one at a time, reclaimed at the next
   test's setup -- a float, not a leak, and never the thing to chase.
@@ -5748,6 +5867,43 @@ The same reach applies, more mildly, to a patch of `asyncio.create_subprocess_ex
 `os.getpid` on the stdlib module: every caller in the worker sees it. Prefer an injected
 value; otherwise patch only for the span of the call, through `monkeypatch`.
 
+**A counting spy counts only the calls the code under test makes.**
+`monkeypatch.setattr(mod.os, "scandir", counting)` reads like a patch of `mod`, but
+`mod.os` IS the stdlib `os`, so the spy counts every scan of the path from every module and
+thread in the worker. A count of "how often this code walked the folder" then also counts
+another module's scan of the same folder, even one the code under test asked a shared
+pool to run. `test_app_manager_installed_record.py::TestListingReusesTheWalk` counted the
+apps folder's walks this way. When `detect_orphaned_builtins` had no cached result,
+`list_apps` validated the built-in manifests, the path gate listed the home's credential
+masks on the shared `mc-pathres` pool (`credential_masks._installed_manifests`, its own
+`os.scandir(apps)`), and the spy saw two walks. Whether that cache was cold depended on
+the tests before it on the worker. After `test_app_backend.py::TestBootSpawnLatency` it
+failed 30 of 30 runs; with the CPU busy, `-n 8` and `-p randomly` it failed 14 of 30 (9 of
+30 on an 8-core Linux host). Counting only the calls the walking function makes, both
+passed 30 of 30. Two ways do that:
+
+- Replace the module's own binding, the way `ManualClock.install` does for `time`:
+  `monkeypatch.setattr(mod, "os", SimpleNamespace(**{**vars(os), "scandir": counting}))`.
+  Not on an owner of a mirrored facade such as `kiro_crew.apps.manager`, where `os` is a
+  shared name: `test_facade_mirror_guards.py` refuses a direct owner patch of one.
+- Keep the stdlib patch but count a call only when its caller is the function under test:
+
+```python
+# Wrong: an unfiltered spy counts every module's and thread's scan of the folder.
+monkeypatch.setattr(manager_records.os, "scandir", counting)
+
+# Right: only the listing walk's own calls are counted.
+real = os.scandir
+listing_walk = manager_records._recorded_app_names.__code__
+
+def counting(path=".", *args, **kwargs):
+    if sys._getframe(1).f_code is listing_walk:
+        walks.append(os.fspath(path))
+    return real(path, *args, **kwargs)
+
+monkeypatch.setattr(os, "scandir", counting)
+```
+
 **A reload or a `sys.modules` eviction leaves the parent package pointing somewhere
 else.** A string target (`monkeypatch.setattr("kiro_crew.agent_state.config_dir", ...)`)
 is resolved through the PARENT PACKAGE's attribute, not through `sys.modules`. Two shapes
@@ -6835,13 +6991,36 @@ path, not a duration or test-count balance. Other shards skip the file before
 import, while discovery patterns and platform ignores remain pytest's own.
 
 The Linux full-suite run adds `--file-shard-pins scripts/ci_file_shard_pins.txt`:
-the heaviest files (about 800) get a fixed shard, placed so the eight shards'
-summed test seconds come out even, and every other file keeps its hash owner. A
-pin only changes which shard owns a file, so a new or renamed file is still
-collected, on its hash shard. `scripts/ci_file_shard_pins.py` regenerates the pin
-file from the `linux-pytest-progress-<N>` artifacts of several green `main` runs;
-regenerate it when the Linux shards' `Run tests` times drift apart again. Windows,
-macOS, release and the reduced and leaf scopes keep pure hash ownership.
+every file with a measured weight gets a fixed shard, placed so the eight shards'
+summed test seconds come out even, and a file with no weight keeps its hash
+owner. A pin only changes which shard owns a file, so a new or renamed file is
+still collected, on its hash shard. `scripts/ci_file_shard_pins.py --every-file`
+regenerates the pin file from the `linux-pytest-progress-<N>` artifacts of
+several green `main` runs; regenerate it when the Linux shards' `Run tests` times
+drift apart again. Without `--every-file` the script pins the 800 heaviest files
+and hashes the rest, and the hashed rest is uneven: planned from 11 green runs
+and replayed on the one held out (12 runs, 2026-11-18), the heaviest Linux shard
+carried a median 1.07x the mean test seconds with 800 pins and 1.02x with every
+file planned. The Windows run adds its own pin file, `--file-shard-pins
+scripts/ci_file_shard_pins_windows.txt`, generated with `--platform windows`
+from the `windows-pytest-progress-<N>` artifacts. Windows keeps a separate file
+because a file's share of the time differs there: the Linux pins cut the slowest
+Windows shard by a median 12% of its summed test seconds over six held-out green
+runs, the Windows pins by 20%. The Windows file stays at the 800 heaviest
+(1.06x held out, against 1.02x with every file) because the Windows leaf scope
+in `ci.yml` reads that file as its list of heavy files (`WINDOWS_LEAF_MAX_PINNED`);
+listing every file there would send any leaf diff of five or more files to the
+full suite. macOS, release and the reduced and leaf scopes keep pure hash
+ownership.
+
+Before the Linux and Windows full-suite test step, `scripts/ci_rewrite_prewarm.py`
+writes pytest's assertion-rewrite pyc for the shard's test files (same hash and
+pin file) and every `conftest.py` loaded during collection, in parallel and without importing them, under
+the `sys.pycache_prefix` the rootdir conftest sets. It changes where a worker's
+collection time goes, not which files the shard collects, and never fails the
+job. `test/test_ci_rewrite_prewarm.py` owns the proof that pytest reads those
+pycs; a change to the cache root in `test/conftest_floor_configure.py` must keep
+`ci_rewrite_prewarm.pycache_prefix` equal to it.
 
 macOS assigns whole files like the other platforms, in eight shards. The shard
 count is the knob to reach for when the suite grows, not the 60-minute cap,

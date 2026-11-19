@@ -444,7 +444,7 @@ class TestManifest:
         assert exc_info.value.code == 1
         err_lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
         assert len(err_lines) == 1
-        assert err_lines[0].startswith(f"Error: Could not write {out_file}: ")
+        assert err_lines[0].startswith(f"❌ Could not write {out_file}: ")
 
     def test_exits_when_template_missing(self):
         mock_resource = MagicMock()
@@ -817,7 +817,7 @@ class TestSetupChannelGating:
         assert "Agent config left unchanged" in out
         assert "Agent installed" not in out
         self._run_setup(monkeypatch, tmp_path, agent_only=True)
-        assert "Done: Agent installed" in capsys.readouterr().out
+        assert "✅ Agent installed" in capsys.readouterr().out
 
     def test_slack_flag_opts_into_slack_steps(self, tmp_path, monkeypatch):
         """--slack runs the guided Slack credential + slash-command steps in order."""

@@ -120,12 +120,12 @@ order once the turn stops: everybody in a thread shares its session, so that
 stop only withdraws what its caller sent. A stop that escalates to a hard
 stop, and **Kill Now**, still tear the session down with its whole queue,
 every member's messages included. Three
-answers, one per outcome: "Execution stopped." when the turn stopped
-cooperatively, "Execution stopped — session reset." when it had to be
+answers, one per outcome: "⏹ Execution stopped." when the turn stopped
+cooperatively, "⛔ Execution stopped — session reset." when it had to be
 escalated to a hard stop, and "Nothing running." when no turn was active.
 
 Authorization: owner and allowed users. Unauthorized callers get
-"Blocked: Not authorized." and an audit log entry under `slack.stop_command`.
+"⛔ Not authorized." and an audit log entry under `slack.stop_command`.
 
 ## Streaming
 
@@ -223,12 +223,71 @@ a later click on it only gets a private "Already answered".
 
 ## Access control
 
-Kiro Crew on Slack answers the bot owner (`KIROCREW_OWNER_ID`) and nobody else.
-Multi-user access is disabled because an allowed user would act under the owner's
-system identity — the owner's file permissions and cloud credentials — with no scope
-limit and no expiry. `!allowlist`, `/kirocrew @user`, `slack.allowed_users` and
-`slack.open_channels` are all inert as a result, and stale allowlist entries are
-pruned at startup.
+By default Kiro Crew on Slack answers the bot owner (`KIROCREW_OWNER_ID`) and nobody
+else. `!allowlist`, `/kirocrew @user`, `slack.allowed_users` and
+`slack.open_channels` stay inert, and stale allowlist entries are pruned at startup.
+
+### Sharing Slack access
+
+The owner can let other people use the bot: Settings → Messaging Channels → Slack →
+**Share Slack access**, or `slack.shared_access` in config. It is off by default.
+
+Anyone on the list acts **as the owner**. Their turns run with the owner's files,
+Git and cloud credentials and connected tools, and they can see and act in any
+Slack thread they are part of. Through the agent's own tools they can also read
+the owner's other conversations and this Crew's saved memory, and change what
+this Crew remembers (lessons and memories feed the owner's later sessions too). The agent's
+own cron, task and spawn tools also still run as the owner in their turns, even
+though the `run` and cron keywords are refused to them, and a schedule they set
+up that way keeps running as the owner after they are removed: to stop one, open
+**Schedule** in the dashboard and delete it. Only add people you trust. The page
+shows this warning, and turning the switch on needs an explicit confirm. The page
+doesn't turn it on while anyone on the list isn't confirmed by Slack: remove them,
+or fix what their row says, first.
+
+- **Who counts.** Each Slack member ID on the list is checked with Slack
+  (`users.info`) before it is used: same workspace as the bot (`auth.test`), a
+  person rather than a bot or app, not deactivated, and not the owner. The page
+  refuses an ID that fails, and shows each person's name next to their ID. An ID
+  added with `kirocrew config` gets the same check from the gateway before its
+  first message counts. A confirmation is re-checked every 10 minutes, and a
+  refusal after a minute: an ID that stays on the list gets access as soon as
+  Slack confirms it, so remove an ID to keep that person out.
+- **What they can do.** Talk to the bot in DMs, mentions and threads, `!stop`,
+  `!title`, `!compact`, answer question cards, answer the tool-approval
+  prompts their own turns post, and send or edit the review-mode draft of their
+  own turn.
+- **What stays the owner's.** The access list and the switch; Trust, YOLO and
+  approval-mode changes (a shared user's Trust click is refused); approving a
+  prompt someone else's turn posted; `!dashboard` and other dashboard links; every
+  other `!` command, including `!channel` and agent overrides, and the
+  `!temporary` / `!incognito` modifiers; a message that starts with `/` (the
+  agent's own commands such as `/agent`, `/model` or `/tools`); the `/kirocrew`
+  slash command; the Home tab and the `sessions` list; the `spawn`, `status`, cron and `run`
+  keywords (the agent's own schedule tools are not narrowed, see below); Slack
+  settings and the manifest; and code channels (a shared
+  user's messages and card answers in one are refused, quietly in a bound channel
+  and with a private "not authorized" note in one not yet bound, and they cannot
+  open one). Other buttons answer a shared user with "Only the bot owner can do
+  that."
+- **Changes apply to the next event.** Removing someone, or turning the switch
+  off, stops their next message, including one already waiting in the Slack
+  queue (one already queued on a linked dashboard chat still runs). A
+  `kirocrew config` edit applies once the gateway reads it, within a couple of
+  seconds. If another `slack.*` setting in `config.json` is broken the gateway
+  cannot apply the change, and the settings page says so instead of reporting it
+  done.
+- **Audit.** Every admission and refusal is written to the security event log
+  with the Slack user ID (`slack.message`, `resources=shared_access` on an
+  admission), never the message text. List and switch changes are logged as
+  `slack.shared_access.*`.
+
+The owner-only line is a judgment call recorded in the design note
+(`docs/request-for-change/rfc-slack-shared-access.md`); the agent itself still
+runs with the owner's tools in a shared user's turn, so a tool call the owner
+would allow is allowed for them too, including the Crew tools
+that list sessions, read transcripts and memory, save lessons, and manage
+artifacts and schedules.
 
 `!dashboard` presigned links go to the owner only.
 
@@ -278,9 +337,9 @@ your own workspace.
    set `slack.home_tab_builtin` to `false` to keep a Home view you publish
    yourself with the same bot instead.
 5. **Set credentials** in `~/.kiro/crew/.env` (`SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`). Slack has no `enabled` setting: both Slack tokens opt the channel in.
-6. **Slash command** (optional) — the command name is configurable via
-   `slack.command` in config.json (default: `kirocrew`). Each app instance
-   should use a unique name.
+6. **Slash command** (optional) — the gateway answers `/kirocrew` and any
+   `/kirocrew-<alias>` the app registers. Set `slack.command` in config.json
+   (default: `kirocrew`) only for another name; it applies without a restart.
 
 ## Settings page
 
@@ -348,9 +407,23 @@ exactly as with the switch off, and the page says why under the switch.
   session instead.
   A button answers only the people who may use Kiro Crew; anyone else is told so
   privately. Comments people leave on the **Plan** tab reach the channel's agent as
-  feedback from the person who wrote them. When the channel already has Slack's maximum
-  of five tabs, the agent's tab it updated least recently makes room for a new one; the
-  Plan tab, the Code tab and tabs others added are never removed. The channel's
+  feedback from the person who wrote them.
+  The channel's newest open pull requests (its own and its workers', at most two) each
+  get Slack's own pull request tab, named **PR #N**; a PR that merges or closes loses
+  its tab. A conductor channel also gets a **Workers** tab: each worker with what it
+  is doing right now, its pull request and tests, **Open in dashboard** and, while it
+  works, **Stop** (after you confirm, it stops that helper agent's current turn and the
+  agents it started; the conductor and the other workers keep going, and nothing keeps
+  the helper stopped: a queued message can start it again). Stop answers the same
+  people as the context bar's Stop.
+  Within seconds the worker's row on the board and the Workers tab reads "Stopped by
+  @you · 14:05", until that worker starts its next turn.
+  The board links the Workers and Code tabs and each pull request to its tab, and the
+  wrap-up links the Code and pull request tabs. The context bar's links still open
+  GitHub: Slack's context bar cannot link a tab. When the channel already has Slack's
+  maximum of five tabs, the agent's tab it updated least recently makes room for a new
+  one, then (only for the Plan, Code or Workers tab) the oldest pull request tab; the
+  Plan, Code and Workers tabs and tabs others added are never removed. The channel's
   pull request is also its linked resource in Slack, and the work board is its live
   summary until the wrap-up replaces it. If Slack stops accepting the channel's updates
   (it is no longer a code channel, or Kiro Crew is no longer its agent), the dashboard
@@ -400,6 +473,7 @@ can name, create or archive a channel.
 | `code_channel_set_status` | Sets the session status: `processing`, `active` or `suspended`. `suspended` means the agent asked the people in the channel something and waits for the answer; it stays after the turn ends, and the next turn clears it. |
 | `code_channel_set_view` | Adds or updates a view tab: a self-contained `html` page (up to 1 MB, nothing external loads) or a display-only `block_kit` surface (up to 50 blocks, no buttons or inputs). The same `view_key` updates the same tab; a channel holds up to five tabs. |
 | `code_channel_publish_plan_canvas` | Creates or replaces the channel's plan canvas from markdown and shows it as the **Plan** tab. Members can comment on it. |
+| `code_channel_read_plan_canvas` | Reads the plan canvas back: its current markdown and the open comments on it. Use it after a restart or when the plan is no longer in the agent's context. |
 | `code_channel_set_context_bar` | Sets the agent's own items on the context bar, after the repo, branch, PR and CI items Kiro Crew keeps there (five items in all; the keys `repo`, `folder`, `branch`, `pr` and `ci` are taken). Each item has a key, a label, an optional icon and an optional `https` link. An empty list clears them. |
 | `code_channel_wrap_up` | Posts the wrap-up: the agent's summary (up to 2800 characters), the facts Kiro Crew knows (branch, PR, CI, changes) and an **Archive channel** button. `/wrap-up` asks for it. Only a person can press the button. |
 

@@ -192,7 +192,7 @@ of your message that the Teams client attaches as rich text does not, so a typed
 While a reply is running, prefix a message to control it: `/queue <message>`
 answers it after the current reply, `/steer <message>` folds it into the reply in
 progress. A message sent mid-turn is never lost — if it cannot be folded in, it is
-held and shown in a single "Queued (N)" receipt that is edited in place, then
+held and shown in a single "⏳ Queued (N)" receipt that is edited in place, then
 answered as one combined turn.
 
 ### Continuing an earlier conversation
@@ -208,8 +208,8 @@ adds it to `/sessions`.
 
 If you message a resumed session while the dashboard is in the middle of a turn, the
 message goes to that dashboard session rather than to this chat's own queue: it is
-folded into the running turn ("↪️ Steering that session") or queued on the session
-("⏳ Queued for that session") and runs when that turn finishes. Attachments are not
+folded into the running turn ("Steering that session") or queued on the session
+("Queued for that session") and runs when that turn finishes. Attachments are not
 carried into a dashboard turn, so a message with files is refused with a note to resend
 it afterwards.
 

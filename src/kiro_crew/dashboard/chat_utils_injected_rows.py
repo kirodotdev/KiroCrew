@@ -311,6 +311,11 @@ MODEL_UNAVAILABLE_KIND = "model_unavailable"
 #: backend formatted it.
 AUTH_REQUIRED_KIND = "auth_required"
 
+#: Row-level kind for the same signed-out turn on the Kiro CLI harness, which
+#: runs on kiro-cli's own sign-in: the frontend shows the setup gate's two kiro-cli
+#: sign-in commands, read from the prerequisite status, instead of Crew's card.
+KIRO_CLI_SIGN_IN_KIND = "kiro_cli_sign_in"
+
 #: Row-level kind for the terminal `error` row a SPENT PLAN ALLOWANCE produces
 #: ("The monthly usage limit has been reached"). Like the two above, no
 #: recovery is queued -- the allowance does not come back until it resets, so a

@@ -125,7 +125,14 @@ kirocrew`). Onto that base:
    store's keys win and the edition's other keys stay. The spec then carries
    exactly those two sets: a key the store set on an earlier build but leaves
    out of its `env` now is removed, and a key the edition ships stays; to turn
-   one off, set it to another value in the store.
+   one off, set it to another value in the store. A spec built from
+   `build_agent_config` rather than by this rebuild (a Bot's worker, research and
+   the team lead among them) gets the same merged `env` on the edition entry it
+   is seeded with (`mcp_sources.seed_edition_servers`), emitted as here: `PATH`
+   and home names expanded. A store key holding a `secret://` reference is left
+   out of it (the shipped value, if any, stands): that reference resolves only
+   where the gateway starts the server for a session, and some sessions of such
+   a spec are handed no gateway stub.
 
 Kiro global outranks any seam-contributed provider global because Kiro Crew is
 kiro-cli-only. Managed servers are skipped by every merge loop: their
@@ -1136,6 +1143,20 @@ scope's own entry, not from the rendered spec, which can still mount the raw key
 program under the alias until the next rebuild. It is not a leftover: from then on
 the store declares the alias too, so later switches on that row edit it.
 
+Kiro Crew's always-on servers (`kirocrew-core`, `kirocrew-cron`, `kirocrew-guide`,
+`kirocrew-mate`, `kirocrew-computer` while its gate is open, plus edition servers that are
+not `opt_in`: the set a fresh spec build emits, `emission_eligible_mcp_servers`) are never turned off or removed. An
+`opt_in` set such as `kirocrew-dashboard` or `kirocrew-secrets` is never locked, and a
+host whose server set cannot be read locks none, so every route answers as it does without
+the lock. An apply change that turns one's `kirocrew` scope off (from on) or
+uninstalls one is refused with `409` and `"code": "mcp_server_builtin"` for the
+whole batch before any write, as are `POST /api/mcp/toggle` with
+`enabled: false`, `POST /api/mcp/remove`, `DELETE /api/mcp/servers/{name}`,
+`POST /api/capability/mcp/uninstall`, a `POST /api/mcp/custom` add with
+`enable: false` and an official-registry install under one of those names.
+`POST /api/mcp/toggle-all` skips them when it disables. Turning one on, its tool
+overrides and its Globals edits are accepted.
+
 `POST /api/mcp/toggle` writes `disabled` into the Kiro global `mcp.json` for a
 server that file holds or that only another scope (an agent file, a provider
 global) holds. A server the Kiro global file does not hold but Kiro Crew's own
@@ -1152,6 +1173,8 @@ global `mcp.json` or a provider global; it is `null` when the row is enabled.
 `disabledInFile` names the file to edit when the shared flag is the Kiro-global one.
 `disabledReason` is `"invalid"` when the mute comes from a non-boolean `disabled`
 value, so the table asks for the value to be repaired rather than toggled.
+`builtin` is `true` on a row for one of Kiro Crew's own servers: the table locks
+its Kiro Crew switch on and offers no Uninstall.
 
 `GET /api/mcp` and both `/api/mcp/probe` responses also say when the default
 agent does not have a server. After each rebuild that lands the spec,
@@ -2240,7 +2263,9 @@ KAS subtracts from its projection the names of exactly the entries it returned
 after those stubs were picked, so a stub whose server that later read drops,
 mutes or marks registry-governed is withdrawn (`SessionExtras.withdrawn_stub_names`)
 and both session start paths remove it from the session-level array before the
-hoist: a mute or a `type: registry` saved while a worker starts still takes effect. claude's mirrored worker path is
+hoist: a mute or a `type: registry` saved while a worker starts still takes effect. The
+same captured names reach the KAS projection for the background helper
+`kirocrew-lite`, which withdraws every stub its spec does not mount. claude's mirrored worker path is
 unchanged.
 
 An app callback from a Bot's stub is governed as that worker's tool calls
@@ -3309,7 +3334,8 @@ answers `tools/list` from):
   call (below).
 - **Browser:** `browser`
 - **Slack code channels:** `code_channel_set_view`,
-  `code_channel_publish_plan_canvas`, `code_channel_set_context_bar`,
+  `code_channel_publish_plan_canvas`, `code_channel_read_plan_canvas`,
+  `code_channel_set_context_bar`,
   `code_channel_rename`, `code_channel_set_status`, `code_channel_wrap_up`
   (`mcp_tools/catalog/code_channels.py` declares them, `mcp_tools/code_channels.py`
   serves them). They are listed only while `slack.code_channels` is on, and each
@@ -6528,7 +6554,10 @@ one, and so does every server other than `kirocrew-core`. A forwarded
 (`_PendingRequest.cancelled`). The backend answers a cancelled call with no
 response, so the entry ages forever: the hard ceiling skips it, while the
 two-condition rule still counts it, so a backend whose pings have also stopped
-is recycled as on main. Notification attribution and the last-stub recycle
+is recycled as on main. An open `subscriptions/listen` is skipped by the ceilings
+the same way: a client of the 2026-07-28 protocol keeps that one request open for its
+whole session, so its age says nothing about stuck work, while the two-condition
+rule still counts it. Notification attribution and the last-stub recycle
 (`has_recyclable_in_flight`) still see the entry, so a late progress frame or
 log for it routes or drops exactly as for any pending request, and the last
 stub leaving after a cancel still recycles a backend whose synchronous tool kept

@@ -419,10 +419,12 @@ plain vitest assertion over the catalog files rather than a diff-scoped gate.
 
 The same job also runs `src/i18n/destructiveConfirm.test.ts`, which is the
 convention detector for quoted operands on destructive confirms (#4821): every
-`confirm` key that interpolates a placeholder must be on the quoted-operand pin,
-an explicit key exemption, or interpolate only names in
+`confirm` key that interpolates a placeholder is swept in and must quote its
+operand, unless it has an explicit key exemption or interpolates only names in
 `EXEMPT_CONFIRM_PLACEHOLDER_NAMES`. A brand-new confirm with a bare `{{name}}`
-fails that test even if nobody remembers to extend the pin.
+fails that test with no edit to the test; the hand list
+`QUOTED_OPERAND_CONFIRM_KEYS` holds only prompts whose key names the sweep
+cannot match.
 
 It fails on any key defined **twice inside one object** in any
 `src/i18n/locales/*.json`. Every catalog on disk is covered, so adding a language

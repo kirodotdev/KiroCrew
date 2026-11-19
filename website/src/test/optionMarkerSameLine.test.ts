@@ -34,6 +34,33 @@ describe('two markers on ONE line', () => {
   })
 })
 
+describe('a head mentioned inside inline code', () => {
+  it.each([
+    'The `[OPTIONS:` line goes last.',
+    'Write ``[OPTIONS:`` last.',
+    'Use `[option:` or `[OPTIONS: x` here.',
+    'Path `C:\\` then `[OPTIONS:` last.',
+    '\\``[OPTIONS: x` is code.',
+  ])('does not block the real marker at the line end — %s', (prose) => {
+    const { options, text } = parseOptions(`${prose} [OPTIONS: A | B]`)
+    expect(options).toEqual(['A', 'B'])
+    expect(text).toBe(prose)
+  })
+
+  it.each([
+    'Use [option: x to pick. [OPTIONS: A | B]',
+    '[OPTIONS: dropped `x` [OPTIONS: A | B]',
+    'Use `[OPTIONS: then [OPTIONS: A | B]',
+    'Use ``[OPTIONS:` then [OPTIONS: A | B]',
+    'Use \\`[OPTIONS: x\\` then [OPTIONS: A | B]',
+    '\\``a ``b` [OPTIONS: x`` [OPTIONS: A | B]',
+  ])('still blocks it when the head is outside a closed code span — %s', (raw) => {
+    const { options, text } = parseOptions(raw)
+    expect(options).toEqual([])
+    expect(text).toBe(raw)
+  })
+})
+
 describe('a row the strip would empty keeps a marker only when nothing renders it', () => {
   const msg = (content: string): ChatMessage =>
     ({ role: 'assistant', content }) as unknown as ChatMessage

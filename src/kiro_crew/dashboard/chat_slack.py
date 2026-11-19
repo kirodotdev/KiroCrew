@@ -689,7 +689,7 @@ async def link_slot_to_slack(
             try:
                 await state.slack_client.post_message(
                     existing_chan,
-                    "🔗 Session linked from dashboard — continuing here.",
+                    "Session linked from dashboard — continuing here.",
                     existing_ts,
                 )
             except Exception:

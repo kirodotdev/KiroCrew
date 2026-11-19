@@ -6,7 +6,7 @@
         "type": "section",
         "text": {
           "type": "mrkdwn",
-          "text": "*Stopping…*\nCooperative cancel in progress."
+          "text": "⏹  *Stopping…*\nCooperative cancel in progress."
         }
       },
       {
@@ -31,7 +31,7 @@
         "type": "section",
         "text": {
           "type": "mrkdwn",
-          "text": "*[Stopped]*"
+          "text": "⏹  *[Stopped]*"
         }
       }
     ],
@@ -40,7 +40,7 @@
         "type": "section",
         "text": {
           "type": "mrkdwn",
-          "text": "*[Stop Failed, Session Reset]*"
+          "text": "⛔  *[Stop Failed, Session Reset]*"
         }
       }
     ],
@@ -50,7 +50,7 @@
         "elements": [
           {
             "type": "mrkdwn",
-            "text": "_Working…_"
+            "text": "⏳ _Working…_"
           }
         ]
       },
@@ -62,7 +62,7 @@
             "action_id": "mc_inline_stop_slack:C0123ABCD:1731400000.000100",
             "text": {
               "type": "plain_text",
-              "text": "Stop"
+              "text": "⏹ Stop"
             },
             "value": "slack:C0123ABCD:1731400000.000100",
             "style": "danger"
@@ -76,7 +76,7 @@
         "elements": [
           {
             "type": "mrkdwn",
-            "text": "_Working…_"
+            "text": "⏳ _Working…_"
           }
         ]
       },
@@ -88,7 +88,7 @@
             "action_id": "mc_inline_stop_slack:C0123ABCD:1731400000.000100",
             "text": {
               "type": "plain_text",
-              "text": "Stop"
+              "text": "⏹ Stop"
             },
             "value": "slack:C0123ABCD:1731400000.000100",
             "style": "danger"

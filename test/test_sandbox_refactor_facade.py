@@ -55,6 +55,7 @@ from typing import Callable
 from unittest import mock
 
 import pytest
+import source_corpus
 import test_sandbox_refactor_create_guard as create_guard
 
 from kiro_crew import (
@@ -166,6 +167,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _install_root_targets_with _install_root_targets_cached _resolved_install_root_targets
         _bundled_kas_targets_cached _bundled_kiro_cli_targets_cached _bundled_root_spellings
         _gateway_package_dir _APP_BACKEND_OWNED_LEAVES app_backend_visible_targets
+        app_backend_secret_mask_targets
         app_declared_mask_targets app_declared_readonly_targets _liftable_declared_file
         _liftable_declared_dir
         crew_home_visible_spellings carveout_chain_has_planted_link
@@ -353,7 +355,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         resource_limit_supervisor_argv _SESSION_HOST_PREEXEC session_host_preexec
         _BUILD_NOFILE_CEILING _BUILD_RESOURCE_PREEXEC build_resource_limit_preexec
         _SPAWN_SHIM_SOURCE _SPAWN_SHIM_CODE RLIMIT_PROFILE_TOOL RLIMIT_PROFILE_BUILD
-        RLIMIT_PROFILE_SESSION_HOST RLIMIT_PROFILE_EXTRACTOR _EXTRACTOR_MAX_AS_BYTES
+        RLIMIT_PROFILE_SESSION_HOST RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST RLIMIT_PROFILE_EXTRACTOR _EXTRACTOR_MAX_AS_BYTES
         _EXTRACTOR_MAX_CPU_SECS _EXTRACTOR_MAX_NOFILE RLIMIT_PROFILE_NONE _PROFILE_OOM_BIAS
         _SHIM_ARGV_SEPARATOR _SHIM_CHDIR_FD_FLAG _SHIM_CTTY_FD_FLAG _SHIM_ARGV_CACHE
         _SHIM_UNAVAILABLE_LOGGED _rlimit_spec spawn_shim_argv _shim_prefix_entering_fd
@@ -1075,6 +1077,7 @@ CENSUS_PARTS = 4
 
 
 @functools.lru_cache(maxsize=1)
+@source_corpus.untraced()
 def census_parts() -> tuple[tuple[Path, ...], ...]:
     """The files the census parses, dealt into ``CENSUS_PARTS`` parts of about equal
     source size: each file, largest first, joins the lightest part so far. Only the
@@ -1097,6 +1100,7 @@ def census_parts() -> tuple[tuple[Path, ...], ...]:
 
 
 @functools.lru_cache(maxsize=CENSUS_PARTS)
+@source_corpus.untraced()
 def census_part(index: int) -> tuple[_Patch, ...]:
     """``(file, line, enclosing function, facade, name)`` for every facade patch in the
     files of census part *index*, read once for both facades."""

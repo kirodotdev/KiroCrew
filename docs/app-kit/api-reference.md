@@ -212,7 +212,11 @@ the same as one that does not exist.
 
 Example, from a backend the gateway spawned (see
 [Backend Environment Variables](#backend-environment-variables)): trade the app secret
-for an app token, then call the routes with it as the gateway's session cookie. Hooks that
+for an app token, then call the routes with it as the gateway's session cookie. The exchange
+answers `{"token": ..., "expires_in": ...}`: `expires_in` is the seconds the token is
+accepted as a `?token=` query parameter, the shorter of its two windows (as the session
+cookie it lasts an hour). A long-running backend exchanges again before `expires_in` runs
+out, or after a 401 or 403. Hooks that
 run in the gateway process have no secret: they get the same app token from
 [`ctx.app_token()`](#app-token-ctxapp_token).
 
@@ -1800,6 +1804,32 @@ async def add_item(request, ctx):
 | `model_id` | The vector space's model id, or `""` with no backend. Store it with each vector; a different value later means old vectors are not comparable. |
 | `embed_sync(text)` | A `list[float]`, or `None` when no model can serve or the embed failed. **Blocking**: call it only inside `run()` or another worker. Called on the event loop it returns `None`. |
 | `await run(func, *args, **kwargs)` | `func(*args, **kwargs)`, run on the host's bounded embed pool. |
+| `await embed_batch(texts, *, instruction=None)` | An `EmbedBatchResult` for up to 64 texts, embedded on the host's background memory pool, one app batch at a time. Seam level 10. |
+| `embed_batch_sync(texts, *, instruction=None)` | The same, **blocking**, for a worker thread of your own; not inside `run()`, whose pool the host's chat turns wait on. Seam level 10. |
+
+The batch members answer with an `EmbedBatchResult`:
+`ready`, `vectors` (one per text, in input order), `model_id`, `dim`,
+`space_signature` and `reason`. Store `space_signature` with your vectors: a model
+change or a custom model gives a different signature, and vectors from different
+signatures are not comparable, so re-embed. When `ready` is `False`, `vectors` is
+empty and `reason` says why:
+
+| `reason` | Meaning |
+|---|---|
+| `invalid_input` | `texts` is not a non-empty list of non-blank strings, or `instruction` is blank. |
+| `too_many_texts` | More than 64 texts. Split the work across calls. |
+| `on_event_loop` | `embed_batch_sync` was called on the event loop. Use `await embed_batch(...)`. |
+| `not_ready` | No embedding is available right now: the model is downloading, loading, being swapped or absent, or the host's bulk queue is full. Fall back (keyword search) and retry later. |
+| `failed` | The embed raised or returned malformed vectors. Logged once per process. |
+
+Batch work needs no manifest permission. It runs at the shared model's bulk
+priority, behind the host's memory recall and explicit memory writes and level
+with its own bulk work such as consolidation (the Ollama provider
+does not order by priority), and it is paced like the host's own bulk work, so a
+full batch can take minutes. Each text is cut at the host's per-text limit.
+`instruction` is prefixed to every text as `Instruct: <instruction>\nQuery:`, the
+form the bundled instruction-tuned model expects: embed stored documents without it
+and queries with it. With a custom model or an `ollama:` model, leave it out.
 
 It never raises into your code: a missing embedding extra, a model that cannot load
 and a failing embed all read as `None`, and the first failure is logged once per
@@ -1866,7 +1896,11 @@ approval: every tool `run` asks for is decided by the host's tool gate with your
 app's name, so the operator's profile for your app applies, and a call the gate
 neither denies nor grants goes to the owner's approval prompt, as a cron job's
 does (Slack DM and dashboard, denied after the short unattended window when
-nobody answers). `run_oneshot`
+nobody answers). When the owner runs the gateway in the `auto` approval mode
+(Settings, `agent.approval_mode`), that call runs without a prompt, as a channel
+chat's does, but only when the turn runs one of your app's own agents (the ones
+your manifest declares); a turn on the host's default agent or another app's
+agent still asks, and so does a host policy that denies `trust`. `run_oneshot`
 rejects every tool. The operator's `capabilities.spawn` row for your app bounds
 which agents you may run, as it does for `ctx.spawn`: when spawning is off for your
 app, or the agent (for `agent=""`, the default agent; for `run_oneshot`,
@@ -1910,7 +1944,7 @@ slots.send(state, slot, "Start with the README.")
 |------|---------|--------------|
 | `get(state, key)` | slot or `None` | The live slot under *key* when it is yours |
 | `restore(state, key, *, adopt_closed)` | slot or `None` | Bring *key*'s saved transcript back into a cold slot (async). Pass `adopt_closed=True` for a slot whose lifecycle you own, never for a key you are creating anew. The slot is returned only when it is yours; a saved transcript another app or a person owns is never brought back |
-| `open(state, key)` | `(slot, created)` | Your slot under *key*, created when absent, with a restored sidebar row's rows read in off the event loop (async). A slot under *key* that is not yours, or a saved transcript under it that records another owner, raises `ChatSlotRefused` and is left untouched. Read the key back from `slot.key`: the Gateway folds it to its session-file charset |
+| `open(state, key, *, hidden=False)` | `(slot, created)` | Your slot under *key*, created when absent, with a restored sidebar row's rows read in off the event loop (async). A slot under *key* that is not yours, or a saved transcript under it that records another owner, raises `ChatSlotRefused` and is left untouched. Read the key back from `slot.key`: the Gateway folds it to its session-file charset. `hidden=True` creates the slot under your app's own mode, out of the session lists, as [`permissions.hiddenSessions`](manifest-reference.md) describes; it still carries your app's name. Without that declaration, or while your app is disabled or untrusted, it raises `ChatSlotRefused` and creates nothing. An existing slot keeps the mode it has. An older host's `open` takes no `hidden` and raises `TypeError` |
 | `set_title(state, slot, title, *, only_untitled=False)` | bool | Title the slot, redacted, push it to the sidebar and mark it for the next save. Withheld (`False`) when redaction fails |
 | `send(state, slot, message, *, meta=None, append_user=True, user_origin=False, typed=True, on_consumed=None, on_irreversibly_consumed=None, reservation=None)` | task or `None` | Start a turn under the operator's unattended-turn cap, or queue *message* behind the running one (`None`, and the consumption callbacks are not attached). `user_origin` says a person sent the text, `typed` that they typed it; both default to the cautious answer, and a queued message keeps `user_origin` only when `typed` is true. Pass the task `reserve` returned as `reservation` to start the turn in its place. A slot that did not come through `open` or `restore` and still has its rows unread raises `RuntimeError` |
 | `reserve(state, slot)` | task or `None` | Mark an idle slot busy for the calling task while it validates, so other starters queue. Released when the task ends, and anything queued meanwhile is started |
@@ -2096,8 +2130,10 @@ directory entries in `credentialMasks` (`"state/"`), the dashboard's
 installed app's `credentialMasks` to the agent's file tools too and adds the manifest's
 `permissions.chatLaunch` (see
 [manifest-reference.md](manifest-reference.md#permissions)) with
-[`useChatLauncher().createChat`](#app-sdk-hooks-dashboard-ui), and
-`permissions.browserSites` with the page's [`useBrowserMedia`](#browser-media); each level
+[`useChatLauncher().createChat`](#app-sdk-hooks-dashboard-ui),
+`permissions.browserSites` with the page's [`useBrowserMedia`](#browser-media), and the
+shared embedder's batch members (`ctx.embed.embed_batch`, see
+[Shared embedder](#shared-embedder-ctxembed)); each level
 includes every level below it. Several seams share level 7, three share level 8, and
 level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it
@@ -3093,6 +3129,17 @@ open), so a per-file symlink like `ln -s ~/src/app/dist/index.mjs ui/index.mjs`
 answers `404` — indistinguishable from "not built yet". The directory link
 works because the route resolves the ui root *through* the link before
 validating files against it.
+
+On Windows, make the link a **directory junction** instead: from `cmd`, keep
+the installed `ui\` as a backup
+(`ren "%USERPROFILE%\.kiro\crew\apps\<name>\ui" ui.bak`), run
+`mklink /J "%USERPROFILE%\.kiro\crew\apps\<name>\ui" "<source>\ui"`, then re-run
+`kirocrew app dev <name> --confirm-out-of-install-root` so the dev grant binds
+to the link target. A junction needs no privilege; a directory symlink there needs Developer Mode or
+an elevated shell (Windows PowerShell 5.1's `New-Item -ItemType SymbolicLink`
+needs elevation even with Developer Mode on). The junction target must be a
+local absolute path. The UI route and the dev watcher follow a junction the
+same way they follow a symlink.
 
 **Contract surface:**
 

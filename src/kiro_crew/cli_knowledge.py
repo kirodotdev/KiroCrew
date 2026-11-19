@@ -307,7 +307,7 @@ def _consolidate_cmd(args) -> None:
                     )
                     unfinished += 1
                 else:
-                    print(f"  {key}: done")
+                    print(f"  {key}: done ✓")
             except Exception as exc:
                 logger.debug("consolidate (or SEL) failed for %s", key, exc_info=True)
                 print(f"  {key}: failed ({type(exc).__name__})", file=sys.stderr)

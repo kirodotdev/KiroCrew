@@ -998,7 +998,7 @@ async def _run_turn(
                 kind=EVENT_SUBAGENT_ACTIVITY,
                 sub_session_id=_n_sid,
                 text=(
-                    "⛔ permission auto-rejected (stranded between turns): "
+                    "Blocked: permission auto-rejected (stranded between turns): "
                     f"{redact_text(str(_n_title)[:4096])[:120]}"
                 ),
             )

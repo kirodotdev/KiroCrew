@@ -261,6 +261,42 @@ def app_backend_visible_targets(app_name: str, mode: str = "standard") -> tuple[
     )
 
 
+def app_backend_secret_mask_targets() -> tuple[str, ...]:
+    """Absolute paths of the gateway's internal-API secret files, for an app backend.
+
+    ``.local_secret`` and every ``run/gateway-<port>.secret`` and
+    ``run/gateway-<port>-<addr>.secret`` hold the same value, which is the only
+    credential of the gateway's internal routes. An app backend is third-party code and
+    reads none of them: no spawned backend calls the gateway with it (the Sage app's
+    routes, the one app that does, run inside the gateway). ``apps/backend.py`` passes
+    these paths as ``extra_hidden_dirs``, so the plan masks the files and leaves
+    ``run`` itself readable. Both data-home spellings and a relocated data home are
+    covered; only files that exist at spawn time are listed.
+
+    shortcut: a ``gateway-*.secret`` written after the spawn is not masked for it;
+    upgrade by masking ``run`` once the launcher lives outside it.
+    """
+    home = str(Path.home())
+    roots = [os.path.join(home, prefix) for prefix in _CREW_HOME_PREFIXES]
+    try:
+        roots.append(str(config_dir()))
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve the crew data home for secret masking", exc_info=True)
+    targets: list[str] = []
+    for root in dict.fromkeys(os.path.normpath(r) for r in roots):
+        targets.append(os.path.join(root, ".local_secret"))
+        try:
+            names = os.listdir(os.path.join(root, "run"))
+        except OSError:
+            continue
+        targets.extend(
+            os.path.join(root, "run", n)
+            for n in sorted(names)
+            if n.startswith("gateway-") and n.endswith(".secret")
+        )
+    return tuple(dict.fromkeys(t for t in targets if os.path.lexists(t)))
+
+
 def app_declared_mask_targets(
     app_name: str, *, builtin: bool, mode: str = "standard"
 ) -> tuple[str, ...]:

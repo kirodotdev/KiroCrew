@@ -41,6 +41,7 @@ import type { RefusedPressAction } from './turnActions'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { continuesAuthorRun } from '../../../api/sharedCrewUi'
 import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../../hooks/useSteerRetract'
+import { isToolCallRow } from '../../../lib/toolRowContract'
 
 /** ChatPage's tool rows derive their auto-denied state inside ToolCallLine;
  *  the registry default that reads this set is never reached here. Frozen and
@@ -356,8 +357,8 @@ export function useTranscriptRendering({
     const msgTimeFull = fmtMessageTimeFull(m.ts)
     return (
       <MessageSearchScope key={key} messageIdx={i}>
-      <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end' : ''} ${m.ts && m.ts === highlightTs ? 'animate-msg-highlight rounded-lg' : ''}`}>
-        <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end' : ''}`}>
+      <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''} ${m.ts && m.ts === highlightTs ? 'animate-msg-highlight rounded-lg' : ''}`}>
+        <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end has-[[data-user-side=start]]:items-start' : ''}`}>
           {isUser ? (
             <UserMessage
               content={m.content}
@@ -530,6 +531,7 @@ export function useTranscriptRendering({
       running: slotRunning,
       key,
       onFileOpen: handleFileOpen,
+      onArtifactOpen: handleArtifactOpen,
       hideCardOwnedOAuth: connectionsUiOn,
       autoDeniedIds: NO_AUTO_DENIED,
       // The shared row set returns `ctx.row(...)`; the row must be a KEYED
@@ -546,15 +548,15 @@ export function useTranscriptRendering({
     // By reference: the merged list's tail is an SDK default, not the bubble.
     return (entry ?? bubbleRenderer).render(m, ctx)
   // eslint-disable-next-line react-hooks/exhaustive-deps -- messagesRef is a useRef (stable for the page's lifetime) that the rule cannot see across the owner boundary; listing it would also put the flush-volatile `messages` name the dep-hygiene ratchet (TurnBlock.rowMemo.test.tsx) bans back in this array
-  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, connectionsUiOn])
+  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, handleArtifactOpen, connectionsUiOn])
 
   // Hoisted out of the row map so every TurnBlock receives the SAME function
   // identity per render — an inline closure there re-created it per row per
   // render and defeated memo(TurnBlock) even when the turn identity was stable
   // (see createTurnGrouper). It depends on nothing row-specific.
   const renderTurnItem = useCallback((it: TurnItem, _j: number) => {
-    // Skip hidden tool messages (✅/🚫 completions) to avoid empty py-1 wrappers
-    if (it.kind === 'single' && it.msg.role === 'tool' && !it.msg.content.startsWith('🔧')) return null
+    // Skip hidden tool messages (Approved:/Refused: completions) to avoid empty py-1 wrappers
+    if (it.kind === 'single' && it.msg.role === 'tool' && !isToolCallRow(it.msg.content)) return null
     // Same for hidden invisible-only assistant rows: renderMessage draws
     // nothing for them, and the bare wrapper would still stack py-1 spacers,
     // one per quiet monitor cycle.

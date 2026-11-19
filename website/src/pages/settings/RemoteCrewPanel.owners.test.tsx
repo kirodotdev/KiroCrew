@@ -56,6 +56,8 @@ describe('RemoteCrewPanel owners', () => {
       'RemoteCrewPanelCrewRow.tsx',
       'RemoteCrewPanelLaunch.tsx',
       'RemoteCrewPanelRestartBanner.tsx',
+      'RemoteCrewPanelSections.tsx',
+      'RemoteCrewPanelSetupCards.tsx',
       'remoteCrewPanelModel.ts',
     ])
   })

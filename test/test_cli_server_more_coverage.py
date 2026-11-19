@@ -25,6 +25,7 @@ from cli_server_more_coverage_helpers import (  # noqa: F401 -- the fixture is r
 )
 
 from kiro_crew import cli_server, kiro_cli, platform_compat
+from kiro_crew.doctor_checks import services
 from kiro_crew.frontend import FrontendBuildResult
 from kiro_crew.platform.update_layout import InstallLayout
 
@@ -1432,7 +1433,7 @@ class TestUpdateWheelInstaller:
     @pytest.mark.parametrize(
         ("stamp", "gateway", "code", "said"),
         [
-            (4242, 4242, 0, "The running gateway is already installing an update"),
+            (4242, 4242, 0, "It does not\n     restart itself"),
             (5151, 4242, 1, "possibly the gateway's own"),
             (4242, None, 1, "possibly the gateway's own"),
         ],
@@ -1440,8 +1441,9 @@ class TestUpdateWheelInstaller:
     def test_a_lock_the_running_gateway_holds_is_not_a_failure(
         self, monkeypatch, capsys, stamp, gateway, code, said
     ) -> None:
-        """The gateway's own update restarts it onto the new version, so the CLI says so
-        and exits 0; another holder, or a gateway it cannot name, keeps exit 1."""
+        """The gateway's own update is no failure, so the CLI exits 0 and says a restart
+        is still needed (the gateway never restarts itself); another holder, or a
+        gateway it cannot name, keeps exit 1."""
         from kiro_crew import gateway_lock
         from kiro_crew.platform import wheel_engine
 
@@ -1538,8 +1540,37 @@ class TestUpdateWheelInstaller:
             raise AssertionError("installer must not run when already current")
 
         monkeypatch.setattr(subprocess, "run", unreachable)
+        monkeypatch.setattr(services, "_running_gateway_version", lambda port: None)
         cli_server._update_wheel(_LAYOUT)
         assert "Already on the latest version" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        ("running", "said", "not_said"),
+        [
+            ("0.0.1", "but the running gateway is still 0.0.1", "Already on the latest"),
+            (None, "Already on the latest version", "kirocrew restart"),
+            ("same", "Already on the latest version", "kirocrew restart"),
+        ],
+    )
+    def test_already_latest_names_a_restart_when_the_gateway_runs_an_older_version(
+        self, monkeypatch, wheel_feed, capsys, running, said, not_said
+    ) -> None:
+        """An update never restarts the gateway, so the installed version can be the
+        latest while the gateway still serves an older one: then the next step is a
+        restart, not "already on the latest"."""
+        from kiro_crew import __version__ as local_version
+
+        wheel_feed(
+            b'{"schema": "kirocrew-cli-artifact-manifest-v1", "channel": "stable", '
+            + f'"version": "{local_version}"'.encode()
+            + b"}"
+        )
+        reported = local_version if running == "same" else running
+        monkeypatch.setattr(services, "_running_gateway_version", lambda port: reported)
+        cli_server._update_wheel(_LAYOUT)
+        out = capsys.readouterr().out
+        assert said in out
+        assert not_said not in out
 
 
 class TestStatusCountLines:

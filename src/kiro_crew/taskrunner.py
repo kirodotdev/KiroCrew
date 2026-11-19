@@ -478,7 +478,7 @@ class TaskRunner:
                 save_progress(run)
                 task_list = "\n".join(f"  {t.index}. {t.title}" for t in run.tasks)
                 await self._notify(
-                    "\U0001f680 Executing plan",
+                    "Executing plan",
                     f"{len(run.tasks)} task(s):\n{task_list}",
                     run=run,
                 )
@@ -490,7 +490,7 @@ class TaskRunner:
                     run.finished_at = time.time()
                     await self._apersist_runs()
                     await self._notify(
-                        "\u2705 Task completed",
+                        "Task completed",
                         format_completion_summary(run),
                         run=run,
                     )
@@ -511,7 +511,7 @@ class TaskRunner:
                     logger.exception("Plan execution error")
                     run.status = "failed"
                     run.error = str(exc)
-                    await self._notify("\u274c Task error", str(exc), run=run)
+                    await self._notify("Error: Task error", str(exc), run=run)
             finally:
                 try:
                     await asyncio.shield(self._cleanup_run_sessions(run))
@@ -652,7 +652,7 @@ class TaskRunner:
                 await self._workflow_rebind(run)
                 if not await self._ensure_resumable_workspace(run, "retry"):
                     return
-                await self._notify("\U0001f504 Retrying", f"From task {from_task}", run=run)
+                await self._notify("Retrying", f"From task {from_task}", run=run)
                 await self._taskq_begin_run(run)
                 watchdog_task = asyncio.create_task(self._watchdog_loop(run))
                 await self._execute_tasks(run, history_key)
@@ -662,7 +662,7 @@ class TaskRunner:
                     await self._apersist_runs()
                     passed = sum(1 for t in run.tasks if t.status == TaskStatus.PASSED)
                     await self._notify(
-                        "\u2705 Task completed", f"{passed}/{len(run.tasks)} passed", run=run
+                        "Task completed", f"{passed}/{len(run.tasks)} passed", run=run
                     )
             except asyncio.CancelledError:
                 # Always a cancellation, never read as the stop: the stop ends a

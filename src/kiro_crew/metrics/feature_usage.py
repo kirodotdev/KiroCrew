@@ -421,23 +421,34 @@ def shipped_curated_tip_ids() -> frozenset[str]:
     return frozenset(t["id"] for t in _load_curated_tips())
 
 
-def tip_feature_label(feature: object) -> str:
+def tip_feature_label(feature: object, edition_tip_ids: frozenset[str] = frozenset()) -> str:
     """*feature* when it names a shipped tip or doc, else ``other``.
 
     Kept when it is a doc in ``TIP_DOC_ALLOWLIST`` (the shipped, user-facing
-    feature docs) or the id of a tip shipped in ``tips_curated.json``. Both are
-    lists this package ships, so a kept value names nothing the user wrote.
+    feature docs), the id of a tip shipped in ``tips_curated.json``, or one of
+    *edition_tip_ids*, the fixed ids an edition pool lists for its own curated
+    tips (``TipsPool.metric_tip_ids``). All are lists a build ships, so a kept
+    value names nothing the user wrote.
     """
     from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 
     if not isinstance(feature, str) or not feature:
         return OTHER
-    if feature in TIP_DOC_ALLOWLIST or feature in shipped_curated_tip_ids():
+    if (
+        feature in TIP_DOC_ALLOWLIST
+        or feature in shipped_curated_tip_ids()
+        or feature in edition_tip_ids
+    ):
         return feature
     return OTHER
 
 
-def record_tip_feedback(action: object, source: object, feature: object) -> None:
+def record_tip_feedback(
+    action: object,
+    source: object,
+    feature: object,
+    edition_tip_ids: frozenset[str] = frozenset(),
+) -> None:
     """One saved tip reaction. Never raises."""
     try:
         _emit(
@@ -445,7 +456,7 @@ def record_tip_feedback(action: object, source: object, feature: object) -> None
             {
                 "action": _closed(action, TIP_ACTION_VALUES),
                 "source": _closed(source, TIP_SOURCE_VALUES),
-                "feature": tip_feature_label(feature),
+                "feature": tip_feature_label(feature, edition_tip_ids),
             },
         )
     except Exception:

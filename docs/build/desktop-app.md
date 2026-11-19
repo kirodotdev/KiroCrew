@@ -262,7 +262,10 @@ version directory. A universal macOS build stages the engine once: its tarball
 is already `darwin-universal`, and `kas_bundle.make_universal_node` fetches the
 other architecture's pinned Node build and `lipo -create`s both into one Mach-O
 at the record's `node_bin` path, probing each slice through `arch -arm64` /
-`arch -x86_64`. The universal build then runs `kas_bundle.trim_for_shipping`:
+`arch -x86_64`. A slice probe that times out is rerun once: the slice that is
+not the host's runs under Rosetta, whose first translation of the new binary
+can outlast the 30-second probe on a loaded runner, and the rerun starts from
+Rosetta's cache. The universal build then runs `kas_bundle.trim_for_shipping`:
 the Node distribution keeps only its binary and `LICENSE` (the engine never
 spawns the distribution's npm, npx or corepack), and the engine loses its C/C++
 sources, headers, source maps and web-tree-sitter's debug build. No reader

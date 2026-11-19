@@ -770,19 +770,21 @@ class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
 class TestHeaderCaptionsAreRedactedAtTheSeam:
     """A caption skips conversion, so it needs its own redaction pass.
 
-    Captions like ``*Cron: <name>*`` are already mrkdwn and skip ``to_slack_mrkdwn``,
+    Captions like ``⏰ *Cron: <name>*`` are already mrkdwn and skip ``to_slack_mrkdwn``,
     yet carry LLM-authored data (a cron's name comes from ``cron_add``).
     """
 
     def test_a_credential_in_the_caption_is_redacted(self) -> None:
-        parts = render_for_slack("body", header=f"*Cron: {_SECRET}*\n\n", redactor=_fake_redactor)
+        parts = render_for_slack(
+            "body", header=f"⏰ *Cron: {_SECRET}*\n\n", redactor=_fake_redactor
+        )
         assert _SECRET not in "".join(parts)
         assert "[REDACTED]" in parts[0]
 
     def test_the_caption_is_not_converted(self) -> None:
         """Conversion would re-interpret the caption's own *bold*."""
-        parts = render_for_slack("body", header="*Cron: nightly*\n\n", redactor=_fake_redactor)
-        assert parts[0].startswith("*Cron: nightly*")
+        parts = render_for_slack("body", header="⏰ *Cron: nightly*\n\n", redactor=_fake_redactor)
+        assert parts[0].startswith("⏰ *Cron: nightly*")
 
     def test_the_caption_lands_on_the_first_part_only(self) -> None:
         parts = render_for_slack(

@@ -81,7 +81,7 @@ import { REGISTERED_OVERLAYS_PACK, readExperience, subscribeExperience } from '.
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
 import { relayPaneBridge } from './lib/relayCrewPanes'
-// Only while the hidden relay pane key is on, so its code stays out of the first load.
+// Only in a desktop shell with the relay pane calls, so its code stays out of the first load elsewhere.
 const RelayCrewPaneHost = lazy(() => import('./components/RelayCrewPaneHost'))
 import RemoteUpdateOffer from './components/RemoteUpdateOffer'
 import KiroSignInNoticeFallback from './components/KiroSignInNoticeFallback'
@@ -148,7 +148,8 @@ const DeveloperPage = lazyPage(() => import('./pages/DeveloperPage'))
 const SchedulePage = lazyPage(() => import('./pages/SchedulePage'))
 const AppPage = lazyPage(() => import('./pages/AppPage'))
 const AppDetailPage = lazyPage(() => import('./pages/AppDetailRoute'))
-const MigrationPage = lazyPage(() => import('./pages/MigrationPage'))
+const MarketListingPage = lazyPage(() => import('./pages/apps/MarketListingPage'))
+const MigrationPage = lazyPage(() => import('./pages/MigrationRoute'))
 const HooksPage = lazyPage(() => import('./pages/HooksPage'))
 
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
@@ -377,6 +378,8 @@ const MainRoutes = memo(function MainRoutes() {
       <Route path="/apps/-/updates" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
       <Route path="/apps/library" element={<Suspense fallback={null}><LibraryPage /></Suspense>} />
       <Route path="/apps/detail/:name" element={<AppDetailPage />} />
+      {/* One Kiro Space store listing, keyed by store and ref, never by app name. */}
+      <Route path="/apps/-/market/:registry/:namespace/:name" element={<MarketListingPage />} />
       <Route path="/apps/migrate/:name" element={<MigrationPage />} />
       <Route path="/apps/:name" element={<AppPage />} />
       {/* Splat route: SettingsPage parses the trailing segments itself
@@ -411,7 +414,7 @@ export default function App() {
   const {
     isEmbed, isPopout, initialPopoutPath, appPopoutRoute, updateAvailable, settingsDotLabel, terminalEnabled, terminalPoppedOut,
     bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
-    colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
+    colorTheme, onboarded, markOnboarded, markImportOnboarded, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
     gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, offlineCoverKind, focusModeExitMsg, focusChromeInert,
@@ -926,7 +929,7 @@ export default function App() {
           <MobileConnectDialog mobileConnect={mobileConnect} />
           <RemoteUpdateOffer />
 
-          <FirstRunChapters firstRun={firstRun} onboarded={onboarded} privacyAcked={privacyAcked} markOnboarded={markOnboarded} markImportOnboarded={markImportOnboarded} markPrivacyAcked={markPrivacyAcked} />
+          <FirstRunChapters firstRun={firstRun} onboarded={onboarded} markOnboarded={markOnboarded} markImportOnboarded={markImportOnboarded} />
         </>
       )}
 

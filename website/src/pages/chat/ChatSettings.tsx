@@ -213,6 +213,12 @@ export function loadChatConfig(): ChatConfig {
     if (!VALID_STREAM_MODES.has(cfg.streamMode)) cfg.streamMode = 'smooth'
     if (typeof cfg.showContextPct !== 'boolean') cfg.showContextPct = false
     if (typeof cfg.showContextTokens !== 'boolean') cfg.showContextTokens = false
+    // Coerced, not trusted: these are read live through `useChatSetting`,
+    // whose snapshot must be a primitive, so a stored object or array here
+    // would re-render every message row without end.
+    if (typeof cfg.showTimestamps !== 'boolean') cfg.showTimestamps = true
+    if (typeof cfg.collapseAllSteps !== 'boolean') cfg.collapseAllSteps = true
+    if (typeof cfg.simplifiedToolNames !== 'boolean') cfg.simplifiedToolNames = true
     if (typeof cfg.showTurnStats !== 'boolean') cfg.showTurnStats = true
     if (typeof cfg.pinLastPrompt !== 'boolean') cfg.pinLastPrompt = true
     // Coerced, not trusted: a stored non-boolean must not decide whether the
@@ -426,6 +432,9 @@ export interface DashboardConfig {
   auto_open_git_panel: boolean
   side_panel_always_open?: boolean
   side_panel_pin_summary?: boolean
+  /** A conductor mode chat's first entry opens the side panel on its Board
+   *  (`dashboard.auto_open_conductor_board`). An absent value reads as on. */
+  auto_open_conductor_board?: boolean
   session_card_source_links: boolean
   /** Directory each new chat gets its own fresh folder under; '' = off. */
   session_folder_root?: string

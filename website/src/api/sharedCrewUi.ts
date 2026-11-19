@@ -145,6 +145,53 @@ export function someoneJoined(rows: readonly PeopleRow[] | null | undefined): bo
   return (rows ?? []).some(row => !row.is_owner && !isUnknownPrincipal(row.principal) && (row.sources ?? []).includes('observed'))
 }
 
+export type PersonSource = 'tailscale' | 'ssm' | 'organization' | 'kiro_login'
+
+/** The connection source a People row came in through, for its chip: read from
+ *  the provenance the server derived, then from the row's own sources. A person
+ *  at this machine came in through none (`null`). A session creator read back
+ *  from a transcript carries no provenance; it takes *fallback*, the one source
+ *  that can have let it in (`soleSource`), and otherwise has no chip.
+ *  The same id strings as `sharedCrewMode.SourceId`, kept apart to avoid a cycle. */
+export function personSource(row: PeopleRow, fallback: PersonSource | null = null): PersonSource | null {
+  const p = row.provenance ?? ''
+  if (p === 'kiro_relay') return 'kiro_login'
+  if (p === 'ssm_invite') return 'ssm'
+  if (p.startsWith('tailscale_') || (row.sources ?? []).includes('tailscale_share')) return 'tailscale'
+  if ((row.sources ?? []).includes('directory')) return 'organization'
+  if (p === 'local_operator') return null
+  return fallback
+}
+
+/** The source a row with no provenance came in through: the only one that is on.
+ *  shortcut: with two or more sources on, such a row has no chip; persisting the
+ *  provenance on the creator stamp would name it. */
+export function soleSource(on: readonly PersonSource[]): PersonSource | null {
+  return on.length === 1 ? on[0] : null
+}
+
+/** One key per person: the login, else an e-mail label (the Kiro relay and
+ *  `owner_name` label people by e-mail), case-insensitive, else the id. The same
+ *  person listed once per source (the owner at this machine and over the relay,
+ *  say) shares one key; two people who only share a display name do not. */
+export function personKey(row: PeopleRow): string {
+  const login = row.principal.display.login.trim().toLowerCase()
+  // An e-mail is one key whether it came as the login or as the label.
+  if (login) return login.includes('@') ? `email:${login}` : `login:${login}`
+  const name = (row.principal.display.name ?? '').trim().toLowerCase()
+  return name.includes('@') ? `email:${name}` : `id:${row.principal.id}`
+}
+
+/** How many people the rows name, one per `personKey`. */
+export function distinctPeopleCount(rows: readonly PeopleRow[]): number {
+  return new Set(rows.map(personKey)).size
+}
+
+/** Here now: an open tab in presence, or the viewer, who is on this page. */
+export function isHereNow(row: PeopleRow): boolean {
+  return !!row.live || !!row.is_viewer
+}
+
 /** The invites listed under "Invites": every pending email invite the server
  *  returns, and an accepted one until its accepting login is a current member
  *  (a row carrying `member.invite_id`), so a share that outlives its person's

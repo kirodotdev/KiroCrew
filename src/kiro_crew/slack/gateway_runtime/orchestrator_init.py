@@ -114,6 +114,7 @@ def __init__(
     self._hoist_webex(cfg, creds)
     self._hoist_imessage(cfg, creds)
     self._hoist_teams(cfg, creds)
+    # Boot value only: the Slack config applier refreshes it on a change.
     self.slack_command = cfg.slack.command
     # Serializes restart_channel: two config writes landing within one
     # poll interval must close-then-start the same channel in order.
@@ -166,6 +167,9 @@ def __init__(
     self._inline_parked = {}
     self._inline_tasks = set()  # settled parked completions still routing
     self._running_script_ids = set()  # job IDs with in-flight script/command execution
+    # In-flight auto-pause notices (concurrent.futures from the callback's
+    # cross-thread hand-off), drained bounded by the exit path.
+    self._auto_pause_alerts = set()  # type: ignore[type-arg]
     self.task_runner = None
     # Runner admission over the task queue, attached by _wire_runner_admission
     self._runner_admission = None

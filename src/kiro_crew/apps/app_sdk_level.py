@@ -6,6 +6,7 @@ app's ``credentialMasks``, and ``permissions.chatLaunch``: an app's page opens t
 person's chat it declares; and ``permissions.browserSites``: the app's own agent
 browses the pages the owner approved without a card per step, and the page's
 ``useBrowserMedia`` controls that tab's media through ``POST /api/browser/media``.
+``ctx.embed``'s batch members share level 10.
 """
 
 APP_SDK_LEVEL = 10

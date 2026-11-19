@@ -261,6 +261,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # one CLI spawn that must write into it is granted its per-call subdirectory
     # explicitly.
     "aws-control-staging",
+    # Kiro Space store sign-ins, one folder per added store. Only the gateway and the
+    # CLI child it runs open them; an agent that could write one could swap in another
+    # person's credential. Masked at OS level too (`sandbox._CREW_HIDDEN_LEAVES`).
+    "market-registries",
     # Quarantine markers for auto-improvement clones whose rollback and retirement both
     # failed. A marker is the only durable record that a clone carrying a refused, unscanned
     # commit must not be reused, and an agent that could write or delete one could certify

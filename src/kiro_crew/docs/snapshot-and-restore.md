@@ -261,7 +261,8 @@ component was being replaced.
   way is named (`↩️  config.json: kept the existing file; the bundle's copy was
   NOT merged into it ...`) and `✅ config` is printed only when no setting was
   left behind. Host state in the same component (`session_map.json`,
-  `project_dir`, `workspace_dir`) keeps this machine's copy silently. A bundle
+  `workspace_dir`) keeps this machine's copy silently. A restore never installs
+  the archive's `project_dir` in either mode; a replace says so. A bundle
   `ui-prefs.json` or `notification_settings.json` that its own store would read
   as empty, or refuse, stops the restore before anything is installed. A replace
   always checks it; a merge checks it only where the destination lacks that file,

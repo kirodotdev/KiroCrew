@@ -897,6 +897,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "(self, batch_id: 'str', parent_session_key: 'str', batch_total: 'int', held_secs: 'float') -> 'None'",
     ),
     "get": ("method", "(self, agent_id: 'str') -> 'SubagentInfo | None'"),
+    "has_current_execution_for": ("method", "(self, parent_session_key: 'str') -> 'bool'"),
     "has_fenced_children": ("method", "(self, parent_session_key: 'str') -> 'bool'"),
     "has_in_memory_pending_work_for": (
         "method",

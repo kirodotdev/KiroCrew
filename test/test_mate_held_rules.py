@@ -895,3 +895,136 @@ def test_the_kiro_cli_helper_check_reads_disk_off_the_event_loop(monkeypatch):
     asyncio.run(KiroHarness().session_extras("helper", work_dir=None, session_key="subagent:a"))
 
     assert seen == [False]
+
+
+def _web_event() -> LLMEvent:
+    return LLMEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        title="Fetching https://example.com",
+        request_id="r1",
+        tool_kind="fetch",
+        harness_tool_id="web_fetch",
+        kas_builtin_ids=True,
+        kas_managed_ask=True,
+    )
+
+
+async def _resolve_web(approver=None) -> list[str]:
+    provider = _Provider()
+    with patch("kiro_crew.permission_floor.refusal_for", return_value=None):
+        await _resolve_permission(
+            provider,
+            _web_event(),
+            ToolApprovalPolicy.AUTO_APPROVE,
+            None,
+            on_tool_approval=approver,
+            agent="zxc",
+        )
+    return provider.calls
+
+
+@pytest.fixture
+def web_ask_edition(monkeypatch):
+    """Set which edition ``web_ask_rule`` reads; the rest of the turn stays ``oss``."""
+    from types import SimpleNamespace
+
+    from kiro_crew import web_ask_rule
+
+    def set_edition(edition: str) -> None:
+        monkeypatch.setattr(
+            web_ask_rule, "edition", SimpleNamespace(is_lts=lambda: edition == "lts")
+        )
+
+    return set_edition
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edition", ["lts", "oss"])
+async def test_a_surface_with_no_approver_refuses_an_org_web_ask(ledger, web_ask_edition, edition):
+    """``web_ask_rule``: an ``AUTO_APPROVE`` turn with nobody to ask refuses KAS's ask
+    on an organisation's web rule in LTS, and approves it in ``oss`` as before."""
+    web_ask_edition(edition)
+    assert await _resolve_web() == (["reject"] if edition == "lts" else ["approve"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edition", ["lts", "oss"])
+async def test_an_auto_cron_asks_a_person_for_an_org_web_ask(ledger, web_ask_edition, edition):
+    """``web_ask_rule``: an ``auto`` cron job's approver does not answer KAS's ask on an
+    organisation's web rule in LTS; its interactive fallback is asked instead."""
+    web_ask_edition(edition)
+    card = AsyncMock(return_value=False)
+    calls = await _resolve_web(auto_job_approver(card))
+    if edition == "lts":
+        assert calls == ["reject"]
+        card.assert_awaited_once()
+    else:
+        assert calls == ["approve"]
+        card.assert_not_awaited()
+
+
+def _deep_ledger(ledger: Path, depth: int = 200_000) -> None:
+    """A ``migrated.json`` naming Bot ``m1``, nested too deep for the JSON parser."""
+    head = '{"held_rules": {"zxc": {"member_id": "m1", "rules": [], "x": '
+    ledger.write_text(head + "[" * depth + "]" * depth + "}}}", encoding="utf-8")
+
+
+def test_a_ledger_nested_too_deep_to_parse_holds_every_call_of_the_bot_it_names(
+    ledger, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from kiro_crew import execution_context
+
+    _deep_ledger(ledger)
+    who = {"member": "m1"}
+    monkeypatch.setattr(
+        execution_context,
+        "read_session_execution",
+        lambda key: SimpleNamespace(member_id=who["member"]),
+    )
+    spec = {"allowedTools": ["fs_read", "execute_bash"]}
+
+    assert mate_held_rules.held_for(_event("read"), session_key="k") == [mate_held_rules.UNREADABLE]
+    child = mate_held_rules.held_child_spec(spec, "k")
+    assert "fs_read" not in child.get("allowedTools", [])
+    assert "execute_bash" not in child.get("allowedTools", [])
+
+    # Control: a session of no member is held by nothing and its spec is unchanged.
+    who["member"] = ""
+    assert mate_held_rules.held_for(_event("read"), session_key="k") == []
+    assert mate_held_rules.held_child_spec(spec, "k") is spec
+
+
+def test_a_held_bots_child_spec_that_cannot_be_narrowed_is_refused(ledger, monkeypatch):
+    from types import SimpleNamespace
+
+    from kiro_crew import execution_context
+    from kiro_crew.agent_sdk import kas_tool_view
+
+    def _boom(_block):
+        raise RuntimeError("narrowing failed")
+
+    monkeypatch.setattr(kas_tool_view, "permissions_block_readable", _boom)
+    spec = {"allowedTools": ["fs_read"]}
+    with pytest.raises(mate_held_rules.HeldLimitsNotApplied):
+        _held_child(ledger, monkeypatch, "fs_read", spec)
+
+    # Control: the same fault on a session whose Bot holds nothing changes nothing.
+    monkeypatch.setattr(
+        execution_context, "read_session_execution", lambda key: SimpleNamespace(member_id="other")
+    )
+    assert mate_held_rules.held_child_spec(spec, "k") is spec
+
+
+def test_a_record_read_error_leaves_the_child_spec_as_the_gate_reads_it(ledger, monkeypatch):
+    """An error reading the record reads as nothing held, in the child and the gate alike."""
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("record read failed")
+
+    _hold(ledger, "fs_read")
+    monkeypatch.setattr(mate_held_rules, "_bot_rules", _boom)
+    spec = {"allowedTools": ["fs_read"]}
+    assert mate_held_rules.held_child_spec(spec, "k") is spec
+    assert mate_held_rules.held_for(_event("read"), session_key="k") == []

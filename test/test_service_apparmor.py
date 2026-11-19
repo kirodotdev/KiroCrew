@@ -554,7 +554,7 @@ class TestAppArmorNeverFailsTheInstall:
         assert rc == 0, "a failed hardening step must not fail the service install"
         out = capsys.readouterr().out
         assert "kirocrew service installed and started" in out
-        assert "⚠️" in out, "the failure must still be surfaced, not swallowed"
+        assert "Warning:" in out, "the failure must still be surfaced, not swallowed"
         assert "could not be installed" in out
 
     def test_install_reports_the_profile_on_success(self, monkeypatch, capsys):
@@ -569,7 +569,7 @@ class TestAppArmorNeverFailsTheInstall:
         out = capsys.readouterr().out
         assert rc == 0
         assert "AppArmor profile installed at" in out
-        assert "⚠️" not in out
+        assert "Warning:" not in out
 
     def test_a_silent_skip_prints_nothing_extra(self, monkeypatch, capsys):
         """On Debian/Arch/RHEL the step must be invisible, not chatty."""
@@ -582,7 +582,7 @@ class TestAppArmorNeverFailsTheInstall:
         out = capsys.readouterr().out
         assert rc == 0
         assert "AppArmor" not in out
-        assert "⚠️" not in out
+        assert "Warning:" not in out
 
     def test_uninstall_removes_the_profile_and_still_reports_success(self, monkeypatch, capsys):
         from kiro_crew.service import controller

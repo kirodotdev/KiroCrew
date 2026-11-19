@@ -108,6 +108,7 @@ instead of the row simply disappearing.
 | ACP → CLI | Catch `AcpError`, print user-friendly message, `sys.exit(1)` |
 | Sandbox refusal → CLI and boot logs | `SandboxCeilingUnsealable` and `SandboxUnavailableError` sit outside the `AcpError` hierarchy, and each one's own text names the host's remedy. `kirocrew chat` (`cli_chat._run_chat`) prints that text as one line through `safe_terminal_line` and exits 1; the built-in adoption STAGE pass logs a `SandboxUnavailableError` as one warning carrying it. Neither prints a stack trace |
 | JSON-RPC read | Non-JSON lines silently skipped (kiro-cli debug output) |
+| KAS HTTP MCP bridge (`kas_http_bridge.Bridge.send`) | A server it cannot reach, or that stops answering mid-answer, is reported on stderr and in each unanswered request's JSON-RPC error with the plain cause `asset_downloader.network_failure_cause` names (`could not be reached (connection refused)`, `stopped answering (timed out)`); any other failure is named by its `reason`, its text or its type |
 | Config load | Invalid JSON → log warning, return defaults |
 | Integer field in a dashboard JSON body | Read through `dashboard/body_numbers.body_int`, which raises `ValueError` for `1e999`/`-1e999` (infinite floats after `json.loads`) where `int()` raises `OverflowError`. The handler's own `except (TypeError, ValueError)` then gives the infinite value the same 400 or fallback any other malformed value gets there, never a 500. A site does not add `OverflowError` to its own except clause instead |
 | Skill index (`list_skills`) | One global SKILL.md that is not UTF-8 or cannot be opened → one warning naming the file, that row dropped, every other row listed. Never a failed listing: the index feeds every chat turn and `GET /api/skills`. Rationale: [memory-skills-hooks](../modules/memory-skills-hooks.md) |
@@ -381,6 +382,17 @@ the frame's "Please try again" still gives it the retryable verdict and the
 `http_5xx` classifier kind, which match the engine's own `SERVER_ERROR`, bounded by
 the ladder.
 
+The engine's **refused credential** is a sign-in error. KAS words its
+`AccessDeniedError` as the fixed sentence "Access denied. Please check your
+authentication. (Request ID: …)", with no 401/403 and no expiry wording, and it
+names no place to sign in. `_RE_SESSION_EXPIRED` carries that exact sentence, so
+the turn takes the session-expiry arm: the harness's signed-out message (the Kiro
+sign-in card and, on a terminal, `kirocrew kas login` for KAS; `kiro-cli login`
+for the Kiro CLI harness), terminal, tagged `sign_in_needed` (and `auth_required`
+where the card is the fix), with the request id after the message. Bare
+"access denied" text and a name such as `AccessDeniedError` in prose match
+nothing.
+
 Retry hints are the other wording-only signal, and they are **provider-scoped**:
 `_RE_5XX_HINT` carries one alternative per backend spelling ("please try again"
 for Kiro/Bedrock, "try your request again" for the claude-agent-acp seam's
@@ -485,6 +497,20 @@ the adapter's tool-call, plan and permission frames to AIR shapes. Members of
   report lets the caller queue that steer again.
 - A JSON-RPC error that follows held chunks (codex's `usageLimitExceeded` writes
   the text and fails the prompt) is raised alone, so the failure is reported once.
+
+pi-acp writes nothing at all of a failed model call: the run settles and the
+prompt answers `end_turn` with no text, an empty reply. Crew's gate extension
+inside pi records the failure at `turn_end` (the assistant message's
+`provider`, `model` and `errorMessage`) and, when the run settles still failed
+and not aborted, notifies one `kiro-crew-model-error` envelope under the launch's
+gate nonce; a failure pi retried successfully reports nothing. pi runs on
+`AcpClient`, so each of its read loops (`_dispatch_events`, `send_message_stream`,
+`_read_prompt_response`; `acp/pi_steer_turn.model_error`) holds the envelope back
+from the turn's text and, when the prompt then answers `end_turn`, raises through
+`_raise_acp_error` with
+`pi's model call failed (<provider>/<model>): <error>`. pi is not a member of
+`ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR`: only the envelope is read, never the
+provider's text. A prompt pi rejects before any model call still ends as today.
 
 The selected model and effort are untouched, and no recovery is added: whether
 the failed turn is retried is decided downstream from the raised error, exactly

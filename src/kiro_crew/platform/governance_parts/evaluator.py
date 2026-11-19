@@ -32,6 +32,7 @@ from kiro_crew.platform.governance_parts.catalog import _SCOPE_ALIASES, COMMANDS
 from kiro_crew.platform.governance_parts.parsing import baseline_controls, with_inner_baseline
 from kiro_crew.platform.governance_parts.tool_calls import (
     _NO_TARGET_ITEM,
+    _NO_WRITE_TARGET_ITEM,
     _RUNNING_PREFIX,
     _UNSPLITTABLE_COMMAND_ITEM,
     _governed_targets,
@@ -326,9 +327,10 @@ def gate_decision(
     identity's ``tools`` pair, and a built-in's argument pair in a scope outside
     its row (the kindless read-and-write guess) may refuse the call only by an
     explicit deny, as ``deny_aliases`` do. Each scope of a built-in's row that
-    the arguments name no target in is asked about :data:`_NO_TARGET_ITEM`, so an
-    allow-mode confinement refuses a pathless search or a non-edit write rather
-    than never being asked. Empty keeps the old reading.
+    the arguments name no target in is asked about :data:`_NO_TARGET_ITEM`
+    (:data:`_NO_WRITE_TARGET_ITEM` in ``filesystem.write``), so an allow-mode
+    confinement refuses a pathless search or a non-edit write rather than never
+    being asked. Empty keeps the old reading.
 
     ``shell_command`` is a shell call's host-recovered command. When set and the
     title's own ``commands`` item is not already that command, the call is first
@@ -401,7 +403,7 @@ def gate_decision(
         image_pairs = tuple(p for p in image_pairs if p[0] in own_scopes)
         named = {scope for scope, _ in arg_pairs}
         arg_pairs += tuple(
-            (scope, _NO_TARGET_ITEM)
+            (scope, _NO_WRITE_TARGET_ITEM if scope == "filesystem.write" else _NO_TARGET_ITEM)
             for scope in own_scopes
             if scope not in ("tools", "mcp") and scope not in named
         )

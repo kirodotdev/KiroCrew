@@ -414,7 +414,10 @@ Request flow:
    process gets an owner token with no `app` claim and a success record whose
    `resources` is `token-issued`. A registry that raises names no app and leaves
    the host-process leg to decide as before. `/api/relay-viewer/token` refuses the
-   same callers by the same `is not None` test. On loopback TCP the caller's
+   same callers by the same `is not None` test. Its browser twin,
+   `POST /api/relay-viewer/browser-open`, is an ordinary owner-only dashboard route
+   instead: it answers only a URL, never the token, and refuses any request that
+   is not straight from this machine. On loopback TCP the caller's
    pid comes from `platform_compat.get_tcp_peer_pid`, a scan of every process's
    descriptors, so it is resolved once per accepted connection: the answer is kept
    against that connection's transport with the process start id read beside it,
@@ -1059,7 +1062,9 @@ Crew's host connection. The Crew's relay client, in process, turns each relayed
 request into an HTTP request to this gateway's loopback TCP listener and stamps the
 person as `x-kiro-relay-user`. `dashboard/kiro_relay/` is the Crew's half of that
 contract, and `relay_client/` is the relay client that calls it. All of it is behind
-`tunnel.relay_enabled`, **off by default**: off, the gateway builds its
+`tunnel.relay_enabled`, **off unless it asks for the relay**
+(`remote_control/hosting.py`: `true`, or unset on a Crew with a team key or a
+workload identity; a personal sign-in is off by default): off, the gateway builds its
 `RelayIngress` off and starts no relay client. An LTS build ignores that
 local switch with the rest of the `tunnel` control
 ([platform-context § Local switches with no governance key](platform-context.md#local-switches-with-no-governance-key-edition_lockspy)).
@@ -1261,6 +1266,7 @@ already names where to sign in.
 | Messaging link generated | `slack.dashboard_token`, `telegram.dashboard_token`, `teams.dashboard_token`, or `webex.dashboard_token` | `ok` | `ttl=<seconds>` |
 | Request accepted | `dashboard.token_auth` | `ok` | request path |
 | Request denied | `dashboard.token_auth` | `denied` | rejection reason |
+| Internal-route request granted (loopback `X-Internal-Secret`, or an agent-socket capability) | `internal_auth`, `source=token_auth` | `granted` | request path; caller is the peer address (empty on a unix socket, the dashboard's or the agent socket), or the verified tailnet login; `error` is `agent socket capability` for an agent-socket grant. The grant branch writes no `dashboard.token_auth` row with caller `internal` beside it, because that row would carry no fact this one lacks. An agent-socket request also carries the agent-socket gate's own `dashboard.token_auth` `granted` row (caller `agent-ipc`), which the same middleware writes earlier. The internal arm's secret refusals (no secret configured, a wrong or empty secret, a delegated caller whose record is gone) each write both an `internal_auth` and a `dashboard.token_auth` `denied` row. |
 | SPA shell served on cold-start nav | `dashboard.token_auth` | `shell_unauth` (no token) / `shell_unauth_invalid_token` (expired/forged token) | request path. **These replace `denied`/403 for non-API `GET`/`HEAD` navigations** — any volume-based scanning/brute-force alert keyed on `denied` or 403 counts for nav paths MUST also watch these two outcomes, or credential-less probing of a remote-exposed dashboard goes invisible. A forged token on a nav serves the secret-free shell but keeps the distinct `shell_unauth_invalid_token` signal (not `ok`). |
 
 ## Security Properties

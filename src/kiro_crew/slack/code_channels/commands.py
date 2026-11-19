@@ -40,6 +40,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from kiro_crew import slack_manifest
 from kiro_crew.slack.code_channels import surface
 from kiro_crew.slack.code_channels.binding import code_channels_on, live_config
 from kiro_crew.slack.code_channels.models import UNAVAILABLE_ERRORS, CodeChannelApiError
@@ -97,7 +98,7 @@ _tasks: set[asyncio.Future[Any]] = set()
 _seen: Any = None
 
 NOT_A_CODE_CHANNEL_TEXT = "That command works only in a Kiro Crew code channel."
-NOT_AUTHORIZED_TEXT = "Blocked: You are not authorized to use this command here."
+NOT_AUTHORIZED_TEXT = "⛔ You are not authorized to use this command here."
 ARCHIVED_TEXT = "This channel is archived."
 NO_PR_TEXT = {
     "not_a_repo": "This session's project is not a git repository, so there is no branch to open a pull request from.",
@@ -274,8 +275,8 @@ def _first_delivery(payload: dict[str, Any]) -> bool:
     """False for a repeat of an invocation already handled."""
     key = str(payload.get("trigger_id") or "")
     if not key:
-        parts = [str(payload.get(k) or "") for k in ("channel_id", "user_id", "command", "text")]
-        key = "nt:" + hashlib.sha256("\0".join(parts).encode()).hexdigest()
+        # No id: a redelivery cannot be told from a deliberate repeat, so run it.
+        return True
     global _seen
     if _seen is None:
         from kiro_crew.slack.events import SeenCache
@@ -365,7 +366,14 @@ async def handle_slash(
     """
     command = str(payload.get("command") or "").strip().lower().lstrip("/")
     text = str(payload.get("text") or "").strip()
-    if command == str(getattr(orch, "slack_command", "") or "kirocrew").lower():
+    configured = getattr(getattr(live_config(orch), "slack", None), "command", "")
+    # The app's own command: the configured or shown name, or any
+    # /kirocrew[-<alias>] the manifest registers (what ``events._handle_slash`` answers).
+    app_command = ""
+    if slack_manifest.is_app_command(
+        f"/{command}", str(getattr(orch, "slack_command", "") or "").lower(), configured
+    ):
+        app_command = command
         # The same split ``events._handle_slash`` routes sub-commands by.
         parts = text.split(maxsplit=1)
         if not parts or parts[0].lower() not in _APP_SUBCOMMANDS:
@@ -394,6 +402,7 @@ async def handle_slash(
         team=str(payload.get("team_id") or ""),
         text=text,
         respond=respond,
+        app_command=app_command,
     )
     return True
 
@@ -408,8 +417,12 @@ async def run_command(
     text: str,
     respond: Callable[[str], Awaitable[None]],
     via: str = "command",
+    app_command: str = "",
 ) -> None:
     """Every gate and effect of one channel command, after its de-duplication.
+
+    *app_command* is the app's own slash command the owner typed (empty for a
+    runtime command or an action); once authorized it becomes the shown name.
 
     The context bar's Create PR action (:mod:`.actions`) runs this same function
     with ``via="action"``, so a click is authorized, audited and delivered exactly
@@ -458,6 +471,10 @@ async def run_command(
                 await respond(refusal)
             return
         surface.audit(user, operation, "allowed", resources)
+        if app_command:
+            # The owner typed a name this app registered: shown from now on
+            # (``events._handle_slash`` does the same).
+            orch.slack_command = app_command
         if command == AGENT:
             await agent_picker.handle_command(orch, binding, user, text, respond, team=team)
         else:

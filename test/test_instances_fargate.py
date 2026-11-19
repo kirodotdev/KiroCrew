@@ -15,6 +15,9 @@ import asyncio
 import json
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 _TASK = "0123456789abcdef0123456789abcdef"
 _ECS_TARGET = f"ecs:crews_{_TASK}_{_TASK}-1234567890"

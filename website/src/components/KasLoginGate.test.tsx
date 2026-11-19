@@ -35,6 +35,8 @@ vi.mock('../api/client', async importOriginal => {
         port: 3128,
       }),
       kasLoginCancel: vi.fn().mockResolvedValue({ ok: true }),
+      // A landed sign-in asks for a fresh credit reading; refused, so no network.
+      sessionsUsageRefresh: vi.fn().mockRejectedValue(new Error('no refresh in this test')),
     },
   }
 })
@@ -93,19 +95,15 @@ describe('KasLoginGate', () => {
     ).toBeInTheDocument()
   })
 
-  it('says what AWS Builder ID and company SSO are on their buttons', async () => {
+  it('shows the AWS Builder ID and company SSO buttons with no caption', async () => {
     renderWithProviders(<KasLoginGate />)
 
     expect(
       await screen.findByRole('button', { name: 'Continue with AWS Builder ID' }),
-    ).toHaveAccessibleDescription(
-      "A free personal sign-in for developers. You don't need an AWS account.",
-    )
+    ).not.toHaveAccessibleDescription()
     expect(
       screen.getByRole('button', { name: 'Continue with company SSO' }),
-    ).toHaveAccessibleDescription(
-      "For work accounts on AWS IAM Identity Center. You'll need the access portal URL your company gave you, even if it signs you in through Okta or Microsoft Entra.",
-    )
+    ).not.toHaveAccessibleDescription()
   })
 
   it('starts the device flow and shows the user code to approve', async () => {
@@ -660,6 +658,43 @@ describe('KasLoginGate', () => {
   })
 
   // ---- loopback transport ---------------------------------------------------
+
+  it('a flow closed while its begin is in flight cancels the late login and opens no tab', async () => {
+    loopbackShape()
+    let answer: (value: Awaited<ReturnType<typeof api.kasLoginBeginLoopback>>) => void = () => {}
+    kasLoginBeginLoopback.mockImplementationOnce(() => new Promise(resolve => { answer = resolve }))
+    const view = renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    // The begin request is in flight; the dialog closes first.
+    await waitFor(() => expect(kasLoginBeginLoopback).toHaveBeenCalledWith('google'))
+    view.unmount()
+    await act(async () => {
+      answer({
+        login_id: 'lb-late',
+        user_code: '',
+        verification_uri_complete: 'https://app.kiro.dev/signin?state=late',
+        expires_at: '2099-01-01T00:00:00Z',
+        auth_url: 'https://app.kiro.dev/signin?state=late',
+        port: 3128,
+      })
+    })
+    await waitFor(() => expect(kasLoginCancel).toHaveBeenCalledWith('lb-late'))
+    expect(openSpy).not.toHaveBeenCalled()
+  })
+
+  it('in card chrome the code screen opens the page by one button and goes back by an icon', async () => {
+    renderWithProviders(<KasLoginEmbedded />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
+    expect(screen.getByRole('link', { name: 'Open sign-in page' })).toHaveAttribute(
+      'href',
+      'https://app.kiro.dev/account/device?user_code=ABCD-EFGH',
+    )
+    expect(screen.getByTestId('kas-login-code-expiry')).toHaveTextContent('Waiting… code expires')
+    // The back control returns to the choices.
+    fireEvent.click(screen.getByRole('button', { name: 'Use a different sign-in' }))
+    expect(await screen.findByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
+  })
 
   it('loopback shape: Google opens the portal tab and shows the browser-wait screen', async () => {
     loopbackShape()

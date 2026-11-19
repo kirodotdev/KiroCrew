@@ -65,6 +65,9 @@ class _Log:
         self.asked.append(session_key)
         return self.newest
 
+    def last_speech_row_ts(self, session_key: str) -> str:
+        return self.last_row_ts(session_key)
+
 
 def _make_orch() -> MagicMock:
     orch = MagicMock()
@@ -188,9 +191,9 @@ async def _submit_several(orch: MagicMock, choices: list[str], picked: list[int]
 
 
 def _answered(blocks: list[dict], *chosen: str) -> bool:
-    """Whether the context line reads "<@U1> chose <chosen> · <time>"."""
+    """Whether the context line reads "✅ <@U1> chose <chosen> · <time>"."""
     names = ", ".join(f"*{c}*" for c in chosen)
-    return _summary(blocks).startswith(f"<@U1> chose {names} · <!date^")
+    return _summary(blocks).startswith(f"✅ <@U1> chose {names} · <!date^")
 
 
 def _summary(blocks: list[dict]) -> str:

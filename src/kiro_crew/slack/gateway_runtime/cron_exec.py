@@ -157,6 +157,7 @@ async def _cron_run_command(self: GatewayOrchestrator, job: CronJob) -> str | No
             job.id,
             job.secret_env,
             job.secret_env_pin,
+            job.env,
             timeout=_claim_backstop(job, cmd_timeout),
         )
         if result.get("status") == "cancelled":
@@ -242,9 +243,11 @@ async def _cron_run_command(self: GatewayOrchestrator, job: CronJob) -> str | No
             # header, once; the body leads with the stderr tail, where a
             # dying command writes its cause. A run with no process (a
             # timeout, a spawn error) reports -1 and a one-line reason
-            # whose ❌ the header already shows.
+            # whose failure lead the header already shows.
+            from kiro_crew.cron_script import _strip_error_lead
+
             code = result.get("exit_code")
-            reason = output.removeprefix("❌ ")
+            reason = _strip_error_lead(output)
             if "stderr" in result:
                 # The streams come only from a process that exited, so its
                 # code is real even when it is -1 (killed by SIGHUP).
@@ -640,6 +643,7 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
                 job.thread_ts or "",
             ),
             self._live_internal_secret,
+            job.env,
             timeout=_claim_backstop(job, script_timeout),
         )
         status = result.get("status", "error")

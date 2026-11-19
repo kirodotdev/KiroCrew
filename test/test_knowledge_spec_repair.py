@@ -690,3 +690,208 @@ class TestARegisteredInjection:
 
         made[0].send_message.assert_not_awaited()
         assert worker._client is None
+
+
+# -- a spec that is rewritten again at every launch -----------------------------------
+
+
+def _reinjecting_factory(
+    work_dir: Path, agents: Path, made: list[acp_client.AcpClient]
+) -> Callable[..., acp_client.AcpClient]:
+    """``_client_factory`` behind a tool that rewrites every spec when kiro-cli launches.
+
+    The repair before each spawn puts the template back, and the launch writes the
+    injection again before the harness reads it, so no repair ever sticks.
+    """
+    inner = _client_factory(work_dir, made)
+
+    def make(**kwargs: Any) -> acp_client.AcpClient:
+        client = inner(**kwargs)
+        ready = client.ensure_ready
+
+        async def ensure_ready() -> None:
+            _inject(_spec_path(agents))
+            await ready()
+
+        client.ensure_ready = ensure_ready
+        return client
+
+    return make
+
+
+@pytest.fixture
+def pool_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ACP pool on Kiro CLI with no config file behind it."""
+    monkeypatch.setattr(llm_pool, "_read_config", lambda: {})
+    monkeypatch.setattr(llm_pool, "_get_acp_backend", lambda config=None: ACP_BACKEND_KIRO)
+    monkeypatch.setattr(llm_pool, "_get_sandbox_mode", lambda config=None: "auto")
+
+
+class TestASpecThatNeverSticks:
+    """One refusal ends the batch, and the pool stops spawning for a while."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("projection_on", [True, False])
+    async def test_a_batch_spawns_once_and_fails_naming_the_file(
+        self, agents_dir, workspace, monkeypatch, pool_env, projection_on
+    ):
+        if not projection_on:
+            monkeypatch.setenv("KIROCREW_NATIVE_SKILL_PROJECTION", "0")
+        _template(agents_dir)
+        made: list[acp_client.AcpClient] = []
+        monkeypatch.setattr(
+            llm_pool, "AcpClient", _reinjecting_factory(workspace, agents_dir, made)
+        )
+        pool = llm_pool.LLMPool(pool_size=2)
+
+        with pytest.raises(llm_pool.KnowledgeSpecUnconfirmed) as caught:
+            await pool.send_batch([f"chunk {i}" for i in range(29)])
+
+        # One spawn for the whole batch, not one per chunk.
+        assert len(made) == 1
+        for client in made:
+            client.send_message.assert_not_awaited()
+        message = str(caught.value)
+        assert str(_spec_path(agents_dir)) in message
+        assert "mcpServers" in message and "allowedTools" in message
+        assert _NONCE not in message and "launcher-creds" not in message
+        # The refusal names the likely writer and what to do about it.
+        assert "leave Kiro Crew's tool-less specs alone" in message
+
+        # A later ingest inside the window spawns nothing.
+        with pytest.raises(llm_pool.KnowledgeSpecUnconfirmed):
+            await pool.send("another chunk")
+        assert len(made) == 1
+        await pool.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_the_pool_tries_again_after_the_window(
+        self, agents_dir, workspace, monkeypatch, pool_env
+    ):
+        from kiro_crew.testing.clock import ManualClock
+
+        clock = ManualClock()
+        clock.install(monkeypatch, llm_pool)
+        _template(agents_dir)
+        made: list[acp_client.AcpClient] = []
+        monkeypatch.setattr(
+            llm_pool, "AcpClient", _reinjecting_factory(workspace, agents_dir, made)
+        )
+        pool = llm_pool.LLMPool(pool_size=1)
+        with pytest.raises(llm_pool.KnowledgeSpecUnconfirmed):
+            await pool.send("chunk")
+        assert len(made) == 1
+
+        # The tool that rewrote the file is gone; the window passes.
+        monkeypatch.setattr(llm_pool, "AcpClient", _client_factory(workspace, made))
+        clock.advance(llm_pool.SPEC_REFUSAL_COOLDOWN_SECS + 1)
+        monkeypatch.setattr(AcpWorker, "is_alive", lambda self: self._client is not None)
+
+        assert await pool.send("chunk") == "{}"
+        assert len(made) > 1
+        await pool.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_the_extractor_fails_the_ingest_instead_of_storing_empty_chunks(
+        self, agents_dir, workspace, monkeypatch, pool_env
+    ):
+        from kiro_crew.knowledge.extractor import EntityExtractor
+
+        _template(agents_dir)
+        made: list[acp_client.AcpClient] = []
+        monkeypatch.setattr(
+            llm_pool, "AcpClient", _reinjecting_factory(workspace, agents_dir, made)
+        )
+        pool = llm_pool.LLMPool(pool_size=1)
+
+        with pytest.raises(llm_pool.KnowledgeSpecUnconfirmed):
+            await EntityExtractor(pool).extract_batch(["one", "two", "three"])
+        with pytest.raises(llm_pool.KnowledgeSpecUnconfirmed):
+            await EntityExtractor(pool).extract("four")
+        assert len(made) == 1
+        await pool.shutdown()
+
+
+class TestAProjectSpecCannotShadowTheWorker:
+    """The worker runs in a Crew-owned cwd, and a checkout claim there is refused."""
+
+    def test_the_worker_cwd_is_crew_owned(self):
+        client = acp_client.AcpClient(agent=AGENT_NAME, acp_backend=ACP_BACKEND_KIRO)
+        assert client._work_dir == paths.config_dir() / paths.KEYLESS_WORK_DIR_NAME
+
+    def test_a_project_spec_of_the_same_name_is_refused_before_spawn(self, tmp_path):
+        from kiro_crew.acp.managed_agent_shadow import managed_agent_shadow_refusal
+
+        project_agents = tmp_path / ".kiro" / "agents"
+        project_agents.mkdir(parents=True)
+        (project_agents / KNOWLEDGE_AGENT_FILENAME).write_text(
+            json.dumps({"name": AGENT_NAME, "tools": ["*"]}), encoding="utf-8"
+        )
+
+        refusal = managed_agent_shadow_refusal(AGENT_NAME, tmp_path)
+
+        assert refusal is not None
+        assert str(project_agents / KNOWLEDGE_AGENT_FILENAME) in refusal
+
+
+class TestAnAliasRewrittenAtEveryLaunch:
+    """The authored spec is clean; a tool rewrites the published alias kiro-cli loads."""
+
+    @pytest.mark.asyncio
+    async def test_the_batch_fails_once_naming_the_alias_not_the_authored_spec(
+        self, agents_dir, workspace, monkeypatch, pool_env
+    ):
+        template = _template(agents_dir)
+        made: list[acp_client.AcpClient] = []
+        monkeypatch.setattr(
+            llm_pool,
+            "AcpClient",
+            _client_factory(
+                workspace, made, lambda prepared: _inject(_alias_path(agents_dir, prepared))
+            ),
+        )
+        pool = llm_pool.LLMPool(pool_size=2)
+
+        with pytest.raises(llm_pool.KnowledgeSpecUnconfirmed) as caught:
+            await pool.send_batch([f"chunk {i}" for i in range(29)])
+
+        assert len(made) == 1
+        made[0].send_message.assert_not_awaited()
+        alias = _alias_path(agents_dir, made[0]._native_skill_projection)
+        message = str(caught.value)
+        assert f"the published skill-view alias {alias} sets" in message
+        assert "rewritten after Kiro Crew published it" in message
+        assert str(_spec_path(agents_dir)) not in message
+        assert "project" not in message
+        assert _NONCE not in message and "launcher-creds" not in message
+        # The authored spec was never the problem, and it is left as it was.
+        assert _read(_spec_path(agents_dir)) == template
+        await pool.shutdown()
+
+
+class TestTheRefusalNamesTheResolvedSpec:
+    """Without a view, the message names what the declared-name resolver returned."""
+
+    @pytest.mark.asyncio
+    async def test_a_second_claimant_is_named_not_blamed_on_a_rewrite(
+        self, agents_dir, workspace, monkeypatch, pool_env
+    ):
+        monkeypatch.setenv("KIROCREW_NATIVE_SKILL_PROJECTION", "0")
+        _template(agents_dir)
+        copy = agents_dir / "kirocrew-knowledge-copy.json"
+        copy.write_text(json.dumps({"name": AGENT_NAME, "tools": ["*"]}), encoding="utf-8")
+        made: list[acp_client.AcpClient] = []
+        monkeypatch.setattr(llm_pool, "AcpClient", _client_factory(workspace, made))
+        pool = llm_pool.LLMPool(pool_size=1)
+
+        with pytest.raises(llm_pool.KnowledgeSpecUnconfirmed) as caught:
+            await pool.send_batch(["one", "two", "three"])
+
+        message = str(caught.value)
+        # The ambiguity error repr()s each path, so a Windows path shows doubled
+        # backslashes; the file's own name is the same on every platform.
+        assert copy.name in message
+        assert "another tool rewrote it" not in message
+        for client in made:
+            client.send_message.assert_not_awaited()
+        await pool.shutdown()

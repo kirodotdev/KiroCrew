@@ -22,6 +22,7 @@ from kiro_crew import edition
 from kiro_crew.agent import SharedAgentHomeRefused
 from kiro_crew.dashboard.handlers._shared import rebuild_agent_spec
 from kiro_crew.dashboard.handlers.mcp import (
+    _builtin_server_refusal,
     _find_server_spec_anywhere,
     _get_mcp_lock,
     _is_valid_mcp_name,
@@ -501,6 +502,11 @@ async def _install_from_official(request: web.Request, server_id: str) -> web.Re
     # written spec (and filling any env vars) — is the consent step before
     # the process can ever spawn. Install never flips anything on.
     enable_now = False
+    # An install lands disabled, so one under a Kiro Crew server's own name
+    # would mute that server through the store.
+    builtin = await _builtin_server_refusal(name)
+    if builtin is not None:
+        return builtin
 
     async with _get_mcp_lock():
         existing = await asyncio.to_thread(_find_server_spec_anywhere, name)

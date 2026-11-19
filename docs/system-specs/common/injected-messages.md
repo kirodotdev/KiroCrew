@@ -97,7 +97,7 @@ single completion path that serves every terminal outcome:
 
 ```
 [Subagent completion event]
-Agent `<id>` (<agent name>) <status> <emoji>
+Agent `<id>` (<agent name>) <status>
 Task: <first 100 chars of the task>
 
 Usage: <credits> credits · <elapsed>
@@ -108,9 +108,14 @@ Usage: <credits> credits · <elapsed>
 - `SUBAGENT_COMPLETION_PREFIX = '[Subagent completion event]'` is defined in
   `constants.py` and included in `injected_turns.py`'s `SUBAGENT_COMPLETION_PREFIXES`
   aggregate.
-- `<status> <emoji>` is one of `completed ✅`, `failed ❌`, or `stopped by user ⏹`.
-  The agent-name parenthetical is present only when the sub-agent ran under a named
-  agent.
+- `<status>` leads with an outcome word: `completed`, `failed`, `stopped by user`,
+  or `failed: reaped`. A note after the word follows a colon. The agent-name
+  parenthetical is present only when the sub-agent ran under a named agent.
+- Gateways before the plain-word wording wrote `<status> <emoji>` (`completed ✅`,
+  `failed ❌`, `stopped by user ⏹`), and saved history keeps them. Every reader
+  (`subagentCompletion.ts`, `system_notices.py`) accepts both forms. A wave's
+  final chunk reads `wave finished: <n> completed · <n> failed · <n> stopped of
+  <n> agents.`, formerly `<n> ✅ · <n> ❌ · <n> ⏹`.
 - The detail is the trimmed result when it fits. When the completion copy dropped
   content, it is a summary plus a `result_path` pointer, so
   the parent reads the full transcript on demand (`read`, `grep`, `spawn_status`)
@@ -163,7 +168,7 @@ synthesis turn follows either; a sibling still queued holds the synthesis, and
 its own completion turn decides it. The one exception is a task store the turn-end fire gate could not
 read; its later re-check fires the synthesis as before. Because the
 synthesis turn is not always there, a completed run that made no tool call
-carries its own ``⚠ Agent `<id>` made no tool calls in this run…`` line, in the
+carries its own ``Warning: Agent `<id>` made no tool calls in this run…`` line, in the
 completion event or under its digest entry, asking the parent to check any
 reported change on disk.
 
@@ -184,7 +189,7 @@ reached through `SubagentManager.notify_injection_failed`:
 
 ```
 [Subagent completion event]
-Agent `<id>` ❌ <reason>
+Agent `<id>` failed: <reason>
 Task: <first 100 chars of the task>
 Usage: <credits> credits · <elapsed>
 <outcome line>
@@ -214,22 +219,22 @@ on disk**, so use the `read` tool to retrieve it rather than re-running the work
 Four adjacent variants exist for a gateway restart, same prefix. They omit
 usage because a run the restart caught has no settled terminal billing record:
 
-- `✅ finished before gateway restart` plus `Result saved at: <path>` and
+- `completed: finished before gateway restart` plus `Result saved at: <path>` and
   `Use the read tool to retrieve it.` — only when the run recorded
   `result_complete`, which a run that claimed its completed ending does once
   `result.txt` holds the whole answer (the window this leaves:
   [subagent](../modules/subagent.md#gateway-restart-reconciliation)). It is a
   completed run (outcome `ok`) that arrives late.
-- `✅ finished before gateway restart` plus a line saying it finished without
+- `completed: finished before gateway restart` plus a line saying it finished without
   writing any text — a run that recorded `result_complete` with no
   `result.txt` (a tool-only run).
-- `⚠️ cut off mid-turn by gateway restart` plus `Partial output saved at: <path>`
+- `interrupted: cut off mid-turn by gateway restart` plus `Partial output saved at: <path>`
   and a line saying the text stops wherever the restart landed. `result.txt` is
   appended per streamed chunk, so a run killed mid-turn leaves a non-empty file
   holding an opening sentence; this variant exists so the parent is not sent to
   read a fragment as though it were the answer. It carries the same resume line
   as the next variant, on the same condition.
-- `❌ lost to gateway restart` plus `No result was captured before the restart.`
+- `failed: lost to gateway restart` plus `No result was captured before the restart.`
   When the run's conversation is still resumable
   (`session_map.session_files_resumable` on the orphan's `session_id` /
   `provider`), one more line follows: how many turns it completed, its last
@@ -927,7 +932,7 @@ speech rather than as the user.
 | `[RESOURCES]` | `resource_status.py` advisory builder | Host memory, or the agent slice's headroom when that is the tighter reading (the line then says "Agent memory" and gives the host's own figure), crossed the tight/critical threshold, **or** the agent slice sits within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`, **or** the macOS kernel reports memory pressure of WARN or worse (`ResourceStatus.memory_pressure_held`) while the figure reads ample or cannot be read; take the lighter path this turn. |
 | `[MCP SERVERS]` | `context_assembly/mcp_servers.py` (`turn_block`), from the session's MCP report | Some of the session's MCP servers cannot be used right now. The block lists them by state inside a nonce fence (names only, screened like every rail line that carries configuration text; never a failure reason) and says what to do: for one still starting, tell the user in a sentence, call `mcp_server_wait` once, then load the tool and finish the task; for a settled state (failed, needs a sign-in, switched off, left out by a registry), say what is true; never say the server or its tools do not exist. A context block on the turn's rail like `[RESOURCES]`: built into the prompt, stored in no transcript and drawn in no chat. Sent every turn while a server is still starting, once per change otherwise, plus one row, once, naming a server an earlier block listed that the report now holds as connected. A server that only stopped being listed (removed, or the session re-opened without it) is never called connected. |
 | `[Relevant skills for this message]` | `skill_runtime/delivery.py` pointer renderer (`trigger_hint`) | Skill candidates named by path instead of by injected body. The body must be read before use unless that skill already appears earlier in the conversation, where native history still carries its instructions. |
-| `[Kiro Crew host notice] You have made the same tool call …` | `repeat_loop.py` (`build_repeat_loop_notice`), steered by `dashboard/chat_turn/deny_chokepoints.py` (`_steer_repeat_loop_notice`) | The same tool call with the same input returned the same result `REPEAT_LOOP_THRESHOLD` times in one turn. Tools that act outside the turn are never counted, judged by tool identity and not by output text: `_EXEMPT_TOOL_IDS` holds `browser` and the `kirocrew-computer` `computer_*` tools, matched on any server-qualified spelling and through the host's `tool_call` wrapper by its `tool_id`. A call with an empty title is named by its tool (the wrapped `tool_id` for `tool_call`). Advice only: nothing was refused or stopped, it is sent at most once per call per turn, and it never joins the refusal ledger, so it schedules no recovery turn. Sent only where `supports_refusal_steer` holds; a hint written after the turn's last tool result may go unread, which is harmless because the loop has ended. |
+| `[Kiro Crew host notice] You have made the same tool call …` | `repeat_loop.py` (`build_repeat_loop_notice`), steered by `dashboard/chat_turn/deny_chokepoints.py` (`_steer_repeat_loop_notice`) | The same tool call with the same input returned the same result `REPEAT_LOOP_THRESHOLD` times in one turn. Tools that act outside the turn are never counted, judged by tool identity and not by output text: `_EXEMPT_TOOL_IDS` holds `browser` and the `kirocrew-computer` `computer_*` tools, matched on any server-qualified spelling and through the host's `tool_call` wrapper by its `tool_id`. A frame that states no tool name is named by its wire title when that is a single tool-name token, behind the backend's own `Running: ` prefix (KAS names a resident MCP tool only there, `@kirocrew-core/browser`); failing that, by the tool an earlier frame of the call named (a `tool_call_update` re-sending the input names none), so the call keeps its exemption and its name. A wire title with whitespace is a command or a label and names nothing. A call with an empty title is named by its tool (the wrapped `tool_id` for `tool_call`). Advice only: nothing was refused or stopped, it is sent at most once per call per turn, and it never joins the refusal ledger, so it schedules no recovery turn. Sent only where `supports_refusal_steer` holds; a hint written after the turn's last tool result may go unread, which is harmless because the loop has ended. |
 | `[INCOGNITO SESSION]` / `[TEMPORARY SESSION]` | `dashboard/chat_utils_slots.py` ephemeral-session prefixes | An instruction, not a tool-level gate: it forbids memory tools (writes in incognito, reads as well in temporary) and learns nothing from the chat — the transcript itself is kept in History for the user, but no lesson, memory or summary is derived from it. `learn_remove` and the cron tools stay permitted as active user actions, and a cron change persists outside the transcript. |
 
 ## Adding a new envelope

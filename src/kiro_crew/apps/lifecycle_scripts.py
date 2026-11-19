@@ -70,7 +70,7 @@ async def run_lifecycle_script(
         logger.warning("Refusing app %s lifecycle action %s: %s", app_name, action, denied)
         return {"output": denied, "failed": True, "denied": True}
 
-    if not app_root.is_dir():
+    if not await asyncio.to_thread(app_root.is_dir):
         return {"output": f"app directory not found: {app_root}", "failed": True}
 
     # Native-Windows policy: these lifecycle hooks are a POSIX-only capability.

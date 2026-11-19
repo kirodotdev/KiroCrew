@@ -3,8 +3,10 @@
  * active pane covers <main> at its rect and hides under a local menu or dialog,
  * every other open pane stays loaded but hidden, past the warm cap the least
  * recent hidden one closes, and a pane main closes drops its tab, so every tab
- * has an open pane. Mounted only while the hidden pane key is on
- * (lib/relayCrewPanes.ts).
+ * has an open pane. A closed pane's Crew stays in the switcher's Remote Crews
+ * list, where a click opens it again. The shell creates every pane hidden, so
+ * this is the only place one is shown. Mounted while the shell has the pane
+ * calls (lib/relayCrewPanes.ts).
  */
 import { useEffect } from 'react'
 import { useAppDispatch, useAppSelector } from '../store'

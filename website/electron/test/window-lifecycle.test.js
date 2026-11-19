@@ -1138,6 +1138,7 @@ describe("dashboard window wiring order", () => {
       "view.on:did-finish-load",
       "win.on:swipe",
       "view.on:input-event",
+      "view.on:did-finish-load",
       "win.on:closed",
       "win.on:resize",
       "win.on:closed",

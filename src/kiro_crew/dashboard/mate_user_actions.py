@@ -148,9 +148,10 @@ def terminal_line(outcome: str, *, source: str, reason: str, command: str) -> st
         head = crewmate_prompts.fill(_TERMINAL_PIECES[outcome], source=where, reason=why)
     else:
         head = crewmate_prompts.fill(_TERMINAL_PIECES[outcome], source=where)
+    from kiro_crew.context_assembly import markers
     from kiro_crew.member_goals import scrub_text
 
-    body = scrub_text(command).replace(_END, "").strip()
+    body = markers.neutralize_user_action_command_close(scrub_text(command)).strip()
     if len(body) > MAX_COMMAND_CHARS:
         body = body[:MAX_COMMAND_CHARS].rstrip() + " …"
     return "\n".join([head, _BEGIN, body, _END])

@@ -137,6 +137,24 @@ class TestLoginTargetValidation:
         domain it lives on."""
         assert normalize_start_url(raw) == canonical
 
+    @pytest.mark.parametrize(
+        "raw, reason",
+        [
+            ("https://not_a_host/start", "that does not look like a web address"),
+            ("https://example.awsapps.com:abc/start", "does not look like a web address"),
+            ("http://example.awsapps.com/start", "must begin with https://"),
+            ("https://user@example.awsapps.com/start", "must not include a user name or password"),
+            ("https://example.awsapps.com:8443/start", "must not include a port number"),
+            ("https://example.awsapps.com/start x", "contains a space or a symbol"),
+        ],
+    )
+    def test_refusal_says_what_is_wrong_in_plain_words(self, raw, reason):
+        """The company SSO form shows this reason to the user, so it names the
+        problem in everyday words."""
+        with pytest.raises(LoginTargetError) as info:
+            normalize_start_url(raw)
+        assert reason in str(info.value)
+
     def test_round_trip_and_malformed_persisted_target_is_refused_not_defaulted(self):
         """A persisted target that NAMED an identity but fails validation is
         an error for the caller to handle, never a quiet Builder ID; a file with
@@ -1047,6 +1065,13 @@ class TestHandlerBoundary:
         assert await sessions_mod._fetch_whoami_or_none("/bin/kiro-cli") is None
         current["proc"] = _Proc(0, b"{}")
         assert await sessions_mod._fetch_whoami_or_none("/bin/kiro-cli") == {}
+        # kiro-cli 3.x signed out: `{"account":null}`, exit 1. A known absence,
+        # not "could not be read" (the launch form's false red error).
+        current["proc"] = _Proc(1, b'{"account":null}\n')
+        assert await sessions_mod._fetch_whoami_or_none("/bin/kiro-cli") == {}
+        # Any other JSON on a nonzero exit is still unknown.
+        current["proc"] = _Proc(1, b'{"account":null,"error":"io"}')
+        assert await sessions_mod._fetch_whoami_or_none("/bin/kiro-cli") is None
         current["proc"] = _Proc(1, IDC_WHOAMI.encode())
         got = await sessions_mod._fetch_whoami_or_none("/bin/kiro-cli")
         assert got is not None and got["account_type"] == "IamIdentityCenter"

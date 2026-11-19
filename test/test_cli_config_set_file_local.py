@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -61,7 +62,7 @@ def test_file_with_local_writes_the_overlay_not_the_base(home, capsys):
     overlay_src.write_text(json.dumps({"agent": {"provider": "acp"}}), encoding="utf-8")
     _run(home, _args(file=str(overlay_src), local=True))
     out = capsys.readouterr().out
-    assert "Done: " in out
+    assert "✅" in out
     assert "config.local.json" in out
     # The overlay holds the document; the base is left untouched.
     written = json.loads((home / "config.local.json").read_text(encoding="utf-8"))
@@ -88,7 +89,7 @@ def test_file_with_a_key_warns_and_still_writes_the_base(home, capsys):
     assert "ignoring the key/value" in captured.err
     assert "agent.provider" in captured.err
     # The --file write still landed on the base (back-compat).
-    assert "Done: " in captured.out
+    assert "✅" in captured.out
     written = json.loads((home / "config.json").read_text(encoding="utf-8"))
     assert written["agent"] == {"provider": "acp"}
 
@@ -99,7 +100,7 @@ def test_plain_file_still_replaces_the_base_config(home, capsys):
     src.write_text(json.dumps({"agent": {"provider": "acp"}}), encoding="utf-8")
     _run(home, _args(file=str(src)))
     out = capsys.readouterr().out
-    assert "Done: " in out
+    assert "✅" in out
     written = json.loads((home / "config.json").read_text(encoding="utf-8"))
     # The file's document is installed whole (the loader adds a meta stamp).
     assert written["agent"] == {"provider": "acp"}
@@ -136,7 +137,7 @@ def test_file_with_local_keeps_an_unchanged_base_workspace_binding(home, capsys)
         encoding="utf-8",
     )
     _run(home, _args(file=str(src), local=True))
-    assert "Done: " in capsys.readouterr().out
+    assert "✅" in capsys.readouterr().out
     written = json.loads((home / "config.local.json").read_text(encoding="utf-8"))
     assert written["workspaces"]["new"] == {"dir": str(home)}
 
@@ -156,7 +157,7 @@ def test_file_with_local_warns_not_refuses_a_dir_the_base_already_binds(home, ca
     src.write_text(json.dumps({"workspaces": {"proj": {"dir": gone}}}), encoding="utf-8")
     _run(home, _args(file=str(src), local=True))
     captured = capsys.readouterr()
-    assert "Done: " in captured.out
+    assert "✅" in captured.out
     assert "not an existing directory" in captured.err
     written = json.loads((home / "config.local.json").read_text(encoding="utf-8"))
     assert written["workspaces"]["proj"] == {"dir": gone}
@@ -180,7 +181,29 @@ def test_file_with_local_judges_each_workspace_on_its_own(home, capsys):
     )
     _run(home, _args(file=str(src), local=True))
     captured = capsys.readouterr()
-    assert "Done: " in captured.out
+    assert "✅" in captured.out
     assert "'proj'" in captured.err
     written = json.loads((home / "config.local.json").read_text(encoding="utf-8"))
     assert written["workspaces"] == {"keep": {"dir": gone}, "proj": {"dir": also_gone}}
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="needs a file the user cannot read",
+)
+def test_file_over_an_overlay_that_cannot_be_read_says_so_and_writes_nothing(home, capsys):
+    overlay = home / "config.local.json"
+    overlay.write_text('{"agent": {"provider": "kas"', encoding="utf-8")
+    overlay.chmod(0o000)
+    src = home / "new.json"
+    src.write_text(json.dumps({"agent": {"provider": "acp"}}), encoding="utf-8")
+    try:
+        with pytest.raises(SystemExit) as raised:
+            _run(home, _args(file=str(src), local=True))
+        overlay.chmod(0o600)
+        assert overlay.read_text(encoding="utf-8") == '{"agent": {"provider": "kas"'
+    finally:
+        overlay.chmod(0o600)
+    assert raised.value.code == 1
+    assert capsys.readouterr().err.startswith("Error: ")
+    assert not list(home.glob("config.local.json.unreadable*"))

@@ -199,23 +199,36 @@ describe('Conductor mode on ChatPage', () => {
     await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'better-conductor', 'template'))
   })
 
-  it('shows the conductor mode chip, not a picker, on a conductor chat', async () => {
+  it('shows one conductor mode bolt, not a picker, on a conductor chat', async () => {
     await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template' })
-    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Conductor mode')
+    expect(screen.getByTestId('crew-mode-composer-chip').textContent).toBe('')
     const mark = screen.getByTestId('crew-mode-composer-chip')
-    expect(mark.tagName).not.toBe('BUTTON')
-    // A read-only status: named for what it says, not focusable, no pointer.
-    expect(mark).toHaveAttribute('aria-label', 'Conductor mode is on for this chat')
-    expect(mark).not.toHaveAttribute('tabindex')
+    expect(mark.tagName).toBe('BUTTON')
+    // A read-only icon: focusable so its name tip reaches keyboard and touch users.
+    expect(mark).toHaveAttribute('aria-label', 'This chat runs in conductor mode')
+    expect(mark).not.toHaveAttribute('aria-pressed')
     expect(mark).not.toHaveAttribute('title')
     expect(mark.className).toContain('cursor-default')
     expect(mark.className).not.toMatch(/\bborder\b|rounded|hover:/)
   })
 
-  it('shows the conductor mode badge on every conductor, the pipeline conductor included', async () => {
+  it('closes the open attach menu when the composer bolt is pressed, as a press anywhere outside it does', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template' })
+    const plus = screen.getByRole('button', { name: 'Add files & options' })
+    fireEvent.click(plus)
+    expect(plus).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'Upload file' })).toBeInTheDocument()
+    // The menu's closer is a bubble-phase document mousedown listener, so a
+    // bolt that stopped mousedown at itself would leave the menu open.
+    fireEvent.mouseDown(screen.getByTestId('crew-mode-composer-chip'))
+    expect(plus).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('button', { name: 'Upload file' })).toBeNull()
+  })
+
+  it('shows one bolt on every conductor, the pipeline conductor included', async () => {
     setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor', 'kirocrew-pipeline-conductor'])
     await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-pipeline-conductor', agentKind: 'template' })
-    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Conductor mode')
+    expect(screen.getByTestId('crew-mode-composer-chip').textContent).toBe('')
   })
 
   it('keeps the crew badge clear of the stationary sessions toggle', async () => {
@@ -255,7 +268,8 @@ describe('Conductor mode on ChatPage', () => {
     expect(ph).toMatch(/^Message |press Resume/)
     // The conductor's footer: the Crew Mode mark, never a switch, and no agent picker.
     const mark = within(wrap).getByTestId('crew-mode-composer-chip')
-    expect(mark.tagName).not.toBe('BUTTON')
+    expect(mark.tagName).toBe('BUTTON')
+    expect(mark).not.toHaveAttribute('aria-pressed')
     expect(within(wrap).queryByRole('button', { name: /^Agent: / })).toBeNull()
     expect(within(wrap).queryByText('kirocrew-worker')).toBeNull()
   })
@@ -515,7 +529,7 @@ describe('Conductor mode on ChatPage', () => {
     detail.hold = true
     await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template', slotLoading: true })
     const mark = screen.getByTestId('crew-mode-composer-chip')
-    expect(mark).toHaveAttribute('aria-label', 'Conductor mode is on for this chat')
+    expect(mark).toHaveAttribute('aria-label', 'This chat runs in conductor mode')
     expect(screen.queryByRole('button', { name: 'Conductor mode', pressed: true })).toBeNull()
     expect(chatSlotAgent).not.toHaveBeenCalled()
   })
@@ -613,7 +627,7 @@ describe('Conductor mode on ChatPage', () => {
     await waitFor(() => expect(store.getState().dashboard.slots[0].agent).toBe('kirocrew-conductor'))
     await waitFor(() => expect(store.getState().chat.activityOpen).toBe(true))
     expect(screen.queryByTestId('crew-mode-switch')).toBeNull()
-    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Conductor mode')
+    expect(screen.getByTestId('crew-mode-composer-chip').textContent).toBe('')
     // The Board shows the conductor mode panel before the gateway's root stamp reaches the row.
     expect(await screen.findByTestId('conductor-mode-crew-panel', {}, { timeout: 5000 })).toBeInTheDocument()
     expect(screen.queryByTestId('crew-workers-none')).toBeNull()
@@ -710,7 +724,7 @@ describe('Conductor mode on ChatPage', () => {
     expect(screen.getByTestId('crew-mode-open-board')).toBeInTheDocument()
     expect(screen.queryByTestId('memory-mode-chip')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Conductor mode', pressed: true })).toBeNull()
-    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Conductor mode')
+    expect(screen.getByTestId('crew-mode-composer-chip').textContent).toBe('')
   })
 
   it('is not offered on a legacy orchestrator-mode session', async () => {

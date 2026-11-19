@@ -372,6 +372,22 @@ custom-rules:
       established in test_builtin_app_assets.py, test_platform_compat.py, and
       test_skill_home_paths.py.
 
+      AN OBJECT THAT OPENS SQLITE IN ITS CONSTRUCTOR IS CLOSED BY ITS TEST. On
+      CPython 3.11+ an unclosed `sqlite3.Connection` is a reference cycle, so a
+      dropped store keeps `db` + `-wal` + `-shm` open until the cyclic collector
+      runs, and on macOS (default `ulimit -n 256`) one xdist worker runs out of
+      descriptors and every later test on it fails with `EMFILE`. GitHub's
+      runners allow 10240 or more, so CI does not show it. FLAG an added or
+      changed test that builds a `SubagentManager`, `VectorMemoryStore`,
+      `KnowledgeStore`, or a new class that opens SQLite in `__init__`, with no
+      `close()` on every exit path, no `opened(...)` wrap and no opt-in close
+      fixture (`close_subagent_managers`). `SkillsLoader` is closed for every
+      test by the rootdir conftest's autouse
+      `_close_skills_loaders_the_test_opened`, so do not flag it; DO flag a
+      change that removes or narrows that fixture. See
+      docs/system-specs/common/testing-conventions.md § Close the SQLite
+      handles and skills loaders a test opens.
+
   - id: tests-are-deterministic
     blocking: true
     file-patterns:
@@ -482,7 +498,11 @@ custom-rules:
           registered under that name in `sys.modules` before `exec_module`,
           never under the real name), and a
           `sys.modules` eviction without restoring both the entry and the
-          parent package's attribute in the same scope.
+          parent package's attribute in the same scope. A NEWLY ADDED
+          counting or recording spy set through `<mod>.os.<name>` (the stdlib
+          module itself) belongs here too when it counts every caller: count
+          only calls whose caller is the function under test, or set it on
+          the module's own `os` binding.
       12. (D11) A NEWLY ADDED autouse fixture that requests the shared
           `monkeypatch` (use `_floor_monkeypatch`), or a bare
           `monkeypatch.undo()` in a test body (scope the patch with
@@ -532,6 +552,17 @@ custom-rules:
           ordering of the checks, or a table whose rows each carry their
           expected rule at that rule's bound, is fine (testing-conventions §
           Refusal tests).
+      17. A probe of a crew log's kernel lock (`file_lock(..., wait=False)` on
+          a unit's `.lease`, or a helper that wraps one) made after
+          `assert_drained()` / `emit.flush()` alone, with no `eager.drain()`
+          before it. The eager folder writes savepoints under this process's
+          share of the same lease on its own thread, and the seal a
+          `session/closed` triggers is one of them, so the probe can read
+          "still owned" while the emitter has already let go: macOS reds
+          about once a day (#39402). Probe through `_owned_elsewhere` /
+          `_can_take_ownership` in `test/crew_log_emit_helpers.py`, which
+          drain the folder first, or drain it yourself (testing-conventions §
+          Filesystem tests).
 
       Allowed (do NOT flag):
       - a sleep inside a stub that simulates slow work while the test waits

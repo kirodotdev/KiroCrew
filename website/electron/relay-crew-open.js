@@ -19,10 +19,11 @@
  * at the next renewal: when any renewal stops on SIGNED_OUT (the gateway reads
  * the Kiro sign-in on every mint), everything closes the same way.
  *
- * An account switch is caught per window: each window keeps the gateway's
+ * An account switch is caught by any page: each one keeps the gateway's
  * non-secret sign-in marker from its first grant and sends it on every
  * renewal. The gateway refuses SIGN_IN_CHANGED when the vault now holds
- * another account, and that one window closes at its own next renewal.
+ * another account, and since the account is the whole app's, every relay
+ * Crew closes then, as on a sign-out.
  *
  * A window stops waiting for its Crew, and shows a notice in place of the
  * Crew's page, when renewal stops on CREW_OFFLINE or CREW_ACCESS_NOT_GRANTED,
@@ -48,7 +49,7 @@ const PANE_EVENT = "relay-crew:pane-event";
 // `openPane` puts the Crew in the main window instead of a window of its own
 // (the pane in relay-crew-window.js); `open` uses it only when handed a
 // pane. Its handle has the window's shape, so everything below serves both.
-function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenewal, createTokenHolder, log }) {
+function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenewal, createTokenHolder, partitionCleared, log }) {
   // endpointId -> { win, holder, renewal, crew, dashboard } for each open
   // window or pane; `dashboard` is set for a pane only.
   const windows = new Map();
@@ -79,9 +80,7 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
     };
     const onOutcome = (o) => {
       if (!o || o.stopped !== true) return;
-      if (o.code === "SIGNED_OUT") closeAll("SIGNED_OUT");
-      // An account switch closes only the window this renewal drives.
-      if (o.code === "SIGN_IN_CHANGED") closeOne(endpointId, renewal, "SIGN_IN_CHANGED");
+      if (o.code === "SIGNED_OUT" || o.code === "SIGN_IN_CHANGED") closeAll(o.code);
       const kind = NOTICE_FOR_CODE[o.code];
       if (kind) {
         const entry = windows.get(endpointId);
@@ -111,15 +110,6 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
     }
   }
 
-  // Close one window, only while `renewal` still drives it. Its close
-  // listener removes the entry.
-  function closeOne(endpointId, renewal, reason) {
-    const entry = windows.get(endpointId);
-    if (!entry || entry.renewal !== renewal) return;
-    try { entry.win.close(); } catch { /* already gone */ }
-    say(endpointId, `closed (${reason})`);
-  }
-
   // Replace the Crew's page with a notice. The name is the Crew's own, shown
   // only in the window and never logged.
   function showNotice(endpointId, entry, kind) {
@@ -142,7 +132,9 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
       say(endpointId, error);
       return { ok: false, error };
     }
-    // Everything closed while the mint was in flight: open nothing.
+    // The last page of this Crew may still be wiping its partition.
+    if (partitionCleared) await partitionCleared(endpointId);
+    // Everything closed while the mint or the wipe was in flight: open nothing.
     if (epoch !== at) {
       renewal.stop();
       say(endpointId, "UNAVAILABLE");
@@ -152,7 +144,13 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
     try {
       const opts = { endpointId, crewUrl: crew.crewUrl, relayDomain: crew.relayDomain, title: crew.name, getToken: holder.current };
       win = pane
-        ? openPane({ ...opts, parent: pane.parent, dashboard: pane.dashboard, bounds: pane.bounds })
+        ? openPane({
+          ...opts,
+          parent: pane.parent,
+          dashboard: pane.dashboard,
+          bounds: pane.bounds,
+          menuReload: (o) => reloadCrew(endpointId, o),
+        })
         : openWindow(opts);
       wire({ win, renewal });
       win.onClosed(() => { if (windows.get(endpointId)?.win === win) windows.delete(endpointId); });
@@ -197,16 +195,15 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
   // and reload. A refusal answers its code and leaves the window as it is,
   // except that a refusal with a notice of its own shows it, and a notice
   // already up is shown again so Check again visibly tried.
-  async function restart(endpointId, entry) {
+  async function restart(endpointId, entry, { ignoreCache = false } = {}) {
     // The same window, so the same sign-in: its first mint sends its marker.
     const crew = { signInMarker: entry.crew ? entry.crew.signInMarker : null };
     const { renewal, error } = await startRenewal(endpointId, entry.holder, crew);
     if (!renewal) {
-      // The account changed since the window opened: close it, and the next
-      // click opens as the new account.
-      if (error === "SIGN_IN_CHANGED" && windows.get(endpointId) === entry) {
-        try { entry.win.close(); } catch { /* already gone */ }
-        say(endpointId, "closed (SIGN_IN_CHANGED)");
+      // The account changed since the page opened: every page closes, and the
+      // next click opens as the new account.
+      if (error === "SIGN_IN_CHANGED") {
+        if (windows.get(endpointId) === entry) closeAll("SIGN_IN_CHANGED");
         return { ok: false, error };
       }
       say(endpointId, error);
@@ -228,7 +225,8 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
     entry.crew = crew;
     entry.notice = null;
     wire(entry);
-    entry.win.reload();
+    entry.win.reload({ ignoreCache });
+    // A window of its own comes forward; a pane's tab is the dashboard's to show.
     entry.win.focus();
     say(endpointId, "renewed");
     return { ok: true };
@@ -241,6 +239,18 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
       .finally(() => opening.delete(endpointId));
     opening.set(endpointId, pending);
     return pending;
+  }
+
+  // Reload a Crew's page from the app menu. A stopped renewal (a notice up,
+  // or access lost) mints first, as Check again does, so the page never loads
+  // with no token; a refusal shows the notice again.
+  function reloadCrew(endpointId, { ignoreCache = false } = {}) {
+    const entry = windows.get(endpointId);
+    if (!entry || entry.win.isClosed()) return Promise.resolve({ ok: false, error: "UNAVAILABLE" });
+    if (entry.renewal.isStopped()) return once(endpointId, () => restart(endpointId, entry, { ignoreCache }));
+    entry.win.reload({ ignoreCache });
+    say(endpointId, "reloaded");
+    return Promise.resolve({ ok: true });
   }
 
   // `pane` is `{ parent, dashboard, bounds }`, resolved by main, or absent
@@ -270,6 +280,7 @@ function createRelayCrewOpener({ requestToken, openWindow, openPane, createRenew
       // dashboard must not show a tab for it.
       return pane && res.ok && !windows.get(endpointId)?.dashboard ? { ...res, window: true } : res;
     },
+    reload: reloadCrew,
     // An open pane's handle and the dashboard view it was opened from, or null
     // for a window, a closed pane or no Crew.
     paneFor(endpointId) {

@@ -142,7 +142,7 @@ _BASE_IMPORTS = frozenset("""
     VOCABULARIES_ACCESS_DENIED VOCABULARIES_LIST_FAILED VOCABULARIES_LIST_PERMISSION
     VocabularyListError _CU_MAX_SCREENSHOT_MAX_PX _CU_MAX_TREE_NODES_LIMIT
     _CU_MIN_SCREENSHOT_MAX_PX _STREAMING_PROVIDERS _VALID_STT_PROVIDERS
-    _clamp_compact_wait_secs _ct_eq _find_ffmpeg _metrics_provider _owner_denial_response
+    _clamp_compact_wait_secs _ct_eq _find_ffmpeg _owner_denial_response
     _pip_install_channel_available _redact_external _resolution _unix_request_socket
     _whisper_language ack_explicit_write annotations asyncio audio_exceeds_secs
     availability_detail aws_consent batch_duration_cap_secs beacon

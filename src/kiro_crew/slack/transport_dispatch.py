@@ -79,11 +79,13 @@ from kiro_crew.slack.handler import (
     _thread_agents,
     get_dashboard_state,
     get_orch_cfg,
+    is_shared_listed,
     is_slack_session_trusted,
     is_thread_temporary,
     maybe_apply_privacy_modifiers,
     maybe_handle_keyword_command,
     maybe_route_linked_thread,
+    shared_user_refused_for_session,
     track_background_task,
 )
 from kiro_crew.slack.renderer import PARTIAL_TURN_MARKER
@@ -91,6 +93,7 @@ from kiro_crew.slack.renderer import SlackApprovalDecider
 from kiro_crew.slack.renderer import SlackApprovalDecider as _APPROVAL_REGISTRY
 from kiro_crew.slack.renderer import SlackRenderer, _display_safe
 from kiro_crew.slack.script_hooks import runs_script_hooks
+from kiro_crew.slack.shared_access import SHARED_OWNER_ONLY_TEXT, shared_command_refused
 from kiro_crew.slack.thread_parent import (
     ThreadParent,
     fetch_thread_parent,
@@ -134,7 +137,7 @@ _DEFAULT_KIROCREW_AGENT = "kirocrew"
 
 #: Generic reply for a failed transport turn whose error text is not meant for
 #: the user (see ``_transport_error_text``).
-_TRANSPORT_ERROR_TEXT = "Error: Something went wrong (transport path). Please try again."
+_TRANSPORT_ERROR_TEXT = "🔧 Something went wrong (transport path). Please try again."
 
 #: Longest error detail posted to Slack, the cap the native path applies to its
 #: ``UnknownMemoryStore`` refusal.
@@ -163,7 +166,7 @@ def _transport_error_text(exc: BaseException) -> str:
 
     A classified backend ``AcpError`` (see ``is_user_worded_failure``) carries a
     user-readable reason, for example a usage limit that retrying cannot fix, so
-    that reason is shown under the same ``Error:`` prefix the native path uses. The
+    that reason is shown under the same ``❌`` prefix the native path uses. The
     message can still quote a host path or a credential from the backend, so it
     goes through the same redaction and length cap as the ``UnknownMemoryStore``
     refusal. Every other failure, including an unclassified ``AcpError``, keeps
@@ -172,7 +175,7 @@ def _transport_error_text(exc: BaseException) -> str:
     if isinstance(exc, (UnknownMemoryStore, EmbedAdmissionTimeout)):
         return _redacted_error_detail(exc)
     if is_user_worded_failure(exc):
-        return f"Error: {_redacted_error_detail(exc)}"
+        return f"❌ {_redacted_error_detail(exc)}"
     return _TRANSPORT_ERROR_TEXT
 
 
@@ -425,7 +428,7 @@ async def handle_message_transport(
                     continue
                 _hydrate_conv_flags(sessions, candidate_key)
                 logger.info(
-                    "Slack thread %s owned by %s (at %s) — routing there",
+                    "🔗 Slack thread %s owned by %s (at %s) — routing there",
                     session_key,
                     candidate_key,
                     stage,
@@ -501,6 +504,20 @@ async def handle_message_transport(
     # Shared with native handle_message so a thread linked via
     # /kirocrew link-to-dashboard routes into its dashboard slot (with the same
     # auth recheck + bang fall-through) instead of spawning a fresh session.
+    # A shared user (slack.shared_access) sends no harness `/` command and no
+    # privacy modifier; refused before the linked-thread hand-off, as on native.
+    # Judged on what the user typed, not the ingested text (see handle_message).
+    if shared_command_refused(user_id, inbound_text):
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.owner_command",
+            outcome="denied",
+            source="slack",
+            resources=channel,
+            error="shared user command",
+        )
+        await slack.post_message(channel, SHARED_OWNER_ONLY_TEXT, reply_ts)
+        return
     if await maybe_route_linked_thread(text, session_key, user_id, channel, slack, reply_ts):
         return
 
@@ -527,7 +544,8 @@ async def handle_message_transport(
 
     # ── Quick shortcuts (no session needed) ──
     _lower = text.strip().lower()
-    if _lower == "status":
+    # Owner-only: the counts are the host's (slack.shared_access).
+    if _lower == "status" and not is_shared_listed(user_id):
         # Use the platform identity seam (native migrated to this) rather than
         # importing the OSS SSO stub directly — keeps the CPP boundary intact
         # and returns the real SSO line under the enterprise companion context.
@@ -670,7 +688,7 @@ async def handle_message_transport(
         # kiro-cli to warm up. on_turn_start is idempotent (the driver's later
         # call no-ops). ──
         decider = (
-            SlackApprovalDecider(session_key=session_key)
+            SlackApprovalDecider(session_key=session_key, requester=user_id)
             if approval_mode == APPROVAL_INTERACTIVE
             else None
         )
@@ -719,6 +737,10 @@ async def handle_message_transport(
                 raise
             if sessions.get_session_for_thread(reply_ts) == owner_before_memory:
                 break
+        # The owner may have linked this thread to a code channel's session since the
+        # linked-thread check ran: a shared user's turn never runs there.
+        if await shared_user_refused_for_session(user_id, session_key, reply_ts, channel):
+            return
         if decider is not None:
             # The decider was constructed with the pre-reroute key, and that key
             # is what maps a human's Trust click back to a session. Leaving it

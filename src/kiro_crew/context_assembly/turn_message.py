@@ -753,7 +753,7 @@ def build_message(
 
     # Follow-ups trust ACP native history: a second transcript would contradict it.
     logger.info(
-        "🔍 build_message: session_key=%s is_new=%s resumed=%s "
+        "build_message: session_key=%s is_new=%s resumed=%s "
         "has_channel_history=%s injected_parts=%d",
         session_key,
         is_new_session,

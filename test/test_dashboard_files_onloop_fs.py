@@ -598,6 +598,24 @@ class TestFileSearch:
         assert resp.status == 200
         assert "beta.txt" in [r["name"] for r in _body(resp)["results"]]
 
+    @pytest.mark.asyncio
+    async def test_a_refused_index_root_resolve_is_the_coded_503(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The index resolves the root again after the root check passed; when
+        that resolve is refused, the search gives the same busy answer."""
+
+        class _BusyIndexRegistry:
+            async def ensure(self, root):
+                raise f._PathProbeBusy()
+
+        monkeypatch.setattr(_State, "file_indexes", _BusyIndexRegistry())
+
+        resp = await f.api_file_search(_req("/api/file-search", f"q=alpha&project={tmp_path}"))
+
+        assert resp.status == 503
+        assert _body(resp)["code"] == "path_probe_busy"
+
 
 class TestFileGrep:
     @pytest.mark.asyncio
@@ -1051,6 +1069,32 @@ class TestBoundedProbePool:
         for name, resp in answers.items():
             assert resp.status == 503, (name, resp.status, resp.text)
             assert _body(resp)["code"] == "path_probe_busy", name
+
+        release.set()
+        await asyncio.gather(*wedged)
+
+    @pytest.mark.asyncio
+    async def test_the_index_root_resolve_is_refused_when_the_pool_is_full(
+        self, tmp_path: Path, small_pool
+    ):
+        """The file index resolves the search root through the same gate, so a
+        full pool refuses it inside the admission window instead of queueing it."""
+        from kiro_crew.dashboard.file_index import FileIndexRegistry
+
+        _pool, release = small_pool
+        elsewhere = os.path.join(os.sep, "unrelated-mount", "share")
+        entered = [threading.Event(), threading.Event()]
+        wedged = [
+            asyncio.ensure_future(
+                f._run_path_probe(_wedge_on, os.path.join(elsewhere, str(i)), event, release)
+            )
+            for i, event in enumerate(entered)
+        ]
+        for event in entered:
+            await _until_entered(event)
+
+        with pytest.raises(f._PathProbeBusy):
+            await finished(FileIndexRegistry().ensure(str(tmp_path)), "the index root resolve")
 
         release.set()
         await asyncio.gather(*wedged)

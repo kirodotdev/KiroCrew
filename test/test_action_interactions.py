@@ -35,7 +35,7 @@ class TestMarkButtonClicked:
         result = _mark_button_clicked(blocks, "btn_1", "A")
         assert result[0] == blocks[0]  # section unchanged
         assert result[1]["type"] == "context"
-        assert "Chosen: A" in result[1]["elements"][0]["text"]
+        assert "✓ A" in result[1]["elements"][0]["text"]
         assert result[2]["type"] == "actions"
         assert len(result[2]["elements"]) == 1
         assert result[2]["elements"][0]["action_id"] == "btn_2"
@@ -429,7 +429,9 @@ async def test_slack_kill_now_posts_to_thread_not_session_key(
     orch = orch_fixture
     # stop_turn must invoke on_hard for the post_message branch to run
 
-    async def _fake_stop_turn(key, *, force=False, on_soft=None, on_hard=None):
+    async def _fake_stop_turn(
+        key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None
+    ):
         if on_hard:
             await on_hard()
         return "hard"

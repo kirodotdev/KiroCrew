@@ -208,11 +208,11 @@ def _command_cron_platform_refusal() -> str | None:
     # Imported here: a module-scope import would surface both names on the
     # mcp_cron facade, whose served-name inventory is pinned.
     from kiro_crew import platform_compat
-    from kiro_crew.cron_script import _no_command_shell_message
+    from kiro_crew.cron_script import _no_command_shell_message, _strip_error_lead
 
     if not platform_compat.IS_WINDOWS:
         return None
-    return "Error: " + _no_command_shell_message().removeprefix("❌ ")
+    return "Error: " + _strip_error_lead(_no_command_shell_message())
 
 
 def _vet_shell_command(command: str, *, governance_checked: bool = False) -> str | None:

@@ -411,6 +411,10 @@ class ChannelAgent:
     # titles and request-body patterns are LLM-influenced and never scope a
     # grant. Set while ``_approval_future`` is pending, cleared with it.
     _pending_approval_command: str = field(default="", repr=False)
+    # The approval awaiting a decision is an organisation's ``ask`` on a KAS web
+    # call (``web_ask_rule``): a trust or YOLO sweep of pending approvals leaves it
+    # for a person. Set and cleared with ``_approval_future``.
+    _pending_approval_person_only: bool = field(default=False, repr=False)
     # The provider's text when the last lost-session verdict was a credential
     # failure ("" otherwise), so the recovery notices can name the real cause.
     _credential_error: str = field(default="", repr=False)
@@ -691,7 +695,7 @@ class Channel:
                     from_role="System",
                     mention=None,
                     msg_type="system",
-                    content=f"⚠️ @{target.role} is no longer active.",
+                    content=f"Warning: @{target.role} is no longer active.",
                 )
                 self.messages.append(bounce)
                 self._msg_index[bounce.id] = bounce
@@ -1001,7 +1005,7 @@ async def run_channel_agent(
         elif agent.is_orchestrator:
             await channel.post(
                 "system",
-                f"✅ @{agent.role} is ready. Send a message to get started.",
+                f"@{agent.role} is ready. Send a message to get started.",
                 from_role="System",
                 msg_type="system",
             )
@@ -1052,7 +1056,7 @@ async def run_channel_agent(
                 if replacement is None:
                     await channel.post(
                         agent.id,
-                        "❌ This agent's session could not be re-acquired after its context "
+                        "Error: This agent's session could not be re-acquired after its context "
                         "was cleared. Wake it to try again.",
                         from_role=agent.role,
                         msg_type="system",
@@ -1102,9 +1106,9 @@ async def run_channel_agent(
                     await channel.post(
                         agent.id,
                         (
-                            "❌ This agent's session is stuck and could not be recovered. "
+                            "Error: This agent's session is stuck and could not be recovered. "
                             if fault == _STREAM_BUSY
-                            else f"❌ {_lost_give_up_text(agent)} "
+                            else f"Error: {_lost_give_up_text(agent)} "
                         )
                         + "Clear its context or wake it to try again.",
                         from_role=agent.role,
@@ -1509,18 +1513,23 @@ async def _stream_task(
                 # YOLO mode (global) or channel trust — auto-approve. A
                 # ``gateway --approval yolo`` grant is for dashboard chats only.
                 _yolo = bool(is_yolo and is_yolo()) and safety_override().is_cli_launch is not True
-                from kiro_crew import mate_held_rules
+                from kiro_crew import mate_held_rules, web_ask_rule
 
                 # A moved Bot's limit its worker could not carry exactly
-                # (``mate_held_rules``): neither YOLO, channel trust nor a trusted
+                # (``mate_held_rules``), or an organisation's ``ask`` on a KAS web
+                # call (``web_ask_rule``): neither YOLO, channel trust nor a trusted
                 # command answers a call it covers; it reaches the card.
-                _held = bool(
-                    await asyncio.to_thread(
-                        mate_held_rules.held_for,
-                        event,
-                        session_key=agent.session_key,
-                        agent=agent.agent_name,
+                _web_held = bool(web_ask_rule.held_phrases(event))
+                _held = (
+                    bool(
+                        await asyncio.to_thread(
+                            mate_held_rules.held_for,
+                            event,
+                            session_key=agent.session_key,
+                            agent=agent.agent_name,
+                        )
                     )
+                    or _web_held
                 )
                 if not _held and (_yolo or (channel.trusted and session_mode_permitted("trust"))):
                     approval_outcome = (
@@ -1748,7 +1757,7 @@ async def _stream_task(
                 except Exception:
                     logger.exception("name-grant environment check failed")
                     _grants_refused = True
-                _prose = f"⚠️ Approval needed: **{sanitized_name}**\n```\n{sanitized_input}\n```"
+                _prose = f"Approval needed: **{sanitized_name}**\n```\n{sanitized_input}\n```"
                 if _ng_refusal is not None:
                     # ``log_text`` is a constant; ``detail`` is built from the unredacted command.
                     _prose += f"\nAsking again even though this is trusted: {_ng_refusal.log_text}."
@@ -1763,6 +1772,7 @@ async def _stream_task(
                 approval_future = loop.create_future()
                 agent._pending_approval_command = _cmd if _command_grantable else ""
                 agent._approval_future = approval_future
+                agent._pending_approval_person_only = _web_held
                 # The card's structured facts, beside the prose. The
                 # server is the only side that can refuse a per-command tier
                 # (``handlers_channel.approve``), so it states here which
@@ -1813,6 +1823,7 @@ async def _stream_task(
                     if agent._approval_future is approval_future:
                         agent._approval_future = None
                         agent._pending_approval_command = ""
+                        agent._pending_approval_person_only = False
 
                 if decision not in ("approved", "rejected", "trust"):
                     decision = "rejected"
@@ -1915,7 +1926,7 @@ async def _stream_task(
         logger.exception("LLM stream error for agent %s (%s)", agent.id, agent.role)
         await channel.post(
             agent.id,
-            "❌ An error occurred while processing. Check logs for details.",
+            "Error: An error occurred while processing. Check logs for details.",
             from_role=agent.role,
             msg_type="system",
             thread_id=thread_id,

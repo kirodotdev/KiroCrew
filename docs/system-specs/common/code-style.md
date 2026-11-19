@@ -58,7 +58,6 @@ Other style rules:
 | Module-global asyncio primitives | Never a bare `asyncio.Lock()`/`Event()`/`Queue()` at module scope — it binds to the import-time (or first-use) loop and raises `RuntimeError` from any other loop (Python 3.10+). Use `kiro_crew.loop_lock.LoopBoundLock` for locks, or create the primitive inside the coroutine. CI enforces this (`loop-bound-locks` gate). |
 | Dataclasses | `@dataclass` for data containers |
 | Product name | The product is **Kiro Crew**: two words, a space, capital `K`. Identifiers keep the spelling their own system gave them (the `kirodotdev/KiroCrew` repo slug, `KiroCrew.dmg` artifacts, the `KiroCrew Nightly` OS identifier, the `kirocrew` CLI, `KIROCREW_*` env vars, `kiro_crew` imports). CI gates the lines a change ADDS, so an existing spelling nearby does not exempt a new one; run `BRAND_BASE_REF=origin/main python3 scripts/check_brand_name.py` before pushing. |
-| Backend messages | Text the backend sends (CLI, chat apps, notices, tool replies, prompts) uses plain words such as `Error:`, `Warning:`, `Done`, not emoji or Slack `:shortcode:` emoji. A glyph that is data (a reaction name, a user-picked icon, text parsed from elsewhere) takes a trailing `# emoji-ok: <reason>` comment. An escape such as `"\u2705"` counts as the glyph. A moved line counts as added, so a file split clears or marks the glyphs it moves. CI gates added string lines: `BACKEND_EMOJI_BASE_REF=origin/main python3 scripts/check_backend_emoji.py`. |
 | Errors | ACP exceptions live in `acp/transport_errors.py` (re-exported by `acp/client.py`), `acp/session_handle_runtime_contract.py` (re-exported by `acp/session_handle.py`), and `acp/runtime.py` (the binding and session-start errors in `acp/runtime_session_setup.py` and `acp/runtime_session_create.py`, re-exported by it); return error strings at tool boundaries. See [error-handling](error-handling.md). |
 
 ## Comments explain the WHY
@@ -410,6 +409,7 @@ byte-order mark to the first field.
 
 Icons are `lucide-react` components with `className="lucide-inline"`. Never an
 emoji in the UI, never a hand-rolled SVG.
+Where emoji may stay outside the web UI: [the 2026-11-18 emoji decision](../../decisions/2026-11-18-emoji-are-replaced-only-in-the-web-ui.md).
 
 Never hardcode a user-facing English string, and never format a date, number or
 sort order without naming a locale. Both are CI-gated; see

@@ -658,7 +658,8 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
     ahead of the trusted module - so this is only ever called for apps whose
     code runs from the writable app dir itself.
     """
-    # Local import: a module-level name would be served by this module's facade.
+    # Local imports: a module-level name would be served by this module's facade.
+    from kiro_crew.apps.manifest import requirements_verdict
     from kiro_crew.bounded_read import bounded_read
 
     # Install Python dependencies into a per-app deps dir (isolated from the
@@ -704,10 +705,17 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
         # or digested). On Windows, where os.O_NOFOLLOW is absent and the
         # parent chain is not pinned, the open refuses a link at the final
         # name itself (_open_contained_nofollow).
+        # The clause the refusal reports. Each raise below sets it first; an
+        # OSError from the open or read itself keeps the default plus its
+        # strerror, never str(exc), which can carry a path.
+        cause = "it could not be opened or read"
         try:
             resolved = requirements_in_tree(root, req_file)
             if resolved is None:
-                raise OSError("requirements.txt resolves outside the app root or is not a file")
+                # A file that changed between the rule and this re-check
+                # leaves the cause empty; the default still names a read failure.
+                cause = requirements_verdict(root, req_file)[1] or cause
+                raise OSError(cause)
             root_resolved, open_target = resolved
             # Descriptor-relative, every-component-no-follow open: the
             # containment check above (`requirements_in_tree`, the rule the
@@ -718,22 +726,21 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
             fd = _open_contained_nofollow(root_resolved, open_target)
             with os.fdopen(fd, "rb") as fh:
                 if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-                    raise OSError("requirements.txt is not a regular file")
+                    cause = "it is not a regular file"
+                    raise OSError(cause)
                 # Bounded read: this buffer lives in the GATEWAY's memory
                 # and the file is app-controlled - cap it instead of letting
                 # a giant file take the gateway down.
                 req_bytes = bounded_read(fh, _DEPS_REQ_MAX_BYTES + 1)
                 if len(req_bytes) > _DEPS_REQ_MAX_BYTES:
-                    raise OSError("requirements.txt exceeds the size cap")
-        except OSError:
+                    cause = f"it is larger than the {_DEPS_REQ_MAX_BYTES}-byte size cap"
+                    raise OSError(cause)
+        except OSError as exc:
             req_bytes = None
+            if exc.errno is not None and exc.strerror:
+                cause = f"{cause} ({exc.strerror})"
         if req_bytes is None:
-            provision_error = (
-                f"Refusing requirements.txt for app {app_name}: it is a "
-                f"symlink escaping the app directory, not a regular file, or "
-                f"unreadable (out-of-root symlinked requirements are not "
-                f"installed)"
-            )
+            provision_error = f"Refusing requirements.txt for app {app_name}: {cause}"
     if req_bytes is not None:
         deps_dir = app_deps_dir(root)
         prior = deps_dir.parent / _DEPS_PRIOR_NAME

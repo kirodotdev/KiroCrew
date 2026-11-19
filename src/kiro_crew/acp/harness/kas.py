@@ -104,6 +104,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_KAS,
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
+from kiro_crew.agent_files import LITE_AGENT_FILENAME
 from kiro_crew.config import paths as paths_mod
 from kiro_crew.kiro_cli import (
     chat_sibling,
@@ -413,6 +414,11 @@ def resolve_projected_spec(
         from kiro_crew.template_mcp_additions import merge_at_spawn
 
         spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
+        if agent == Path(LITE_AGENT_FILENAME).stem:
+            # Crew sends this spec, so an injection another tool writes into the file
+            # (and a registered filter removes exactly) is left out: the template is
+            # sent instead, as the knowledge worker's view is built.
+            spec = agent_mod.lite_view_without_registered_injection(spec)
         declared, project = project_agent_spec(agent, work_dir) if work_dir else (False, None)
         if declared and notices is not None:
             notices.append(
@@ -1343,9 +1349,13 @@ class KasHarness(MembershipHarness):
             else:
                 # A child a Bot started runs under the Bot's identity: its held
                 # limits ask here too (the worker's are applied in its own merge).
-                from kiro_crew.mate_held_rules import held_child_spec
+                from kiro_crew.mate_held_rules import HeldLimitsNotApplied, held_child_spec
 
-                spec = held_child_spec(spec, session_key)
+                try:
+                    spec = held_child_spec(spec, session_key)
+                except HeldLimitsNotApplied as exc:
+                    # Refused, never started with its full pre-approvals.
+                    raise AcpAgentUnavailable(str(exc), agent=agent) from exc
             # KAS loads workspace steering itself, honouring each file's inclusion, from
             # the session's own folder (a subagent's may differ from the runtime's).
             steering_dir = session_cwd or work_dir
@@ -1399,6 +1409,15 @@ class KasHarness(MembershipHarness):
                 # so a server muted or removed in between is withdrawn from the
                 # session-level array too: this payload is the later reading.
                 withdrawn = withdrawn_worker_stubs(spec, worker_stub_names, scope_muted=scope_muted)
+            elif agent == Path(LITE_AGENT_FILENAME).stem:
+                # The background helper mounts nothing, so every stub its spec does
+                # not mount unmuted is withdrawn: its stubs are looked up by name
+                # from the file on disk, which may carry an injection the spec sent
+                # leaves out (``resolve_projected_spec``). Judged against the names
+                # ``session/new`` carries when the caller captured them.
+                if worker_stub_names is not None:
+                    stubbed = worker_stub_names
+                withdrawn = withdrawn_worker_stubs(spec, stubbed, scope_muted=scope_muted)
             else:
                 # A server this spec declares muted (a checkout's switch-off,
                 # ``_with_project_switch_offs``) is withdrawn from the session-level

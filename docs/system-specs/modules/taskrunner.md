@@ -960,7 +960,7 @@ A failure the step declared is not retried and not re-planned around. It also
 fails the run (`run.status = "failed"`, `run.error = "Task N failed: ..."`), and
 `_try_replan` plans nothing for a run that is already `failed`, so the step's
 dependents never start and the DAG does not continue on the data the step said
-is incomplete. The usual `❌ Task N/M failed` notice and failure lesson follow. A
+is incomplete. The usual `Error: Task N/M failed` notice and failure lesson follow. A
 resume (`execute_plan`) runs the step again. Pinned by
 `test/test_taskrunner_status_file.py`.
 
@@ -1030,28 +1030,30 @@ Notifications with a run are prefixed with `[run.name]`, falling back to the spe
 
 | Event | Title | Body |
 |-------|-------|------|
-| Task started | 🚀 Task started | Spec name |
-| Plan ready | 📋 Plan ready | Step list |
-| Task passed | ✅ Task N/M | Title + bounded result preview |
-| Task failed | ❌ Task N/M failed | Title + error |
-| Task completed | ✅ Task completed | Steps passed/failed, elapsed, tokens, work dir, full step list |
-| Task error | ❌ Task error | Exception message |
-| Stall warning | ⚠️ Task may be stalled | Minutes since last activity |
-| Session reset | 🔧 Watchdog: cancelling stalled task | Minutes + resetting |
-| Process died | 💀 Task N: process died | Recovery count |
-| Resumed after a restart | ▶️ Resumed after a gateway restart | The run continues from its checkpoint |
-| Lesson learned | 📝 Lesson learned | Rule text |
-| Replan started | 🔄 Re-planning (attempt N/2) | Failed step title + error |
-| Revised plan | 📋 Revised plan | New step count + titles |
-| Possible loop | ⚠️ Possible loop | Same error repeated Nx |
-| Token budget | 💰 Token budget exceeded | Usage vs budget |
+| Task started | Task started | Spec name |
+| Plan ready | Plan ready | Step list |
+| Task passed | Done: Task N/M | Title + bounded result preview |
+| Task failed | Error: Task N/M failed | Title + error |
+| Task completed | Task completed | Steps passed/failed, elapsed, tokens, work dir, full step list |
+| Task error | Error: Task error | Exception message |
+| Stall warning | Warning: Task may be stalled | Minutes since last activity |
+| Session reset | Watchdog: cancelling stalled task | Minutes + resetting |
+| Process died | Error: Task N: process died | Recovery count |
+| Resumed after a restart | Resumed after a gateway restart | The run continues from its checkpoint |
+| Lesson learned | Lesson learned | Rule text |
+| Replan started | Re-planning (attempt N/2) | Failed step title + error |
+| Revised plan | Revised plan | New step count + titles |
+| Possible loop | Warning: Possible loop | Same error repeated Nx |
+| Token budget | Error: Token budget exceeded | Usage vs budget |
 | Branch ready | 🌿 Branch: `name` | Shown in completion summary |
 
 The completion summary's step list and `TASK_PROGRESS.md` mark each step from one
-map, `task_reporter.TASK_STATUS_ICONS`: ✅ passed, ❌ failed, 🔄 in progress,
-🔍 reviewing, ⬜ pending, ⏭️ skipped, 🚫 cancelled. So a step a replan skipped
-shows ⏭️ in the summary, not ❌. The summary uses ❌ for a status the map does
-not have. Pinned by `test/test_taskrunner_verification.py`.
+map, `task_reporter.TASK_STATUS_ICONS`: Passed, Failed, Running, Reviewing,
+Pending, Skipped, Cancelled. So a step a replan skipped shows Skipped in the
+summary, not Failed. The summary uses Failed for a status the map does not
+have. `load_checkpoint` reads a passed line led by `Passed` or, in a file
+written before the words, by U+2705. Pinned by
+`test/test_taskrunner_verification.py`.
 
 ### Where a notification lands: the originating conversation
 
@@ -1076,9 +1078,9 @@ The notices that say something happened to the run that the person who started i
 from a chat would otherwise never see also reach that conversation
 (`dashboard/task_run_notices.py`, chosen in `reaches_origin` by how the title
 ends, so a run whose name holds one of these words, behind the `[label]` prefix,
-does not route its other notices there): a step's runtime died (`💀 Task N:
-process died`, and the watchdog's `💀 Watchdog: ACP process died`), and a gateway
-restart interrupted the run (`⏸️ Run not auto-resumed`, `▶️ Resumed after a
+does not route its other notices there): a step's runtime died (`Error: Task N:
+process died`, and the watchdog's `Error: Watchdog: ACP process died`), and a gateway
+restart interrupted the run (`Run not auto-resumed`, `Resumed after a
 gateway restart`). The sink appends the notice,
 title then body as the bell shows them, to the open dashboard tab showing the
 conversation (`dashboard_slot_key`) as an assistant-role `taskrunner_notice`
@@ -1441,7 +1443,10 @@ original exception, and cancellation is not logged as failure.
 
 Restore reads this same registry. Unreadable storage leaves the file untouched
 and fences subsequent snapshot writes until restart after recovery. Invalid JSON
-is preserved as `.corrupt` when renaming succeeds. An invalid snapshot shape or
+is preserved as `.corrupt` (the rename is retried through the Windows sharing window
+off the event loop). When the rename still fails, the file stays in place and
+subsequent snapshot writes are fenced until restart, so the corrupt bytes are never
+overwritten, and the log claims a sidecar only after the rename succeeded. An invalid snapshot shape or
 malformed execution context refuses restore and fences writes; it is not hydrated
 through a hidden row or downgraded to Global memory. An obsolete
 `{"task_id": ..., "private_payload": true}` reference, which 0.7.0-insider.1 to .5

@@ -10,6 +10,7 @@ import ErrorNotice from './ErrorNotice'
 import { NewFolderForm, NewFolderToggle } from './ProjectPickerNewFolder'
 import { reportForError, type ErrorReport } from '../utils/errorReport'
 import { endsWithSeparator, isWindowsPath, lastSegment, parentIsDriveList, pathSeparator, stripTrailingSeparator } from '../utils/browsePath'
+import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
 import { searchErrorCause, type SearchErrorCause } from '../lib/searchErrorCause'
 import { canPickFolderNatively, hasNativeFolderPicker, pickFolderNatively } from '../lib/electron'
 
@@ -17,6 +18,9 @@ import { i18nT } from '../i18n/t'
 
 /** The Browse tab's Tab trap dismisses nothing itself (`handleEscape: false`). */
 const noop = () => {}
+
+/** A Recent or Favourites row's bold title: the folder name, also for a native Windows path. */
+const projectTitle = (d: string) => pathBasename(stripTrailingSeparators(d)) || d
 
 // Copy for a failed DIRECTORY listing, keyed on the same classifier WorkspacePicker and
 // FolderPanel read, so one failure is named one way whichever picker the user is in. Three
@@ -922,7 +926,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                 >
                   <FolderOpen size={12} className="text-accent shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-mono font-semibold text-text truncate">{d.split('/').pop()}</div>
+                    <div className="text-[13px] font-mono font-semibold text-text truncate">{projectTitle(d)}</div>
                     <div className="text-[11px] text-muted truncate">{d}</div>
                   </div>
                 </button>
@@ -997,7 +1001,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                 >
                   <FolderOpen size={12} className="text-accent shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-mono font-semibold text-text truncate">{d.split('/').pop()}</div>
+                    <div className="text-[13px] font-mono font-semibold text-text truncate">{projectTitle(d)}</div>
                     <div className="text-[11px] text-muted truncate">{d}</div>
                   </div>
                 </button>

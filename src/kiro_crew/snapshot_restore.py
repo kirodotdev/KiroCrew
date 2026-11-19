@@ -335,10 +335,19 @@ def _backup_and_copy(
     component swapped for a link, or a symlink left at the core file's name. A name still
     occupied after the backup move is refused instead of written through.
     """
+    host_local = COMPONENTS[component].host_local
+    for f in host_local:
+        if os.path.lexists(snap / f):
+            kept = "; this install's copy is kept" if os.path.lexists(mc / f) else ""
+            print(
+                f"  ↩  {f}: not restored (the backup's copy points at the machine "
+                f"that made it){kept}."
+            )
+    files = [f for f in CORE_FILES.get(component, ()) if f not in host_local]
     if not _facade()._staging_is_pinned(
         allow_unpinned=allow_unpinned, what=f"restore of {component!r}"
     ):
-        for f in CORE_FILES.get(component, ()):
+        for f in files:
             # Validated before the live file is touched, and a symlink at the live name is
             # MOVED aside rather than skipped -- the same two properties the pinned branch
             # has. Skipping would skip both the backup AND the replacement, so the archive's
@@ -388,7 +397,7 @@ def _backup_and_copy(
                 backup, what=f"pre-restore backup for {component!r}"
             )
             try:
-                for f in CORE_FILES.get(component, ()):
+                for f in files:
                     live = mc / f
                     # Checked BEFORE the live file is touched: the archive is untrusted, and
                     # finding a FIFO or directory only after the move would leave nothing

@@ -314,7 +314,27 @@ async def _stop_services_and_sessions(
         await asyncio.gather(*self._handler_tasks, return_exceptions=True)
 
     if self.cron_svc:
-        await self.cron_svc.stop()
+        from kiro_crew import cron as _cron_facade
+
+        try:
+            await self.cron_svc.stop()
+        finally:
+            # A pause landed by stop()'s own held-record flush scheduled a
+            # notice on this loop; drain it bounded before the loop ends, as
+            # the interrupt notices are, so a schedule's last word is not
+            # cancelled with the process — in a finally, because a raising
+            # stop() is exactly the exit that would otherwise destroy it. One
+            # slower than the bound is cancelled, not left to die as "Task
+            # was destroyed but it is pending" at loop close. The callback
+            # itself is per-service (set_auto_pause_alert) and dies with it.
+            pending = [f for f in getattr(self, "_auto_pause_alerts", ()) if not f.done()]
+            if pending:
+                await asyncio.wait(
+                    [asyncio.wrap_future(f) for f in pending],
+                    timeout=_cron_facade._INTERRUPT_ALERT_WAIT_SECS,
+                )
+                for fut in pending:
+                    fut.cancel()
     if self.heartbeat_svc:
         self.heartbeat_svc.stop()
         await self.heartbeat_svc.wait_closed()
@@ -573,7 +593,7 @@ def _install_shutdown_signal_handlers(self: GatewayOrchestrator) -> None:
             # is not instant, since a repeat Ctrl-C does nothing more.
             try:
                 print(
-                    "\nForce exit! Saving the audit and log tail first "
+                    "\n👻 Force exit! Saving the audit and log tail first "
                     f"(at most {_FORCE_EXIT_DEADLINE_SECS:.0f}s)…"
                 )
             except Exception:
@@ -614,7 +634,7 @@ async def _shutdown_and_exit(
     """Use the same bounded cleanup for early owner stop and normal shutdown."""
     from kiro_crew.session import cleanup_orphaned_sessions
 
-    print("Shutting down…")
+    print("👻 Shutting down…")
 
     # Exit status for the os._exit below. 0 for an operator stop (SIGTERM,
     # `systemctl stop`, Ctrl-C) so a restart-on-failure supervisor leaves
@@ -727,7 +747,7 @@ async def _shutdown_and_exit(
     except Exception:  # noqa: BLE001 - shutdown must not raise
         logger.warning("stopping app backends at exit failed", exc_info=True)
 
-    print("Goodbye!")
+    print("👻 Goodbye!")
     # Kill any kiro-cli processes that survived graceful shutdown.
     # Off-loop: still inside the orchestrator coroutine here.
     #

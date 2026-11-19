@@ -51,8 +51,8 @@ _TAKEOVER_CATCH_UP_ROUNDS = 8
 _TAKEOVER_REPLAY_SEND_TIMEOUT_S = 5.0
 
 
-# The final ready frame runs while output publication is paused. Bound that
-# pause so a candidate with a wedged transport cannot stall PTY draining.
+# The replay boundary and ready frames run while output publication is paused.
+# Bound each send so a wedged candidate cannot stall PTY draining.
 _TAKEOVER_READY_TIMEOUT_S = 5.0
 
 
@@ -383,6 +383,10 @@ async def _replace_terminal_ws(
                     elif sess.output_bytes != sent_output_bytes:
                         continue
                     next_send_lock = asyncio.Lock()
+                    await asyncio.wait_for(
+                        ws.send_str(json.dumps({"type": "replayed"})),
+                        timeout=_TAKEOVER_READY_TIMEOUT_S,
+                    )
                     if sess.shell_ready:
                         # The handler cannot read candidate input until this
                         # function returns. Send ready before publication so a
