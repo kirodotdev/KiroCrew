@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ArrowLeft, Copy, KeyRound } from 'lucide-react'
 
+import type { KasLoginStatus } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { copyCode } from '../utils/clipboard'
 import { KasLoginEmbedded, SignInBackContext, type SignInBackSlot } from './KasLoginGate'
@@ -15,10 +16,46 @@ function CloseWhenSignedIn({ onDone }: { onDone: () => void }) {
 }
 
 /**
+ * The shared Kiro sign-in content (`KasLoginEmbedded`, driven by
+ * `hooks/useKasLogin`): the four choices, the browser wait or the device code,
+ * cancel. The dialog below wraps it.
+ * Settings > Kiro account renders it in its card for both states, passing
+ * *renderSignedIn* for the signed-in summary, so the flow stays mounted when a
+ * sign-in lands and its landed result settles; there the device screen draws its
+ * own back arrow (no `SignInBackContext`).
+ * *onSignedIn* runs once a sign-in lands, except a switch whose old account could
+ * not be removed: that stays on its warning, so the person reads it.
+ * Unmounting it mid-sign-in cancels the pending login (`useKasLoginFlow`).
+ */
+export function KiroSignInFlow({
+  reauth = false,
+  onSignedIn,
+  renderSignedIn,
+}: {
+  reauth?: boolean
+  onSignedIn?: () => void
+  renderSignedIn?: (status: KasLoginStatus) => ReactNode
+}) {
+  return (
+    <KasLoginEmbedded
+      bare
+      startInReauth={reauth}
+      renderPending={() => null}
+      renderAuthenticated={(status, { replaceWarning }) =>
+        renderSignedIn
+          ? renderSignedIn(status)
+          : replaceWarning || !onSignedIn
+            ? null
+            : <CloseWhenSignedIn onDone={onSignedIn} />
+      }
+    />
+  )
+}
+
+/**
  * The one Kiro sign-in dialog: Kiro Crew's own sign-in (the bundled engine's),
- * opened by every surface that offers it. Its body is the shared flow
- * (`KasLoginEmbedded`, driven by `hooks/useKasLogin`): the four choices, the
- * browser wait or the device code, cancel. It closes itself once a sign-in lands.
+ * opened by every chat surface that offers it and by Settings' switch account and
+ * sign in again. Its body is `KiroSignInFlow`. It closes itself once a sign-in lands.
  * *reauth* opens the choices over a stored sign-in: a switch, or one Kiro refused.
  * Closing it mid-sign-in cancels the pending login (`useKasLoginFlow`).
  */
@@ -55,14 +92,7 @@ export function KiroSignInDialog({
         </DialogHeader>
         <DialogBody>
           <SignInBackContext.Provider value={backSlot}>
-          <KasLoginEmbedded
-            bare
-            startInReauth={reauth}
-            renderPending={() => null}
-            // A switch whose old account could not be removed stays open on its
-            // warning, so the person reads it; any other landed sign-in closes it.
-            renderAuthenticated={(_status, { replaceWarning }) => (replaceWarning ? null : <CloseWhenSignedIn onDone={close} />)}
-          />
+          <KiroSignInFlow reauth={reauth} onSignedIn={close} />
           </SignInBackContext.Provider>
         </DialogBody>
       </DialogContent>

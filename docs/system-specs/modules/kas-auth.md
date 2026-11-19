@@ -826,17 +826,24 @@ engine instead ([aws-control.md](aws-control.md)).
   (`useKasLoginFlow`, plus `useKasLoginStatus` and `KAS_LOGIN_STATUS_KEY`, the one
   `['kas-login']` cache entry every surface reads). `KasLoginGate.tsx` only renders
   it, in gate chrome (`KasLoginGate`, onboarding's organisation-only door) or card
-  chrome (`KasLoginEmbedded`). Every surface opens it in one dialog,
-  `components/KiroSignInDialog.tsx`: the Settings card, the app-level notice, the
-  chat's `KiroSignInPrompt` and the chat's signed-out rows. A dialog closed while a
+  chrome (`KasLoginEmbedded`). Its shared content is `KiroSignInFlow` in
+  `components/KiroSignInDialog.tsx`. Settings > Kiro account shows it in the card
+  while signed out: the choices and the device-code screen sit in place, with no
+  Sign in button and no dialog. The card keeps that one flow mounted when a
+  sign-in lands and renders its signed-in summary through the flow's
+  authenticated slot, so the landed result settles before the summary shows. Every other surface opens it in one dialog,
+  `KiroSignInDialog`, which only wraps that content: the card's Switch account and
+  Sign in again, the app-level notice, the chat's `KiroSignInPrompt` and the chat's
+  signed-out rows. A flow that goes away (a closed dialog, a left page) while a
   begin request is still in flight cancels the login that request returns and
   opens no browser tab for it.
-  In the dialog the choices are Google, GitHub and AWS Builder ID with their
+  In both places the choices are Google, GitHub and AWS Builder ID with their
   marks (`assets/google-mark.svg`, `assets/aws-mark.svg`, the shipped GitHub mark),
   then "or", then company SSO. Its device-code screen (`DeviceCodeCard`, card
   chrome) shows one heading, an "Open sign-in page" button with a copy control,
   the code with its own copy control, one waiting line with the expiry, and a back
-  arrow in the dialog header (`SignInBackContext`) that returns to the choices.
+  arrow that returns to the choices: in the dialog header (`SignInBackContext`),
+  and beside the screen's heading in the Settings card, which has no such header.
 - **The chat asks before a message fails.** `KiroSignInPrompt`, above the
   composer (`ComposerDockView`), shows one line and a Sign in button that opens
   `KiroSignInDialog` while
