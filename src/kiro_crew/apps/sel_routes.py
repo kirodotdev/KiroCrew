@@ -14,10 +14,18 @@ What the body can and cannot say:
 * One event kind only: ``api_access`` (``sel.py`` ``log_api_access``). The gateway's
   security kinds -- ``governance_decision`` (``sel.py:893``), ``governance_degraded``
   (``sel.py:945``), ``tool_invocation`` (``sel.py:820``, approvals and credential
-  use) and ``sel_rotation`` (``sel.py:698``) -- are refused.
+  use) and ``sel_rotation`` (``sel.py:698``) -- are refused as methods. A backend's
+  governance decision or degraded event arrives as an ordinary ``api_access`` row
+  (operation ``governance.decision`` / ``governance.degraded``): the app's own claim,
+  not gateway policy evidence.
 * The operation is kept under the app's own namespace (``<app>.<operation>``), so
   an app cannot reuse a gateway operation name such as ``internal_auth``.
 * ``source`` is ``app``, so a reader shows the row as app-sourced.
+* The operation is normalized (``sel_client.normalize_operation``) and the row is kept,
+  so no newline or control character reaches a text view of the log. A tool use is the
+  ordinary row with the operation
+  ``tool.<name>``. ``critical`` stays a flag on that one row (it makes ``sel.py``'s
+  write synchronous; nothing else reacts to it).
 
 Responses never echo the body. A refused write is a status code and a fixed string.
 
@@ -35,17 +43,15 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.apps.sel_client import normalize_operation
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
 #: Largest request body accepted, in bytes. ``log_api_access`` clips ``outcome``,
 #: ``resources`` and ``error`` to 500 characters (``sel.py:111``) but stores
-#: ``operation`` as given, so ``operation`` is capped here instead.
+#: ``operation`` as given, so ``operation`` is normalized and clipped in ``_write``.
 _MAX_BODY = 16 * 1024
-#: Longest ``operation`` accepted, before the ``<app>.`` prefix (an app name is at most
-#: 64 characters, so the stored value stays under the shared 500-character clip).
-_MAX_OPERATION = 200
 #: Sustained rows per second and burst, per app. A refused call never reaches the
 #: log, so the limiter cannot grow or rotate the segment.
 _RATE = 50.0
@@ -100,13 +106,11 @@ def _parse(raw: bytes) -> tuple[str, dict[str, Any]] | None:
     for key, value in kwargs.items():
         if not isinstance(value, bool if key == "critical" else str):
             return None
-    if len(kwargs["operation"]) > _MAX_OPERATION:
-        return None
     return method, kwargs
 
 
 def _write(app: str, method: str, kwargs: dict[str, Any]) -> None:
-    operation = str(kwargs["operation"])
+    operation = normalize_operation(kwargs["operation"])
     if not operation.startswith(f"{app}."):
         operation = f"{app}.{operation}"
     getattr(sel(), method)(caller=f"app:{app}", source="app", **{**kwargs, "operation": operation})

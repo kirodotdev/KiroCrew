@@ -30,6 +30,7 @@ from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps
 from kiro_crew.apps.event_bus import build_broadcast_fn
 from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.hooks_integration import on_app_enable
+from kiro_crew.apps.host_exec_grants import host_exec_granted
 from kiro_crew.apps.manager import (
     app_enabled_state,
     app_lifecycle_lock,
@@ -307,6 +308,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         # A re-enable repeats every step but the Python hooks: the flag does not prove
         # onEnable ran (a file-only CLI enable skips it), while hook_reconcile loads hooks.
         was_enabled = await asyncio.to_thread(app_enabled_state, name) is True
+        had_marker = await asyncio.to_thread(host_exec_granted, name)
         result = await asyncio.to_thread(
             enable_app,
             name,
@@ -329,6 +331,13 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         # Register resources if gateway-managed
         if resources == "gateway":
             reg = await _register_app_off_loop(name)
+            if not had_marker:
+                # An enable that creates the owner-enable marker restarts the backend: a
+                # backend spawned without the marker has no gateway origin, and the new
+                # spawn gets one.
+                await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), stop_app_backend, name
+                )
             backend = await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
             )

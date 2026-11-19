@@ -146,9 +146,9 @@ def broker_stub_roster(servers: Any) -> Roster:
 def _audit_missing(backend: str, session_id: str, session_key: str, names: list[str]) -> None:
     """One SEL row for one session's missing mounts. Never raises."""
     try:
-        from kiro_crew.sel import SecurityEvent, SecurityEventLog
+        from kiro_crew.sel import SecurityEvent, sel
 
-        SecurityEventLog().log(
+        sel().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
                 timestamp=datetime.now(tz=timezone.utc).isoformat(),

@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.owner_only_files import mkdirs_owner_only
 
 if TYPE_CHECKING:
@@ -58,7 +59,40 @@ _TRUST_SUBDIR = "trust"
 _HMAC_KEY_MIN_BYTES = 32
 
 
+def _spawned_tree_key(self: SecurityEventLog) -> bytes:
+    """The key of a process in a spawned app backend's tree: none, whatever is on disk.
+
+    A backend with a route has its key masked, so this process never reads, creates,
+    migrates, rotates or signs with a key, and never raises: it becomes a no-write writer
+    that drops each row (``SecurityEventLog._drop_unsigned``). Nothing here touches the
+    disk.
+    """
+    self._hmac_key_file = self._dir / _TRUST_SUBDIR / _HMAC_KEY_FILE
+    self._no_write = True
+    return b""
+
+
+def _in_spawned_app_backend_tree() -> bool:
+    """Whether this process is in the tree of an app backend that has the gateway route.
+
+    The spawn marker alone does not say so: it also marks processes that are not app
+    backends. The app name and the per-app secret name an app backend, and the gateway
+    origin says it has the route and so a masked key (the condition ``apps/backend.py``
+    masks the key on). A backend spawned without an origin has no route and an unmasked
+    key, and keeps signing with it.
+    """
+    env = os.environ
+    return bool(
+        env.get(KIROCREW_SPAWNED_ENV) == KIROCREW_SPAWNED_VALUE
+        and env.get("KIROCREW_APP_NAME", "").strip()
+        and env.get("KIROCREW_GATEWAY_ORIGIN", "").strip()
+        and env.get("KIROCREW_PROXY_SECRET")
+    )
+
+
 def _load_or_create_hmac_key(self: SecurityEventLog) -> bytes:
+    if _in_spawned_app_backend_tree():
+        return _spawned_tree_key(self)
     trust_dir = self._dir / _TRUST_SUBDIR
     key_path = trust_dir / _HMAC_KEY_FILE
     legacy_path = self._dir / _HMAC_KEY_FILE
