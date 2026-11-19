@@ -449,7 +449,13 @@ export async function registryQueryFn(): Promise<{
           // through its floor here, and dropping it whole beats rendering a
           // half-width card against empty space.
           if (b.form === 'full' ? items.length !== 1 : items.length < 2) return []
-          return [{ form: b.form, items, curated: true }]
+          // `useAppArt` marks a block from the edition's own registry: its
+          // document carries no editorial art (its refs would not resolve), so
+          // its app cards draw the app's own store art, as a derived pick does.
+          // A block holding a collection stays curated: a collection's art would
+          // otherwise come from its first member and promote that one app.
+          const appArt = b.useAppArt === true && items.every(i => i.type === 'app')
+          return [{ form: b.form, items, curated: !appArt }]
         })
       : []
     const rawApps: unknown[] = res.apps

@@ -277,8 +277,15 @@ def _load_index_entries_sync(
 async def _fetch_external_registry_index(
     repo: str,
     branch: str,
+    *,
+    editorial_out: list[dict[str, Any] | None] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Fetch app-registry.json from an external repo via a shallow git clone.
+
+    *editorial_out*, when a list, also receives the clone's ``editorial.json``
+    (``edition_editorial.read_document``: the object, or ``None`` when absent)
+    on a successful fetch. Only the caller decides to ask, and it asks only for a
+    registry the build opted in, so no other registry's file is ever read.
 
     Every failure records its cause for :func:`_registry_fetch_failure`; any
     later fetch of the same registry clears the record first.
@@ -431,6 +438,10 @@ async def _fetch_external_registry_index(
         index_entries, fallback_entries = await asyncio.to_thread(
             _load_index_entries_sync, clone_path, repo, branch
         )
+        if editorial_out is not None and (index_entries is not None or fallback_entries):
+            from kiro_crew.apps.edition_editorial import read_document
+
+            editorial_out.append(await asyncio.to_thread(read_document, clone_path))
         if index_entries is not None:
             _sel_outcome("success")
             return _credential_free_external_registry_entries(index_entries)
@@ -525,7 +536,19 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
     public_registry_repo = _strip_git_target_userinfo(reg.repo)
     name = _public_registry_name(reg)
     cache_identity = _external_registry_cache_identity(reg)
-    entries = await _fetch_external_registry_index(reg.repo, reg.branch)
+    from kiro_crew.apps import edition_editorial
+
+    # Asked only for a registry the build opted into featuring its own apps; any
+    # other registry's fetch keeps the exact call it always made.
+    editorial: list[dict[str, Any] | None] | None = (
+        [] if await asyncio.to_thread(edition_editorial.registry_opted_in, reg) else None
+    )
+    if editorial is None:
+        entries = await _fetch_external_registry_index(reg.repo, reg.branch)
+    else:
+        entries = await _fetch_external_registry_index(
+            reg.repo, reg.branch, editorial_out=editorial
+        )
     if entries is None:
         cause = _registry_fetch_failure(reg.repo, reg.branch) or _FETCH_CAUSE_OTHER
         await asyncio.to_thread(_write_external_registry_failure, cache_identity, cause)
@@ -552,6 +575,14 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
         entry.setdefault("repo", public_registry_repo)
         entry["_registry"] = name
     _apply_configured_branch(entries, reg, warn=True)
+    if editorial is not None:
+        # Written before the index: an interrupted refresh then leaves the old
+        # index cache until its next refresh, never a fresh index cache beside
+        # an older editorial copy. Sections naming an app the index does
+        # not list render nothing, since Discover resolves every ref.
+        await asyncio.to_thread(
+            edition_editorial.write_cache, reg, editorial[0] if editorial else None
+        )
     await asyncio.to_thread(_write_external_registry_cache, cache_identity, entries)
     await asyncio.to_thread(_clear_external_registry_failure, cache_identity)
     return entries

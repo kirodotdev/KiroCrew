@@ -55,8 +55,13 @@ _APPLIED_KEY = "apps_default_installs_applied"
 _ALLOW_KEY = "allowDefaultInstall"
 
 
-def _allowed_registries() -> list[Any]:
-    """Registries in force at the owner tier whose build row sets ``allowDefaultInstall``."""
+def _allowed_registries(key: str = _ALLOW_KEY) -> list[Any]:
+    """Registries in force at the owner tier whose build row sets *key* to ``true``.
+
+    *key* defaults to ``allowDefaultInstall``; the edition editorial
+    (``edition_editorial``) asks the same question for its own ``editorial`` key.
+    Only a build row counts: an operator-configured registry can set neither.
+    """
     from kiro_crew.apps import registry as reg_mod
 
     empty: list[dict[str, Any]] = []
@@ -71,7 +76,7 @@ def _allowed_registries() -> list[Any]:
         reg_mod._registry_identity_key(row["name"])
         for row in rows
         if isinstance(row, dict)
-        and row.get(_ALLOW_KEY) is True
+        and row.get(key) is True
         and isinstance(row.get("name"), str)
         and row["name"].strip()
     }
@@ -82,13 +87,14 @@ def _allowed_registries() -> list[Any]:
     }
     out: list[Any] = []
     for reg in reg_mod._effective_registries():
-        key = reg_mod._registry_identity_key(reg.name or reg.repo)
-        if key not in allowed or key not in pinned:
+        ident = reg_mod._registry_identity_key(reg.name or reg.repo)
+        if ident not in allowed or ident not in pinned:
             continue
         if reg_mod._registry_trust_tier_of(reg) != reg_mod._TRUST_OWNER:
             logger.error(
-                "Registry %r allows default installs but is not at the owner tier; ignoring",
+                "Registry %r sets %s but is not at the owner tier; ignoring",
                 reg_mod._public_registry_name(reg),
+                key,
             )
             continue
         out.append(reg)
