@@ -222,7 +222,7 @@ const MAX_SITE_ROOT_ANCESTORS = 8
  *  separator. `\` counts as a separator only on a drive-rooted Windows path
  *  (`windows`, read from the path itself unless the caller pins it for a walk
  *  up from one file); on POSIX a backslash is a legal file-name character. */
-function parentDirOf(path: string, windows = WINDOWS_ABS_PATH_RE.test(path)): string {
+export function parentDirOf(path: string, windows = WINDOWS_ABS_PATH_RE.test(path)): string {
   return windows ? path.replace(/[\\/][^\\/]*$/, '') : path.replace(/\/[^/]*$/, '')
 }
 
