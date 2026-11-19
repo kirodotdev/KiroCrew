@@ -2258,6 +2258,13 @@ measures, never above.
   with Node 18 while the repo declares `engines.node >= 22.12.0`. Gate on the floor the code
   under test actually needs, and probe it the way the tests will experience it.
 
+- **Sandbox only the cases whose subject is the sandbox.** On macOS each sandboxed
+  spawn costs about 0.3 s (`sandbox-exec` compiles the Seatbelt profile on every exec),
+  and one git call is several spawns. A test of worktree or git logic runs plain git;
+  only a case that tests the sandbox composition asks for it, the way
+  `test_crewmate_worktree.py`'s `sandboxed_git` fixture does. The wrapper itself is
+  tested in `test_worktree_create.py`.
+
 - **If you stub the only thing that releases a resource, the fixture owes the release.**
   A permit, an in-flight claim, a lock: when the green-path test replaces the runner
   whose `finally` gives it back, the resource is gone for the life of the worker. The
