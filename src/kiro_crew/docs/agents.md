@@ -74,8 +74,11 @@ conductor mode chat shows its welcome, its side panel's **Board** tab lists its
 crew members, and the Sessions list draws it as a crew card with a **Conductor
 mode** filter. Its crew members are listed there, not as rows of your list. To
 start every new chat in conductor mode, turn on **Settings → Chat → Sessions →
-Start New Chats in conductor mode** (off by default). Conductor mode used to be a
-Feature Preview; a switch for it saved from then is ignored.
+Start New Chats in conductor mode** (off by default). The first time you open a
+conductor mode chat, its side panel opens on the **Board**. To keep the panel
+closed instead, turn off **Settings → Chat → Side panel → Auto-Open Board in Side
+Panel** (on by default). Conductor mode used to be a Feature Preview; a switch for
+it saved from then is ignored.
 
 The LTS edition does not offer conductor mode:
 

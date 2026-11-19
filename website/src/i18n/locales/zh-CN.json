@@ -18942,6 +18942,8 @@
         "auto_compact_exact_hint": "输入 {{min}} 到 {{max}} 之间的任意值。按 Enter 或字段失去焦点时保存。",
         "auto_compact_threshold_clamped": "已保存 {{stored}}。{{requested}} 超出允许范围（{{min}} 到 {{max}}）。",
         "auto_ingest_limit_per_scan": "每次扫描的自动摄取上限",
+        "auto_open_conductor_board": "在侧边栏中自动打开看板",
+        "auto_open_conductor_board_hint": "第一次打开 Conductor mode 聊天时，打开侧边栏并显示看板。关闭此设置后，这个聊天会像其他聊天一样打开：除非开启了“保持侧边栏打开”，否则侧边栏保持关闭。在聊天中开启 Conductor mode 时，仍会打开看板。在手机上，此设置不生效。",
         "auto_open_git_panel": "在侧边栏中自动打开 Git",
         "auto_register_project_documents": "自动注册项目文档",
         "background_effort": "后台推理强度",

@@ -432,6 +432,9 @@ export interface DashboardConfig {
   auto_open_git_panel: boolean
   side_panel_always_open?: boolean
   side_panel_pin_summary?: boolean
+  /** A conductor mode chat's first entry opens the side panel on its Board
+   *  (`dashboard.auto_open_conductor_board`). An absent value reads as on. */
+  auto_open_conductor_board?: boolean
   session_card_source_links: boolean
   /** Directory each new chat gets its own fresh folder under; '' = off. */
   session_folder_root?: string

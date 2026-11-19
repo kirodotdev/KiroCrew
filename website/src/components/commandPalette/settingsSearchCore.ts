@@ -222,6 +222,8 @@ export function settingEntryOffered(
   if (entry.configKey === 'dashboard.milestones_enabled') return readPreviewFlag(PREVIEW_EXPLORE)
   // Chat > Sessions draws Start New Chats in conductor mode in every build that offers conductor mode.
   if (entry.configKey === 'dashboard.new_chat_crew_mode') return crewModeEnabled()
+  // Chat > Side panel draws Auto-Open Board in Side Panel in every build that offers conductor mode.
+  if (entry.configKey === 'dashboard.auto_open_conductor_board') return crewModeEnabled()
   // Slack > Code channels draws Always use conductor mode wherever conductor mode is offered.
   if (entry.configKey === 'slack.code_channel_defaults.conductor_mode') return crewModeEnabled()
   // Feature Previews draws the stale-wake switch only while the stale-fields mark is on.

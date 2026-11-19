@@ -19984,6 +19984,8 @@
         "auto_compact_exact_hint": "Digite um valor de {{min}} a {{max}}. Ele é salvo ao pressionar Enter ou quando o campo perde o foco.",
         "auto_compact_threshold_clamped": "{{stored}} salvo. {{requested}} está fora do intervalo permitido ({{min}} a {{max}}).",
         "auto_ingest_limit_per_scan": "Limite de ingestão automática por varredura",
+        "auto_open_conductor_board": "Abrir o Quadro automaticamente no painel lateral",
+        "auto_open_conductor_board_hint": "Abre o painel lateral no Quadro na primeira vez que você abre um chat no Conductor mode. Se você desativar, o chat abre como qualquer outro, com o painel fechado, a menos que \"Manter o painel lateral aberto\" esteja ativado. Se você ativar o Conductor mode em um chat, o Quadro abre mesmo assim. No celular, esta configuração não se aplica.",
         "auto_open_git_panel": "Abrir o Git automaticamente no painel lateral",
         "auto_register_project_documents": "Registrar documentos de projeto automaticamente",
         "background_effort": "Esforço em segundo plano",

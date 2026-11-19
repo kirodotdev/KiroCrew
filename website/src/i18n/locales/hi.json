@@ -19463,6 +19463,8 @@
         "auto_compact_exact_hint": "{{min}} से {{max}} तक कोई भी मान लिखो। Enter दबाने पर या फ़ील्ड से फ़ोकस हटने पर यह सेव हो जाता है।",
         "auto_compact_threshold_clamped": "{{stored}} सेव किया गया। {{requested}} अनुमत सीमा ({{min}} से {{max}}) से बाहर है।",
         "auto_ingest_limit_per_scan": "प्रति स्कैन स्वतः-ग्रहण सीमा",
+        "auto_open_conductor_board": "साइड पैनल में बोर्ड स्वतः खोलो",
+        "auto_open_conductor_board_hint": "पहली बार कोई Conductor mode चैट खोलने पर साइड पैनल को बोर्ड पर खोलता है। यह बंद हो तो चैट बाकी चैट की तरह खुलती है, और जब तक \"साइड पैनल खुला रखो\" चालू न हो, उसका पैनल बंद रहता है। किसी चैट में Conductor mode चालू करने पर बोर्ड फिर भी खुलता है। फ़ोन पर यह सेटिंग लागू नहीं होती।",
         "auto_open_git_panel": "साइड पैनल में Git स्वतः खोलें",
         "auto_register_project_documents": "परियोजना दस्तावेज़ स्वतः पंजीकृत करें",
         "background_effort": "बैकग्राउंड एफ़र्ट",
