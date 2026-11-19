@@ -26,23 +26,14 @@ import { useKasLoginStatus } from '../hooks/useKasLogin'
  */
 export const KIRO_SIGN_IN_NOTICE_POLL_MS = 60_000
 
-/** The lapsed notice's detail, by cause and by who runs as the sign-in. */
-const LAPSED_DETAIL = {
-  expired: {
-    agents: 'components.kiroSignInNotice.expired_detail',
-    bots: 'components.kiroSignInNotice.expired_detail_bots',
-    account: 'components.kiroSignInNotice.expired_detail_account',
-  },
-  refresh_rejected: {
-    agents: 'components.kiroSignInNotice.refused_detail',
-    bots: 'components.kiroSignInNotice.refused_detail_bots',
-    account: 'components.kiroSignInNotice.refused_detail_account',
-  },
-  refresh_rejected_expired: {
-    agents: 'components.kiroSignInNotice.refused_expired_detail',
-    bots: 'components.kiroSignInNotice.refused_expired_detail_bots',
-    account: 'components.kiroSignInNotice.refused_expired_detail_account',
-  },
+/**
+ * A refusal whose access token still works, by who runs as the sign-in. Both
+ * expired shapes instead say only what to do, not why.
+ */
+const REFUSED_DETAIL = {
+  agents: 'components.kiroSignInNotice.refused_detail',
+  bots: 'components.kiroSignInNotice.refused_detail_bots',
+  account: 'components.kiroSignInNotice.refused_detail_account',
 } as const
 
 /**
@@ -251,21 +242,27 @@ export default function KiroSignInNotice() {
   // in again fixes it. An expiry with nothing to renew it is that failure as
   // much as an issuer's refusal is, so it is not dressed down to a warning --
   // a yellow "agents cannot run" under a red "will stop" read backwards.
-  // The text says which one happened.
+  // Once expired, both say only what to do: the cause changes nothing for the user.
   // Who runs as this sign-in: the agents (main harness on KAS), only the Bots,
   // or neither, so only the features that use the Kiro account. Off the main
   // KAS harness the main agent still runs, so it keeps its hand-off.
   const mainOnKas = cfgQuery.data !== undefined && configuredAcpBackend(cfgQuery.data) === ACP_BACKEND_KAS
   const audience = mainOnKas ? 'agents' : kas ? 'bots' : 'account'
-  let title = i18nT('components.kiroSignInNotice.sign_in_expired')
-  const detail = i18nT(LAPSED_DETAIL[cause][audience])
-  if (cause !== 'expired') {
-    // The renewal tick only asks Kiro inside the refresh margin, so by the time
-    // a refusal is recorded the access token is usually `expired` too: the
-    // agents have already stopped, and "will stop" would be wrong. `usable`
-    // cannot tell the two apart (a stored refresh token keeps it true).
-    title = i18nT('components.kiroSignInNotice.refused_title')
-  }
+  // The renewal tick only asks Kiro inside the refresh margin, so by the time
+  // a refusal is recorded the access token is usually `expired` too: the
+  // agents have already stopped, and "will stop" would be wrong. `usable`
+  // cannot tell the two apart (a stored refresh token keeps it true), so only
+  // a refusal whose token still works keeps its own "will stop" copy.
+  const title = cause === 'refresh_rejected'
+    ? i18nT('components.kiroSignInNotice.refused_title')
+    : i18nT('components.kiroSignInNotice.sign_in_expired')
+  // Expired: the agents (or Bots) running as it have stopped; off KAS the
+  // agents keep running, so only the account features need the sign-in.
+  const detail = cause === 'refresh_rejected'
+    ? i18nT(REFUSED_DETAIL[audience])
+    : i18nT(audience === 'account'
+      ? 'components.kiroSignInNotice.expired_detail_account'
+      : 'components.kiroSignInNotice.expired_detail')
   const lapsed = {
     className: 'mx-3 md:mx-6 mt-4 mb-2',
     title,

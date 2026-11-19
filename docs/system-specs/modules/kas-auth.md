@@ -917,12 +917,17 @@ engine instead ([aws-control.md](aws-control.md)).
   it draws is an `ErrorNotice` with the agent hand-off, a "Sign in" button that
   opens the shared sign-in dialog (`KiroSignInDialog`) and dismiss, so an expiry with nothing to renew it and a renewal Kiro
   refused read at the same weight (in both the agents' credential requests are
-  refused, or will be); the title and text say which one happened. Because the
-  renewal tick only asks Kiro inside the refresh margin, a refusal is usually
-  recorded on a token that is already `expired` (while `usable` stays true,
-  since a refresh token is stored); the refused notice then says the agents
-  cannot run, and only a refusal on a token outside the margin says they will
-  stop. The button opens that dialog over the current page, which is not left,
+  refused, or will be). Once the access token is `expired`, either cause shows
+  the same two lines and no cause: "Sign-in expired." and "Sign in again to
+  resume sessions and agent work.", or, where nothing runs on KAS (`kasInUse`
+  false, so only the features that use the Kiro account stop), "Sign in again
+  to use features that need your Kiro account."; the Settings card's lapsed
+  summary says the same and shows no reason line. Because the renewal tick only
+  asks Kiro inside the refresh margin, a refusal is usually recorded on a token
+  that is already `expired` (while `usable` stays true, since a refresh token is
+  stored); only a refusal on a token outside the margin keeps its own "Kiro
+  refused to renew your sign-in" title, saying the agents (or Bots, or account
+  features) will stop. The button opens that dialog over the current page, which is not left,
   so the page's leave guard is not asked; dismissing hides the notice for the current cause until
   the page reloads (a refusal that has since expired is a new cause). A
   failed status read, on a gateway that runs KAS or offers Kiro sign-in,
