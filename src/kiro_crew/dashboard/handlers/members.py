@@ -139,10 +139,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.members_thread_turns import (  # noqa: F401
         _FRESH_START_POLL_SECS,
         _FRESH_START_STOP_WAIT_SECS,
+        _drop_queue_entries,
         _queue_pending,
         _turn_busy,
         _turn_ends_within,
         _work_pending,
+        _written_held_ids,
         api_member_fresh_start,
         api_member_greet,
     )

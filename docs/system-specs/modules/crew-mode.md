@@ -1765,6 +1765,12 @@ DM binding and never makes one, so the slot key, its monitor loops, the work led
 the crew log stay bound. A thread with queued messages or unconsumed steers answers 409
 `slot_queue_pending` before anything is stopped, and again if one arrives during a stop
 wait: a soft stop keeps them, and they would then run on the old conversation.
+A held entry (`is_held_queue_entry`: restored after a restart and not chosen) does not
+refuse it, because it never runs on its own; a restored entry the person chose still
+does. After a `cleared` outcome the route drops each held entry whose user row is
+already in the transcript (`row_already_written`), since its cancel is refused and
+nothing else removes it; the row stays, and the `queue_cancel` frame carries no content.
+A `queued` clear drops nothing, and a held entry with no written row stays queued.
 Otherwise it runs existing paths in order: `stop_slot_turn` on a running turn, a second
 `stop_slot_turn` when the turn has not ended within the wait (its hard-kill escalation,
 which frees a stuck process), then the typed `/clear` path
