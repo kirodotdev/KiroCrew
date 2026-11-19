@@ -273,8 +273,8 @@ describe('App nav rail — rows declare and display their chord', () => {
   it('leaves a row with no chord undeclared, and that row is present', async () => {
     renderWithProviders(<App />, { route: '/chat' })
     // Presence first: an absent row would satisfy "no attribute" vacuously.
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
-    expect(screen.getByRole('button', { name: 'Settings' })).not.toHaveAttribute('aria-keyshortcuts')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Account & Settings' })).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Account & Settings' })).not.toHaveAttribute('aria-keyshortcuts')
     expect(screen.getByRole('button', { name: 'Artifacts' })).not.toHaveAttribute('aria-keyshortcuts')
   })
 
@@ -324,7 +324,7 @@ describe('App nav rail — rows declare and display their chord', () => {
   it('drops every hint when shortcuts are switched off', async () => {
     localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
     renderWithProviders(<App />, { route: '/chat' })
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Account & Settings' })).toBeInTheDocument())
     for (const { name, navId } of RAIL_ROWS) {
       expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-keyshortcuts')
       expect(screen.queryByTestId(`nav-shortcut-${navId}`)).toBeNull()

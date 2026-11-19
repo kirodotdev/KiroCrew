@@ -171,7 +171,7 @@ describe('phone chat page: one top bar', () => {
     // Each tile carries a visible caption: a finger cannot summon the desktop
     // rail's hover tip, and an icon-only Artifacts glyph was unreadable cold.
     expect(chat).toHaveTextContent('Sessions')
-    expect(within(rail).getByRole('button', { name: 'Settings' })).not.toHaveClass('nav-active')
+    expect(within(rail).getByRole('button', { name: 'Account & Settings' })).not.toHaveClass('nav-active')
     // Search moved here from the bar, same label, same command palette.
     expect(within(rail).getByTestId('mobile-nav-rail-search')).toHaveAccessibleName('Search sessions, files, and commands')
     // The brand mark is a control (home = chat root), not an inert picture in
@@ -181,7 +181,7 @@ describe('phone chat page: one top bar', () => {
     // rail's hover tip, so the full Customize name stays visible.
     const customize = within(rail).getByRole('button', { name: 'Customize' })
     expect(customize).toHaveTextContent('Customize')
-    expect(within(rail).getByRole('button', { name: 'Settings' })).toHaveTextContent('Settings')
+    expect(within(rail).getByRole('button', { name: 'Account & Settings' })).toHaveTextContent('Account & Settings')
     // The rail is the last row-set before Search; nothing in it is a text label
     // (icon-only, 56px wide), so every row must be named.
     for (const row of within(rail).getAllByRole('button')) expect(row).toHaveAccessibleName()
@@ -196,7 +196,7 @@ describe('phone chat page: one top bar', () => {
     expect(apps).toHaveClass('overflow-y-auto', 'flex-1', 'min-h-[7.5rem]')
     expect(apps).not.toContainElement(within(rail).getByTestId('mobile-nav-rail-home'))
     expect(apps).not.toContainElement(within(rail).getByTestId('mobile-nav-rail-search'))
-    expect(apps).not.toContainElement(within(rail).getByRole('button', { name: 'Settings' }))
+    expect(apps).not.toContainElement(within(rail).getByRole('button', { name: 'Account & Settings' }))
     expect(apps).not.toContainElement(customize)
   })
 
@@ -432,44 +432,43 @@ describe('phone chat page: one top bar', () => {
   })
 
   // The desktop opens the account modal (balance, sign-in state) from the
-  // readout capsule's credits segment; the phone renders no capsule, so the two
-  // phone drawers carry an Account entry -- on exactly the readings the desktop
-  // segment would show. The default mocks are a non-Kiro harness with no
-  // reading: the one state with no segment on the desktop, and no entry here.
-  it('offers no Account entry on a harness whose desktop bar would show no credits segment', async () => {
+  // readout capsule's credits segment; the phone renders no capsule and no
+  // account row: its Account & Settings tile carries the account's initials and
+  // leads to Settings -> Kiro account, whose Credits section shows the balance.
+  it('draws an empty person avatar on the Account & Settings tile with no reading', async () => {
     localStorage.setItem('mc-onboarded', '1')
     renderWithProviders(<App />, { route: '/chat' })
     const rail = await screen.findByTestId('mobile-nav-rail')
-    // Settle the config + usage reads before asserting absence.
-    await screen.findByRole('button', { name: 'Settings' })
+    const tile = await within(rail).findByRole('button', { name: 'Account & Settings' })
+    expect(within(tile).getByTestId('account-avatar-empty')).toBeInTheDocument()
     expect(within(rail).queryByRole('button', { name: 'Kiro Account' })).toBeNull()
   })
 
-  it('puts a Kiro Account tile in the rail and a row in the nav drawer on the Kiro backend, opening the account modal', async () => {
+  it("draws the account's initials on the tile and offers no Kiro Account entry in either drawer", async () => {
     localStorage.setItem('mc-onboarded', '1')
-    const { api } = await import('../api/client')
     vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'kiro' } })
+    vi.mocked(api.sessionsUsage).mockResolvedValue({
+      usage: { credits_plan: 1000, credits_used: 250, email: 'zezhen.xu@example.com', account_type: 'IamIdentityCenter' },
+    } as never)
     try {
       const { unmount } = renderWithProviders(<App />, { route: '/chat' })
       const rail = await screen.findByTestId('mobile-nav-rail')
-      const tile = await within(rail).findByRole('button', { name: 'Kiro Account' })
-      // Between Capabilities and Settings, pinned with them (not in the Apps scroller).
-      expect(within(rail).getByTestId('mobile-nav-rail-apps')).not.toContainElement(tile)
-      expect(tile).toHaveAttribute('aria-pressed', 'false')
-      fireEvent.click(tile)
-      expect(await screen.findByRole('dialog', { name: 'Kiro Account' })).toBeInTheDocument()
-      expect(tile).toHaveAttribute('aria-pressed', 'true')
+      const tile = await within(rail).findByRole('button', { name: 'Account & Settings' })
+      expect(await within(tile).findByTestId('account-avatar-initials')).toHaveTextContent('ZX')
+      expect(within(rail).queryByRole('button', { name: 'Kiro Account' })).toBeNull()
       unmount()
 
-      // Every other phone page: the nav drawer carries the same entry.
+      // Every other phone page: the nav drawer has no account row either.
       renderWithProviders(<App />, { route: '/settings' })
       await screen.findByTestId('settings-page')
       fireEvent.click(within(header()).getByRole('button', { name: 'Open menu' }))
       const nav = await screen.findByRole('navigation', { name: 'Main navigation' })
-      fireEvent.click(await within(nav).findByRole('button', { name: 'Kiro Account' }))
-      expect(await screen.findByRole('dialog', { name: 'Kiro Account' })).toBeInTheDocument()
+      const row = await within(nav).findByRole('button', { name: 'Account & Settings' })
+      expect(await within(row).findByTestId('account-avatar-initials')).toHaveTextContent('ZX')
+      expect(within(nav).queryByRole('button', { name: 'Kiro Account' })).toBeNull()
     } finally {
       vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'claude' } })
+      vi.mocked(api.sessionsUsage).mockResolvedValue({ usage: null } as never)
     }
   })
 

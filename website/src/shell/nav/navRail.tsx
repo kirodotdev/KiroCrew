@@ -3,7 +3,7 @@ import { SortableAppNavRow, NavToggle } from './appRail'
 import { AppRailMenu } from './appRailMenu'
 import { railWidthFor } from '../../hooks/useRailWidth'
 import { FOCUS_INSET } from '../../hooks/useFocusMode'
-import { Coins, Compass, KeyRound, LayoutGrid, SquareTerminal, Smartphone, Search as SearchIcon } from 'lucide-react'
+import { Compass, KeyRound, LayoutGrid, SquareTerminal, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { DndContext, closestCenter, DragOverlay } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
@@ -25,6 +25,7 @@ import { coversPaneProps } from '../../hooks/paneVisibility'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { useLayoutEffect } from 'react'
+import { AccountAvatar, ACCOUNT_AVATAR_RAIL_PX, ACCOUNT_AVATAR_TOUCH_PX } from '../../components/AccountAvatar'
 
 /**
  * The main navigation: the desktop rail, and the phone nav drawer with its scrim,
@@ -39,7 +40,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup,
     activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
     appsExpanded, toggleAppsExpanded, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates,
-    commandPalette, kiroUsageOpen, setKiroUsageOpen, kiroAccountEntry, kiroSignInPrompt, openKiroSignIn,
+    commandPalette, kiroUsageState, kiroSignInPrompt, openKiroSignIn,
     setReportProblemOpen, toggleNav, effectiveCollapsed, closeMobileNav, activePath, libraryNavActive,
     discoverNavActive, isChat, navRowActive,
   } = shell
@@ -379,25 +380,6 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 />
               )}
               <div>{renderNavRow(cap)}</div>
-              {/* Phone only: the account modal (balance, sign-in state) has no
-                  other phone entry -- the readout capsule that opens it on the
-                  desktop is not rendered on the phone. Shown on exactly the
-                  readings the desktop segment shows (`kiroAccountEntry`); the
-                  chat page reaches it from its own drawer's rail. */}
-              {isMobile && kiroAccountEntry && (
-                <NavItem
-                  path="#"
-                  label={i18nT('components.kiroAccountModal.kiro_account')}
-                  icon={<Coins size={20} />}
-                  active={kiroUsageOpen}
-                  pressed={kiroUsageOpen}
-                  collapsed={effectiveCollapsed}
-                  onClick={closeMobileNav}
-                  onClickOverride={() => setKiroUsageOpen(true)}
-                  navId="account"
-                  {...uiLocation('shell.kiro-account')}
-                />
-              )}
               {/* Phone only: the capsule's quiet "Sign in to Kiro" segment. */}
               {isMobile && kiroSignInPrompt && (
                 <NavItem
@@ -413,8 +395,12 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
               )}
               <NavItem
                 path={s.path}
-                label={surfaceLabel(s)}
-                icon={s.icon}
+                /* The row's own label and the account's initials (or an empty
+                   person circle) instead of the gear: this row is where the
+                   account lives, credits included on the phone, whose drawer
+                   has no account row. Paths elsewhere keep the page name. */
+                label={i18nT('nav.account_and_settings')}
+                icon={<AccountAvatar usage={kiroUsageState} size={isMobile ? ACCOUNT_AVATAR_TOUCH_PX : ACCOUNT_AVATAR_RAIL_PX} />}
                 active={activePath === s.path || activePath.startsWith(s.path + '/')}
                 collapsed={effectiveCollapsed}
                 onClick={closeMobileNav}

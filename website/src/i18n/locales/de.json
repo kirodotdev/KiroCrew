@@ -11873,7 +11873,8 @@
     "badge_unread_conversations": "ungelesene Unterhaltungen",
     "badge_unread_member_threads": "ungelesene Mitglieder-Threads",
     "badge_notifications": "Benachrichtigungen",
-    "badge_approvals_needed": "ausstehende Freigaben"
+    "badge_approvals_needed": "ausstehende Freigaben",
+    "account_and_settings": "Konto & Einstellungen"
   },
   "pages": {
     "mcpPage": {
@@ -16240,6 +16241,9 @@
         "save_failed": "Der Wert konnte nicht gespeichert werden. Versuche es erneut.",
         "title": "Modellanbieter",
         "value_missing": "Der Wert, auf den das verweist, ist nicht mehr in den Secrets, daher werden neue Strands-Sitzungen abgelehnt. Speichere einen neuen Wert oder entferne ihn."
+      },
+      "kiroAccountCredits": {
+        "title": "Credits"
       }
     },
     "developerPage": {
@@ -22042,8 +22046,7 @@
         "aria_label": "Einstellungen durchsuchen",
         "no_results": "Keine passenden Einstellungen",
         "placeholder": "Einstellungen durchsuchen…"
-      },
-      "settings": "Einstellungen"
+      }
     },
     "systemPage": {
       "live_system_metrics": "Live-Systemmetriken",

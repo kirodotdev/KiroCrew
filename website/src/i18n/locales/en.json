@@ -8703,6 +8703,9 @@
         "save_failed": "Could not save this value. Try again.",
         "title": "Model provider",
         "value_missing": "The value this names is no longer in Secrets, so new Strands sessions are refused. Save a new value, or remove it."
+      },
+      "kiroAccountCredits": {
+        "title": "Credits"
       }
     },
     "embedSettingsPage": {
@@ -11905,8 +11908,7 @@
         "aria_label": "Search settings",
         "no_results": "No matching settings",
         "placeholder": "Search settings…"
-      },
-      "settings": "Settings"
+      }
     },
     "systemPage": {
       "live_system_metrics": "Live system metrics",

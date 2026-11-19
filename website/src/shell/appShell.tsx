@@ -898,7 +898,7 @@ export function useAppShell() {
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
   })
 
-  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroAccountEntry, kiroSignInPrompt, openKiroSignIn } = useKiroUsageReadout()
+  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn } = useKiroUsageReadout()
   // Feature previews live on the gateway; this keeps the browser cache of them in
   // step. Called beside the credit readout, which already reads ['kirocrewConfig'].
   usePreviewFlagServerSync()
@@ -1157,7 +1157,7 @@ export function useAppShell() {
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
     toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, usageSegmentHidden, kiroAccountEntry, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
+    kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,
     subscribeLogs, subscribeSubagents, forceReconnect, updateFlow, updating, setUpdating, showUpdateModal,
     setShowUpdateModal, showChangelog, updateError, setUpdateError, reportProblemOpen,

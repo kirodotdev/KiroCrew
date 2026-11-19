@@ -11602,7 +11602,8 @@
     "badge_unread_conversations": "未読の会話",
     "badge_unread_member_threads": "未読のメンバースレッド",
     "badge_notifications": "通知",
-    "badge_approvals_needed": "承認待ち"
+    "badge_approvals_needed": "承認待ち",
+    "account_and_settings": "アカウントと設定"
   },
   "pages": {
     "mcpPage": {
@@ -15820,6 +15821,9 @@
         "save_failed": "この値を保存できませんでした。もう一度お試しください。",
         "title": "モデルプロバイダー",
         "value_missing": "参照先の値がシークレットにないため、新しい Strands セッションは拒否されます。新しい値を保存するか、削除してください。"
+      },
+      "kiroAccountCredits": {
+        "title": "クレジット"
       }
     },
     "developerPage": {
@@ -21495,8 +21499,7 @@
         "aria_label": "設定を検索",
         "no_results": "一致する設定がありません",
         "placeholder": "設定を検索…"
-      },
-      "settings": "設定"
+      }
     },
     "systemPage": {
       "live_system_metrics": "ライブシステムメトリクス",

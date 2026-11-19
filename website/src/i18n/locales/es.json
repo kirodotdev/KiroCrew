@@ -12144,7 +12144,8 @@
     "badge_unread_conversations": "conversaciones sin leer",
     "badge_unread_member_threads": "hilos de miembros sin leer",
     "badge_notifications": "notificaciones",
-    "badge_approvals_needed": "aprobaciones pendientes"
+    "badge_approvals_needed": "aprobaciones pendientes",
+    "account_and_settings": "Cuenta y ajustes"
   },
   "pages": {
     "mcpPage": {
@@ -16660,6 +16661,9 @@
         "save_failed": "No se pudo guardar este valor. Inténtalo de nuevo.",
         "title": "Proveedor de modelos",
         "value_missing": "El valor al que apunta ya no está en Secretos, así que las nuevas sesiones de Strands se rechazan. Guarda un valor nuevo o quítalo."
+      },
+      "kiroAccountCredits": {
+        "title": "Créditos"
       }
     },
     "developerPage": {
@@ -22589,8 +22593,7 @@
         "aria_label": "Buscar ajustes",
         "no_results": "No hay ajustes coincidentes",
         "placeholder": "Buscar ajustes…"
-      },
-      "settings": "Ajustes"
+      }
     },
     "systemPage": {
       "live_system_metrics": "Métricas del sistema en vivo",

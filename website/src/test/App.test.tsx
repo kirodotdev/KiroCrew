@@ -578,7 +578,7 @@ describe('App routing', () => {
       expect(screen.getByRole('button', { name: 'Reload page' })).toBeInTheDocument()
       // The nav rail is still rendered around the failed route.
       expect(screen.getByText('Sessions')).toBeInTheDocument()
-      expect(screen.getByText('Settings')).toBeInTheDocument()
+      expect(screen.getByText('Account & Settings')).toBeInTheDocument()
 
       fireEvent.click(within(notice).getByRole('button', { name: 'Ask the agent' }))
       expect(consumeChatHandoff()).toContain(`- Message: ${caughtDiagnostic}`)
@@ -608,7 +608,7 @@ describe('App routing', () => {
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByText('Sessions')).toBeInTheDocument()
     expect(screen.getByText('Customize')).toBeInTheDocument()
-    expect(screen.getByText('Settings')).toBeInTheDocument()
+    expect(screen.getByText('Account & Settings')).toBeInTheDocument()
     // PR1 App Store split: the single 'Explore' entry is gone — the sidebar
     // now carries TWO App Store rows, Discover (/apps) and Library
     // (/apps/library).
@@ -1706,10 +1706,10 @@ describe('App routing', () => {
     return shellSettled()
   })
 
-  it('keeps theme controls available from Settings', () => {
+  it('keeps theme controls available from Account & Settings', () => {
     renderWithProviders(<App />, { route: '/chat' })
     // Theme controls live in Settings > Display rather than the shell header.
-    expect(screen.getByText('Settings')).toBeInTheDocument()
+    expect(screen.getByText('Account & Settings')).toBeInTheDocument()
     return shellSettled()
   })
 
