@@ -212,6 +212,9 @@ class AcpSessionHandle:
     get_valid_effort_levels = _sh_models.get_valid_effort_levels
     _crew_agent_name = _sh_models._crew_agent_name
     store_session_config = _sh_models.store_session_config
+    absorb_config_options = _sh_models.absorb_config_options
+    settle_kas_model_select = _sh_models.settle_kas_model_select
+    store_config_options = _sh_models.store_config_options
     ensure_served_default = _sh_models.ensure_served_default
     _normalize_models = staticmethod(_sh_models._normalize_models)
     refresh_available_models = _sh_models.refresh_available_models

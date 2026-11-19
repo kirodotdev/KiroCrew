@@ -7,7 +7,7 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_config_options``, ``_input_wait_emitted``,
+Instance fields written: ``_input_wait_emitted``,
 ``_native_child_tool_call_ids``, ``_prompt_or_tool_seen``, ``_stale_eligible``,
 ``_status_rejected``, ``_tool_dispatched``, ``_tool_output_seen``, ``last_infra_error``.
 
@@ -392,8 +392,7 @@ def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[Ac
     if session_update == "config_option_update":
         config_options = update.get("configOptions")
         if isinstance(config_options, list):
-            self._config_options = config_options
-            self._sync_effort_levels()
+            self.absorb_config_options(config_options)
         return []
 
     # KAS folds signals that kiro-cli sends as separate top-level

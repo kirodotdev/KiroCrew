@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
@@ -158,6 +158,8 @@ class TestTheFirstTurnAfterAReopen:
         """A loaded session whose own server and bridge are up; the user's two still connect."""
         handle = AcpSessionHandle.__new__(AcpSessionHandle)
         handle._session_id = _SID
+        # The late-select settle step reads the runtime; this handle has none.
+        handle.settle_kas_model_select = AsyncMock()  # type: ignore[method-assign]
         handle._mcp_report = McpSessionReport(folded_on_arrival=True)
         handle._mcp_report.begin_session([])
         handle._queue = asyncio.Queue()
