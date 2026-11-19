@@ -14665,6 +14665,7 @@
       "session_closed_elsewhere": "Dieser Chat wurde außerhalb dieses Fensters geschlossen."
     },
     "chatSidebar": {
+      "sign_in_then_resume": "Anmelden, dann „Wieder aufnehmen“",
       "needsMeCard": {
         "card_label": "{{title}}: braucht dich",
         "recap": "Zusammenfassung",

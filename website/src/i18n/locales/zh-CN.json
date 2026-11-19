@@ -14313,6 +14313,7 @@
       "session_closed_elsewhere": "此聊天已在此窗口之外关闭。"
     },
     "chatSidebar": {
+      "sign_in_then_resume": "先登录，再点“恢复”",
       "needsMeCard": {
         "card_label": "{{title}}：需要你处理",
         "recap": "概要",

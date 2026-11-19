@@ -15017,6 +15017,7 @@
       "session_closed_elsewhere": "Questa chat è stata chiusa fuori da questa finestra."
     },
     "chatSidebar": {
+      "sign_in_then_resume": "Accedi, poi Riprendi",
       "needsMeCard": {
         "card_label": "{{title}}: ha bisogno di te",
         "recap": "Riepilogo",

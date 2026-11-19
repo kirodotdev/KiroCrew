@@ -15369,6 +15369,7 @@
       "session_closed_elsewhere": "Этот чат закрыли за пределами этого окна."
     },
     "chatSidebar": {
+      "sign_in_then_resume": "Войди, затем «Возобновить»",
       "needsMeCard": {
         "card_label": "{{title}}: нужно твоё участие",
         "recap": "Сводка",

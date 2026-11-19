@@ -14665,6 +14665,7 @@
       "session_closed_elsewhere": "यह चैट इस विंडो के बाहर बंद की गई।"
     },
     "chatSidebar": {
+      "sign_in_then_resume": "साइन इन करो, फिर “फिर से शुरू करो”",
       "needsMeCard": {
         "card_label": "{{title}}: तुम्हारी ज़रूरत है",
         "recap": "सारांश",

@@ -14313,6 +14313,7 @@
       "session_closed_elsewhere": "このチャットはこのウィンドウの外で閉じられました。"
     },
     "chatSidebar": {
+      "sign_in_then_resume": "サインインしてから「再開」",
       "needsMeCard": {
         "card_label": "{{title}}：対応が必要です",
         "recap": "要約",

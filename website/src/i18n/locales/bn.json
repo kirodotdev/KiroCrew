@@ -14665,6 +14665,7 @@
       "session_closed_elsewhere": "এই চ্যাটটি এই উইন্ডোর বাইরে বন্ধ করা হয়েছে।"
     },
     "chatSidebar": {
+      "sign_in_then_resume": "সাইন ইন করো, তারপর ‘পুনরায় শুরু করো’",
       "needsMeCard": {
         "card_label": "{{title}}: তোমাকে দরকার",
         "recap": "সারাংশ",

@@ -14313,6 +14313,7 @@
       "session_closed_elsewhere": "이 채팅은 이 창 밖에서 닫혔습니다."
     },
     "chatSidebar": {
+      "sign_in_then_resume": "로그인한 다음 ‘재개’",
       "needsMeCard": {
         "card_label": "{{title}}: 처리가 필요합니다",
         "recap": "요약",

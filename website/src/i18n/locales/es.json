@@ -15017,6 +15017,7 @@
       "session_closed_elsewhere": "Este chat se cerró fuera de esta ventana."
     },
     "chatSidebar": {
+      "sign_in_then_resume": "Inicia sesión y luego pulsa Reanudar",
       "needsMeCard": {
         "card_label": "{{title}}: te necesita",
         "recap": "Resumen",
