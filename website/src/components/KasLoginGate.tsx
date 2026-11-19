@@ -34,7 +34,7 @@ import { initialCompanySignIn, rememberCompanySignIn } from '../utils/companySig
 import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeHref } from '../utils/safeHref'
-import { openAuthTab, useKasLoginFlow, type KasLoginExtra } from '../hooks/useKasLogin'
+import { openAuthTab, useKasLoginFlow, type KasLoginExtra, type KasLoginFellBack } from '../hooks/useKasLogin'
 import { providerLabel, type KasLoginProvider } from './kasProviderLabel'
 import googleMarkUrl from '../assets/google-mark.svg'
 import awsMarkUrl from '../assets/aws-mark.svg'
@@ -45,6 +45,15 @@ import { fmtTime } from '../i18n/format'
 // After this long on the loopback wait screen the screen says the sign-in is not
 // finished: the tab was closed or blocked, or the redirect cannot land.
 const LOOPBACK_SLOW_HINT_MS = 30_000
+// The code screen's line after a loopback attempt degraded, by why it did. A
+// failed poll means the browser did come back, so its code names what went wrong;
+// a timeout, a busy port and the user's own switch keep the "couldn't come back" line.
+const FELL_BACK_LINE = {
+  unreached: 'components.kasLogin.loopback_fell_back',
+  loopback_wrong_address: 'components.kasLogin.loopback_fell_back_wrong_address',
+  loopback_exchange_failed: 'components.kasLogin.loopback_fell_back_exchange_failed',
+  loopback_failed: 'components.kasLogin.loopback_fell_back_failed',
+} as const
 // The begin error's DOM id, so the SSO field it names can point at it.
 const SSO_ERROR_ID = 'kas-sso-begin-error'
 const SSO_PREFILLED_ID = 'kas-sso-start-url-prefilled'
@@ -138,6 +147,28 @@ export interface SignInBackSlot {
 export const SignInBackContext = createContext<SignInBackSlot | null>(null)
 
 /**
+ * The code screen's line saying why a loopback attempt fell back to a code: a
+ * status line for `unreached`, where nothing failed, else the shared error notice.
+ */
+function FellBackLine({ fellBack, className }: { fellBack?: KasLoginFellBack | false; className: string }) {
+  if (fellBack === 'unreached') {
+    return (
+      <p className={`${className} text-[13px] leading-relaxed text-muted`} role="status" data-testid="kas-login-fell-back">
+        {i18nT(FELL_BACK_LINE.unreached)}
+      </p>
+    )
+  }
+  return (
+    <ErrorNotice
+      className={className}
+      message={fellBack ? i18nT(FELL_BACK_LINE[fellBack]) : null}
+      noHandoffReason="a sign-in is in progress on this screen and the agent may run as the very sign-in being set up or replaced; the code below is the way on"
+      testId="kas-login-fell-back"
+    />
+  )
+}
+
+/**
  * The device-code screen in card chrome (the sign-in dialog): one heading, one
  * button that opens the issuer's page with a small copy control, the code in a
  * plain box with its own copy control, one waiting line, and a back control to
@@ -151,7 +182,7 @@ function DeviceCodeCard({
   onCancel,
 }: {
   session: KasLoginDeviceSession
-  fellBack?: boolean
+  fellBack?: KasLoginFellBack | false
   busy: boolean
   notice: string
   onCancel: () => void
@@ -191,11 +222,7 @@ function DeviceCodeCard({
         )}
         <h2 className="text-[15px] font-semibold text-text-strong">{i18nT('components.kasLogin.finish_in_browser')}</h2>
       </div>
-      {fellBack ? (
-        <p className="mt-2 text-[13px] leading-relaxed text-muted" role="status" data-testid="kas-login-fell-back">
-          {i18nT('components.kasLogin.loopback_fell_back')}
-        </p>
-      ) : null}
+      <FellBackLine fellBack={fellBack} className="mt-2" />
       <div className="mt-4 flex items-center gap-2">
         {href ? (
           <a
@@ -707,8 +734,8 @@ function DeviceWaiting({
 }: {
   session: KasLoginDeviceSession
   provider: KasLoginProvider
-  /** True when a loopback attempt degraded here, so the screen explains the switch. */
-  fellBack?: boolean
+  /** Why a loopback attempt degraded here, so the screen explains the switch. */
+  fellBack?: KasLoginFellBack | false
   /** True while a cancel is settling: leaving this screen is disabled until then. */
   busy: boolean
   /** A cancel that did not settle (see settleCancel): shown, never swallowed. */
@@ -746,15 +773,7 @@ function DeviceWaiting({
       <h1 className={chrome.h1}>
         {i18nT('components.kasLogin.enter_the_code_in_your_browser')}
       </h1>
-      {fellBack ? (
-        <p
-          className="mt-3 max-w-md text-[13px] leading-relaxed text-muted"
-          role="status"
-          data-testid="kas-login-fell-back"
-        >
-          {i18nT('components.kasLogin.loopback_fell_back')}
-        </p>
-      ) : null}
+      <FellBackLine fellBack={fellBack} className="mt-3 max-w-md" />
       <ol className="mt-6 w-full max-w-md list-none space-y-5">
         <li>
           <p className="flex items-center gap-2 text-[13px] font-medium text-text">

@@ -782,7 +782,9 @@ describe('KasLoginGate', () => {
     expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
     expect(kasLoginBeginDevice).toHaveBeenCalledWith('github', undefined)
     // The switch is explained, and the 409 is never shown as an error.
-    expect(screen.getByTestId('kas-login-fell-back')).toBeInTheDocument()
+    expect(screen.getByTestId('kas-login-fell-back')).toHaveTextContent(
+      "The sign-in couldn't come back to this computer directly, so here's a code instead.",
+    )
     expect(screen.queryByText(/loopback_unavailable/)).not.toBeInTheDocument()
   })
 
@@ -793,9 +795,42 @@ describe('KasLoginGate', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
     // Not the expired-code problem screen: the code screen, with the reason.
     expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
-    expect(screen.getByTestId('kas-login-fell-back')).toBeInTheDocument()
+    expect(screen.getByTestId('kas-login-fell-back')).toHaveTextContent(
+      "The sign-in couldn't come back to this computer directly, so here's a code instead.",
+    )
+    // Nothing failed, so the line stays status, not an alert.
+    expect(screen.getByTestId('kas-login-fell-back')).toHaveAttribute('role', 'status')
     expect(kasLoginBeginDevice).toHaveBeenCalledWith('google', undefined)
     expect(screen.queryByText('The code expired')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['loopback_wrong_address', "The sign-in came back to an address this computer doesn't handle, so here's a code instead."],
+    ['loopback_exchange_failed', "The sign-in service couldn't finish signing you in, so here's a code instead."],
+    ['loopback_failed', "The sign-in didn't finish in the browser, so here's a code instead."],
+  ])('a loopback failure %s still switches to a code and says why, not that the browser never came back', async (code, line) => {
+    loopbackShape()
+    kasLoginPoll.mockResolvedValueOnce({ status: 'error', code, error: 'x' })
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
+    expect(kasLoginBeginDevice).toHaveBeenCalledWith('google', undefined)
+    expect(screen.getByTestId('kas-login-fell-back')).toHaveTextContent(line)
+    // A failure, so the line is the shared error notice, announced as an alert.
+    expect(screen.getByTestId('kas-login-fell-back')).toHaveAttribute('role', 'alert')
+  })
+
+  it.each([
+    ['loopback_exchange_failed', { status: 'error', code: 'loopback_exchange_failed', error: 'x' }, "The sign-in service couldn't finish signing you in, so here's a code instead.", 'alert'],
+    ['loopback_timeout', { status: 'expired', code: 'loopback_timeout' }, "The sign-in couldn't come back to this computer directly, so here's a code instead.", 'status'],
+  ] as const)('in card chrome a loopback that ends in %s says why on the code screen too', async (_code, answer, line, role) => {
+    loopbackShape()
+    kasLoginPoll.mockResolvedValueOnce(answer)
+    renderWithProviders(<KasLoginEmbedded />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
+    expect(screen.getByTestId('kas-login-fell-back')).toHaveTextContent(line)
+    expect(screen.getByTestId('kas-login-fell-back')).toHaveAttribute('role', role)
   })
 
   it('"Use a code instead" cancels the listener and starts the device flow', async () => {
@@ -804,6 +839,9 @@ describe('KasLoginGate', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Use a code instead' }))
     expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
+    expect(screen.getByTestId('kas-login-fell-back')).toHaveTextContent(
+      "The sign-in couldn't come back to this computer directly, so here's a code instead.",
+    )
     expect(kasLoginCancel).toHaveBeenCalledWith('lb-1')
     expect(kasLoginBeginDevice).toHaveBeenCalledWith('google', undefined)
     // Cancel settles (and status is re-read) BEFORE another login starts, so a
