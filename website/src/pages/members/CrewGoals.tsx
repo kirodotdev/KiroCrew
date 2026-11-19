@@ -247,8 +247,9 @@ const MONTH_DAYS = Array.from({ length: 28 }, (_, i) => i + 1)
 export const HEARTBEAT_INTERVALS = [30, 60, 120, 240] as const
 
 /** The most wakes a heartbeat at *minutes* makes in a day, the bound the user consents
- *  to (`member_goals.wakes_per_day`). */
-export const wakesPerDay = (minutes: number) => Math.floor((24 * 60) / minutes)
+ *  to (`member_goals.wakes_per_day`): inside its hours *from* to *until* only, which
+ *  default to the whole day. */
+export const wakesPerDay = (minutes: number, from = 0, until = 24) => Math.ceil(((until - from) * 60) / minutes)
 
 /** "30 min" / "1 hr", in the active locale. */
 export const fmtInterval = (minutes: number) =>

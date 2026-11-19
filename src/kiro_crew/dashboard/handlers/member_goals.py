@@ -558,7 +558,8 @@ async def api_member_goals_schedules(request: web.Request) -> web.Response:
     """PUT /api/members/{slug}/goals/schedules — the check-in switches and their timing.
 
     Body: ``{member, daily?, weekly?, monthly?, heartbeat?, time?, timezone?,
-    weekday?, month_day?, interval?}``. Turning a switch on needs a goal (409 ``no_goal``).
+    weekday?, month_day?, interval?, active_from?, active_until?}``. Turning a
+    switch on needs a goal (409 ``no_goal``).
     The record is written first, then the schedules are made to match it; when
     they cannot be written the switches turned on by this request are turned back
     off and the answer is 503, so no switch shows a check-in nothing will send.

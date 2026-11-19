@@ -5,7 +5,7 @@
  * forward: it is the one thing that wakes the mate without a person or a goal
  * check-in asking, which is what the Schedules tab lists, so it lives there
  * (Zezhen Xu, 2026-10-22, issue #23262) and not among the Goals tab's
- * check-ins. Its switch and interval are still fields of the goal record's
+ * check-ins. Its switch, interval and hours are still fields of the goal record's
  * `schedules` (`PUT /api/members/{slug}/goals/schedules`, one gateway-owned
  * cron per switch), so this row reads and writes the same record the Goals
  * tab does; with no goal the switch is disabled, as the check-ins are.
@@ -19,10 +19,18 @@ import { Toggle } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
 import { cn } from '../../lib/utils'
+import { fmtDateFields } from '../../i18n/format'
 import { HEARTBEAT_INTERVALS, fmtInterval, memberGoalsKey, useMemberGoals, wakesPerDay } from './CrewGoals'
 
 /** The heartbeat's options carry their daily bound, so the picker fits the longest one. */
 const PICKER_STYLE = { width: '19rem', maxWidth: '100%' } as const
+const HOUR_PICKER_STYLE = { width: '8rem', maxWidth: '100%' } as const
+
+/** The whole hours a window can start at (0-23) and end at (1-24). */
+const DAY_HOURS = Array.from({ length: 25 }, (_, h) => h)
+
+/** Hour *h* of the day as a time in the active locale; 24 is the midnight that ends the day. */
+const fmtHour = (h: number) => fmtDateFields(new Date(2000, 0, 1, h), { hour: '2-digit', minute: '2-digit' })
 
 /** `onBusyChange` publishes an in-flight write into the Profile card's leave
  *  guard (the Goals tab's `onDraftStateChange`, same shape: this row never
@@ -57,7 +65,15 @@ export default function CrewHeartbeatRow({ slug, member, onBusyChange }: { slug:
   const sched = q.data.schedules
   const hasGoal = q.data.goals.length > 0
   const on = sched.heartbeat
+  const from = sched.active_from ?? 0
+  const until = sched.active_until ?? 24
+  const allDay = from === 0 && until === 24
   const label = t('pages.membersPage.goals_heartbeat')
+  const hint = allDay
+    ? t('pages.membersPage.goals_heartbeat_hint', { interval: fmtInterval(sched.interval) })
+    : t('pages.membersPage.goals_heartbeat_hint_hours', { interval: fmtInterval(sched.interval), from: fmtHour(from), until: fmtHour(until) })
+  const fromHours = DAY_HOURS.filter(h => h < until)
+  const untilHours = DAY_HOURS.filter(h => h > from)
   return (
     <div className="flex flex-col gap-2" data-testid="crew-heartbeat">
       {save.isError && <ErrorNotice message={t('pages.membersPage.goals_save_failed')} askAgent testId="crew-heartbeat-error" />}
@@ -67,9 +83,9 @@ export default function CrewHeartbeatRow({ slug, member, onBusyChange }: { slug:
           <span className="flex-1 min-w-0 leading-tight">
             <span className={cn('block text-[13px] font-semibold', hasGoal ? 'text-text' : 'text-muted')}>{label}</span>
             <span className="block text-[12px] text-muted">
-              {t('pages.membersPage.goals_heartbeat_hint', { interval: fmtInterval(sched.interval) })}
+              {hint}
               {/* Where the Heartbeat is on, it also says what it costs. */}
-              {on && <> · {t('pages.membersPage.goals_heartbeat_credits')} · {t('pages.membersPage.goals_heartbeat_per_day', { count: wakesPerDay(sched.interval) })}</>}
+              {on && <> · {t('pages.membersPage.goals_heartbeat_credits')} · {t('pages.membersPage.goals_heartbeat_per_day', { count: wakesPerDay(sched.interval, from, until) })}</>}
             </span>
             {!hasGoal && <span className="block text-[12px] text-muted">{t('pages.membersPage.goals_checkins_need_goal')}</span>}
           </span>
@@ -78,13 +94,39 @@ export default function CrewHeartbeatRow({ slug, member, onBusyChange }: { slug:
         {on && (
           <SimpleSelect
             options={HEARTBEAT_INTERVALS.map(String)}
-            optionLabels={HEARTBEAT_INTERVALS.map(m => `${t('pages.membersPage.goals_heartbeat_every', { interval: fmtInterval(m) })} · ${t('pages.membersPage.goals_heartbeat_per_day', { count: wakesPerDay(m) })}`)}
+            optionLabels={HEARTBEAT_INTERVALS.map(m => `${t('pages.membersPage.goals_heartbeat_every', { interval: fmtInterval(m) })} · ${t('pages.membersPage.goals_heartbeat_per_day', { count: wakesPerDay(m, from, until) })}`)}
             value={String(sched.interval)}
             onChange={v => set({ interval: Number(v) })}
             disabled={!hasGoal || busy}
             aria-label={t('pages.membersPage.goals_heartbeat_interval')}
             style={PICKER_STYLE}
           />
+        )}
+        {/* The Heartbeat's hours: no wake starts outside them. A window never
+            crosses midnight, so each picker offers only the hours on its side
+            of the other. */}
+        {on && (
+          <div className="flex items-center gap-2 flex-wrap" data-testid="crew-heartbeat-hours">
+            <span className="text-[12px] text-muted">{t('pages.membersPage.goals_heartbeat_hours')}</span>
+            <SimpleSelect
+              options={fromHours.map(String)}
+              optionLabels={fromHours.map(fmtHour)}
+              value={String(from)}
+              onChange={v => set({ active_from: Number(v) })}
+              disabled={!hasGoal || busy}
+              aria-label={t('pages.membersPage.goals_heartbeat_hours_from')}
+              style={HOUR_PICKER_STYLE}
+            />
+            <SimpleSelect
+              options={untilHours.map(String)}
+              optionLabels={untilHours.map(fmtHour)}
+              value={String(until)}
+              onChange={v => set({ active_until: Number(v) })}
+              disabled={!hasGoal || busy}
+              aria-label={t('pages.membersPage.goals_heartbeat_hours_until')}
+              style={HOUR_PICKER_STYLE}
+            />
+          </div>
         )}
       </div>
     </div>

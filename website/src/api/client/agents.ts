@@ -258,6 +258,11 @@ export interface GoalSchedules {
   month_day: number
   heartbeat: boolean
   interval: number
+  /** The heartbeat's hours, whole hours in the record's timezone: wakes start at
+   *  `active_from` (0-23) and none at or after `active_until` (1-24). 0 to 24, the
+   *  whole day, by default; absent from a gateway that predates them. */
+  active_from?: number
+  active_until?: number
 }
 
 /** A saved weekly report or monthly review (an artifact). */
