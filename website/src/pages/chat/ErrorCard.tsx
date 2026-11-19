@@ -6,6 +6,7 @@ import { ExternalLink, Loader2, MessageSquarePlus, RotateCw, Settings, ShieldChe
 
 import { ApiError, apiErrorCode } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
+import { reportForError } from '../../utils/errorReport'
 // The shared two-step restart control. Its module holds only the About panel's
 // update actions (shared components and the api client), not the Settings page.
 import { RestartGatewayButton } from '../settings/AboutPanelUpdateFlow'
@@ -329,10 +330,10 @@ export interface ErrorCardProps {
   /**
    * The fix affordance for an `auth_required` row: deep link to the Kiro
    * sign-in card in Settings, where the user signs in to Kiro Crew's own
-   * identity again. Offered INSTEAD of Continue for the same reason as the
-   * entitlement actions -- a retry hits the same signed-out wall -- and on
-   * EVERY such row, because a lapsed sign-in is settled state the user still
-   * has to act on. Omitted on a surface with no settings route (embed, popout).
+   * identity again. Offered INSTEAD of Continue (until `signInWorks`) for the
+   * same reason as the entitlement actions -- a retry hits the same signed-out
+   * wall -- and on EVERY such row, because a lapsed sign-in is settled state
+   * the user still has to act on. Omitted on a surface with no settings route (embed, popout).
    */
   onOpenSignIn?: () => void
   /** A `kiro_cli_sign_in` row: one line and kiro-cli's two sign-in commands. */
@@ -341,6 +342,17 @@ export interface ErrorCardProps {
   kiroCliCrewSignIn?: boolean
   /** The row's untranslated text, where a translated notice dropped its request id. */
   rawContent?: string
+  /**
+   * True on an `auth_required` row whose sign-in the host has read as working
+   * again: the row's line says so, and `onContinue`'s Resume gets a row of its
+   * own under the kept Sign in button, since a retry no longer meets that wall.
+   */
+  signInWorks?: boolean
+  /**
+   * The failed read of whether that sign-in works again: shown under the
+   * row's text on a surface with no app-level sign-in notice (embed, popout).
+   */
+  signInCheckError?: Error | null
   /**
    * True on the newest `session_start_failed` row when the same session start
    * has already failed `SESSION_START_REPEAT_REFUSAL_AT` times in a row with
@@ -668,6 +680,8 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
     kiroCliSignIn,
     kiroCliCrewSignIn,
     rawContent,
+    signInWorks,
+    signInCheckError,
     unentitledElsewhere,
     featureRequestFormUrl,
     limitContinueSlot,
@@ -791,6 +805,34 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
       </div>
     )
   }
+  const resumeButton = onContinue && (
+    <button
+      type="button"
+      onClick={onContinue}
+      disabled={continuing}
+      className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
+      title={i18nT('pages.chat.errorCard.resume_hint')}
+      data-testid="error-card-continue"
+    >
+      {continuing
+        ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
+        : <RotateCw size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
+      {i18nT('pages.chat.errorCard.resume')}
+    </button>
+  )
+  const signInCheckNotice = signInCheckError && (
+    <div className="mt-1">
+      <ErrorNotice
+        title={signInCheckError.message ? i18nT('components.kasLogin.sign_in_status_unavailable') : undefined}
+        message={signInCheckError.message || i18nT('components.kasLogin.sign_in_status_unavailable')}
+        report={reportForError(signInCheckError)}
+        messagePlacement="below"
+        variant="inline"
+        noHandoffReason="This row says the agent's Kiro sign-in failed and no read has shown it working since; on KAS the Ask-the-agent chat runs as that same sign-in and would fail the same way."
+        testId="error-card-sign-in-check-failed"
+      />
+    </div>
+  )
   if (kiroCliSignIn) {
     return (
       <KiroCliSignInRow fallback={content} crewSignIn={kiroCliCrewSignIn} />
@@ -799,14 +841,16 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
   if (onOpenSignIn) {
     // Kiro Crew's own sign-in stopped working: one line and the shared sign-in
     // dialog, opened over the stored (refused) sign-in. The request id stays
-    // behind a copy control.
+    // behind a copy control. Once the host reads the sign-in as working, the
+    // line says so and Resume sits on its own row under Sign in.
     return (
       <div className="self-center w-full max-w-full min-w-0" data-testid="error-card" data-auth-required="true">
         <KiroSignInStrip
-          title={i18nT('components.kiroSignInPrompt.keep_title')}
+          title={signInWorks ? content : i18nT('components.kiroSignInPrompt.keep_title')}
           reauth
           requestId={requestIdOf(rawContent ?? wireContent)}
           testId="error-card-sign-in"
+          action={signInWorks ? resumeButton : undefined}
         />
       </div>
     )
@@ -1042,21 +1086,6 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
       </div>
     )
   }
-  const resumeButton = onContinue && (
-    <button
-      type="button"
-      onClick={onContinue}
-      disabled={continuing}
-      className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
-      title={i18nT('pages.chat.errorCard.resume_hint')}
-      data-testid="error-card-continue"
-    >
-      {continuing
-        ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
-        : <RotateCw size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
-      {i18nT('pages.chat.errorCard.resume')}
-    </button>
-  )
   if (onOpenTurnLimit || turnLimitSlot) {
     const secondaryBtn = `${ACTION_BTN} bg-transparent text-text ring-1 ring-inset ring-border hover:bg-bg-elevated`
     return (
@@ -1136,6 +1165,7 @@ export const ErrorCard = memo(function ErrorCard(props: ErrorCardProps) {
             {restartHint()}
           </div>
         )}
+        {signInCheckNotice}
       </div>
     )
   }

@@ -831,6 +831,14 @@ function outcomeAfter(messages: readonly ChatMessage[], index: number): Outcome 
 }
 
 /**
+ * True for a KAS signed-out row: the one whose fix is Kiro Crew's own sign-in.
+ * Not the launcher form, whose fix is kiro-cli's login (no token is stamped).
+ */
+export function isKasSignedOut(m: ChatMessage): boolean {
+  return shapeOf(m)?.token === 'kas_signed_out'
+}
+
+/**
  * Resolve a gateway status row into localized copy, or null when the row is not
  * one (any other row keeps its verbatim prose).
  *

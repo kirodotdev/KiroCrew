@@ -813,7 +813,30 @@ engine instead ([aws-control.md](aws-control.md)).
   SettingsPage mounts; the card's older home, `/developer?tab=agent-backend`,
   is forwarded there by the `/developer` redirect, and old Agent Harness sign-in
   links by SettingsPage, with the `highlight` kept) and from the KAS remedy
-  strings in `agent_sdk/host_auth.py`. Its intro sentence says Kiro Agent and
+  strings in `agent_sdk/host_auth.py`. Once the sign-in works (`/api/kas-login`
+  reads authenticated, not `expired` and not `signInLapsed`, from a read taken
+  after the row appeared), the chat page's newest error row, when it is an
+  `auth_required` row naming this sign-in (notice `kas_signed_out`; the launcher
+  form naming `kiro-cli login` and the relay's `kiro_cli_sign_in` row do not), no
+  request was sent after it and its turn can be resumed, keeps its Sign in
+  button and offers Resume on its own row under it, its line reading
+  "Signed in to Kiro — resume to send your message again.", so the
+  failed turn reruns in the same chat instead of being typed again; a later read
+  that fails withdraws Resume, so the row returns to its signed-out shape. The row
+  re-reads the status every minute while it stands, so a frame signed in from
+  another window gains Resume too. The button
+  stays because the status can read signed in while the engine still refuses the
+  token (a revoked session). Embed and popout, which carry no button, offer
+  Resume alone; a pane's row is unchanged. When that read fails, the popout
+  and embed frames (`/popout/*`, `/embed/*`), which mount no app-level sign-in
+  notice, show it on the row (an `ErrorNotice`
+  with no agent hand-off, since the agent runs as the sign-in the row says
+  failed), except a failure while the dashboard is offline, which the offline
+  state already reports (`useOutageFailure`, as the app-level notice does); the
+  dashboard window, a chat embedded in one of its pages (an artifact's companion
+  chat) included, leaves it to that app-level notice, which reads the same
+  endpoint.
+  Its intro sentence says Kiro Agent and
   other Kiro features run as this account whichever harness is picked, and that
   Kiro CLI keeps its own kiro-cli login. It is deliberately NOT on Settings >
   Overview: a provider chooser on the landing page read as a required step to
