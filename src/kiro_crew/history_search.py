@@ -30,6 +30,7 @@ from kiro_crew import _facade_mirror, history_listing_memo
 from kiro_crew._sqlite_compat import is_cjk_char, script_runs  # noqa: F401 - facade re-exports
 from kiro_crew.config.sections_defaults import DEFAULT_SEARCH_SCAN_WINDOW
 from kiro_crew.cron_service.identity import is_stateless_cron_run_key
+from kiro_crew.history_archive_text import iter_rotated_texts
 from kiro_crew.history_cache import _GroupRecencyMemo
 from kiro_crew.history_derivation import is_incognito_transcript
 from kiro_crew.history_index import (
@@ -1500,11 +1501,13 @@ class SessionCatalogProjection:
         return (sum(len(t) for t in texts), fold_texts(texts))
 
     def _iter_message_texts(self, key: str) -> Iterator[str]:
-        """Yield each message's non-empty string ``content`` from *key*'s file.
+        """Yield each message's non-empty string ``content`` from *key*'s files.
 
         One definition of "what counts as searchable text in a session file",
         shared by the fold and the snippet so their skip rules cannot drift apart
-        as the on-disk format evolves. Yields in file order; skips blank lines,
+        as the on-disk format evolves. Yields the ``rotate`` archive segments'
+        texts (:func:`~kiro_crew.history_archive_text.iter_rotated_texts`), then
+        the live file's, in file order; skips blank lines,
         unparseable lines, non-object lines, the metadata header and a host-sandbox
         refusal row.
 
@@ -1518,6 +1521,9 @@ class SessionCatalogProjection:
         # excerpt would hand any reader without the row's type to redact by.
         from kiro_crew.dashboard.host_sandbox_refusal import is_refusal_row
 
+        # The size-rotated head first: it is older than every row the live file
+        # still holds, and the chat's own paging corpus serves it too.
+        yield from iter_rotated_texts(self._log._dir, key)
         path = self._log._path(key)
         with open(path, "rb") as handle:
             for line in bounded_records(handle, path, label="history_search"):
