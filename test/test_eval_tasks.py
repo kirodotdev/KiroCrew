@@ -64,6 +64,20 @@ def test_every_shipped_case_bites_on_its_base_and_passes_on_its_reference():
     assert tasks.check_cases(tasks.find_cases(SUITE, "all", [])) == []
 
 
+def test_a_build_commit_starts_no_background_git_maintenance(tmp_path):
+    # A detached `git maintenance run --auto` holds objects/maintenance.lock while the
+    # build's local clone copies objects/, and removes it mid-copy.
+    repo, trace = tmp_path / "repo", tmp_path / "trace.log"
+    env = {**tasks._base_env(), "GIT_TRACE": str(trace)}
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    for cmd in (
+        ["git", "init", "-q", str(repo)],
+        ["git", "-C", str(repo), *ident, "commit", "-q", "--allow-empty", "-m", "base"],
+    ):
+        subprocess.run(cmd, check=True, env=env, timeout=default_timeout())
+    assert "maintenance run" not in trace.read_text()
+
+
 def test_check_names_a_case_whose_base_already_passes(tmp_path):
     case_dir = _case_copy(tmp_path)
     shutil.copy(case_dir / "ref" / "attach_names.py", case_dir / "base" / "attach_names.py")

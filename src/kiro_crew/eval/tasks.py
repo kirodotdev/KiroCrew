@@ -760,7 +760,18 @@ def _write_record(out_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _base_env() -> dict[str, str]:
-    return {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "TZ") if os.environ.get(k)}
+    """The environment for the suite's own build, check and reference git work.
+
+    Git's auto-maintenance is off: after a commit or push, git starts a DETACHED
+    ``git maintenance run --auto``, which holds ``objects/maintenance.lock`` while a
+    local clone of that repository copies ``objects/``; the lock is removed mid-copy
+    and the clone dies with ENOENT. These repositories are throwaway, so nothing is lost.
+    """
+    env = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "TZ") if os.environ.get(k)}
+    env.update(
+        GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="maintenance.auto", GIT_CONFIG_VALUE_0="false"
+    )
+    return env
 
 
 # ---------- the batch ----------
