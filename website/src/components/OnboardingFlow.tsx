@@ -547,8 +547,8 @@ export default function OnboardingFlow({
     // `savingProfile` IS part of the key: every step-2 control is disabled
     // during the save, so `getFocusable()` is empty and the browser drops focus
     // to <body>. Without re-seating focus when the freeze lifts, the failed-save
-    // path (modal stays open with an error) would leave the Tab trap's
-    // first/last comparisons unmatched and Tab would escape the dialog.
+    // path (modal stays open with an error) would leave focus on <body>,
+    // outside the dialog with no visible ring, until the next Tab re-enters it.
     const focusKey = `${step}:${shellHost?.sectionSlot ? 1 : 0}:${savingProfile ? 1 : 0}`
     if (initialFocusKeyRef.current !== focusKey) {
       initialFocusKeyRef.current = focusKey
@@ -567,8 +567,14 @@ export default function OnboardingFlow({
       if (items.length === 0) return
       const first = items[0]
       const last = items[items.length - 1]
-      const wrapsBackward = e.shiftKey && document.activeElement === first
-      const wrapsForward = !e.shiftKey && document.activeElement === last
+      // Focus outside the dialog (the chat composer behind the scrim) re-enters
+      // it on Tab, unless it sits in another modal, such as a theme pack's
+      // consent dialog, whose own trap owns the key.
+      const active = document.activeElement
+      const outside = !node.contains(active)
+      if (outside && active?.closest('[aria-modal="true"]')) return
+      const wrapsBackward = e.shiftKey && (outside || active === first)
+      const wrapsForward = !e.shiftKey && (outside || active === last)
       // A mid-dialog Tab is the browser's to move, so it is also not the
       // trap's to claim — claiming it would consume legitimate navigation
       // inside the post-composition latch window.
