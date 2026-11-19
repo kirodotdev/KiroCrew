@@ -75,6 +75,21 @@ describe('above the composer', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  it('with the Shared Crew preview off, reads neither People nor the mode', async () => {
+    mount(<SessionCollabStrip sessionKey="s1" />)
+    await waitFor(() => expect(api.sharedCrewPresence).toHaveBeenCalled())
+    await new Promise(r => setTimeout(r, 0))
+    expect(api.sharedCrewMode).not.toHaveBeenCalled()
+    expect(api.sharedCrewPeople).not.toHaveBeenCalled()
+  })
+
+  it('with the Shared Crew preview on, reads People and the mode once', async () => {
+    vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ ...ALL_UNAVAILABLE, presence: 'available', attribution: 'available', shared_crew_preview: true })
+    mount(<SessionCollabStrip sessionKey="s1" />)
+    await waitFor(() => expect(api.sharedCrewPeople).toHaveBeenCalledTimes(1))
+    expect(api.sharedCrewMode).toHaveBeenCalledTimes(1)
+  })
+
   it('draws nothing of its own while others are present: presence lives in the context row', async () => {
     const me = person('p_me', 'Me')
     vi.mocked(api.sharedCrewViewer).mockResolvedValue(me as never)

@@ -1869,8 +1869,8 @@ that never learned a revision sends none and is not compared.
 | `GET /api/shared-crew/capabilities` | `Capabilities` |
 | `GET /api/auth/me` | gains `principal` (`Principal.to_public_dict`) |
 | `GET /api/shared-crew/sessions?creator=&q=&cursor=&limit=` | `SessionPage`; each item carries `attribution` |
-| `GET /api/shared-crew/people` | observed collaborators with usage (`is_owner` per row, `tailscale_share` rows), and the directory state |
-| `GET /api/shared-crew/mode` | the mode body (§2 People and setup modes), with `viewer_via` and `owner_label` |
+| `GET /api/shared-crew/people` | observed collaborators with usage (`is_owner` per row, `tailscale_share` rows), and the directory state. With the preview off it reads no session catalogue and no Tailscale daemon, so it lists only the viewer; the dashboard does not request it then |
+| `GET /api/shared-crew/mode` | the mode body (§2 People and setup modes), with `viewer_via` and `owner_label`. With the preview off it reads no session catalogue, so no creator makes the mode `network`; the dashboard does not request it then, except `HostSandboxUnavailableCard` for a non-owner |
 | `GET` / `PUT /api/shared-crew/preview` `{enabled}` | owner only, registered with the preview off: `{enabled, active, env_override, restart_required}` (Release gate) |
 | `GET /api/shared-crew/capacity` | `CapacityResponse` for the viewer |
 | `GET /api/shared-crew/work?session_key=` | public `AcceptedWork` list |

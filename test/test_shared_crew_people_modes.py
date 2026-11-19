@@ -27,6 +27,7 @@ from kiro_crew.shared_crew import (
     crew_mode,
     lifecycle,
     people,
+    preview,
     routes_identity,
     trigger,
 )
@@ -342,7 +343,11 @@ async def _mode_client(log, principal: Principal, *, app_name: str = "") -> Test
 
 
 @pytest.mark.asyncio
-async def test_mode_route_reports_personal_then_network_once_someone_else_creates(tmp_path):
+async def test_mode_route_reports_personal_then_network_once_someone_else_creates(
+    tmp_path, monkeypatch
+):
+    # Creators from the catalogue count only with the Shared Crew preview on.
+    monkeypatch.setenv(preview.PREVIEW_ENV, "1")
     base = tmp_path / "s"
     base.mkdir()
     log = ConversationLog(base)
