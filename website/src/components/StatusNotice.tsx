@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Info, TriangleAlert, X } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
@@ -15,6 +16,7 @@ export default function StatusNotice({
   onDismiss,
   className = '',
   testId,
+  footer,
 }: {
   /** Human notice text. Falsy renders nothing. */
   message?: string | null
@@ -22,10 +24,13 @@ export default function StatusNotice({
   onDismiss?: () => void
   className?: string
   testId?: string
+  /** Controls under the message, as on `ErrorNotice` (a button per item it names). */
+  footer?: ReactNode
 }) {
   if (!message) return null
   const dismissName = i18nT('components.errorNotice.dismiss')
   const Icon = tone === 'warn' ? TriangleAlert : Info
+  const text = <span className="min-w-0 flex-1 whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>{message}</span>
   return (
     <div
       role="status"
@@ -36,7 +41,7 @@ export default function StatusNotice({
       } ${className}`}
     >
       <Icon size={14} className={`mt-[2px] shrink-0 ${tone === 'warn' ? 'text-warn' : 'text-muted'}`} aria-hidden="true" />
-      <span className="min-w-0 flex-1 whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>{message}</span>
+      {footer ? <div className="min-w-0 flex-1">{text}{footer}</div> : text}
       {onDismiss && (
         <button
           type="button"
