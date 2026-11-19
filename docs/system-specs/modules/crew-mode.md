@@ -4546,7 +4546,8 @@ parts:
   not `armed` or `existing (active-work-ledger)`, with `watch="work-ledger"`,
   `gate` left at its default (never `gate:false`), and no `interval_secs`,
   `max_cycles` or `max_runtime_secs` (a work-ledger patrol takes none from the
-  model and runs every 300 s), and, when every item is terminal or the user says stop, ONE final
+  model and runs every 300 s), and, when every item is terminal and nothing is
+  queued, or the user says stop, ONE final
   report to the user before `autonudge_stop` in a later step. Those
   rules, and the verdict and close rules beside them, are not the Bot's
   own text: each is a placeholder filled from the root conductor's shared rules
