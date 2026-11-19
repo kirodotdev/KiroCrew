@@ -1688,7 +1688,10 @@ cumulative, so `printed` reads only the part after what it already read, with a
 64-character overlap (and the two characters before it, a separator's or an
 escape's context) so a token split there is read whole. Times are read from
 there, a `:` in front refusing one at its first character, whose left neighbour
-the cut lost, since a time can be glued to a word (`..._at_12:34:56`). Word
+the cut lost, since a time can be glued to a word (`..._at_12:34:56`); a digit
+or colon on either side refuses it as part of a longer value, including a
+compatibility form that folds to one under NFKC (an Arabic-Indic or fullwidth
+digit, a fullwidth colon). Word
 tokens are read from past a word cut at the overlap's front, so its tail is not
 read as a token: a word running from before the overlap past it is longer than
 any token on every read. Every other detector matches inside a window no longer
