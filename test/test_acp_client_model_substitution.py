@@ -347,7 +347,9 @@ class TestSubstitutionFollow:
                 # shape that can be neither governed nor left out of the session's
                 # setting sources. Patched rather than built with a real symlink,
                 # so the case runs on hosts without symlink privilege.
-                monkeypatch.setattr(client_claude_seed, "_claude_settings_usable", lambda _path: False)
+                monkeypatch.setattr(
+                    client_claude_seed, "_claude_settings_usable", lambda _path: False
+                )
             return len(sent)
 
         waits = 0
