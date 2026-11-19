@@ -13205,6 +13205,8 @@
         "copy_failed": "Copia non riuscita",
         "quote_message": "Cita messaggio",
         "turn_credits": "{{credits}} crediti",
+        "turn_cache_likely": "Cache probabilmente ricostruita",
+        "turn_cache_likely_hint": "Questa risposta è arrivata dopo una pausa più lunga del tempo in cui il modello tiene la conversazione in cache, quindi probabilmente l’intera conversazione è stata salvata di nuovo ed è costata più del solito. È una stima.",
         "turn_cache_rewritten": "Cache ricostruita",
         "turn_cache_rewritten_hint": "Questa risposta ha dovuto salvare di nuovo l’intera conversazione, quindi è costata più del solito."
       },

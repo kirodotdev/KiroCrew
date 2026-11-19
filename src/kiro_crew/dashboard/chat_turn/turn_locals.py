@@ -291,6 +291,7 @@ class _ChatTurn:
     _ttft_visible: "_FirstVisibleClock"
     _turn_billed: "bool"
     _turn_cache_rewrite: "bool"
+    _turn_cache_likely: "bool"
     _turn_boundary_set: "bool"
     _turn_cost_usd: "float"
     _turn_credits: "float"

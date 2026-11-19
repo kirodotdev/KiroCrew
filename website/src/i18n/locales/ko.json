@@ -12627,6 +12627,8 @@
         "copy_failed": "복사 실패",
         "quote_message": "메시지 인용",
         "turn_credits": "크레딧 {{credits}}",
+        "turn_cache_likely": "캐시를 다시 만들었을 가능성이 높음",
+        "turn_cache_likely_hint": "이 답변은 모델이 대화를 캐시에 유지하는 시간보다 오래 쉰 뒤에 도착했으므로, 대화 전체를 다시 저장해 평소보다 비용이 더 들었을 가능성이 높습니다. 추정치입니다.",
         "turn_cache_rewritten": "캐시 다시 만듦",
         "turn_cache_rewritten_hint": "이 답변에서는 대화 전체를 다시 저장해야 해서 평소보다 비용이 더 들었습니다."
       },

@@ -10347,6 +10347,7 @@
         "restore_sessions": false,
         "dynamic_dashboard_cards": false,
         "audit_secret_reads": false,
+        "turn_cache_estimate": false,
         "crewmate_threads": false,
         "crewmates_in_agent_picker": false,
         "feature_previews": {},
@@ -10776,6 +10777,20 @@
       "tags": [],
       "label": "Audit secret reads",
       "help": "Write a security log row when the gateway reads a vault secret: the secret's name, the module that read it and the function that asked (unknown when the read runs on a worker thread with no calling code of its own), never the value. Repeat reads of one secret by one caller share a row per 10 minutes, which counts them. Off by default. Takes effect on the next read; no restart (within 30 seconds in the MCP gateway process).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.turn_cache_estimate",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Estimate cache rebuilds",
+      "help": "Mark a reply in its footer as \"Cache likely rebuilt\" when the backend reports no cache counts and the turn started after a pause longer than the model keeps the conversation cached. Backends that report cache counts are unaffected.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
