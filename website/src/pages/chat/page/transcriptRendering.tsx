@@ -531,6 +531,7 @@ export function useTranscriptRendering({
       running: slotRunning,
       key,
       onFileOpen: handleFileOpen,
+      onArtifactOpen: handleArtifactOpen,
       hideCardOwnedOAuth: connectionsUiOn,
       autoDeniedIds: NO_AUTO_DENIED,
       // The shared row set returns `ctx.row(...)`; the row must be a KEYED
@@ -547,7 +548,7 @@ export function useTranscriptRendering({
     // By reference: the merged list's tail is an SDK default, not the bubble.
     return (entry ?? bubbleRenderer).render(m, ctx)
   // eslint-disable-next-line react-hooks/exhaustive-deps -- messagesRef is a useRef (stable for the page's lifetime) that the rule cannot see across the owner boundary; listing it would also put the flush-volatile `messages` name the dep-hygiene ratchet (TurnBlock.rowMemo.test.tsx) bans back in this array
-  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, connectionsUiOn])
+  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, handleArtifactOpen, connectionsUiOn])
 
   // Hoisted out of the row map so every TurnBlock receives the SAME function
   // identity per render — an inline closure there re-created it per row per

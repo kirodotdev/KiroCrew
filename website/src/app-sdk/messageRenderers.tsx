@@ -683,7 +683,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     roles: ['system'],
     match: isSkillLoadRow,
     render: (m, ctx) => ctx.row(
-      <SkillLoadCard message={m} disclosureKey={ctx.key} />,
+      <SkillLoadCard message={m} disclosureKey={ctx.key} onArtifactOpen={ctx.onArtifactOpen} />,
     ),
   },
   {
@@ -710,6 +710,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
         message={m}
         onFileOpen={ctx.onFileOpen}
         onFolderOpen={ctx.onFolderOpen}
+        onArtifactOpen={ctx.onArtifactOpen}
         disclosureKey={ctx.key}
       />,
       true,

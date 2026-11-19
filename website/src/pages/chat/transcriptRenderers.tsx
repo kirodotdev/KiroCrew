@@ -506,7 +506,7 @@ export function createTranscriptRenderers(
       roles: ['system'],
       match: isSkillLoadRow,
       render: (m, ctx) => ctx.row(
-        <SkillLoadCard key={ctx.key} message={m} disclosureKey={ctx.key} />,
+        <SkillLoadCard key={ctx.key} message={m} disclosureKey={ctx.key} onArtifactOpen={ctx.onArtifactOpen} />,
       ),
     },
     {
@@ -521,6 +521,7 @@ export function createTranscriptRenderers(
           message={m}
           onFileOpen={o.onFileOpen}
           onFolderOpen={o.onFolderOpen}
+          onArtifactOpen={ctx.onArtifactOpen}
           onSessionOpen={o.onSessionOpen}
           sessions={o.sessions}
           activeSession={o.activeSession}
@@ -586,6 +587,7 @@ export function createTranscriptRenderers(
             // The same gate as the body's session chips: a host that withholds
             // the roster (offline) cannot navigate, so the @tag stays plain text.
             onOpenSession={o.sessions ? o.onSessionOpen : undefined}
+            onArtifactOpen={ctx.onArtifactOpen}
           />,
           true,
         )
