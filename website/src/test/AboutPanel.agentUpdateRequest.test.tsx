@@ -23,6 +23,8 @@ import { store } from '../store'
 import { sseStatus } from '../store/dashboardSlice'
 import { AboutPanel, AgentUpdateRequestCard, AGENT_REQUEST_POLL_MS } from '../pages/settings/AboutPanel'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
+import { newQueryClient } from '../api/queryClient'
 import { agentInstallDispatchQuery, useAgentInstallLatch } from '../hooks/useAgentInstallLatch'
 
 const BLANK_STATUS = {
@@ -433,7 +435,7 @@ describe('AboutPanel with a pending agent request', () => {
     vi.spyOn(api, 'armStatus').mockImplementation(async () => {
       calls += 1
       if (calls === 1) return REQUEST as never
-      throw new Error('gateway away')
+      throw new ApiError(503, 'update state unavailable')
     })
     // A tiny poll interval stands in for the 5 s one so three consecutive
     // failures land inside the test's budget; the threshold under test is the
@@ -441,11 +443,10 @@ describe('AboutPanel with a pending agent request', () => {
     const saved = AGENT_REQUEST_POLL_MS.value
     AGENT_REQUEST_POLL_MS.value = 20
     try {
-      // React Query resets `failureCount` at the START of each fetch, so it only
-      // reaches the threshold through RETRIES within one poll — which is what
-      // production has (the default retry is 3). Keep retries on here, with no
-      // delay, or the threshold can never be crossed.
-      const client = new QueryClient({ defaultOptions: { queries: { retry: 3, retryDelay: 1 } } })
+      // The app's own client, so the poll runs production's retry policy (one
+      // retry for a 503); only the retry delay is shortened.
+      const client = newQueryClient()
+      client.setDefaultOptions({ queries: { ...client.getDefaultOptions().queries, retryDelay: 1 } })
       renderPanel(client)
       await screen.findByTestId('agent-update-request')
       await screen.findByTestId('agent-update-request-panel-error', {}, { timeout: 4000 })
