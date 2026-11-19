@@ -811,6 +811,21 @@ class AgentConfig:
             "Custom name the bot identifies as in conversations. Leave empty for default.",
         ),
     )
+    subagents: str = field(
+        default="engine",
+        metadata=_meta(
+            "Use KAS Sub-agents",
+            "Which sub-agents a dashboard chat on the default agent uses on KAS. "
+            "'engine' (default): sub-agents that report back in the same reply run "
+            "inside the KAS engine as the kirocrew-helper agent, and that chat's "
+            "agent no longer lists spawn_sub_agents. 'crew': Kiro Crew starts its "
+            "own, as before. spawn_run, Crew members, Bots, conductors, cron, "
+            "workflows and channel chats keep Kiro Crew's own either way. Applies "
+            "to the next session, not to one already running. No effect on any "
+            "backend but KAS.",
+            enum=["engine", "crew"],
+        ),
+    )
     tool_search: bool = field(
         default=True,
         metadata=_meta(

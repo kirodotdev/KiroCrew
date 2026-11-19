@@ -888,6 +888,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         dangerously_skip_permissions=_read_skip_permissions(agent_data),
         yolo_duration=section.read("yolo_duration", _normalize_yolo_duration),
         notify_override_expiry=section.get("notify_override_expiry"),
+        subagents=section.get("subagents"),
         tool_search=bool(section.get("tool_search")),
         tool_search_min_pct=section.read("tool_search_min_pct", _safe_int),
         tool_search_min_tokens=section.read("tool_search_min_tokens", _safe_int),

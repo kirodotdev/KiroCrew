@@ -96,6 +96,7 @@ def post_compaction_parts(
         is_cc=is_cc,
         private_owner=private_owner,
         session_start=False,
+        provider_type=provider_type,
     )
     if _agent_prompt:
         parts.append(f"[AGENT SYSTEM PROMPT]\n{_agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")

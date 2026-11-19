@@ -66,3 +66,58 @@ def test_the_helper_is_built_fresh_and_ignores_an_agent_file_of_its_name(tmp_pat
     entry = _entry(tmp_path, monkeypatch)
     assert not entry.get("mcpServers")
     assert "*" not in entry["tools"]
+
+
+_PROMPT_MD = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "config" / "prompt.md"
+
+
+def _rules_section() -> list[str]:
+    """The lines of the ``## Rules`` section of the shipped default contract."""
+    lines = _PROMPT_MD.read_text(encoding="utf-8").splitlines()
+    start = lines.index("## Rules") + 1
+    end = next(i for i in range(start, len(lines)) if lines[i].startswith("## "))
+    return lines[start:end]
+
+
+def test_the_helper_carries_the_parents_tool_rules_from_the_one_source():
+    """Every rule the helper carries is a whole Rules bullet of ``config/prompt.md``."""
+    from kiro_crew.acp.kas_engine_subagent_target import (
+        HELPER_RULE_ANCHORS,
+        helper_spec,
+        helper_tool_rules,
+    )
+
+    rules = _rules_section()
+    carried = helper_tool_rules()
+    # Each anchor names exactly one bullet, and the helper carries every one of them.
+    for anchor in HELPER_RULE_ANCHORS:
+        assert sum(line.startswith(anchor) for line in rules) == 1, anchor
+    assert len(carried) == len(HELPER_RULE_ANCHORS)
+    for line in carried:
+        assert line in rules, line
+    prompt = helper_spec()["prompt"]
+    for named in (
+        "Do NOT read credential files directly",
+        "Do NOT run destructive commands",
+        "A blocked call is a policy decision, not a puzzle.",
+    ):
+        assert any(named in line for line in carried), named
+        assert named in prompt, named
+    assert prompt.endswith("\n".join(carried))
+
+
+def test_a_rule_the_source_loses_or_rewords_leaves_the_helper(tmp_path, monkeypatch):
+    """The helper holds no copy of its own: a bullet the source drops is not carried."""
+    import kiro_crew.agent as agent_mod
+    from kiro_crew.acp.kas_engine_subagent_target import HELPER_RULE_ANCHORS, helper_tool_rules
+
+    lines = _PROMPT_MD.read_text(encoding="utf-8").splitlines()
+    dropped = HELPER_RULE_ANCHORS[0]
+    lines = [
+        line.replace(dropped, "- Reworded:") if line.startswith(dropped) else line for line in lines
+    ]
+    (tmp_path / "prompt.md").write_text("\n".join(lines), encoding="utf-8")
+    monkeypatch.setattr(agent_mod, "_BUNDLED_CFG_DIR", tmp_path)
+    carried = helper_tool_rules()
+    assert len(carried) == len(HELPER_RULE_ANCHORS) - 1
+    assert not any(line.startswith(dropped) for line in carried)

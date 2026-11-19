@@ -173,6 +173,7 @@ _OWNING_PAGES: dict[str, dict[str, str]] = {
     "agent.sandbox": {"tab": "developer", "sub": "config"},
     "agent.default_agent": {"tab": "developer", "sub": "config"},
     "agent.tool_search": {"tab": "developer", "sub": "config"},
+    "agent.subagents": {"tab": "developer", "sub": "config"},
     "session.timeout_secs": {"tab": "developer", "sub": "config"},
     # Settings -> Chat.
     "agent.model": {"tab": "chat"},

@@ -17,7 +17,8 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_governance_scope``, ``_kiro_native_spec_lookup``, ``_launch_agent``,
 ``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``,
 ``_member_context``, ``_native_launch_resources``, ``_native_launch_sources``,
-``_native_launch_view_alias``, ``_native_skill_projection``, ``_session_queues``,
+``_native_launch_view_alias``, ``_native_skill_projection``, ``_remote_workspace``,
+``_session_queues``,
 ``_ssh_auth_sock_forwarded``, ``_start_launch_name``, ``_tool_search_wire``,
 ``_wire_mode_id``, ``_work_dir``.
 """
@@ -489,6 +490,12 @@ async def _kas_custom_agents(
     )
     scope = getattr(self, "_governance_scope", None)
     governance_app = scope[1] if scope is not None and scope[0] == session_key else None
+    # A remote workspace replaces every built-in, the engine's sub-agent tool
+    # included. Only a KAS runtime holds one (``set_remote_workspace``), so like
+    # *worker* it goes down only when set and every other host's call is unchanged.
+    remote: dict[str, Any] = (
+        {} if getattr(self, "_remote_workspace", None) is None else {"remote_workspace": True}
+    )
     extras = await self._harness.session_extras(
         agent,
         work_dir=getattr(self, "_work_dir", None),
@@ -501,6 +508,7 @@ async def _kas_custom_agents(
         ssh_auth_sock_forwarded=getattr(self, "_ssh_auth_sock_forwarded", False),
         governance_app=governance_app,
         **worker,
+        **remote,
     )
     # Judged HERE, on the payload, so every path that builds one -- session/new
     # and session/load alike -- is covered, and a host that builds none (kiro:

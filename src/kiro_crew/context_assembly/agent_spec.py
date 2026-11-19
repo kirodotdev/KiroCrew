@@ -18,7 +18,8 @@ methods read builder state through ``self``, so a class or instance patch applie
 
 Builder state read and written: ``_bot_name``; ``_cap_figures`` and
 ``_cap_figures_lock``; ``_computer_use_gates`` and ``_computer_use_gates_lock``;
-``_browser_gates`` and ``_browser_gates_lock``; the class constants
+``_browser_gates`` and ``_browser_gates_lock``; ``_engine_subagent_gates`` and
+``_engine_subagent_gates_lock``; the class constants
 ``_CAP_FIGURE_SESSIONS``, ``_MAX_SUBAGENTS_TOKEN`` and ``_COMPUTER_USE_TOKEN``.
 
 New agent-spec reads and prompt templates belong here.
@@ -776,6 +777,7 @@ def _resolve_agent_prompt(
     is_cc: bool,
     private_owner: bool,
     session_start: bool,
+    provider_type: str | None = None,
 ) -> str:
     """Return the agent contract for the ``[AGENT SYSTEM PROMPT]`` block, or "".
 
@@ -835,7 +837,23 @@ def _resolve_agent_prompt(
             refresh=session_start,
         ),
         substitute_bot_name=self._substitute_bot_name,
+        engine_subagents=lambda: self._session_reading(
+            self._engine_subagent_gates,
+            self._engine_subagent_gates_lock,
+            key,
+            lambda: _live_engine_subagents(provider_type, agent, key),
+            refresh=session_start,
+        ),
     )
+
+
+def _live_engine_subagents(provider_type: str | None, agent: str | None, key: str) -> bool:
+    """A live reading of whether *key*'s contract names the engine's sub-agent tool."""
+    from kiro_crew.acp.kas_engine_subagents import DEFAULT_AGENT, contract_names_engine_subagents
+
+    # No agent named is the default agent, as ``_resolve_agent_prompt`` reads it, so
+    # this reading agrees with the session head's, which names it.
+    return contract_names_engine_subagents(provider_type, agent or DEFAULT_AGENT, key)
 
 
 def _render_contract(
@@ -847,6 +865,7 @@ def _render_contract(
     computer_use: Callable[[], bool],
     browser: Callable[[], bool],
     substitute_bot_name: Callable[[str], str],
+    engine_subagents: Callable[[], bool] = lambda: False,
 ) -> str:
     """The ``[AGENT SYSTEM PROMPT]`` text for *agent_prompt*, the agent's raw contract.
 
@@ -880,6 +899,12 @@ def _render_contract(
             conductor=agent == MATE_CONDUCTOR_AGENT,
             own_thread=is_member_session_key(session_key),
         )
+    # A KAS chat whose agent mounts the engine's own sub-agent tool: the one
+    # ``spawn_sub_agents`` sentence names that tool instead (agent.subagents).
+    from kiro_crew.acp import kas_engine_subagents as _engine
+
+    if _engine.SPAWN_SUB_AGENTS_SENTENCE in agent_prompt and engine_subagents():
+        agent_prompt = _engine.with_engine_sentence(agent_prompt)
     # The Bot conductor's spec prompt is the shared stub, so its ask policy (the
     # shared core and conductor tail, the same constants Conductor mode carries)
     # rides here at agent rank. After any user prompt.md is read, so a custom

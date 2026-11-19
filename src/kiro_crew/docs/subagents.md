@@ -136,6 +136,26 @@ durably, so it stays dismissed after a restart. A dismissal that answers HTTP 50
 - **macOS memory pressure**: on macOS the memory guard also reads the kernel's memory-pressure level (the one Activity Monitor graphs). While it is WARN or CRITICAL and one of this gateway's dedicated subagents is running, a new start waits even when the free-memory figure is above the floor; the chip says "macOS reports memory pressure". Temporary and incognito spawns wait the same way. A held start is re-checked every 15 seconds and whenever a subagent finishes; if it has been held for `agent.subagent_queue_max_wait_secs` (30 minutes by default) with no other top-level start from the same chat beginning in that time (the starts ahead of it in that chat's queue, from any `spawn_run` batch; scheduled and background jobs share one queue, so a start from any of them counts for all of them), it is ended without starting ("never started: waiting for memory"), and the wave's results count it among those that never started, to resubmit once memory eases; and while an episode lasts longer than that, new starts it would hold end at once. With no dedicated subagent of ours running, the start is judged on the figure alone, and a subagent's own nested subagents are never held. `agent.spawn_min_memory_gb = 0` turns this off with the rest of the guard
 - **Redaction**: task strings in SubagentInfo are redacted (credentials, inside URLs too) before surfacing to Slack/dashboard
 
+## KAS sub-agents (`agent.subagents`)
+
+On KAS, a dashboard chat on the default agent hands short, independent tasks whose
+results it needs in the same reply to the KAS engine's own sub-agent tool
+(`invoke_sub_agent`), with the built-in `kirocrew-helper` agent. A KAS sub-agent
+runs inside the chat's turn and process: it starts no process and no MCP server of
+its own, so the memory guard, the queue and the sub-agent count settings above do
+not apply to it, and its cost is part of the chat's turn. It holds built-in tools
+only, is held to the chat agent's own limits, and asks for approval like any other
+call: each dispatch is one approval card unless the chat is trusted or YOLO is on.
+It ends with the turn and cannot be stopped on its own; Stop the turn instead
+(Stop all covers Kiro Crew's own sub-agents only, so a chat whose only sub-agents
+run in the engine shows no Stop-all control). That
+chat's agent no longer lists `spawn_sub_agents`; `spawn_run` and everything in this
+page stay as they are, for that chat and every other.
+
+Turn it off with Settings > Developer > Configuration > "Use KAS sub-agents" (or
+`agent.subagents = "crew"`), and Kiro Crew starts its own sub-agents again from the
+next chat. See [configuration.md](configuration.md) for where it does not apply.
+
 ## Named Agents
 
 You can specify which agent a subagent should use:
