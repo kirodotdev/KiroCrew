@@ -719,10 +719,15 @@ interface SettingsStepperProps {
   /**
    * When given, the readout is a number input: the typed integer is passed
    * here on Enter or blur, and the box then shows `value` again, so the
-   * caller's own clamp decides what is displayed. Empty or non-numeric input,
-   * and Escape, revert to `value`. `min` / `max` are the input's native range.
+   * caller's own clamp decides what is displayed. Non-numeric input, and
+   * Escape, revert to `value`; so does empty input, unless `emptyValue` is
+   * set. `min` / `max` are the input's native range.
    */
   onSet?: (value: number) => void
+  /** With `onSet`: the value an emptied box commits, instead of reverting. */
+  emptyValue?: number
+  /** With `onSet`: what an empty box shows, for a `value` of `''`. */
+  placeholder?: string
   min?: number
   max?: number
   suffix?: string
@@ -740,8 +745,8 @@ interface SettingsStepperProps {
    * copy stacked in one grid cell with the shown value, so the box takes the
    * width of the widest of them in whatever locale and font the reader has. A
    * fixed `ch` floor fits one language's word and still shifts for a longer
-   * translation. The typed-input readout (`onSet`) ignores it: the input sizes
-   * that box.
+   * translation. The typed-input readout (`onSet`) sizes its input the same
+   * way when this is given, and to a fixed width otherwise.
    */
   reserveWidthFor?: Array<string | number>
   /** Backend config key this stepper writes. */
@@ -770,8 +775,11 @@ function StepperReadoutText({ value, suffix, reserve }: { value: number | string
   )
 }
 
-function StepperValueInput({ label, value, onSet, min, max, suffix, disabled }: { label: string; value: number | string; onSet: (value: number) => void; min?: number; max?: number; suffix: string; disabled?: boolean }) {
+function StepperValueInput({ label, value, onSet, emptyValue, placeholder, min, max, suffix, disabled, reserve }: { label: string; value: number | string; onSet: (value: number) => void; emptyValue?: number; placeholder?: string; min?: number; max?: number; suffix: string; disabled?: boolean; reserve?: Array<string | number> }) {
   const [draft, setDraft] = React.useState(String(value))
+  // A number input reports a half-typed value such as "-" as "", so `badInput`
+  // is what tells it apart from a box the user emptied.
+  const [badInput, setBadInput] = React.useState(false)
   // A new `value` from the caller (a step, or the result of a typed value)
   // replaces whatever is in the box.
   const [shown, setShown] = React.useState(value)
@@ -780,35 +788,54 @@ function StepperValueInput({ label, value, onSet, min, max, suffix, disabled }: 
     setDraft(String(value))
   }
   const commit = () => {
-    const n = draft.trim() === '' ? NaN : Math.round(Number(draft))
+    const n = badInput ? NaN : draft.trim() === '' ? (emptyValue ?? NaN) : Math.round(Number(draft))
     setDraft(String(value))
+    setBadInput(false)
     if (Number.isFinite(n) && n !== value) onSet(n)
   }
+  const sized = !!reserve?.length
+  const input = (
+    <input
+      type="number"
+      inputMode="numeric"
+      min={min}
+      max={max}
+      step={1}
+      disabled={disabled}
+      aria-label={label}
+      placeholder={placeholder}
+      value={draft}
+      onChange={e => {
+        setDraft(e.target.value)
+        setBadInput(e.target.validity.badInput)
+      }}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') commit()
+        else if (e.key === 'Escape') {
+          setDraft(String(value))
+          setBadInput(false)
+        }
+      }}
+      className={`${sized ? 'col-start-1 row-start-1 w-full min-w-0 text-center' : 'w-[3.5ch] text-right'} bg-transparent text-text-strong text-sm font-bold placeholder:text-text-strong [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none disabled:cursor-not-allowed`}
+    />
+  )
   return (
     <span className={`${STEPPER_READOUT_CLASS} gap-0.5 cursor-text hover:border-border-strong focus-within:border-accent${disabled ? ' opacity-40' : ''}`}>
-      <input
-        type="number"
-        inputMode="numeric"
-        min={min}
-        max={max}
-        step={1}
-        disabled={disabled}
-        aria-label={label}
-        value={draft}
-        onChange={e => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={e => {
-          if (e.key === 'Enter') commit()
-          else if (e.key === 'Escape') setDraft(String(value))
-        }}
-        className="w-[3.5ch] bg-transparent text-right text-text-strong text-sm font-bold [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none disabled:cursor-not-allowed"
-      />
+      {sized ? (
+        <span className="grid">
+          {reserve!.map((reserved, i) => (
+            <span key={i} className="col-start-1 row-start-1 invisible" aria-hidden="true">{reserved}</span>
+          ))}
+          {input}
+        </span>
+      ) : input}
       {suffix && <span aria-hidden="true">{suffix}</span>}
     </span>
   )
 }
 
-export function SettingsStepper({ label, description, hint, value, onIncrement, onDecrement, onReset, onSet, min, max, suffix = '', disabled, decrementDisabled = false, reserveWidthFor, configKey }: SettingsStepperProps) {
+export function SettingsStepper({ label, description, hint, value, onIncrement, onDecrement, onReset, onSet, emptyValue, placeholder, min, max, suffix = '', disabled, decrementDisabled = false, reserveWidthFor, configKey }: SettingsStepperProps) {
   return (
     <SettingsField label={label} description={description} hint={hint} configKey={configKey} layout="inline-auto">
       <div className="flex items-center gap-2">
@@ -820,7 +847,7 @@ export function SettingsStepper({ label, description, hint, value, onIncrement, 
           aria-label={i18nT('components.settings.decrease')}
         >−</button>
         {onSet ? (
-          <StepperValueInput label={label} value={value} onSet={onSet} min={min} max={max} suffix={suffix} disabled={disabled} />
+          <StepperValueInput label={label} value={value} onSet={onSet} emptyValue={emptyValue} placeholder={placeholder} min={min} max={max} suffix={suffix} disabled={disabled} reserve={reserveWidthFor} />
         ) : onReset ? (
           <button
             type="button"
