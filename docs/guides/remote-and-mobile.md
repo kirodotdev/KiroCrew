@@ -356,6 +356,17 @@ the same and the difference is the whole security story:
   new tailnet the card links to the Tailscale HTTPS settings for the one-time
   administrator approval, then waits for **Re-check**.
 
+  On a Linux host with no desktop, such as a Remote Crew launched on EC2, the
+  card's download link would install Tailscale on the computer your browser runs
+  on, not on the host. When the host runs Amazon Linux 2023, Debian or Ubuntu and
+  its gateway user can run `sudo` without a password (a launched EC2 Remote Crew
+  can), the card instead offers **Install on the server**. That adds Tailscale's
+  official package repository, installs the package, starts `tailscaled`, and
+  runs `tailscale set --operator=<gateway user>` so the gateway can publish with
+  `tailscale serve` later. It then shows **Open sign-in link**: approve the host
+  in your browser with the account your phone uses. No auth key is used or
+  stored. Other hosts keep the download link.
+
   Once those prerequisites hold, click **Set up & show QR** once. The dashboard
   enables its daemon-derived origin, restarts through the gateway's formal
   single-flight restart path, waits for the replacement listener to prove the

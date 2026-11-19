@@ -1546,3 +1546,27 @@ def _published_redaction_verdict_on():
     seams = sys.modules.get("kiro_crew.redaction_seams")
     if seams is not None:
         seams.publish(False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_tailnet_host_setup_state(_floor_monkeypatch):
+    """Every test starts and ends with no cached sudo answer and no login process.
+
+    ``tailnet_host_setup`` keeps ``_sudo_ok`` (``sudo -n true``'s answer, asked
+    once per process) and ``_login_proc`` (the running ``tailscale login``) as
+    module globals. Any test that reaches the phone-access status read on an
+    ``install``/``start_daemon``/``sign_in`` step, or runs the host setup, can
+    leave a faked answer or a fake process there, and a later test on the same
+    worker would read it. A test that never imported the module pays one dict
+    lookup.
+    """
+
+    def clear() -> None:
+        module = sys.modules.get("kiro_crew.dashboard.tailnet_host_setup")
+        if module is not None:
+            _floor_monkeypatch.setattr(module, "_sudo_ok", None)
+            _floor_monkeypatch.setattr(module, "_login_proc", None)
+
+    clear()
+    yield
+    clear()

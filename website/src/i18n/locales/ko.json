@@ -10202,7 +10202,16 @@
       "automatic_https": "이 tailnet에 HTTPS가 활성화되면 Tailscale이 비공개 인증서를 자동으로 만들고 갱신합니다.",
       "setting_up": "휴대폰 액세스를 설정하는 중…",
       "setup_action": "설정하고 QR 표시",
-      "setup_timeout": "휴대폰 액세스가 준비되지 않았습니다. 설정을 확인한 후 다시 시도하세요."
+      "setup_timeout": "휴대폰 액세스가 준비되지 않았습니다. 설정을 확인한 후 다시 시도하세요.",
+      "install_host_title": "서버에 Tailscale 설치",
+      "install_host_body": "Tailscale은 서버와 휴대폰을 사설 네트워크로 연결합니다. 이 컴퓨터가 아니라 서버에 설치합니다.",
+      "sign_in_host_body": "휴대폰에서 사용하는 계정으로 서버를 승인하세요.",
+      "install_here": "서버에 설치",
+      "start_here": "Tailscale 시작",
+      "get_sign_in_link": "로그인 링크 받기",
+      "open_sign_in": "로그인 링크 열기",
+      "working": "서버에서 처리하는 중…",
+      "host_setup_failed": "서버에서 Tailscale 설정을 마치지 못했습니다."
     },
     "sessionTabStrip": {
       "close_tab_hint": "이 탭을 닫습니다. 세션은 사이드바에 남습니다.",

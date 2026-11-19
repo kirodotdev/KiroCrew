@@ -1930,7 +1930,16 @@
       "automatic_https": "After HTTPS is enabled for this tailnet, Tailscale creates and renews the private certificate automatically.",
       "setting_up": "Setting up phone access…",
       "setup_action": "Set up & show QR",
-      "setup_timeout": "Phone access did not reach a ready state. Re-check the setup, then try again."
+      "setup_timeout": "Phone access did not reach a ready state. Re-check the setup, then try again.",
+      "install_host_title": "Install Tailscale on the server",
+      "install_host_body": "Tailscale links the server and your phone on a private network. This installs it on the server, not on this computer.",
+      "sign_in_host_body": "Approve the server with the account your phone uses.",
+      "install_here": "Install on the server",
+      "start_here": "Start Tailscale",
+      "get_sign_in_link": "Get sign-in link",
+      "open_sign_in": "Open sign-in link",
+      "working": "Working on the server…",
+      "host_setup_failed": "Couldn’t finish setting up Tailscale on the server."
     },
     "filePickerMenu": {
       "type_2_chars_to_search_files_enter_held": "Type 2+ chars to search files and folders… — Enter won’t send yet; press Esc, then Enter sends the message",

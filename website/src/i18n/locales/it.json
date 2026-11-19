@@ -10684,7 +10684,16 @@
       "automatic_https": "Dopo aver attivato HTTPS per questa tailnet, Tailscale crea e rinnova automaticamente il certificato privato.",
       "setting_up": "Configurazione dell’accesso dal telefono…",
       "setup_action": "Configura e mostra QR",
-      "setup_timeout": "L’accesso dal telefono non è pronto. Controlla la configurazione e riprova."
+      "setup_timeout": "L’accesso dal telefono non è pronto. Controlla la configurazione e riprova.",
+      "install_host_title": "Installa Tailscale sul server",
+      "install_host_body": "Tailscale collega il server e il tuo telefono in una rete privata. Si installa sul server, non su questo computer.",
+      "sign_in_host_body": "Approva il server con l’account del tuo telefono.",
+      "install_here": "Installa sul server",
+      "start_here": "Avvia Tailscale",
+      "get_sign_in_link": "Ottieni il link di accesso",
+      "open_sign_in": "Apri il link di accesso",
+      "working": "Operazione in corso sul server…",
+      "host_setup_failed": "Non è stato possibile completare la configurazione di Tailscale sul server."
     },
     "sessionTabStrip": {
       "close_tab_hint": "Chiude questa scheda. La sessione resta nella barra laterale.",

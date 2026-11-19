@@ -100,6 +100,19 @@ export interface TailnetMobileData {
    *  dashboard by hand. Optional because an older gateway does not send it. */
   serve_command?: string
   download_url: string
+  /** On `install` / `start_daemon` / `sign_in`: this host (Linux, no desktop,
+   *  passwordless sudo) can set Tailscale up by itself, so the card offers that
+   *  instead of the download link, which would install it on the browser's own
+   *  computer. Optional because an older gateway does not send it. */
+  host_setup?: boolean
+  /** On `sign_in` with `host_setup`: the login URL the daemon is waiting on. */
+  auth_url?: string
+}
+
+/** Result of `POST /api/tailnet/mobile/host-setup`. */
+export interface TailnetMobileHostSetup {
+  ok: boolean
+  detail: string
 }
 
 /** Result of a publish/unpublish attempt. `detail` carries the daemon's own
@@ -185,6 +198,8 @@ export function createRemoteAccessEndpoints({ get, post, put, j }: ClientTranspo
     tailnetMobile: () => get('/api/tailnet/mobile').then(j) as Promise<TailnetMobileData>,
     tailnetMobileConfigure: () =>
       post('/api/tailnet/mobile/configure', {}).then(j) as Promise<TailnetMobileConfigure>,
+    tailnetMobileHostSetup: () =>
+      post('/api/tailnet/mobile/host-setup', {}).then(j) as Promise<TailnetMobileHostSetup>,
     tailnetMobilePublish: () =>
       post('/api/tailnet/mobile/publish', {}).then(j) as Promise<TailnetMobileMutation>,
     tailnetMobileUnpublish: () =>

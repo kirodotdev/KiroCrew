@@ -428,6 +428,21 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # ``capabilities.tailnet_origin`` ceiling at the enforcement call, and
         # never reached from a tool dispatch path.
         "dashboard/tailnet_serve.py::_run",
+        # Headless Tailscale setup from the phone-access card
+        # (``POST /api/tailnet/mobile/host-setup``, owner-only). Every argv is a
+        # module literal: ``sudo -n true``; ``tee <fixed repo path>`` fed the
+        # downloaded bytes on stdin, then ``chmod 0644`` it; ``dnf``/``apt-get
+        # install -y tailscale``;
+        # ``systemctl enable --now tailscaled``; ``tailscale set --operator=<the
+        # gateway's own user name, charset-checked>``; ``tailscale login`` /
+        # ``up``. No request field reaches any of them, nothing goes through a
+        # shell, and the tailscale binary is ``_cli_path``'s vetted path.
+        # Deliberately NOT routed: the purpose is to install a system package
+        # and drive the local daemon as root, the ambient authority a sandbox
+        # exists to remove, and it is never reached from a tool dispatch path.
+        "dashboard/tailnet_host_setup.py::_run",
+        "dashboard/tailnet_host_setup.py::_start_login",
+        "dashboard/tailnet_host_setup.py::_sudo_without_password",
         # PID-reuse guard for app-backend reap and source-stable Browser
         # descendant checks. Only the macOS/other-POSIX arm spawns, and it uses
         # the fixed ``ps -o lstart= -p <pid>`` argv: no shell, the binary comes

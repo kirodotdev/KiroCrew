@@ -10202,7 +10202,16 @@
       "automatic_https": "为此 tailnet 启用 HTTPS 后，Tailscale 会自动创建并续期专用证书。",
       "setting_up": "正在配置手机访问…",
       "setup_action": "一键设置并显示二维码",
-      "setup_timeout": "手机访问未能进入就绪状态。请重新检查配置，然后再试一次。"
+      "setup_timeout": "手机访问未能进入就绪状态。请重新检查配置，然后再试一次。",
+      "install_host_title": "在服务器上安装 Tailscale",
+      "install_host_body": "Tailscale 把服务器和你的手机连到同一个私有网络。这会把它安装到服务器上，而不是这台电脑。",
+      "sign_in_host_body": "用你手机使用的账号批准这台服务器。",
+      "install_here": "安装到服务器",
+      "start_here": "启动 Tailscale",
+      "get_sign_in_link": "获取登录链接",
+      "open_sign_in": "打开登录链接",
+      "working": "正在服务器上处理…",
+      "host_setup_failed": "没能在服务器上完成 Tailscale 的配置。"
     },
     "sessionTabStrip": {
       "close_tab_hint": "关闭此标签页。会话仍保留在侧边栏中。",
