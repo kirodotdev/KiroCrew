@@ -250,9 +250,11 @@ function parseNetstatListenPids(stdout, port) {
   return [...pids];
 }
 
+// windowsHide adds CREATE_NO_WINDOW. Without it, every probe this GUI app runs
+// gets a new console of its own, which a terminal-run netstat never pays for.
 function execFileText(execFileFn, command, args, timeout) {
   return new Promise((resolve, reject) => {
-    execFileFn(command, args, { timeout }, (err, stdout) => {
+    execFileFn(command, args, { timeout, windowsHide: true }, (err, stdout) => {
       if (err) return reject(err);
       resolve(String(stdout || ""));
     });

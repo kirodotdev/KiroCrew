@@ -126,7 +126,7 @@ test("windowsListenPids queries both address families with a bounded timeout", a
   assert.deepStrictEqual(invocation, {
     command: TEST_TOOLS.netstat,
     args: ["-ano"],
-    options: { timeout: 1234 },
+    options: { timeout: 1234, windowsHide: true },
   });
 });
 
@@ -395,7 +395,7 @@ test("windowsTaskkill revalidates identity before using force on the PID", async
   assert.deepStrictEqual(invocation, {
     command: TEST_TOOLS.taskkill,
     args: ["/T", "/F", "/PID", "4242"],
-    options: { timeout: 2345 },
+    options: { timeout: 2345, windowsHide: true },
   });
 });
 
