@@ -1095,9 +1095,18 @@ async def switch_slot_agent(
         # torn down mid-stream. The helper's None verdict marks the degraded
         # post-pop teardown; a bool verdict is the reset outcome the ladder
         # reads.
+        # The Crew Mode migration's switch moves a root onto a new conductor.
+        switch_kind = "conductor" if caller.crew_mode_migration else "agent"
+        # Read before the reset, so the switch span recorded at the commit point
+        # below names the session this reset tears down, not a successor's.
+        from kiro_crew.dashboard.trace_binding import registry_key
+        from kiro_crew.tracing import sessions as trace_sessions
+
+        traced_key = registry_key(state.sessions, session_key)
+        torn_down = trace_sessions.current(traced_key)
         try:
             reset_verdict = await _reset_slot_session_or_warn(
-                state, slot, session_key, switch_kind="agent"
+                state, slot, session_key, switch_kind=switch_kind, record_switch=False
             )
         except BaseException:
             # The identity probe proved the pop never happened: the old
@@ -1139,7 +1148,11 @@ async def switch_slot_agent(
                 # the first-attempt guard prevents.
                 try:
                     reset_verdict = await _reset_slot_session_or_warn(
-                        state, slot, session_key, switch_kind="agent"
+                        state,
+                        slot,
+                        session_key,
+                        switch_kind=switch_kind,
+                        record_switch=False,
                     )
                 except BaseException:
                     _rollback_switch()
@@ -1592,6 +1605,9 @@ async def switch_slot_agent(
                     thread_agent = session_agent_from_metadata(recorded) or thread_agent
             adopt_dashboard_thread_agent(session_key, thread_agent)
 
+        # Past the last rollback point: the reset's switch span is true now.
+        if reset_ok or teardown_incomplete:
+            trace_sessions.switched(traced_key, switch_kind, generation=torn_down)
         # The switch is committed and the session reset: mark the boundary in
         # the transcript, still inside both locks. A re-pick of the bound agent
         # changes nothing the row could name, so it appends none.

@@ -107,6 +107,10 @@ async def _move_tree_edge(state: "DashboardState", slot: "_ChatSlot", parent: st
         except SessionControlError as exc:
             logger.warning("session_handoff: tree edge for %s not moved: %s", slot.key, exc)
             return False
+    from kiro_crew.dashboard.trace_binding import slot_session_key
+    from kiro_crew.tracing import sessions as trace_sessions
+
+    trace_sessions.adopted(slot_session_key(state, slot.key), slot_session_key(state, parent))
     return True
 
 
