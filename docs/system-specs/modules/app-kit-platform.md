@@ -6036,12 +6036,12 @@ in with bearer or Basic auth therefore needs the app's backend to add
 `Authorization` itself.
 
 **Response.** Hop-by-hop headers and `Clear-Site-Data` are dropped, every
-`Set-Cookie` loses its `Domain` (host-only, so one app's cookie never reaches
-another app's name), and each comma-separated CSP policy the backend sent loses
-only its `frame-ancestors` directive. Every other directive and every non-empty
-policy stays enforced. One more policy carries `frame-ancestors 'self'` plus the
-dashboard's loopback origins (`frame_ancestors_value`). The dashboard's own
-security headers are not applied.
+`Set-Cookie` loses its `Domain` (host-only, so a backend's response cannot set a
+cookie for another app's name), and each comma-separated CSP policy the backend
+sent loses only its `frame-ancestors` directive. Every other directive and every
+non-empty policy stays enforced. One more policy carries `frame-ancestors 'self'`
+plus the dashboard's loopback origins (`frame_ancestors_value`). The dashboard's
+own security headers are not applied.
 
 **Dashboard side.** `APP_WEB_ORIGIN_CSP_SOURCE` (`http://*.apps.localhost:*`) is in the
 dashboard's `frame-src` and `connect-src` always (the frame, and the no-cors
@@ -6054,9 +6054,13 @@ single-label Remote Crew pane names and from `kirocrew.localhost`.
 under the list's default rule an unlisted top-level name is a public suffix, so
 a browser may count every app origin as the one site `apps.localhost`. Each app
 still has its own origin, storage and host-only cookies, but `SameSite` cookies
-do not keep one app's framed pages from another app's backend. An app checks
-`Origin` or a CSRF token on the routes that change state; the manifest reference
-says so.
+do not keep one app's framed pages from another app's backend. A script on one
+app's pages can also set a cookie for `apps.localhost`, which the browser sends
+to every app origin and the gateway forwards like the app's own, and a
+`Clear-Site-Data: "cookies"` from one app origin would clear every app's
+cookies (the reason the gateway drops it). An app checks `Origin` or a CSRF
+token on the routes that change state, and trusts a cookie by a value it
+issued, never by its name; the manifest reference says so.
 
 **Discovery.** `appWebOrigin(name)` on `@kirocrew/app-sdk`
 (`website/src/app-sdk/webOrigin.ts`), App Kit seam level 8, answers
