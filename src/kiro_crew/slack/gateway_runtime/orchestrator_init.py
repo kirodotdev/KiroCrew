@@ -167,6 +167,9 @@ def __init__(
     self._inline_parked = {}
     self._inline_tasks = set()  # settled parked completions still routing
     self._running_script_ids = set()  # job IDs with in-flight script/command execution
+    # In-flight auto-pause notices (concurrent.futures from the callback's
+    # cross-thread hand-off), drained bounded by the exit path.
+    self._auto_pause_alerts = set()  # type: ignore[type-arg]
     self.task_runner = None
     # Runner admission over the task queue, attached by _wire_runner_admission
     self._runner_admission = None

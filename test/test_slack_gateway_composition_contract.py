@@ -655,6 +655,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, job: 'CronJob', failure_hash: 'str', *, channel_delivered: 'bool', slack_failed: 'bool') -> 'None'",
         ),
         (
+            "_alert_cron_auto_paused",
+            "async method",
+            "(self, job: 'CronJob', streak: 'int', reason: 'str') -> 'None'",
+        ),
+        (
             "_alert_cron_failure",
             "async method",
             "(self, job: 'CronJob', detail: 'str', *, denied: 'bool' = False, "

@@ -1271,7 +1271,14 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   hit's record carries the rule name the source cards read (`compat.old_rule`). A
   detector error, or a table that does not load, replaces the whole text with
   `REDACTION_UNAVAILABLE_TAG`, a value-free record, a log line naming the error
-  type, and one count on `kirocrew.security.redaction.fail_closed`; it never returns
+  type, and one count on `kirocrew.security.redaction.fail_closed` — and a failed
+  LOAD poisons every later plan in the process (`compat._LOAD_FAILED`), so the
+  first load is serialized (`compat._LOAD_LOCK`) and imports through
+  `importlib.import_module`, which waits out a module another thread is
+  mid-importing: redaction's first call can come from two threads at once (the
+  SEL writer thread and the gateway loop), and a `from package import engine`
+  there resolved the parent's attribute to a partially-initialized module and
+  set the poison flag for a race, not a broken table; it never returns
   the raw text. `StreamRedactor` asks `compat.stream_read()` where the detectors
   need a buffer held (the start of any unit still undecided at the buffer's end, of
   any hit a cut would split, and a fixed tail), drops a unit decided while still
