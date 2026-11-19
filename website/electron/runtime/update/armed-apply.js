@@ -72,6 +72,8 @@ async function runArmedApply({ exec, version, log }) {
  * in-memory ones, so the apply is skipped, the arm kept, and the stop command
  * is handed back for the notice. A probe that cannot answer is treated the same
  * way: an apply that cannot prove the bundle is idle waits for the next start.
+ * An empty `stopCommand` means the holder is not known to be this bundle's
+ * gateway, so the log and the notice name it as unidentified.
  *
  * @returns {Promise<{outcome: "none"|"already-installed"|"relaunching"|"failed"|"gateway-running", error?: string, stopCommand?: string}>}
  */
@@ -90,7 +92,10 @@ async function applyArmedAtStart({ arm, exec, currentVersion, relaunch, app, log
       probe = { running: true };
     }
     if (probe && probe.running) {
-      log.info(`[update] armed update ${rec.version} not applied at start: a gateway from this app's bundle is still running - the arm stays`);
+      const holder = probe.stopCommand
+        ? "a gateway from this app's bundle is still running"
+        : "the gateway port or lock may be held by a program this app could not identify";
+      log.info(`[update] armed update ${rec.version} not applied at start: ${holder} - the arm stays`);
       return { outcome: "gateway-running", stopCommand: probe.stopCommand || "" };
     }
   }

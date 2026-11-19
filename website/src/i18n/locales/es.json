@@ -10144,11 +10144,11 @@
       "restarting": "Reiniciando…",
       "update_ready": "Actualización lista",
       "install_on_quit": "Instalar al salir",
-      "install_on_quit_timing": "La actualización se instala la próxima vez que salgas de la aplicación. No se reinicia nada hasta entonces.",
+      "install_on_quit_timing": "Elige “Instalar al salir” y la actualización se instalará la próxima vez que salgas de la aplicación. No se reinicia nada hasta entonces.",
       "armed_installs_on_quit": "{{productName}} {{version}} se instala cuando sales de la aplicación.",
       "restart_now": "Reiniciar e instalar ahora",
       "restart_now_failed": "No se pudo reiniciar la aplicación. La actualización se instalará igualmente al salir.",
-      "armed_app_too_old": "Esta versión de la aplicación de escritorio no puede programar la actualización desde aquí. Descarga la última versión de la aplicación para actualizar."
+      "armed_app_too_old": "Esta versión de la aplicación de escritorio no tiene la opción “Instalar al salir”. Para actualizar, instala la última versión de la aplicación de escritorio."
     },
     "updatePill": {
       "downloading": "Descargando…",
@@ -19742,7 +19742,7 @@
         "gateway_lane_title": "El servicio en segundo plano que ejecuta tus agentes y sirve este panel. Los chips de rama y commit son su compilación.",
         "update_refused_dirty_worktree": "La actualización se detuvo para proteger tus cambios locales: tu carpeta de {{productName}} tiene cambios sin confirmar ({{changed}}). Confírmalos o guárdalos con stash y vuelve a pulsar Actualizar ahora. Para guardarlo todo con stash, ejecuta el comando de abajo en una terminal dentro de tu carpeta de {{productName}}.",
         "app_updates_heading": "Actualizaciones de la app",
-        "downloaded_and_verified_installs_on_quit": "Descargada y verificada. Se instala cuando sales de la aplicación; no se reinicia nada hasta entonces.",
+        "downloaded_and_verified_installs_on_quit": "Descargada y verificada. Elige “Instalar al salir” y se instalará la próxima vez que salgas de la aplicación; no se reinicia nada hasta entonces.",
         "what_you_d_get_one": "Qué obtendrías ({{count}} cambio desde tu compilación)",
         "what_you_d_get_many": "Qué obtendrías ({{count}} cambios desde tu compilación)",
         "what_you_d_get_other": "Qué obtendrías ({{count}} cambios desde tu compilación)",

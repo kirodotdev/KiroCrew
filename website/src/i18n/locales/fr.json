@@ -10144,11 +10144,11 @@
       "restarting": "Redémarrage...",
       "update_ready": "Mise à jour prête",
       "install_on_quit": "Installer à la fermeture",
-      "install_on_quit_timing": "La mise à jour s’installe la prochaine fois que tu quittes l’application. Rien ne redémarre d’ici là.",
+      "install_on_quit_timing": "Choisis « Installer à la fermeture » et la mise à jour s’installera la prochaine fois que tu quitteras l’application. Rien ne redémarre d’ici là.",
       "armed_installs_on_quit": "{{productName}} {{version}} s’installe quand tu quittes l’application.",
       "restart_now": "Redémarrer et installer maintenant",
       "restart_now_failed": "Impossible de redémarrer l’application. La mise à jour s’installera tout de même à la fermeture.",
-      "armed_app_too_old": "Cette version de l’application de bureau ne peut pas programmer la mise à jour d’ici. Télécharge la dernière version de l’application pour la mettre à jour."
+      "armed_app_too_old": "Cette version de l’application de bureau n’a pas l’option « Installer à la fermeture ». Pour mettre à jour, installe la dernière version de l’application de bureau."
     },
     "updatePill": {
       "downloading": "Téléchargement…",
@@ -19742,7 +19742,7 @@
         "gateway_lane_title": "Le service en arrière-plan qui exécute vos agents et sert ce tableau de bord. Les puces de branche et de commit indiquent sa version compilée.",
         "update_refused_dirty_worktree": "La mise à jour a été arrêtée pour protéger tes modifications locales : ton dossier {{productName}} contient des modifications non validées ({{changed}}). Valide-les ou mets-les de côté avec stash, puis appuie de nouveau sur Mettre à jour maintenant. Pour tout mettre de côté, exécute la commande ci-dessous dans un terminal ouvert dans ton dossier {{productName}}.",
         "app_updates_heading": "Mises à jour de l'app",
-        "downloaded_and_verified_installs_on_quit": "Téléchargée et vérifiée. Elle s’installe quand tu quittes l’application ; rien ne redémarre d’ici là.",
+        "downloaded_and_verified_installs_on_quit": "Téléchargée et vérifiée. Choisis « Installer à la fermeture » et elle s’installera la prochaine fois que tu quitteras l’application ; rien ne redémarre d’ici là.",
         "what_you_d_get_one": "Ce que tu obtiendras ({{count}} changement depuis ton build)",
         "what_you_d_get_many": "Ce que tu obtiendras ({{count}} changements depuis ton build)",
         "what_you_d_get_other": "Ce que tu obtiendras ({{count}} changements depuis ton build)",

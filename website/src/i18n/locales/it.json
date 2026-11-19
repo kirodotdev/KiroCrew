@@ -10144,11 +10144,11 @@
       "restarting": "Riavvio in corso...",
       "update_ready": "Aggiornamento pronto",
       "install_on_quit": "Installa all’uscita",
-      "install_on_quit_timing": "L’aggiornamento viene installato alla prossima chiusura dell’app. Nulla si riavvia fino ad allora.",
+      "install_on_quit_timing": "Scegli «Installa all’uscita» e l’aggiornamento verrà installato alla prossima chiusura dell’app. Nulla si riavvia fino ad allora.",
       "armed_installs_on_quit": "{{productName}} {{version}} viene installato quando chiudi l’app.",
       "restart_now": "Riavvia e installa ora",
       "restart_now_failed": "Impossibile riavviare l’app. L’aggiornamento verrà comunque installato alla chiusura.",
-      "armed_app_too_old": "Questa versione dell’app desktop non può programmare l’aggiornamento da qui. Scarica l’ultima versione dell’app per aggiornare."
+      "armed_app_too_old": "Questa versione dell’app desktop non ha l’opzione «Installa all’uscita». Per aggiornare, installa l’ultima versione dell’app desktop."
     },
     "updatePill": {
       "downloading": "Download in corso…",
@@ -19742,7 +19742,7 @@
         "gateway_lane_title": "Il servizio in background che esegue i tuoi agenti e serve questa dashboard. I chip di branch e commit indicano la sua build.",
         "update_refused_dirty_worktree": "L'aggiornamento è stato interrotto per proteggere le tue modifiche locali: la tua cartella di {{productName}} ha modifiche non sottoposte a commit ({{changed}}). Esegui il commit o lo stash, poi premi di nuovo Aggiorna ora. Per mettere tutto in stash, esegui il comando qui sotto in un terminale nella tua cartella di {{productName}}.",
         "app_updates_heading": "Aggiornamenti app",
-        "downloaded_and_verified_installs_on_quit": "Scaricato e verificato. Viene installato quando chiudi l’app; nulla si riavvia fino ad allora.",
+        "downloaded_and_verified_installs_on_quit": "Scaricato e verificato. Scegli «Installa all’uscita» e verrà installato alla prossima chiusura dell’app; nulla si riavvia fino ad allora.",
         "what_you_d_get_one": "Cosa otterresti ({{count}} modifica dalla tua build)",
         "what_you_d_get_many": "Cosa otterresti ({{count}} modifiche dalla tua build)",
         "what_you_d_get_other": "Cosa otterresti ({{count}} modifiche dalla tua build)",

@@ -9908,11 +9908,11 @@
       "restarting": "Wird neu gestartet...",
       "update_ready": "Aktualisierung bereit",
       "install_on_quit": "Beim Beenden installieren",
-      "install_on_quit_timing": "Das Update wird installiert, wenn du die App das nächste Mal beendest. Bis dahin wird nichts neu gestartet.",
+      "install_on_quit_timing": "Wähle „Beim Beenden installieren“, dann wird das Update installiert, wenn du die App das nächste Mal beendest. Bis dahin wird nichts neu gestartet.",
       "armed_installs_on_quit": "{{productName}} {{version}} wird installiert, wenn du die App beendest.",
       "restart_now": "Neu starten und jetzt installieren",
       "restart_now_failed": "Die App konnte nicht neu gestartet werden. Das Update wird trotzdem beim Beenden installiert.",
-      "armed_app_too_old": "Diese Version der Desktop-App kann das Update von hier aus nicht vormerken. Lade die neueste Version der App herunter, um zu aktualisieren."
+      "armed_app_too_old": "Diese Version der Desktop-App hat die Option „Beim Beenden installieren“ nicht. Installiere zum Aktualisieren die neueste Version der Desktop-App."
     },
     "updatePill": {
       "downloading": "Wird heruntergeladen…",
@@ -19228,7 +19228,7 @@
         "gateway_lane_title": "Der Hintergrunddienst, der Ihre Agenten ausführt und dieses Dashboard bereitstellt. Die Branch- und Commit-Chips zeigen seinen Build.",
         "update_refused_dirty_worktree": "Das Update wurde angehalten, um deine lokalen Änderungen zu schützen: Dein {{productName}}-Ordner hat nicht committete Änderungen ({{changed}}). Committe oder stashe sie und drücke dann erneut auf „Jetzt aktualisieren“. Um alles zu stashen, führe den Befehl unten in einem Terminal in deinem {{productName}}-Ordner aus.",
         "app_updates_heading": "App-Updates",
-        "downloaded_and_verified_installs_on_quit": "Heruntergeladen und verifiziert. Es wird installiert, wenn du die App beendest; bis dahin wird nichts neu gestartet.",
+        "downloaded_and_verified_installs_on_quit": "Heruntergeladen und verifiziert. Wähle „Beim Beenden installieren“, dann wird es installiert, wenn du die App das nächste Mal beendest; bis dahin wird nichts neu gestartet.",
         "what_you_d_get_one": "Was du bekommst ({{count}} Änderung seit deinem Build)",
         "what_you_d_get_other": "Was du bekommst ({{count}} Änderungen seit deinem Build)",
         "what_you_d_get_read_all": "Vollständige Hinweise lesen",
