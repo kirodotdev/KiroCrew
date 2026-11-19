@@ -47,9 +47,13 @@
  * mobile mode keeps the phone form past 768px (useIsMobile, touchLayoutForm),
  * and its `md:hidden` / `hidden md:flex` controls must not flip to the desktop
  * set there. `useIsMobile.ts` writes `data-layout-form="phone"` on <html> while
- * the phone form is drawn; these four keep Tailwind's own widths and order. */
+ * the phone form is drawn; these four keep Tailwind's own widths and order.
+ * `md` also matches FOLD_TWO_PANE_QUERY (hooks/useViewportSegments.ts, repeated
+ * verbatim): a reported fold at 640px and wider takes the two-pane form below
+ * 768px too, and these styles follow it. */
 @custom-variant md {
   @media (width >= 48rem) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
+  @media (min-width: 640px) and (horizontal-viewport-segments: 2) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
 }
 @custom-variant lg {
   @media (width >= 64rem) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }

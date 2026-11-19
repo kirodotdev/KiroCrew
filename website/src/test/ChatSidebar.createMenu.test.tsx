@@ -80,7 +80,8 @@ const mobileViewport = { value: false }
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
   value: vi.fn().mockImplementation((q: string) => ({
-    get matches() { return mobileViewport.value }, media: q, onchange: null,
+    // A phone or a desktop with no fold: the fold query never matches.
+    get matches() { return q.includes('viewport-segments') ? false : mobileViewport.value }, media: q, onchange: null,
     addListener: vi.fn(), removeListener: vi.fn(),
     addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
   })),
