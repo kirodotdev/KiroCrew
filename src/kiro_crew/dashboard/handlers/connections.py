@@ -1540,6 +1540,13 @@ async def api_connections_oauth_client_put(request: web.Request) -> web.Response
     # (commit both halves, or roll the first back) before the cancellation
     # propagates to the caller.
     failure = await asyncio.shield(_mutate())
+    from kiro_crew.connections import crew_oauth
+    from kiro_crew.connections.owner_servers import taken_by_card
+
+    # A saved app can end the card's yield, and the owner server the card takes
+    # over has no use left for its grant. Judged on what is stored, so a failed
+    # save takes nothing over.
+    await crew_oauth.forget_owner_grants(await asyncio.to_thread(taken_by_card, slug))
     if failure is not None:
         return failure
 

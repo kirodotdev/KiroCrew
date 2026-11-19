@@ -1179,6 +1179,32 @@ async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bo
     return {"removed": removed, "revoked": revoked}
 
 
+async def forget_owner_grants(servers: dict[str, str]) -> None:
+    """Revoke and delete what Crew holds for owner-added servers left without a use for it.
+
+    *servers* maps each name to the url its grant is keyed on (:func:`custom_key`):
+    a server the owner removed, re-pointed or turned local, or one a card took
+    over. Its pair goes as a Disconnect does (:func:`disconnect`), then its
+    client. Never raises: the config change that ended the entry has landed.
+    """
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.connections.crew_oauth_dcr import ClientStore, client_entry_name
+    from kiro_crew.secrets import SecretVault
+
+    for name, url in servers.items():
+        key = custom_key(name, url)
+        try:
+            vault = SecretVault(data_home())
+            held = await asyncio.to_thread(vault.list_names)
+            # The revoke reads the client, so the client goes last.
+            if token_entry_name(key) in held:
+                await disconnect(key, TokenStore(vault))
+            if client_entry_name(key) in held:
+                await asyncio.to_thread(ClientStore(vault).delete, key)
+        except Exception:  # noqa: BLE001 -- the config change already landed
+            logger.warning("could not forget the grant of owner MCP server %r", name, exc_info=True)
+
+
 def _audit(operation: str, outcome: str, slug: str, detail: str = "") -> None:
     """One SEL record and one gateway.log line; a provider and a coarse code, never a value."""
     detail = safe_error_code(detail, "")

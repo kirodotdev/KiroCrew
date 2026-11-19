@@ -1586,7 +1586,12 @@ row keeps the in-place Sign in (`is_signable_name`, `ownerSignIn`), that sign-in
 goes to Crew when the preview is on (`crew_oauth.signs_in_custom`), and a session
 reads the grant under the owner key (`crew_oauth._left_to_owner`). Saving a Slack
 app, or a grant under the slug, ends it: the card owns the entry, and a grant under
-the owner key is not read again. An entry the owner did not record never reaches
+the owner key is not read again. The save that ends it deletes the grant
+(revoked where the server advertises a revocation endpoint) of each recorded
+server named for the slug, in any letter case, that loses
+its sign-in (`owner_servers.taken_by_card`, `is_signable_name`,
+`crew_oauth.forget_owner_grants`), judged on what is stored after the save. An
+entry the owner did not record never reaches
 that path. For every other name the gateway
 still refuses to mint for a registry slug by server
 name (`owner_servers.is_signable_name`), so the mark opens no sign-in path.
@@ -1674,7 +1679,12 @@ in runs Crew's sign-in (`dashboard/handlers/connections_custom_oauth.py`,
 `crew_oauth.signs_in_custom`). Its grant is keyed by name AND url
 (`crew_oauth.custom_key`: `custom-<sha256[:20]>`, vault entries
 `CONNECTIONS_CUSTOM_<KEY>_OAUTH_TOKENS` / `_CLIENT`), and a session bridges the
-entry only while that grant is held (`crew_oauth._custom_slug`). Discovery runs
+entry only while that grant is held (`crew_oauth._custom_slug`). Once the owner
+record stops naming that url (the server is removed, re-pointed or turned local:
+`owner_servers.replaced_urls`), the grant goes as a Disconnect would, revoked
+where the server advertises a revocation endpoint, and its client with it
+(`crew_oauth.forget_owner_grants`). Best effort, after the record write: the
+cleanup that fails is logged and never fails the change. Discovery runs
 from the url without its query (`crew_oauth_dcr.prepare_custom`), which is also
 the `resource` and the audited url. Unlike a card it **commits no issuer**: it
 follows the one the url advertises, because the url is the owner's sealed record;

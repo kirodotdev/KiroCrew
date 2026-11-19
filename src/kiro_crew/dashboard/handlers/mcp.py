@@ -1381,6 +1381,9 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
     # Names whose config the locked loop has already purged — so the
     # guaranteed-cleanup sweep does not redundantly re-purge them.
     purged_names: set[str] = set()
+    # Names whose uninstall landed in full, by the loop or the sweep: their owner
+    # sign-in records go too.
+    uninstalled: set[str] = set()
 
     # ── Phase 0: read-only preflight of every change, before any side effect ──
     # Each scope is read once and every change's name resolved against it. A
@@ -1562,7 +1565,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                         purged_names.add(name)
                         return _agent_home_not_owned_response(name)
                     purged_names.add(name)
-                    await _forget_owner_servers([name])
+                    uninstalled.add(name)
                     # Companion package removal already ran in Phase 1 (before the
                     # lock); merge its recorded result here.
                     if name in capability_results:
@@ -1723,14 +1726,20 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
             uninstall_keys,
         )
         try:
-            await asyncio.shield(_sweep_future)
+            uninstalled.update(await asyncio.shield(_sweep_future))
         except asyncio.CancelledError:
             # We're unwinding a cancellation: the executor thread is already
             # running and cannot be cancelled, so wait for it to finish the purge
             # before propagating (shield stopped the await from cancelling the
             # future; this second await blocks until the thread returns).
-            await _sweep_future
+            uninstalled.update(await _sweep_future)
             raise
+        finally:
+            # After the MCP lock, as the remove route does, and on every exit:
+            # forgetting a removed owner server's grant can wait on its
+            # revocation endpoint.
+            if uninstalled:
+                await _forget_owner_servers(sorted(uninstalled))
 
     # ── Rebuild agent artifacts once all scope writes complete ──
     rebuild_ok = False
