@@ -861,15 +861,18 @@ _TAB_MOVE_HINTS = {
 }
 
 
-def _refused_for_tab_move(hub: LiveHub, key: str, op: str) -> dict[str, Any] | None:
+def _refused_for_tab_move(
+    hub: LiveHub, key: str, op: str, args: dict[str, Any]
+) -> dict[str, Any] | None:
     """The refusal for a page-targeted op while a tab move is unreported, or ``None``.
 
     The ref or point the agent sent was read off the page it was on before a popup
     moved its tab, so it would land on an unrelated element. Ops that do not point
-    into the page (``navigate``, ``snapshot``, ``screenshot``, ``tabs``, ...) run.
+    into the page (``navigate``, ``snapshot``, unscoped ``read``, ...) run.
     """
     pending = hub.pending_tab_move(key)
-    if op not in _PAGE_TARGETED_OPS or not pending:
+    page_targeted = op in _PAGE_TARGETED_OPS or (op == "read" and args.get("ref") is not None)
+    if not page_targeted or not pending:
         return None
     if "popup" in pending:
         return harness_ops.refusal(
@@ -1460,7 +1463,7 @@ async def _bound_op(
     try:
         await asyncio.wait_for(_bind(), timeout=OP_TIMEOUT_S)
         bound = True
-        moved = _refused_for_tab_move(hub, key, op)
+        moved = _refused_for_tab_move(hub, key, op, args)
         if hub.in_control(key):
             # A claim landed during the bind; the op has not touched the page yet.
             return _HELD

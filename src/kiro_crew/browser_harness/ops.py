@@ -35,6 +35,7 @@ pure function of ``(op, args, ctx)``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import json
 import logging
@@ -51,6 +52,7 @@ from kiro_crew.browser_harness.budgets import CHANGE_AFTER_S, CHANGE_BEFORE_S
 from kiro_crew.browser_harness.frames import FRAME_READ_CAP, split_frame_ref
 from kiro_crew.browser_snapshots import SNAPSHOT_DIR_NAME
 from kiro_crew.browser_snapshots import prune as prune_snapshots
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,7 @@ OPS: tuple[str, ...] = (
     "navigate",
     "back",
     "snapshot",
+    "read",
     "click",
     "drag",
     "scroll",
@@ -811,6 +814,90 @@ async def _snapshot(ctx: OpContext, _args: dict[str, Any]) -> dict[str, Any]:
         )
     if data.get("error"):
         out["partial"] = str(data["error"])
+    return out
+
+
+#: The longest ``content`` one ``read`` returns. Below :data:`TEXT_CAP` so the
+#: header the tool shim puts in front of it still fits the shim's 20,000 cap.
+READ_CONTENT_CAP = TEXT_CAP - 2_000
+#: How far back a truncated page is scanned for whitespace; longer than any
+#: credential the redactor matches.
+READ_CUT_SCAN = 512
+
+
+async def _read(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    if args.get("format", "text") != "text":
+        return refusal("bad_format", "only text is supported")
+    offset = args.get("offset", 0)
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        return refusal("bad_offset", "offset must be a whole number of characters, 0 or more")
+    ref = args.get("ref")
+    if ref is not None and not _is_ref(ref):
+        return refusal("bad_ref", f"not a valid ref: {ref!r}; call snapshot first")
+    if split_frame_ref(ref) is not None:
+        return refusal(
+            "bad_ref",
+            f"read cannot be scoped to {ref}, an element of a cross-origin frame; "
+            "read the page without a ref",
+        )
+    await _step(ctx, "Read the page text")
+    data = await _page(ctx, "read", ref)
+    if isinstance(data, dict) and data.get("code") == "ref_stale":
+        return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
+    if not isinstance(data, dict) or not isinstance(data.get("content"), str):
+        return refusal("read_error", "the page returned no content")
+    # Redacted and fence-neutralized whole, before paging: a token split across
+    # two pages would match in neither, and neutralizing after paging grows a
+    # page past the shim's cap, which then drops text no `next_offset` covers.
+    # Imported here: the MCP server loads this module before it answers the tool
+    # list, and test_mcp_listing_import_budget caps what that list may load.
+    from kiro_crew.context_assembly.markers import _neutralize_fence_markers
+
+    content = data["content"]
+    if data.get("truncated"):
+        # The walker may cut a credential mid-word. Withhold that word before
+        # redaction, but scan back at most READ_CUT_SCAN characters: a page with
+        # no whitespace near its end loses only that tail, not all its text.
+        floor = max(0, len(content) - READ_CUT_SCAN)
+        end = len(content)
+        while end > floor and not content[end - 1].isspace():
+            end -= 1
+        content = content[:end]
+    content, _ = redact_exfiltration_urls(content)
+    content, _ = redact_credentials(content)
+    content = _neutralize_fence_markers(content)
+    total = len(content)
+    if offset > total:
+        return refusal("bad_offset", f"offset {offset} is past the end ({total} characters)")
+    page = content[offset : offset + READ_CONTENT_CAP]
+    out: dict[str, Any] = {
+        "ok": True,
+        "url": str(data.get("url", "")),
+        "title": str(data.get("title", "")),
+        "content": page,
+        "offset": offset,
+        "total": total,
+        "digest": hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()[:12],
+    }
+    if offset + len(page) < total:
+        out["next_offset"] = offset + len(page)
+    if data.get("truncated"):
+        out["truncated"] = True
+    counts = [data.get("skippedFrames"), data.get("deepRoots")]
+    skipped, deep = (c if isinstance(c, int) and not isinstance(c, bool) else 0 for c in counts)
+    notes = []
+    if skipped > 0:
+        notes.append(
+            f"{skipped} cross-origin frame(s) or embedded document(s) were not read; "
+            "their text is not included"
+        )
+    if deep > 0:
+        notes.append(
+            f"{deep} shadow root(s) or frame(s) nested past the read depth were not read; "
+            "read a ref inside them"
+        )
+    if notes:
+        out["note"] = "; ".join(notes)
     return out
 
 
@@ -1615,6 +1702,7 @@ _HANDLERS: dict[str, Callable[[OpContext, dict[str, Any]], Awaitable[dict[str, A
     "navigate": _navigate,
     "back": _back,
     "snapshot": _snapshot,
+    "read": _read,
     "click": _click,
     "drag": _drag,
     "scroll": _scroll,

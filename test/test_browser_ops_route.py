@@ -847,6 +847,47 @@ async def test_a_ref_op_after_the_popup_closed_is_refused_and_a_navigate_still_r
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scoped", [True, False])
+@pytest.mark.parametrize("during_bind", [False, True])
+async def test_read_after_popup_closed_refuses_only_a_scoped_read(
+    monkeypatch: pytest.MonkeyPatch, scoped: bool, during_bind: bool
+) -> None:
+    """A popup ref must not read the opener's element with the same ref id."""
+    sup = _BindRaceSupervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    hub = hub_mod.get_live_hub()
+    await _op("chat-a")
+    sup.open_popup("P1", "T1")
+    await _op("chat-a", "snapshot")
+    assert hub.target_of("chat-a") == "P1"
+    if during_bind:
+        sup.close_during_bind = "P1"
+    else:
+        sup.ledger.remove("P1")
+    read_targets: list[tuple[str, dict[str, Any]]] = []
+
+    async def _read(op: str, args: dict[str, Any], ctx: Any) -> dict[str, Any]:
+        assert op == "read"
+        read_targets.append((sup.current, args))
+        return {"ok": True, "content": "opener text"}
+
+    monkeypatch.setattr(harness_ops, "run_op", _read)
+    answer = await _op("chat-a", "read", **({"ref": "e1"} if scoped else {}))
+    assert hub.target_of("chat-a") == "T1" and sup.current == "T1"
+    if scoped:
+        assert answer["ok"] is False and answer["code"] == "popup_closed"
+        assert read_targets == [], "the opener's same ref must never be read"
+        result = answer
+    else:
+        result = answer["result"]
+        assert result["ok"] is True and result["content"] == "opener text"
+        assert read_targets == [("T1", {})]
+    assert result["popup_closed"]["returned_to"] == "T1"
+    assert hub.pending_tab_move("chat-a") is None
+
+
+@pytest.mark.asyncio
 async def test_a_ref_op_after_a_late_popup_opened_is_refused_until_a_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -894,14 +935,14 @@ def test_a_move_no_answer_reported_stays_pending_and_refuses_page_targeted_ops()
     held = object()
     assert mod._with_tab_move(hub, "k", held) is held
     assert hub.pending_tab_move("k") is not None
-    assert mod._refused_for_tab_move(hub, "k", "snapshot") is None, "reads still run"
-    pasted = mod._refused_for_tab_move(hub, "k", "paste")
+    assert mod._refused_for_tab_move(hub, "k", "snapshot", {}) is None, "reads still run"
+    pasted = mod._refused_for_tab_move(hub, "k", "paste", {})
     assert pasted is not None and pasted["code"] == "popup_opened", "paste is refused like type"
-    refused = mod._refused_for_tab_move(hub, "k", "click")
+    refused = mod._refused_for_tab_move(hub, "k", "click", {})
     assert refused is not None and refused["code"] == "popup_opened"
     told = mod._with_tab_move(hub, "k", refused)
     assert told["popup"]["target_id"] == "P1" and hub.pending_tab_move("k") is None
-    assert mod._refused_for_tab_move(hub, "k", "click") is None, "told once, then the op runs"
+    assert mod._refused_for_tab_move(hub, "k", "click", {}) is None, "told once, then the op runs"
 
 
 def test_a_governance_deny_leaves_the_tab_move_pending() -> None:
