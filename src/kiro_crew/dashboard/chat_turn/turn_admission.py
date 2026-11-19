@@ -1111,6 +1111,9 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             client, is_new, resumed = await _claim_session(_wait_if_busy)
             turn.is_new = is_new
             turn.resumed = resumed
+            # Armed at the claim, before any await a Stop can interrupt: the
+            # claim consumed the one-shot resume, so every later exit owes it.
+            turn._slim_resume_pending = bool(is_new and resumed)
             turn.client = client
             break
         except SessionBusyError:
@@ -1151,6 +1154,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         )
         turn.is_new = is_new
         turn.resumed = resumed
+        turn._slim_resume_pending = bool(is_new and resumed)
         turn.client = client
     except BaseException:
         state.sessions.release(session_key)

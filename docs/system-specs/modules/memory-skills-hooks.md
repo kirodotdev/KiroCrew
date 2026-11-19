@@ -8236,14 +8236,19 @@ The flags resolve once at spawn and live on `SubagentInfo`. Every path that re-m
 ### Session Resume (`resumed=True`)
 
 `build_message(resumed=True)` uses slim resume after native `session/load`.
-It does not reinject the original full memory, lessons, skills or agent prompt.
+It does not reinject the original full memory, skills or agent prompt. It does
+re-send the learned-lessons block, the steering resources and the folder
+steering, because a compacted restored transcript may have lost them; it uses
+the post-compaction helpers (`context_assembly/turn.py` → `lessons_parts`,
+`steering_parts`) and their gates, and a minimal turn gets none of them.
 A direct `build_session_context(resumed=True)` call only skips thread history;
 it is not the public turn's slim-resume path.
 
 | Block | Slim resume |
 |---|---|
 | Thread history | Native provider history retained; no duplicate block |
-| Memory, lessons, skills, agent prompt | No full reinjection |
+| Memory, skills, agent prompt | No full reinjection |
+| Lessons, steering resources, folder steering | Re-sent under the post-compaction gates |
 | Date, runtime, UI language | Refreshed minimal header |
 | Member essentials/rules | Existing lifecycle delivery retained |
 | Critical rules | Existing restored context; no full duplicate |

@@ -729,11 +729,13 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "resumed": (
-        "db5fbd3b9c3b06050438fef000308c3771ab3bf1d8c754e21c8fc5aa6b8b3761",
+        "dc5948d4637d5b9d8139c2347928058b4ed7b144ac43d0aa731a85e582666935",
         [
-            ("recovery", 303),
+            ("recovery", 442),
             ("agent_identity", 25),
             ("surface", 30),
+            ("lessons", 179),
+            ("unclassified", 18),
             ("reply_format_rules", 1282),
             ("request_header", 50),
         ],
