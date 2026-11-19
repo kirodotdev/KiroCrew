@@ -36,6 +36,7 @@ import { createElement } from 'react'
 import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { X } from 'lucide-react'
+import { signInCommand, signInSentence } from './signInCommand'
 import type { ClientTransport } from './client/transport'
 import { gatedRead } from './readGate'
 import { createSystemEndpoints } from './client/system'
@@ -521,17 +522,18 @@ async function exchangePastedToken(token: string): Promise<PasteExchange> {
 /**
  * Render *sentence* into *el* with the command wrapped in a <code> element.
  *
- * The command comes from `api.client.reauth_command`, so the value split on is
- * the SAME value a translator sees, and no untranslated literal sits in this
- * module. Falls back to the plain sentence when the command is absent from it,
- * because a translation that moved or dropped it must still be readable --
- * losing the chip is a styling regression, whereas rendering nothing would be a
- * blank banner. `ApiClient.coverage.test.tsx` pins the relationship across every
- * catalog, so a translation that breaks it reddens CI rather than silently
- * costing the chip.
+ * The command is `signInCommand()`: the catalog's `api.client.reauth_command`,
+ * the SAME value a translator sees, or the one a container gateway sends, which
+ * `signInSentence` put in the sentence in its place. No untranslated literal
+ * sits in this module. Falls back to the plain sentence when the command is
+ * absent from it, because a translation that moved or dropped it must still be
+ * readable -- losing the chip is a styling regression, whereas rendering
+ * nothing would be a blank banner. `ApiClient.coverage.test.tsx` pins the
+ * relationship across every catalog, so a translation that breaks it reddens
+ * CI rather than silently costing the chip.
  */
 function setInstructionWithCommandChip(el: HTMLElement, sentence: string): void {
-  const command = i18nT('api.client.reauth_command')
+  const command = signInCommand()
   const at = command ? sentence.indexOf(command) : -1
   if (at < 0) {
     el.textContent = sentence
@@ -613,7 +615,7 @@ function showSessionExpiredBanner(lead?: string): void {
         return
       }
       if (!ok) {
-        failure.textContent = i18nT('api.client.token_not_accepted')
+        failure.textContent = signInSentence(i18nT('api.client.token_not_accepted'))
         input.focus()
         return
       }
@@ -632,7 +634,7 @@ function showSessionExpiredBanner(lead?: string): void {
       // the banner stays up and says the token was not accepted, which is the
       // accurate reading of a 200 that proves neither.
       if (_staleOwnerBanner && !(tokenAccepted && ownerOk)) {
-        failure.textContent = i18nT('api.client.token_not_accepted')
+        failure.textContent = signInSentence(i18nT('api.client.token_not_accepted'))
         input.focus()
         return
       }
@@ -704,7 +706,7 @@ function showSessionExpiredBanner(lead?: string): void {
   const instruction = document.createElement('div')
   setInstructionWithCommandChip(
     instruction,
-    i18nT('api.client.run_kirocrew_token_then_paste_sign_in_url'),
+    signInSentence(i18nT('api.client.run_kirocrew_token_then_paste_sign_in_url')),
   )
   el.append(b, instruction, input, failure)
   // On a phone the desktop "Connect your phone" QR carries this same sign-in URL,
@@ -736,7 +738,7 @@ function showSessionExpiredBanner(lead?: string): void {
           // The decoded string is never logged: in the intended use it IS the token.
           const settled = submitToken(raw.trim())
           if (!settled) {
-            failure.textContent = i18nT('api.client.token_not_accepted')
+            failure.textContent = signInSentence(i18nT('api.client.token_not_accepted'))
             return
           }
           scan.disabled = true
@@ -969,9 +971,9 @@ const apiFailure = (r: Response, errText: string, benign?: Benign): ApiError => 
   // says where to go, so only a top-level document raises the notice.
   if (edgeOutcome === 'challenged') showEdgeChallengeBanner()
   const message = staleOwnerSession
-    ? i18nT('api.client.stale_owner_session_sign_in_again')
+    ? signInSentence(i18nT('api.client.stale_owner_session_sign_in_again'))
     : authRequired
-      ? i18nT('api.client.session_expired_sign_in_again')
+      ? signInSentence(i18nT('api.client.session_expired_sign_in_again'))
       : edgeChallengeMessage(edgeOutcome)
         || friendlyErrText(r.status, errText)
         || statusErrText(r.status, errText)
