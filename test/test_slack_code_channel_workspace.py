@@ -45,6 +45,12 @@ def _passthrough_spawn(argv, mode="standard", **kw):
 def _no_sandbox(_floor_monkeypatch):
     _floor_monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
     _floor_monkeypatch.setattr(git_ops, "sandboxed_spawn_argv", _passthrough_spawn)
+    # These tests prove the worktree, diff and bar, not hook handling. The hook scan
+    # starts extra git processes before every `run_git` call, and a refresh makes
+    # dozens of them. `run_git` carrying the disable flags and failing closed on a scan
+    # error are covered in test_git_config_hooks.py (test_worktree_run_git_carries_the_disable,
+    # test_worktree_run_git_scan_failure_reads_as_git_failure).
+    _floor_monkeypatch.setattr(wt, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
 
 
 @pytest.fixture(autouse=True)
