@@ -322,6 +322,7 @@ from kiro_crew.config.sections_defaults import (  # noqa: F401
     DEFAULT_SESSION_TIMEOUT,
     DEFAULT_WATCHDOG_RSS_MAX_MB,
     SectionReader,
+    _report_clamp,
 )
 from kiro_crew.config.sections_limits import (  # noqa: F401
     _DEFAULT_CHAT_TURN_TIMEOUT_SECS,
