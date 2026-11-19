@@ -4,7 +4,7 @@ import { AlertTriangle, CheckCircle2, Eye, EyeOff, KeyRound, Loader2, LogOut, Re
 import { api, type KasLoginStatus } from '../../api/client'
 import { kasInUse, type AcpBackendConfig } from '../../api/acpBackend'
 import { KasLoginEmbedded } from '../../components/KasLoginGate'
-import { KiroSignInDialog } from '../../components/KiroSignInDialog'
+import { KiroSignInDialog, KiroSignInFlow } from '../../components/KiroSignInDialog'
 import { useKasLoginStatus } from '../../hooks/useKasLogin'
 import { providerLabelFromWire } from '../../components/kasProviderLabel'
 import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../../components/KiroAccountModal'
@@ -207,10 +207,11 @@ function SignedInSummary({
 }
 
 /**
- * The card's body: a signed-in view, or one Sign in button. Signing in,
- * switching account and signing in again all open the shared sign-in dialog
- * (`KiroSignInDialog`), the same one the chat opens; closing it backs out. A
- * failed status read shows the shared flow's own error and Check again.
+ * The card's body: a signed-in view, or the shared sign-in choices in place
+ * (`KiroSignInFlow`, the same content the chat's dialog wraps). Switching account
+ * and signing in again open the shared sign-in dialog (`KiroSignInDialog`);
+ * closing it backs out. A failed status read shows the shared flow's own error
+ * and Check again.
  */
 function SignInBody({
   renderSignedIn,
@@ -219,7 +220,7 @@ function SignInBody({
 }) {
   // This card is what keeps the shared status fresh while Settings is open.
   const statusQuery = useKasLoginStatus({ poll: 30_000 })
-  const [dialog, setDialog] = useState<null | 'sign_in' | 'reauth'>(null)
+  const [reauthOpen, setReauthOpen] = useState(false)
   const status = statusQuery.data
   let content: ReactNode
   if (statusQuery.isPending) {
@@ -231,23 +232,21 @@ function SignInBody({
     )
   } else if (!status) {
     content = <KasLoginEmbedded renderAuthenticated={() => null} />
-  } else if (status.authenticated) {
-    content = renderSignedIn(status, () => setDialog('reauth'))
   } else {
+    // One flow for both states: it stays mounted when a sign-in lands, so the
+    // landed result settles (caches dropped) before the summary replaces the
+    // choices. The choices keep the dialog's width on a wide card.
+    const signedOut = !status.authenticated
     content = (
-      <Btn type="button" primary onClick={() => setDialog('sign_in')} data-testid="kiro-sign-in-open">
-        {i18nT('components.kiroSignInPrompt.sign_in')}
-      </Btn>
+      <div className={signedOut ? 'max-w-md' : undefined} data-testid={signedOut ? 'kiro-sign-in-inline' : undefined}>
+        <KiroSignInFlow renderSignedIn={signedIn => renderSignedIn(signedIn, () => setReauthOpen(true))} />
+      </div>
     )
   }
   return (
     <>
       {content}
-      <KiroSignInDialog
-        open={dialog !== null}
-        onOpenChange={o => { if (!o) setDialog(null) }}
-        reauth={dialog === 'reauth'}
-      />
+      <KiroSignInDialog open={reauthOpen} onOpenChange={setReauthOpen} reauth />
     </>
   )
 }
