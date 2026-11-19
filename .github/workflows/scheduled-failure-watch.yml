@@ -96,6 +96,7 @@ on:
       - "PR Readiness Self-Heal Sweep"
       - "Production Dependency Vulnerability Gate"
       - "Ship Report"
+      - "Test Map"
     types: [completed]
     # MUST equal the repository default branch, and a rename that misses this
     # line silences the watcher rather than breaking it: every `schedule:` run
