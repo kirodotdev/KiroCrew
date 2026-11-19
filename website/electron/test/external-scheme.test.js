@@ -376,6 +376,32 @@ describe("createWindowOpenHandler", () => {
       assert.deepEqual(opened, ["vscode://file/Users/me/a.ts", "vscode://file/C:/Users/me/b.ts:4"]);
     });
 
+    it("asks for a link to another machine's share, even after a remembered local choice", async () => {
+      const asked = [];
+      const { handler, opened } = harness({
+        confirmOpen: async (url) => {
+          asked.push(url);
+          return { open: true, remember: true };
+        },
+        rememberedEditorTargets: new Set(),
+      });
+      const links = [
+        "vscode://file/C:/Users/me/a.ts",
+        // A drive letter keeps a doubled slash local, so the local choice covers it.
+        "vscode://file/C://files.example.test/share/a.ts",
+        "vscode://file//files.example.test/share/a.ts",
+        "vscode://file//files.example.test/share/a.ts:4",
+        // Decoded, this is another path on the same share, so it asks again.
+        "vscode://file/%2Ffiles.example.test/share/b.ts",
+      ];
+      for (const url of links) {
+        handler({ url });
+        await settle();
+      }
+      assert.deepEqual(asked, [links[0], links[2], links[4]]);
+      assert.deepEqual(opened, links);
+    });
+
     it("does not remember a Cancel, even with the box checked", async () => {
       const remembered = new Set();
       const { handler, opened } = harness({

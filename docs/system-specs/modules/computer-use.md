@@ -2456,8 +2456,12 @@ local files only) and `vscode://vscode-remote/ssh-remote+<host>/<path>`
 native dialog with the full URL and hands it to the OS only if the user picks
 Open, one dialog at a time. Its "Don't ask again" box skips the dialog for
 later links to the same editor and machine (one SSH host, or local files) until
-the app quits; the choice is held in memory only. `isEditorLink` checks the raw string, requires the
-host to pass `HOSTNAME_RE`, and refuses a `..` segment after decoding. Every
+the app quits; the choice is held in memory only. A local link whose decoded
+path starts with two slashes and has no drive letter
+(`vscode://file//<host>/<share>/<path>`) names a share on another machine, so it
+is remembered for that one path and no other choice covers it. `isEditorLink`
+checks the raw string, requires the host to pass `HOSTNAME_RE`, and refuses a
+`..` segment after decoding. Every
 other editor URL, such as an extension URI handler
 (`vscode://<extension-id>/…`), stays `block`.
 
