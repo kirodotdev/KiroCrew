@@ -4,7 +4,8 @@ import { renderHook } from '@testing-library/react'
 import { QueryClient, QueryClientProvider, type QueryClientProviderProps } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { AppDispatch } from '../store'
+import { store, type AppDispatch } from '../store'
+import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import type { ResizeInfo } from '../utils/resizeImage'
 
 // `handleOpenCrewTab` is the ONE host reveal the Crew Mode dispatch-notice
@@ -149,7 +150,7 @@ describe('handleOpenCrewTab (Crew Mode dispatch-notice reveal)', () => {
 // The folder twin of handleFileOpen's split-pane override (#9921, #35014),
 // pinned here because this file already builds the controller.
 describe('handleFolderOpen (split-pane slot override)', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => { vi.clearAllMocks(); store.dispatch(sseConnected()) })
 
   it('stamps the folder tab with the pane slot it is given and switches the panel to that chat', () => {
     // The panel is bound to activeSlot, so without the switch the folder tab
@@ -180,6 +181,17 @@ describe('handleFolderOpen (split-pane slot override)', () => {
     expect(switchSlot).toHaveBeenCalledTimes(1)
     expect(switchSlot).toHaveBeenCalledWith({ key: 'pane-chat', announceOnMissing: true, gesture: true })
     expect(dispatch).toHaveBeenCalledWith({ type: 'test/switchSlot', payload: { key: 'pane-chat', announceOnMissing: true, gesture: true } })
+  })
+
+  it('a pane file that opens from cache while offline does not switch the panel', () => {
+    // Offline the switch's fetch is rejected and blanks the pane, so a read
+    // served from the query cache must not trigger it. The dock still opens.
+    store.dispatch(sseDisconnected(null))
+    const { result } = renderHook(() => useController('active-chat'), { wrapper })
+    void result.current.handleFileOpen('/repo/a.md', { slot: 'pane-chat' })
+    docHooks.onOpened?.('pane-chat')
+    expect(switchSlot).not.toHaveBeenCalled()
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: expect.stringContaining('openActivityPanel') }))
   })
 
   it('a file opened for the chat the panel already shows does not switch', () => {
