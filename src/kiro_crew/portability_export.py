@@ -50,6 +50,7 @@ from kiro_crew.portability_archive import (
 )
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.snapshot import _DB_SIDECAR_GLOBS
+from kiro_crew.sqlite_uri import read_only_uri
 
 if TYPE_CHECKING:
     from typing import IO
@@ -73,7 +74,7 @@ def _sqlite_logical_size(src: Path) -> int:
     it and never plans an archive import would refuse. Falls back to ``st_size``.
     """
     try:
-        conn = sqlite3.connect(src.absolute().as_uri() + "?mode=ro", uri=True)
+        conn = sqlite3.connect(read_only_uri(src), uri=True)
         try:
             page_count = conn.execute("PRAGMA page_count").fetchone()[0]
             page_size = conn.execute("PRAGMA page_size").fetchone()[0]
@@ -99,7 +100,7 @@ def _backup_sqlite(src: Path, dst: IO[bytes]) -> int:
     memory, not the database. The temp file is removed before this
     returns, whether it succeeds or fails.
     """
-    src_conn = sqlite3.connect(src.absolute().as_uri() + "?mode=ro", uri=True)
+    src_conn = sqlite3.connect(read_only_uri(src), uri=True)
     try:
         fd, tmp_name = tempfile.mkstemp(suffix=".db")
         os.close(fd)

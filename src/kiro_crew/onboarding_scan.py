@@ -59,6 +59,7 @@ from kiro_crew.security import (
     is_sensitive_path,
     redact_with_findings,
 )
+from kiro_crew.sqlite_uri import read_only_uri
 from kiro_crew.user_json import strip_json_comments as _strip_json5_comments
 from kiro_crew.user_json import strip_utf8_bom
 from kiro_crew.yaml_safe import NoAliasSafeLoader
@@ -949,7 +950,7 @@ def _open_snapshot_db(
     connection: sqlite3.Connection | None = None
     try:
         try:
-            connection = sqlite3.connect(snapshot.absolute().as_uri() + "?mode=ro", uri=True)
+            connection = sqlite3.connect(read_only_uri(snapshot), uri=True)
         except (OSError, sqlite3.Error, ValueError):
             scan.diagnostic(category, "database_open_failed", failed=True)
             yield None
