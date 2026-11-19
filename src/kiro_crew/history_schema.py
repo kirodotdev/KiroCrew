@@ -100,6 +100,8 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "mutes_opened",
         # Same reason: an unmute of the per-row mute writes no key.
         "muted",
+        # Same reason: turning a session's chips back on writes no key.
+        "source_links_off",
         "color_index",
         "color_hex",
         "color_theme",

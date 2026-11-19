@@ -9647,7 +9647,11 @@
       "mute": "Silenciar esta sessão",
       "unmute": "Reativar som desta sessão",
       "mute_failed": "Não foi possível silenciar esta sessão",
-      "unmute_failed": "Não foi possível reativar o som desta sessão"
+      "unmute_failed": "Não foi possível reativar o som desta sessão",
+      "hide_source_chips": "Não mostrar chips de PR e issue nesta sessão",
+      "show_source_chips": "Mostrar chips de PR e issue nesta sessão",
+      "hide_source_chips_failed": "Não foi possível desativar os chips de PR e issue desta sessão",
+      "show_source_chips_failed": "Não foi possível ativar os chips de PR e issue desta sessão"
     },
     "newFolderMoveDialog": {
       "cancel": "Cancelar",
@@ -24172,6 +24176,7 @@
       "move_artifacts": "mover artefatos",
       "move_sessions": "mover sessões",
       "change_mute": "alterar o silenciamento de sessões",
+      "change_source_chips": "alterar os chips de PR e issue",
       "name_not_saved_keep_field_open": "Gateway offline — ainda não foi salvo. Deixe este campo aberto e reconecte; se fechá-lo, o nome é descartado.",
       "optimize": "otimizar",
       "change_pin": "alterar a fixação de sessões",

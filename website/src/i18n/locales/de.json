@@ -9414,7 +9414,11 @@
       "mute": "Diese Sitzung stummschalten",
       "unmute": "Stummschaltung dieser Sitzung aufheben",
       "mute_failed": "Diese Sitzung konnte nicht stummgeschaltet werden",
-      "unmute_failed": "Stummschaltung dieser Sitzung konnte nicht aufgehoben werden"
+      "unmute_failed": "Stummschaltung dieser Sitzung konnte nicht aufgehoben werden",
+      "hide_source_chips": "PR- und Issue-Chips in dieser Sitzung nicht anzeigen",
+      "show_source_chips": "PR- und Issue-Chips in dieser Sitzung anzeigen",
+      "hide_source_chips_failed": "PR- und Issue-Chips dieser Sitzung konnten nicht ausgeschaltet werden",
+      "show_source_chips_failed": "PR- und Issue-Chips dieser Sitzung konnten nicht eingeschaltet werden"
     },
     "newFolderMoveDialog": {
       "cancel": "Abbrechen",
@@ -23597,6 +23601,7 @@
       "move_artifacts": "das Verschieben von Artefakten",
       "move_sessions": "das Verschieben von Sitzungen",
       "change_mute": "das Ändern der Stummschaltung von Sitzungen",
+      "change_source_chips": "das Ändern der PR- und Issue-Chips",
       "name_not_saved_keep_field_open": "Gateway offline — noch nicht gespeichert. Lass dieses Feld offen und verbinde neu; wenn du es schließt, wird der Name verworfen.",
       "optimize": "das Optimieren",
       "change_pin": "das Ändern der Anpinnung von Sitzungen",

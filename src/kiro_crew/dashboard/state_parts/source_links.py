@@ -8,7 +8,7 @@ Instance fields of ``_ChatSlot`` this module reads and writes:
 
 Writes: ``_dismissed_hydrated``, ``_dismissed_source_links``, ``_dismissed_txn_depth``,
 ``_dismissed_txn_pending``, ``_projection``, ``_source_links_cache``,
-``_source_links_revision``.
+``_source_links_revision``, ``source_links_off``.
 
 Instance fields of ``DashboardState`` this module reads and writes:
 
@@ -285,6 +285,12 @@ def init_source_links_fields(self: _ChatSlot) -> None:
     # showing a chip disk still records. Cleared for the key when the
     # transaction commits (durable) or rolls back (removed from the set).
     self._dismissed_txn_pending = set()
+    # The user's per-session switch from the session menu: while True this
+    # session serializes no chips and feeds no chip URL to the status refresh,
+    # whatever the transcript mentions, exactly as the global
+    # ``dashboard.session_card_source_links`` switch does for every session.
+    # Durable like ``muted``; never set by an agent.
+    self.source_links_off = False
 
 
 def invalidate_source_links(self: _ChatSlot) -> None:
@@ -406,12 +412,15 @@ def _summary_source_links(self: _ChatSlot) -> list[dict]:
     # under a per-call parse budget, and paying for a payload nothing renders
     # is the cost this switch exists to remove. The getter is a cache-only
     # snapshot lookup -- it never touches config, which is what makes it safe
-    # to call from this synchronous per-slot path on the event loop.
+    # to call from this synchronous per-slot path on the event loop. The
+    # session's own switch is read the same way, off the slot.
     from kiro_crew.dashboard.handlers.source_providers import (
         session_card_source_links_enabled,
     )
 
-    return self._pr_source_links() if session_card_source_links_enabled() else []
+    if self.source_links_off or not session_card_source_links_enabled():
+        return []
+    return self._pr_source_links()
 
 
 def source_links_view(
@@ -464,7 +473,14 @@ def source_link_urls(self: DashboardState) -> list[str]:
 
 
 def _slot_chip_urls(slot: _ChatSlot) -> list[str]:
-    """The PR/MR chip URLs one slot serializes (sidebar budget, no issues)."""
+    """The PR/MR chip URLs one slot serializes (sidebar budget, no issues).
+
+    Empty while the session's own chips are off. Every status-refresh feed
+    (the periodic round, its idle tier and the turn boundary) reads a slot's
+    URLs through here, so that session spends no provider call on them.
+    """
+    if slot.source_links_off:
+        return []
     return [
         link["url"]
         for link in _budgeted_source_links(slot._pr_source_links())

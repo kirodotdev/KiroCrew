@@ -9181,7 +9181,11 @@
       "mute": "このセッションをミュート",
       "unmute": "このセッションのミュートを解除",
       "mute_failed": "このセッションをミュートできませんでした",
-      "unmute_failed": "このセッションのミュートを解除できませんでした"
+      "unmute_failed": "このセッションのミュートを解除できませんでした",
+      "hide_source_chips": "このセッションで PR と Issue チップを表示しない",
+      "show_source_chips": "このセッションで PR と Issue チップを表示",
+      "hide_source_chips_failed": "このセッションの PR と Issue チップをオフにできませんでした",
+      "show_source_chips_failed": "このセッションの PR と Issue チップをオンにできませんでした"
     },
     "newFolderMoveDialog": {
       "cancel": "キャンセル",
@@ -23022,6 +23026,7 @@
       "move_artifacts": "アーティファクトを移動",
       "move_sessions": "セッションを移動",
       "change_mute": "セッションのミュートを変更",
+      "change_source_chips": "PR と Issue チップを変更",
       "name_not_saved_keep_field_open": "ゲートウェイがオフラインです — まだ保存されていません。この入力欄を開いたまま再接続してください。閉じると名前は破棄されます。",
       "optimize": "最適化",
       "change_pin": "セッションのピン留めを変更",

@@ -3654,7 +3654,11 @@
       "mute": "Mute this session",
       "unmute": "Unmute this session",
       "mute_failed": "Couldn't mute this session",
-      "unmute_failed": "Couldn't unmute this session"
+      "unmute_failed": "Couldn't unmute this session",
+      "hide_source_chips": "Don't show PR and Issue chips on this session",
+      "show_source_chips": "Show PR and Issue chips on this session",
+      "hide_source_chips_failed": "Couldn't turn off this session's PR and Issue chips",
+      "show_source_chips_failed": "Couldn't turn on this session's PR and Issue chips"
     },
     "sessionGridView": {
       "fork_child_session": "Fork {{name}} (child session)",
@@ -11455,6 +11459,7 @@
       "move_artifacts": "move artifacts",
       "move_sessions": "move sessions",
       "change_mute": "change muting",
+      "change_source_chips": "change PR and Issue chips",
       "name_not_saved_keep_field_open": "Gateway offline — not saved yet. Keep this field open and reconnect; closing it discards the name.",
       "optimize": "optimize",
       "change_pin": "change pinning",

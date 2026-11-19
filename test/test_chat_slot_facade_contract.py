@@ -108,6 +108,7 @@ _TO_DICT_KEYS = (
     "pinned",
     "mutes_opened",
     "muted",
+    "source_links_off",
     "tags",
     "tags_revision",
     "color_index",

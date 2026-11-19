@@ -9181,7 +9181,11 @@
       "mute": "静音此会话",
       "unmute": "取消静音此会话",
       "mute_failed": "无法静音此会话",
-      "unmute_failed": "无法取消静音此会话"
+      "unmute_failed": "无法取消静音此会话",
+      "hide_source_chips": "不在此会话中显示 PR 和 Issue 标签",
+      "show_source_chips": "在此会话中显示 PR 和 Issue 标签",
+      "hide_source_chips_failed": "无法关闭此会话的 PR 和 Issue 标签",
+      "show_source_chips_failed": "无法开启此会话的 PR 和 Issue 标签"
     },
     "newFolderMoveDialog": {
       "cancel": "取消",
@@ -23022,6 +23026,7 @@
       "move_artifacts": "移动工件",
       "move_sessions": "移动会话",
       "change_mute": "更改会话静音",
+      "change_source_chips": "更改 PR 和 Issue 标签",
       "name_not_saved_keep_field_open": "网关离线 — 尚未保存。请保持此输入框打开并重新连接。关闭后名称将被丢弃。",
       "optimize": "优化",
       "change_pin": "更改会话置顶",

@@ -23,8 +23,9 @@ import type { DashboardState } from './dashboard/state'
 export type OfflineCause = 'session_ended' | 'refused' | 'remote_off'
 export { selectFoldersHoldingSessions, selectMateThreadsHidingSessions, selectPersonSlots } from './personSlots'
 
-/** The two user-owned mute flags on a slot. */
-export type MuteFlag = 'mutes_opened' | 'muted'
+/** The user-owned per-session flags the session menu toggles: the two mutes
+ *  and the per-session PR and Issue chip switch. */
+export type MuteFlag = 'mutes_opened' | 'muted' | 'source_links_off'
 /** The `slotMuteFlagError` key for one flag on one slot. */
 export const muteFlagErrorKey = (flag: MuteFlag, slotKey: string) => `${flag}:${slotKey}`
 
@@ -1279,11 +1280,12 @@ const dashboardSlice = createSlice({
         state.slotPinGenerations[action.payload.key] = (state.slotPinGenerations[action.payload.key] ?? 0) + 1
       })
     },
-    /** Optimistic toggle of a user-owned mute flag: the "mute sessions it
-     *  opens" rule (`mutes_opened`) or the per-row mute (`muted`). Unlike pin
-     *  neither bears on sidebar ordering, so they need none of the pin
-     *  batch/order machinery -- just flip the row and let the authoritative
-     *  `slot_patch` frame reconcile. */
+    /** Optimistic toggle of a user-owned per-session flag: the "mute sessions
+     *  it opens" rule (`mutes_opened`), the per-row mute (`muted`) or the
+     *  per-session chip switch (`source_links_off`). None bears on sidebar
+     *  ordering, so they need none of the pin batch/order machinery -- just
+     *  flip the row and let the authoritative frame reconcile (a `slot_patch`
+     *  for the mutes, a full slots frame for the chips). */
     updateSlotMuteFlag(state, action: PayloadAction<{ key: string; flag: MuteFlag; value: boolean }>) {
       const { key, flag, value } = action.payload
       patchSlotRow(state, key, slot => {

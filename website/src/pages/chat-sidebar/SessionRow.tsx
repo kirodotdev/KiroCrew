@@ -1925,7 +1925,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                   // spawn approval, or an armed loop asking (a ledger item on the person is counted from `crew_work`).
                   rootOwes={s.pending_approval || s.needs_input || subagentAwaiting > 0 || (loopWaiting && !(crewWork?.person ?? 0)) ? 1 : 0} />
               : <SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />}
-            {s.source_links && s.source_links.length > 0 && (
+            {!s.source_links_off && s.source_links && s.source_links.length > 0 && (
               <SessionSourceChips
                 slotKey={s.key}
                 links={s.source_links}

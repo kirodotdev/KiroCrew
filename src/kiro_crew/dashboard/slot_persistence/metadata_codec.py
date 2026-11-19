@@ -218,6 +218,8 @@ class SaveFolds:
     mutes_opened: bool | None = None
     # Staged per-row ``muted`` value; same contract as ``mutes_opened`` above.
     muted: bool | None = None
+    # Staged per-session ``source_links_off`` value; the same contract.
+    source_links_off: bool | None = None
     # Staged ``turn_timeout_secs``, the same shape for the turn-time-limit
     # endpoint. Wrapped in a 1-tuple because ``None`` is a real value there (it
     # clears the session's limit): ``None`` here means "nothing staged, read the
@@ -704,6 +706,11 @@ def _read_mutes_opened(r: _Read) -> None:
 def _read_muted(r: _Read) -> None:
     if r.meta.get("muted"):
         r.slot.muted = True
+
+
+def _read_source_links_off(r: _Read) -> None:
+    if r.meta.get("source_links_off"):
+        r.slot.source_links_off = True
 
 
 def _read_color_index(r: _Read) -> None:
@@ -1314,6 +1321,21 @@ FIELDS: tuple[Field, ...] = (
         read=_read_muted,
     ),
     Field(
+        "source_links_off",
+        _ALL,
+        attr="source_links_off",
+        # Same staged-override contract as ``mutes_opened`` above.
+        line=lambda s, f: (
+            True
+            if (s.source_links_off if f.source_links_off is None else f.source_links_off)
+            else OMIT
+        ),
+        merge=lambda s, f: bool(
+            s.source_links_off if f.source_links_off is None else f.source_links_off
+        ),
+        read=_read_source_links_off,
+    ),
+    Field(
         "color_index",
         _ALL,
         attr="color_index",
@@ -1590,6 +1612,7 @@ LINE_ORDER: tuple[str, ...] = (
     "pinned",
     "mutes_opened",
     "muted",
+    "source_links_off",
     "color_index",
     "color_hex",
     "color_theme",
@@ -1618,6 +1641,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "pinned",
     "mutes_opened",
     "muted",
+    "source_links_off",
     "mode",
     "artifact",
     "reasoning_effort",

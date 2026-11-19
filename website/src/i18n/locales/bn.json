@@ -9414,7 +9414,11 @@
       "mute": "এই সেশন নীরব করো",
       "unmute": "এই সেশনের নীরবতা তুলে নাও",
       "mute_failed": "এই সেশন নীরব করা যায়নি",
-      "unmute_failed": "এই সেশনের নীরবতা তোলা যায়নি"
+      "unmute_failed": "এই সেশনের নীরবতা তোলা যায়নি",
+      "hide_source_chips": "এই সেশনে PR ও Issue চিপ দেখিও না",
+      "show_source_chips": "এই সেশনে PR ও Issue চিপ দেখাও",
+      "hide_source_chips_failed": "এই সেশনের PR ও Issue চিপ বন্ধ করা যায়নি",
+      "show_source_chips_failed": "এই সেশনের PR ও Issue চিপ চালু করা যায়নি"
     },
     "newFolderMoveDialog": {
       "cancel": "বাতিল",
@@ -23597,6 +23601,7 @@
       "move_artifacts": "আর্টিফ্যাক্ট সরানো",
       "move_sessions": "সেশন সরানো",
       "change_mute": "সেশন নীরব পরিবর্তন",
+      "change_source_chips": "PR ও Issue চিপ পরিবর্তন",
       "name_not_saved_keep_field_open": "গেটওয়ে অফলাইন — এখনো সংরক্ষণ হয়নি। এই ঘরটি খোলা রাখো এবং আবার সংযুক্ত হও; বন্ধ করলে নামটি হারিয়ে যাবে।",
       "optimize": "অপ্টিমাইজ করা",
       "change_pin": "সেশন পিন পরিবর্তন",
