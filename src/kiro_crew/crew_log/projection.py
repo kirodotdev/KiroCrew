@@ -388,6 +388,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.crew_log.projection_session_log import (  # noqa: F401
         _log_identity,
         _unit_log_identity,
+        fresh_log_identity,
         log_origin,
         open_session_log,
     )
@@ -861,11 +862,13 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         log_rank_of,
     )
     from kiro_crew.crew_log.store import (  # noqa: F401
+        ConsumedSpan,
         CrewLog,
         ReadCursor,
         ResumePoint,
         crew_log_dir,
         log_exception_text,
+        resolved_home_for_pass,
         segment_paths,
         session_units_by_slot,
         session_units_for_slot,
