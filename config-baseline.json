@@ -67,6 +67,7 @@
         "yolo_duration": "6h",
         "notify_override_expiry": true,
         "bot_name": "",
+        "subagents": "engine",
         "tool_search": true,
         "tool_search_min_pct": 5,
         "tool_search_min_tokens": 50000,
@@ -1128,6 +1129,23 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "agent.subagents",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Run Quick Sub-agents Inside the Chat",
+      "help": "Which sub-agents a dashboard chat on the default agent uses on KAS. 'engine' (default): sub-agents that report back in the same reply run inside the KAS engine as the kirocrew-helper agent, and that chat's agent no longer lists spawn_sub_agents. 'crew': Kiro Crew starts its own, as before. spawn_run, Crew members, Bots, conductors, cron, workflows and channel chats keep Kiro Crew's own either way. Applies to the next session, not to one already running. No effect on any backend but KAS.",
+      "hasChildren": false,
+      "enumValues": [
+        "engine",
+        "crew"
+      ],
+      "defaultValue": "engine"
     },
     {
       "path": "agent.tool_search",

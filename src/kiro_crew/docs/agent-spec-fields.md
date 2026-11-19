@@ -137,7 +137,9 @@ Four cases, and the difference between them is the whole answer:
   can never be run as a KAS sub-agent, listed or not. A sub-agent is held to the
   chat's own agent's shell and write allowlists and `deniedCommands`, and gets none
   of its grants. The chat's own agent's `postToolUse` hooks run on a sub-agent's
-  finished calls too.
+  finished calls too. With `agent.subagents = "engine"` (the default) a dashboard
+  chat on the default agent also reaches Kiro Crew's built-in `kirocrew-helper`
+  (built-in tools only); your own agents keep exactly what their file says.
   A server the sub-agent's own agent file turns off (`"disabled": true`) stays
   off for the sub-agent, even when the chat's own agent loads it.
   A sub-agent runs inside the chat's turn, so the chat's own agent's

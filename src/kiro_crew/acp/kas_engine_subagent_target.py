@@ -20,10 +20,13 @@ limits at Kiro Crew's gate (``session_handle_permissions``).
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 #: The helper's agent id. No agent file carries it; a user's agent file of the
 #: same name never takes its place (:func:`helper_entry` builds its own).
@@ -52,13 +55,60 @@ _HELPER_PROMPT = (
     "You cannot start other agents, and nothing you do outlives this reply."
 )
 
+#: Where the default agent's standing rules on what a shell or file tool must not do
+#: start: the first words of each of those bullets in the ``## Rules`` section of the
+#: shipped ``config/prompt.md``, the one source the parent's prompt is built from. The
+#: helper carries each whole bullet as that file has it (:func:`helper_tool_rules`), so
+#: no second copy of the text exists; ``test_kas_engine_subagent_target.py`` fails when
+#: the source loses one. Guidance only: what the helper may do is bounded by the same
+#: gate and sandbox as its parent.
+HELPER_RULE_ANCHORS: tuple[str, ...] = (
+    "- Do NOT run `git push` to protected branches",
+    "- Do NOT run destructive commands",
+    "- A blocked call is a policy decision, not a puzzle.",
+    "- Do NOT read credential files directly",
+    "- You CAN run AWS CLI commands",
+    "- If you need to serve files over HTTP",
+)
+_RULES_HEADING = "## Rules"
+
+
+def helper_tool_rules() -> tuple[str, ...]:
+    """The ``## Rules`` bullets of the shipped prompt that :data:`HELPER_RULE_ANCHORS` names.
+
+    Read from the file at build time, in anchor order, each whole bullet as written.
+    An anchor the section does not hold is left out and logged; an unreadable file
+    gives none, and the helper keeps only its own three sentences.
+    """
+    from kiro_crew.agent import _BUNDLED_CFG_DIR
+
+    try:
+        lines = (_BUNDLED_CFG_DIR / "prompt.md").read_text(encoding="utf-8").splitlines()
+        start = lines.index(_RULES_HEADING) + 1
+    except (OSError, ValueError):
+        logger.warning("the shipped prompt's Rules could not be read for the helper", exc_info=True)
+        return ()
+    section: list[str] = []
+    for line in lines[start:]:
+        if line.startswith("## "):
+            break
+        section.append(line)
+    found: list[str] = []
+    for anchor in HELPER_RULE_ANCHORS:
+        match = next((line for line in section if line.startswith(anchor)), None)
+        if match is None:
+            logger.warning("the shipped prompt's Rules hold no bullet starting %r", anchor)
+        else:
+            found.append(match)
+    return tuple(found)
+
 
 def helper_spec() -> dict[str, Any]:
     """The helper's agent spec, in kiro-cli's shape, built fresh on every call."""
     return {
         "name": KAS_HELPER_AGENT,
         "description": "Runs one short, independent task and reports the result back.",
-        "prompt": _HELPER_PROMPT,
+        "prompt": "\n\n".join((_HELPER_PROMPT, "\n".join(helper_tool_rules()))),
         "tools": list(_HELPER_TOOLS),
         "allowedTools": list(_HELPER_ALLOWED),
         "mcpServers": {},
@@ -120,4 +170,11 @@ def helper_entry(
     return entry
 
 
-__all__ = ["KAS_HELPER_AGENT", "helper_entry", "helper_spec", "session_level_servers"]
+__all__ = [
+    "HELPER_RULE_ANCHORS",
+    "KAS_HELPER_AGENT",
+    "helper_entry",
+    "helper_spec",
+    "helper_tool_rules",
+    "session_level_servers",
+]

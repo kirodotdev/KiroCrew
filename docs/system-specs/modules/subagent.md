@@ -1752,6 +1752,28 @@ declaration forbids and say so
 server resolves its own session's template best-effort and filters nothing
 when it cannot — and the gate above is the decision.
 
+### KAS engine sub-agents beside this manager (`agent.subagents`)
+
+On KAS with `agent.subagents = "engine"` (the default), a person's dashboard chat on
+the default agent hands in-turn fan-out to the engine's own sub-agent tool and the
+in-memory `kirocrew-helper` agent (`acp/kas_engine_subagents.py`,
+[acp-client](acp-client.md)); its agent entry excludes `spawn_sub_agents`, and the
+contract's one `spawn_sub_agents` sentence names the engine's tool instead. Nothing
+in this module changes: `spawn_run`, `spawn_sub_agents` (still served to every other
+session and agent), the manager, admission, the memory gate and its deferral queue,
+orphan recovery and every route stay, and serve every other session kind
+(`subagent:`, `cron:`, workflows, the task runner, Crew members, Bots, conductors
+and their workers, channels). A KAS child never reaches this manager: it starts no
+process, so the memory gate, `agent.max_subagents` and the per-child usage row do
+not apply to it, and it ends with its parent's turn. Stop all
+(`POST /api/spawn/stop-all`) reaches only this manager's runs, so a KAS child stops
+with the turn's Stop, and a chat whose only sub-agents are KAS children shows no
+Stop-all control. The helper's prompt carries the default contract's Rules bullets on
+what a shell or file tool must not do, read from the shipped `config/prompt.md` at
+build time by the anchors in `HELPER_RULE_ANCHORS` (no second copy); they are guidance, and the helper is bounded by the same gate and
+sandbox as its parent. `"crew"` restores this manager's path for those chats too,
+from their next session.
+
 ### Kiro Crew's own generated specs are not sub-agents
 
 Two kinds of spec Kiro Crew writes into the user-level agents directory — the

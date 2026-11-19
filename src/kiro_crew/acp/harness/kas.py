@@ -1256,6 +1256,7 @@ class KasHarness(MembershipHarness):
         session_cwd: str | Path | None = None,
         ssh_auth_sock_forwarded: bool = False,
         governance_app: str | None = None,
+        remote_workspace: bool = False,
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
 
@@ -1567,7 +1568,21 @@ class KasHarness(MembershipHarness):
                 scope_muted=scope_muted,
                 folder_gated_out=gated,
             )
-            custom_agents = native_batch(custom_agents, targets)
+            custom_agents = native_batch(
+                custom_agents,
+                targets,
+                agent=agent,
+                session_key=session_key,
+                member_dispatch=member_dispatch,
+                crew_panel=crew_panel,
+                agents_dir=agents_dir,
+                work_dir=work_dir,
+                stub_server_names=stubbed - withdrawn,
+                settings_dir=session_cwd or work_dir,
+                notices=spec_notices,
+                parent_spec=spec,
+                remote_workspace=remote_workspace,
+            )
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.

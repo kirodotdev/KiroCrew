@@ -92,6 +92,9 @@ def head_blocks(
             computer_use=_agent_spec._live_computer_use_gate,
             browser=_agent_spec._live_browser_gate,
             substitute_bot_name=_substitute_bot_name,
+            engine_subagents=lambda: _agent_spec._live_engine_subagents(
+                provider_label, agent, session_key
+            ),
         )
     except Exception:
         # No head is the safe direction: every block then rides in the message.

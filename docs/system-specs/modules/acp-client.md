@@ -3227,7 +3227,34 @@ spec the same way kiro-cli v2 does where the wire allows it:
   in registry`; it does keep a profile that carries a `permissions` block, which is
   why every entry that mounts the tool also carries a `subagent` deny over Kiro
   Crew's own agent names (`kas_subagent_targets.deny_own_agents`, applied last by
-  `acp/kas_native_batch.native_batch`), listed or not. Only when the agent's projected entry mounts `invoke_sub_agent`,
+  `acp/kas_native_batch.native_batch`), listed or not. Before that deny,
+  `native_batch` applies `agent.subagents`: on `"engine"` (the default) and only
+  when `kas_engine_subagents.engine_subagents_on` holds (a `dashboard:` /
+  `dashboard_` key that is not a crew member's, the default agent `kirocrew`, no
+  member dispatch or Crew panel, the chat-runtime-sharing preview off), the default
+  agent's entry gains `invoke_sub_agent` in `tools`, a `subagent` deny on every name
+  but `kirocrew-helper`, and `@kirocrew-core/spawn_sub_agents` in `excludedTools`,
+  and the in-memory helper entry (`acp/kas_engine_subagent_target.py`) is appended,
+  carrying every `deny` and `ask` rule of the default agent's entry (never an
+  allow) and withholding auto-approval for what that agent's own spec PreToolUse
+  hooks cover, as a registered target's entry does. The helper's ceiling is never
+  wider than its parent's: a default-agent spec carrying a restriction the helper
+  cannot mirror (`kas_engine_subagents.unmirrored_restriction`: an unreadable spec,
+  an `excludedTools` entry that withdraws a built-in or names no known MCP server,
+  any `toolsSettings`, a `tools` or `allowedTools` narrower than the helper's)
+  refuses the mount, and that chat keeps Kiro Crew's own sub-agents exactly as on
+  main. A mount records one `kas_engine_subagent_mounted` security event (source
+  `kas_agent_projection`) naming the agent and how many of its rules the helper
+  carries (`kas_subagent_targets.audit_subagent_policy`).
+  A batch that already holds that id, or an agent file of that name in the user's
+  or the project's agents folder, refuses the mount with a session-start notice.
+  The config is read in the projection thread; an unreadable config mounts
+  nothing. The spec on disk is never written, and the process-sharing check
+  (`chat_runtime_sharing.agent_spawns_native_subagents`) reads that spec, so it is
+  unchanged by the mount, which the preview keeps off anyway. The Tool Search
+  never-defer list stays the agent's (`tool_search.JOB_TOOLS`): it is sent at the
+  runtime's handshake, before any session is known, and an excluded tool it names
+  is not on the entry's surface. Only when the agent's projected entry mounts `invoke_sub_agent`,
   read as the engine's tool filter reads it: `tools` is `"*"` or holds an entry
   equal to the tool's id or one of its tags (`@builtin`, `@subagent`), or a `*` or
   `?` pattern matching one, and no `excludedTools` entry does the same. An

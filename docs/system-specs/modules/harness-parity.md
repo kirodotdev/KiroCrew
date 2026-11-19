@@ -632,6 +632,20 @@ path is unchanged. `test/test_kas_skill_scope.py` compares the skills KAS would
 offer for the built payload with the kiro-cli scope and goes red when the rule
 is not sent.
 
+### KAS engine sub-agents (`agent.subagents`)
+
+On `"engine"` (the default) a KAS dashboard chat of the default agent mounts the
+engine's own sub-agent tool with only the shipped `kirocrew-helper` reachable, and
+its entry excludes `spawn_sub_agents` (`acp/kas_engine_subagents.py`). The gate is
+positive (H5): only `KasHarness.session_extras` reads the switch (through
+`acp/kas_native_batch.py`), and the contract renderer names the engine's tool only
+for the KAS provider label (`contract_names_engine_subagents`, read through the
+agent-SDK facade `agent_sdk/kas_engine_subagents.py`). Every other harness,
+Copilot, DeepSeek and Pi included, has no such tool on this path and keeps
+`spawn_sub_agents`: a named gap, not parity. `test_kas_engine_subagents_switch.py`
+pins that nothing outside those two modules imports the seam. The KAS child is an
+H16 native child of its parent (no per-child Stop, no per-child cost row).
+
 ### H16 on Claude: Workflow agents and a child's Stop
 
 Each agent of a Claude Code Workflow run, read from Claude Code's raw SDK task

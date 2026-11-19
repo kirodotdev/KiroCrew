@@ -1558,6 +1558,9 @@ class ContextBuilder:
         # `context_assembly.agent_spec._resolve_agent_prompt`.
         self._browser_gates: dict[str, bool] = {}
         self._browser_gates_lock = threading.Lock()
+        # The same, for whether the contract names KAS's own sub-agent tool.
+        self._engine_subagent_gates: dict[str, bool] = {}
+        self._engine_subagent_gates_lock = threading.Lock()
         # Captured for the Jev decision point at `skills.select`. Production
         # reaches `build_message` only through `run_in_embed_pool`, a thread
         # executor with no running loop, so the point cannot obtain one where it

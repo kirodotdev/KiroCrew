@@ -17,6 +17,7 @@ import { triggerRefresh } from '../../store/dashboardSlice'
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 
 import { i18nT } from '../../i18n/t'
+import { ACP_BACKEND_KAS, configuredAcpBackend } from '../../api/acpBackend'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { parseWholeNumber } from '../../utils/wholeNumber'
@@ -46,7 +47,7 @@ interface KiroCrewCfg {
   default_workspace: string
   memory_stores: Record<string, MemoryStoreCfg>
   default_memory_store: string
-  agent: { default_agent: string; provider: string; model: string; approval_mode: string; sandbox: string; subagent_max_turns?: number; max_subagents?: number; subagent_auto_max?: number; tool_search?: boolean; max_channels: number; max_channel_agents: number }
+  agent: { default_agent: string; provider: string; model: string; approval_mode: string; sandbox: string; subagent_max_turns?: number; max_subagents?: number; subagent_auto_max?: number; tool_search?: boolean; subagents?: string; acp_backend?: string; max_channels: number; max_channel_agents: number }
   session: { timeout_secs: number; pool_size: number; pool_agent: string; pool_ttl_secs: number }
   memory: { embedding_provider: string }
   auto_update: boolean
@@ -158,10 +159,13 @@ function useDirtyTrack<T>(value: T) {
   return { ok, markDirty }
 }
 
-function CfgRow({ label, hint, ok, children }: { label: string; hint?: string; ok: boolean; children: React.ReactNode }) {
+function CfgRow({ label, hint, description, ok, children }: { label: string; hint?: string; description?: string; ok: boolean; children: React.ReactNode }) {
+  const labelEl = <span className="text-muted inline-flex items-center gap-1">{label} {hint && <InfoTip text={hint} />}</span>
   return (
     <div className={rowCls}>
-      <span className="text-muted inline-flex items-center gap-1">{label} {hint && <InfoTip text={hint} />}</span>
+      {/* A description is read before the choice, so it stays on the row, never behind the info icon. */}
+      {/* Block elements: the label and the description are two strings, never one run. */}
+      {description ? <div className="flex flex-col gap-0.5 min-w-0"><div>{labelEl}</div><p className="text-muted text-[12px] m-0">{description}</p></div> : labelEl}
       <div className="flex items-center gap-1.5">
         {children}
         {ok && <span className="text-ok text-[11px]"><Check className="lucide-inline" /></span>}
@@ -221,12 +225,12 @@ function CfgNumber({ label, path, value, suffix, min, max, hint, onSave }: { lab
   )
 }
 
-function CfgToggle({ label, path, value, hint, onSave }: { label: string; path: string; value: boolean; hint?: string; onSave: (p: string, v: boolean) => void }) {
+function CfgToggle({ label, path, value, hint, description, onSave }: { label: string; path: string; value: boolean; hint?: string; description?: string; onSave: (p: string, v: boolean) => void }) {
   const [local, setLocal] = useState(value)
   const { ok, markDirty } = useDirtyTrack(value)
   useEffect(() => { setLocal(value) }, [value])
   return (
-    <CfgRow label={label} hint={hint} ok={ok}>
+    <CfgRow label={label} hint={hint} description={description} ok={ok}>
       <button className={`h-7 min-w-[120px] px-2 py-0.5 rounded text-[13px] font-mono ${local ? 'bg-ok/15 text-ok-text border border-ok/30' : 'bg-bg-elevated text-muted border border-border'}`} onClick={() => { markDirty(); const v = !local; setLocal(v); onSave(path, v) }}>
         {local ? 'on' : 'off'}
       </button>
@@ -487,7 +491,8 @@ export default function KiroCrewCfgTab() {
       {/* Quick Info */}
       <Card>
         <CardTitle><Settings className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.config_summary')}</CardTitle>
-        {saveErr && <p className="text-danger text-[13px] mb-2">{saveErr}</p>}
+        {/* No hand-off: the workspace-create dialog on this page holds typed fields that are not saved yet. */}
+        {saveErr && <ErrorNotice message={saveErr} variant="inline" testId="cfg-save-error" />}
         <div className="grid grid-cols-1 gap-y-2 [&>*:last-child]:border-b-0">
           <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.provider')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.provider}</span></div>
           <CfgSelect key={`approval-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.approval_mode')} path="agent.approval_mode" value={cfg.agent.approval_mode} options={['auto', 'interactive']} hint={i18nT('pages.overview.kiroCrewCfgTab.immediate_auto_approves_all_tools_interactive_as')} onSave={save} />
@@ -499,6 +504,12 @@ export default function KiroCrewCfgTab() {
           <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.embedding_provider')}</span><span className="text-text font-mono text-[13px]">{cfg.memory.embedding_provider}</span></div>
           <CfgToggle key={`autoupdate-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.auto_update')} path="auto_update" value={cfg.auto_update} hint={i18nT('pages.overview.kiroCrewCfgTab.next_update_check_cycle')} onSave={save} />
           <CfgToggle key={`toolsearch-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.mcp_tool_search')} path="agent.tool_search" value={cfg.agent.tool_search ?? true} hint={i18nT('pages.overview.kiroCrewCfgTab.enable_dynamic_mcp_tool_discovery_via_kiro_cli_t')} onSave={save} />
+          {/* Stored as "engine" (on) or "crew" (off); only a KAS session reads it. */}
+          {configuredAcpBackend(cfg) === ACP_BACKEND_KAS ? (
+            <CfgToggle key={`subagents-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.use_kas_sub_agents')} path="agent.subagents" value={(cfg.agent.subagents ?? 'engine') === 'engine'} description={i18nT('pages.overview.kiroCrewCfgTab.use_kas_sub_agents_hint')} onSave={(p, on) => save(p, on ? 'engine' : 'crew')} />
+          ) : (
+            <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.use_kas_sub_agents')}</span><span className="text-muted text-[13px]">{i18nT('pages.overview.kiroCrewCfgTab.use_kas_sub_agents_not_kas')}</span></div>
+          )}
           <div className={readonlyCls}><span className="text-muted">{i18nT('pages.overview.kiroCrewCfgTab.max_channels')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.max_channels}</span></div>
           <div className={readonlyCls}><span className="text-muted">{i18nT('pages.overview.kiroCrewCfgTab.max_channel_agents')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.max_channel_agents}</span></div>
         </div>
