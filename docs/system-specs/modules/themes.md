@@ -54,7 +54,7 @@ a pack may ship. Validation is tier-scaled to payload trust.
 
 | Tier | `level` | Surface unlocked |
 |---|---|---|
-| **L0 Color** | 0 | the 60 theme CSS variables (dark + light) only |
+| **L0 Color** | 0 | the 61 theme CSS variables (dark + light) only |
 | **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark, welcome, splash), `styles/fonts/`, scoped `overrides.css`, `loader/*.png\|webp\|gif\|svg` |
 | **L2 Experience** | 2 | + `overlays/` + `topbar/` sandboxed HTML, `audio/`, `persona.md` |
 
