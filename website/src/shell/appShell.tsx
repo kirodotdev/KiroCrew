@@ -1073,10 +1073,10 @@ export function useAppShell() {
   // space actually left for content — ChatPage's activity panel decides
   // beside-vs-fill from it. Kept in sync with the gridTemplateColumns value
   // in App's shell grid; railWidthFor is the single source for both. An embed
-  // document draws no rail, so it publishes none (#37165).
+  // document and every pop-out window draw no rail, so they publish none.
   useEffect(() => {
-    setRailWidth(focusActive || isEmbed ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
-  }, [isMobile, effectiveCollapsed, focusActive, isEmbed])
+    setRailWidth(focusActive || isEmbed || isPopout ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
+  }, [isMobile, effectiveCollapsed, focusActive, isEmbed, isPopout])
   // The header's three grid tracks (see `.topbar` in index.css) size themselves:
   // the search width is a function of the window and the two side groups split
   // the remainder. Each group re-lays-out its own contents with container
