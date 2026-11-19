@@ -3332,8 +3332,14 @@ run came from a `code-review.yml` that still hears `edited`, so it counts.
   (both directions — a `ruleid:` line must match, an `ok:` line must not — so a
   rule regression goes red here, not on a later unrelated PR; the rules dir is
   non-hidden because semgrep 1.78's test mode cannot discover tests under a
-  hidden directory), then the scan itself, diff-only against the base,
-  community packs plus `semgrep/`, with `--error`. The fixtures are listed in
+  hidden directory), then the scan itself, community packs plus `semgrep/`,
+  with `--error`. The pull-request checkout is GitHub's synthetic merge commit,
+  so the scan uses that commit's first parent (`HEAD^1`) as its baseline: this
+  is the exact base tip the merge result was built on and leaves only the PR's
+  merge-result delta. The PR branch's older merge-base would also target every
+  base-branch file changed since the branch was cut, while the event's
+  `base.sha` can lag the merge ref on a rerun. Jobs that diff the explicit PR
+  head still use the branch merge-base. The fixtures are listed in
   `.semgrepignore` so the deliberately vulnerable fixture code is never read by
   the scan. Blocking.
 - The production dependency audit (`dependency-vulnerability.yml`, which runs

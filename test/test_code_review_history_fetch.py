@@ -329,6 +329,47 @@ def test_the_rule_greps_run_on_the_fetched_history(world) -> None:
     )
 
 
+def test_semgrep_scans_only_the_pr_delta_when_the_base_moved(world) -> None:
+    """The merge ref's first parent, not the branch point, scopes its working tree.
+
+    Semgrep 1.78 derives its target list with ``git diff --cached --merge-base
+    <baseline>``. A stale PR's branch point therefore includes every base-branch
+    commit since the branch was cut, while ``HEAD^1`` is the exact base tip
+    GitHub merged the PR into.
+    """
+    o, cases, _ = world
+    stale = next(c for c in cases if c["name"] == "stale-base-sha")
+    work, res, branch_point = _diff_base(o, stale, "sast")
+    assert res.returncode == 0, res.stdout + res.stderr
+    (scan,) = [s for s in _steps("sast") if "semgrep scan" in str(s.get("run"))]
+    baseline = scan["env"]["SEMGREP_BASELINE_REF"]
+    assert baseline == "HEAD^1"
+    assert o.git("rev-parse", baseline, cwd=work).strip() == stale["parent"]
+
+    def semgrep_targets(ref: str) -> set[str]:
+        return set(
+            o.git(
+                "diff",
+                "--cached",
+                "--name-only",
+                "--no-ext-diff",
+                "--diff-filter=ACDMRTUXB",
+                "--ignore-submodules",
+                "--relative",
+                ref,
+                "--merge-base",
+                "--",
+                cwd=work,
+                env={"GIT_NO_LAZY_FETCH": "1"},
+            ).splitlines()
+        )
+
+    pr_delta = semgrep_targets(baseline)
+    inflated = semgrep_targets(branch_point)
+    assert pr_delta == {"src/shared.py"}
+    assert inflated - pr_delta == {f"docs/d{i}.md" for i in range(30)}
+
+
 def test_a_fetch_that_fails_once_is_retried(world) -> None:
     o, cases, _ = world
     real_git = shutil.which("git")

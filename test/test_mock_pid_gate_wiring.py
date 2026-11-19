@@ -134,8 +134,8 @@ class TestTheScanStaysDiffScoped:
         assert "--baseline-commit" in scan[0], "the scan is no longer diff-scoped"
         assert "SEMGREP_BASELINE_REF" in scan[0]
 
-    def test_the_diff_base_is_the_merge_base(self) -> None:
-        """A base-branch tip would read sibling commits as this branch's own work."""
+    def test_each_diff_uses_the_base_for_the_tree_it_scans(self) -> None:
+        """PR-head diffs branch from the merge-base; the merge tree branches from HEAD^1."""
         steps = yaml.safe_load(CODE_REVIEW.read_text(encoding="utf-8"))["jobs"]["sast"]["steps"]
         resolvers = [step for step in steps if step.get("id") == "diffbase"]
         assert len(resolvers) == 1, f"expected one diff-base step, found {len(resolvers)}"
@@ -144,7 +144,7 @@ class TestTheScanStaysDiffScoped:
         assert 'merge_base="$(git merge-base "$BASE_TIP" "$HEAD_SHA")"' in script
         assert 'echo "sha=$merge_base" >> "$GITHUB_OUTPUT"' in script
         (scan,) = [step for step in steps if "semgrep scan" in str(step.get("run"))]
-        assert scan["env"]["SEMGREP_BASELINE_REF"] == "${{ steps.diffbase.outputs.sha }}"
+        assert scan["env"]["SEMGREP_BASELINE_REF"] == "HEAD^1"
 
     def test_the_rule_tests_run_on_the_fixtures(self) -> None:
         harness = [run for run in _sast_run_steps() if "--test" in run]
