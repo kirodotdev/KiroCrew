@@ -2,7 +2,7 @@
 
 An enforced harness (``tool_gate.is_enforced``: codex, opencode, goose, pi) runs
 under an OS credential mask that hides the gateway's internal secret from its whole
-process tree, so the ``kirocrew-core`` it launches has no credential and every
+process tree, so the Kiro Crew servers it launches have no credential and every
 gateway-backed tool is refused. The gateway's agent socket
 (:mod:`kiro_crew.dashboard.agent_ipc`) admits that server by a capability instead,
 redeemed from a one-time pickup that rides the server's own element ``env``.
@@ -30,8 +30,8 @@ from kiro_crew.providers.mirrors.identity import with_env
 
 logger = logging.getLogger(__name__)
 
-#: The Kiro Crew server that redeems a pickup at startup (``agent_ipc_client``).
-PICKUP_SERVERS: frozenset[str] = frozenset({"kirocrew-core"})
+#: The Kiro Crew servers that redeem a pickup at startup (``agent_ipc_client``).
+PICKUP_SERVERS: frozenset[str] = frozenset({"kirocrew-core", "kirocrew-dashboard"})
 
 
 def _launches_server_directly(element: dict[str, Any]) -> bool:
