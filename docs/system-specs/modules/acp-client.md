@@ -6508,8 +6508,8 @@ nothing and answers not done in these cases:
 
 A failed unlink, or a rollout that a second scan still finds, also answers not
 done. In each of these cases the prune keeps its retry record and `spawn_release`
-answers `not_disposed`. The cleanup removes no directory, and it never touches a
-persistent session's rollout.
+answers `not_disposed`. The cleanup removes no directory, and it never touches the
+rollout of a persistent session that can be resumed.
 
 Codex keeps text from the conversation in SQLite too, and this cleanup does not
 delete it. The thread's row in the state database (`state_5.sqlite`, with
