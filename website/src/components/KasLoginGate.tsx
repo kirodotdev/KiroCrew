@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -338,44 +338,25 @@ function ProviderButton({
   primary,
   disabled,
   onClick,
-  hint,
 }: {
   icon: ReactNode
   label: string
   primary?: boolean
   disabled?: boolean
   onClick: () => void
-  /** One line under the button saying what the choice is, read as its description. */
-  hint?: string
 }) {
   const { card } = useChrome()
-  const hintId = useId()
   const base = card
     ? 'flex min-h-9 w-full cursor-pointer items-center justify-center gap-2 rounded-lg px-3 text-[13px] transition-all focus-ring active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40'
     : 'flex h-11 w-full cursor-pointer items-center justify-center gap-2.5 rounded-lg text-sm transition-all focus-ring active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40'
   const variant = primary && !card
     ? 'btn-sweep border-none bg-accent font-semibold text-accent-fg hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)]'
     : 'border border-border bg-transparent font-medium text-text hover:border-border-strong hover:bg-bg-hover'
-  const button = (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      aria-describedby={hint ? hintId : undefined}
-      className={`${base} ${variant}`}
-    >
+  return (
+    <button type="button" disabled={disabled} onClick={onClick} className={`${base} ${variant}`}>
       {icon}
       {label}
     </button>
-  )
-  if (!hint) return button
-  return (
-    <div className="mb-1 flex flex-col gap-1">
-      {button}
-      <p id={hintId} className="px-1 text-[12px] leading-snug text-muted">
-        {hint}
-      </p>
-    </div>
   )
 }
 
@@ -467,7 +448,6 @@ function Chooser({
             <ProviderButton
               icon={bare ? <img src={awsMarkUrl} alt="" width={16} height={16} className="shrink-0" /> : <IdCard className="lucide-inline" />}
               label={i18nT('components.kasLogin.continue_with_builder_id')}
-              hint={i18nT('components.kasLogin.builder_id_hint')}
               disabled={busy}
               onClick={() => onPick('builder_id')}
             />
@@ -572,7 +552,6 @@ function Chooser({
           <ProviderButton
             icon={<Building2 className="lucide-inline" />}
             label={i18nT('components.kasLogin.continue_with_company_sso')}
-            hint={i18nT('components.kasLogin.company_sso_hint')}
             disabled={busy}
             onClick={() => setSsoOpen(true)}
           />
