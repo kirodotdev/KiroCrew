@@ -183,7 +183,9 @@ COMPONENTS: dict[str, ComponentSpec] = {
         ),
         # `project_dir` names the checkout the gateway runs `ensure-node.sh` from at boot;
         # a bundle that also carries `workspace/` could supply pointer and tree together.
-        host_local=("project_dir",),
+        # `workspace_dir` roots every session work directory, outbox and upload root;
+        # `session_map.json` holds the folder a resumed session starts in.
+        host_local=("project_dir", "session_map.json", "workspace_dir"),
     ),
     "skills": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
