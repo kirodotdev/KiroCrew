@@ -111,7 +111,7 @@ async def prepare_vm_session(
     # already owns a workspace or VM with another provider is pinned to it:
     # moving it would skip that provider's resume check and leave its archived
     # files due for deletion.
-    moved = recorded_provider != _CODER and recorded_provider != provider
+    moved = recorded_provider != provider
     if not moved:
         moved = await asyncio.to_thread(_owned_elsewhere, home, owner_key, provider)
     if moved and not _profile_configured(section, profile_id):
