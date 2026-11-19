@@ -390,6 +390,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
         "<crew>/ledgers": "standard",
         "<crew>/live-target-staging": "standard",
         "<crew>/live_target.json": "standard",
+        "<crew>/market-registries": "standard",
         "<crew>/mcp-apps": "standard",
         "<crew>/mcp-launch-approvals": "standard",
         "<crew>/mcp/resolved": "standard",

@@ -28,7 +28,7 @@ import TrustAppModal, {
   APP_EXECUTION_DENIED, DESKTOP_BUILD_STEP_UNSUPPORTED, isSessionApprovalConsentRequiredError,
   isTrustDeniedError, localOnlyTrustRepository, SESSION_APPROVAL_CONSENT_REQUIRED, useTrustGate,
 } from '../components/appstore/TrustAppModal'
-import { isRegistrySourced } from '../components/appstore/types'
+import { isMarketSourced, isRegistrySourced } from '../components/appstore/types'
 import { desktopRequestOf } from '../components/appstore/desktopRequest'
 import { REGISTRY_STALE_MS, registryQueryFn } from './apps/useAppsData'
 import AppSource from '../components/appstore/AppSource'
@@ -540,6 +540,7 @@ export default function AppDetailPage() {
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
     // A directory install with no registry update pending is this page's Sync (a
     // re-copy). Everything else runs the streaming registry install, as Update does.
+    if (stateAction === 'update' && isMarketSourced(app)) return
     if (stateAction === 'update' && app.installed && !isRegistrySourced(app) && !app.updateAvailable) {
       handleAction('update')
       return
@@ -927,7 +928,8 @@ export default function AppDetailPage() {
   // UX gate only: the marker is client-side, so nothing security-relevant may
   // rest on it (see PlatformConfig.requiresDesktopApp in manifest.py).
   const desktopOnly = needsDesktopApp(app)
-  const canUpdate = app.lifecycle === 'gateway'
+  // A Kiro Space install has no update path yet: no Sync, no Update.
+  const canUpdate = app.lifecycle === 'gateway' && !isMarketSourced(app)
   const canUninstall = app.lifecycle !== 'locked'
   // Resource lists, derived once. `manifest` is absent for a registry-only app,
   // and `normalizeInstalledApp` fills the lists for an installed one — so the

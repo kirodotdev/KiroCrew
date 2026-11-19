@@ -7298,7 +7298,7 @@ app has no update path until one resolves, verifies and re-confirms a new
 version.
 
 Two owner-only routes in `apps/routes_market_install.py` drive those calls.
-`POST /api/apps/market/install` (`{ref, version?}`) runs `prepare_market_install`
+`POST /api/apps/market/install` (`{ref, version?, account?, registry?}`) runs `prepare_market_install`
 in the executor and answers `{stagingId, confirm}`; it installs nothing.
 `POST /api/apps/market/install/confirm` (`{stagingId, confirmed}`) installs the
 folder prepare verified (`confirmed: true`, 201, disabled) or discards it
@@ -7311,7 +7311,8 @@ registry (`404 market_staging_unknown` when absent): it is never joined to a
 path, and the folder a registry entry holds is checked to sit under
 `market_staging_root()` when it is registered. Confirm never calls the client,
 so nothing is fetched or re-verified after the person says yes, and an id is
-single use. A pending staging lives `STAGING_TTL_SECONDS` (15 minutes), at most
+single use. When `app["market_account"]` is set (§31a), confirm refuses a
+staging prepared under another account (`409 market_account_changed`). A pending staging lives `STAGING_TTL_SECONDS` (15 minutes), at most
 `MAX_PENDING` (8) at once (`429 market_install_too_many_pending`); expiry,
 discard, confirm and a graceful gateway shutdown each delete the folder; a
 crash or kill leaves staging folders behind, and nothing reclaims them at the next
@@ -7343,11 +7344,163 @@ must be `https://` (plain `http://` only to a loopback host), no redirect is
 followed, and an answer over 1 MiB is refused. The plan does not yet name an
 app's crons, MCP servers or agents, nor a bundled component's path, so those
 stay empty and such an app is refused (`market_undeclared_capability`, or a
-malformed component) until the API carries them. No route or dashboard view
-calls it yet.
+malformed component) until the API carries them. It also answers
+`ListListings` (one page: items and `nextCursor`) and `GetListing` (one
+`ListingView` by ref) for the App Store's Kiro Space source below.
+
+### 31a. A Kiro Space store is an App Store source the build offers
+
+A build that can reach a Kiro Space store sets one aiohttp key,
+`app["market_registries"]`, to a provider (`apps/market_registries.py`,
+`MarketRegistryProvider`): `offers()` (`[{id, label, web}]`, on the loop, no
+child process), `status(id)` (`{state: signed_in | needs_sign_in | no_access |
+unknown, account, detail?}`, in the executor; `detail` is `cli_missing` or
+`cli_outdated` when `state` is `unknown` for that reason; `account` must name
+the account when `state` is `signed_in`, and core reads a `signed_in` status
+with an empty or non-string `account` as `unknown`), `client(id)` (on the loop, memory only;
+never `None`, raises `market_signed_out`; the object is both a `MarketClient`
+and a `MarketReader`; the core HTTP client's `_call` also raises
+`market_signed_out` when the store answers 401, CBOR body or not, and every
+other non-200 is unchanged: `market_api_refused` with a CBOR body, including
+every 403, and `market_api_invalid` without one), `sign_in(id)` and `sign_out(id)` (in the executor). The
+open-source build sets no provider and ships no store address. A build sets
+the key in its `contribute_routes`, never in `start_services`: core's startup
+hook that sets the install factory runs before a `start_services` hook, so a
+provider set there leaves every install at `503 market_client_unavailable`.
+
+`sign_in(id)` returns at once, with `state`, the device `code` and the
+`approvalPage`; it never blocks until the person approves, and nothing reads
+the sign-in view again. While a code is shown the dashboard re-reads
+`GET /api/apps/market/registries` every 3 seconds for up to 10 minutes and
+treats `status(id) == signed_in` as the end. So a provider must make `status`
+report `signed_in` as soon as the sign-in completes (drop any cached negative
+snapshot then). A failed or expired sign-in is not read back: the row shows,
+next to the code, the hint to ask the store's team for access, and after 10
+minutes says the sign-in did not finish. A provider may answer `failed` or
+`expired` from `sign_in` itself when it knows at once.
+
+`config.json` keeps only the added store ids, top-level `market_registries`
+(a list of strings), never an address: the address is in the provider's code,
+and `config.json` is agent-writable. It is separate from the git `registries`
+list, so no reader of `_effective_registries()` has to skip a row with no git
+URL. The rule of §15 still holds: what is listed and what can be installed read
+one list. Every store route and the install factory call
+`require_usable_registry`: the id must be in `market_registries` AND in
+`offers()`, else `market_registry_unavailable`.
+
+`app["market_client_factory"]` is set by core, in an `app.on_startup` hook
+(`routes_market_registry.register_market_client_factory`), only when a provider
+is present: core registers its routes before a build contributes the provider.
+The factory reads the added ids from the live config snapshot (no I/O), so it
+can lag a write to `market_registries` by one watcher reload; it refuses
+unless exactly one usable store is added, and returns `client(<id>)`. The
+same hook sets `app["market_account"]`, an async callable naming the account
+that store's status names now (`""` unless `signed_in`). The install prepare
+route refuses (`409 market_account_changed`) when the body's optional
+`account`, the one the page loaded under, is not the account signed in now,
+and records the account with the staging. Confirm reads it again, and the
+store too, while it holds the app's lifecycle lock right before the install,
+so a sign-out while confirm waits for another install step still counts: another
+account, or `""` on either side, answers `409 market_account_changed` and
+discards the staging, so an install staged for one account never lands while
+another is signed in. When the status reads `unknown` (a failed probe reads
+so), the callable raises `market_unavailable` instead of naming `""`: prepare
+and confirm answer `503 market_unavailable`, the store-unavailable error the
+store reads use, and confirm discards the staging. A page reload with the Install dialog open does not
+discard its staging (the dialog's cleanup never runs): the staging stays
+until its 15-minute TTL, and confirm would refuse it.
+The hook also sets `app["market_store"]`, a callable naming the store installs
+come from now (`""` when no single usable store is added). Prepare refuses
+(`409 market_registry_changed`) when the body's optional `registry`, the store
+the page showed the listing from, is another store, and records the store with
+the staging; confirm refuses and discards the staging when installs come from
+another store by then. So a listing page left open while the added store is
+replaced never installs the other store's package.
+`shortcut:` one store per Kiro Crew; give the factory an id, and record the
+store on the installed app, when a second store exists.
+
+Routes in `apps/routes_market_registry.py`, each behind
+`require_owner_dashboard_request` before the body is read, registered before
+`/api/apps/{name}`:
+
+| Route | Answer |
+|---|---|
+| `GET /api/apps/market/registries` | `{offers, added, status}`; no provider: `offers: []`, `added: []` |
+| `PUT /api/apps/market/registries` | `{added: [id]}` sets the offered ids; an id not offered is `400 market_registry_unknown`; more than one id is `400 market_registry_one_only`, because installs come from exactly one added store; an id the file holds that is not offered now is kept as it is (the owner cannot see it) and the factory ignores it |
+| `POST /api/apps/market/registries/{id}/signin`, `/signout` | the provider's sign-in view (`state`, `reason`, `code`, `approvalPage`, https only); body must be `{}` |
+| `GET /api/apps/market/listings?registry=<id>` | card rows, `truncated`, `status`, and `account`: the account the rows were read for (`""` with no rows). Nothing is cached: every read goes to the store with the credential that is current then. Rows come only under a `signed_in` status. A status of `needs_sign_in` or `no_access`, read first or after a failed read, answers no rows and only that `status`. Any other status (`unknown`: the store or its status probe is down) makes no read and answers no rows, the `status` and `error.code` `market_unavailable`. After the read, and after every other await, the route reads the status again; if it does not name the same `signed_in` account, it answers no rows and that fresh `status` (with `market_unavailable` for `unknown`). A failed read answers no rows, `error.code` and a fresh `status`; when the store refuses the token (`market_signed_out`) while that status still says `signed_in`, the answer keeps that live status with `error.code` `market_signed_out`, so it names the same account as the registries read. `shortcut:` a switch to another account and back inside one read is not seen; closing it needs the provider's client to name its account. The page keeps that one answer until its next listing read |
+| `GET /api/apps/market/listing?registry=<id>&ref=<ref>` | one listing row with the download count, and `account` (whose listing it is, `""` without one); only under `signed_in`, and a read after which the status does not name the same account (as above) answers no listing and the fresh `status` |
+
+Without a provider every route but the first answers `503
+market_registry_unavailable`, and the install routes keep answering `503
+market_client_unavailable`. Store calls run in the executor. Nothing logged or
+answered carries a token or the store CLI's output.
+
+The listing read pages `ListListings(kind=app, limit=100)` up to 10 pages and
+marks `truncated` when a cursor is left. Rows are never kept, in memory or on
+disk: a disk copy in the data home would be a row an agent could rewrite. A row is installed only when an installed app's
+source is `market:<that ref>@<n>`; an installed app of the same name from any
+other source marks `nameTaken`. Store rows are never merged with git rows by
+name. The list row's download count is `absent` (the list's copy is not a real
+count yet); the detail shows it, or `unavailable`.
+
+A git catalog row whose installed app has a `market:` source carries
+`installedFrom: "market"` and never `updateAvailable`
+(`registry_pipeline/catalog._enrich_with_install_status`, read by both store
+listings and the update notes), so the git card cannot reinstall it from git.
+For the same reason `update_status.published_index` gives a `market:` install
+no `update` field: `GET /api/apps/<name>`, the installed list and the App SDK
+never tell such an app that a git version is out.
+
+Each added store is one more source in the App Store rail. Picking it shows
+only that store's block; a git source hides every store block; the category
+and installed-only filters apply to store rows (a row's category is
+`categoryFor([category, ...tags])`). The rail's counts (All apps, each
+category, Installed) count store rows beside git rows, under the search box:
+every added store's rows for All sources, only the picked store's rows for a
+store source, none for a git source. A
+category only store rows have is added to the rail, and the picked category
+stays on it even with no match. The store's own rail row follows the search box like a git source.
+The page keeps the account each store was signed in as when it first read
+that store's status (`''` when signed out; `unknown` names none), in
+`components/appstore/marketAccount.ts`. It reads the statuses again when the
+tab gets focus, every 30 seconds while the tab is visible, and after its own
+sign-in or sign-out. When a status read, or a listing or detail answer, names
+another account than the one the page loaded under (signed in to signed out
+and the reverse included), the page drops that answer and runs
+`window.location.reload()`. A second change within 10 seconds of the last
+such reload (its time is kept in `sessionStorage`) does not reload: the page
+holds that store, dropping its rows and Install and showing its status line,
+until the next read that differs, which reloads. When one status read names
+another account for several stores, every one of them is held, not only the
+first. So a status that flips
+faster than 10 seconds cannot loop, and one that flips more slowly (once per
+30-second poll, say) reloads once per flip. A held store's status line and
+Sign out show what the read that caused the hold found, never the old
+account. While the shared status read finds a store `unknown`, the block,
+the rail and the listing page hide its rows (or listing) and Install the
+same way. Its own Sign out reloads as soon as it returns. So
+rows, rail counts, the listing page and an open Install dialog read for one
+account never outlive a change to another; a change made outside the
+dashboard (the store CLI) shows within 30 seconds of a visible tab, or at once
+on focus. Store queries are keyed by store (and ref) only, and Refresh is a
+plain refetch.
+The block shows the sign-in card only for `needs_sign_in` and `no_access`. The
+card carries its own Sign in, which runs the same flow as the Sources row
+(`components/appstore/marketSignIn.tsx`) and shows the code and the approval
+link on the card. In the Sources popover a store row shows at most two
+controls; past two, the first stays a button and the rest move to a More
+actions menu. When the shared status read fails with no earlier answer, the
+Sources block and the listing page show that error instead of nothing. For
+`unknown` it shows no rows and the read error, or the status line when the
+status names a `detail` (the CLI is missing or too old).
+
+Each added store's sign-in lives under `<data home>/market-registries/<id>`
+(`registry_data_dir`), masked in every sandbox mode (security spec).
 
 Writers: `apps/marketplace_install.py`, `apps/market_client.py`,
-`apps/market_source.py`,
+`apps/market_source.py`, `apps/market_registries.py`,
+`apps/routes_market_registry.py`,
 `apps/manager_install.py` (`install_app`, `market_source` / `source_commit`),
 `apps/registry_pipeline/catalog.py` (`resolve_installed_trust_repository`).
 

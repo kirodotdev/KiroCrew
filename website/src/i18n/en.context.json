@@ -1463,6 +1463,8 @@
     "pages.settings.remoteCrewPanel.setting_up_progress": "Clickable status on a Crew that is still being launched, with its step count.",
     "pages.settings.remoteCrewPanel.launching_crew": "Heading over the launch steps of a Crew being set up.",
     "components.sharedCrews.section_title": "Section heading on Settings > Remote Crew over the Shared Crews the person can open.",
-    "components.sharedCrews.open": "Visible label of a Shared Crew row's open action. A verb."
+    "components.sharedCrews.open": "Visible label of a Shared Crew row's open action. A verb.",
+    "components.appstore.marketStore.add": "Button on a Kiro Space store row in the App Store's Sources popover: adds that store as a source of apps. A verb, the imperative.",
+    "components.appstore.marketStore.err_account_changed": "Error in the Install from Kiro Space dialog: the account signed in to Kiro Space is not the one the page loaded under, so the install was refused. Tells the reader to reload the page and try again."
   }
 }

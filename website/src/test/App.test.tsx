@@ -859,11 +859,13 @@ describe('App routing', () => {
     // mc:apps-changed; the handler must drop that cache or a just-installed
     // registry app keeps showing a "Get" button until the cache expires.
     const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
-    queryClient.setQueryData(['registry'], { apps: [] })
+    // Kiro Space store rows (the last two keys) carry the same server-computed flags.
+    const keys = [['registry'], ['market-listings', 'team-store'], ['market-listing', 'team-store', 'acme/board']]
+    for (const key of keys) queryClient.setQueryData(key, {})
     expect(queryClient.getQueryState(['registry'])?.isInvalidated).toBe(false)
     act(() => { window.dispatchEvent(new Event('mc:apps-changed')) })
     await waitFor(() => {
-      expect(queryClient.getQueryState(['registry'])?.isInvalidated).toBe(true)
+      for (const key of keys) expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
     })
   })
 

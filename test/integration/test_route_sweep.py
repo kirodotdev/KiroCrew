@@ -109,6 +109,9 @@ UNAVAILABLE_ON_A_FRESH_HOME: dict[str, str] = {
     "/api/capability/mcp/registry": "capability manager not available",
     "/api/capability/plugins": "capability manager not available",
     "/api/capability/skills": "capability manager not available",
+    # A fresh home has added no Kiro Space store, so the listings read for one
+    # answers 503 market_registry_unavailable, as every store route does then.
+    "/api/apps/market/listings": "this Kiro Space store is not added",
 }
 
 #: Substituted for every ``{token}`` in a parameterized path. Chosen so it

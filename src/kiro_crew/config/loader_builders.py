@@ -1619,3 +1619,10 @@ def _registry_entry(raw: dict) -> ExternalRegistryConfig:
         # field existed keeps the credential-free posture it had.
         trust=str(entry.get("trust")),
     )
+
+
+def _market_registry_ids(raw: object) -> list[str]:
+    """``market_registries``: the string ids, de-duplicated in file order; else ``[]``."""
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(i.strip() for i in raw if isinstance(i, str) and i.strip()))

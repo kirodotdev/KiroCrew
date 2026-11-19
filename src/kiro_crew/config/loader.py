@@ -768,6 +768,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _load_background_hold_secs,
         _load_idle_exempt_keys,
         _log_config_clamp_event,
+        _market_registry_ids,
         _member_fallback_logged,
         _member_remap_logged,
         _note_member_fallback,

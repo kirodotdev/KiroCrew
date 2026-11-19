@@ -13916,6 +13916,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "index"
+    },
+    {
+      "path": "market_registries",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro Space Stores",
+      "help": "Ids of the Kiro Space stores added as App Store sources. Only an id a store provider offers is used; the address lives in the provider's code.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "market_registries.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     }
   ]
 }

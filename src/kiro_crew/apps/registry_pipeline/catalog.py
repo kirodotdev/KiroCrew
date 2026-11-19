@@ -153,6 +153,8 @@ def _enrich_with_install_status(
     *detected* is a set of app names that were found via ``detectInstalled``
     shell commands (installed outside Kiro Crew's app manager).
     """
+    from kiro_crew.apps.market_source import is_market_source  # facade star import stays
+
     detected = detected or set()
     for entry in entries:
         name = entry.get("name", "")
@@ -174,7 +176,12 @@ def _enrich_with_install_status(
                 entry["origin"] = existing.get("origin", "registry")
             entry["resources"] = existing.get("resources", "gateway")
             entry["lifecycle"] = existing.get("lifecycle", "gateway")
-            entry["updateAvailable"] = _version_newer(
+            # A Kiro Space install is matched to this row by NAME only, so the row
+            # must not offer an update that would reinstall it from git.
+            from_market = is_market_source(existing.get("source"))
+            if from_market:
+                entry["installedFrom"] = "market"
+            entry["updateAvailable"] = not from_market and _version_newer(
                 entry.get("version", ""),
                 existing.get("version", ""),
             )

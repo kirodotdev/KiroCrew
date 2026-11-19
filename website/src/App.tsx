@@ -148,6 +148,7 @@ const DeveloperPage = lazyPage(() => import('./pages/DeveloperPage'))
 const SchedulePage = lazyPage(() => import('./pages/SchedulePage'))
 const AppPage = lazyPage(() => import('./pages/AppPage'))
 const AppDetailPage = lazyPage(() => import('./pages/AppDetailRoute'))
+const MarketListingPage = lazyPage(() => import('./pages/apps/MarketListingPage'))
 const MigrationPage = lazyPage(() => import('./pages/MigrationPage'))
 const HooksPage = lazyPage(() => import('./pages/HooksPage'))
 
@@ -377,6 +378,8 @@ const MainRoutes = memo(function MainRoutes() {
       <Route path="/apps/-/updates" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
       <Route path="/apps/library" element={<Suspense fallback={null}><LibraryPage /></Suspense>} />
       <Route path="/apps/detail/:name" element={<AppDetailPage />} />
+      {/* One Kiro Space store listing, keyed by store and ref, never by app name. */}
+      <Route path="/apps/-/market/:registry/:namespace/:name" element={<MarketListingPage />} />
       <Route path="/apps/migrate/:name" element={<MigrationPage />} />
       <Route path="/apps/:name" element={<AppPage />} />
       {/* Splat route: SettingsPage parses the trailing segments itself

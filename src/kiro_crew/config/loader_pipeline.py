@@ -38,6 +38,7 @@ from kiro_crew.config.loader_builders import (
     _build_telemetry_config,
     _clamp_security_bounds,
     _default_memory_mode_from,
+    _market_registry_ids,
     _read_backend_choice,
     _registry_entry,
     mark_member_backend_inherited,
@@ -1312,6 +1313,7 @@ def build_config(
             for r in (data.get("registries") or [])
             if isinstance(r, dict) and r.get("repo")
         ],
+        market_registries=_market_registry_ids(data.get("market_registries")),
         mcp_gateway=_build_mcp_gateway_config(mcp_gateway_data),
         mcp=_build_mcp_config(mcp_data),
         instances=_build_instances_config(connect_timeout_raw, instances_data, mint_timeout_raw),
