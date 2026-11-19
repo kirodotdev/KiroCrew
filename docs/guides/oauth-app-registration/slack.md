@@ -7,7 +7,7 @@ card reads "needs configuration" until the Client ID and Client Secret from
 section 5 are saved, and offers **Connect** after, once the Crew-owned sign-in
 preview is on and your chats run on Kiro Agent.
 
-This runbook covers the **Slack MCP server** (`https://mcp.slack.com/mcp`), which lets Kiro Crew search and read Slack on behalf of the signed-in user. It is not the Slack channel bot described in `docs/guides/slack-setup.md`; that is a separate feature with separate tokens. You can reuse one Slack app for both, but this document only covers the MCP side.
+This runbook covers the **Slack MCP server** (`https://mcp.slack.com/mcp`), which lets Kiro Crew search and read Slack on behalf of the signed-in user. It is not the Slack channel bot described in `docs/guides/slack-setup.md`; that is a separate feature with separate tokens. You can reuse one Slack app for both: turn on **Slack tools for your agents** (Settings → Messaging Channels → Slack → Slack Code) and save the manifest Kiro Crew generates on your bot app, which adds the MCP toggle, PKCE, the redirect URL and the user scopes below while the app keeps its Bot Token Scopes (see the Slack setup guide). Then continue at section 4. The rest of this document registers a separate app for the MCP side only.
 
 ## Before you start
 
@@ -70,7 +70,7 @@ The Slack MCP server acts as the signed-in user, so all scopes go under **User T
 | `canvases:read` | Read a canvas |
 | `lists:read` | Read lists |
 
-Leave out `chat:write`, `reactions:write`, `canvases:write`, `lists:write`, `files:write` and the `*:write` channel scopes unless you want the agent to post or create things. Leave **Bot Token Scopes** empty. This is not only tidiness: with PKCE on and a `localhost` redirect, Slack treats the flow as a desktop redirect, and "Desktop redirects are not allowed to request bot scopes." Any bot scope you add here would make Slack reject the authorization; the MCP server does not use a bot token anyway.
+Leave out `chat:write`, `reactions:write`, `canvases:write`, `lists:write`, `files:write` and the `*:write` channel scopes unless you want the agent to post or create things. On an app you register only for this, you can leave **Bot Token Scopes** empty: the MCP server does not use a bot token. On an app that also runs the Kiro Crew bot, keep them: removing them stops the bot. Slack's rule that "Desktop redirects are not allowed to request bot scopes" applies to what the sign-in asks for, and the Slack card asks for these user scopes only (at `https://slack.com/oauth/v2_user/authorize`). The bot token still comes from **Install to Workspace**.
 
 Scopes are additive per installation and cannot be removed from an existing token; if you later add a scope, reinstall the app so the new user token carries it.
 
@@ -102,7 +102,7 @@ Container or CI alternative: set the environment variables `KIROCREW_CONNECTIONS
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | Slack shows `bad_redirect_uri` | The URI Kiro Crew sent does not match a saved Redirect URL, or PKCE is not enabled on the app so Slack treats `http://localhost` as a server redirect and demands https | Re-check section 2, and confirm the PKCE setting on OAuth & Permissions is on (section 1 step 8) |
-| Slack rejects the authorization because of bot scopes | A Bot Token Scope was added; desktop redirects cannot request bot scopes | Remove all Bot Token Scopes (section 3) and retry |
+| Slack rejects the authorization because of bot scopes | The sign-in asked for a bot scope; desktop redirects cannot request bot scopes. The Slack card asks for user scopes only, so the sign-in did not come from the card (for example a hand-made MCP entry that lists bot scopes) | Connect from the Slack card under **Settings → Connections**. Don't remove the app's Bot Token Scopes if the Kiro Crew bot uses it: the bot needs them, and the card's sign-in does not ask for them |
 | Slack shows `invalid_team_for_non_distributed_app` | You authorised against a different workspace than the one the app was created in | Sign in to the correct workspace and retry; do not enable distribution |
 | Consent page says the app needs admin approval | Workspace has app approval turned on | Ask an admin to approve the request (section 4) |
 | Connected, but tools return `missing_scope` | A user scope from section 3 is missing | Add the scope under User Token Scopes, then reconnect |
@@ -115,7 +115,7 @@ To revoke the grant later: in Slack, click your profile picture → **Preference
 
 - Slack requires https redirect URLs; the only plain-http exception is `localhost` on an app with PKCE enabled. Kiro Crew therefore registers `http://localhost:48106/callback` and the app must stay a PKCE (public) client; PKCE cannot be turned off again without Slack support.
 - Tokens issued through a desktop-style (PKCE + `localhost`) redirect are rotating tokens whose refresh tokens expire after 30 days ("if PKCE is enabled, all refresh tokens issued to your app will expire in 30 days instead of lasting indefinitely"). Users must re-consent monthly.
-- Bot scopes cannot be requested through this redirect type; only user scopes work.
+- Bot scopes cannot be requested through this redirect type, so the sign-in asks for user scopes only. The app's Bot Token Scopes are not affected: an app that also runs the Kiro Crew bot keeps them, and its bot token comes from **Install to Workspace**.
 - No Dynamic Client Registration and no SSE transport: "We do not support SSE-based connections or Dynamic Client Registration at this time."
 - MCP requests are subject to the same Web API rate limits as the underlying methods (search is Tier 2, channel history Tier 3).
 - The MCP server exposes only what the signed-in user can already see; it cannot read channels the user is not a member of.

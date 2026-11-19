@@ -397,7 +397,7 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
     switches: dict[str, Any] = {}
     for feature in slack_manifest.FEATURES:
         switches[feature] = slack_features.toggle(cfg, feature)
-        if feature in slack_features.REQUIRED_SCOPE:
+        if feature not in slack_manifest.MANIFEST_ONLY_FEATURES:
             switches[f"{feature}_capability"] = _capability(feature)
     return {
         **switches,

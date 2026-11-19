@@ -53,7 +53,7 @@ def fake_switch(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setattr(
         slack_manifest,
         "FEATURES",
-        (*slack_manifest.FEATURE_SCOPES, slack_manifest.SLACK_MCP),
+        (*slack_manifest.FEATURE_SCOPES, *slack_manifest.MANIFEST_ONLY_FEATURES),
     )
     monkeypatch.setattr(exfil, "_slack_manifest_re_slot", [])
     return _FAKE
@@ -71,21 +71,39 @@ class TestRendering:
         assert len({slack_manifest.render("x", features=c) for c in COMBOS}) == len(COMBOS)
 
     def test_features_are_the_registry(self) -> None:
+        # Derived from the registry, so registering another switch needs no edit here.
         assert slack_manifest.FEATURES == (
             *slack_manifest.FEATURE_SCOPES,
-            slack_manifest.SLACK_MCP,
+            *slack_manifest.MANIFEST_ONLY_FEATURES,
         )
         # The Slack MCP switch has no bot scope, so the capability probe, the
         # latches and the runtime gate (all keyed on FEATURE_SCOPES) never see it.
+        assert slack_manifest.SLACK_MCP in slack_manifest.FEATURES
         assert slack_manifest.SLACK_MCP not in slack_manifest.FEATURE_SCOPES
-        assert slack_manifest.FEATURES == (
+        # Display order: the switches this file knows keep their relative order.
+        known = [
             slack_manifest.AGENT_SESSIONS,
             slack_manifest.CODE_CHANNELS,
             slack_manifest.SLACK_MCP,
-        )
+        ]
+        assert [f for f in slack_manifest.FEATURES if f in known] == known
         # agent_view is one-way, so only the Agent sessions switch declares it.
         assert "agent_view" not in slack_manifest.render("x", features=_CC)
         assert "agent_view" in slack_manifest.render("x", features=_AS)
+
+    def test_every_switch_has_a_bot_scope_or_is_manifest_only(self) -> None:
+        # A loop over FEATURES that indexes a switch's bot scope skips the
+        # manifest-only switches by name; it must then never KeyError.
+        from kiro_crew.slack.features import REQUIRED_SCOPE
+
+        gateway = set(slack_manifest.FEATURE_SCOPES)
+        manifest_only = set(slack_manifest.MANIFEST_ONLY_FEATURES)
+        assert slack_manifest.SLACK_MCP in manifest_only
+        assert gateway.isdisjoint(manifest_only)
+        assert set(slack_manifest.FEATURES) == gateway | manifest_only
+        for feature in slack_manifest.FEATURES:
+            if feature not in slack_manifest.MANIFEST_ONLY_FEATURES:
+                assert REQUIRED_SCOPE[feature]
 
     @pytest.mark.parametrize("combo", COMBOS)
     def test_no_gate_survives_rendering(self, combo: frozenset[str]) -> None:
@@ -315,13 +333,9 @@ class TestRegisteringASwitch:
         on = frozenset({fake_switch})
         combos = slack_manifest.feature_sets()
         assert combos[0] == frozenset()
-        assert len(combos) == 2**4 == len(set(combos))
-        assert {f for combo in combos for f in combo} == {
-            slack_manifest.AGENT_SESSIONS,
-            slack_manifest.CODE_CHANNELS,
-            slack_manifest.SLACK_MCP,
-            fake_switch,
-        }
+        assert fake_switch in slack_manifest.FEATURES
+        assert len(combos) == 2 ** len(slack_manifest.FEATURES) == len(set(combos))
+        assert {f for combo in combos for f in combo} == set(slack_manifest.FEATURES)
         text = slack_manifest.render("x", features=on)
         assert "fake:write" in text and "fake_event" in text and "#@" not in text
         assert "fake:write" not in slack_manifest.render("x", features=_CC)
@@ -348,7 +362,7 @@ class TestRegisteringASwitch:
         )
         assert manifest_features(cfg) == {fake_switch}
         changes = scs.feature_changes()
-        assert set(changes) == {"agent_sessions", "code_channels", "slack_mcp", fake_switch}
+        assert set(changes) == set(slack_manifest.FEATURES) and fake_switch in changes
         assert changes[fake_switch]["added_scopes"] == ["fake:write"]
         view = asyncio.run(scs.code_settings_view(cfg, None))
         assert view[fake_switch] is True and view["code_channels"] is False

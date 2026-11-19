@@ -142,8 +142,13 @@ FEATURE_SCOPES: dict[str, str] = {
 #: the capability probe, the latches and the runtime gate read (a bot token
 #: cannot read an app's user scopes or settings anyway).
 SLACK_MCP = "slack_mcp"
+#: The switches that only change the manifest: a toggle and gated template
+#: lines, no bot scope, nothing the gateway runs. Disjoint from
+#: :data:`FEATURE_SCOPES`; code that loops :data:`FEATURES` and needs a switch's
+#: bot scope skips these (or loops ``FEATURE_SCOPES`` instead).
+MANIFEST_ONLY_FEATURES: tuple[str, ...] = (SLACK_MCP,)
 #: Every registered switch, in a fixed (display) order.
-FEATURES: tuple[str, ...] = (*FEATURE_SCOPES, SLACK_MCP)
+FEATURES: tuple[str, ...] = (*FEATURE_SCOPES, *MANIFEST_ONLY_FEATURES)
 
 #: A gated template line: ``<content>  #@flag`` or ``#@flag1|flag2`` at line end;
 #: ``#@!flag`` gates on the switch being OFF (a line the switch replaces).
