@@ -354,6 +354,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _prune_stale_app_resources,
         _registration_source,
     )
+    from kiro_crew.apps.host_exec_grants import (  # noqa: F401
+        host_exec_granted,
+    )
     from kiro_crew.apps.market_registries import (  # noqa: F401
         MAX_ADDED,
         NEEDS_SIGN_IN,

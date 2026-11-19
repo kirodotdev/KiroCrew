@@ -684,6 +684,20 @@ def main() -> None:
     if args.command == "gateway":
         arena_cap = platform_compat.limit_malloc_arenas()
 
+    # A gateway restarted from inside an app backend (the Dev Fleet detached restart
+    # passes no environment) inherits that backend's identity. With the per-app secret
+    # set, ``sel()`` returns the backend's route client, so the gateway would post its
+    # own security rows to its own route. Only the gateway command drops them: an app
+    # backend runs other commands through this entry point and keeps its own.
+    if args.command == "gateway":
+        for _backend_var in (
+            "KIROCREW_SPAWNED",
+            "KIROCREW_APP_NAME",
+            "KIROCREW_GATEWAY_ORIGIN",
+            "KIROCREW_PROXY_SECRET",
+        ):
+            os.environ.pop(_backend_var, None)
+
     # The mcp-* stdio servers run one per agent session, so a gateway hosts
     # dozens. If any import reaches numpy, OpenBLAS/OpenMP start one spinning
     # thread per core. Cap both at one before anything below imports the
