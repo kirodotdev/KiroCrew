@@ -225,6 +225,8 @@ jobs:
               # Run by build_backend to make bin/ console scripts relocatable.
               - 'packaging/relocate_posix_scripts.py'
               - 'scripts/stamp-distribution.sh'
+              # The smoke install itself: a change to it must run it once.
+              - 'scripts/smoke-linux-packages.sh'
               - '.github/workflows/build-desktop.yml'
             # Independent of the buckets above. Read for a FORK pull request, to
             # decide whether its Backend Tests (Windows) run, and on every run to
