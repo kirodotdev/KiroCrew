@@ -6,9 +6,9 @@
  * The list is the one behind the Crew switcher's Team Crews group
  * (`useRelayViewerCrews`, one cached read of `GET /api/relay-viewer/crews`), so
  * the two surfaces cannot disagree. Both cards render nothing while that hook
- * is hidden: no desktop bridge, or the route 404s because
- * `tunnel.relay_viewer_enabled` is off. Rows open a Crew the same way the
- * switcher does (`openRelayCrew`, the endpoint ID only).
+ * is hidden: the route 404s because `tunnel.relay_viewer_enabled` is off. Rows
+ * open a Crew the same way the switcher does (`openRelayCrewTab`, the endpoint ID
+ * only): a tab in the desktop app's main window, a new tab in a browser.
  *
  * shortcut: no role chip and no member count. The crews answer carries neither
  * (`_entry` in `src/kiro_crew/dashboard/handlers/relay_viewer.py`); add them
@@ -24,6 +24,7 @@ import {
   clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText, relayRefusalText, relayRetryable, useRelayViewerCrews,
 } from '../hooks/useRelayViewerCrews'
 import { useAppDispatch } from '../store'
+import { relayPaneBridge } from '../lib/relayCrewPanes'
 import { Btn, Card, PanelSectionHeader } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
@@ -66,6 +67,7 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
 }) {
   const { t } = useTranslation()
   const online = isRelayCrewOnline(crew)
+  const inWindow = relayPaneBridge() !== null
   const kind = crew.crewType.toUpperCase()
   const type = kind === 'TEAM'
     ? t('components.relayCrews.type_team')
@@ -79,7 +81,8 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
         // Focusable while offline, so its tooltip still says why it won't open.
         aria-disabled={online ? undefined : true}
         aria-label={t('components.relayCrews.open_crew', { name: crew.name })}
-        title={online ? t('components.relayCrews.opens_own_window') : t('components.relayCrews.refusal_offline')}
+        // With the pane calls the Crew opens in this window, so no own-window title or mark.
+        title={online ? (inWindow ? undefined : t('components.relayCrews.opens_own_window')) : t('components.relayCrews.refusal_offline')}
         onClick={() => { if (online) onOpen(crew.endpointId) }}
         className={`w-full flex items-center gap-3 px-2 py-2 rounded-md text-left ${online ? 'hover:bg-bg-hover' : 'opacity-70 cursor-default'}`}
       >
@@ -98,7 +101,7 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
         {/* The whole row is the Open button; this is its visible label. */}
         {online && (
           <span className="shrink-0 inline-flex items-center gap-1 rounded-md bg-accent text-accent-fg text-[12px] font-medium px-2.5 py-1" aria-hidden>
-            {t('components.sharedCrews.open')} <ExternalLink size={12} />
+            {t('components.sharedCrews.open')} {!inWindow && <ExternalLink size={12} />}
           </span>
         )}
       </button>

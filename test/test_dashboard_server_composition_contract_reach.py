@@ -673,6 +673,7 @@ _DASHBOARD_CHAIN = (
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
     ("app_web_origin_middleware", "build_app_web_origin_middleware.<locals>."),
+    ("relay_origin", "_relay_origin_middleware.<locals>."),
     ("host_canonical_redirect", "build_host_canonical_redirect.<locals>."),
     ("host_validation_middleware", "_make_host_validation_middleware.<locals>."),
     ("reject_compressed_body_middleware", "reject_compressed_body_middleware"),
@@ -808,7 +809,7 @@ _DASHBOARD_BOOT = tuple("""
     _make_csrf_middleware
     _make_deny_audit_middleware resolve_dashboard_host build_host_canonical_redirect
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
-    relay_ingress_middleware
+    relay_ingress_middleware _relay_origin_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_lts_gate _register_prevent_sleep_shutdown _register_listener_guard_shutdown
     _register_stt_hooks _register_own_host_warm _register_config_watch

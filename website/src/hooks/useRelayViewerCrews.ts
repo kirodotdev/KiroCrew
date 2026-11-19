@@ -1,10 +1,11 @@
 /**
  * The desktop app's list of remote Crews reachable through the Kiro relay.
  *
- * Two gates, both needed: the desktop shell's `relayCrewAPI` preload bridge (a
- * plain browser tab and the PWA have none), and the gateway's crews route, which
- * answers 404 while `tunnel.relay_viewer_enabled` is off. Either one missing
- * hides the whole list, so the default dashboard is unchanged.
+ * Shown wherever the gateway's crews route answers: it 404s while
+ * `tunnel.relay_viewer_enabled` is off, which hides the whole list, so the default
+ * dashboard is unchanged. The desktop app opens a Crew as a tab in its main window
+ * through the `relayCrewAPI` bridge; a browser opens it in a new tab, which the
+ * gateway serves on an origin of its own (`relay_viewer/browser_origin.py`).
  */
 import { useCallback, useState } from 'react'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
@@ -12,7 +13,8 @@ import { api, ApiError, type RelayCrewEntry, type RelayViewerAccount } from '../
 import { parseErrorCode, parseErrorField } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 import { timeAgo } from '../utils/timeAgo'
-import type { AppDispatch } from '../store'
+import type { AppDispatch, RootState } from '../store'
+import { relayOpenStarted } from '../store/instancesSlice'
 import { openRelayPane, relayPaneBridge } from '../lib/relayCrewPanes'
 
 export type RelayCrewOpenResult = { ok: boolean; error?: string }
@@ -36,16 +38,56 @@ export async function openRelayCrew(endpointId: string): Promise<RelayCrewOpenRe
   }
 }
 
-/** Open a relay Crew as a tab in this window while the hidden pane key is on,
- *  else in its own window through `openRelayCrew`, as before. */
+/** Open a relay Crew as a tab in the main window; a shell without the pane calls
+ *  opens it in its own window through `openRelayCrew`, and a browser in a new tab. */
 export function openRelayCrewTab(endpointId: string, name: string, dispatch: AppDispatch): Promise<RelayCrewOpenResult> {
   const bridge = relayPaneBridge()
-  return bridge ? openRelayPane(bridge, { id: endpointId, name }, dispatch) : openRelayCrew(endpointId)
+  if (bridge) return openRelayPane(bridge, { id: endpointId, name }, dispatch)
+  return relayCrewBridge() ? openRelayCrew(endpointId) : openRelayCrewInBrowser(endpointId, dispatch)
+}
+
+/** endpointId -> its open still waiting for the gateway: a second click joins it
+ *  rather than minting again, which would end the first open's access. */
+const browserOpening = new Map<string, Promise<RelayCrewOpenResult>>()
+
+/** Open a relay Crew in a new browser tab. The tab is opened inside the click (a
+ *  later `window.open` is a blocked pop-up) on a blank page, cut from this page,
+ *  and sent to the Crew only once the gateway answered and no newer choice was made
+ *  meanwhile; otherwise it closes. Never throws. */
+export function openRelayCrewInBrowser(endpointId: string, dispatch: AppDispatch): Promise<RelayCrewOpenResult> {
+  const pending = browserOpening.get(endpointId)
+  if (pending) return pending
+  dispatch(relayOpenStarted())
+  const seq = () => dispatch((_d, getState: () => RootState) => getState().instances.pickSeq ?? 0)
+  const gen = seq()
+  const tab = window.open('about:blank', '_blank')
+  if (!tab) return Promise.resolve({ ok: false, error: 'POPUP_BLOCKED' })
+  try {
+    tab.opener = null
+  } catch { /* already cut */ }
+  const opening = api.relayViewerBrowserOpen(endpointId).then(
+    ({ url }) => {
+      if (seq() !== gen) {
+        tab.close()
+        return { ok: true }
+      }
+      tab.location.replace(url)
+      return { ok: true }
+    },
+    (err: unknown) => {
+      tab.close()
+      return { ok: false, error: parseErrorCode(err instanceof ApiError ? err.body : undefined) || 'UNAVAILABLE' }
+    },
+  ).finally(() => browserOpening.delete(endpointId))
+  browserOpening.set(endpointId, opening)
+  return opening
 }
 
 /** Ask the desktop shell to close every relay Crew window now, after this
  *  dashboard's Sign out or Switch account lands. Does nothing without the bridge
- *  and never throws: a sign-out made elsewhere is caught at the next renewal. */
+ *  and never throws: a sign-out made elsewhere is caught at the next renewal. A
+ *  browser tab is not closed from here (this page cut its `opener`, which also
+ *  ends this page's hold on it): the gateway tells the tab itself. */
 export async function closeRelayCrews(): Promise<void> {
   const b = (window as { relayCrewAPI?: { closeAll?: () => Promise<unknown> } }).relayCrewAPI
   if (typeof b?.closeAll !== 'function') return
@@ -67,6 +109,8 @@ export function relayRefusalText(code: string | undefined, generic?: string): st
     case 'THROTTLED': return i18nT('components.relayCrews.refusal_throttled')
     case 'SIGNED_OUT': return i18nT('components.relayCrews.refusal_signed_out')
     case 'NOT_SET_UP': return i18nT('components.relayCrews.refusal_not_configured')
+    case 'BROWSER_NOT_LOCAL': return i18nT('components.relayCrews.refusal_browser_not_local')
+    case 'POPUP_BLOCKED': return i18nT('components.relayCrews.refusal_popup_blocked')
     default: return generic ?? i18nT('components.relayCrews.refusal_generic')
   }
 }
@@ -161,7 +205,12 @@ export async function clearRelayCrewsUnseen(queryClient: QueryClient, endpointId
     old ? { ...old, crews: old.crews.map(c => (ids.has(c.endpointId) ? { ...c, unseen: false } : c)) } : old)
 }
 
-const isOffError = (err: unknown) => err instanceof ApiError && err.status === 404
+/** The answers that mean this page cannot use the viewer at all, so the list hides:
+ *  the viewer off (404), and a page reached through the relay or by someone who is
+ *  not the owner (403 with those codes). Any other refusal is shown. */
+const HIDING_403 = new Set(['relay_local_credential', 'owner_only'])
+const isOffError = (err: unknown) =>
+  err instanceof ApiError && (err.status === 404 || (err.status === 403 && HIDING_403.has(parseErrorCode(err.body) || '')))
 
 /** How often the list is re-read: sooner while a listed Crew is not online, so a host
  *  that just connected reads as online without a reload, and once a minute otherwise. */
@@ -183,12 +232,15 @@ export function useRelayViewerCrews(): {
   /** Read a loaded list again unless the last read is under OPEN_FRESH_MS old (the menu opened). */
   refreshOnOpen: () => void
 } {
-  const hasBridge = relayCrewBridge() !== null
   const queryClient = useQueryClient()
   const q = useQuery({
     queryKey: RELAY_VIEWER_CREWS_KEY,
-    queryFn: () => api.relayViewerCrews(),
-    enabled: hasBridge,
+    // Every dashboard reads this now, so an answer without a list (an older or
+    // stand-in gateway) is read as an empty one rather than breaking the shell.
+    queryFn: async () => {
+      const answer = await api.relayViewerCrews()
+      return { ...answer, crews: Array.isArray(answer?.crews) ? answer.crews : [] }
+    },
     // A 404 is the feature-off answer, not a blip to retry.
     retry: false,
     // Presence changes on the host's side, so re-read; stop once the route says the feature is off.
@@ -227,11 +279,11 @@ export function useRelayViewerCrews(): {
     setHeld(refusal ? { refusal, at: q.errorUpdatedAt } : null)
     void q.refetch()
   }
-  if (hasBridge && !off && q.isPending && q.isFetching && held && held.at === q.errorUpdatedAt) {
+  if (!off && q.isPending && q.isFetching && held && held.at === q.errorUpdatedAt) {
     // Try again is reading: keep its refusal up, with Try again off, until the answer.
     return { hidden: false, crews: [], account: null, refusal: held.refusal, retry, retrying: true, refreshOnOpen }
   }
-  if (!hasBridge || off || q.isPending) return { hidden: true, crews: [], account: null, refusal: null, retry, retrying: false, refreshOnOpen }
+  if (off || q.isPending) return { hidden: true, crews: [], account: null, refusal: null, retry, retrying: false, refreshOnOpen }
   if (refusal) return { hidden: false, crews: [], account: null, refusal, retry, retrying: q.isFetching, refreshOnOpen }
   return { hidden: false, crews: q.data?.crews ?? [], account: q.data?.account ?? null, refusal: null, retry, retrying: q.isFetching, refreshOnOpen }
 }

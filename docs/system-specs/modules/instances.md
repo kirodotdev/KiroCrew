@@ -1056,7 +1056,8 @@ modal (#38790):
   creating its machine. The header carries the count, Refresh and **+ Add Crew**.
 - **Shared with me** — the Shared Crews this person can open over the relay
   (`SharedCrewsCards`, the list behind the header switcher's Remote Crews
-  group); hidden while the relay viewer is off.
+  group, in the desktop app and a browser alike); hidden while the relay viewer
+  is off.
 - **Settings** — **Auto-connect crews** and the default destination crew.
   The personal **Remote Control** card (Turn off) sits below it, at the foot
   of the page: Settings > Advanced is not routed, so it cannot move there.

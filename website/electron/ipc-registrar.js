@@ -26,9 +26,10 @@ const { safeFilename } = require("./download-handler");
 const { saveThemeSplash } = require("./theme-splash");
 const { createRelayCrewOpener, isEndpointId } = require("./relay-crew-open");
 const { requestRelayCrewToken } = require("./relay-crew-client");
-const { openRelayCrewWindow, openRelayCrewPane, createTokenHolder } = require("./relay-crew-window");
+const { openRelayCrewWindow, openRelayCrewPane, createTokenHolder, partitionCleared } = require("./relay-crew-window");
 const { normalizeBounds, deriveScale, scaleRect } = require("./browser-view");
 const { createRelayCrewRenewal } = require("./relay-crew-renewal");
+const { createRelayCrewHandoff } = require("./relay-crew-handoff");
 
 /**
  * Register the Electron shell's renderer bridges without taking ownership of
@@ -297,6 +298,7 @@ function createIpcRegistrar({
         openPane: (opts) => openRelayCrewPane(opts, windowDeps),
         createRenewal: createRelayCrewRenewal,
         createTokenHolder,
+        partitionCleared,
         log,
       });
     }
@@ -1447,15 +1449,35 @@ function createIpcRegistrar({
       const content = parent.getContentBounds();
       return normalizeBounds(scaleRect(rect, deriveScale(viewport, content)), content);
     };
+    // Another local dashboard window's open goes to the main window's
+    // dashboard while it listens (relay-crew-handoff.js).
+    const relayHandoff = createRelayCrewHandoff({ showMainWindow: (o) => windows.showMainWindow(o) });
+    ipcMain.handle("relay-crew:open-requests", async (event, on, seq) => {
+      try {
+        await assertLocalDashboard(event, "relay-crew:open-requests");
+        assertMainWindowDashboard(event, "relay-crew:open-requests");
+      } catch {
+        return;
+      }
+      relayHandoff.listen(event.sender, on, seq);
+    });
     ipcMain.handle("relay-crew:open-pane", async (event, endpointId, rect, viewport) => {
       if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      const main = windows.getMainWindow();
       try {
         await assertLocalDashboard(event, "relay-crew:open-pane");
+        if (main && windows.windowForWebContents(event.sender) !== main) {
+          if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame) {
+            logGateRejection(event.sender, "relay-crew:open-pane rejected: sender is not the top frame");
+            throw new Error("relay-crew:open-pane is restricted to a dashboard's top frame");
+          }
+          return relayHandoff.handOff(endpointId);
+        }
         assertMainWindowDashboard(event, "relay-crew:open-pane");
       } catch {
         return { ok: false, error: "UNAVAILABLE" };
       }
-      const parent = windows.getMainWindow();
+      const parent = main;
       const bounds = paneRect(parent, rect, viewport);
       // Before any mint, like a bad ID.
       if (!bounds) return { ok: false, error: "INVALID_BOUNDS" };

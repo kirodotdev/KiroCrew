@@ -488,8 +488,10 @@ async def handle_app_api_proxy(
         session = request.app.get("_proxy_session")
         owns_session = session is None or session.closed
         if owns_session:
-            # As the shared session in routes.py: relay the encoded bytes as-is.
-            session = aiohttp.ClientSession(auto_decompress=False)
+            # As the shared session in routes.py: the encoded bytes as-is, no cookie jar.
+            session = aiohttp.ClientSession(
+                auto_decompress=False, cookie_jar=aiohttp.DummyCookieJar()
+            )
         try:
             async with asyncio.timeout(_PROXY_TIMEOUT) as total_bound:
                 async with session.request(

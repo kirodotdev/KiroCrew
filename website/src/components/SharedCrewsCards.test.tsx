@@ -35,11 +35,11 @@ afterEach(() => {
 })
 
 describe('SharedCrewsCards', () => {
-  it('renders nothing and reads nothing without the desktop bridge', async () => {
+  it('lists the Crews in a browser too, with no desktop bridge', async () => {
     const spy = vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
-    const { container } = await act(async () => renderWithProviders(<SharedCrewsCards />))
-    expect(spy).not.toHaveBeenCalled()
-    expect(container).toBeEmptyDOMElement()
+    await act(async () => renderWithProviders(<SharedCrewsCards />))
+    await waitFor(() => expect(spy).toHaveBeenCalled())
+    expect(await screen.findAllByTestId('shared-crew-row')).toHaveLength(1)
   })
 
   it('renders nothing while the relay viewer is off (the route 404s)', async () => {

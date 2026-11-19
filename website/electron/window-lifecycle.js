@@ -34,6 +34,7 @@ const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { stepZoomFactor } = require("./zoom");
 const { registerCaptureSurface } = require("./capture-trust");
 const { isLoopbackUrl } = require("./browser-view");
+const { shownRelayPane } = require("./relay-crew-window");
 const { runAnnotateOp } = require("./browser-annotate");
 const { attachContextMenu } = require("./context-menu");
 const {
@@ -1541,11 +1542,17 @@ function createWindowLifecycle(options) {
       appName: app.name,
       openSettings: () => openSettingsPage(),
       openAbout: () => openSettingsPage("about"),
+      // A relay Crew tab in front takes Reload, as its own window did,
+      // instead of the dashboard reloading and closing every tab.
       reload: () => {
+        const pane = shownRelayPane(BaseWindow.getFocusedWindow());
+        if (pane) { pane.menuReload({ ignoreCache: false }); return; }
         const wc = focusedDashboardWebContents();
         if (wc) wc.reload();
       },
       forceReload: () => {
+        const pane = shownRelayPane(BaseWindow.getFocusedWindow());
+        if (pane) { pane.menuReload({ ignoreCache: true }); return; }
         const wc = focusedDashboardWebContents();
         if (wc) wc.reloadIgnoringCache();
       },

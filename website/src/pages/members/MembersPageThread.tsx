@@ -486,9 +486,11 @@ export function useMembersPageThreadView({
       window.removeEventListener('blur', onVis)
     }
   }, [])
-  // The New crewmate card hides the chat while it
-  // stays mounted: hidden is not viewed, so it neither reads nor suppresses.
-  const threadShown = pageVisible && !createOpen
+  // The New crewmate card hides the chat while it stays mounted, and a relay
+  // Crew tab covers the whole page: hidden is not viewed, so it neither reads
+  // nor suppresses.
+  const relayCovered = useAppSelector(s => s.instances?.relayActive != null)
+  const threadShown = pageVisible && !createOpen && !relayCovered
   // What the PANE may count as seen: the thread is shown AND nothing floats
   // over the chat. An overlay side panel (a phone sheet, a desktop overlay
   // under its scrim), a floating Profile card and the phone roster drawer all

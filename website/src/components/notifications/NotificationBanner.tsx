@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion, type TargetAndTransition } from 'framer-motion'
 import { i18nT } from '../../i18n/t'
-import { useAppDispatch, useAppSelector } from '../../store'
+import { store, useAppDispatch, useAppSelector } from '../../store'
 import { ackNotification } from '../../store/notificationsSlice'
 import { setActiveId } from '../../store/instancesSlice'
 import { useLocalCrewHidden } from '../overlayRoot'
@@ -267,6 +267,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
         // Read at arrival, like focus: the Members page registers its thread
         // only while it is visible and focused.
         viewedThread: getViewedThreadSlot(),
+        relayCovered: store.getState().instances?.relayActive != null,
       })
       if (!ok) return
       const next = [note, ...pendingRef.current.filter(n => n.ts !== note.ts)]
@@ -466,8 +467,10 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
                 // took its close click (the click expanded the deck instead).
                 style={{ zIndex: 10 - idx, ...(deck ? { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 } : { position: 'relative' }) }}
                 data-testid="notification-banner-card"
-                // A relay Crew pane hides under a showing card (lib/relayCrewPanes.ts).
-                data-relay-pane-overlay=""
+                // A relay Crew pane hides under a critical card (lib/relayCrewPanes.ts).
+                // Any other card is a passing note: hiding the whole Crew for it
+                // blanked the page each time one came up, and the bell keeps it.
+                data-relay-pane-overlay={prio === 'critical' ? '' : undefined}
                 data-priority={prio}
                 data-deck={deck ? 'true' : undefined}
                 className="rounded-2xl"

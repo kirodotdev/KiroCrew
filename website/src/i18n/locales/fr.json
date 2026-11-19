@@ -8024,6 +8024,8 @@
       "refusal_throttled": "Trop de requêtes. Réessaie dans une minute.",
       "refusal_signed_out": "Connecte-toi à Kiro pour voir tes Crews partagées.",
       "refusal_not_configured": "Les Crews partagées via le relais ne sont pas configurées.",
+      "refusal_browser_not_local": "Ouvre cette Crew depuis un navigateur sur la machine qui exécute cette Crew.",
+      "refusal_popup_blocked": "Ton navigateur a bloqué le nouvel onglet. Autorise les fenêtres pop-up pour cette page et réessaie.",
       "refusal_generic": "Impossible d'ouvrir cette crew.",
       "refusal_list_generic": "Impossible de charger tes Crews partagées.",
       "try_again": "Réessayer",

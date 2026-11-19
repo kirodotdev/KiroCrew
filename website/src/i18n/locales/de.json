@@ -7816,6 +7816,8 @@
       "refusal_throttled": "Zu viele Anfragen. Versuche es in einer Minute erneut.",
       "refusal_signed_out": "Melde dich bei Kiro an, um deine geteilten Crews zu sehen.",
       "refusal_not_configured": "Geteilte Crews über das Relay sind nicht eingerichtet.",
+      "refusal_browser_not_local": "Öffne diese Crew in einem Browser auf dem Rechner, auf dem diese Crew läuft.",
+      "refusal_popup_blocked": "Dein Browser hat den neuen Tab blockiert. Erlaube Pop-ups für diese Seite und versuche es erneut.",
       "refusal_generic": "Diese Crew konnte nicht geöffnet werden.",
       "refusal_list_generic": "Deine geteilten Crews konnten nicht geladen werden.",
       "try_again": "Erneut versuchen",

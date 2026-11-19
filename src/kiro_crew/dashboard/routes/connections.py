@@ -29,6 +29,7 @@ from kiro_crew.dashboard.handlers.auth_refresh import (
 )
 from kiro_crew.dashboard.handlers.mobile_connect import api_mobile_connect_methods
 from kiro_crew.dashboard.handlers.relay_viewer import (
+    api_relay_viewer_browser_open,
     api_relay_viewer_crews,
     api_relay_viewer_crews_seen,
     api_relay_viewer_token,
@@ -214,3 +215,5 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/relay-viewer/crews", api_relay_viewer_crews)
     app.router.add_post("/api/relay-viewer/crews/seen", api_relay_viewer_crews_seen)
     app.router.add_post("/api/relay-viewer/token", api_relay_viewer_token)
+    # A browser tab's open: the gateway keeps the grant and relays the Crew.
+    app.router.add_post("/api/relay-viewer/browser-open", api_relay_viewer_browser_open)
