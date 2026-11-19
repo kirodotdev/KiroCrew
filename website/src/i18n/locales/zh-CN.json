@@ -21430,6 +21430,7 @@
         "keeps_running": "Keeps running if you leave this page.",
         "launch": "Launch",
         "launch_another": "再启动一个 Crew",
+        "launch_cancelled": "已取消",
         "launch_done": "完成 — 你的新 Crew 已就绪，现在会出现在“我的 Crew”中。",
         "launch_done_unsigned": "Crew 已就绪并出现在“我的 Crew”中，但还没有登录 Kiro。请在上方完成登录。",
         "launch_failed_title": "Launch failed",

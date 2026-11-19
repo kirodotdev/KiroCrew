@@ -22524,6 +22524,7 @@
         "keeps_running": "Continue de tourner si tu quittes cette page.",
         "launch": "Lancer",
         "launch_another": "Lancer une autre crew",
+        "launch_cancelled": "Annulé",
         "launch_done": "Terminé — ta nouvelle crew est prête et apparaît maintenant dans « Mes Crews ».",
         "launch_done_unsigned": "La crew est prête et apparaît dans Mes Crews, mais Kiro n’y est pas encore connecté. Termine la connexion ci-dessus.",
         "launch_failed_title": "Échec du lancement",

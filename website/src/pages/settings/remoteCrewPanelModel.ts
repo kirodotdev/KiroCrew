@@ -46,6 +46,10 @@ export function launchGuardKey(body: { provider_id?: string }): string {
 const TERMINAL: LaunchJob['status'][] = ['done', 'failed', 'cancelled']
 export const isTerminal = (j: LaunchJob) => TERMINAL.includes(j.status)
 
+/** A cancelled launch whose instance is still being deleted: the gateway keeps the
+ *  rollback step active until AWS confirms the delete (or it fails). */
+export const isRemoving = (j: LaunchJob) => j.status === 'cancelled' && j.steps.some(st => st.state === 'active')
+
 /** The connect (register) step ran — the crew exists under My Crews, so a
  *  sign-in can be re-run against it rather than provisioning anything. */
 export const isRegistered = (j: LaunchJob) => j.steps.some(st => st.key === 'connect' && st.state === 'done')

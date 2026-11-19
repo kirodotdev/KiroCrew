@@ -96,7 +96,7 @@ import {
 } from './InstanceFormFields'
 import {
   isInProgress, CLOUD_PROFILE_KEY, CLOUD_REGION_KEY, CLOUD_SIZE_KEY, CLOUD_PROVISIONER_KEY,
-  DEFAULT_REGION, launchGuardKey, isTerminal, isRegistered, needsSignin, type SizeTier, SIZE_TIERS, X86_TIERS,
+  DEFAULT_REGION, launchGuardKey, isTerminal, isRemoving, isRegistered, needsSignin, type SizeTier, SIZE_TIERS, X86_TIERS,
   type SigninNotice,
 } from './remoteCrewPanelModel'
 import {
@@ -440,8 +440,8 @@ export function RemoteCrewPanel() {
     queryFn: () => api.cloudLaunchStatus(effectiveLaunchId as string),
     enabled: !!effectiveLaunchId,
     refetchInterval: q => {
-      const s = (q.state.data as LaunchJob | undefined)?.status
-      return s && launchIsInFlight(s) ? 3000 : false
+      const job = q.state.data as LaunchJob | undefined
+      return job && (launchIsInFlight(job.status) || isRemoving(job)) ? 3000 : false
     },
   })
 

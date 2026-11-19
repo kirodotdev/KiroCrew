@@ -847,6 +847,45 @@ class TestCancelRollsBackTheStack:
         assert out.status == lj.CANCELLED
         assert ("teardown", out.tag) in eng.calls
         assert out.step(lj.STEP_PROVISION).detail == f"Removed {out.tag} after cancellation."
+        assert out.step(lj.STEP_PROVISION).state == lj.STEP_DONE
+
+    def test_the_saved_job_says_the_removal_is_running_until_it_confirms(self, tmp_path):
+        """The job is saved ``cancelled`` before the minutes-long delete. A reader of
+        that file must see the removal step still running, or the dashboard stops
+        polling and never learns whether the instance stopped billing."""
+        entered, release = threading.Event(), threading.Event()
+
+        class BlockingTeardown(FakeEngine):
+            def teardown(self, *, tag, profile, region):
+                entered.set()
+                assert release.wait(10), "the test never released the teardown"
+                return True
+
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        cancel = threading.Event()
+        eng = BlockingTeardown(
+            handle=FakeHandle(url="u", code="c", on_wait=lambda ev: cancel.set())
+        )
+        worker = threading.Thread(
+            target=lj.run_launch, args=(job, s, eng), kwargs={"cancel": cancel}
+        )
+        worker.start()
+        try:
+            assert entered.wait(10), "the rollback never reached the teardown"
+            during = _store(tmp_path).get(job.id)
+            assert during.status == lj.CANCELLED
+            assert during.step(lj.STEP_PROVISION).state == lj.STEP_ACTIVE
+            assert during.step(lj.STEP_PROVISION).detail == f"Removing {job.tag}…"
+        finally:
+            release.set()
+            worker.join(10)
+        assert not worker.is_alive()
+
+        after = _store(tmp_path).get(job.id)
+        assert after.status == lj.CANCELLED
+        assert after.step(lj.STEP_PROVISION).state == lj.STEP_DONE
+        assert after.step(lj.STEP_PROVISION).detail == f"Removed {job.tag} after cancellation."
 
     def test_an_unconfirmed_delete_is_not_reported_as_removed(self, tmp_path):
         """`destroy(wait=False)` only means the request was accepted. A stack that
@@ -860,6 +899,7 @@ class TestCancelRollsBackTheStack:
         assert out.tag in (out.error or "")
         assert "did NOT confirm" in (out.error or "")
         assert "billing" in (out.error or "")
+        assert out.step(lj.STEP_PROVISION).state == lj.STEP_FAILED
 
     def test_a_failed_rollback_names_the_stack_so_the_user_can_remove_it(self, tmp_path):
         out, _ = self._cancel_at_signin(tmp_path, teardown_exc=RuntimeError("access denied"))
@@ -867,6 +907,7 @@ class TestCancelRollsBackTheStack:
         assert out.status == lj.CANCELLED
         assert out.tag in (out.error or ""), "the user must be told what to delete"
         assert "billing" in (out.error or "")
+        assert out.step(lj.STEP_PROVISION).state == lj.STEP_FAILED
 
     def test_a_cancel_before_provisioning_deletes_nothing(self, tmp_path):
         s = _store(tmp_path)
@@ -949,6 +990,41 @@ class TestOrphanReaping:
         assert s.reap_orphans() == []
         still = s.get(job.id)
         assert still is not None and still.status == lj.RUNNING
+
+    def _cancelled_mid_removal(self, tmp_path, *, error=""):
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        job.status = lj.CANCELLED
+        job.step(lj.STEP_PROVISION).state = lj.STEP_ACTIVE
+        job.step(lj.STEP_PROVISION).detail = f"Removing {job.tag}…"
+        job.error = error
+        s.save(job)
+        return s, job
+
+    def test_a_removal_cut_short_by_a_restart_is_failed_not_left_spinning(self, tmp_path):
+        """A cancelled job whose removal step is still active lost its rollback with
+        the old process. Left alone, the dashboard would poll a spinner forever and
+        never say the instance may still be billing."""
+        _, job = self._cancelled_mid_removal(tmp_path, error="Earlier note.")
+
+        reaped = _store(tmp_path).reap_orphans()
+
+        assert reaped == [job.id]
+        after = _store(tmp_path).get(job.id)
+        assert after.status == lj.CANCELLED
+        assert after.step(lj.STEP_PROVISION).state == lj.STEP_FAILED
+        assert after.error.startswith("Earlier note. Interrupted")
+        assert "restarted" in after.error
+        assert "billing" in after.error
+        assert job.tag in after.error
+
+    def test_a_removal_this_process_is_running_is_left_alone(self, tmp_path):
+        s, job = self._cancelled_mid_removal(tmp_path)
+
+        assert s.reap_orphans() == []
+        still = s.get(job.id)
+        assert still.step(lj.STEP_PROVISION).state == lj.STEP_ACTIVE
+        assert still.error == ""
 
     def test_terminal_jobs_are_untouched(self, tmp_path):
         s = _store(tmp_path)
