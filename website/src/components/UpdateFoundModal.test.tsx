@@ -113,6 +113,14 @@ describe('UpdateFoundModal — desktop source', () => {
     expect(byName('components.updateFoundModal.download')).toBeInTheDocument()
   })
 
+  it('is sized like the post-update changelog dialog: wide, viewport-capped, tall notes', async () => {
+    await mount(found)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(dialog()).toHaveClass('w-full', 'max-w-3xl', 'max-h-[85vh]')
+    expect(screen.getByTestId('update-found-body')).toHaveClass('overflow-y-auto', 'min-h-0')
+    expect(screen.getByTestId('update-found-notes')).toHaveClass('max-h-[60vh]')
+  })
+
   it('stays closed on Settings > About, which already shows the update', async () => {
     await mount(found, createTestStore(), <UpdateFoundModal />, '/settings/about')
     expect(dialog()).toBeNull()
