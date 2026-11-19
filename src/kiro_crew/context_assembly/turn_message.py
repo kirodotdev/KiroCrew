@@ -694,7 +694,7 @@ def build_message(
             if _member_section:
                 parts.append(ctx._neutralize_structural_markers(_member_section))
 
-    # Channel history — inject on every message for group channel context
+    # Channel history — group channel context; a compaction-reporting harness is sent only new entries
     ch_ctx: str | None = None
     # With thread_ts set, channel history holds only that thread's recent
     # messages. When the fenced thread-replies block below is present it
@@ -707,7 +707,26 @@ def build_message(
         and self.channel_history
         and not (thread_ts and thread_replies_text)
     ):
-        ch_ctx = self.channel_history.context_for(channel_id, thread_ts=thread_ts) or None
+        # A harness that reports compaction holds the window an earlier turn sent, so a
+        # top-level turn is sent only what arrived since (``delivery_records``).
+        if (
+            session_key
+            and not thread_ts
+            and getattr(context_provider, "reports_compaction", False) is True
+        ):
+            _window_base = self._channel_window_base(
+                session_key, channel_id, agent, reset=is_new_session or needs_reinjection
+            )
+            _window_text, _window_newest = self.channel_history.context_since(
+                channel_id, thread_ts, _window_base
+            )
+            if _window_newest is not None and _window_newest != _window_base:
+                self._channel_window_sent(
+                    session_key, channel_id, agent, base=_window_base, newest=_window_newest
+                )
+        else:
+            _window_text = self.channel_history.context_for(channel_id, thread_ts=thread_ts)
+        ch_ctx = _window_text or None
         if ch_ctx:
             # Group-channel context is authored by other users — scrub the
             # primary boundary markers so it cannot forge a prompt boundary.

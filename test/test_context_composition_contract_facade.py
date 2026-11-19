@@ -213,6 +213,14 @@ _BUILDER_MEMBERS: dict[str, tuple[str, str]] = {
         "(self, memory_store: 'str | None', *, member: 'str' = '', member_is_id: 'bool' = True, project: 'str | None' = None, workspace: 'str | None' = None, blocks_reads: 'bool' = False, context_groups: 'frozenset[str] | None' = None, profile_overrides: 'dict[str, str] | None' = None, native_documents: 'dict[str, str] | None' = None, native_envelope_out: 'list[str] | None' = None, execution_template: 'str' = '', member_template: 'str' = '', conditional_index: 'bool' = False, trigger_text: 'str' = '', steering_dirs: 'tuple[str, ...]' = (), desk_withheld: 'bool' = False, provider_type: 'str | None' = None) -> 'str'",
     ),
     "_cap_memo_key": ("static", "(session_key: 'str') -> 'str'"),
+    "_channel_window_base": (
+        "method",
+        "(self, session_key: 'str', channel_id: 'str', agent: 'str | None', *, reset: 'bool') -> 'int | None'",
+    ),
+    "_channel_window_sent": (
+        "method",
+        "(self, session_key: 'str', channel_id: 'str', agent: 'str | None', *, base: 'int | None', newest: 'int') -> 'None'",
+    ),
     "_dedup_triggered_bodies": (
         "method",
         "(self, session_key: 'str | None', agent: 'str | None', reset: 'bool', candidates: 'list[tuple[str, str]]') -> 'set[str]'",

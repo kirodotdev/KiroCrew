@@ -9,7 +9,9 @@ Two bounded, oldest-evicted records the builder keeps per session key, both keye
   ``store_admission.turn_lessons_block``;
 * the trigger-matched skill bodies a session was sent, with the per-turn undo record
   that ``rollback_skill_bodies`` and ``commit_skill_bodies`` settle once the turn's fate
-  is known.
+  is known;
+* the position of the newest recent-channel-message entry a session was sent, which
+  rides the same undo and settle (``_channel_window_base``, ``_channel_window_sent``).
 
 The sub-agent notices a channel turn's build reads from its conversation's dashboard
 tab ride the same per-turn settle, but their settle call goes to the turn that built,
@@ -17,7 +19,8 @@ never into a record here: another turn on the session cannot take it.
 
 Builder state read and written: ``_lessons_shown`` and ``_lessons_shown_lock``;
 ``_sent_skill_bodies``, ``_sent_skill_agents``, ``_sent_skill_bodies_undo`` and
-``_sent_skill_bodies_lock``; ``tab_notices_for_session`` is read; the bounds ``_SENT_SKILL_BODY_SESSIONS`` and ``_SENT_SKILL_BODY_ENTRIES`` are read
+``_sent_skill_bodies_lock``; ``_channel_windows`` and ``_channel_windows_undo`` (under
+that lock); ``tab_notices_for_session`` is read; the bounds ``_SENT_SKILL_BODY_SESSIONS`` and ``_SENT_SKILL_BODY_ENTRIES`` are read
 through the builder, so an instance override applies.
 
 New per-session delivery records belong here.
@@ -236,6 +239,56 @@ def _dedup_triggered_bodies(
     return demote
 
 
+def _channel_window_base(
+    self, session_key: str, channel_id: str, agent: str | None, *, reset: bool
+) -> int | None:
+    """Where *session_key*'s recent-channel-messages window left off, ``None`` for all of it.
+
+    *reset* is a fresh session or the first turn after a compaction: the provider
+    window cannot hold what was sent before, so the whole window goes again. A build
+    that nothing settled may not have landed, so this one reads from where that one
+    began, as does a rebuild of the same turn: entries may repeat, none is dropped.
+    A record for another channel or agent does not apply.
+    """
+    key = self._cap_memo_key(session_key)
+    agent_key = None if agent is None else self._cap_memo_key(agent)
+    with self._sent_skill_bodies_lock:
+        if key in self._channel_windows_undo:
+            prior = self._channel_windows_undo.pop(key)
+            if prior is None:
+                self._channel_windows.pop(key, None)
+            else:
+                self._channel_windows[key] = prior
+        if reset:
+            self._channel_windows.pop(key, None)
+        record = self._channel_windows.get(key)
+    if record is None or record[:2] != (channel_id, agent_key):
+        return None
+    return record[2]
+
+
+def _channel_window_sent(
+    self,
+    session_key: str,
+    channel_id: str,
+    agent: str | None,
+    *,
+    base: int | None,
+    newest: int,
+) -> None:
+    """Record that this build carries the window up to *newest*, undoable until it settles."""
+    key = self._cap_memo_key(session_key)
+    agent_key = None if agent is None else self._cap_memo_key(agent)
+    with self._sent_skill_bodies_lock:
+        self._channel_windows_undo[key] = None if base is None else (channel_id, agent_key, base)
+        self._channel_windows.pop(key, None)
+        self._channel_windows[key] = (channel_id, agent_key, newest)
+        while len(self._channel_windows) > self._SENT_SKILL_BODY_SESSIONS:
+            oldest = next(iter(self._channel_windows))
+            self._channel_windows.pop(oldest, None)
+            self._channel_windows_undo.pop(oldest, None)
+
+
 def rollback_skill_bodies(self, session_key: str | None) -> None:
     """Undo the current turn's skill-body dedup writes for *session_key*.
 
@@ -259,6 +312,12 @@ def rollback_skill_bodies(self, session_key: str | None) -> None:
         return
     key = self._cap_memo_key(session_key)
     with self._sent_skill_bodies_lock:
+        if key in self._channel_windows_undo:
+            prior = self._channel_windows_undo.pop(key)
+            if prior is None:
+                self._channel_windows.pop(key, None)
+            else:
+                self._channel_windows[key] = prior
         undo = self._sent_skill_bodies_undo.pop(key, None)
         if not undo:
             return
@@ -291,6 +350,7 @@ def commit_skill_bodies(self, session_key: str | None) -> None:
     key = self._cap_memo_key(session_key)
     with self._sent_skill_bodies_lock:
         self._sent_skill_bodies_undo.pop(key, None)
+        self._channel_windows_undo.pop(key, None)
 
 
 def _read_tab_notices(self, session_key: str | None, settles: list[Callable[[bool], None]]) -> str:

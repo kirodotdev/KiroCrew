@@ -48,6 +48,7 @@ When `thread_ts` is provided, output includes only messages from the current thr
 - **Observe mode**: defaults to 200 entries and one week, configured by `slack.observe_max_messages` and `slack.observe_ttl_hours`; entries are appended to owner-local JSONL under `<data-home>/history`, loaded on startup, and compacted lazily
 - **Push after gates**: unauthorized, intercepted, activation-off, and channel-governance-denied content is never recorded; observe mode records admitted messages before the mention/active-thread routing decision, while other modes record only messages accepted for processing
 - **Inject on every built message**: `ContextBuilder.build_message()` reads current channel history on both new and follow-up turns and neutralizes structural prompt markers
+- **New entries only on compaction-reporting harnesses**: each entry carries an arrival number. When the provider reports compaction (`reports_compaction is True`), a top-level turn after the first is sent only the entries that arrived since the previous turn, under `[New channel messages since the last turn:]`, and nothing when there are none. The builder keeps the position per session in `context_assembly/delivery_records.py` and settles it with the skill-body record (`commit_skill_bodies` / `rollback_skill_bodies`). The whole window goes again on a new session, after a compaction, after a turn that did not land, and when no turn settled the last build. Thread turns and every other harness keep the whole window
 
 ## Thread Context (Trust ACP)
 

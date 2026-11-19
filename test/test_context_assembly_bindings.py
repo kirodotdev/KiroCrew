@@ -61,6 +61,8 @@ _MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_session_computer_use_gate": ("function", False, "agent_spec"),
     "_session_reading": ("function", False, "agent_spec"),
     "_substitute_bot_name": ("function", False, "agent_spec"),
+    "_channel_window_base": ("function", False, "delivery_records"),
+    "_channel_window_sent": ("function", False, "delivery_records"),
     "_dedup_triggered_bodies": ("function", False, "delivery_records"),
     "_forget_shown_lessons": ("function", False, "delivery_records"),
     "_live_shown_lessons": ("function", False, "delivery_records"),

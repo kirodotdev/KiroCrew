@@ -1623,6 +1623,13 @@ class ContextBuilder:
         # the entry did not exist before this build (rollback removes it).
         self._sent_skill_bodies_undo: dict[str, dict[str, str | None]] = {}
         self._sent_skill_bodies_lock = threading.Lock()
+        # Per-session position of the newest recent-channel-message entry sent, for
+        # harnesses that report compaction (``context_assembly/delivery_records.py``):
+        # digest of the session key -> (channel, agent digest, position), with the
+        # same one-build undo entry the skill-body record keeps. Guarded by the
+        # skill-body lock and bounded by the same session cap.
+        self._channel_windows: dict[str, tuple[str, str | None, int]] = {}
+        self._channel_windows_undo: dict[str, tuple[str, str | None, int] | None] = {}
         if bot_name:
             self._bot_name = bot_name
         else:
@@ -1642,6 +1649,8 @@ class ContextBuilder:
     _dedup_triggered_bodies = _delivery_records._dedup_triggered_bodies
     rollback_skill_bodies = _delivery_records.rollback_skill_bodies
     commit_skill_bodies = _delivery_records.commit_skill_bodies
+    _channel_window_base = _delivery_records._channel_window_base
+    _channel_window_sent = _delivery_records._channel_window_sent
     _read_tab_notices = _delivery_records._read_tab_notices
     # ── The agent spec and prompt (context_assembly/agent_spec.py) ──
     _substitute_bot_name = _agent_spec._substitute_bot_name

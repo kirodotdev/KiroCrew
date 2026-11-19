@@ -38,6 +38,9 @@ class HistoryEntry:
     msg_ts: str | None = None  # Slack message ts — identifies thread parent
     timestamp: float = field(default_factory=time.monotonic)
     wall_ts: float | None = None  # wall-clock time (observe-mode only, for persistence)
+    # Arrival order within this buffer set; 0 for an entry loaded from disk, which a
+    # turn started before this process could never have been sent.
+    seq: int = 0
 
 
 class ChannelHistory:
@@ -69,6 +72,7 @@ class ChannelHistory:
         self._channels: dict[str, deque[HistoryEntry]] = {}
         self._observe_channels: set[str] = set()  # channels with deeper buffer
         self._user_names: dict[str, str] = {}  # user_id -> display name cache
+        self._seq = 0  # arrival counter behind HistoryEntry.seq
 
     def set_user_name(self, user_id: str, name: str) -> None:
         """Cache a display name for a user ID."""
@@ -134,8 +138,9 @@ class ChannelHistory:
 
         # Build entry — observe channels use wall clock for persistence
         wall_ts = time.time() if is_observe else None
+        self._seq += 1
         entry = HistoryEntry(
-            user=user, text=text, thread_ts=thread_ts, msg_ts=msg_ts, wall_ts=wall_ts
+            user=user, text=text, thread_ts=thread_ts, msg_ts=msg_ts, wall_ts=wall_ts, seq=self._seq
         )
         buf.append(entry)
 
@@ -143,22 +148,42 @@ class ChannelHistory:
         if is_observe:
             self._append_to_disk(channel_id, entry)
 
-    def context_for(self, channel_id: str, thread_ts: str | None = None) -> str:
+    def context_for(
+        self, channel_id: str, thread_ts: str | None = None, *, after: int | None = None
+    ) -> str:
         """Format recent messages for injection into LLM context.
 
         When *thread_ts* is provided, messages are split into current-thread
         and other-thread sections so the LLM can distinguish them.
         Returns empty string if no relevant history exists.
+
+        *after* (see :meth:`context_since`) limits a top-level window to the
+        entries that arrived after that position.
+        """
+        return self.context_since(channel_id, thread_ts, after)[0]
+
+    def context_since(
+        self, channel_id: str, thread_ts: str | None = None, after: int | None = None
+    ) -> tuple[str, int | None]:
+        """:meth:`context_for` and the position of the newest top-level entry it covers.
+
+        With *after* ``None`` the whole top-level window is formatted. With an
+        earlier return value as *after*, only the entries that arrived since then are,
+        under a header that says so, and ``""`` when there are none. A position
+        ahead of this buffer set (a history that was replaced) reads as ``None``.
+        A thread window is always whole and carries no position. The position
+        comes from the same snapshot as the text, so an entry pushed meanwhile
+        is never skipped.
         """
         buf = self._channels.get(channel_id)
         if not buf:
-            return ""
+            return "", None
 
         # Evict expired before formatting
         self._evict(buf, channel_id)
 
         if not buf:
-            return ""
+            return "", None
 
         now_mono = time.monotonic()
         now_wall = time.time()
@@ -181,18 +206,26 @@ class ChannelHistory:
             # thread parent, whose own thread_ts is None until it receives a reply.
             current = [_fmt(e) for e in buf if e.thread_ts == thread_ts or e.msg_ts == thread_ts]
             if not current:
-                return ""
+                return "", None
             return (
                 "[Recent channel messages for context:]\n"
                 "[Current thread:]\n" + "\n".join(current) + "\n[End of channel context]\n\n"
-            )
+            ), None
 
         # No thread_ts — only include top-level (non-thread) messages
-        lines: list[str] = [_fmt(e) for e in buf if e.thread_ts is None]
-        return (
+        top = [e for e in list(buf) if e.thread_ts is None]
+        since = after if after is not None and after <= self._seq else None
+        fresh = top if since is None else [e for e in top if e.seq > since]
+        if since is not None and not fresh:
+            return "", since
+        header = (
             "[Recent channel messages for context:]\n"
-            + "\n".join(lines)
-            + "\n[End of channel context]\n\n"
+            if since is None
+            else "[New channel messages since the last turn:]\n"
+        )
+        return (
+            header + "\n".join(_fmt(e) for e in fresh) + "\n[End of channel context]\n\n",
+            max((e.seq for e in fresh), default=None),
         )
 
     def clear(self, channel_id: str) -> None:
