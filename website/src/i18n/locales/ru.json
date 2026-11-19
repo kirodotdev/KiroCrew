@@ -11291,6 +11291,7 @@
       "flow_needs_you": "Нужен ты",
       "eyebrow": "Conductor mode",
       "composer_chip_label": "Этот чат работает в Conductor mode",
+      "composer_chip_label_worker": "Conductor mode · Воркер",
       "back_to_main_chat": "Назад к основному чату",
       "parent_row_hint": "Показан один из участников команды",
       "steer_too_long": "Сообщение для {{name}} может содержать не более {{max}} символов. Сократи его, чтобы отправить.",

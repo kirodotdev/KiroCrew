@@ -10805,6 +10805,7 @@
       "flow_needs_you": "Braucht dich",
       "eyebrow": "Conductor mode",
       "composer_chip_label": "Dieser Chat läuft im Conductor mode",
+      "composer_chip_label_worker": "Conductor mode · Worker",
       "back_to_main_chat": "Zurück zum Hauptchat",
       "parent_row_hint": "Zeigt eines seiner Crew-Mitglieder",
       "steer_too_long": "Eine Nachricht an {{name}} darf höchstens {{max}} Zeichen lang sein. Kürze sie zum Senden.",
