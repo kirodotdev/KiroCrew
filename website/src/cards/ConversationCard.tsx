@@ -26,6 +26,9 @@
  * A fourth surface, `lesson`, is a lesson the agent saved (`learn_add`): also
  * already applied, one row per write, drawn as one quiet line with a link to
  * the Memory page (`LessonSavedRow`).
+ *
+ * A fifth surface, `waiting`, records a waiting-on-you ask being pinned or
+ * closed: one quiet line with nothing to press (`WaitingHistoryRow`).
  */
 import type { ChatMessage } from '../types'
 import { useAppSelector } from '../store'
@@ -42,6 +45,7 @@ import GuideOfferCard from '../guide/GuideOfferCard'
 import ErrorNotice from '../components/ErrorNotice'
 import SelfChangeRow, { type SelfChangeRef, type SelfField } from './SelfChangeRow'
 import LessonSavedRow, { type LessonSavedRef } from './LessonSavedRow'
+import WaitingHistoryRow, { isWaitingHistoryStatus, type WaitingHistoryRef } from './WaitingHistoryRow'
 
 export const CARD_ROLE = 'card'
 
@@ -103,6 +107,19 @@ export function readLessonSavedRef(m: Pick<ChatMessage, 'role' | 'meta'>): Lesso
   const rule = str(c.rule)
   if (!id || !rule) return null
   return { surface: 'lesson', id, slot: str(c.slot, 256), rule, status: c.status === 'enriched' ? 'updated' : 'saved' }
+}
+
+/** The row's waiting-on-you history reference, or null when the row is not one. */
+export function readWaitingHistoryRef(m: Pick<ChatMessage, 'role' | 'meta'>): WaitingHistoryRef | null {
+  if (m.role !== CARD_ROLE) return null
+  const raw = (m.meta as { card?: unknown } | undefined)?.card
+  if (!raw || typeof raw !== 'object') return null
+  const c = raw as Record<string, unknown>
+  if (c.surface !== 'waiting' || !isWaitingHistoryStatus(c.status)) return null
+  const id = str(c.id, 64)
+  const title = str(c.title)
+  if (!id || !title) return null
+  return { surface: 'waiting', id, slot: str(c.slot, 256), title, status: c.status }
 }
 
 /** The row's card reference, or null when the row does not carry a usable one. */
@@ -223,6 +240,14 @@ export default function ConversationCard({ message, slot, shownAgainBelow = fals
     return (
       <div className="min-w-0" data-testid="conversation-card" data-card-surface="lesson" data-card-id={lesson.id}>
         <LessonSavedRow lesson={lesson} />
+      </div>
+    )
+  }
+  const waiting = readWaitingHistoryRef(message)
+  if (waiting) {
+    return (
+      <div className="min-w-0" data-testid="conversation-card" data-card-surface="waiting" data-card-id={waiting.id}>
+        <WaitingHistoryRow record={waiting} />
       </div>
     )
   }

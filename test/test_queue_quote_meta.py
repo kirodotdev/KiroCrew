@@ -40,8 +40,9 @@ _QUOTE = {
 
 def _sans_author(meta):
     """*meta* without the server-stamped Shared Crew author, which every person's
-    send now carries (``shared_crew.attribution``); these tests pin the rest."""
-    return {k: v for k, v in (meta or {}).items() if k != "author"}
+    send now carries (``shared_crew.attribution``), and the asks an owner's steer saw
+    (``waitingOnYouShown``); these tests pin the rest."""
+    return {k: v for k, v in (meta or {}).items() if k not in ("author", "waitingOnYouShown")}
 
 
 def _make_state() -> DashboardState:

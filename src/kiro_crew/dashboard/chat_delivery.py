@@ -152,6 +152,29 @@ KNOWLEDGE_HASH_MAX_LEN = 16
 # monitor-loop banner's validator, so the two labels share one cap.
 CHAT_BANNER_META_KEY = "banner"
 
+# A validated card-answer claim projected onto a queued entry's client view.
+# The internal camel-case key stays in persisted entry metadata until the drain
+# writes its row; clients receive only these two strings under this wire key.
+WAITING_ON_YOU_ANSWER_VIEW_KEY = "waiting_on_you_answer"
+
+
+def waiting_on_you_answer_view(meta: object) -> dict[str, dict[str, str]]:
+    """A queued card answer's validated ``{key, ask_id}`` client projection."""
+    from kiro_crew.dashboard.waiting_on_you_events import (
+        ANSWER_CLAIM_META_KEY,
+        answer_claim,
+    )
+
+    claim = answer_claim(meta).get(ANSWER_CLAIM_META_KEY)
+    if not claim:
+        return {}
+    return {
+        WAITING_ON_YOU_ANSWER_VIEW_KEY: {
+            "key": claim["key"],
+            "ask_id": claim["ask_id"],
+        }
+    }
+
 
 def banner_meta(meta: object) -> dict[str, str]:
     """``{"banner": ...}`` for a queue entry's label when it is usable, else ``{}``.
@@ -457,8 +480,12 @@ async def steer_into_running_turn(
     held_peer: bool = False,
     held_key: str = "",
     held_entry: object = None,
+    shown_at_send: dict[str, Any] | None = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
+
+    ``shown_at_send`` is the owner's send-time ask stamp (``shown_asks_meta``), read
+    before the caller's own awaits; without it the asks pinned at this call are used.
 
     ``held_peer`` marks a peer steer the gateway held for this tool boundary: on a
     harness that can drop an accepted steer it skips the ``peer_steer_loss_recovery``
@@ -775,6 +802,15 @@ async def steer_into_running_turn(
         slot._turn_owner_sent = False
     if admission is not None:
         slot._steer_admissions[message] = admission
+    # The asks the owner could see now: a steer the turn ends before taking drains
+    # as a queued row later, which must retire only these, as a queued send does.
+    shown_at_steer: dict[str, Any] = {}
+    if owner_origin and shown_at_send is not None:
+        shown_at_steer = dict(shown_at_send)
+    elif owner_origin:
+        from kiro_crew.dashboard.waiting_on_you_events import shown_asks_meta
+
+        shown_at_steer = shown_asks_meta(state, slot.key)
     if (
         attachments
         or quote
@@ -784,6 +820,7 @@ async def steer_into_running_turn(
         or banner
         or relay_meta
         or author
+        or shown_at_steer
     ):
         # Retained for the REQUEUE with the attachment lists: a steer the turn
         # ended before consuming is drained as a queued row, and that row is
@@ -807,6 +844,7 @@ async def steer_into_running_turn(
             # The server-named Shared Crew author, so a requeued steer's drained row
             # names its person as the delivered row below does.
             **({MESSAGE_AUTHOR_META_KEY: dict(author)} if author else {}),
+            **shown_at_steer,
             **({"appLabel": app_label} if app_label else {}),
             **({TURN_ACTOR_META_KEY: "app"} if app_actor else {}),
             **({CHAT_BANNER_META_KEY: banner} if banner else {}),
@@ -1170,6 +1208,9 @@ async def steer_into_running_turn(
         # teammate's steer is their message like any other send, so its row and
         # its live push name them.
         **({MESSAGE_AUTHOR_META_KEY: dict(author)} if author else {}),
+        # The asks the owner could see on sending: one the agent pinned while the
+        # RPC was awaited stays pinned, as it does for a requeued steer.
+        **shown_at_steer,
     }
     if user_origin:
         # A PERSON typed this into the session's own surface, same as an ordinary
@@ -1365,6 +1406,8 @@ def queue_for_next_turn(
     banner: str = "",
     queued_work: Any = None,
     knowledge: dict[str, Any] | None = None,
+    waiting_on_you: dict[str, Any] | None = None,
+    shown_at_send: dict[str, Any] | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -1487,6 +1530,19 @@ def queue_for_next_turn(
         meta[CHAT_BANNER_META_KEY] = banner
     if knowledge:
         meta.update(knowledge)
+    if waiting_on_you:
+        # A card answer's ``waitingOnYouAnswer`` claim, checked when the drain writes
+        # its row. The drain never merges such an entry, so its row answers one ask.
+        meta.update(waiting_on_you)
+    elif directive_owner_origin and shown_at_send is not None:
+        # The drain writes the row after any ask pinned meanwhile; it retires only
+        # the asks pinned when the owner sent it.
+        meta.update(shown_at_send)
+    elif directive_owner_origin:
+        from kiro_crew.dashboard.waiting_on_you_events import shown_asks_meta
+
+        # The drain writes the row after any ask pinned meanwhile; it retires only these.
+        meta.update(shown_asks_meta(state, slot.key))
     qid = slot.queue_append(
         message,
         meta=meta,
@@ -1539,6 +1595,7 @@ def queue_for_next_turn(
         push.setdefault("meta", {})[CHAT_BANNER_META_KEY] = banner
     if knowledge:
         push.setdefault("meta", {}).update(knowledge)
+    push.update(waiting_on_you_answer_view(meta))
     # Accepted, and possibly not persisted: the write ceilings refuse an entry
     # past the count cap or the byte budget and the send is still accepted, so
     # that case is logged at WARNING and drawn on the card this frame makes.
@@ -1783,8 +1840,8 @@ def attachment_meta(user_meta: dict | None) -> dict[str, list[str]]:
 
 
 def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
-    """The wire form of one queue entry: ``id``, ``content``, and ``meta``
-    holding its attachment lists when it carries any.
+    """The wire form of one queue entry: ``id``, ``content``, optional card
+    ``meta``, and a validated ``waiting_on_you_answer`` claim when present.
 
     ``content`` passes :func:`queued_text_for_display`: as typed for an entry
     the session's own human wrote (:func:`queue_entry_is_user_origin`),
@@ -1826,6 +1883,7 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
         view.setdefault("meta", {}).update(banner)
     if knowledge := knowledge_meta(item.get("meta")):
         view.setdefault("meta", {}).update(knowledge)
+    view.update(waiting_on_you_answer_view(item.get("meta")))
     # The structural kind tag rides in ``meta`` so the queue card can classify
     # a system entry (an MCP-App message, for one) without parsing its text —
     # the same enqueue-time source the server's own drain reads, and the same

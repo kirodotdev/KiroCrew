@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.deny_override import DenyOverrideOffer
     from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
     from kiro_crew.dashboard.responsive_chat import ResponsiveTurn
+    from kiro_crew.dashboard.waiting_on_you_events import WaitingShown
     from kiro_crew.execution_context import ExecutionContext
     from kiro_crew.repeat_loop import RepeatLoopTracker
     from kiro_crew.security import StreamRedactor
@@ -248,6 +249,9 @@ class _ChatTurn:
     _reply_flushed: "bool"
     _reply_mids_snapshot: "list[str] | None"
     _request_prefix_context: "str"
+    # The closed asks this turn's [WAITING ON YOU] block named, acknowledged only
+    # once the model answers this prompt (``turn_ledgers._report_consumed``).
+    _waiting_on_you_shown: "WaitingShown | None"
     _responsive_owner: "Task[Any] | None"
     _responsive_recovery: "list[dict[str, str]]"
     _responsive_turn: "ResponsiveTurn"
@@ -466,6 +470,7 @@ class _ChatTurn:
         # alternation placeholder, with each one's ``released`` flag: dropped or
         # replayed by ``stream_chunks._settle_echo_hold`` at the segment's end.
         self._echo_held = []
+        self._waiting_on_you_shown = None
 
     @property
     def assistant_text(self) -> str:

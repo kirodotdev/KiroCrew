@@ -2,7 +2,8 @@
 
 Message edits, the skill catalog, ``kiro_cli_logs``, ``set_project``,
 ``reset_conversation``, ``chat_tag``, ``chat_rename``, ``suggest_followup`` with its git branch
-grammar, ``nothing_to_do`` and the ``workflow_*`` tools.
+grammar, ``nothing_to_do``, ``waiting_on_you`` with ``waiting_on_you_clear``, and the
+``workflow_*`` tools.
 
 Callers import these names from :mod:`kiro_crew.validation`, which serves them; this
 module never imports that facade.
@@ -341,6 +342,48 @@ NOTHING_TO_DO_SCHEMA = ToolSchema(
         # it on the quiet transcript step — so a long note must not cost the
         # quiet end itself and fire the consumer's lost-marker WARNING.
         FieldSpec("note", str, max_len=MAX_SHORT_STRING, clamp_to_max=True),
+    ],
+)
+
+# --- waiting_on_you ---
+# The ask's text bounds and its tool schemas live here, on the schema registry's
+# import path, so listing kirocrew-core's tools does not load the ask contract.
+# ``kiro_crew.waiting_on_you_contract`` re-exports them for the gateway's own check.
+WAITING_ON_YOU_TITLE_MAX = 120
+WAITING_ON_YOU_DETAIL_MAX = 1000
+WAITING_ON_YOU_OPTIONS_MAX = 6
+WAITING_ON_YOU_LABEL_MAX = 200
+WAITING_ON_YOU_DESCRIPTION_MAX = 500
+
+WAITING_ON_YOU_OPTION_SCHEMA = ToolSchema(
+    tool_name="waiting_on_you.option",
+    fields=[
+        FieldSpec("label", str, required=True, max_len=WAITING_ON_YOU_LABEL_MAX),
+        FieldSpec("description", str, max_len=WAITING_ON_YOU_DESCRIPTION_MAX),
+    ],
+)
+
+WAITING_ON_YOU_SCHEMA = ToolSchema(
+    tool_name="waiting_on_you",
+    fields=[
+        FieldSpec("key", str, required=True, max_len=40),
+        FieldSpec("title", str, required=True, max_len=WAITING_ON_YOU_TITLE_MAX),
+        FieldSpec("detail", str, max_len=WAITING_ON_YOU_DETAIL_MAX),
+        FieldSpec(
+            "options",
+            list,
+            item_type=dict,
+            max_items=WAITING_ON_YOU_OPTIONS_MAX,
+            item_schema=WAITING_ON_YOU_OPTION_SCHEMA,
+        ),
+    ],
+)
+
+WAITING_ON_YOU_CLEAR_SCHEMA = ToolSchema(
+    tool_name="waiting_on_you_clear",
+    fields=[
+        FieldSpec("key", str, max_len=40),
+        FieldSpec("all", bool),
     ],
 )
 

@@ -40,6 +40,14 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "credential redactors, inside URLs too, before it is stored.",
     ),
     (
+        "Waiting-on-you asks an agent pins",
+        "dashboard/handlers/waiting_on_you.py",
+        "The title, detail and option text of each ask an agent pins above the "
+        "composer, stored in the waiting-on-you store and rendered in the browser. "
+        "The text is agent-written, so each string passes the exfiltration-URL and "
+        "credential redactors before it is stored.",
+    ),
+    (
         "A return-triggered warm task brief",
         "dashboard/warm_task_brief.py",
         "The original request and model-generated task facts written into a chat "

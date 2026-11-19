@@ -1562,6 +1562,21 @@
     "pages.membersPage.copy_failed": "Generic error when the copy's import card could not be raised.",
     "components.changeCards.import_name_empty": "Hint under the name field of a bot import card when the field is empty.",
     "components.changeCards.import_name_taken": "Error under the name field of a bot import card: another bot has this name, or was first created with it (a rename keeps the original name reserved).",
-    "components.changeCards.import_name_invalid": "Error under the name field of a bot import card when the server refuses the typed name."
+    "components.changeCards.import_name_invalid": "Error under the name field of a bot import card when the server refuses the typed name.",
+    "components.waitingOnYou.header": "Label of a card above the chat composer, and of the session status, for something the agent asked the person to do or decide and pinned until it is answered. Must read differently from \"Waiting on you\", which means a live question or approval.",
+    "components.waitingOnYou.done": "The chat message an action card sends when the person answers it with no note: it tells the agent the person did the requested action. \"I have done it\", not \"finished\" as a state.",
+    "components.waitingOnYou.mark_done": "Button on a pinned action card that the person presses to report that they did the requested action themselves. It does not do the action. First person: \"I have done it\".",
+    "components.waitingOnYou.pinned_ago": "Age line on a pinned ask card. {{time}} is a relative time such as \"3 hr. ago\", so the whole reads \"Pinned 3 hr. ago\".",
+    "components.waitingOnYou.discard": "Button that throws away a note the person had typed into an ask card that has since closed. A verb.",
+    "components.waitingOnYou.owner_check_failed": "Error under a pinned ask card when the dashboard could not check whether the viewer is the session owner, the only person who may answer it. Says the answer and dismiss controls are hidden until the check works.",
+    "components.waitingOnYou.owner_check_retry": "Button in that error that runs the owner check again. A verb.",
+    "components.waitingOnYou.answer_queued": "Status below a pinned ask after its answer joined the session queue. It explains that the answer will be sent after the agent finishes the current turn.",
+    "components.waitingOnYou.history_pinned": "One quiet line in the chat history, where the agent pinned an ask for the person; {{title}} is the ask in the agent's words. Past participle: the ask was pinned.",
+    "components.waitingOnYou.history_answered": "One quiet line in the chat history, where the person answered a pinned ask; {{title}} is the ask. Past participle: the ask was answered.",
+    "components.waitingOnYou.history_dismissed": "One quiet line in the chat history, where the person dismissed a pinned ask without answering; {{title}} is the ask. Past participle.",
+    "components.waitingOnYou.history_withdrawn": "One quiet line in the chat history, where the agent took back an ask it had pinned; {{title}} is the ask. Past participle: the agent withdrew it.",
+    "components.waitingOnYou.history_expired": "One quiet line in the chat history, where a pinned ask went unanswered for seven days and was removed; {{title}} is the ask. Past participle.",
+    "components.waitingOnYou.history_closed": "One quiet line in the chat history, where a pinned ask closed because the person wrote to the agent instead; {{title}} is the ask. Past participle.",
+    "components.sessionTabStrip.status_action": "Status word added to a session tab name and tooltip while the agent has an ask pinned; {{title}} is the ask in the agent's words. Lower case like the other tab statuses."
   }
 }

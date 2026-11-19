@@ -35,6 +35,10 @@ export function decideApprovalPath(target: ApprovalTarget, action: 'approve' | '
     : '/api/chat/slots/' + encodeURIComponent(target.slot) + '/approve'
 }
 
+function waitingOnYouDismissPath(slot: string, key: string): string {
+  return '/api/chat/slots/' + encodeURIComponent(slot) + '/waiting-on-you/' + encodeURIComponent(key) + '/dismiss'
+}
+
 export function createApprovalsEndpoints({ post, j, jfetch: fetch }: ClientTransport) {
   const requests = {
     approvals: (): Promise<{ id: string; instance?: string; source?: string; tool?: string; tool_input?: string; tool_purpose?: string; tool_call_id?: string; slot?: string; ts?: number; run_task_id?: string; task_index?: number }[]> => fetch('/api/approvals').then(j),
@@ -87,6 +91,10 @@ export function createApprovalsEndpoints({ post, j, jfetch: fetch }: ClientTrans
      *  it lands, and the server refuses rather than retiring the wrong ask. */
     dismissQuestionCard: (slot: string, cardId: string) =>
       post('/api/ask-question/dismiss', { slot, card_id: cardId }).then(j),
+    /** The owner's ✕ on a pinned waiting-on-you ask. An answer has no route of its
+     *  own: it is an ordinary `sendChat` naming its ask (`useWaitingOnYouActions`). */
+    dismissWaitingOnYou: (slot: string, key: string, askId: string) =>
+      post(waitingOnYouDismissPath(slot, key), { ask_id: askId }).then(j) as Promise<{ ok: true }>,
   }
 
   return { requests }

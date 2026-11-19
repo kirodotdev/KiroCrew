@@ -56,6 +56,9 @@ class RouteAccess:
 # Who may call a route is decided by its handler; the comment beside an entry only
 # records it.
 ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
+    # Attested dashboard session only, on its own slot (handlers/waiting_on_you.py).
+    ("POST", "/api/agent-waiting/set"): RouteAccess("waiting_on_you.set", UNSTABLE),
+    ("POST", "/api/agent-waiting/clear"): RouteAccess("waiting_on_you.clear", UNSTABLE),
     # App token, owner dashboard or internal caller may read (apps/browser_sites_routes.py).
     ("GET", "/api/apps/{name}/browser-sites"): RouteAccess("apps.browser_sites.read", UNSTABLE),
     # Owner dashboard only: 403 for an app token and an internal caller.
@@ -67,6 +70,10 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # Owner dashboard only (chat_api/slot_effort.py); restarts the slot's idle session.
     ("POST", "/api/chat/slots/{slot}/approve-for-me"): RouteAccess(
         "chat.approve_for_me.change", UNSTABLE
+    ),
+    # Owner dashboard only: 403 for an app token and a Shared Crew teammate.
+    ("POST", "/api/chat/slots/{slot}/waiting-on-you/{key}/dismiss"): RouteAccess(
+        "waiting_on_you.dismiss", UNSTABLE
     ),
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.

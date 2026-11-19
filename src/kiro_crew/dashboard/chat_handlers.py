@@ -93,6 +93,7 @@ from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_close
 from kiro_crew.dashboard.chat_api import agent_switch as _owner_agent_switch
 from kiro_crew.dashboard.chat_api import app_admission as _owner_app_admission
 from kiro_crew.dashboard.chat_api import chat_send as _owner_chat_send
+from kiro_crew.dashboard.chat_api import chat_send_steer as _owner_chat_send_steer
 from kiro_crew.dashboard.chat_api import conductor_close as _owner_conductor_close
 from kiro_crew.dashboard.chat_api import continue_turn as _owner_continue_turn
 from kiro_crew.dashboard.chat_api import crew_steer as _owner_crew_steer
@@ -160,6 +161,8 @@ from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
     _settle_send_race,
     _sweep_stale_permissions,
     api_chat,
+)
+from kiro_crew.dashboard.chat_api.chat_send_steer import (  # noqa: F401
     decided_message_handling,
     steer_is_auto,
 )
@@ -870,6 +873,12 @@ RESERVED_ROW_META_KEYS = frozenset(
         # Redirects a pin or link on a superseded row (`_retire_superseded_steer_row`).
         "supersededBy",
         REQUEUED_STEER_ROW_MID_META,
+        # Names the waiting-on-you ask a row answers; only the row's append stamps it.
+        "waitingOnYou",
+        # The asks pinned when a queued message was sent; only the queue stamps it.
+        "waitingOnYouShown",
+        # The owner replaced a queued message's words; only the queue edit stamps it.
+        "waitingOnYouOwnerEdit",
     }
 )
 
@@ -1506,6 +1515,7 @@ _facade_compose(
         _owner_agent_switch,
         _owner_app_admission,
         _owner_chat_send,
+        _owner_chat_send_steer,
         _owner_conductor_close,
         _owner_continue_turn,
         _owner_crew_steer,

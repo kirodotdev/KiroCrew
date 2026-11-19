@@ -1,9 +1,10 @@
 """The slot list's ``needs_full_chat``: a session waits on something ChatEmbed cannot draw.
 
-That is a change card the person can still act on, a live guide offer, or a browser
-``ask`` parked on the live card. Each is read from the store that owns it, never from
-transcript rows, which are agent-writable. The read runs on every slots frame, so it
-does no disk work: the change-card store is loaded at gateway start.
+That is a change card the person can still act on, a live guide offer, a browser
+``ask`` parked on the live card, or a waiting-on-you ask the agent pinned. Each is read
+from the store that owns it, never from transcript rows, which are agent-writable. The
+read runs on every slots frame, so it does no disk work: the change-card and
+waiting-on-you stores are loaded at gateway start.
 
 The dashboard state imports this module at boot, so every import of a store module
 below is deferred to first use (``no-new-work-on-gateway-boot-path``).
@@ -80,14 +81,24 @@ def push_slot_list(state: Any) -> None:
         logger.debug("full-chat flag: slots push failed", exc_info=True)
 
 
+def _pinned_waiting_ask(slot_key: str) -> bool:
+    """An ask the agent pinned on *slot_key* that is still live. No I/O."""
+    # Deferred: boot path (module docstring).
+    from kiro_crew.dashboard.waiting_on_you import slot_payload
+
+    return bool(slot_payload(slot_key))
+
+
 def needs_full_chat(state: Any, slot_key: str) -> bool:
-    """Whether *slot_key* waits on a change card, a guide offer or a browser ask."""
+    """Whether *slot_key* waits on a change card, a guide offer, a browser ask or a
+    pinned waiting-on-you ask."""
     try:
         card_store_for, guide_store_for, _ = _readers()
         return (
             card_store_for(state).holds_open_card(slot_key)
             or guide_store_for(state).holds_live_guide(slot_key)
             or _parked_browser_ask(slot_key)
+            or _pinned_waiting_ask(slot_key)
         )
     except Exception:
         logger.debug("full-chat flag unreadable for %s", slot_key, exc_info=True)

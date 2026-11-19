@@ -1,7 +1,8 @@
 """The slot list's ``needs_full_chat``: what only the full chat can show waits on the person.
 
 Each source is read from the store that owns it, without changing it: a change card the
-person can still act on, a live guide offer, and a browser ``ask`` parked on the live card.
+person can still act on, a live guide offer, a browser ``ask`` parked on the live card, and
+a waiting-on-you ask the agent pinned.
 """
 
 from __future__ import annotations
@@ -14,10 +15,15 @@ from unittest.mock import MagicMock
 
 import pytest
 from change_cards_helpers import SLOT, Clock, _propose
+from waiting_on_you_helpers import ask as waiting_ask
+from waiting_on_you_helpers import new_store as new_waiting_store
+from waiting_on_you_helpers import pin
+from waiting_on_you_helpers import store_path as waiting_store_path
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew.browser_harness import live_hub as lh
 from kiro_crew.dashboard import full_chat_waits
+from kiro_crew.dashboard import waiting_on_you as waiting_store_mod
 from kiro_crew.dashboard.change_cards import (
     INFLIGHT_STALE_SECONDS,
     STATUS_APPLIED,
@@ -291,6 +297,20 @@ def test_each_source_alone_sets_the_flag(hub: lh.LiveHub) -> None:
     state = _state()
     _guide(state._guide_store)
     assert full_chat_waits.needs_full_chat(state, SLOT) is True
+
+
+def test_a_pinned_waiting_on_you_ask_sets_the_flag_until_it_is_cleared(monkeypatch) -> None:
+    waiting = new_waiting_store()
+    monkeypatch.setattr(waiting_store_mod, "_STORES", {waiting_store_path(): waiting})
+    state = _state()
+    assert full_chat_waits.needs_full_chat(state, SLOT) is False
+
+    asyncio.run(pin(waiting, waiting_ask(), slot=SLOT))
+    assert full_chat_waits.needs_full_chat(state, SLOT) is True
+    assert full_chat_waits.needs_full_chat(state, "chat-other") is False
+
+    asyncio.run(waiting.clear(SLOT, None))
+    assert full_chat_waits.needs_full_chat(state, SLOT) is False
 
 
 def test_the_projection_carries_the_slot_reader_answer() -> None:

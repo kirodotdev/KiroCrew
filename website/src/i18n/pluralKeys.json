@@ -596,5 +596,6 @@
   "pages.mcpManagement.share_diagram_copies",
   "pages.chat.errorCard.repeated_in_a_row",
   "pages.chatSidebar.show_linked_items",
-  "pages.chatSidebar.show_linked_items_failed"
+  "pages.chatSidebar.show_linked_items_failed",
+  "components.waitingOnYou.more_count"
 ]

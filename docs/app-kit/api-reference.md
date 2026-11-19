@@ -1097,8 +1097,8 @@ list holds them, live, and the acts a person takes on one from there: reply or s
 approve or reject the tool it waits on, and start a new session without leaving your page.
 Each session reads as its sidebar row does (title, agent, running, message count, newest
 message, a pending approval). `needsFullChat` is true while the session waits on something
-`ChatEmbed` cannot show or answer: a change card, a guide offer, or a browser sign-in or
-other `ask`. Send the person to the session for those, with
+`ChatEmbed` cannot show or answer: a change card, a guide offer, a browser sign-in or
+other `ask`, or an ask the agent pinned with `waiting_on_you`. Send the person to the session for those, with
 `useChatLauncher().openChat({ slotKey })`. A page reading `/api/chat/slots` itself finds the
 same answer in each slot's `needs_full_chat`. It needs `APP_SDK_LEVEL >= 8`, and since a host can report 8
 before it has this hook, read it off a namespace import:

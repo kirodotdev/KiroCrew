@@ -27,6 +27,8 @@
     "register_hook": "Register webhook",
     "autonudge_stop": "Stop nudge loop",
     "ask_question": "Ask question",
+    "waiting_on_you": "Pin an ask for you",
+    "waiting_on_you_clear": "Clear a pinned ask",
     "nothing_to_do": "Nothing to report",
     "monitor_watch": "Watch pull request",
     "monitor_inspect": "Inspect monitor",
