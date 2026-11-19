@@ -66,6 +66,9 @@ done
 KIROCREW_APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Data home: honor KIROCREW_HOME, else the current default ~/.kiro/crew (NOT the
 # pre-move ~/.kirocrew, which is not the data home).
+# The app expands a leading ~ in KIROCREW_HOME, and a quoted value reaches this
+# script unexpanded, so expand it once here for every read and child below.
+case "${KIROCREW_HOME:-}" in "~" | "~/"*) KIROCREW_HOME="$HOME${KIROCREW_HOME#?}" ;; esac
 KIROCREW_DATA_DIR="${KIROCREW_HOME:-$HOME/.kiro/crew}"
 NODE_VERSION="24"
 # Minimum Node version (major.minor.patch) Kiro Crew supports -- the same
@@ -914,6 +917,14 @@ echo ""
 echo "  ${BOLD}Next steps:${RESET}"
 echo ""
 echo "    ${CYAN}1.${RESET} Reload your shell:"
+if [ -n "${KIROCREW_HOME:-}" ]; then
+# Absolute: a relative value would resolve against whatever directory a later command runs from.
+# CDPATH is cleared because a hit through it makes `cd` echo the directory too.
+KIROCREW_DATA_ABS="$(CDPATH=''; cd "$KIROCREW_DATA_DIR" && pwd -P)"
+echo "       This install used the data home ${CYAN}${KIROCREW_DATA_ABS}${RESET} (from KIROCREW_HOME)."
+echo "       Every kirocrew command needs it set too, or it uses ~/.kiro/crew; add this to your shell profile:"
+echo "       ${GREEN}export KIROCREW_HOME=\"${KIROCREW_DATA_ABS}\"${RESET}"
+fi
 case "$(basename "${SHELL:-}")" in
     fish) echo "       ${GREEN}source ~/.config/fish/config.fish${RESET}" ;;
     bash|zsh) echo "       ${GREEN}source ~/.$(basename "${SHELL}")rc${RESET}" ;;
