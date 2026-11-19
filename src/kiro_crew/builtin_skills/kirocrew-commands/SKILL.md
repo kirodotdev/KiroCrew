@@ -425,6 +425,7 @@ or write them).
 | `kirocrew policy show` | Show the effective enterprise security policy |
 | `kirocrew policy show --ids` | List each denied-command category's rule ids (default: counts only) |
 | `kirocrew policy validate` | Load-check the policy + all profiles |
+| `kirocrew compliance report --out FILE` | Write one owner-only evidence file of the security facts (read-only) |
 | `kirocrew policy explain SCOPE ITEM` | Explain one tool/scope decision for a surface |
 | `kirocrew policy explain SCOPE ITEM --session-key K --agent A --app APP` | Scope the explanation to a surface |
 | `kirocrew policy explain SCOPE ITEM --json` | Print the explanation as one JSON object |
