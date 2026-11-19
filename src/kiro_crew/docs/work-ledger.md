@@ -319,7 +319,8 @@ unfinished work — a stub written before the real content, a pull request green
 before the last commit.
 
 A conductor stops patrolling only when every item is terminal (accepted,
-rejected or abandoned), or when the user says stop, in words or through a round
+rejected or abandoned) and nothing is queued (a queued item has no ledger row
+yet), or when the user says stop, in words or through a round
 or time budget they set. An item that fails acceptance three times is closed
 `rejected` and the rest keep going. A decision that needs a person parks only
 that item: the conductor asks about it and keeps patrolling the others. The
