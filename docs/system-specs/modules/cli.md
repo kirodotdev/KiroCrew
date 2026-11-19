@@ -3390,13 +3390,16 @@ shape and policy alone, before any check runs: a policy provider owns the update
 and installs only with an `apply_command` it can run; a git checkout installs only
 past the unattended git apply's static gates (a trusted `git`, a primary branch,
 no repository-named exec driver, tracking `origin/<branch>`, the pinned source);
-a managed venv only past the shadow apply's (POSIX, a trusted `openssl`, the
-managed venv itself, a safe HTTPS CDN, the pinned source); anything else is updated by its own updater. The
+a managed venv only past the shadow apply's (the pinned source first, as its
+preflight reads it, then POSIX, a trusted `openssl`, the managed venv itself, a
+safe HTTPS CDN); anything else is updated by its own updater. The
 gateway's update loop branches on that answer, and `notify` never pauses
 admission, so it is not paused for an update the install will not apply (a
 provider with no `apply_command`, a feature-branch checkout).
 `notify` is also what a source pin produces, and no badge then points at a
-`kirocrew update` the same pin refuses. A policy with
+`kirocrew update` the same pin refuses. Any other wheel install the loop only
+notifies for (a pip or pipx environment, Windows) gets a log line that ends by
+naming `kirocrew update`, which prints the step for that shape. A policy with
 `updates.unattended_apply: false` turns every remaining `install` into `notify`
 but keeps the route, the path a person's Update takes: the provider path reads
 `can_apply` (the Update button) off it, and the status frame's

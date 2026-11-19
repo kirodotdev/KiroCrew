@@ -403,6 +403,7 @@ from kiro_crew.platform.update_capability import (
     CHECK_UNCHECKED,
     EXTERNALLY_MANAGED_STAMPS,
     MANAGED_BY_COMMAND,
+    MANAGED_BY_KIROCREW,
     AutoUpdateEffect,
     auto_update_effect,
 )
