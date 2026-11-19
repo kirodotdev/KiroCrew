@@ -45,6 +45,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import PasteHoverLayer from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
+import { useSuggestedGoal } from './chat-input/suggestedGoal'
 import { platformShortcut } from '../utils/platform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { useComposerDraftText, useComposerMentionSlice, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
@@ -87,7 +88,7 @@ import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useComposerFocus, useComposerKeyDown, useEditorInput } from './chat-input/keyboard'
 import { useComposerStopKey } from './chat-input/stopKey'
 import { ESCAPE_PRIORITY, useEscapeLayer } from '../hooks/useEscapeLayer'
-import { INPUT_DEFAULT_MAX_H, INPUT_DRAG_MIN_H, INPUT_PREFILL_MAX_H, useInputAreaKeyboardLift, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
+import { COMPOSER_ONE_ROW_RADIUS, COMPOSER_RIM_FROM_PX, INPUT_DEFAULT_MAX_H, INPUT_DRAG_MIN_H, INPUT_PREFILL_MAX_H, ONE_ROW_CLUSTER_PAD_PX, ONE_ROW_TEXT_PAD, useInputAreaKeyboardLift, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
 import { usePromptHistory } from './chat-input/draftHistory'
 import { useUndoHistory } from '../chat-core/composer/undoHistory'
 import { useOptimizeBeforeSend, usePromptOptimizer, usePromptOptimizerEnabled } from './chat-input/optimizer'
@@ -125,23 +126,6 @@ const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
 // gate. Extensions align the picker exactly with the verified server allowlist
 // instead of broadening the dialog to neighboring unsupported formats.
 const AUDIO_ACCEPT = '.mp3,.m4a,.wav,.ogg,.oga,.opus,.flac'
-// Half the one-row box: the 44px text line plus its 1px border each side.
-const COMPOSER_ONE_ROW_RADIUS = 23
-// The one-row text line's padding, equal above and below so the line sits on
-// the buttons' centre whatever its height. INPUT_TYPO's 12px over 4px puts it
-// lower by half of (line height - 20px): 2px at the 16px touch floor. Set on
-// the text column, so the textarea, its paste mirror and the Lexical editor
-// all take it; `1.5em` is INPUT_TYPO's `leading-normal` line, and resolves on
-// each of them at its own font size. Not `1lh`: Safari before 16.4 has no
-// such unit, and an invalid value would drop the padding to 0.
-const ONE_ROW_TEXT_PAD = '[--composer-pt:max(0px,calc((44px_-_1.5em)_/_2))] [--composer-pb:max(0px,calc((44px_-_1.5em)_/_2))]'
-// The one-row clusters' edge padding (pl-1.5 + pr-1.5), which the text column
-// gives up besides the clusters themselves.
-const ONE_ROW_CLUSTER_PAD_PX = 12
-// The glass rim is a slice of the pane's smaller side. A one-row composer
-// would get half the rim of a two-row one, so the rim is sized from the
-// two-row height (one wrapped line of text plus the toolbar) in both shapes.
-const COMPOSER_RIM_FROM_PX = 102
 const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.eml,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.php,.sql,.kt,.swift,.cs,.vue,.toml,.pdf,.doc,.docx,.dotx,.xls,.xlsx,.xltx,.ppt,.pptx,.potx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
 import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
@@ -268,6 +252,7 @@ function ChatInput({
   automationSnapshotFailed,
   sessionMode,
   sendOnEnter: sendOnEnterProp,
+  followUpGoal,
   followUpOptions,
   followUpPicked,
   onFollowUpSelect,
@@ -362,6 +347,9 @@ function ChatInput({
   const project = sessionOnPeer ? undefined : projectProp
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
+  const {
+    canReviewSuggestedGoal, displayedFollowUpGoal, displayedFollowUpOptions, goalBarProps,
+  } = useSuggestedGoal({ followUpGoal, followUpOptions, automation, isRunning, sessionMode, onAutomationClick, slotId })
   // The store handle, read at click time (not subscribed) so "Optimize prompt"
   // can pull THIS pane's slot messages without re-rendering every composer on
   // each streamed frame. useAppStore returns the Provider-injected store, the
@@ -1047,9 +1035,9 @@ function ChatInput({
         </div>
       )}
 
-      {/* Ghost follow-up bubbles floating above input */}
-      {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={selectFollowUp} onSend={fireFollowUp} quickSend={quickSend} multi={followUpMulti} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError} />
+      {/* Autonomous goal card plus ordinary follow-up replies. */}
+      {!showGhost && ((displayedFollowUpOptions.length > 0 && onFollowUpSelect) || (displayedFollowUpGoal && canReviewSuggestedGoal)) && (
+          <FollowUpBar options={displayedFollowUpOptions} {...goalBarProps} picked={followUpPicked ?? new Set()} onSelect={selectFollowUp} onSend={fireFollowUp} quickSend={quickSend} multi={followUpMulti} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError} />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always

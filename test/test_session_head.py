@@ -19,6 +19,7 @@ from kiro_crew.agent_parts.spec_build import _NATIVE_PROMPT_STUB
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_assembly import agent_spec
 from kiro_crew.essential_delivery import EssentialDelivery
+from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
 
@@ -63,7 +64,14 @@ def _recorded(blocks) -> dict[str, str]:
     return held
 
 
-def _turn(tmp_path, provider, *, resumed: bool = False, agent: str | None = None) -> str:
+def _turn(
+    tmp_path,
+    provider,
+    *,
+    resumed: bool = False,
+    agent: str | None = None,
+    execution_context=None,
+) -> str:
     builder = ContextBuilder(
         memory=MemoryStore(workspace=tmp_path / "ws"),
         skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
@@ -77,6 +85,7 @@ def _turn(tmp_path, provider, *, resumed: bool = False, agent: str | None = None
         provider_type=PROVIDER_LABEL_KAS,
         runtime_source="dashboard",
         context_provider=provider,
+        execution_context=execution_context,
     )
     return msg
 
@@ -184,6 +193,59 @@ def test_a_block_whose_record_differs_is_sent_as_before(tmp_path, fixed_readings
     msg = _turn(tmp_path, _kas_provider(recorded))
     assert msg.count(RULES_BLOCK) == 1
     assert AGENT_BLOCK not in msg and TOOLS_BLOCK not in msg
+
+
+def _record_state(execution, *, mode="persistent"):
+    """A durable session-metadata record carrying *execution*, as the store writes it."""
+    from kiro_crew.execution_context import EXECUTION_CONTEXT_KEY, METADATA_LINE_READABLE
+
+    record = {
+        EXECUTION_CONTEXT_KEY: execution.to_record(),
+        "memory_store": execution.store.legacy_name,
+        "memory_mode": mode,
+    }
+    return record, METADATA_LINE_READABLE
+
+
+@pytest.mark.parametrize(
+    ("app", "has_marker"),
+    [("notes", False), ("", True)],
+    ids=["app-kit-slot", "ordinary-full-chat"],
+)
+def test_the_head_reads_the_rules_from_the_durable_record(
+    tmp_path, fixed_readings, monkeypatch, app, has_marker
+):
+    # An App Kit slot's execution is persisted to the session's durable record, and
+    # the turn binds it before the session (and so the head) is created, where the
+    # in-memory map is still empty. The head must read the same durable carrier
+    # session start reads, or an App Kit agent's prompt is cached teaching the goal
+    # marker and the first message carries a second, different rules block.
+    from kiro_crew import execution_context
+
+    execution = ExecutionContext(None, MemoryStoreRef("default"), "template", "kirocrew", app=app)
+    # The live map is empty at create time (conftest resets it); the record is on "disk".
+    monkeypatch.setattr(
+        execution_context,
+        "_session_record_state",
+        lambda key: _record_state(execution) if key == KEY else ({}, ""),
+    )
+    blocks = session_head.head_blocks("kirocrew", STUB_SPEC, KEY, PROVIDER_LABEL_KAS)
+    assert ("[GOAL: objective]" in dict(blocks)[session_head.RULES_KEY]) is has_marker
+    msg = _turn(tmp_path, _kas_provider(_recorded(blocks)), execution_context=execution)
+    assert RULES_BLOCK not in msg and AGENT_BLOCK not in msg and TOOLS_BLOCK not in msg
+
+
+def test_an_unreadable_record_yields_no_head(fixed_readings, monkeypatch):
+    # An unreadable or refused record raises; the head falls back to none, so every
+    # block rides in the first message as session start builds it.
+    from kiro_crew import execution_context
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    def _raise(key):
+        raise UnknownMemoryStore("Execution memory is unavailable: test; Global was not used")
+
+    monkeypatch.setattr(execution_context, "read_session_execution", _raise)
+    assert session_head.head_blocks("kirocrew", STUB_SPEC, KEY, PROVIDER_LABEL_KAS) == ()
 
 
 def test_a_resume_that_lost_the_head_gets_the_agent_prompt_back(tmp_path, fixed_readings):

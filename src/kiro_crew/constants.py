@@ -9,6 +9,10 @@ import re
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, TypeAlias
 
+# The goal-line protocol's own module; kiro_crew.constants is the import path of both.
+from kiro_crew import goal_marker as _goal_marker
+from kiro_crew.goal_marker import strip_goal_marker_lines  # noqa: F401
+
 if TYPE_CHECKING:
     from kiro_crew.option_marker_scan import MarkerRun
 
@@ -1327,7 +1331,7 @@ def is_control_tag_tail(text: str) -> bool:
 
     For an append-only streaming sink (Slack) that holds a candidate span
     byte by byte and must decide per byte whether to keep holding. Same
-    answer as ``strip_control_comments(text, hide_partial=True) == ""``, but
+    answer as ``strip_trailing_control_tags(text, hide_partial=True) == ""``, but
     ANCHORED: the two grammars are applied with ``fullmatch`` at the span's
     own start and at its last line break, so a call costs one linear pass
     over the span rather than a search from every position -- a hold is
@@ -1350,8 +1354,12 @@ def is_control_tag_tail(text: str) -> bool:
 
 
 def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
-    """Remove trailing control-tag lines from *text* for a plain-text
-    projection (preview, TTS, channel delivery).
+    """:func:`kiro_crew.goal_marker.strip_control_comments`, at the import path its readers use."""
+    return _goal_marker.strip_control_comments(text, hide_partial=hide_partial)
+
+
+def strip_trailing_control_tags(text: str, *, hide_partial: bool = False) -> str:
+    """Remove trailing control-tag lines from *text*; always a prefix of it.
 
     TAIL-ANCHORED with a FENCE-PARITY guard — the same grammar as the
     frontend recognizer (``keepVisibleMarker.ts``), case-insensitive on
@@ -1363,7 +1371,7 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
     missed, and a tag quoted anywhere in the body (prose, inline code, any
     fence dialect) is structurally untouchable rather than guarded by a
     code-span grammar. Stacked trailing tags are all removed. This is the ONE
-    backend strip implementation.
+    backend control-tag grammar.
 
     *hide_partial* is the STREAMING question, and it is a parameter for the
     same reason ``split_options_trailer`` makes it one: a tail that is a
@@ -1514,7 +1522,7 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     whose tail cannot extend into a complete marker stays visible, instead of
     being detached and silently dropped from the rendered cut.
     """
-    suffix_start = len(strip_control_comments(text))
+    suffix_start = len(strip_trailing_control_tags(text))
     idx = _rightmost_unfinished_marker(text[:suffix_start])
     # DELIBERATELY ASCII-ONLY -- do not widen the helper's gate to
     # ``MARKER_CLOSERS``. It asks "is the tail an UNFINISHED marker?", and
@@ -1544,7 +1552,7 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     # does not reach a tag prefix: the splitter cuts at line boundaries first,
     # and a tag line is far shorter than any transport's message cap, so it
     # is never cut through unless it alone exceeds the cap.
-    suffix_start = len(strip_control_comments(text[:suffix_start]))
+    suffix_start = len(strip_trailing_control_tags(text[:suffix_start]))
 
     if suffix_start == len(text):
         return text, ""

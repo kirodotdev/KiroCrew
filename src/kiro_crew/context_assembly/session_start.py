@@ -273,7 +273,12 @@ def build_session_context(
     # RENDER for any agent that emits them; the opt-out only stops MANDATING them.
     held = native_documents or {}
     if ctx._agent_includes_crew_context(agent):
-        rules = ctx._critical_rules_for(session_key, runtime_source)
+        rules = ctx._critical_rules_for(
+            session_key,
+            runtime_source,
+            mode=mode,
+            execution_context=execution_context,
+        )
         if _session_head.holds(held, _session_head.RULES_KEY, rules):
             blocks.charge_held(rules)
         else:

@@ -83,6 +83,7 @@ from kiro_crew.constants import (  # noqa: F401 - read by the owners
     is_control_tag_tail,
     relocate_glued_tail_marker,
     strip_control_comments,
+    strip_trailing_control_tags,
 )
 from kiro_crew.context import (
     ContextBuilder,

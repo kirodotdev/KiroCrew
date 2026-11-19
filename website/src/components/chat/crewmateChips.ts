@@ -49,6 +49,7 @@ export function asksForCard(label: string): boolean {
 
 const NONE: FollowUpDerivation = Object.freeze({
   followUpOptions: Object.freeze([]) as readonly string[],
+  followUpGoal: null,
   followUpSourceKey: null,
   followUpMulti: true,
 })
@@ -56,11 +57,12 @@ const NONE: FollowUpDerivation = Object.freeze({
 /**
  * The derivation a crewmate chat offers: *d* without its card-asking chips.
  * Returns *d* itself when nothing is dropped, so a memoized consumer keeps its
- * identity, and the shared empty offer when every chip is dropped.
+ * identity, and the shared empty offer when every chip is dropped. A
+ * suggested goal is not a chip, so it stays on offer on its own.
  */
 export function crewmateFollowUps(d: FollowUpDerivation): FollowUpDerivation {
   const kept = d.followUpOptions.filter(label => !asksForCard(label))
   if (kept.length === d.followUpOptions.length) return d
-  if (!kept.length) return NONE
+  if (!kept.length) return d.followUpGoal ? { ...d, followUpOptions: NONE.followUpOptions, followUpMulti: true } : NONE
   return { ...d, followUpOptions: kept }
 }

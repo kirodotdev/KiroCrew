@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../types'
-import { stripMarkersForDisplay } from '../app-sdk/protocol/optionMarker'
+import { parseOptions } from '../app-sdk/protocol/options'
 import { stripKeepVisibleMarker } from '../app-sdk/protocol/keepVisibleMarker'
 import { extractInlineThinking } from '../app-sdk/protocol/inlineThinking'
 import { warmBriefOf, warmBriefVisibleText } from '../components/chat/WarmBriefCard'
@@ -22,10 +22,11 @@ const MCWIDGET_RE = /<mcwidget\b[^>]*>[\s\S]*?<\/mcwidget>/gi
  * "phantom" matches (inside OPTIONS buttons or widget iframes) the user can
  * never see highlighted.
  *
- * It is the DISPLAY helper rather than `stripOptionMarkers` so this index cannot drift
- * from what the transcript shows: a marker the transcript keeps (one that offers no
- * choice) is kept here too. Markers go FIRST, because the transcript passes the WHOLE
- * message, widget included, to `parseOptions`.
+ * It reads the transcript's own parse (`parseOptions`, which strips with the DISPLAY
+ * helper rather than `stripOptionMarkers`) so this index cannot drift from what the
+ * transcript shows: a marker the transcript keeps (one that offers no choice) is kept
+ * here too. Markers go FIRST, because the transcript passes the WHOLE message, widget
+ * included, to `parseOptions`.
  */
 export function searchableText(m: ChatMessage): string {
   // A structured warm brief draws a card, not its plain-text `content` (whose
@@ -33,13 +34,15 @@ export function searchableText(m: ChatMessage): string {
   const brief = warmBriefOf(m)
   if (brief) return warmBriefVisibleText(brief)
   if (m.role === 'assistant' || m.role === 'streaming') {
-    // stripKeepVisibleMarker: the marker is an HTML comment the renderer never
-    // shows (#7948), so a search hit inside it would be a phantom match.
+    // parseOptions is the parser AssistantMessage renders through: it drops the
+    // accepted [OPTIONS:] markers and the [GOAL:] line full chat draws as a card,
+    // so a hit inside either would be a phantom match. stripKeepVisibleMarker:
+    // the marker is an HTML comment the renderer never shows (#7948).
     // An inline `<thinking>` block leaves the bubble for a reasoning row whose
     // body mounts only when opened, so it is split off here exactly as the
     // bubble splits it; a hit inside it would be a phantom match.
     const shown = extractInlineThinking(m.content, { hidePartial: m.role === 'streaming' }).cleaned
-    return stripKeepVisibleMarker(stripMarkersForDisplay(shown).replace(MCWIDGET_RE, '')).trimEnd()
+    return stripKeepVisibleMarker(parseOptions(shown).text.replace(MCWIDGET_RE, '')).trimEnd()
   }
   return m.content
 }
