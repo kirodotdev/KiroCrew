@@ -435,10 +435,11 @@ async def flush_for_exit() -> None:
 
 def reset_for_testing() -> None:
     """Shut down and forget the tracer, so a test starts from the switch."""
-    global _conductor_mode_shape, _accept_traceparent
+    global _conductor_mode_shape, _accept_traceparent, _off_epoch
     shutdown()
     _conductor_mode_shape = CONDUCTOR_MODE_RUN
     _accept_traceparent = False
+    _off_epoch = 0
     with _counts_lock:
         _span_counts.clear()
 

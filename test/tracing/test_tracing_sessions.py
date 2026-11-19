@@ -531,7 +531,8 @@ def test_a_reset_switch_uses_the_key_the_registry_folds_onto(spans, monkeypatch)
             get_provider=lambda key: None, _fold_key=lambda k: folded.get(k, k)
         )
     )
-    slot = SimpleNamespace(key="chat-1")
+    # Linked by the bare timestamp, so the key the handler passes is that alias.
+    slot = SimpleNamespace(key="chat-1", linked_session_key="1700000000.000100")
     assert asyncio.run(
         ch._reset_slot_session_or_warn(state, slot, "1700000000.000100", switch_kind="model")
     )
@@ -582,7 +583,8 @@ def test_a_generation_kept_from_before_tracing_went_off_is_not_reused(spans):
     (fresh,) = [
         s
         for s in _lifecycle(spans)
-        if s.name == "kirocrew.session.open" and s.attributes["kirocrew.acp_session_id"] == "acp-new"
+        if s.name == "kirocrew.session.open"
+        and s.attributes["kirocrew.acp_session_id"] == "acp-new"
     ]
     assert "kirocrew.session.relation" not in fresh.attributes
 
@@ -593,7 +595,9 @@ def test_a_fork_of_an_alias_keyed_tab_names_the_registered_parent(spans):
     parent = "slack:1700000000.000100"
     sessions.opened(parent, _Source("acp-p"), T0)
     state = SimpleNamespace(
-        sessions=SimpleNamespace(_fold_key=lambda k: "slack:" + k if "." in k and ":" not in k else k),
+        sessions=SimpleNamespace(
+            _fold_key=lambda k: "slack:" + k if "." in k and ":" not in k else k
+        ),
         get_slot=lambda key: None,
     )
     slot = SimpleNamespace(key="chat-1", forked_from="1700000000.000100")
@@ -605,5 +609,128 @@ def test_a_fork_of_an_alias_keyed_tab_names_the_registered_parent(spans):
         if s.name == "kirocrew.session.open" and s.attributes["kirocrew.acp_session_id"] == "acp-c"
     ]
     assert child.attributes["kirocrew.session.relation"] == "fork"
-    assert child.attributes["kirocrew.parent_session_key_hash"] == correlation.keyed_hash(KEY, parent)
+    assert child.attributes["kirocrew.parent_session_key_hash"] == correlation.keyed_hash(
+        KEY, parent
+    )
     assert len(child.links) == 1
+
+
+def test_compactions_after_separate_off_on_cycles_get_distinct_span_ids(spans):
+    """A session kept alive across two off/on cycles: each re-enable's fallback
+    generation is its own, so the two compactions never share a span identity."""
+    state = provider.peek()
+    sessions.opened(CHAT, _Source("acp-a"), T0)
+    for _ in range(2):
+        provider.install_for_testing(None)
+        provider.install_for_testing(state)
+        with sessions.compaction(CHAT) as traced:
+            traced.outcome = "ok"
+    first, second = [s for s in _lifecycle(spans) if s.name == "kirocrew.session.compaction"]
+    assert (first.context.trace_id, first.context.span_id) != (
+        second.context.trace_id,
+        second.context.span_id,
+    )
+
+
+def test_a_generation_rebuilt_after_an_off_on_cycle_does_not_repeat_switch_ids(spans):
+    """A switch before the off and one after its reset rebuilds the same generation:
+    the second must not take the first one's span identity."""
+    state = provider.peek()
+    sessions.opened(CHAT, _Source("acp-a"), T0)
+    sessions.switched(CHAT, "model")
+    provider.install_for_testing(None)
+    provider.install_for_testing(state)
+    assert sessions.current(CHAT) is None
+    sessions.closed(CHAT, "reset", T0)
+    sessions.switched(CHAT, "agent")
+    first, second = [s for s in _lifecycle(spans) if s.name == "kirocrew.session.switch"]
+    assert first.context.trace_id == second.context.trace_id
+    assert first.context.span_id != second.context.span_id
+
+
+def test_a_reset_switch_rebound_mid_reset_records_no_switch(spans, monkeypatch):
+    """The caller's rebind guard rolls such a switch back with a 409, so the trace
+    must not show it: same answer as the live path's rebind test."""
+    from kiro_crew.dashboard import chat_handlers as ch
+
+    sessions.opened(CHAT, _Source("acp-a"), T0)
+    slot = SimpleNamespace(key=CHAT)
+
+    async def reset(state, slot_, session_key, *, skip_if_busy):
+        slot.linked_session_key = "slack:1700000000.000200"  # a cron links the tab
+        return True
+
+    monkeypatch.setattr(ch, "_reset_slot_session", reset)
+    state = SimpleNamespace(sessions=SimpleNamespace(get_provider=lambda key: None))
+    assert asyncio.run(ch._reset_slot_session_or_warn(state, slot, CHAT, switch_kind="model"))
+    assert [s for s in _lifecycle(spans) if s.name == "kirocrew.session.switch"] == []
+
+
+def _agent_switch_env(tmp_path, monkeypatch):
+    """A dashboard state and an agent switch that resolves without config or disk."""
+    from unittest.mock import AsyncMock
+
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.config.loader import KiroCrewConfig, ResolvedBindings
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
+    target = "kirocrew-conductor"
+    bindings = ResolvedBindings(
+        workspace_dir=tmp_path / "ws",
+        effective_memory_config={},
+        memory_store_name="default",
+        requested_resolved=True,
+        resolved_alias=target,
+        kiro_agent=target,
+        selection_kind="template",
+        execution_context=ExecutionContext(
+            None, MemoryStoreRef("default"), "template", target, selection_name=target
+        ),
+    )
+    mod = "kiro_crew.dashboard.chat_handlers"
+    monkeypatch.setattr(f"{mod}.KiroCrewConfig.load", lambda: KiroCrewConfig())
+    monkeypatch.setattr(f"{mod}.resolve_agent_bindings", lambda *_a, **_k: bindings)
+    monkeypatch.setattr(f"{mod}._workspace_name_for_dir", lambda cfg, ws_dir: "default")
+    monkeypatch.setattr(f"{mod}.warm_project_agent_names", AsyncMock())
+    monkeypatch.setattr(f"{mod}.cached_project_agent_names", lambda project_dir: frozenset())
+    monkeypatch.setattr(f"{mod}.default_project_dir", lambda ws: str(tmp_path / "ws"))
+    monkeypatch.setattr("kiro_crew.dashboard_agentic.adopt_crew_mode_board_on_switch", AsyncMock())
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    state.sessions._fold_key = lambda key: key  # a mock folds to a mock, not a key
+    slot = state.get_or_create_slot("r")
+    slot.agent, slot.agent_kind, slot.crew_mode_agent = "kirocrew-team-lead", "template", ""
+    return state, slot, target
+
+
+def test_an_agent_switch_refused_after_its_reset_records_no_switch(spans, tmp_path, monkeypatch):
+    """The metadata write fails after the reset landed: the handler rolls the agent
+    back and answers 503, so the trace must not show the switch."""
+    from kiro_crew.dashboard import chat_handlers as ch
+
+    state, slot, target = _agent_switch_env(tmp_path, monkeypatch)
+    sessions.opened("dashboard:r", _Source("acp-r", "dashboard:r"), T0)
+
+    def refuse(*_a, **_k):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(state.conversation_log, "update_metadata", refuse)
+    caller = ch.SlotAgentSwitchCaller.for_crew_mode_migration()
+    resp = asyncio.run(ch.switch_slot_agent(state, slot, "r", target, "template", caller))
+    assert resp.status == 503, resp.text
+    assert [s for s in _lifecycle(spans) if s.name == "kirocrew.session.switch"] == []
+
+
+def test_an_agent_switch_that_commits_records_one_switch(spans, tmp_path, monkeypatch):
+    from kiro_crew.dashboard import chat_handlers as ch
+
+    state, slot, target = _agent_switch_env(tmp_path, monkeypatch)
+    sessions.opened("dashboard:r", _Source("acp-r", "dashboard:r"), T0)
+    caller = ch.SlotAgentSwitchCaller.for_crew_mode_migration()
+    resp = asyncio.run(ch.switch_slot_agent(state, slot, "r", target, "template", caller))
+    assert resp.status == 200, resp.text
+    (switch,) = [s for s in _lifecycle(spans) if s.name == "kirocrew.session.switch"]
+    assert switch.attributes["kirocrew.session.switch_kind"] == "conductor"
+    assert switch.attributes["kirocrew.acp_session_id"] == "acp-r"

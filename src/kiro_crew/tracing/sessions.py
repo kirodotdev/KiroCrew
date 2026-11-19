@@ -31,7 +31,9 @@ already live when tracing was switched on has no open span, so its children name
 parent nobody wrote and its generation is unknown (``""``) until its next open.
 The same holds after tracing is switched off and on again: what was kept from
 before the off (generations, lineage notes) is dropped, since a session may have
-reset or reopened unseen while it was off.
+reset or reopened unseen while it was off. A generation recorded after an off
+counts its repeatable events afresh, so their ``n`` is ``<off epoch>:<count>``
+(plain ``<count>`` at epoch 0) and never repeats an earlier record's.
 
 Off (``provider.peek()`` is ``None``): every entry point returns at its first line.
 No title, prompt or message text: names are fixed, values are closed vocabularies,
@@ -122,7 +124,9 @@ def generation_of(started_at: float) -> str:
     return str(int(started_at * 1_000_000))
 
 
-def _ids(state: provider.TraceState, key: str, gen: str, event: str, n: int) -> tuple[str, str]:
+def _ids(
+    state: provider.TraceState, key: str, gen: str, event: str, n: "int | str"
+) -> tuple[str, str]:
     from kiro_crew.tracing import ids
 
     ns = state.namespace
@@ -165,12 +169,15 @@ def _start(
         live = generation if generation is not None else _live_locked(key)
         gen = live.generation if live is not None else ""
         acp = live.acp_session_id if live is not None else ""
-        n = 0
+        n: "int | str" = 0
         if event not in (EVENT_OPEN, EVENT_CLOSE, EVENT_RESET):
             if live is None:
                 live = _Generation("")
                 _bounded_put(_generations, key, live)
-            n = live.counts[event] = live.counts.get(event, 0) + 1
+            count = live.counts[event] = live.counts.get(event, 0) + 1
+            # A generation recorded again after an off restarts its counts, so its
+            # epoch keeps them apart from the earlier record's; epoch 0 adds nothing.
+            n = f"{live.epoch}:{count}" if live.epoch else count
     trace_id, span_id = _ids(state, key, gen, event, n)
     parent = None
     if event != EVENT_OPEN:

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         _test_interleave,
         canonical_key,
         drained_to_thread,
+        effective_session_key,
         logger,
         record_agent_selection,
         restore_agent_selection,
@@ -137,8 +138,13 @@ async def _reset_slot_session_or_warn(
     session_key: str,
     *,
     switch_kind: str,
+    record_switch: bool = True,
 ) -> bool | None:
     """:func:`_reset_slot_session` for the commit-before-reset switch handlers.
+
+    *record_switch* False leaves the ``kirocrew.session.switch`` span to a caller
+    that can still roll the switch back after its rebind guard (the agent switch's
+    metadata write and owner checks); it then records it at its own commit point.
 
     Returns the reset verdict, or ``None`` when the teardown RAISED after the
     session pop. The model and workspace handlers commit the new setting
@@ -158,7 +164,7 @@ async def _reset_slot_session_or_warn(
     value on a non-2xx). ``None`` tells the caller to record the degraded
     teardown and answer 200 with :data:`_TEARDOWN_INCOMPLETE_WARNING` after
     the usual slots push; a caller with a rebind guard
-    (``effective_session_key`` — the model and workspace handlers) must still
+    (``effective_session_key`` — every switch handler has one) must still
     FALL THROUGH and run it, so a slot rebound during the raising await keeps
     answering rollback + 409. Shared
     by all four commit-before-reset switch handlers (agent, reasoning effort,
@@ -218,10 +224,13 @@ async def _reset_slot_session_or_warn(
         logger.exception(
             "Slot %s %s switch: old session teardown incomplete", slot.key, switch_kind
         )
-        trace_sessions.switched(traced_key, switch_kind, generation=torn_down)
+        if record_switch and effective_session_key(slot) == session_key:
+            trace_sessions.switched(traced_key, switch_kind, generation=torn_down)
         return None
-    if verdict:
-        # The switch reached the session (it was reset onto the new value).
+    # The switch reached the session (it was reset onto the new value), unless the
+    # slot was rebound during the await: each recording caller's rebind guard, which
+    # runs next with no await between, then rolls the switch back with a 409.
+    if record_switch and verdict and effective_session_key(slot) == session_key:
         trace_sessions.switched(traced_key, switch_kind, generation=torn_down)
     return verdict
 
