@@ -1285,7 +1285,9 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   any hit a cut would split, and a fixed tail), drops a unit decided while still
   running to its end (`compat.discard_run`), and reads each committed window after
   the raw text that preceded it (`compat.look_behind`), so the stream yields the
-  batch result (`test_stream_table_parity.py`). The fixed tail hold ends at the last
+  batch result (`test_stream_table_parity.py`). A unit still open whose start lies
+  in that already-sent text (a label streamed before its value) holds the window
+  from its first character (`engine.scan` clamps it to `origin`). The fixed tail hold ends at the last
   blank, and `StreamRedactor.release_at_boundary()` skips it: the dashboard turn
   calls it at a tool call or prompt and Slack at a tool card, a `wait` and the
   turn's end. `display_battery.RULE_SOURCES` lists every `redaction_structured/`
