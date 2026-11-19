@@ -141,9 +141,17 @@ class _FakeRequest:
 
     def __init__(self, service) -> None:
         self.app = {"kas_login_service": service, "state": _FakeState()}
+        # The dashboard owner (a local subject, empty app scope): the route is owner-gated.
+        self._items = {"app": "", "user": "local-app"}
+
+    def __contains__(self, key):
+        return key in self._items
+
+    def __getitem__(self, key):
+        return self._items[key]
 
     def get(self, key, default=""):
-        return default
+        return self._items.get(key, default)
 
 
 @pytest.mark.asyncio

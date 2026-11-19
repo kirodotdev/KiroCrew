@@ -8511,6 +8511,7 @@
       "profile_lookup_failed_body": "Не удалось запросить твой профиль Kiro. Начни заново, чтобы попробовать ещё раз.",
       "connection_lost_body": "Связь с {{productName}} прервалась, возможно из-за перезапуска. Начни заново, чтобы снова войти.",
       "sign_in_status_unavailable": "Не удалось проверить состояние входа",
+      "owner_only": "Управлять входом в Kiro может только владелец панели.",
       "sign_in_to_kiro": "Вход в Kiro",
       "skip_for_now": "Пропустить пока",
       "signing_in_with": "Вход через {{provider}}",

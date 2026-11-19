@@ -7881,6 +7881,7 @@
       "profile_lookup_failed_body": "Kiro プロファイルを検索できませんでした。最初からやり直して、もう一度お試しください。",
       "connection_lost_body": "{{productName}} との接続が切れました。再起動した可能性があります。最初からやり直して、もう一度サインインしてください。",
       "sign_in_status_unavailable": "サインイン状態を確認できませんでした",
+      "owner_only": "Kiro のサインインを管理できるのはダッシュボードのオーナーだけです。",
       "sign_in_to_kiro": "Kiro にサインイン",
       "skip_for_now": "今はスキップ",
       "signing_in_with": "{{provider}} でサインイン中",

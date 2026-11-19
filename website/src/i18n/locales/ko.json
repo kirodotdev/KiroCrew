@@ -7881,6 +7881,7 @@
       "profile_lookup_failed_body": "Kiro 프로필을 조회하지 못했습니다. 처음부터 다시 시작해 다시 시도하세요.",
       "connection_lost_body": "{{productName}}와(과)의 연결이 끊어졌습니다. 재시작되었을 수 있습니다. 처음부터 다시 시작해 다시 로그인하세요.",
       "sign_in_status_unavailable": "로그인 상태를 확인하지 못했습니다",
+      "owner_only": "대시보드 소유자만 Kiro 로그인을 관리할 수 있습니다.",
       "sign_in_to_kiro": "Kiro에 로그인",
       "skip_for_now": "지금은 건너뛰기",
       "signing_in_with": "{{provider}}(으)로 로그인 중",

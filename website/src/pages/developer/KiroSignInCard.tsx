@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, Eye, EyeOff, KeyRound, Loader2, LogOut, RefreshCw } from 'lucide-react'
 import { api, type KasLoginStatus } from '../../api/client'
+import { isPermissionRefusal } from '../../api/apiError'
 import { kasInUse, type AcpBackendConfig } from '../../api/acpBackend'
 import { KasLoginEmbedded } from '../../components/KasLoginGate'
 import { KiroSignInDialog, KiroSignInFlow } from '../../components/KiroSignInDialog'
@@ -314,7 +315,8 @@ export function KiroSignInCard() {
       <ErrorNotice
         className="mb-3"
         title={i18nT('pages.developer.kiroSignInCard.could_not_read_sources')}
-        message={sourcesError?.message || null}
+        // Not the owner: refused like the status read below, which says so.
+        message={isPermissionRefusal(sourcesError) ? null : sourcesError?.message || null}
         testId="kiro-sign-in-sources-error"
       />
       <SignInStoreUnreadableErrors sources={sources} />

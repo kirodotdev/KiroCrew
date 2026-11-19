@@ -15,6 +15,7 @@ import { useOpenKiroSignIn } from '../pages/developer/useOpenKiroSignIn'
 import { configuredAcpBackend, kasInUse, type AcpBackendConfig } from '../api/acpBackend'
 import { useKiroSignInOffered } from '../pages/developer/useKiroSignInOffered'
 import { failedWithNoData } from '../api/queryState'
+import { isPermissionRefusal } from '../api/apiError'
 import { fmtCurrency, fmtDateFields, fmtNumber, fmtPercent, fmtTime } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { usePersistedBool } from '../hooks/usePersistedBool'
@@ -599,6 +600,15 @@ export function CreditUsage({
     // stored sign-in the usage read could not use is a failure too. With none
     // stored nothing failed, so that is the passive notice.
     if (signInQuery.data === undefined) {
+      // Not the owner: the sign-in read is refused, and the sign-in is not theirs to fix.
+      if (isPermissionRefusal(signInQuery.error)) {
+        return (
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 p-3.5 text-[13px] text-muted" data-testid="kiro-account-owner-only">
+            <Info className="lucide-inline shrink-0" aria-hidden="true" />{' '}
+            {i18nT('components.kasLogin.owner_only')}
+          </div>
+        )
+      }
       return failedWithNoData(signInQuery)
         ? (
           <ErrorNotice
@@ -849,7 +859,7 @@ function SignInSettingsLink({ onClose, usage }: { onClose: () => void; usage: Ki
   // stored (or not yet known): the popup names kiro-cli's login, which the card
   // cannot sign out, but signing in there DOES switch the account agents run as
   // -- so the label promises only the switch.
-  const { cfgQuery, onKas, mainOnKas, offered, crewSignInStored } = useKasHarness()
+  const { cfgQuery, onKas, mainOnKas, offered, signInQuery, crewSignInStored } = useKasHarness()
   if (cfgQuery.data === undefined) {
     // `config-unreadable` already carries this failure in the usage box above.
     if (!failedWithNoData(cfgQuery) || usage === 'config-unreadable') return null
@@ -873,7 +883,8 @@ function SignInSettingsLink({ onClose, usage }: { onClose: () => void; usage: Ki
       className="inline-flex cursor-pointer items-center gap-1 text-[12px] text-accent hover:underline focus-ring-accent"
       data-testid="kiro-account-sign-in-settings"
     >
-      {i18nT(!onKas
+      {i18nT(!onKas || isPermissionRefusal(signInQuery.error)
+        // Not the owner: the page holds no sign-in action for them, so the link only names it.
         ? 'components.kiroAccountModal.kiro_account_in_settings'
         : !mainOnKas
         ? 'components.kiroAccountModal.bots_sign_in_in_settings'

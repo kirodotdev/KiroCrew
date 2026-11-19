@@ -2962,6 +2962,7 @@
       "profile_lookup_failed_body": "We couldn't look up your Kiro profile. Start over to try again.",
       "connection_lost_body": "We lost the connection to {{productName}}, which may have restarted. Start over to sign in again.",
       "sign_in_status_unavailable": "We could not check sign-in status",
+      "owner_only": "Only the dashboard owner can manage Kiro sign-in.",
       "sign_in_to_kiro": "Sign in to Kiro",
       "skip_for_now": "Skip for now",
       "signing_in_with": "Signing in with {{provider}}",

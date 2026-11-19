@@ -58,7 +58,7 @@ def _unavailable() -> web.Response:
 
 
 async def _require_owner(request: web.Request, operation: str) -> web.Response | None:
-    """Refuse a non-owner caller for a credential mutation.
+    """Refuse a non-owner caller on a Kiro sign-in route, mutation or status read.
 
     The KAS token store is a single machine-global Kiro credential, so a device
     login or logout replaces/deletes it for the whole gateway. Only the dashboard
@@ -139,8 +139,11 @@ async def api_kas_login_status(request: web.Request) -> web.Response:
     starts with (both ``""`` when nothing supplies one). ``local_agent_off_start_urls``
     lists the start URLs an edition gives its own sign-in profile, so the form can
     say before sign-in that no local agent runs on them (``[]`` while the
-    ``crew_client`` preview is off).
+    ``crew_client`` preview is off). Owner-gated like the sign-in routes beside it.
     """
+    denied = await _require_owner(request, "kas_login_status")
+    if denied is not None:
+        return denied
     service = _service(request)
     if service is None:
         return _unavailable()

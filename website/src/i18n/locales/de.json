@@ -8091,6 +8091,7 @@
       "profile_lookup_failed_body": "Wir konnten dein Kiro-Profil nicht abrufen. Beginne neu, um es noch einmal zu versuchen.",
       "connection_lost_body": "Die Verbindung zu {{productName}} wurde unterbrochen, vielleicht durch einen Neustart. Beginne neu, um dich wieder anzumelden.",
       "sign_in_status_unavailable": "Der Anmeldestatus konnte nicht geprüft werden",
+      "owner_only": "Nur der Besitzer des Dashboards kann die Kiro-Anmeldung verwalten.",
       "sign_in_to_kiro": "Bei Kiro anmelden",
       "skip_for_now": "Vorerst überspringen",
       "signing_in_with": "Anmeldung mit {{provider}}",

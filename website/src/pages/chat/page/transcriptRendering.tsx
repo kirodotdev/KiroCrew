@@ -15,6 +15,7 @@ import { createTranscriptRenderers } from '../transcriptRenderers'
 import { authRequiredIsNewest } from '../transcriptRenderers'
 import { useStableCallbackProps } from '../useStableCallbackProps'
 import { api, type PlanStepInput } from '../../../api/client'
+import { isPermissionRefusal } from '../../../api/apiError'
 import type { FileChangeEntry } from '../../../components/FileChangeChips'
 import CollapsibleToolGroup from '../CollapsibleToolGroup'
 import { isSystemNoticeRow } from '../CompactionCard'
@@ -234,6 +235,8 @@ export function useTranscriptRendering({
   // kept data. Popout and embed frames (by path) show a failed read on the row
   // unless it came from a gateway outage; the dashboard window, a chat
   // embedded in one of its pages included, leaves it to the app-level notice.
+  // A caller who is not the owner is refused the same way every time: that is
+  // no failure to show, and it is not polled again.
   const newestError = messages.findLast(m => m.role === 'error')
   const signedOutRow = interrupted && newestError !== undefined && isAuthRequired(newestError) && isKasSignedOut(newestError) && authRequiredIsNewest(messages) ? newestError : undefined
   const { data: kasStatus, error: kasStatusError, isError: kasStatusFailed, errorUpdatedAt: kasStatusErrorAt, refetch: refetchKasStatus } = useQuery({
@@ -241,7 +244,7 @@ export function useTranscriptRendering({
     queryFn: api.kasLoginStatus,
     enabled: signedOutRow !== undefined,
     staleTime: 0,
-    refetchInterval: KIRO_SIGN_IN_NOTICE_POLL_MS,
+    refetchInterval: query => (isPermissionRefusal(query.state.error) ? false : KIRO_SIGN_IN_NOTICE_POLL_MS),
   })
   const kasStatusOutage = useOutageFailure(kasStatusFailed, kasStatusErrorAt, () => refetchKasStatus({ cancelRefetch: false }))
   const path = appPathname()
@@ -509,7 +512,7 @@ export function useTranscriptRendering({
       onOpenDefaultModel: embedded || popout ? undefined : openDefaultModelSetting,
       onOpenSignIn: embedded || popout ? undefined : openKiroSignIn,
       kiroSignedIn,
-      kiroSignInCheckError: framed && !kasStatusOutage ? kasStatusError : null,
+      kiroSignInCheckError: framed && !kasStatusOutage && !isPermissionRefusal(kasStatusError) ? kasStatusError : null,
       onOpenTurnLimit: embedded || popout ? undefined : openTurnLimitSetting,
       // The repeat-start remedy (#13791). The restart itself is owner-gated on
       // the server; a refusal comes back as an ApiError the card shows.

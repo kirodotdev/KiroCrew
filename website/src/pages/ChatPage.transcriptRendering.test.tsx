@@ -353,6 +353,25 @@ describe('a signed-out row on the dashboard and in an embed or popout frame (#34
     expect(screen.queryByTestId('error-card-sign-in-check-failed')).toBeNull()
   })
 
+  it('shows a caller who is not the owner no failure in a frame, and does not poll the refusal again', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false })
+    notifyManager.setScheduler(queueMicrotask)
+    onTestFinished(() => notifyManager.setScheduler(defaultScheduler))
+    const status = vi.mocked(api.kasLoginStatus)
+    status.mockClear()
+    const message = 'Only the dashboard owner can manage Kiro sign-in.'
+    status.mockRejectedValue(new ApiError(403, message, JSON.stringify({ error: message, code: 'owner_only' })))
+    const client = renderRow({ embedded: true }, '/embed/chat/s1')
+
+    await act(() => vi.advanceTimersByTimeAsync(0))
+    expect(client.getQueryState(['kas-login', 'm-out'])?.status).toBe('error')
+    expect(screen.queryByTestId('error-card-sign-in-check-failed')).toBeNull()
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+
+    await act(() => vi.advanceTimersByTimeAsync(KIRO_SIGN_IN_NOTICE_POLL_MS * 2))
+    expect(status).toHaveBeenCalledTimes(1)
+  })
+
   it('offers no Resume and reads no sign-in for a row a later request follows', async () => {
     const status = vi.mocked(api.kasLoginStatus)
     status.mockClear()

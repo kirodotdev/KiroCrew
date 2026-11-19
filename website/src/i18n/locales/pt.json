@@ -8301,6 +8301,7 @@
       "profile_lookup_failed_body": "Não conseguimos consultar seu perfil do Kiro. Comece de novo para tentar outra vez.",
       "connection_lost_body": "Perdemos a conexão com o {{productName}}, que pode ter reiniciado. Comece de novo para fazer login outra vez.",
       "sign_in_status_unavailable": "Não foi possível verificar o status do login",
+      "owner_only": "Só o proprietário do painel pode gerenciar o login no Kiro.",
       "sign_in_to_kiro": "Fazer login no Kiro",
       "skip_for_now": "Ignorar por enquanto",
       "signing_in_with": "Fazendo login com {{provider}}",

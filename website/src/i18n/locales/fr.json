@@ -8301,6 +8301,7 @@
       "profile_lookup_failed_body": "Nous n'avons pas pu consulter ton profil Kiro. Recommence pour réessayer.",
       "connection_lost_body": "Nous avons perdu la connexion à {{productName}}, qui a peut-être redémarré. Recommence pour te reconnecter.",
       "sign_in_status_unavailable": "Impossible de vérifier l'état de la connexion",
+      "owner_only": "Seul le propriétaire du tableau de bord peut gérer la connexion à Kiro.",
       "sign_in_to_kiro": "Se connecter à Kiro",
       "skip_for_now": "Ignorer pour l’instant",
       "signing_in_with": "Connexion avec {{provider}}",

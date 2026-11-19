@@ -391,11 +391,14 @@ async def test_logout_store_failure_returns_coded_500():
 
 
 @pytest.mark.asyncio
-async def test_status_open_to_non_owner():
-    # status is a read (no credential mutation), so it stays available to any
-    # allowed dashboard user.
-    resp = await api_kas_login_status(_FakeRequest(_StubService(), owner=False))
-    assert resp.status == 200
+async def test_status_refuses_non_owner():
+    # Same owner gate as the sign-in routes: a non-owner dashboard caller gets an
+    # audited 403 and the stored sign-in is never read.
+    svc = _StubService()
+    resp = await api_kas_login_status(_FakeRequest(svc, owner=False))
+    assert resp.status == 403
+    assert _body(resp)["code"] == "owner_only"
+    assert svc.calls == []
 
 
 @pytest.mark.asyncio

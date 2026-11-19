@@ -549,6 +549,11 @@ access token.
   existing credential-redaction floor).
 - The child process running any browser-open MUST bind the callback listener to
   `127.0.0.1` only.
+- `GET /api/kas-login` takes the same owner gate as the sign-in routes beside it and
+  `GET /api/kas-login/sources` (`dashboard/handlers/kas_login._require_owner`, i.e.
+  `is_owner_dashboard_request`: the owner and Shared Crew teammates with owner rights).
+  Anyone else, an app token included, gets an audited 403 `owner_only` before the
+  store or the config is read.
 - The loopback sign-in listener (`auth/login/portal.py:bind_allowed_port`) claims its
   port per platform: `SO_REUSEADDR` on POSIX (a rebind through `TIME_WAIT`; a live
   listener still refuses it) and `SO_EXCLUSIVEADDRUSE` on Windows, where two listeners
@@ -887,7 +892,9 @@ engine instead ([aws-control.md](aws-control.md)).
   state already reports (`useOutageFailure`, as the app-level notice does); the
   dashboard window, a chat embedded in one of its pages (an artifact's companion
   chat) included, leaves it to that app-level notice, which reads the same
-  endpoint.
+  endpoint. A read refused as `owner_only` (a caller who is not the owner) is shown
+  in no frame and is not polled again, so that caller's row never gains Resume; the
+  composer's Resume, or sending the message again, still reruns the turn.
   Its intro sentence says Kiro Agent and
   other Kiro features run as this account whichever harness is picked, and that
   Kiro CLI keeps its own kiro-cli login. It is deliberately NOT on Settings >
@@ -1039,7 +1046,16 @@ engine instead ([aws-control.md](aws-control.md)).
   check sign-in status", with a plain-language line saying to sign in again
   if the sign-in stopped working or to ask the agent (the
   server's error goes to the hand-off, not the visible text), since the
-  sign-in then goes unchecked. A config read that fails before any good read
+  sign-in then goes unchecked. A read refused as `owner_only` (a caller who is not
+  the owner, see Security invariants) is not a failure: the client does not journal
+  it on the status or the sources read, neither read polls it again, the notice
+  shows nothing, and the Settings card, the sign-in dialog and the Kiro account popup
+  show `components.kasLogin.owner_only` in place of the sign-in choices or an error.
+  A failed status read is not re-read when another `useKasLoginStatus` reader mounts
+  (`retryOnMount: false`): it stays on its error and Check again until the next poll,
+  since re-reading on mount, with the card swapping its spinner for the sign-in flow
+  (a new reader), would loop between the two.
+  A config read that fails before any good read
   shows "Could not read the dashboard settings" with the hand-off and no
   sign-in button or sign-in claim: it cannot say whether KAS runs the agents,
   and kiro-cli and Claude have no Kiro sign-in. It stays hidden while the

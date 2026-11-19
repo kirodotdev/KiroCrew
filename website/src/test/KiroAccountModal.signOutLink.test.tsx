@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import KiroAccountModal, { type KiroAccountUsage } from '../components/KiroAccountModal'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import type { AcpBackendConfig } from '../api/acpBackend'
 import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
@@ -287,6 +288,18 @@ describe('KiroAccountModal with no usable Kiro sign-in', () => {
     expect(within(dialog).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
     expect(within(dialog).queryByText(/No active Kiro sign-in/)).toBeNull()
     expect(dialog.textContent).not.toMatch(/kiro-cli/)
+  })
+
+  it('tells a caller who is not the owner whose sign-in it is, with no error and no hand-off', async () => {
+    const message = 'Only the dashboard owner can manage Kiro sign-in.'
+    signInMock.mockRejectedValue(new ApiError(403, message, JSON.stringify({ error: message, code: 'owner_only' })))
+    renderModal('signin-required')
+    const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
+    expect(await within(dialog).findByTestId('kiro-account-owner-only', {}, QUERY_CHAIN)).toHaveTextContent(message)
+    expect(within(dialog).queryByText('We could not check sign-in status')).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: /Ask the agent/i })).toBeNull()
+    // The link only names the page: there is no sign-in there for this caller.
+    expect(within(dialog).getByTestId('kiro-account-sign-in-settings')).toHaveTextContent('Kiro account in Settings')
   })
 
   it.each<[string, AcpBackendConfig]>([

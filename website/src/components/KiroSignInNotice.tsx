@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useLocation } from 'react-router-dom'
 
 import { api } from '../api/client'
+import { isPermissionRefusal } from '../api/apiError'
 import { ACP_BACKEND_KAS, configuredAcpBackend, kasInUse, type AcpBackendConfig } from '../api/acpBackend'
 import { i18nT } from '../i18n/t'
 import { useOutageFailure } from '../hooks/useOutageFailure'
@@ -198,8 +199,9 @@ export default function KiroSignInNotice() {
   }
   if (reads && outageFailure) return null
   // The status read's failure, wherever it is read: nothing then says whether
-  // a sign-in is stored or works, and the card is where to look.
-  const failedRead = reads && statusQuery.isError
+  // a sign-in is stored or works, and the card is where to look. A caller that
+  // is not the owner is refused the read: the sign-in is not theirs to report.
+  const failedRead = reads && statusQuery.isError && !isPermissionRefusal(statusQuery.error)
     ? { key: `status:${statusQuery.dataUpdatedAt}`, error: statusQuery.error }
     : null
   if (failedRead) {

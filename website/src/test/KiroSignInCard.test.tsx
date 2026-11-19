@@ -7,6 +7,7 @@ import { SETTINGS_MANUAL } from '../components/commandPalette/settingsManual'
 import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../components/KiroAccountModal'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { api, type KasLoginStatus } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { RELAY_VIEWER_CREWS_KEY } from '../hooks/useRelayViewerCrews'
 import { KAS_LOGIN_STATUS_KEY } from '../hooks/useKasLogin'
 
@@ -183,6 +184,24 @@ describe('KiroSignInCard', () => {
     expect(card).toHaveTextContent('Kiro sign-in')
     // The anchor useSettingHighlight's direct lookup rings for KIRO_SIGN_IN_PATH.
     expect(card).toHaveAttribute('data-setting-key', KIRO_SIGN_IN_HIGHLIGHT_ANCHOR)
+  })
+
+  it('not the owner: says whose sign-in it is, with no error, no Check again and no sign-in choices', async () => {
+    const message = 'Only the dashboard owner can manage Kiro sign-in.'
+    const refusal = () => new ApiError(403, message, JSON.stringify({ error: message, code: 'owner_only' }))
+    kasLoginStatus.mockRejectedValue(refusal())
+    vi.mocked(api.kasLoginSources).mockRejectedValueOnce(refusal())
+    renderWithProviders(<KiroSignInCard />)
+    expect(await screen.findByTestId('kas-login-owner-only')).toHaveTextContent(message)
+    // Settled, not a remount loop: one read, and the line stays in place of the spinner.
+    for (let i = 0; i < 5; i += 1) await act(async () => { await Promise.resolve() })
+    expect(kasLoginStatus).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('kiro-sign-in-pending')).toBeNull()
+    expect(screen.getByTestId('kas-login-owner-only')).toBeInTheDocument()
+    expect(screen.queryByTestId('kas-login-status-error')).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-sources-error')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-inline')).toBeNull()
   })
 
   it('signed out: the card shows the shared sign-in choices in place, with no Sign in button or dialog', async () => {
