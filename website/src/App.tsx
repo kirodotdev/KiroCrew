@@ -98,7 +98,7 @@ import { i18nT } from './i18n/t'
 import { KIRO_SIGN_IN_PATH } from './pages/developer/kiroSignInLink'
 import { useLanguageGeneration } from './i18n/useLanguageGeneration'
 import { isAppNavId } from './appNotificationBadges'
-import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect, TerminalRoute } from './shell/routes'
+import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect, TerminalRoute, ShareTargetRedirect } from './shell/routes'
 import { NAV_ITEMS } from './shell/nav/navItems'
 import { RailHeaderGlyph } from './shell/nav/railChrome'
 import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
@@ -339,6 +339,7 @@ const MainRoutes = memo(function MainRoutes() {
     <Routes>
       <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
       <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />
+      <Route path="/share" element={<ShareTargetRedirect />} />
       <Route path="/notifications" element={<ErrorBoundary><NotificationsPage /></ErrorBoundary>} />
       {/* Bookmarkable session chooser: neutral list, no auto-select; rows
           open the full /chat/<key> experience inside this same shell. */}

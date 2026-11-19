@@ -295,7 +295,7 @@ self.addEventListener('fetch', e => {
   }
 
   // ── Shell navigation: network-first, fall back to cached shell ──────
-  e.respondWith(
+  const networkFirstShell = () => (
     fetch(e.request).then(resp => {
       // Refresh the cached shell on every successful navigation TO THE SHELL.
       // The shell cache was previously written only at install time, so the
@@ -338,4 +338,14 @@ self.addEventListener('fetch', e => {
       return caches.match(e.request).then(r => r || Response.error())
     })
   )
+  // The installed app's share target opens `/share?title=&text=&url=`, and the
+  // page reads that query itself (ShareTargetRedirect). A long share makes a
+  // request line the gateway refuses with a bare 400 page, so the worker answers
+  // this one navigation from the cached shell with no network hop. The exact
+  // path is the whole rule; with no shell cached it is network-first like any page.
+  if (url.pathname === '/share' && e.request.mode === 'navigate') {
+    e.respondWith(caches.match('/index.html').then(shell => shell || networkFirstShell()))
+  } else {
+    e.respondWith(networkFirstShell())
+  }
 })

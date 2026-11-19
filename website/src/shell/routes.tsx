@@ -12,6 +12,7 @@ import { EmptyState } from '../components/ui'
 import { useViewerIsNotOwner } from '../hooks/sharedCrew/useSharedCrew'
 import { isBottomTerminalOpen, openBottomTerminal } from '../hooks/useBottomTerminal'
 import { i18nT } from '../i18n/t'
+import { shareTargetChatQuery } from '../utils/shareTarget'
 
 /**
  * A route page loaded on first navigation, rendering nothing until its chunk
@@ -82,3 +83,6 @@ export function TerminalRoute() {
   if (!opens) return null
   return <Navigate to={'/chat' + search} replace />
 }
+
+/** `/share`: the installed app's share target. A share from another app opens a new chat with the shared text in its composer, unsent. */
+export function ShareTargetRedirect() { const { search } = useLocation(); return <Navigate to={'/chat' + shareTargetChatQuery(search)} replace /> }
