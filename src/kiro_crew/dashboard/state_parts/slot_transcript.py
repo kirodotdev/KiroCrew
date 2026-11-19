@@ -327,9 +327,11 @@ def append(
         except Exception:
             logger.warning("owed segment cut failed for slot %s", self.key, exc_info=True)
     # A turn with no prompt row has its first durable row open it, after any
-    # row the cut above wrote first.
+    # row the cut above wrote first. A transient row (a permission or
+    # elicitation card) is never saved and a refresh rebuilds its meta, so it
+    # would carry the mark away: the first saved row takes it instead.
     owed_opener = getattr(self, "_owed_turn_opener", None)
-    if owed_opener is not None and role not in _WIRE_ONLY_ROLES and role != "user":
+    if owed_opener is not None and role not in _TRANSIENT_ROLES and role != "user":
         self._owed_turn_opener = None
         meta = owed_opener(meta)
     # A live row the person typed makes any in-flight return summary stale.

@@ -598,6 +598,20 @@ def test_the_first_durable_row_the_turn_writes_takes_the_opener():
     assert slot._owed_turn_opener is None
 
 
+@pytest.mark.parametrize("transient", ["permission", "elicitation"])
+def test_a_card_first_turn_leaves_the_opener_for_the_first_saved_row(transient):
+    # A card row is never saved and a refresh rebuilds its meta, so it cannot
+    # hold the turn's boundary: the tool row after it takes the opener.
+    slot = _make_slot()
+    slot._owed_turn_opener = agent_turn_opener_meta
+    slot.append(transient, "fs_write", meta={"request_id": "req-1"})
+    slot.append("tool", "🔧 fs_write", meta={"origin": _ORIGIN})
+
+    origins = [(m["role"], (m.get("meta") or {}).get("origin")) for m in slot.messages]
+    assert origins == [(transient, None), ("tool", _OPENER)]
+    assert slot._owed_turn_opener is None
+
+
 # ── Regenerate never re-runs a prompt over a reply the agent started ──
 
 

@@ -1191,10 +1191,11 @@ and reads the pending turn with `AcpProvider.stream_unsolicited`, through the sa
 event loop a user turn uses: its tool rows, permission cards, PreToolUse /
 PostToolUse hooks, SEL records, redaction and persistence are a user turn's own. It
 writes no user row, its assistant rows carry `meta.origin = {"kind": "agent"}`, and
-its first row, whatever its role, carries `{"kind": "agent", "turn_start": true}`
+its first saved row, whatever its role, carries `{"kind": "agent", "turn_start": true}`
 (`agent_started.agent_turn_opener_meta`, owed to the slot when the turn opens its
-stream and paid by the next durable row `append` writes; a turn that wrote no row
-drops it). It
+stream and paid by the next row `append` writes outside `_TRANSIENT_ROLES`, so a
+permission or elicitation card, which is never saved and whose meta a refresh
+rebuilds, leaves it for the row after; a turn that wrote no such row drops it). It
 records crew-log actor `agent`, and it ends through the normal end-of-turn path,
 so the unread badge and turn sound fire. A message sent while it runs queues
 behind it: the turn is responsive-protected, so a send never cancels it. It is
