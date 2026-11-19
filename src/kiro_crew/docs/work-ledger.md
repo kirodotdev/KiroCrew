@@ -194,10 +194,12 @@ any choice that fits none, so a worker with a recommendation reports
 `question` without it. A wait on a build, service or other item
 carries no reason. It is refused on `progress` and `done`, and every report
 replaces it. When every open item waits on a person (`approval` or
-`needs_human`) and nothing on the ledger changed since the conductor's last
-turn, the conductor's `work-ledger` watch holds: no turns, no extension, and
-the goal popover says it is waiting on you. A worker's new report releases it;
-the conductor's own writes do not.
+`needs_human`), the conductor relayed each with a current `ask` record
+(`work_ask_record`), and nothing on the ledger changed since the conductor's
+last turn, the conductor's `work-ledger` watch holds: no turns, no extension,
+and the goal popover says it is waiting on you. A worker's new report releases
+it, and so does a `decide` or `close` (both clear the `ask`); the conductor's
+other writes do not.
 
 **`wake_at` says a `progress` report is a wait until a known time.** The item is
 not flagged `stale` before that time, so the conductor mode sidebar does not call the

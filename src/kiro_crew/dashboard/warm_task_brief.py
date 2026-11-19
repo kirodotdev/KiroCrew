@@ -1178,9 +1178,9 @@ async def _compose(
     # Memory reads, on the loop; a remote worker's turn is read off it below.
     local = {str(i["item_id"]): board.item_running(state, i) for i in open_items}
 
-    def reads() -> tuple[dict[str, bool], tuple[dict[str, Any], ...]]:
-        awaits = {
-            str(i["item_id"]): board.item_awaits_person(
+    def reads() -> tuple[dict[str, str], tuple[dict[str, Any], ...]]:
+        person = {
+            str(i["item_id"]): board.item_person_state(
                 slot.key, i, running=local[str(i["item_id"])]
             )
             for i in open_items
@@ -1195,14 +1195,15 @@ async def _compose(
             )
             for i in items
         )
-        return awaits, shown
+        return person, shown
 
-    awaits, shown_items = await asyncio.to_thread(reads)
+    person, shown_items = await asyncio.to_thread(reads)
     content = welcome.render(
         language=language,
         goal=_goal(settled),
         items=shown_items,
-        awaits=awaits,
+        awaits={key: state == "waits" for key, state in person.items()},
+        checking={key for key, state in person.items() if state == "checking"},
         waiting=settled.waiting,
         live=live,
         checked_at=inputs.clock(checked_epoch),

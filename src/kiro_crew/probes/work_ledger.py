@@ -55,9 +55,13 @@ from kiro_crew.work_vocab import (
     WORK_BLOCKED_REASONS,
     WORK_REASON_STATUSES,
     WORK_REMOTE_DISPATCH_STATUSES,
+    ask_is_current,
 )
 
 logger = logging.getLogger(__name__)
+
+#: Events read per item to date its ask record: the Board's own tail size.
+_ASK_TAIL = 20
 
 #: This probe's subject kind. ``probes/__init__`` imports this module only inside
 #: ``build``, which keeps the ledger store off the gateway boot path, so it spells the
@@ -809,3 +813,39 @@ def _conductor_key(raw: object) -> str:
     if not key:
         raise ValueError("work-ledger watch config needs a 'conductor' session key")
     return key
+
+
+def person_wait_asked(conductor_key: str) -> bool:
+    """Whether the conductor relayed every open item's question with a current ``ask``.
+
+    The person-wait hold's second half. The Board lists a person wait only with a
+    current ``ask`` record (``work_vocab.ask_is_current``: no report after the newest
+    ``ask`` event), so the hold does too: a question the conductor has not relayed,
+    or one a newer report superseded, is still the conductor's, and holding its
+    patrol would stall the crew while the Board says nothing needs the person.
+
+    Kept apart from :func:`person_wait_fingerprint` on purpose: the fingerprint
+    covers worker-owned fields only, so the conductor's own ``work_ask_record`` write
+    in the relay turn does not move it, and the next tick can hold at once.
+    Positive evidence only: a read that raises answers False, so doubt never holds.
+    Blocking file reads; call it off-loop.
+    """
+    try:
+        open_items = [
+            item for item in work_ledger.list_work_items(conductor_key) if not item.is_terminal
+        ]
+        return bool(open_items) and all(
+            item.ask
+            and ask_is_current(
+                [
+                    event.to_dict()
+                    for event in work_ledger.read_events(
+                        conductor_key, item.item_id, limit=_ASK_TAIL
+                    )
+                ]
+            )
+            for item in open_items
+        )
+    except Exception:  # noqa: BLE001 - a read fault must not hold the patrol
+        logger.debug("work-ledger probe: ask read failed for %s", conductor_key)
+        return False

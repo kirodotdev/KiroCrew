@@ -13,7 +13,9 @@ const item = (over: Partial<WorkBoardItem>): WorkBoardItem => ({
   schema: 1, item_id: 'it_1', title: 'Menu', acceptance: { kind: 'human_approval' }, state: 'open', verdict: null,
   decision: '', round: 1, fails: 0, status: null, summary: '', artifacts: {}, pr: null, last_report_at: null,
   created_at: '2026-10-30T00:00:00Z', closed_at: null, decided_at: null, orphaned: false, stale: false,
-  acceptance_concrete: true, outstanding: false, terminal: false, alive: 'idle', events: [], ...over,
+  acceptance_concrete: true, outstanding: false, terminal: false, alive: 'idle', events: [],
+  // The conductor's current ask: without one a person-reason report stays the conductor's.
+  ask: { what: 'Pick one', why: '', options: [], pick: '', pick_why: '', written_at: '2026-10-30T00:06:00Z' }, ...over,
 })
 
 const worker = (key: string, by: string): CrewWorker => ({

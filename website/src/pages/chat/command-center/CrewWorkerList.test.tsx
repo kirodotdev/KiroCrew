@@ -498,7 +498,7 @@ describe('Conductor mode Crew tab', () => {
 
   it('Status: a report whose reason names a person needs you, and the Needs your input line points at it', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
-    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'h1', title: 'Supplies list', status: 'blocked', reason: 'needs_human', summary: 'Sign in to the shop. Then retry.' })] })
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'h1', title: 'Supplies list', status: 'blocked', reason: 'needs_human', summary: 'Sign in to the shop. Then retry.', ask: { what: 'Pick one', why: '', options: [], pick: '', pick_why: '', written_at: '2026-10-30T00:06:00Z' } })] })
     renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />)
     const row = await screen.findByTestId('conductor-mode-milestone')
     expect(row.getAttribute('data-state')).toBe('needs_you')

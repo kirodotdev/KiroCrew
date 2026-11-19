@@ -815,7 +815,12 @@ existing session.
 3. The child reports against its item with `work_report` (`progress`,
    `blocked`, `question`, `done`). Read the reports with `work_ledger_read`
    (`compact=true` each cycle).
-4. You give each item its verdict and close it: `work_ledger_record`
+4. When a `blocked` or `question` report's `reason` names a person
+   (`approval`, `needs_human`) and you put it in front of them, load and call
+   `work_ask_record` that turn (it is deferred), with the `item_id`: `what` you need, `why` only
+   they can, each option with its `outcome`, and your `pick` with `pick_why`.
+   Only an item with a recorded ask shows as needing the person.
+5. You give each item its verdict and close it: `work_ledger_record`
    `action=verdict`, then `action=close` with its `state`.
 
 The ledger holds the item's state, and it is what the person's Dashboard tab

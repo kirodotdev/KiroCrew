@@ -637,11 +637,14 @@ def spend_slots(roots: set[str], since: float) -> set[str]:
 
 
 def ledger_asks(items: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Items the board reads as waiting on the person (``awaits_person``), or with a recorded ask."""
+    """Items the board reads as waiting on the person (``awaits_person``), or with the
+    conductor's current ask record (a ``human_approval`` item it asks about after a
+    ``done``). The board sends ``ask`` only while it is current, so an item whose newer
+    report the main chat is still checking is neither."""
     out = []
     for item in items:
         ask = item.get("ask")
-        if item.get("awaits_person") or (ask and item.get("state") == "open"):
+        if item.get("awaits_person") or (isinstance(ask, dict) and item.get("state") == "open"):
             text = (ask.get("what") or "") if isinstance(ask, dict) else ""
             out.append(
                 {

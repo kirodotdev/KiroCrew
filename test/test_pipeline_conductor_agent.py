@@ -204,6 +204,16 @@ class TestPipelineConductorInstaller(
         assert agent._CONDUCTOR_WORK_LEDGER_PROTOCOL in data["prompt"]
         assert data["prompt"].startswith(agent._PIPELINE_CONDUCTOR_SYSTEM_PROMPT)
 
+    def test_it_can_relay_a_person_wait_unattended(self, tmp_path, monkeypatch):
+        """ "Needs you" on every surface counts an item only once its conductor
+        recorded the ask. So the pipeline conductor auto-approves ``work_ask_record``
+        and its prompt names the relay step; without both, its workers' person
+        waits would never surface."""
+        data = self._install(tmp_path, monkeypatch)
+        assert "@kirocrew-work/work_ask_record" in data["allowedTools"]
+        assert "kirocrew-work/work_ask_record" in data["permissions"]["rules"][0]["match"]
+        assert "load and call\n   `work_ask_record`" in data["prompt"]
+
     def test_governed_host_withholds_and_audits(self, tmp_path, monkeypatch):
         """A ceiling that strips a grant must leave an audit record naming THIS
         installer, or the operator has no record of why the agent now prompts."""

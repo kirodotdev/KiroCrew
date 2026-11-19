@@ -101,11 +101,11 @@ async def test_crew_mode_return_after_45_minutes_welcomes_once(monkeypatch):
     assert _brief_kinds(slot) == _FULL_BRIEF
     assert len(renders) == 1
     content = slot.rows[-1]["content"]
-    # The goal, then what needs the owner, from the ledger: the item waits, and
-    # with no ask record and no report time the welcome points at the question.
+    # The goal, then what needs the owner, from the ledger: the worker asked, but
+    # with no ask record the main chat is still checking it, so nothing needs the owner.
     assert content.startswith("**Goal**: Ship the welcome in Crew Mode")
-    assert "- Add the panel (waiting on you" in content
-    assert "See the question in this chat." in content
+    assert "**Needs you**\nNothing needs you right now." in content
+    assert "- Add the panel (main chat is on it" in content
     assert "Fix the login bug" not in content  # closed before the owner left
     assert "brief" not in slot.rows[-1]["meta"]
 
