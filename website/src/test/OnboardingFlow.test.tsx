@@ -451,11 +451,69 @@ describe('OnboardingFlow — About You step', () => {
     expect(document.activeElement).not.toBe(first)
   })
 
+  it('a Tab from the page behind the scrim re-enters the dialog, either direction', () => {
+    // The chat composer behind the scrim focuses itself when its session
+    // loads; neither first nor last, so without the re-entry Tab walks the page behind.
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    const dialog = screen.getByRole('dialog')
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter(el => !el.hasAttribute('disabled') && el.tabIndex >= 0)
+    const behind = document.createElement('textarea')
+    document.body.appendChild(behind)
+    try {
+      behind.focus()
+      fireEvent.keyDown(document, { key: 'Tab' })
+      expect(document.activeElement).toBe(focusable[0])
+      behind.focus()
+      fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+      expect(document.activeElement).toBe(focusable[focusable.length - 1])
+    } finally {
+      behind.remove()
+    }
+  })
+
+  it('leaves a Tab from the click-focusable step heading to the browser, either direction', () => {
+    // The heading is inside the dialog but not a Tab stop, so it is neither
+    // first nor last: the browser moves focus on, the trap does not claim it.
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    const heading = screen.getByRole('heading', { level: 1, name: 'Pick your look' })
+    expect(heading.tabIndex).toBe(-1)
+    heading.focus()
+    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(true)
+    expect(document.activeElement).toBe(heading)
+    expect(fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })).toBe(true)
+    expect(document.activeElement).toBe(heading)
+  })
+
+  it('leaves a Tab inside another modal over the step to that modal, either direction', () => {
+    // A theme pack's consent dialog opens over the Customize step with its
+    // own trap; pulling its focus back to "Skip all" would strand its buttons.
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    const other = document.createElement('div')
+    other.setAttribute('role', 'dialog')
+    other.setAttribute('aria-modal', 'true')
+    const button = document.createElement('button')
+    other.appendChild(button)
+    document.body.appendChild(other)
+    try {
+      button.focus()
+      expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(true)
+      expect(document.activeElement).toBe(button)
+      expect(fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })).toBe(true)
+      expect(document.activeElement).toBe(button)
+    } finally {
+      other.remove()
+    }
+  })
+
   it('re-seats focus inside the dialog when the save freeze lifts', async () => {
     // Every step-2 control is disabled during the save, so the browser drops
     // focus to <body>. On the failed-save path the modal stays open, and
-    // without re-seating focus the Tab trap's first/last comparisons stop
-    // matching and Tab escapes the aria-modal dialog.
+    // without re-seating focus it would sit on <body>, outside the aria-modal
+    // dialog with no visible ring, until the next Tab re-enters it.
     patchConfig.mockRejectedValueOnce(new Error('gateway down'))
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     advanceToStep2()
