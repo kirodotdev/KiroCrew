@@ -263,10 +263,10 @@ _SHIPPED_PINS = [
     {
         "name": "meetings",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-meetings",
-        "commit": "a1e710690930abc025f051a97e20fe9db502d7f7",
+        "commit": "d167f569ca3611b96524c64b5f0900c2f5dcd248",
         "version": "0.1.3",
-        "treeSha256": "3bb25cb8eb58fbc0373c5c5a61df768cdf43c0ebfef0c6f6444b181003b202e4",
-        "archiveSha256": "7514bb05c9924e2610cba97ac8b12bf46a7d85ec9b5534a15bc9421482fce30c",
+        "treeSha256": "3fea7883c4f88b04a6670fff7e16aa21160f9d810db472897c44072e1c1eeb94",
+        "archiveSha256": "f9e0a7679e4454fa47df092f32ca3c59ec607610500b73cff5a89fe2e216de07",
         "minAppSdkLevel": 7,
         "legacyNav": {"route": "/meetings", "icon": "CalendarClock"},
     },
