@@ -31,6 +31,7 @@ from relay_client_helpers import (
     RecordingSleep,
     StaticHostTokenSource,
     TopRng,
+    drop_unanswered,
     fixture,
     make_client,
     ready_frame,
@@ -172,6 +173,7 @@ class FakeLeaseService:
         self.requests: List[Dict[str, Any]] = []
         self.releases: List[Dict[str, Any]] = []
         self.on_refused_credential: Any = None
+        self.reachable = True  # False drops every call unanswered; the port stays held
         self._server: Optional[TestServer] = None
 
     @property
@@ -195,6 +197,8 @@ class FakeLeaseService:
             await self._server.close()
 
     async def _route(self, request: web.Request) -> web.Response:
+        if not self.reachable:
+            return drop_unanswered(request)
         if request.headers.get("X-Amz-Target") == RELEASE_TARGET:
             return await self._release(request)
         return await self._renew(request)
@@ -623,22 +627,22 @@ async def test_failed_calls_back_off_on_the_reconnect_steps_then_reset(
 
 async def test_a_service_it_cannot_reach_is_retried_later(tmp_path: Path, clock: StepClock) -> None:
     async with FakeLeaseService() as gone:
-        url = gone.url
-    source = LeaseHostTokenSource(
-        lease_url=url,
-        credential=str(credential_file(tmp_path)),
-        crew_version="0.9.1.0",
-        home=tmp_path,
-        rng=TopRng(),
-        sleep=clock.sleep,
-        monotonic=clock.monotonic,
-    )
-    try:
-        with pytest.raises(HostTokenRetryLater, match="could not be reached"):
-            await source.current()
-        assert await clock.next_sleep() == 2.0
-    finally:
-        await source.aclose()
+        gone.reachable = False  # kept up, so no other listener can take its port and answer
+        source = LeaseHostTokenSource(
+            lease_url=gone.url,
+            credential=str(credential_file(tmp_path)),
+            crew_version="0.9.1.0",
+            home=tmp_path,
+            rng=TopRng(),
+            sleep=clock.sleep,
+            monotonic=clock.monotonic,
+        )
+        try:
+            with pytest.raises(HostTokenRetryLater, match="could not be reached"):
+                await source.current()
+            assert await clock.next_sleep() == 2.0
+        finally:
+            await source.aclose()
 
 
 @pytest.mark.parametrize(
@@ -1687,10 +1691,10 @@ async def _connected_then_unreachable(lease: FakeLeaseService, relay: FakeRelay,
     await leg.handshake()
     await async_wait_until(client.relay_connected)
     # The token's own lifetime passes, the relay stops taking it, and the lease
-    # service goes away.
+    # service drops every call while it keeps its port, so nothing else can answer.
     clock.now += 600
     relay.tokens.clear()
-    await lease.__aexit__()
+    lease.reachable = False
     return leg
 
 
