@@ -22350,6 +22350,7 @@
         "save_stopped_note": "Attente arrêtée. Cet enregistrement a pu aboutir ou non ; la liste affiche l’état actuel. Tes modifications sont toujours là. Enregistre à nouveau ou annule.",
         "saving": "Enregistrement…",
         "service_missing": "Pas encore disponible avec ce profil — le lancement a besoin d’une autorisation pour ce service.",
+        "service_not_checked": "Pas encore vérifié — il faut d’abord des identifiants AWS qui fonctionnent.",
         "service_ok": "Accessible avec ce profil.",
         "setting_up": "Configuration",
         "sign_in_hint": "Valide un code dans ton navigateur pour terminer la configuration. Le code expire au bout de quelques minutes.",
