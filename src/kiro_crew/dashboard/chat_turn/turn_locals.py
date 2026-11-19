@@ -160,6 +160,9 @@ class _ChatTurn:
     # The web term an organisation's ``ask`` rule names for this request, or ""
     # (``web_ask_rule.needs_person``); set with ``_deny_override``.
     _web_ask: "str"
+    # No auto-approve answers this request: a card's turn, a held Bot limit or an
+    # organisation's web ``ask``; set with ``_web_ask``.
+    _no_auto_approve: "bool"
     _dir_consumed_out: "dict[str, str]"
     _dispatch_lock: "Lock"
     _dispatch_lock_held: "bool"
