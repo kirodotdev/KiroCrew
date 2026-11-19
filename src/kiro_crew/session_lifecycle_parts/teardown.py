@@ -1037,7 +1037,12 @@ async def swap_conversation(self: SessionLifecycleService, key: str) -> str:
         # Re-pointed only where a sid was mapped, as the cold start would map it.
         if still_live and owner._session_map.clear_sid(key) and new_sid:
             # ``provider=""`` keeps the entry's recorded provider: the process is the same.
-            owner._session_map.set(key, new_sid, provider="")
+            owner._session_map.set(
+                key,
+                new_sid,
+                provider="",
+                kas_memory=getattr(session.provider, "kas_memory_mode", ""),
+            )
     finally:
         session.semaphore.release()
     self._deps.logger.info("Swapped native conversation on the live process: %s", key)

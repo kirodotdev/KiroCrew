@@ -63,6 +63,8 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'developer.decisions-jev': 'developer.decisions',
   // The banner switch is labelled by when it fires.
   'notifications.show-a-banner-for-new-notifications': 'notifications.show-a-banner-while-this-window-is-open',
+  // The engine-memory switch is labelled by the product name, Kiro Memory.
+  'agent.orchestrator-memory': 'agent.kiro-memory',
 }
 
 /** The ids `LEGACY_ID_EXACT` rewrites, for the test that none is live. */
