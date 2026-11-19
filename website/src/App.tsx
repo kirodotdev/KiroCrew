@@ -149,7 +149,7 @@ const SchedulePage = lazyPage(() => import('./pages/SchedulePage'))
 const AppPage = lazyPage(() => import('./pages/AppPage'))
 const AppDetailPage = lazyPage(() => import('./pages/AppDetailRoute'))
 const MarketListingPage = lazyPage(() => import('./pages/apps/MarketListingPage'))
-const MigrationPage = lazyPage(() => import('./pages/MigrationPage'))
+const MigrationPage = lazyPage(() => import('./pages/MigrationRoute'))
 const HooksPage = lazyPage(() => import('./pages/HooksPage'))
 
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
