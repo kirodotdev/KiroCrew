@@ -382,6 +382,50 @@ any other way (the agent's `dashboard_apply`, a discard, expiry), the preview vi
 hands over to the live page the same way, with a line that says so. Template
 previews only: a session's page has no person route.
 
+## An imported dashboard rebuilds its page, or says it did not
+
+An instance export carries a Bot's `members/<slug>/dashboard/instance.json`, `history.json` and
+`versions/<n>.json` and the artifact package the record pins, but never the
+gateway-owned page snapshot `crew-panels/<slug>.dashboard-page.<digest>.json`. The
+import (`portability_bot_stores.install_bot_stores`) installs the dashboard directory
+add-only, and only when this install has none: a Bot that already has a dashboard
+keeps it whole. An existing dashboard counts as the Bot's own only when the Bot was
+already on this install as the same Bot (`owned_slugs`); one that belonged to a
+different Bot of that slug is left alone and reported `not_restored` with
+`held_by_other_bot`, and no page is rebuilt for it. After the publish `instance.read(slug)` must not be in the error
+state, or the directory is taken back and reported `not_restored`
+(`unreadable_record`).
+
+The carried package is checked on its staged bytes before either store is published
+(`_check_staged_artifact`, see [artifacts](artifacts.md)): the meta and every
+`version_kinds` entry say `dashboard`, the package holds only `meta.json`,
+`current.html` and `versions/v<n>.html` for `n` in 1 to `meta.version` (and holds
+`current.html` and the highest version), every version is bound to
+`crewmate:<slug>`, the pinned version passes full validation and its digest equals
+the pin, and `current.html` is byte-equal to the highest version. A `meta.json`
+whose `REFUSED_META_FIELDS` entry holds anything but the store's empty value
+(`REFUSED_META_EMPTY`) is refused: the package is not installed, the record
+still is, and the part is `page_not_rebuilt` / `artifact_rejected`.
+The comment sidecar `comments.json` is not installed (`UNSTAGED_ARTIFACT_FILES`), so
+a Bot's dashboard comments do not travel; the `STRIPPED_META_FIELDS` remote-copy pointers are removed, so
+a published dashboard restores unpublished. When this install keeps the Bot's
+dashboard record but lacks its `artifacts/<P>/`, a carried package that passes the
+check against the destination record's pin is published add-only (`restored`);
+one that does not is `page_not_rebuilt` with its reason.
+
+The stores publish in one order: the package, then the dashboard record, then the page. An `artifacts/<P>/` already here is this Bot's only when both its LIVE version (read the way `scan_bound_dashboards` and `resolve_bound_slug` read it) and its pinned version (read and decoded once, which also yields the checked page) are dashboards bound to `crewmate:<slug>` (`portability_bot_stores._owned_package`). A copy-only artifact (a `source_path` with `source_copy_only`) is an ordinary package; a live pointer never counts; the live-pointer rule is one function, `dashboard_package.is_live_pointer`, used by `scan_bound_dashboards` and the import alike. `_owned_package` reads only the metadata before any full read of the package, and when the bound-slug scan is complete it takes the live binding from `BoundIndex.live_binding` instead of reading it again. The record installs unless it cannot stand on this install: its pinned `artifacts/<P>/` is here and bound to another Bot (`not_restored` / `held_by_other_bot`); the archive's own staged package is bound to a different Bot (its `current.html` bound elsewhere; checked before `BoundIndex` on both paths, so two archive Bots pinning one package get the same outcome in either order: `not_restored` / `held_by_other_bot`); the `artifacts/<P>/` here is not a dashboard, is a live pointer, or is bound to no Bot (`not_restored` / `artifact_rejected`); its pinned package name is invalid; or the `artifacts/<P>/` here has no readable `meta.json` (`not_restored` / `unreadable_record`). A non-directory at `members/<slug>` also makes the dashboard `not_restored` / `write_failed`. On every path the archive is checked for `bot-artifacts/<P>/` and its pinned version file first, by the one rule `_archive_carries`, which also applies `_keep_for_export` (so an export-excluded package name counts as not carried): a missing one is `artifact_missing` and no library scan runs. A package that appears here while the import runs, on a kept record, is judged exactly like one that was already here (the same ownership check and page rebuild). Then one `BoundIndex`, built once per import through the same scan `dashboard_package.resolve_bound_slug` uses (`scan_bound_dashboards` / `BoundScan` in `artifact_store/dashboard_package.py`), checks uniqueness over each package's LIVE binding, keyed by this Bot's binding: another package here already bound to this same Bot is `another_package_of_this_bot` (`BoundIndex.refusal`), and a scan that could not finish is `unreadable_record`. A page is rebuilt from a package already here (for a kept record or a newly installed one) only when that check passes. When the package cannot be published (missing from the archive, refused by the gate, a digest that does not match, `another_package_of_this_bot`, an unproven scan, or a failed publish) a new record still installs and the part is `page_not_rebuilt` with that reason; an own package missing only the pinned version is `artifact_missing`. A failed page-snapshot write rolls nothing back: the record and package stay and the part is `page_not_rebuilt`. A rollback moves what was published back into the stage only when the record's read-back fails, the package back only after the record's rollback succeeded, into the fixed stage names `ROLLED_BACK_RECORD` and `ROLLED_BACK_PACKAGE`. A kept record is `restored` when something came back (a missing page snapshot rebuilt through the same gate, or a missing package published add-only). Anything that could have been brought back and was not (an index refusal, a gate failure, a write failure, a page write that fails after its package was published) is `page_not_rebuilt` with the reason. It stays `kept` with no reason only when the page is already in place, or the package is missing and the archive carries neither `bot-artifacts/<P>/` nor its pinned version. One Bot never ends up with two packages bound to it.
+
+The page snapshot is then rebuilt from the installed artifact alone, under
+`instance._locked(instance.instance_dir(slug))`: `ArtifactStore.get(P, version=V)`
+must be a dashboard artifact that is not live-backed, its
+`canonical_package_content` must parse bound to `crewmate:<slug>`, and its
+`instance._page_digest` must equal the digest the record pins. Only then does
+`instance._write_page_snapshot` write the snapshot, the same writer an apply uses.
+Anything else (a missing version, an edited package, one bound to another Bot, a
+digest that does not match) writes no snapshot and reports `page_not_rebuilt`; the
+reader then serves the template copy, as it does for any record whose snapshot is
+missing, and the Bot is listed as not whole in the import summary.
+
 ## There is no structure lock
 
 A Bot's page changes only through its own `dashboard_apply`, `dashboard_rollback` and

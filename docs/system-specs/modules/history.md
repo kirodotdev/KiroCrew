@@ -1315,6 +1315,86 @@ may also carry `home_paths_moved` and `sessions_project_cleared`. The latter cou
 only chats this import installs. The Import / Export page shows the
 `import_chats_folder_missing` line for that count.
 
+**Bot DM transcripts.** A member-thread transcript (a dashboard transcript whose stem
+is a member slot key) is useful only beside the Bot binding that names its slot, so
+the import installs one only for a Bot this import brought in. A whole-install import
+passes `_merge_sessions` the keyword `member_stem_allowed`, a predicate on a
+member-thread stem built from the imported Bots
+(`portability_bots.allowed_member_stems`): a stem equal to an imported Bot's
+`portability_bot_bindings.member_stem(slot_key)` is installed as any chat is, and
+every other member-thread transcript is withheld, in Merge and in Replace alike. A
+withheld one is counted in `sessions_member_withheld`, unless this install already
+holds that stem (`portability_bots.member_thread_withheld(allowed, stem)` is false
+for it): then it counts as already here, in `sessions_skipped_existing`. Which
+of an imported Bot's own stems are allowed is decided by the binding ladder below,
+run once before `_merge_sessions` (`portability_bot_bindings.binding_ladder`, with
+no installed stems yet): a Bot that was NOT on this install before gets its archive
+thread only when the verdict is `kept` or `rebuilt` (`REBUILD`). Any other verdict
+withholds the thread and lists it as an orphan, so the Bot's thread opens fresh
+(empty) and answers 200, never 409, even for a forged binding. A self-restore (a Bot
+this install already had) still restores its transcript. A withheld one is listed in
+`bot_transcripts_orphaned` with its slug, generation and the names of the destination
+Bots whose slug it carries, so a transcript can neither land under a destination Bot's
+key nor leave a thread that answers 409 `member_binding_missing`. A withheld
+transcript this install already holds under the same stem lost nothing and is not
+listed (`orphan_transcripts(..., mc=...)`). Other chats are
+judged exactly as above. A reserved name (`portability_bot_types.is_reserved_bot_name`:
+`default` and the mate service agent names; the assistant crewmate `mate` is an ordinary Bot) is never a Bot: its
+member-thread transcripts are imported exactly as any chat is (installed when the
+file name is free), never withheld, orphaned or counted
+(`PreparedBots.reserved_slugs`, `orphan_transcripts(..., passthrough_slugs=...)`),
+and its binding is never touched. Reserved slugs are `PreImport.reserved_slugs`, filled in by `before_import` from this install's PRE-IMPORT config (`_destination_reserved_slugs`; `default`'s slug is always reserved, unless a non-reserved Bot uses it, since the loader seeds `default` even when the document lists no agents or this install has no readable `config.json`), minus every slug a Bot uses. The slugs of archive Bots the roster step skipped, and of any non-reserved archive entry, are left out of the reserved set, so a skipped Bot's thread at a reserved slug is withheld. An archive Bot skipped `name_taken` in a
+Merge is not imported, so its member thread is withheld and listed in
+`bot_transcripts_orphaned`. The verdicts the
+ladder reaches here (`portability_bot_bindings.binding_ladder`) are passed on to
+`rebuild_bindings(verdicts=...)`. The archive's `sessions/` listing is taken once
+(`portability_bot_bindings.sessions_listing`, kept in `PreImport.sessions`) and
+shared by `_merge_sessions`, `archive_member_stems` and `orphan_transcripts`. A
+memory-only import passes `None`, which applies no member
+rule. `_merge_sessions` returns the stems it installed.
+
+The binding is then rebuilt, never copied (`portability_bot_bindings.rebuild_bindings`),
+by the same one ladder the chat merge consulted (`binding_ladder`; status `REBUILD`
+means every check passed and the rebuild writes the binding). Every verdict judged
+before the chat merge that `rebuild_bindings` reuses is judged again when the Bot's
+thread did not land and none is here: a binding file here still decides first
+(`kept`), and otherwise no binding is needed (`not_needed`). An imported Bot here includes one the Merge `kept` as the same Bot already on this
+install, so a DM transcript this install lost is restored beside its binding. For each
+imported Bot the checks run in this order:
+
+1. A binding file for the slug already here decides first and is left byte for byte.
+   When the slug is not in `owned_slugs` (this install's own Bots before the import,
+   by the same-Bot rule), it belonged to a different Bot and is never adopted:
+   `held_by_other_bot`. Otherwise one that names this Bot at its `slot_key` is
+   `kept` (whole), whatever the transcript's origin.
+2. An owned binding file that does not name this Bot at its slot is
+   `binding_exists_unusable`, even when there is no transcript.
+3. No transcript at the Bot's slot at all is `not_needed`.
+4. A transcript at the slot that was already here before this import, with no
+   binding, is `transcript_predates_import` only when the slug is not owned. For an
+   owned slug (the Bot was here as the same Bot) a transcript at the Bot's exact
+   derived slot does not block the rebuild: the checks of step 5 run.
+5. Otherwise the transcript at `member_thread_session_alias(slug, generation)` gets
+   one binding through
+   `write_dm_binding`, only when every check holds: the Bot's `member_id` is
+   non-empty, equals its slug and is unique (`no_member_id`, `member_id_ambiguous`);
+   exactly one config name maps to the slug (`slug_collision`); and, when the
+   archive carries `member-records/member-bindings/<slug>.json`, that claim parses as
+   an object whose `member_id`, `member`, `slug`, `slot_key` and `memory_store`
+   equal the derived values (`archive_binding_disagrees`). An unreadable claim
+   blocks writing a NEW binding, but an existing binding that names the Bot stays
+   `kept` (step 1). Just before writing, `rebuild_bindings` re-checks that no
+   binding file appeared for the slug; one that appeared is `kept` when it names the
+   Bot, else `binding_exists_unusable`, and is never overwritten. After the write
+   `read_dm_binding_for_slot(slot_key)` must name the Bot.
+
+A failed check writes nothing, the binding part's status is `not_rebuilt`, and the
+reason lands in the Bot's `summary.bots` row (see
+[config: Bots in a whole-install export and import](config.md#bots-in-a-whole-install-export-and-import)).
+A version-1 Bot is owned when it was here as the same Bot, so its own existing
+binding is `kept`, but it is never given a NEW binding: it has no `member_id`
+(`no_member_id`), so a thread with no binding keeps failing closed on open.
+
 Image references inside a transcript are absolute paths into the source's
 `sessions/` directory, so an image renders after import only when the target's
 data home has the same path.

@@ -152,11 +152,11 @@ def _store_bytes(directory: Path) -> dict[str, bytes]:
     }
 
 
-def _per_file_store_merge(src: Path, dst: Path, **kwargs) -> list[str]:
+def _per_file_store_merge(src: Path, dst: Path, **kwargs) -> tuple[list[str], list[str]]:
     """Negative control: independently filling files mixes store generations."""
     dst.mkdir(parents=True, exist_ok=True)
     snap._copy_tree_no_overwrite(src, dst, **kwargs)
-    return []
+    return [], []
 
 
 def _rows(db: Path) -> int:
@@ -360,7 +360,14 @@ class TestRestoreBringsNamedStoresBack:
         assert restore_main([str(tarball), "--mode", "merge", "--force"] + unpinnable_argv()) == 0
         # Kept, not overwritten -- and said so.
         assert _rows(dst / ROOT / STORE / MEMORY_DB_FILE) == 7
-        assert "kept the existing store" in capsys.readouterr().out
+        kept_lines = [
+            line
+            for line in capsys.readouterr().out.splitlines()
+            if "kept the existing store" in line
+        ]
+        # Exactly one line, naming the store itself (not a list of names).
+        assert len(kept_lines) == 1, kept_lines
+        assert f"{ROOT}/{STORE}: kept the existing store" in kept_lines[0]
         assert not (dst / ROOT / STORE / "lessons.jsonl").exists()
 
     def test_merge_installs_the_whole_store_when_the_destination_has_none(

@@ -5022,7 +5022,59 @@ source agent. There is no kit record and the file does not track the agent; the
 file is the sum of what was added to it. A new Bot's file is minimal
 (`mate_config.write_mate_config`): its name and empty additions, written without
 reading any agent file, so everything it can do at first comes from the worker
-base. A preview writes nothing and lists each `added` and each `skipped` item,
+base. An instance import writes that same minimal file for each imported Bot
+whose `kiro_agent` is its name (`portability_bot_crewmates.restore_crewmate_files`),
+never a file from the archive: the archive carries no crewmate file, because one
+can hold grants and launchable MCP servers. It calls
+`write_mate_config(name, only_if_absent=True)`, which makes `write_mate_spec`
+check under the owners lock it already holds that no file is at the path and
+write nothing when one is. The file is staged and then moved onto the path: on
+Windows with `os.rename`, which refuses an existing destination, and elsewhere with
+`platform_compat.rename_noreplace`, or a hard link of the staged file where the
+platform has no atomic no-replace rename; where `os.link` is refused too (`EPERM`,
+`ENOTSUP`, `EOPNOTSUPP`, `EXDEV`, `ENOSYS`, `EMLINK`) it falls back to an exclusive
+create of the final path, a write and an fsync (`pinned_fs.write_new_file_pinned`),
+all under the owners lock, so a file that appears after the check
+is not replaced either: an existing file (this instance's or another's) stays byte
+for byte. An existing file counts as the Bot's own (`kept`) only by
+the own-file rule of `portability_bot_crewmates.restore_crewmate_files`: its slug is
+in `owned_slugs` (the Bots this install had as the same
+Bot before the import); or the file is minimal
+(`portability_bot_types.is_minimal_crewmate_file`, read through `crewmate_file_state`:
+`name` is the Bot's and every other key holds the empty value of its own type, so the boot migration's shorter
+file counts as well as `mate_config.minimal_mate_spec`; it grants nothing whoever
+wrote it); or
+`mate_config.crewmate_file_on_record` names this data home AND this install had no
+`config.json` before the import (`fresh_home`), so a backup restored into a fresh data home on the same
+machine keeps its own file. A file whose owner record names another data home
+(`mate_config.crewmate_file_foreign`) is never own or free: a Merge skips the Bot up
+front with roster reason `foreign_owner`, and a Replace reports `crewmate_file`
+`not_written` / `foreign_owner`. An unreadable owner record makes an existing file
+`held_by_other_bot` (`crewmate_file_held`). Any other existing file is `not_written`
+with `held_by_other_bot`, and a Merge does not add an archive Bot whose name holds a
+crewmate file that is not its own by the same rule (`crewmate_name_held`, roster
+`held_by_other_bot`). A Replace installs the archive config as given and rewrites
+nothing in it: a Bot whose crewmate file is held by another Bot is reported
+`crewmate_file` `not_written` / `held_by_other_bot`, and the Portability tab says the
+Bot runs on an agent file this import did not write (`import_bot_agent_file_held`).
+The owner record is read by `mate_config._read_owners` through
+`_read_owner_bytes` (a pinned parent, a no-follow open, at most `MAX_OWNERS_BYTES`)
+and decoded as strict UTF-8.
+The name must be safe first (`portability_bot_types.safe_path_component`:
+no slash, backslash, NUL, `:`, `<`, `>`, `"`, `|`, `?`, `*` or control character,
+no leading dot, and not a Windows reserved device name: `CON`, `PRN`, `AUX`, `NUL`,
+`COM1` to `COM9` or `LPT1` to `LPT9`, in any case, with or without an extension),
+`mate_config_path(name)` must sit
+directly inside `mate_agents_dir()`, and it must not be a mate service name or a
+user-level agent (`unsafe_name`, `user_agent_named`); a
+`MateConfigError` is reported (`foreign_owner`, `write_failed`), never raised. The
+export lists the Bots whose crewmate file was not minimal
+(`crewmate_files_customised`), and the import's
+`portability_bot_crewmates.crewmate_file_notices` gives each of them whose file THIS
+import wrote (status `written`), and each Bot new to this install whose kept file is
+minimal (`_minimal_file_bots`, from the crewmate step's own `minimal=` set rather
+than a second read), the notice `starting_abilities_only`: the Bot arrives with the worker base only, and abilities
+added on the exporting host can be added again here. A preview writes nothing and lists each `added` and each `skipped` item,
 plus every auto-approval the add writes
 (`allowedTools` rows, from any of three channels: an `allowedTools` entry, a
 server's `autoApprove`, and an `mcp` or unscoped built-in allow in `permissions`,

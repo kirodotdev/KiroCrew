@@ -21,12 +21,13 @@ import os
 import socket
 import time
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePath
 from typing import Any, cast
 
 from kiro_crew import pinned_fs
 from kiro_crew import portability as _pf
+from kiro_crew import portability_bot_export as _bots
 from kiro_crew.member_memory_backup import hold_stores_for_read
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
 from kiro_crew.snapshot import EXPORT_MANIFEST_VERSION, is_product_tree_database
@@ -38,6 +39,17 @@ from kiro_crew.snapshot import EXPORT_MANIFEST_VERSION, is_product_tree_database
 #: The stem-order type the planner hands the writer; the same alias as
 #: ``portability._SessionOrder``, repeated here for the annotations below.
 _SessionOrder = list[str]
+
+#: The export roster: ``(name, slug)`` per Bot, as ``portability_bot_export.load_roster``.
+_Roster = Sequence[tuple[str, str]]
+
+
+#: The export's Bots, read once per export (``portability_bot_export.export_bots``):
+#: the measurement pass and the writer both use this one value, so the archive's Bot
+#: stores, its manifest fields and the footprint the chat budget is measured against
+#: all describe the same roster.
+BotExport = _bots.ExportBots
+
 
 __all__ = [
     "ExportPlan",
@@ -118,6 +130,7 @@ def _build_export_zip(
     memory_only: bool,
     include_agent_templates: bool,
     session_order: _SessionOrder | None = None,
+    bot_export: BotExport | None = None,
 ) -> dict:
     """Write every member into *zf* and return the manifest.
 
@@ -130,6 +143,8 @@ def _build_export_zip(
     *session_order* is the stem order a streaming export's pre-pass hands the writer
     (:func:`_plan_sessions`); the writer still judges each chat authoritatively.
     ``None`` lets :func:`_write_sessions` discover and sort the stems itself.
+
+    *bot_export* is the roster :func:`plan_export` computed; ``None`` computes it here.
     """
     mc = _pf._mc_dir()
     contents_summary: dict = {}
@@ -201,6 +216,22 @@ def _build_export_zip(
         contents_summary["plan_memory_files"] = dir_counts.get("plan_memory", 0)
         contents_summary["skill_count"] = len(skill_dirs)
 
+    # Each roster Bot's own stores: its dashboard record, briefing and claimed
+    # welcome, and the artifact package its dashboard pins. Bindings, rules, goals,
+    # page snapshots and crewmate files are never carried (`portability_bot_export`).
+    bot_fields: Mapping[str, Any] = {}
+    if not memory_only:
+        found = bot_export if bot_export is not None else _bots.export_bots(mc_real)
+        bot_files = 0
+        for rel, fd in _bots.iter_bot_store_files(mc_real, found.roster):
+            try:
+                _pf._add_from_fd(zf, fd, f"{prefix}/{rel.as_posix()}")
+            finally:
+                os.close(fd)
+            bot_files += 1
+        contents_summary["bot_store_files"] = bot_files
+        bot_fields = found.fields
+
     # Named memory stores: the same pinned walk, with the tree's own filter and the
     # fence lifted (see `_open_verified`). A store's databases go through the backup
     # API like the root ones -- the gateway holds every store open under WAL while
@@ -250,6 +281,7 @@ def _build_export_zip(
         "home_real": os.path.realpath(Path.home()),
         "contents": contents_summary,
     }
+    manifest.update(bot_fields)
     if memory_only:
         manifest["components"] = ["memory"]
     if include_agent_templates:
@@ -276,6 +308,7 @@ def _measure_nonsession_footprint(
     *,
     memory_only: bool,
     include_agent_templates: bool,
+    bots: _Roster | None = None,
 ) -> tuple[int, int]:
     """Stat-only ``(member_count, uncompressed_bytes)`` for every NON-session member.
 
@@ -286,7 +319,11 @@ def _measure_nonsession_footprint(
 
     This walks the trees and stores exactly as the writer does (the pinned,
     reparse-safe `_walk_contained`), so a workspace junction is skipped here too and
-    is never resolved.
+    is never resolved. *bots* is the export's roster; ``None`` reads it here.
+
+    A Bot store file is opened by the walk and sized by ``fstat``, like the trees:
+    the walk yields a containment-checked descriptor, not a parent directory to
+    ``fstatat`` in, and the pinned package is learned by reading ``instance.json``.
     """
     mc = _pf._mc_dir()
     members = 0
@@ -326,6 +363,15 @@ def _measure_nonsession_footprint(
     trees = _pf.MEMORY_ONLY_TREES if memory_only else ("workspace", "plan_memory", "skills")
     for dirname in trees:
         for rel, fd in _pf._walk_contained(mc_real, PurePath(dirname), _pf._keep_for_export):
+            try:
+                members += 1
+                nbytes += os.fstat(fd).st_size
+            finally:
+                os.close(fd)
+
+    if not memory_only:
+        roster = bots if bots is not None else _bots.load_roster(mc_real)
+        for _rel, fd in _bots.iter_bot_store_files(mc_real, roster):
             try:
                 members += 1
                 nbytes += os.fstat(fd).st_size
@@ -379,6 +425,7 @@ class ExportPlan:
         "agent_templates_past_cap",
         "session_order",
         "sessions_skipped",
+        "bot_export",
     )
 
     def __init__(
@@ -393,6 +440,7 @@ class ExportPlan:
         agent_templates_past_cap: int,
         session_order: _SessionOrder | None,
         sessions_skipped: int,
+        bot_export: BotExport | None = None,
     ) -> None:
         self.prefix = prefix
         self.created_at = created_at
@@ -403,6 +451,7 @@ class ExportPlan:
         self.agent_templates_past_cap = agent_templates_past_cap
         self.session_order = session_order
         self.sessions_skipped = sessions_skipped
+        self.bot_export = bot_export
 
 
 def plan_export(
@@ -435,6 +484,9 @@ def plan_export(
     _pf._wal_checkpoint(mc / "memory_index.db")
 
     mc_real = os.path.realpath(mc)
+    # One read of config.json and one roster for the whole export: the measurement
+    # below and the writer (`stream_export_zip`) both use it.
+    bot_export = None if memory_only else _bots.export_bots(mc_real)
 
     bundled_templates: list[str] = []
     agent_templates_past_cap = 0
@@ -447,7 +499,10 @@ def plan_export(
     sessions_skipped = 0
     if include_sessions:
         base_members, base_bytes = _measure_nonsession_footprint(
-            mc_real, memory_only=memory_only, include_agent_templates=include_agent_templates
+            mc_real,
+            memory_only=memory_only,
+            include_agent_templates=include_agent_templates,
+            bots=bot_export.roster if bot_export is not None else None,
         )
         # Build the same manifest skeleton the writer will, so the chat budget
         # reserves against the document the importer actually reads.
@@ -466,6 +521,12 @@ def plan_export(
             "home_real": os.path.realpath(Path.home()),
             "contents": contents_summary,
         }
+        # The real count is known only once the archive is written; every Bot store
+        # file is one of the non-session members, so that total is an upper bound
+        # and the reserve is never smaller than the manifest the writer produces.
+        contents_summary["bot_store_files"] = base_members
+        if bot_export is not None:
+            manifest_skeleton.update(bot_export.fields)
         if include_agent_templates:
             manifest_skeleton["agent_templates"] = bundled_templates
         session_order, sessions_skipped = _pf._plan_sessions(
@@ -486,6 +547,7 @@ def plan_export(
         agent_templates_past_cap=agent_templates_past_cap,
         session_order=session_order,
         sessions_skipped=sessions_skipped,
+        bot_export=bot_export,
     )
 
 
@@ -518,4 +580,5 @@ def stream_export_zip(write: Callable[[bytes], int | None], plan: ExportPlan) ->
             memory_only=plan.memory_only,
             include_agent_templates=plan.include_agent_templates,
             session_order=plan.session_order,
+            bot_export=plan.bot_export,
         )

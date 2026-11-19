@@ -34,7 +34,7 @@ from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
 import kiro_crew._facade_mirror as _facade_mirror
-from kiro_crew import crew_teams, pinned_fs, platform_compat, ui_prefs
+from kiro_crew import crew_teams, pinned_fs, platform_compat, portability_bots, ui_prefs
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent_discovery import clear_list_agents_cache, parsed_agent_specs
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
@@ -281,7 +281,7 @@ def _merge_settings(
     vetted: dict[str, object],
     summary: dict,
     channel_settings: ChannelSettings | None,
-) -> None:
+) -> bool:
     """Apply the archive's settings documents the way Merge applies everything: never overwrite.
 
     Per document, not per setting. A document this install LACKS is installed from the
@@ -305,8 +305,10 @@ def _merge_settings(
     Every document the archive carried that this Merge did not apply is named in
     ``summary["settings_kept"]``. The entries are the four file names above, never
     archive-authored text, so the list is bounded by construction (at most four).
+    Returns whether this call installed ``config.json``.
     """
     kept: list[str] = []
+    installed: list[bool] = []
 
     def _keep(name: str, label: str, note: str = _KEPT_NOTE) -> None:
         kept.append(name)
@@ -315,7 +317,6 @@ def _merge_settings(
     incoming = vetted.get("config.json")
     if isinstance(incoming, dict):
         target = mc / "config.json"
-        installed: list[bool] = []
 
         def _install_if_absent(_current: dict) -> dict | None:
             # Inside the config lock: a writer that created the file first wins.
@@ -330,6 +331,7 @@ def _merge_settings(
             try:
                 update_config_locked(target, mutate=_install_if_absent)
             except (ConfigReadError, ConfigWriteRefused, OSError) as exc:
+                installed.clear()  # decided under the lock, but the write did not land
                 _skip_setting(summary, "config", str(exc))
             else:
                 if installed:
@@ -384,6 +386,7 @@ def _merge_settings(
 
     if kept:
         summary["settings_kept"] = kept
+    return bool(installed)
 
 
 def _listing(directory: Path) -> dict[str, os.DirEntry]:
@@ -501,7 +504,9 @@ def _merge_sessions(
     *,
     allow_unpinned: bool,
     cleared: frozenset[str] = frozenset(),
-) -> None:
+    member_stem_allowed: Callable[[str], bool] | None = None,
+    sessions_listing: dict[str, os.DirEntry] | None = None,
+) -> frozenset[str]:
     """Add the archive's dashboard chats this install does not have yet.
 
     Never overwrites: a transcript whose file name already exists here is left as
@@ -524,11 +529,16 @@ def _merge_sessions(
     dropped (left out when none). Copy failures roll back only this call's
     files under the stem lock and use the existing items/refused_merges reporting.
     An archive without a ``sessions/`` tree records nothing.
+
+    With *member_stem_allowed*, a member's DM-thread transcript is installed only when
+    the predicate accepts its stem (an imported Bot's slot); any other is withheld, counted in
+    ``sessions_member_withheld`` unless already here. ``None`` judges it like any other chat.
+    *sessions_listing* is the import's one ``sessions/`` listing. Returns the stems installed.
     """
     if not _real_dir(_listing(snap).get(SESSIONS_DIR_NAME)):
-        return
+        return frozenset()
     src = snap / SESSIONS_DIR_NAME
-    entries = _listing(src)
+    entries = _listing(src) if sessions_listing is None else sessions_listing
     threads_dir = entries.get(THREADS_DIR_NAME)
     threads = _listing(src / THREADS_DIR_NAME) if _real_dir(threads_dir) else {}
     archive_dir = entries.get(ARCHIVE_DIR_NAME)
@@ -536,11 +546,16 @@ def _merge_sessions(
     _staging_is_pinned(allow_unpinned=allow_unpinned, what="chat import")
     dest = mc / SESSIONS_DIR_NAME
     history = ConversationLog(base_dir=dest)
-    added = existing = withheld = failed = project_cleared = 0
+    added = existing = withheld = failed = project_cleared = member_withheld = 0
+    installed: set[str] = set()
     for name in sorted(entries):
         entry = entries[name]
         stem = _chat_stem(name)
         if stem is None or not _real_file(entry):
+            continue
+        if portability_bots.member_thread_withheld(member_stem_allowed, stem):
+            here = os.path.lexists(dest / name)  # withheld: "already here" when it is held
+            existing, member_withheld = existing + here, member_withheld + (not here)
             continue
         rel = PurePath(SESSIONS_DIR_NAME, name)
         with _open_import_session_file(snap.parent, PurePath(snap.name) / rel) as fd:
@@ -604,6 +619,7 @@ def _merge_sessions(
                             )
                         continue
                 added += 1
+                installed.add(stem)
                 if name in cleared:
                     project_cleared += 1
     summary["sessions_added"] = added
@@ -612,12 +628,16 @@ def _merge_sessions(
     summary["sessions_skipped_existing"] = existing
     summary["sessions_withheld"] = withheld
     summary["sessions_failed"] = failed
+    if member_stem_allowed is not None:
+        summary["sessions_member_withheld"] = member_withheld
     if failed:
         summary.setdefault("refused_merges", []).append("sessions")
+    member_note = f", {member_withheld} Bot threads withheld" if member_withheld else ""
     summary["items"].append(
         f"sessions (merged: {added} added, {existing} already here, {withheld} withheld, "
-        f"{failed} failed)"
+        f"{failed} failed{member_note})"
     )
+    return frozenset(installed)
 
 
 def _read_session_mtimes(zf: zipfile.ZipFile) -> dict[str, float]:
@@ -887,8 +907,12 @@ def apply_import_zip(
         # Before either branch too: a settings document neither branch may install is
         # removed from the extraction here, and reported.
         vetted_settings = _vet_archive_settings(snap, summary)
+        # Binding claims and this install's own Bots, read before either branch runs.
+        pre = None if memory_only else portability_bots.before_import(snap, mc, vetted_settings)
+        roster: portability_bots.RosterStep | None = None
 
         if mode == "replace":
+            replace_components = list(portability_bots.INSTANCE_REPLACE_COMPONENTS)
             # Strip sensitive files and skills/auto/ from snapshot before replace
             for excluded_name in EXPORT_EXCLUDE:
                 excluded_file = snap / excluded_name
@@ -932,7 +956,7 @@ def apply_import_zip(
                         vetted_settings["notification_settings.json"],
                     )
                     swap_guard.enter_context(channel_settings.replacing_file(channels))
-                _do_replace(snap, mc, None, allow_unpinned=not staging_pinned)
+                _do_replace(snap, mc, replace_components, allow_unpinned=not staging_pinned)
             summary["items"].append("full replace")
             if "ui-prefs.json" in vetted_settings:
                 summary["ui_prefs_restored"] = True
@@ -986,9 +1010,10 @@ def apply_import_zip(
             # a concurrent team write neither loses to the import nor overwrites it.
             # Validated above by the team store's own reader, before anything moved.
             teams_snap = snap / crew_teams.TEAMS_DIR_NAME / crew_teams.TEAMS_FILE_NAME
-            if teams_snap.is_file() and crew_teams.install_document(
+            teams_installed = teams_snap.is_file() and crew_teams.install_document(
                 teams_snap, mc / crew_teams.TEAMS_DIR_NAME, only_if_absent=True
-            ):
+            )
+            if teams_installed:
                 summary["items"].append("crew-teams (copied)")
 
             if (snap / "hooks.json").is_file():
@@ -1001,7 +1026,7 @@ def apply_import_zip(
                 else:
                     summary["items"].append("hooks (skipped, already exists)")
 
-            _merge_settings(mc, vetted_settings, summary, channel_settings)
+            config_installed = _merge_settings(mc, vetted_settings, summary, channel_settings)
 
             if (snap / "notifications.jsonl").is_file():
                 if (mc / "notifications.jsonl").is_file():
@@ -1045,9 +1070,11 @@ def apply_import_zip(
                     summary["items"].append(f"{dirname} (merged)")
 
             stores_src = snap / MEMORY_STORES_DIR_NAME
+            kept: list[str] = []
+            added: list[str] = []
             if stores_src.is_dir():
                 stores_dst = mc / MEMORY_STORES_DIR_NAME
-                kept = _merge_named_stores(
+                kept, added = _merge_named_stores(
                     stores_src, stores_dst, allow_unpinned=not staging_pinned
                 )
                 summary["items"].append(f"{MEMORY_STORES_DIR_NAME} (merged)")
@@ -1056,6 +1083,15 @@ def apply_import_zip(
                         f"{MEMORY_STORES_DIR_NAME}/{store} (kept the existing store; "
                         "the archive's copy was not merged into it)"
                     )
+            if not memory_only:  # after the store merge: a Bot needs a store it created
+                roster = portability_bots.merge_roster_step(
+                    mc,
+                    vetted_settings,
+                    summary,
+                    stores_added=added,
+                    config_installed=config_installed,
+                    teams_installed=teams_installed,
+                )
 
             if (snap / "skills").is_dir():
                 (mc / "skills").mkdir(parents=True, exist_ok=True)
@@ -1074,20 +1110,38 @@ def apply_import_zip(
         # names, and chats are not one of them, so an archive -- with chats or
         # without -- never deletes or overwrites a chat this install already has.
         # The chat folders follow the same rule (`dashboard.folder_portability`).
+        # A member's DM thread is installed only for a Bot this import brought, and the
+        # Bot's own stores follow the chats; none of it raises (`portability_bots`).
+        bots = None if memory_only else portability_bots.prepare_bots(mc, roster, pre)
         if not memory_only:
             import_folders(snap, summary, folder_merge or merge_folders_on_disk(mc))
-        _merge_sessions(snap, mc, summary, allow_unpinned=not staging_pinned, cleared=cleared)
+        installed_stems = _merge_sessions(
+            snap,
+            mc,
+            summary,
+            allow_unpinned=not staging_pinned,
+            cleared=cleared,
+            member_stem_allowed=portability_bots.allowed_member_stems(bots),
+            sessions_listing=None if bots is None else bots.sessions,
+        )
+        if bots is not None:
+            portability_bots.restore_bots(
+                snap,
+                mc,
+                summary,
+                bots=bots,
+                installed_stems=installed_stems,
+                allow_unpinned=not staging_pinned,
+            )
 
     if agent_templates and not memory_only:
         _install_agent_templates(zip_path, sorted(set(agent_templates)), summary)
 
-    # Warn, never refuse: the rows are already written, and a template can be
-    # installed afterwards without importing again.
+    # Warn, never refuse: a template can be installed later without importing again.
     try:
         missing, more = missing_crew_templates(mc / "config.json")
     except Exception:  # RecursionError included
-        # The import is already written: a spec this cannot read costs the warning,
-        # never the import's success.
+        # The import is written: an unreadable spec costs the warning, never the import.
         logger.warning("Could not check crew agent templates after import", exc_info=True)
         missing, more = [], 0
     if missing:

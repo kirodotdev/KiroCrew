@@ -115,13 +115,18 @@ def missing_crew_templates(config_path: Path) -> tuple[list[dict[str, str]], int
     Returns ``(rows, more)``, bounded like :func:`unbundled_agent_templates`.
 
     Matches a spec by its ``name`` field or file stem, the same test the config
-    loader applies when it resolves a crew's template.
+    loader applies when it resolves a crew's template, in both folders the loader
+    reads agents from: the agents directory and the crewmate folder
+    (``config.paths.mate_agents_dir``), so a Bot running on its own crewmate file
+    is never listed.
     """
+    from kiro_crew.config.paths import mate_agents_dir
+
     refs = crew_template_refs(config_path)
     if not refs:
         return [], 0
     installed: set[str] = set()
-    for data, path in _installed_specs():
+    for data, path in [*_installed_specs(), *_installed_specs(mate_agents_dir())]:
         installed.add(path.stem)
         if isinstance(data, dict) and isinstance(data.get("name"), str):
             installed.add(data["name"])

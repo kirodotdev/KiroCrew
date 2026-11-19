@@ -157,7 +157,7 @@ def _do_merge(
                         "would write this component outside the data home."
                     )
                 if tree == MEMORY_STORES_DIR_NAME:
-                    kept = facade._merge_named_stores(sd, dd, allow_unpinned=allow_unpinned)
+                    kept, _added = facade._merge_named_stores(sd, dd, allow_unpinned=allow_unpinned)
                     for store in kept:
                         print(
                             f"  ↩️  {tree}/{_safe_name(store)}: kept the existing store; "

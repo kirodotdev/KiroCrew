@@ -945,6 +945,150 @@ and crash behavior remain provider-specific, not a new sandbox guarantee.
 See [memory](memory-skills-hooks.md), [session](session.md), and
 [subagents](subagent.md) for storage, selection and retention details.
 
+### Bots in an instance export and import
+
+An instance export and import carry a Bot whole without changing any fence: no
+disposition in `sandbox.py`, no `security.paths` list and no `is_sensitive_path`
+answer differs, and the export's `_open_verified` still refuses every sensitive path.
+The archive is untrusted input, so each Bot store is either carried through a narrow
+allowlist or regenerated on the destination from `config.json`, which is itself
+vetted on the way in. What the code does
+([config: Bots in a whole-install export and import](config.md#bots-in-a-whole-install-export-and-import)):
+
+- **Bindings are regenerated, never carried.** `member-records/` is on the sensitive
+  floor, and a DM binding is fully derivable from the config, so the export carries
+  none and the import never copies a file from an archive's `member-records/`. An
+  archive `member-records/member-bindings/<slug>.json` is read only as a claim that
+  can veto (a pinned open read through `portability_bot_types.read_fd_at_most`, at
+  most 4 KiB per file and 1,000 files; a link or an oversize file is never read): a claim whose `member_id`, `member`, `slug`, `slot_key` or
+  `memory_store` differs from the derived binding refuses the rebuild with
+  `archive_binding_disagrees`. A forged binding therefore cannot point a Bot's thread
+  at another member's store: the Bot's archive thread is withheld and the thread
+  opens fresh. One ladder (`portability_bot_bindings.binding_ladder`) decides both the binding and whether the
+  thread is installed.
+- **Page snapshots (`crew-panels/`) are regenerated, never carried.** The page in force
+  is rebuilt from the carried artifact only when its digest matches the pin and it is
+  bound to that Bot, through the same writer a live apply uses
+  ([dashboard instances](dashboard-instances.md)), so an archive cannot name a page
+  the artifact write gate would refuse.
+- **Crewmate files are never carried, because of their grant keys.** A crewmate file
+  under the Kiro home can hold `allowedTools`, `autoApprove` and `permissions` and
+  `mcpServers` entries that launch commands; installing one from an archive would
+  grant tools and start servers with no person action. The import never reads an
+  archive member as a crewmate file and writes only the minimal file
+  (`mate_config.write_mate_config(name, only_if_absent=True)`) for a safe imported
+  name, published on Windows with `os.rename` (which refuses an existing
+  destination) and elsewhere with `platform_compat.rename_noreplace` (a hard link
+  where the platform has no atomic no-replace rename), leaving an existing file byte for byte. A Bot whose exporting host had added
+  abilities is reported `starting_abilities_only` ([crew-mode](crew-mode.md)).
+- **An older release never applies the Bot stores.** The export writes a Bot's
+  pinned package under the top-level archive tree `bot-artifacts/<P>/`
+  (`BOT_ARTIFACTS_DIR`), never `artifacts/<P>/`, and keeps the manifest version. A
+  release that predates the Bot stores does not read that tree, so it leaves them
+  out and touches nothing on its install; a package under `artifacts/` would have
+  made its Replace clear and refill this install's whole `artifacts/` tree.
+- **`members/<slug>/` is carried through the allowlist `carried_member_file` only**:
+  `members/<slug>/dashboard/instance.json`, `members/<slug>/dashboard/history.json`, `dashboard/versions/<n>.json`,
+  `briefing.md` and `welcome_claimed.json`. The directory is the Bot's own
+  agent-writable space, so everything else stays behind. `activity.jsonl` is excluded
+  because on a fresh install it has no fenced fold marker and would be read as
+  trusted history the Bot wrote itself; `welcome_owed.json`, `create_request.json`,
+  `dm.json`, `members/<slug>/dashboard/preview.json` and lock files are host state.
+- **An added Bot's config entry cannot widen what it runs with.** A Merge that adds an
+  archive Bot to this install's roster cuts its entry back with
+  `portability_bot_roster.merged_entry` to what a create path sets: `kiro_agent` is
+  forced to the Bot's own name, so the entry cannot bind it to another agent spec,
+  and `approval_mode`, `acp_backend`, `model`, `worker_model`, `reasoning_effort`,
+  `worker_reasoning_effort` and `dynamic_capabilities` are never copied, so the archive cannot choose a looser
+  approval mode, another harness, a model or added capabilities; this install's
+  defaults apply.
+  Every other field must validate as an `AgentConfig` field of the right type, or the
+  Bot is not added (`config_rejected`). Its store entry is cut back the same way
+  (`merged_store_entry`): `owner_member` is forced to the Bot's name,
+  `owner_member_id` must equal its `member_id` and `memory_version` must be 2, so an
+  archive cannot hand an added Bot a store another member owns. A reserved name
+  (`is_reserved_bot_name`: `default` and the mate service agent names) is never treated as a Bot, on
+  export or import, and its binding is never touched; the assistant crewmate `mate`
+  is an ordinary Bot. A destination Bot is never replaced: in a Merge an archive Bot
+  whose name is taken is skipped `name_taken`, whatever the destination Bot looks
+  like, and nothing of the destination changes (no entry, store entry, workspace or
+  team membership); its member thread is withheld and orphaned. A Replace installs
+  the archive config as given, and an existing crewmate file at a new Bot's name
+  counts as its own only when it is minimal.
+- **One Bot never gets two packages.** The stores publish package, then record, then
+  page, and move back what was published when the record's read-back fails. An
+  `artifacts/<P>/` here is this Bot's only when both its live and its pinned version
+  are bound to `crewmate:<slug>` (`_owned_package`; a live pointer never counts); one
+  that is not is left alone (`held_by_other_bot` when bound to another Bot,
+  `artifact_rejected` when it is not a dashboard, is a live pointer by
+  `dashboard_package.is_live_pointer`, or is bound to no Bot). An archive package whose
+  staged `current.html` is bound to a different Bot is refused too
+  (`held_by_other_bot`), before `BoundIndex`, so two archive Bots pinning one package
+  get the same outcome in either order. `BoundIndex` checks the live
+  binding of every package here, and another package already bound to this same Bot
+  is `another_package_of_this_bot`, so an archive cannot bind a second page to a Bot
+  or take over another Bot's package.
+- **An added Bot never resolves to a crewmate file the import did not write.** A
+  Merge skips an archive Bot whose name already holds a crewmate file that is not
+  its own (`crewmate_name_held`, `held_by_other_bot`), a crewmate file whose owner
+  record names another data home (`mate_config.crewmate_file_foreign`,
+  `foreign_owner`, checked up front) or a user-level agent file (`user_agent_named`);
+  these scans run once, before the config lock. A Replace reports such a foreign file
+  `not_written` / `foreign_owner`, and an unreadable owner record makes an existing
+  file `held_by_other_bot`. An existing crewmate file is the Bot's own only by
+  the own-file rule of `restore_crewmate_files`, and never when another data home
+  owns it: an owned slug, a
+  minimal file (`is_minimal_crewmate_file`: every key but `name` holds the empty
+  value of its own type; it grants
+  nothing), or a file on record for this data home when this install had no
+  `config.json` before the import (`fresh_home`). A file with additions another Bot
+  of this data home was given is never adopted, because it carries that Bot's
+  grants.
+- **An entry already here is adopted only by the Bot that owned it.** Before the
+  mode branch `before_import` records this install's own Bots, and `prepare_bots`
+  derives `owned_slugs` from them by the same-Bot rule (`raw_entry_identity`: same
+  name, same `member_id` and same `memory_store`; a version-1 Bot matches with an
+  empty `member_id` on both sides, but is still never given a new binding). A dashboard, briefing,
+  crewmate file or binding already at a Bot's path counts as that Bot's own only
+  when its slug is owned; one that belonged to a different Bot is left untouched
+  and the part is reported `held_by_other_bot`, so an archive Bot that takes a
+  freed slug or name never inherits another Bot's page, abilities or DM thread.
+
+Each store installs add-only: built in the Bot's stage, a random owner-only
+`.bot-stage-<32 hex>` directory made by exclusive mkdir in the import's private
+directory (never a name derived from the extraction's; an existing entry is
+`write_failed`), each file copied by `pinned_fs.copy_file_pinned` (a pinned no-follow open
+and an exclusive create), and
+published in two steps: the completed staged directory is renamed through pinned
+descriptors to a hidden sibling (`.<name>.publish-<hex>`) in the destination's
+parent, then published with `platform_compat.publish_dir_noreplace` (whose own
+fallback, where the platform has no atomic no-replace rename, is an exclusive mkdir
+claim then a rename). A carried package is checked on its staged bytes first
+(`_check_staged_artifact`): a `meta.json` whose `REFUSED_META_FIELDS` entry
+(`source_path`, `source_root`, `source_copy_only`, which change what the local
+artifact serves or widen its allowed source roots) holds anything but exactly the
+store's empty value, type included (`REFUSED_META_EMPTY`), installs nothing; the
+package may hold only `meta.json`, `current.html` and `versions/v<n>.html` up to its
+version, every version bound to that Bot and `current.html` equal to the highest;
+the comment sidecar `comments.json` is never staged (`UNSTAGED_ARTIFACT_FILES`); and the
+`STRIPPED_META_FIELDS` remote-copy pointers are removed before publish, so the
+archive cannot point a restored artifact at a local file or a remote publication.
+The sibling is removed on any failure, and a cross-device move
+is `write_failed`, so a store that already exists here is kept whole. A store found
+before staging is kept without staging; during staging a `FileExistsError` is
+`write_failed`, and only the publish step's means the store exists. `briefing.md`
+and `welcome_claimed.json` install all or nothing: the first is removed when the
+second fails. The fallbacks write through descriptors too: the stores rewrite with
+`atomic_write_at` and publish with `pinned_fs.copy_file_pinned`, and the crewmate
+file's exclusive-create fallback uses `pinned_fs.write_new_file_pinned`. A crewmate
+name must pass `safe_path_component`, which also refuses `:`, `<`, `>`, `"`, `|`,
+`?`, `*`, control characters and the Windows reserved device names. Every bounded
+read of an archive or Bot file (the stores, the export's
+`instance.json` read and the binding claims) goes through
+`portability_bot_types.read_fd_at_most`, which raises `BoundedReadError` past its
+limit. A package slug read from the archive passes the artifact store's own slug
+check (`artifacts.slug_is_well_formed`) before any `artifacts/<P>` path is built (`artifact_rejected` otherwise).
+
 ## Module layout
 
 The security controls ship as the package `src/kiro_crew/security/`. `kiro_crew.security` remains the only import path for the split controls: `security/__init__.py` is a facade that re-exports every name the rest of the tree and the tests reach, so a caller never names a submodule. Submodules hold one responsibility cluster each, and the facade is what keeps that split an internal detail rather than an API. One module on this surface sits outside the facade by design: `readonly_bash.py`, the read-only bash classifier, is imported by its own path (`kiro_crew.security.readonly_bash`) and is not re-exported -- see its entry below for why.

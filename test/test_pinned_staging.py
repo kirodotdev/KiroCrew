@@ -759,7 +759,9 @@ def test_the_import_path_passes_its_staging_decision_to_both_branches() -> None:
         "except PinnedPathRefusal" not in source
     ), "the refusal is being swallowed again; a returned summary reads as success"
     assert "rejected_replace" not in source
-    assert "_do_replace(snap, mc, None, allow_unpinned=not staging_pinned)" in source, (
+    assert (
+        "_do_replace(snap, mc, replace_components, allow_unpinned=not staging_pinned)" in source
+    ), (
         "the replace branch does not receive the entry decision, so it will re-gate and "
         "refuse on a platform that cannot pin"
     )

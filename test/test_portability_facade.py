@@ -269,6 +269,17 @@ def test_the_mirror_indexes_exactly_the_owners_with_no_exclusion_and_no_forward(
     assert index.divergent() == ()
 
 
+BOT_SIBLINGS = (
+    "kiro_crew.portability_bot_bindings",
+    "kiro_crew.portability_bot_crewmates",
+    "kiro_crew.portability_bot_export",
+    "kiro_crew.portability_bot_roster",
+    "kiro_crew.portability_bot_stores",
+    "kiro_crew.portability_bot_types",
+    "kiro_crew.portability_bots",
+)
+
+
 def test_the_owners_are_every_portability_sibling() -> None:
     assert portability.__file__ is not None
     siblings = sorted(
@@ -278,8 +289,9 @@ def test_the_owners_are_every_portability_sibling() -> None:
     # ``portability_stream`` is a sibling but not an owner: it builds the export archive,
     # reads every portability name as ``portability.<name>`` at call time and is
     # re-exported by the facade at its foot, so it uses the facade instead of holding
-    # a part of it.
-    assert siblings == sorted([*OWNERS, "kiro_crew.portability_stream"])
+    # a part of it. The ``portability_bot*`` modules restore each Bot of an instance
+    # import; they hold no part of the facade and reach it as ``portability.<name>``.
+    assert siblings == sorted([*OWNERS, "kiro_crew.portability_stream", *BOT_SIBLINGS])
 
 
 def _project_imports(tree: ast.Module) -> set[str]:
