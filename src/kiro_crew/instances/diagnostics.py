@@ -30,7 +30,11 @@ from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
 # `_send_over_ssm` is imported rather than re-spelled so this rung's SSM dispatch
 # cannot drift from the mint path's on the inner/outer timeout pair -- the same
 # reason `_build_ssh_argv` is shared with the SSH rung rather than rebuilt here.
-from kiro_crew.instances.ssm_token_mint import _send_over_ssm
+from kiro_crew.instances.ssm_token_mint import (
+    NOT_INSTALLED_REASON,
+    USER_UNKNOWN_REASON,
+    _send_over_ssm,
+)
 from kiro_crew.instances.token_mint import (
     REMOTE_BIN_CANDIDATES,
     _build_ssh_argv,
@@ -131,10 +135,8 @@ _SSM_REASONS = {
     SSM_ACCESS_DENIED: "Your AWS profile isn't allowed to run commands on this instance over "
     "SSM (ssm:SendCommand was denied). A crew over SSM needs ssm:StartSession, ssm:SendCommand "
     "and ssm:GetCommandInvocation on this instance: add them to the profile's IAM policy.",
-    SSM_USER_UNKNOWN: "User {user} doesn't exist on this instance. Ubuntu images use ubuntu. "
-    "Set Remote user in Edit settings.",
-    REMOTE_NOT_INSTALLED: "Kiro Crew isn't installed for user {user} on this instance. Run the "
-    "install there as that user, or set Remote kirocrew path in Edit settings.",
+    SSM_USER_UNKNOWN: USER_UNKNOWN_REASON,
+    REMOTE_NOT_INSTALLED: NOT_INSTALLED_REASON,
     REMOTE_WRONG_PORT: "A Kiro Crew gateway is listening on port {found}, not {port}. Set "
     "Remote port to {found} in Edit settings.",
 }
