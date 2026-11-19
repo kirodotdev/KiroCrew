@@ -2872,8 +2872,15 @@ added a fourth; each was a real defect:
   three-pass clone test waited `WAIT_S` (10 s) for `exhausted`, and the failing snapshot
   showed `pass 3/3` complete with only the final status flip outstanding: a real clone
   plus three passes of several git subprocesses each, on a host shared with five other
-  workers, is more than ten seconds on Windows. It now waits a named `WAIT_S * 3` with
-  the reason next to it — class 5 above, not a stuck watcher.
+  workers, is more than ten seconds on Windows. Multiplying the ceiling (`WAIT_S * 3`)
+  on the two tests that had failed did not fix the file: once the Windows backend shards
+  ran six xdist workers, the one-pass export and head-branch tests failed the same way
+  (`watcher never reached {'exhausted'}`, last status `nudging`, `pass 1/1`) on seven
+  pull requests in a day. The file's poll helpers now call `wait_until` with no
+  `timeout`, so every wait gets the lost-run bound (half the test's timeout). A
+  file-wide short ceiling shared by poll helpers is D1's "bets on the runner's speed"
+  for EVERY caller: raise it to the lost-run bound once, in the helper, rather than
+  per test after each one fails.
 - **Two `resolve()` calls that disagree by a prefix.** The CI Windows shard failed
   `test_work_ledger`'s four-threads-bind-one-worker test with one thread reporting
   `path traversal blocked for worker key` — for a key with no traversal in it. The
