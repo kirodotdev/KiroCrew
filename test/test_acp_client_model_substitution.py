@@ -344,15 +344,15 @@ class TestSubstitutionFollow:
             lambda wire_servers: guard_calls.append(list(wire_servers or []))
         )
         sent = []
-        settings = tmp_path / ".claude" / "settings.local.json"
 
         async def _send(method, params):
             sent.append(list(params.get("mcpServers") or []))
             if len(sent) == 1 and lose_surface:
-                # A link: the one shape that can be neither governed nor left out
-                # of the session's setting sources.
-                settings.unlink()
-                settings.symlink_to(tmp_path / "elsewhere.json")
+                # The path turns unusable (a link, or a sensitive target): the one
+                # shape that can be neither governed nor left out of the session's
+                # setting sources. Patched rather than built with a real symlink,
+                # so the case runs on hosts without symlink privilege.
+                monkeypatch.setattr(acp_client, "_claude_settings_usable", lambda _path: False)
             return len(sent)
 
         waits = 0
