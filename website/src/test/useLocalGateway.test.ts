@@ -61,13 +61,24 @@ describe('useLocalGateway', () => {
     await waitFor(() => expect(result.current.localGatewayEnabled).toBe(true))
   })
 
-  it('survives a rejecting bridge without losing its current value', async () => {
+  it('hides the switch when main.js refuses the read, as it does for a connection window', async () => {
     installBridge({
-      get: () => Promise.reject(new Error('ipc gone')),
-      set: () => Promise.reject(new Error('ipc gone')),
+      get: () => Promise.reject(new Error("local-gateway:get is restricted to the main window's dashboard")),
+      set: vi.fn(),
     })
     const { result } = renderHook(() => useLocalGateway())
+    await waitFor(() => expect(result.current.localGatewaySupported).toBe(false))
+  })
+
+  it('puts the switch back when main.js refuses the write', async () => {
+    installBridge({
+      get: () => Promise.resolve(true),
+      set: () => Promise.reject(new Error("local-gateway:set is restricted to the main window's dashboard")),
+    })
+    const { result } = renderHook(() => useLocalGateway())
+    await waitFor(() => expect(result.current.localGatewayEnabled).toBe(true))
+
     await act(async () => { result.current.setLocalGatewayEnabled(false) })
-    expect(result.current.localGatewayEnabled).toBe(false)
+    await waitFor(() => expect(result.current.localGatewayEnabled).toBe(true))
   })
 })

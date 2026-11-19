@@ -969,10 +969,19 @@ function createIpcRegistrar({
     });
 
     // This setting deliberately has next-launch semantics. Toggling it never
-    // starts or stops the gateway which owns the current session.
-    ipcMain.handle("local-gateway:get", () => isLocalGatewayEnabled(store));
-    ipcMain.handle("local-gateway:set", (_event, enabled) =>
-      setLocalGatewayEnabled(store, enabled));
+    // starts or stops the gateway which owns the current session. It decides
+    // whether THIS machine runs a gateway, so only the main window's dashboard
+    // reads or writes it (assertMainWindowDashboard, below; called only after
+    // registration ends), like the close-action and tray rows: a connection
+    // window shares this preload and is pointed at another machine's gateway.
+    ipcMain.handle("local-gateway:get", async (event) => {
+      assertMainWindowDashboard(event, "local-gateway:get");
+      return isLocalGatewayEnabled(store);
+    });
+    ipcMain.handle("local-gateway:set", async (event, enabled) => {
+      assertMainWindowDashboard(event, "local-gateway:set");
+      return setLocalGatewayEnabled(store, enabled);
+    });
 
     // THE local-dashboard gate. Every channel whose answer is a fact about the
     // machine in front of the user — rather than about the gateway a window

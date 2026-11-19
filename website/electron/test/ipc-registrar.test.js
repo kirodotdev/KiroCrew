@@ -206,9 +206,6 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
 
   h.listeners.get("badge:set")(event, 7.9);
   assert.deepEqual(lastCall(h.appCalls, "setBadgeCount").slice(1), [7]);
-  assert.equal(h.handlers.get("local-gateway:get")(event), true);
-  assert.equal(h.handlers.get("local-gateway:set")(event, false), false);
-  assert.equal(h.store.data.runLocalGateway, false);
   assert.deepEqual(h.handlers.get("global-hotkey:get")(event), {
     accelerator: "",
     requested: "",
@@ -1463,6 +1460,8 @@ const MAIN_WINDOW_SETTING_CHANNELS = [
   ["tray-icon:set", [false]],
   ["minimize-to-tray:get", []],
   ["minimize-to-tray:set", [true]],
+  ["local-gateway:get", []],
+  ["local-gateway:set", [false]],
 ];
 const MAIN_WINDOW_ONLY = (channel) => ({
   message: `${channel} is restricted to the main window's dashboard`,
@@ -1490,6 +1489,11 @@ function assertCloseActionRefused(h, channel) {
     h.windowCalls.some(([name]) => name.startsWith("closeAction.") || name.startsWith("trayIcon.")),
     false,
     `${channel}: a refused sender must not read or write the setting`,
+  );
+  assert.equal(
+    h.store.writes.some(([key]) => key === "runLocalGateway"),
+    false,
+    `${channel}: a refused sender must not write the local-gateway choice`,
   );
 }
 
@@ -1547,6 +1551,13 @@ test("main-window setting channels refuse when there is no main window", async (
     await assert.rejects(() => h.handlers.get(channel)(mainFrameEvent(), ...args), MAIN_WINDOW_ONLY(channel));
     assertCloseActionRefused(h, channel);
   }
+});
+
+test("local-gateway channels answer the main window's dashboard, including on a remote gateway", async () => {
+  const h = closeActionHarness({ wslGatewayLocal: false, primaryPortOwner: "foreign" });
+  assert.equal(await h.handlers.get("local-gateway:get")(mainFrameEvent()), true);
+  assert.equal(await h.handlers.get("local-gateway:set")(mainFrameEvent(), false), false);
+  assert.equal(h.store.data.runLocalGateway, false);
 });
 
 test("tray-icon channels answer the main window's dashboard, including on a remote gateway", async () => {
