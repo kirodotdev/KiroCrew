@@ -29,7 +29,12 @@ from connections_mint_helpers import (
 from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
 from kiro_crew import mcp_grant
-from kiro_crew.acp.types import METHOD_MCP_SERVER_INIT_FAILURE, JsonRpcMessage
+from kiro_crew.acp.types import (
+    METHOD_MCP_OAUTH_REQUEST,
+    METHOD_MCP_SERVER_INIT_FAILURE,
+    METHOD_MCP_SERVER_INITIALIZED,
+    JsonRpcMessage,
+)
 from kiro_crew.connections import mint
 from kiro_crew.testing.wait import await_until, finished
 
@@ -496,6 +501,13 @@ async def test_the_revalidation_fallback_is_rate_limited(
     await mint._dispose_mint(entry)
 
 
+def _started_without_challenge(client: _FakeClient) -> None:
+    """Queue what kiro-cli sends for a server that started and asked for no sign-in."""
+    client.frames.append(
+        JsonRpcMessage(method=METHOD_MCP_SERVER_INITIALIZED, params={"serverName": "notion"})
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_refuted_grant_with_no_challenge_is_not_republished_as_granted(
     monkeypatch: pytest.MonkeyPatch,
@@ -515,6 +527,7 @@ async def test_a_refuted_grant_with_no_challenge_is_not_republished_as_granted(
         def __init__(self, **kwargs: Any) -> None:
             super().__init__(**kwargs)
             self.requests = []  # no challenge on the fresh spawn
+            _started_without_challenge(self)
 
     _FakeClient.command_results["/mcp"] = {
         "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
@@ -527,6 +540,49 @@ async def test_a_refuted_grant_with_no_challenge_is_not_republished_as_granted(
     view = mint.pending_mint_for("notion")
     assert view is not None
     assert _state_only(view) == {"state": "failed", "reason": "mint_grant_unproven"}
+    assert logged == ["error reason=mint_grant_unproven"]
+
+
+@pytest.mark.parametrize("fresh_spawn", ["fails", "never_reports"])
+@pytest.mark.asyncio
+async def test_a_refuted_grant_whose_fresh_spawn_fails_stays_unproven(
+    monkeypatch: pytest.MonkeyPatch, fresh_spawn: str
+):
+    # A check disproved the stored grant, and the fresh spawn then fails the same
+    # way (or never reports). The card's unproven-grant fence keys on
+    # mint_grant_unproven, so that reason must win over the spawn's own failure.
+    _write_paired_grant_artifacts(_URL)
+    logged: list[str] = []
+    monkeypatch.setattr(
+        mint,
+        "_log_mint_outcome",
+        lambda slug, outcome, detail: logged.append(f"{outcome} {detail}"),
+    )
+
+    class _RefutedThenFailing(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []
+            if fresh_spawn == "fails":
+                self.frames.append(
+                    JsonRpcMessage(
+                        method=METHOD_MCP_SERVER_INIT_FAILURE,
+                        params={"serverName": "notion", "error": "connection refused"},
+                    )
+                )
+
+    _FakeClient.command_results["/mcp"] = {
+        "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
+    }
+    attempts = iter([_FakeClient, _RefutedThenFailing])
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: next(attempts))
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_grant_unproven",
+    }
     assert logged == ["error reason=mint_grant_unproven"]
 
 
@@ -616,6 +672,7 @@ async def test_a_server_that_never_challenges_is_granted_and_disposed(
         def __init__(self, **kwargs: Any) -> None:
             super().__init__(**kwargs)
             self.requests = []
+            _started_without_challenge(self)
 
     monkeypatch.setattr(mint, "_acp_client_factory", lambda: _NoChallenge)
 
@@ -634,12 +691,95 @@ async def test_a_challenge_for_another_server_is_not_claimed(
         def __init__(self, **kwargs: Any) -> None:
             super().__init__(**kwargs)
             self.requests = [{"serverName": "linear", "oauthUrl": _AUTHORIZE}]
+            _started_without_challenge(self)
 
     monkeypatch.setattr(mint, "_acp_client_factory", lambda: _WrongServer)
 
     await mint.start_oauth_mint("notion", _URL)
 
     assert _state_only(mint.pending_mint_for("notion")) == {"state": "granted"}
+
+
+@pytest.mark.asyncio
+async def test_a_challenge_that_arrives_after_the_init_drain_is_still_served(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Readiness drains init frames for about a second, and a remote server that
+    # discovers and registers a client first (Atlassian) asks for sign-in later.
+    # The mint waits for that challenge: silence is not an open endpoint.
+    class _SlowChallenge(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []
+
+        async def _drain_notifications(self, **kwargs: Any) -> None:
+            # The challenge arrives only on the drain that waits for the server.
+            if kwargs.get("until_declared"):
+                self.requests.append({"serverName": "notion", "oauthUrl": _AUTHORIZE})
+                self.frames.append(
+                    JsonRpcMessage(
+                        method=METHOD_MCP_OAUTH_REQUEST,
+                        params={"serverName": "notion", "oauthUrl": _AUTHORIZE},
+                    )
+                )
+            await super()._drain_notifications(**kwargs)
+
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _SlowChallenge)
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "waiting",
+        "oauth_url": _AUTHORIZE,
+    }
+    await mint._dispose_mint(mint._mints["notion"])
+
+
+@pytest.mark.asyncio
+async def test_a_server_that_fails_to_start_is_not_reported_granted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A failure report is not an open endpoint: the card must say the mint failed
+    # instead of clearing the wait as if the sign-in were done.
+    class _FailsLate(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []
+            self.frames.append(
+                JsonRpcMessage(
+                    method=METHOD_MCP_SERVER_INIT_FAILURE,
+                    params={"serverName": "notion", "error": "connection refused"},
+                )
+            )
+
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _FailsLate)
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_server_failed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_process_that_dies_before_its_server_reports_fails_as_gone(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _Dies(_FakeClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.requests = []
+            self.alive = False
+
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _Dies)
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_process_gone",
+    }
 
 
 @pytest.mark.asyncio

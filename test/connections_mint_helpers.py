@@ -88,6 +88,11 @@ class _FakeClient:
     def mcp_session_report(self) -> McpSessionReport:
         return self.report
 
+    async def wait_for_declared_mcp(self, timeout: float) -> tuple[str, ...]:
+        # The real method drains until the spec's servers report; the fake drains once.
+        await self._drain_notifications(duration=timeout, until_declared=True)
+        return ()
+
     def is_process_alive(self) -> bool:
         return self.alive
 
