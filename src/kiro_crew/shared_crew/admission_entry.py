@@ -224,6 +224,12 @@ async def refuse_if_slot_closed(state: Any, slot: Any, admission: _gate.Admissio
 
     if slot_is_live(state, slot):
         return None
+    await cancel_admitted(admission)
+    return web.json_response({"error": "session closed", "code": "slot_closed"}, status=409)
+
+
+async def cancel_admitted(admission: _gate.Admission) -> None:
+    """Give back *admission*'s parked work for a queued send refused after it was admitted."""
     work = admission.work
     if not admission.passthrough and admission.service is not None and work is not None:
         try:
@@ -231,8 +237,7 @@ async def refuse_if_slot_closed(state: Any, slot: Any, admission: _gate.Admissio
                 work.work_id, expected_revision=work.revision, reason=ReasonCode.CANCELLED_BY_USER
             )
         except Exception:  # noqa: BLE001 -- the refusal stands; restart reconcile settles it
-            logger.debug("shared crew: cancelling %s for a closed slot failed", work.work_id)
-    return web.json_response({"error": "session closed", "code": "slot_closed"}, status=409)
+            logger.debug("shared crew: cancelling refused queued work %s failed", work.work_id)
 
 
 def stamp_queued_work(slot: Any, queue_id: str, admission: _gate.Admission) -> None:

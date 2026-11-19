@@ -10234,7 +10234,8 @@
       "status_running": "작업 중",
       "status_unread": "읽지 않음",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "이 탭의 고정을 해제합니다. 고정된 탭은 닫을 수 없습니다."
+      "unpin_tab_hint": "이 탭의 고정을 해제합니다. 고정된 탭은 닫을 수 없습니다.",
+      "status_action": "내 할 일 · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "휴대폰에서 {{productName}} 사용",
@@ -11558,6 +11559,34 @@
       "zoom_in": "확대",
       "zoom_out": "축소",
       "zoom_percent": "{{percent}}%"
+    },
+    "waitingOnYou": {
+      "header": "내 할 일",
+      "stack_label": "에이전트가 요청한 작업",
+      "pinned_ago": "{{time}} 고정됨",
+      "show_fewer": "접기",
+      "show_more": "더 보기",
+      "show_less": "간략히 보기",
+      "done": "완료",
+      "note_label": "에이전트에게 남길 메모",
+      "note_placeholder": "메모 추가(선택)",
+      "dismiss_aria": "이 요청 닫기",
+      "read_only": "세션 소유자만 답할 수 있습니다.",
+      "closed": "이 요청은 닫혔습니다.",
+      "closed_draft": "메모는 전송되지 않았습니다.",
+      "discard": "버리기",
+      "answer_failed": "답이 세션에 전달되지 않았습니다. 다시 시도하세요.",
+      "answer_queued": "답변이 대기열에 있으며 에이전트가 작업을 마치면 전송됩니다.",
+      "answer_refused": "세션이 답을 받지 않아 요청이 고정된 채로 남아 있습니다.",
+      "dismiss_failed": "이 요청을 닫지 못했습니다. 다시 시도하세요.",
+      "status_line": "내 할 일 · {{title}}",
+      "history_pinned": "고정됨: {{title}}",
+      "history_answered": "답변함: {{title}}",
+      "history_dismissed": "무시함: {{title}}",
+      "history_withdrawn": "철회됨: {{title}}",
+      "history_expired": "만료됨: {{title}}",
+      "history_closed": "종료됨: {{title}}",
+      "more_count_other": "+{{n}}개 더"
     }
   },
   "hooks": {

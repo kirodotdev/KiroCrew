@@ -10234,7 +10234,8 @@
       "status_running": "処理中",
       "status_unread": "未読",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "このタブのピン留めを解除します。ピン留めしたタブは閉じられません。"
+      "unpin_tab_hint": "このタブのピン留めを解除します。ピン留めしたタブは閉じられません。",
+      "status_action": "あなたへの依頼 · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "スマホで {{productName}} を使う",
@@ -11558,6 +11559,34 @@
       "zoom_in": "拡大",
       "zoom_out": "縮小",
       "zoom_percent": "{{percent}}%"
+    },
+    "waitingOnYou": {
+      "header": "あなたへの依頼",
+      "stack_label": "エージェントからの依頼",
+      "pinned_ago": "{{time}}にピン留め",
+      "show_fewer": "折りたたむ",
+      "show_more": "もっと表示",
+      "show_less": "表示を減らす",
+      "done": "完了",
+      "note_label": "エージェントへのメモ",
+      "note_placeholder": "メモを追加（任意）",
+      "dismiss_aria": "この依頼を閉じる",
+      "read_only": "セッションの所有者だけが回答できます。",
+      "closed": "この依頼は終了しました。",
+      "closed_draft": "メモは送信されていません。",
+      "discard": "破棄",
+      "answer_failed": "回答がセッションに届きませんでした。もう一度お試しください。",
+      "answer_queued": "回答はキューに入り、エージェントの作業完了後に送信されます。",
+      "answer_refused": "セッションが回答を受け付けなかったため、依頼はピン留めされたままです。",
+      "dismiss_failed": "この依頼を閉じられませんでした。もう一度お試しください。",
+      "status_line": "あなたへの依頼 · {{title}}",
+      "history_pinned": "固定：{{title}}",
+      "history_answered": "回答済み：{{title}}",
+      "history_dismissed": "却下：{{title}}",
+      "history_withdrawn": "取り下げ：{{title}}",
+      "history_expired": "期限切れ：{{title}}",
+      "history_closed": "終了：{{title}}",
+      "more_count_other": "ほか {{n}} 件"
     }
   },
   "hooks": {

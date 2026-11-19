@@ -20,6 +20,7 @@ import {
   type TabStatus,
 } from '../lib/sessionTabs'
 import { offlineProps } from '../utils/offline'
+import { newestAsk } from '../lib/waitingOnYou'
 import { i18nT } from '../i18n/t'
 import { useLongPressReorder } from '../hooks/useLongPressReorder'
 import { isUntitledSession, sessionDisplayTitle } from '../utils/sessionDisplayTitle'
@@ -35,6 +36,7 @@ const STATUS_LABEL_KEY: Record<Exclude<TabStatus, 'idle'>, string> = {
   unread: 'components.sessionTabStrip.status_unread',
   permission: 'components.sessionTabStrip.status_permission',
   question: 'components.sessionTabStrip.status_question',
+  action: 'components.sessionTabStrip.status_action',
 }
 
 /** How long the replacement outline is held at full strength, then faded. */
@@ -370,7 +372,8 @@ export default function SessionTabStrip({ tabs, pinned = NO_PINS, activeKey, cue
     // which would defeat the point of ranking a blocked session above a
     // running one in the first place. 'idle' contributes nothing, so an
     // ordinary tab is still named by its session and nothing else.
-    const statusWord = status === 'idle' ? '' : i18nT(STATUS_LABEL_KEY[status])
+    // An ask names what it needs, as the sidebar row does.
+    const statusWord = status === 'idle' ? '' : i18nT(STATUS_LABEL_KEY[status], status === 'action' ? { title: newestAsk(slot)?.title ?? '' } : undefined)
     const accessibleName = statusWord
       ? i18nT('components.sessionTabStrip.tab_name_with_status', { name: title, status: statusWord })
       : title

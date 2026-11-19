@@ -282,6 +282,32 @@ export interface ChatDonePayload extends TurnIdentityFields {
   run_seconds?: number
 }
 
+/** One option of a waiting-on-you decision card. */
+export interface WaitingOnYouOption {
+  label: string
+  /** "" when the agent gave none. */
+  description: string
+}
+
+/** An ask the agent pinned with the `waiting_on_you` tool: something it needs
+ *  from the person, kept above the composer until the person answers or writes,
+ *  the agent clears it, or it expires. The gateway store is the authority; this
+ *  is its projection on the slot row. */
+export interface WaitingOnYouAsk {
+  /** The agent's handle for the ask, unique within the session. */
+  key: string
+  /** Server-minted identity of this declaration. A re-declare of the same key
+   *  mints a new one, so an answer naming an old one counts as a plain message. */
+  ask_id: string
+  title: string
+  /** Markdown; "" when the agent gave none. */
+  detail: string
+  /** Empty for an action card, answered with "Done" and an optional note. */
+  options: WaitingOnYouOption[]
+  /** Epoch seconds of the ask's last change. */
+  ts: number
+}
+
 export interface ChatSlot extends TurnIdentityFields {
   /** Which namespace `agent` was chosen in: a configured member, a shared
    *  provider template, or "" when the choice was made by name alone or came
@@ -470,6 +496,10 @@ export interface ChatSlot extends TurnIdentityFields {
    * `waiting_for_input` (true of every finished turn, and therefore no signal)
    * and separate from `pending_approval` (a tool gate). */
   needs_input?: boolean
+  /** The asks the agent pinned for the person, in stack order, oldest
+   *  declaration first; a replaced ask keeps its place. Separate from
+   *  `needs_input`, which a pinned ask never sets. Absent from an older gateway. */
+  waiting_on_you?: WaitingOnYouAsk[]
   /** The transcript shows the last turn ending without a reply (trailing error
    * row or unanswered user row) — the state behind the composer's Resume
    * button. Always false while `running`. Lets the sidebar stop rendering a

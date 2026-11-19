@@ -413,6 +413,15 @@ def append(
         # reopening a session is not writing in it.
         if note_participant:
             note_author(self, meta)
+            # The owner writing in the chat retires the waiting-on-you asks: the one
+            # a checked card-answer claim names, else every one
+            # (``waiting_on_you_events``). A resumed row is not new writing.
+            try:
+                from kiro_crew.dashboard.waiting_on_you_events import on_live_user_row
+
+                meta = on_live_user_row(getattr(self._on_message, "__self__", None), self.key, meta)
+            except Exception:
+                logger.debug("waiting-on-you retirement failed for %s", self.key, exc_info=True)
     if meta:
         msg["meta"] = meta
     # Stamp a per-row delivery identity. A client sees the SAME row through

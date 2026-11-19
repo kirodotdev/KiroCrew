@@ -146,6 +146,15 @@ async def _remove_slot_for_history_key(
 
         await close_work_item_for_slot(worker_key)
 
+    # The deleted conversation's waiting-on-you asks go with it, by every slot-key
+    # spelling it had. Imported here, never at boot.
+    from kiro_crew.dashboard.waiting_on_you_events import forget_deleted_session
+
+    await forget_deleted_session(
+        state,
+        set(_history_delete_candidate_keys(key)) | ({slot.key} if slot is not None else set()),
+    )
+
     # Pins, work ledgers, and autocompact overrides are independent state. A
     # transcript can be created or restored by another process after any owner
     # scan, so deleting those sidecars cannot be made atomic here. Preserve them:

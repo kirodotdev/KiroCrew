@@ -39,6 +39,9 @@ import { Btn } from './ui'
 import ChatDropOverlay from './ChatDropOverlay'
 import PaneDim from './PaneDim'
 import PendingQuestionCard from './PendingQuestionCard'
+import WaitingOnYouStack from './waitingOnYou/LazyWaitingOnYouStack'
+import { pinnedAsks } from '../lib/waitingOnYou'
+import { ActionForYouPill } from './waitingOnYou/LazyActionForYouStatus'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import McpLoadingBar from '../pages/chat/McpLoadingBar'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
@@ -903,6 +906,7 @@ export default function ChatPane({
             </span>
           )}
           <span className="flex-1" />
+          <ActionForYouPill slot={paneSlot} />
           {running && (
             headerStopUnderWay
               // While a stop is under way the caption reads a localized
@@ -1202,6 +1206,10 @@ export default function ChatPane({
             }}
             onDirectSend={onDirectQuestionSend}
           />
+          </div>
+          {/* Below the question card, which takes keyboard focus first. */}
+          <div className="empty:hidden pb-2">
+            <WaitingOnYouStack key={slotKey} slotKey={slotKey} asks={pinnedAsks(paneSlot)} agent={agentOrDefaultLabel(paneSlot?.agent, defaultAgent, paneSlot?.agent_kind)} />
           </div>
         </div>
 

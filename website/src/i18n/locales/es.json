@@ -10716,7 +10716,8 @@
       "status_running": "trabajando",
       "status_unread": "sin leer",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "Deja de fijar esta pestaña. Una pestaña fijada no se puede cerrar."
+      "unpin_tab_hint": "Deja de fijar esta pestaña. Una pestaña fijada no se puede cerrar.",
+      "status_action": "acción para ti · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Usar {{productName}} en tu teléfono",
@@ -12100,6 +12101,36 @@
       "zoom_in": "Acercar",
       "zoom_out": "Alejar",
       "zoom_percent": "{{percent}} %"
+    },
+    "waitingOnYou": {
+      "header": "Acción para ti",
+      "stack_label": "Lo que el agente necesita de ti",
+      "pinned_ago": "Fijado {{time}}",
+      "show_fewer": "Mostrar menos",
+      "show_more": "Mostrar más",
+      "show_less": "Mostrar menos",
+      "done": "Listo",
+      "note_label": "Nota para el agente",
+      "note_placeholder": "Agrega una nota (opcional)",
+      "dismiss_aria": "Descartar esta solicitud",
+      "read_only": "Solo quien es dueño de la sesión puede responder.",
+      "closed": "Esta solicitud se cerró.",
+      "closed_draft": "Tu nota no se envió.",
+      "discard": "Descartar",
+      "answer_failed": "Tu respuesta no llegó a la sesión. Inténtalo de nuevo.",
+      "answer_queued": "Tu respuesta está en cola y se enviará cuando el agente termine.",
+      "answer_refused": "La sesión no aceptó la respuesta, así que la solicitud sigue fijada.",
+      "dismiss_failed": "No se pudo descartar esta solicitud. Inténtalo de nuevo.",
+      "status_line": "Acción para ti · {{title}}",
+      "history_pinned": "Fijado: {{title}}",
+      "history_answered": "Respondido: {{title}}",
+      "history_dismissed": "Descartado: {{title}}",
+      "history_withdrawn": "Retirado: {{title}}",
+      "history_expired": "Caducado: {{title}}",
+      "history_closed": "Cerrado: {{title}}",
+      "more_count_one": "+{{n}} más",
+      "more_count_many": "+{{n}} más",
+      "more_count_other": "+{{n}} más"
     }
   },
   "hooks": {

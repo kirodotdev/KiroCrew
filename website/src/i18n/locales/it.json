@@ -10716,7 +10716,8 @@
       "status_running": "in corso",
       "status_unread": "non letta",
       "tab_name_with_status": "{{name}} — {{status}}",
-      "unpin_tab_hint": "Rimuove il fissaggio di questa scheda. Una scheda fissata non si può chiudere."
+      "unpin_tab_hint": "Rimuove il fissaggio di questa scheda. Una scheda fissata non si può chiudere.",
+      "status_action": "azione per te · {{title}}"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Usa {{productName}} sul telefono",
@@ -12100,6 +12101,36 @@
       "zoom_in": "Aumenta zoom",
       "zoom_out": "Riduci zoom",
       "zoom_percent": "{{percent}}%"
+    },
+    "waitingOnYou": {
+      "header": "Azione per te",
+      "stack_label": "Ciò che l’agente ti chiede",
+      "pinned_ago": "Fissato {{time}}",
+      "show_fewer": "Mostra meno",
+      "show_more": "Mostra altro",
+      "show_less": "Mostra meno",
+      "done": "Fatto",
+      "note_label": "Nota per l’agente",
+      "note_placeholder": "Aggiungi una nota (facoltativa)",
+      "dismiss_aria": "Ignora questa richiesta",
+      "read_only": "Solo il proprietario della sessione può rispondere.",
+      "closed": "Questa richiesta è stata chiusa.",
+      "closed_draft": "La tua nota non è stata inviata.",
+      "discard": "Scarta",
+      "answer_failed": "La tua risposta non è arrivata alla sessione. Riprova.",
+      "answer_queued": "La tua risposta è in coda e verrà inviata quando l’agente avrà finito.",
+      "answer_refused": "La sessione non ha accettato la risposta, quindi la richiesta resta fissata.",
+      "dismiss_failed": "Impossibile ignorare questa richiesta. Riprova.",
+      "status_line": "Azione per te · {{title}}",
+      "history_pinned": "Fissato: {{title}}",
+      "history_answered": "Risposto: {{title}}",
+      "history_dismissed": "Ignorato: {{title}}",
+      "history_withdrawn": "Ritirato: {{title}}",
+      "history_expired": "Scaduto: {{title}}",
+      "history_closed": "Chiuso: {{title}}",
+      "more_count_one": "+{{n}} altro",
+      "more_count_many": "+{{n}} altri",
+      "more_count_other": "+{{n}} altri"
     }
   },
   "hooks": {

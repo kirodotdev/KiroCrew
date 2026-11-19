@@ -16,6 +16,10 @@ const SOURCES: Record<string, string> = {
     { query: '?raw', import: 'default', eager: true },
   ),
   ...import.meta.glob<string>('../components/PreviewTabBody.tsx', { query: '?raw', import: 'default', eager: true }),
+  ...import.meta.glob<string>(
+    ['../components/waitingOnYou/*.{ts,tsx}', '!../components/waitingOnYou/*.test.{ts,tsx}'],
+    { query: '?raw', import: 'default', eager: true },
+  ),
 }
 
 const IMPORTS_LAZY = /import\s*(?:\w+\s*,\s*)?\{[^}]*\blazy\b[^}]*\}\s*from\s*['"]react['"]/
@@ -25,6 +29,7 @@ describe('the chat page lazy parts', () => {
   it('load through lazyRetry, never a plain React.lazy()', () => {
     expect(Object.keys(SOURCES)).toContain('../components/PreviewTabBody.tsx')
     expect(Object.keys(SOURCES)).toContain('../pages/chat/SidePanel.tsx')
+    expect(Object.keys(SOURCES)).toContain('../components/waitingOnYou/LazyActionForYouStatus.tsx')
     const plain = Object.entries(SOURCES)
       .filter(([, source]) => IMPORTS_LAZY.test(source) || REACT_DOT_LAZY.test(source))
       .map(([path]) => path)

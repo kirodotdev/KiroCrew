@@ -44,6 +44,7 @@ over and what changes.
 | [Connections](connections.md) | MCP servers and OAuth'd services on one page: the curated provider catalogue, adding your own stdio or remote server, what a health badge means, and why a tool's name may differ |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
+| [Waiting-on-you Cards](waiting-on-you.md) | Let an agent pin an action or decision it needs from you above the composer until you answer it |
 | [Chat Channels](#chat-channels) | DM-based chat with tool approval on ten messaging platforms; the list and per-channel guides are under [Chat Channels](#chat-channels) below |
 | [Agents](agents.md) | Switch between specialized agents per conversation, thread, or cron job |
 | [Bots](crew-members.md) | Keep named Bots — each with its own workspace, memory, template and model — talk to each in a standing thread, and route work to one |

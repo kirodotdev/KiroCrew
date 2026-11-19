@@ -151,6 +151,29 @@ KNOWLEDGE_HASH_MAX_LEN = 16
 # monitor-loop banner's validator, so the two labels share one cap.
 CHAT_BANNER_META_KEY = "banner"
 
+# A validated card-answer claim projected onto a queued entry's client view.
+# The internal camel-case key stays in persisted entry metadata until the drain
+# writes its row; clients receive only these two strings under this wire key.
+WAITING_ON_YOU_ANSWER_VIEW_KEY = "waiting_on_you_answer"
+
+
+def waiting_on_you_answer_view(meta: object) -> dict[str, dict[str, str]]:
+    """A queued card answer's validated ``{key, ask_id}`` client projection."""
+    from kiro_crew.dashboard.waiting_on_you_events import (
+        ANSWER_CLAIM_META_KEY,
+        answer_claim,
+    )
+
+    claim = answer_claim(meta).get(ANSWER_CLAIM_META_KEY)
+    if not claim:
+        return {}
+    return {
+        WAITING_ON_YOU_ANSWER_VIEW_KEY: {
+            "key": claim["key"],
+            "ask_id": claim["ask_id"],
+        }
+    }
+
 
 def banner_meta(meta: object) -> dict[str, str]:
     """``{"banner": ...}`` for a queue entry's label when it is usable, else ``{}``.
@@ -1320,6 +1343,7 @@ def queue_for_next_turn(
     banner: str = "",
     queued_work: Any = None,
     knowledge: dict[str, Any] | None = None,
+    waiting_on_you: dict[str, Any] | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -1442,6 +1466,15 @@ def queue_for_next_turn(
         meta[CHAT_BANNER_META_KEY] = banner
     if knowledge:
         meta.update(knowledge)
+    if waiting_on_you:
+        # A card answer's ``waitingOnYouAnswer`` claim, checked when the drain writes
+        # its row. The drain never merges such an entry, so its row answers one ask.
+        meta.update(waiting_on_you)
+    elif directive_owner_origin:
+        from kiro_crew.dashboard.waiting_on_you_events import shown_asks_meta
+
+        # The drain writes the row after any ask pinned meanwhile; it retires only these.
+        meta.update(shown_asks_meta(state, slot.key))
     qid = slot.queue_append(
         message,
         meta=meta,
@@ -1494,6 +1527,7 @@ def queue_for_next_turn(
         push.setdefault("meta", {})[CHAT_BANNER_META_KEY] = banner
     if knowledge:
         push.setdefault("meta", {}).update(knowledge)
+    push.update(waiting_on_you_answer_view(meta))
     # Accepted, and possibly not persisted: the write ceilings refuse an entry
     # past the count cap or the byte budget and the send is still accepted, so
     # that case is logged at WARNING and drawn on the card this frame makes.
@@ -1738,8 +1772,8 @@ def attachment_meta(user_meta: dict | None) -> dict[str, list[str]]:
 
 
 def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
-    """The wire form of one queue entry: ``id``, ``content``, and ``meta``
-    holding its attachment lists when it carries any.
+    """The wire form of one queue entry: ``id``, ``content``, optional card
+    ``meta``, and a validated ``waiting_on_you_answer`` claim when present.
 
     ``content`` passes :func:`queued_text_for_display`: as typed for an entry
     the session's own human wrote (:func:`queue_entry_is_user_origin`),
@@ -1781,6 +1815,7 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
         view.setdefault("meta", {}).update(banner)
     if knowledge := knowledge_meta(item.get("meta")):
         view.setdefault("meta", {}).update(knowledge)
+    view.update(waiting_on_you_answer_view(item.get("meta")))
     # The structural kind tag rides in ``meta`` so the queue card can classify
     # a system entry (an MCP-App message, for one) without parsing its text —
     # the same enqueue-time source the server's own drain reads, and the same

@@ -170,6 +170,17 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
                 turn._request_prefix_context = _request_prefix_context
         except Exception:
             logger.debug("self-change undo block skipped", exc_info=True)
+        # The asks this agent pinned with ``waiting_on_you``, and the ones closed
+        # since its last turn (told once). Reference data from the gateway's store.
+        try:
+            from kiro_crew.dashboard.waiting_on_you_events import turn_block
+
+            _waiting_block = await turn_block(state, slot)
+            if _waiting_block:
+                _request_prefix_context += _waiting_block
+                turn._request_prefix_context = _request_prefix_context
+        except Exception:
+            logger.debug("waiting-on-you block skipped", exc_info=True)
 
     # Ensure the mirror-source message is always bound before both the Slack
     # and channel-neutral user-message mirror legs run. The assignment in _turn_build_prompt's
