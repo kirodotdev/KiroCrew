@@ -12,7 +12,6 @@ Errors use the OAuth body (``error``, ``error_description``), not the Crew API o
 from __future__ import annotations
 
 import asyncio
-import html
 from typing import Any
 
 from aiohttp import web
@@ -32,8 +31,13 @@ def _error(error: str, description: str, status: int = 400, retry_after: int = 0
     headers = dict(_NO_STORE)
     if retry_after:
         headers["Retry-After"] = str(retry_after)
-    body = {"error": error, "error_description": description}
-    return web.json_response(body, status=status, headers=headers)
+    # ``error`` is the OAuth code (RFC 6749 section 5.2); ``code`` repeats it for the
+    # gateway's own error readers.
+    return web.json_response(
+        {"error": error, "error_description": description, "code": error},
+        status=status,
+        headers=headers,
+    )
 
 
 def _refused(request: web.Request) -> web.Response | None:
@@ -111,16 +115,12 @@ async def oauth_authorize(request: web.Request) -> web.Response:
             "interval": la.POLL_INTERVAL_SECS,
         }
         return web.json_response(body, status=202, headers=_NO_STORE)
+    # Plain text and a Refresh header: the page carries no markup, so nothing the app
+    # sent can be read as markup either.
     again = request.rel_url.update_query(request_id=value["request_id"])
-    page = (
-        "<!doctype html><meta charset=utf-8>"
-        f'<meta http-equiv="refresh" content="{la.POLL_INTERVAL_SECS + 1};'
-        f'url={html.escape(str(again), quote=True)}">'
-        "<title>Kiro Crew</title><p>Waiting for the owner of this Kiro Crew to answer.</p>"
-        f"<p>Code: <b>{html.escape(value['user_code'])}</b></p>"
-    )
-    headers = {**_NO_STORE, "Content-Security-Policy": "default-src 'none'"}
-    return web.Response(text=page, content_type="text/html", headers=headers)
+    text = f"Waiting for the owner of this Kiro Crew to answer.\nCode: {value['user_code']}\n"
+    headers = {**_NO_STORE, "Refresh": f"{la.POLL_INTERVAL_SECS + 1}; url={again}"}
+    return web.Response(text=text, content_type="text/plain", headers=headers)
 
 
 async def oauth_token(request: web.Request) -> web.Response:

@@ -313,7 +313,8 @@ async def test_an_app_goes_from_request_to_token_over_http(client, store, clock)
     pending = await asked.json()
     assert asked.status == 202 and pending["status"] == "pending" and pending["interval"] == 2
     page = await client.get("/oauth/authorize", params={**ASK, "client_id": "<b>x"})
-    assert page.status == 200 and "<b>x" not in await page.text()
+    assert page.status == 200 and page.content_type == "text/plain"
+    assert "<b>x" not in await page.text() and "request_id=greq_" in page.headers["Refresh"]
 
     store.decide(pending["request_id"], True)
     clock.now += la.POLL_INTERVAL_SECS
