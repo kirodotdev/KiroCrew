@@ -30,7 +30,7 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
 # The local editors the Markdown panel's "Open in <editor>" row can target
 # (``dashboard.remote_editor.editor``). Each id is the URL scheme of an editor
 # that keeps the ``vscode-remote`` authority, so the row's link is
-# ``<id>://vscode-remote/ssh-remote+<host><absolute path>``. The dashboard's own list,
+# ``<id>://vscode-remote/ssh-remote+<host><absolute path>:1``. The dashboard's own list,
 # with each editor's name, is ``REMOTE_EDITORS`` in
 # ``website/src/utils/remoteEditorUrl.ts``; keep the two equal.
 REMOTE_EDITOR_IDS: tuple[str, ...] = ("vscode",)
