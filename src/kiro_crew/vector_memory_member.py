@@ -42,6 +42,7 @@ from kiro_crew.memory_kind_routing import (
 )
 from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.project_scope import canonical_scope, scope_is_admissible
+from kiro_crew.sqlite_uri import read_only_uri
 from kiro_crew.validation import normalize_lesson_category
 from kiro_crew.vector_memory_constants import (
     _MAX_EPISODIC_PER_CONSOLIDATION,
@@ -102,7 +103,7 @@ def read_member_database_identity(path: Path) -> tuple[str, str]:
 
     sqlite3 = vm.sqlite3
 
-    db = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+    db = sqlite3.connect(read_only_uri(Path(path).resolve()), uri=True)
     try:
         return _member_identity(db)
     finally:

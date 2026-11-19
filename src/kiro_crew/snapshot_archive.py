@@ -36,6 +36,7 @@ from kiro_crew.snapshot_components import (
     _tree_roots_replace_clears,
     is_product_tree_database,
 )
+from kiro_crew.sqlite_uri import read_only_uri
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 
@@ -375,7 +376,7 @@ def _copy_database_consistently(
                 ),
             )
         return DB_UNSAFE_SOURCE
-    ro_uri = f"{src.absolute().as_uri()}?mode=ro"
+    ro_uri = read_only_uri(src)
     immutable_for: Exception | None = None
     try:
         try:

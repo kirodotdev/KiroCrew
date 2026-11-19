@@ -32,6 +32,7 @@ from functools import wraps
 from pathlib import Path
 
 from kiro_crew import crew_teams
+from kiro_crew.sqlite_uri import read_only_uri
 
 logger = logging.getLogger(__name__)
 
@@ -672,7 +673,7 @@ def _require_legacy_store_files(store: str, target: Path) -> None:
     if not database.is_file():
         raise UnknownMemoryStore(f"memory store {store!r} is unreadable")
     try:
-        connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
+        connection = sqlite3.connect(read_only_uri(database), uri=True)
         try:
             if connection.execute(
                 "SELECT 1 FROM sqlite_schema WHERE name='member_database'"
@@ -1109,7 +1110,7 @@ def _legacy_member_database_identity(path: Path, store: str, alias: str) -> str:
 
     _require_private_member_database(path)
     try:
-        connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        connection = sqlite3.connect(read_only_uri(path.resolve()), uri=True)
     except sqlite3.Error as exc:
         raise UnknownMemoryStore(f"{MEMORY_DB_FILE} is unreadable: {exc}") from exc
     try:
