@@ -3946,9 +3946,9 @@ every assembled prompt, offline; the fixtures and their goldens are in
 A member-mode slot's transcript is the Bot's whole working record: the
 `[auto-nudge cycle N]` turns of its patrol loop, `[Cron notification …]` and
 `[Subagent completion event]` envelopes, every tool call, and the say-nothing
-reply a quiet Heartbeat or `[Worker report]` turn ends on. A work-ledger patrol
-wake with nothing for the user ends on one visible line of what the Bot did
-(`patrol_reply`), which the chat pane shows. The Members page's chat pane shows **only what
+reply a quiet Heartbeat, `[Worker report]` or work-ledger patrol turn ends on: a
+patrol wake with no news for the user says nothing, and a finished task is
+reported in full (the Bot's own patrol rule in `conductor.patrol`). The Members page's chat pane shows **only what
 the Bot says to the user** and the user's own messages. Everything else stays in the slot's history and is filtered at render time by `filterCrewmateChat`
 (`website/src/components/chat/crewmateBubbles.ts`), which `ChatPane` applies
 when its host passes `crewmate`. Ordinary chats never pass it and are drawn
@@ -4746,11 +4746,16 @@ compaction, and the long-task and
 team rules every turn needs: the item budget, one owner per file and one
 integrator per output, merging two lines, reusing a finished worker only for the
 next step of its own line, the plan reviewer, the `pr_merged` bar,
-the hourly check on a quiet wake, routine incidents, reporting before a park, and
-the one-line reply on a patrol wake that has nothing the person must see) are written once,
+the hourly check on a quiet wake, routine incidents, and reporting before a park) are written once,
 in `agent_parts/spec_prompts.py` `_LEDGER_CONDUCTOR_RULES`: the root charter is
 assembled from them (`_CONDUCTOR_PROMPT_SECTIONS`) and `conductor.patrol` names
 each as a placeholder (`context_assembly.member.ledger_rules_block`).
+How each conductor replies to a patrol wake is NOT shared: conductor mode,
+watched live, gets one line (`_CONDUCTOR_PATROL_REPLY`, also in the team lead's
+`_SHARED_CONDUCTOR_RULES_BLOCK`), while a Bot, read once or twice a day, says
+nothing unless there is news (its own rule in `conductor.patrol`). The shared
+`wake_check` and goal-conductor step 6 point at "your patrol-reply rule", so each
+side reads its own.
 `test/test_mate_conductor_parity.py` roots at `crew_mode.crew_mode_agent()`, the
 agent conductor mode runs, checks that every shared rule is in both installed
 prompts, and compares the effective agents, not the spec
