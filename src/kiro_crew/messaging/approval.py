@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 #: How long a pending approval waits for a typed answer before DENYING.
 #:
 #: Must stay comfortably below ``acp/client_timeouts.py``'s ``_TOOL_STALL_TIMEOUT``
-#: (600s): while a permission request is outstanding the provider emits no
+#: (720s): while a permission request is outstanding the provider emits no
 #: frames, so that watchdog is armed against this wait. Five minutes is the
 #: window for someone answering from a phone; the cost of it being too short is
 #: a denied tool the operator can retry, and the cost of it being too long is a

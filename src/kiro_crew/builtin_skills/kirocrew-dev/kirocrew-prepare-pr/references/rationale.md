@@ -689,9 +689,9 @@ falls out of the reading, but the lane's check run finishes with the edit and wa
 the loop. Comments from the loop's own account are left out, so a posted disposition
 does not wake it again.
 
-A merge or close ends a gated dashboard loop with the bell notice and no turn; only
-a Slack or Discord loop gets one last turn. So the Report goes out on the converged
-turn, and the `Merged` step runs only where that last turn exists. The decision is
+A merge or close ends a gated loop after one last turn on every surface, opening
+with the result (when it merged, which head). The Report still goes out on the
+converged turn; the last turn runs the `Merged` step. The decision is
 recorded in the `rfc-gated-pr-poll-loops` RFC
 ([#22440](https://github.com/kirodotdev/KiroCrew/pull/22440)).
 

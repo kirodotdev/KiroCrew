@@ -1,0 +1,7 @@
++111
+The s3 download reader reads the shapes agents send around a download: its output piped
+into tail, head, grep or wc (not less, which may run LESSOPEN), 2>&1 stream copies and
+redirects to /dev/null, a leading time, an AWS_PROFILE, AWS_REGION or AWS_DEFAULT_REGION
+prefix, and --request-payer requester. A word splitter, a redirect stripper, a reader
+check, the operator tables and their reasons. Uploads, redirects to a file and every
+other pipe or prefix stay denied.

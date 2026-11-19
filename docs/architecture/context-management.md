@@ -578,6 +578,13 @@ re-adds, once:
    session start, payload scrubbed of structural markers. kiro-cli loads the agent's
    `resources` natively and keeps them across its own compaction, so the kiro and
    KAS paths get nothing here.
+9. `[REINJECTED AFTER COMPACTION — goal-conductor]` — one line telling a
+   conductor to re-read the `goal-conductor` skill, whose body the compaction
+   dropped, via `context_assembly/turn.py` → `conductor_reread_part`: a chat on
+   `kirocrew-conductor` (or a deprecated alias of it; the pipeline, security and
+   team-lead conductors run their own skills), and a crewmate's DM thread under the
+   gate session start appends `conductor.patrol` with (dispatch tools held, ledger
+   tools on the binding). Workers, plain chats and minimal turns get nothing.
 
 If that turn does not land (cancelled, refused, errored), `rearm_reinjection` puts
 the flag back, so the context is never lost to a failed turn. A minimal-context turn

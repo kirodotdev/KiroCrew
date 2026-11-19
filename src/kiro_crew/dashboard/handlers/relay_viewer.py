@@ -312,7 +312,7 @@ async def _local_main_refusal(request: web.Request) -> Optional[web.Response]:
         local_auth_executor(), local_owner_bootstrap_provenance, request
     )
     # Only the desktop app's own main process needs this, never an app backend.
-    if provenance is None or provenance.app:
+    if provenance is None or provenance.app is not None:
         _audit(request, "denied", "unverified-owner-process")
         return _error("This process isn't the desktop app.", "member_owner_token_refused", 403)
     return None

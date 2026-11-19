@@ -2882,6 +2882,8 @@ never mints or holds a member slot -- `app_reserved_key_reason` stands down for
 a `member-` key only when a live Bot thread holds exactly that key on a
 grant route (`app_new_key_refusal(..., session_grant_route=True)`), so a send
 to a member key with no live thread is the uniform 404 and creates nothing.
+An app's own session does not run as a Bot either, whatever agent name the app
+puts on it: crew-mode.md, "An app's session never runs as a Bot".
 An app's existing access to its own slots is
 unchanged. On a user-owned session a `POST /api/chat` from the app sends a
 turn: a send carrying a change to the session's agent binding, persona settings,
@@ -7374,10 +7376,26 @@ cancel_ack_secs)` runs one turn under `ToolApprovalPolicy.HOOK_BASED` with
 `app=<ctx.name>`, so the PreToolUse gate resolves `POLICY ∩ PROFILE` for this app,
 and passes the gateway's approval prompt as `on_tool_approval`: `_init_task_runner`
 registers `agent_turn_sdk.set_turn_approver(lambda app:
-self._interactive_approval("app", requester=f"app {app}"))`, so a call the gate
-neither denies nor grants asks the owner as a cron job's does (`"app"` is in
-`_BACKGROUND_APPROVAL_SOURCES`, the deny-fast unattended window) instead of reaching
-`_resolve_permission`'s caller-less default approve. With no prompt registered (a
+self._interactive_approval("app", requester=f"app {app}",
+follows_approval_mode=own_agent))`, where `run()` passes `own_agent` from
+`_is_own_agent(app, <recorded agent>)` (true only when `session_agent_spec_path`,
+the file a session of that agent loads, with the crewmate folder for the mate
+service agents and `agent.spec_pins` applied, sits in the user agents folder and
+is named `<app>--<agent>.json`; no file, any other file or a resolver error is
+not own). `run()` judges this once, on the turn whose `get_or_create` started the
+session (`is_new`), and stores the verdict with the app and recorded agent in
+`_own_agent_by_session`. A reused session keeps that verdict, because a re-pin
+made later does not change the file the live session loaded. A reused session
+with no stored verdict, or whose app or recorded agent differs from the stored
+one, is not own. `_cancel_or_reset` drops the entry when it resets the session.
+A call the gate neither denies nor grants asks the
+owner as a cron job's does (`"app"` is in `_BACKGROUND_APPROVAL_SOURCES`, the
+deny-fast unattended window) instead of reaching `_resolve_permission`'s caller-less
+default approve. `follows_approval_mode` makes that prompt answer as a channel turn
+does under the gateway's approval mode (`--approval`, else `agent.approval_mode`):
+under `auto` the call is approved without asking, unless it falls under a held Bot
+limit, is a low-fidelity child request, or `session_mode_permitted("trust")` is
+false. With no prompt registered (a
 bare test application) the turn passes an approver that refuses, so a call the gate
 does not settle is rejected, with or without a hook manager. The turn is admitted through
 `run_admitted_or_raise(automation=True,
@@ -8816,7 +8834,23 @@ spelling's parents unguarded, so the backend can create, rotate and remove the f
 keeps its credential in. The namespace plan pins the same parents (`parent_pins`), each one
 the agent could rename: a namespace mask is a mount, which moves with a renamed parent inside
 that spawn, but on disk the leaf then sits at a name no mask covers, so the next spawn would
-read it there. No seal or keystone disposition reads a declaration, the
+read it there. One of those pins moves to the end of the stages: the folder of each app
+that declares a mask, `apps/<app>`, is taken out of `parent_pins` and bound over itself
+after every mask (`mask_parent_pins`, `pin_mask_parents`, the last mask stage), so the set
+of pinned folders is unchanged. An update replaces that folder from the gateway's
+namespace and renames `data/` into the new one, and a mount stays on the mount it was
+placed through: a mask or a `data/` pin placed through a pin of the old folder would be
+left with the retired folder, and a running session would read the restored credential
+plain. With the app folder unpinned while the rest are placed, they sit on the mount the
+rename keeps, and the app folder's recursive pin adds one copy of them. Each pin is
+matched to an app folder by the folder it resolves to, so a linked data-home spelling, or
+one reached by walking a seal through its link, moves too, while a link entry, pinned as
+itself, stays with the pins placed first; one spelling per folder is bound, none above
+another, so the mount count does not compound. The limit, stated:
+the replacement `apps/<app>` is created after the spawn, so a session already running can
+rename it until its next spawn; closing that needs a layout change, not another pin.
+`test_seal_parent_pin_real_sandbox.py` checks the refusals and the mask across that move
+in a real namespace. No seal or keystone disposition reads a declaration, the
 tool gate reads the shipped built-ins' only, as more refusals (`declared_crew_leaves(installed=False)`, in
 `security._CREW_SECRET_LEAVES`), and the one carve-out that does (the app's own backend,
 below) never lifts a core leaf, so a manifest can only add masks. A built-in's declared

@@ -16,9 +16,11 @@ that command keeps one :data:`SUBST` step in its place.
 
 from __future__ import annotations
 
+import re
 from typing import NamedTuple
 
 from . import shell_normalizer as _shell
+from . import shell_normalizer_walk as _walk
 
 # One gate call's payloads per frame text are kept in ``_CALL_VIEWS`` under the plain
 # text; ``shell_normalizer._shell_payload_walk`` keeps its frames there under tuple keys.
@@ -361,9 +363,19 @@ def _read_bodies(
 
 
 def _body_substitutions(body: str, base: int, track: bool) -> "list[ShellCommand]":
-    """The commands of each ``$(…)`` / backtick in an unquoted heredoc body. There a quote
-    is a plain character and only a backslash escapes, so each body is read once."""
+    """The commands of each ``$(…)`` / backtick in an unquoted heredoc body, read once."""
     out: list[ShellCommand] = []
+    for _start, _stop, inner_at, inner in _heredoc_body_substitutions(body):
+        out.extend(read_commands(inner, track, base + inner_at, heredocs=True))
+    return out
+
+
+def _heredoc_body_substitutions(body: str) -> "list[tuple[int, int, int, str]]":
+    """``(start, stop, inner_start, inner)`` of each ``$(…)`` / backtick in an unquoted
+    heredoc body, in order; ``start:stop`` spans the opener to the closer. There a quote
+    is a plain character and only a backslash escapes. The one scan of such a body: the
+    ssh self-target floor (``argv_floor_ssh_bodies``) reads it too."""
+    out: list[tuple[int, int, int, str]] = []
     i = 0
     while i < len(body):
         if body[i] == "\\":
@@ -371,13 +383,12 @@ def _body_substitutions(body: str, base: int, track: bool) -> "list[ShellCommand
         elif body.startswith("$(", i):
             rest = body[i + 2 :]  # the walk starts unquoted inside the substitution
             close, proven = _shell._matching_close_paren(rest, 0)
-            inner = rest[: close - 1 if proven else close]
-            out.extend(read_commands(inner, track, base + i + 2, heredocs=True))
+            out.append((i, i + 2 + close, i + 2, rest[: close - 1 if proven else close]))
             i += 2 + close
         elif body[i] == "`":
             closer = _shell._backtick_closer(body, i + 1)
             end = len(body) if closer < 0 else closer
-            out.extend(read_commands(body[i + 1 : end], track, base + i + 1, heredocs=True))
+            out.append((i, end + 1, i + 1, body[i + 1 : end]))
             i = end + 1
         else:
             i += 1
@@ -434,11 +445,100 @@ def without_substitutions(command: str) -> str:
     :func:`read_commands` would cut (``bash -c 2>$(x) '<script>'``)."""
     out: list[str] = []
     pos = 0
+    quote_at: "dict[int, tuple[int, bool]] | None" = None
     while True:
-        steps = _shell._iter_shell_chars(command[pos:])
-        opens = (pos + s.offset for s in steps if s.active and s.char in "$<>")
+        steps = _shell._iter_shell_chars(command, 0, False, pos)
+        opens = (s.offset for s in steps if s.active and s.char in "$<>")
         hit = next((at for at in opens if command.startswith("(", at + 1)), None)
         if hit is None:
             return "".join(out) + command[pos:]
         out.append(command[pos:hit] + "_")
-        pos = _shell._matching_close_paren(command, hit + 2)[0]
+        quote_at = quote_at or _walk._quote_states(command)
+        pos = _shell._matching_close_paren(command, hit + 2, quote_at[hit + 2])[0]
+
+
+def heredoc_text_spans(text: str) -> "list[tuple[int, int]]":
+    """Raw ``(start, end)`` of each here-document body :func:`read_commands` finds in *text*."""
+    if "<<" not in text:
+        return []
+    return [
+        (doc.start, doc.end) for cmd in read_commands(text, heredocs=True) for doc in cmd.heredocs
+    ]
+
+
+def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]":
+    """``(start, end, proven)`` of each ``$(...)`` directly inside double quotes in *text*.
+
+    *start* is the ``$``; *end* is just past the matching ``)`` when *proven*, else the end
+    of *text*. A ``)`` in a heredoc body inside the substitution does not end it.
+    """
+    spans: "list[tuple[int, int, bool]]" = []
+    i, state = 0, 0
+    while i < len(text):
+        dollars = 0
+        for step in _shell._iter_shell_chars(text[i:], state):
+            at = i + step.offset
+            dollars = dollars + 1 if step.state == 2 and step.text == "$" else 0
+            if dollars % 2 and text.startswith("(", at + 1):
+                rest = text[at + 2 :]
+                for start, end in heredoc_text_spans(rest):
+                    rest = rest[:start] + re.sub("[^\n]", " ", rest[start:end]) + rest[end:]
+                end, proven = _shell._matching_close_paren(rest, 0)
+                spans.append((at, at + 2 + end if proven else len(text), proven))
+                i, state = spans[-1][1], 2
+                break
+        else:
+            break
+    return spans
+
+
+def _proven_body_spans(text: str) -> "dict[int, int]":
+    """Start -> end of each proven double-quoted ``$( )`` body outside heredoc text."""
+    if "$(" not in text:
+        return {}
+    docs = heredoc_text_spans(text)
+    return {
+        at: end
+        for at, end, proven in _double_quoted_substitution_spans(text)
+        if proven and not any(start <= at < stop for start, stop in docs)
+    }
+
+
+def _double_quoted_substitution_bodies(text: str) -> "list[str]":
+    """The body of each ``$(...)`` that sits directly inside double quotes in *text*.
+
+    :func:`_mask_quoted_separators` keeps double-quoted text as data, but bash runs
+    such a body as a command line of its own, in a new quote context. Only an
+    unpaired ``$`` opens one (``$$`` is the PID, ``\\$`` is text); the body ends at
+    its own matching ``)``, or runs to the end of *text* when none is found. A ``)``
+    in a heredoc body that :func:`read_commands` finds there does not end it. The
+    text that a bare ``cat`` prints from a quoted-tag heredoc is cut out of each
+    body (:func:`_without_quoted_heredoc_text`).
+    """
+    spans = _double_quoted_substitution_spans(text)
+    return [_without_quoted_heredoc_text(text[a + 2 : e - (1 if p else 0)]) for a, e, p in spans]
+
+
+def _without_quoted_heredoc_text(body: str) -> str:
+    """*body* with the text of each quoted-tag heredoc that a bare ``cat`` prints cut out.
+
+    Bash expands nothing in such a text, and a ``cat`` that writes to no file and
+    pipes to nothing only prints it. Every other heredoc keeps its text, so a shell
+    fed one (``bash <<'EOF'``, ``cat <<'EOF' | sh``) is read as before.
+    """
+    if "<<" not in body:
+        return body
+    docs = [
+        doc
+        for cmd in read_commands(body, heredocs=True)
+        if [word.raw for word in cmd.argv] == ["cat"]
+        and all(word.raw.startswith("<<") for word, _target in cmd.redirects)
+        and not cmd.separator.startswith("|")
+        for doc in cmd.heredocs
+        if doc.quoted
+    ]
+    cut = len(body)
+    for doc in sorted(docs, key=lambda doc: doc.start, reverse=True):
+        if doc.end <= cut:
+            body, cut = body[: doc.start] + body[doc.end :], doc.start
+    return body

@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.app_agent_binding import (
         _recover_app_agent_binding,
         app_agent_binding_applies,
+        app_session_selects_bot,
     )
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _slot_predecessor_store
     from kiro_crew.dashboard.chat_turn.model_fallback import (
@@ -614,12 +615,13 @@ async def _eager_spawn(
        exists to prevent. When a turn is running, its own end-of-turn path
        consumes the reset instead.
     2. Global and named V1 sessions may reach ``get_or_create``, which acquires
-       the per-session semaphore and is released immediately below because no
-       turn follows. Private V2 sessions stop before allocation so the first
-       real turn can validate and pin their trusted store before a provider is
-       registered. For eligible V1 sessions, a first message arriving during
-       the handshake blocks on the same semaphore and reuses the created
-       session.
+       the per-session semaphore. No turn follows, so it is given back below:
+       by this task on every path that keeps the session, and by the teardown
+       itself on the two that remove it. Private V2 sessions stop before
+       allocation so the first real turn can validate and pin their trusted
+       store before a provider is registered. For eligible V1 sessions, a
+       first message arriving during the handshake blocks on the same
+       semaphore and reuses the created session.
 
     ``on_ended`` (see ``schedule_eager_spawn``) is called on every exit but a
     cancel: a cancelled start was replaced by a newer slot signal or stopped by
@@ -752,6 +754,10 @@ async def _eager_spawn(
                 if bindings.selection_kind == "template":
                     crew_alias = ""
                 resolved_ok = bindings.requested_resolved
+                if app_session_selects_bot(slot, bindings):
+                    # The first real turn refuses it, so nothing starts as the Bot.
+                    logger.info("Eager spawn: app slot %s names a Bot; not started", slot.key)
+                    return
                 await asyncio.to_thread(
                     _require_session_memory_assignment, session_key, bindings.memory_store_name
                 )
@@ -1065,7 +1071,6 @@ async def _spawn_admitted_prefetch(
         # message starts the agent itself.
         logger.info("Eager spawn: %s left to first turn (refused)", session_key)
         return
-    sessions.release(session_key)
     if is_new and not resumed and not slot.blocks_reads:
         # The first message's build reads every recent-history file (about 75 in a
         # busy store, a quarter of a second through the hardened reader). None of
@@ -1088,6 +1093,10 @@ async def _spawn_admitted_prefetch(
             warm = asyncio.create_task(_warm_history())
             state._background_tasks.add(warm)
             warm.add_done_callback(state._background_tasks.discard)
+    # Each path that keeps the session releases its permit. The two stale arms
+    # leave it held for ``remove``, which releases it in the lock hold that pops
+    # the session, so a claimant parked on it cannot take the stale session.
+    #
     # The cleanup below may only tear down a session THIS task created.
     # is_new=False means another creator won the same-key race (or the
     # claim attached to an already-registered session): a real turn
@@ -1097,6 +1106,7 @@ async def _spawn_admitted_prefetch(
     # winner registered with its own current bindings, so the stale-
     # bindings hazard these guards exist for does not apply to it.
     if not is_new:
+        sessions.release(session_key)
         logger.info("Eager spawn: another creator won %s, leaving session alone", session_key)
         return
     # The slot can be deleted while the handshake ran; the delete
@@ -1106,7 +1116,9 @@ async def _spawn_admitted_prefetch(
     # slot's (now stale) agent/cwd bindings. Tear it down.
     if state.get_slot(slot.key) is not slot:
         logger.info("Eager spawn: slot %s vanished mid-handshake, removing session", slot.key)
-        await sessions.remove(session_key)
+        # Shielded as in _prefetch_ttl: a later slot signal cancels this task, and
+        # a cancel after the pop would leak the process holding the session lock.
+        await asyncio.shield(sessions.remove(session_key))
         return
     # Same shape for a binding change: a switch handler's reset ran
     # before registration and found nothing, so the session we just
@@ -1118,8 +1130,10 @@ async def _spawn_admitted_prefetch(
             "Eager spawn: slot %s bindings changed mid-handshake, removing session",
             slot.key,
         )
-        await sessions.remove(session_key)
+        # Shielded for the same reason as the vanished-slot removal above.
+        await asyncio.shield(sessions.remove(session_key))
         return
+    sessions.release(session_key)
     if not resumed:
         # Stamp first, matching the turn site. This call IS the allocation, so the
         # two agree whenever a tier resolved one, and the stamp additionally carries

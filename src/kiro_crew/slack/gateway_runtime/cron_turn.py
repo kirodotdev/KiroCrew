@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         _annotate_model_downgrade,
         _annotate_model_fallback,
         _annotate_partial_block,
+        _app_job_names_bot,
         _apply_gate_verdict,
         _cron_auth_expiry,
         _cron_failure_attribution,
@@ -58,6 +59,7 @@ if TYPE_CHECKING:
         declared_mcp_not_ready_note,
         effective_job_approval_mode,
         engine_attributed_model,
+        live,
         logger,
         note_turn_landed,
         persist_token_record_async,
@@ -112,7 +114,12 @@ async def _cron_run_sequence(
 
     for agent in agents:
         _seq_kagent, _seq_cwd, _seq_crew = self._resolve_cron_agent(
-            cron_execution, agent, sequence_step=True
+            cron_execution,
+            agent,
+            sequence_step=True,
+            template_namespace=_app_job_names_bot(
+                job, agent, live.snapshot() or getattr(self, "_cfg", None)
+            ),
         )
         _seq_cwd = await asyncio.to_thread(cron_session_cwd, job, _seq_cwd)
         steps.append(
@@ -681,7 +688,10 @@ async def _cron_run_single(
         # + workspace before dispatch; falls back to the raw value when
         # it is already a real mode or unset.
         _single_kagent, _single_cwd, _single_crew = self._resolve_cron_agent(
-            cron_execution, cron_agent or None, template_namespace=_default_substituted
+            cron_execution,
+            cron_agent or None,
+            template_namespace=_default_substituted
+            or _app_job_names_bot(job, cron_agent, live.snapshot() or getattr(self, "_cfg", None)),
         )
         # A job's own project directory outranks the agent's workspace;
         # a job without one keeps the cwd resolved above.

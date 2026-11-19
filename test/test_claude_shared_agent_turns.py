@@ -390,3 +390,56 @@ def test_a_prompt_error_naming_only_background_calls_completes_the_turn(tmp_path
     events = asyncio.run(scenario())
     assert events[-1].kind == EVENT_COMPLETE and events[-1].stop_reason == "end_turn"
     asyncio.run(rt.terminate_session("s-1"))
+
+
+def test_a_reply_held_by_a_request_wait_reaches_the_dashboard_as_its_own_turn(tmp_path):
+    """The issue's steps through the dashboard's slot claim: the agent's reply is
+    handed off, a request wait (a live model change) holds its frames while the
+    turn opened for it reads, and the wait's answer releases them. The chat's
+    callback starts a second turn, after the first, that reads the reply whole."""
+    from unittest.mock import MagicMock, patch
+
+    from dashboard_approval_helpers import _make_slot, _make_state
+
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.testing.wait import async_wait_until
+
+    state, _client = _make_state(tmp_path)
+    slot = _make_slot()
+    state._slots[slot.key] = slot
+    turns: list[list[str]] = []
+
+    async def scenario() -> None:
+        plane = _Plane({"sessionId": "s-1", "modes": {"currentModeId": "default"}})
+        rt = _claude_runtime(plane)
+        handle = await rt.create_session(cwd=str(tmp_path), agent="kirocrew")
+        queue = rt._session_queues["s-1"]
+        state.sessions.get_provider = MagicMock(return_value=handle)
+
+        async def run_chat(*_a: Any, **_k: Any) -> None:
+            events = await _collect(handle.stream_unsolicited())
+            turns.append([e.text for e in events if e.kind == EVENT_TEXT_CHUNK])
+
+        def spawn(_state: Any, _slot: Any, coro: Any) -> Any:
+            return asyncio.get_running_loop().create_task(coro)
+
+        with (
+            patch.object(chat_runner, "_run_chat", run_chat),
+            patch.object(chat_runner, "spawn_guarded_turn", spawn),
+        ):
+            handle.watch_agent_turns(lambda: chat_runner._on_agent_turn(state, slot, handle))
+            queue.put_nowait(_chunk("s-1", "printed probe-done"))
+            queue.put_nowait(_autonomous_end("s-1"))
+            wait = asyncio.create_task(handle._wait_for_response(99, _SIGNAL_DEADLINE_SECS))
+            # The turn the first hand-off opened reads while the wait holds the frames.
+            await async_wait_until(lambda: len(turns) == 1)
+            queue.put_nowait(JsonRpcMessage.from_dict({"jsonrpc": "2.0", "id": 99, "result": {}}))
+            await wait
+            await async_wait_until(lambda: len(turns) == 2)
+            if slot.task is not None:
+                await slot.task
+        assert not handle.agent_turn_pending()
+        await rt.terminate_session("s-1")
+
+    asyncio.run(scenario())
+    assert turns == [[], ["printed probe-done"]]

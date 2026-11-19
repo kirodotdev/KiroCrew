@@ -1003,13 +1003,62 @@ def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
         print("   Check each one, then enable it on the dashboard's Hooks page.")
 
 
+def _is_interactive() -> bool:
+    try:
+        return bool(sys.stdin and sys.stdin.isatty() and sys.stdout.isatty())
+    except (ValueError, AttributeError):
+        return False
+
+
+def _resolve_mode(explicit: str | None) -> str | None:
+    """The restore mode the operator chose, or None after saying why none was.
+
+    Restore has no default mode: Replace overwrites the live settings documents, so the
+    mode is either named with ``--mode`` or typed at a prompt. Off a terminal there is
+    nobody to ask, so the command refuses. Whether a ``memory.db`` exists says nothing
+    about what the operator wants and never selects a mode.
+    """
+    if explicit:
+        return explicit
+    if not _is_interactive():
+        _audit("state_restore_rejected", "reason=mode_not_chosen")
+        print(
+            "❌ No restore mode was chosen and no terminal is available to ask. "
+            "Run again with --mode merge or --mode replace."
+        )
+        return None
+    print(
+        "Choose how to restore:\n"
+        "  merge    keep what this install already has and add what the archive carries\n"
+        "  replace  overwrite this install's state with the archive's (current state is "
+        "backed up first)"
+    )
+    print("Type merge or replace: ", end="", flush=True)
+    try:
+        answer = sys.stdin.readline().strip()
+    except (KeyboardInterrupt, EOFError):
+        answer = ""
+    if answer not in ("merge", "replace"):
+        _audit("state_restore_rejected", "reason=mode_not_chosen")
+        print("\n❌ No restore mode was chosen. Nothing was changed.")
+        return None
+    return answer
+
+
 def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | None = None) -> int:
     if parsed is None:
         p = argparse.ArgumentParser(
             prog="kirocrew-restore", description="Restore KiroCrew state from a snapshot."
         )
         p.add_argument("snapshot", nargs="?")
-        p.add_argument("--mode", choices=("replace", "merge"))
+        p.add_argument(
+            "--mode",
+            choices=("replace", "merge"),
+            help=(
+                "replace = overwrite existing state, merge = keep it and add; "
+                "asked on a terminal when omitted, refused off a terminal"
+            ),
+        )
         p.add_argument("--dry-run", action="store_true")
         p.add_argument(
             "--force", action="store_true", help="Allow restore even if gateway is running"
@@ -1109,7 +1158,9 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             return 1
 
     mc = _mc_dir()
-    mode = args.mode or ("merge" if (mc / "memory.db").is_file() else "replace")
+    mode = _resolve_mode(getattr(args, "mode", None))
+    if mode is None:
+        return 1
 
     # The archive is opened and bounded by its member headers BEFORE the staging root is
     # created, so a refused archive leaves the data home exactly as it was.

@@ -253,3 +253,39 @@ async def test_a_newer_session_registered_during_the_await_is_reselected_and_ref
     # displaced it during the await.
     assert older.refreshed == 1
     assert newer.refreshed == 1
+
+
+class _PinRequest(dict):
+    """A request that carries per-request values, as ``aiohttp.web.Request`` does."""
+
+    def __init__(self, *providers: Any, fingerprint: str) -> None:
+        super().__init__()
+
+        async def _read() -> str:
+            return fingerprint
+
+        state = SimpleNamespace(sessions=SimpleNamespace(active_providers=lambda: list(providers)))
+        service = SimpleNamespace(current_identity_fingerprint=_read)
+        self.app = {"state": state, "kiro_prerequisite_service": service}
+
+
+@pytest.mark.asyncio
+async def test_a_session_of_the_previous_account_does_not_judge_the_pin() -> None:
+    """After a `kiro-cli login` to another account, the picker skips the old
+    account's session; the pin save must judge by the same sessions, or it
+    refuses the model the picker just offered."""
+    old = SimpleNamespace(
+        spawn_identity="a" * 64,
+        available_models=lambda: _rows("auto", "claude-sonnet-5"),
+        maybe_refresh_available_models=AsyncMock(return_value=[]),
+    )
+    new = SimpleNamespace(
+        spawn_identity="b" * 64,
+        available_models=lambda: _rows("auto", "claude-sonnet-5", "claude-opus-5"),
+        maybe_refresh_available_models=AsyncMock(return_value=[]),
+    )
+    request = _PinRequest(new, old, fingerprint="b" * 64)
+
+    assert await core._revalidate_role_pin_evidence("claude-opus-5", request) is None
+    assert core._validate_role_model("claude-opus-5", request) is None
+    old.maybe_refresh_available_models.assert_not_awaited()

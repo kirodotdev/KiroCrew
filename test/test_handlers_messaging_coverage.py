@@ -1184,8 +1184,11 @@ class TestApiSpawnDeleteUntrackedRun:
     def test_an_app_token_is_told_to_dismiss_the_card_from_the_dashboard(self) -> None:
         """A run with no manager entry is a card only the dashboard dismisses."""
         req = _Req(_state(), match_info={"agent_id": "run-1"}, extra={"app": "caller-app"})
+        # The app's own finished run: a run of anyone else's answers 404 first.
+        record = {"parent_session": "", "execution_context": {"app": "caller-app"}}
 
-        resp = _run(mod.api_spawn_delete, req)
+        with patch.object(mod, "read_state", return_value=record):
+            resp = _run(mod.api_spawn_delete, req)
 
         assert resp.status == 403
         body = _payload(resp)

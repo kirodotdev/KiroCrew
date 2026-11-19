@@ -18,6 +18,7 @@ switch cannot be turned on, so ``selection-capabilities`` carries the reason as
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -452,13 +453,15 @@ async def test_the_dashboard_refuses_a_write_while_a_channel_turn_holds_the_sess
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("route", "option", "code"),
+    ("route", "option", "code", "shown"),
     [
-        ("fast", _fast_option("off"), "fast_refused"),
-        ("ultracode", _ultracode_option("off"), "ultracode_refused"),
+        ("fast", _fast_option("off"), "fast_refused", "Fast mode"),
+        ("ultracode", _ultracode_option("off"), "ultracode_refused", "ultracode"),
     ],
 )
-async def test_a_write_the_adapter_rejects_answers_502_and_frees_the_lease(route, option, code):
+async def test_a_write_the_adapter_rejects_answers_502_and_frees_the_lease(
+    route, option, code, shown
+):
     provider = _provider(ACP_BACKEND_CLAUDE, [option])
     provider._client.set_config_option = AsyncMock(side_effect=AcpError("Invalid params"))
     app, _slot = _app(provider)
@@ -466,8 +469,34 @@ async def test_a_write_the_adapter_rejects_answers_502_and_frees_the_lease(route
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(f"/api/chat/slots/test/{route}", json={"enabled": True})
         assert resp.status == 502
-        assert await resp.json() == {"error": "Invalid params", "code": code}
+        # A fixed sentence, not the adapter's own words ("Invalid params").
+        assert await resp.json() == {
+            "error": f"The agent did not accept the {shown} change.",
+            "code": code,
+        }
     sessions.release.assert_called_once_with("dashboard:test", wake_queue=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "option"),
+    [("fast", _fast_option("off")), ("ultracode", _ultracode_option("off"))],
+)
+async def test_a_refused_write_keeps_the_exception_text_out_of_the_body(route, option, caplog):
+    provider = _provider(ACP_BACKEND_CLAUDE, [option])
+    provider._client.set_config_option = AsyncMock(
+        side_effect=AcpError("secret=abc123 /home/u/private internal.example.net")
+    )
+    app, _slot = _app(provider)
+    with caplog.at_level(logging.WARNING):
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(f"/api/chat/slots/test/{route}", json={"enabled": True})
+            assert resp.status == 502
+            body = await resp.text()
+    for leaked in ("abc123", "/home/u/private", "internal.example.net"):
+        assert leaked not in body
+    # The owner's log keeps the detail.
+    assert "AcpError" in caplog.text
 
 
 @pytest.mark.asyncio

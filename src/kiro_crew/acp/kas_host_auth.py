@@ -33,13 +33,40 @@ auth subsystem loads on first use, not at boot). A KAS spawn is that first use.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import time
 
 logger = logging.getLogger(__name__)
+
+#: Delays before the second and third try of a refresh that failed on the
+#: network (DNS, connect, a dropped or timed-out request). A refused grant is
+#: never retried: only a new sign-in fixes it.
+REFRESH_RETRY_DELAYS_SECS: tuple[float, ...] = (0.5, 1.5)
+
+#: No retry starts once this long has passed since the first try, so a
+#: black-holed route (each try may take the full ``refresh.HTTP_TIMEOUT``) still
+#: answers the engine instead of holding its callback open.
+REFRESH_RETRY_WINDOW_SECS = 10.0
+
+
+def _is_transient_refresh_error(exc: BaseException) -> bool:
+    """A failure that says nothing about the grant: the issuer was not reached, or
+    its answer did not come back. aiohttp's DNS and connect errors are both
+    ``ClientConnectionError``; ``ServerTimeoutError`` is also a timeout."""
+    import aiohttp  # deferred with the rest of the refresh stack (module docstring)
+
+    return isinstance(exc, (aiohttp.ClientConnectionError, asyncio.TimeoutError))
 
 
 class HostAuthCallbackError(Exception):
     """The callback could not be answered. ``str(exc)`` is token-free by construction."""
+
+
+def token_digest(access_token: str) -> str:
+    """A one-way tag for an access token, so a runtime can tell which one it was
+    served without holding the token itself."""
+    return hashlib.sha256(access_token.encode("utf-8")).hexdigest()
 
 
 async def vault_holds_identity_off_loop() -> bool:
@@ -74,7 +101,26 @@ async def answer_get_access_token() -> dict:
         # stand in for an identity the operator signed out of (and the engine would
         # send it with the wrong token type anyway -- it is not an OIDC bearer).
         provider = KasAuthProvider(default_token_store(), allow_env_api_key=False)
-        return await handle_get_access_token(provider)
+        started = time.monotonic()
+        for delay in (*REFRESH_RETRY_DELAYS_SECS, None):
+            try:
+                return await handle_get_access_token(provider)
+            except Exception as exc:  # noqa: BLE001 - only network failures retry
+                if (
+                    delay is None
+                    or not _is_transient_refresh_error(exc)
+                    # The next try must START inside the window, after the backoff.
+                    or time.monotonic() - started + delay >= REFRESH_RETRY_WINDOW_SECS
+                ):
+                    raise
+                # Type only: see the last handler below.
+                logger.info(
+                    "KAS auth callback: refresh failed (%s); retrying in %.1fs",
+                    type(exc).__name__,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable: the last try raises or returns")
     except NotAuthenticated as exc:
         # The engine renders this string in its sign-in prompt; keep it short.
         raise HostAuthCallbackError("not signed in to Kiro Crew") from exc
@@ -88,3 +134,50 @@ async def answer_get_access_token() -> dict:
         # refresh endpoint; expose only its type, and only in the local log.
         logger.warning("KAS auth callback: refresh failed (%s)", type(exc).__name__)
         raise HostAuthCallbackError("refresh failed") from exc
+
+
+async def sign_in_refused(served_digest: str | None) -> bool:
+    """Whether Crew's sign-in is refused, renewing a token the engine may hold.
+
+    Asked when a KAS host on the Crew-owned route fail-closed its governance
+    read. The engine caches the token it was served until that token's own
+    expiry and never asks again when Kiro refuses it, and the callback serves
+    the vault's token for as long as the vault thinks it is live, so a token
+    Kiro refuses early reaches every new runtime until it expires. When the
+    vault still holds the token this runtime was served (*served_digest*, from
+    :func:`token_digest`), it is renewed now (``rejected_access_token``), so
+    the retried start draws a new one; a peer that already renewed it makes
+    this a plain read. Under the refresh lock, so many runtimes asking at once
+    make one refresh.
+
+    True only on proof that a new sign-in is needed: nothing stored, the issuer
+    refused the renewal, or the renewal cannot be attempted and the token is
+    already past its margin. A network failure, or any other error, is False:
+    that start keeps its retryable error.
+    """
+    # Deferred: see the module docstring (boot-path and cryptography gates).
+    from kiro_crew.auth.bridge import default_token_store
+    from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
+    from kiro_crew.auth.refresh import RefreshBlocked, RefreshRejected
+
+    store = default_token_store()
+    try:
+        stored = await asyncio.to_thread(store.resolve)
+        if stored is None:
+            return True
+        served = served_digest is not None and token_digest(stored.access_token) == served_digest
+        provider = KasAuthProvider(store, allow_env_api_key=False)
+        try:
+            await provider.current(rejected_access_token=stored.access_token if served else None)
+        except RefreshBlocked:
+            # Checked locally, no issuer asked: it says nothing about whether Kiro
+            # took the token. A sign-in is needed only once the token itself is
+            # past its margin; a live one keeps the retryable error.
+            return stored.is_expired()
+    except (NotAuthenticated, RefreshRejected):
+        return True
+    except Exception as exc:  # noqa: BLE001
+        # Type only, as in answer_get_access_token.
+        logger.warning("KAS sign-in check: renewal failed (%s)", type(exc).__name__)
+        return False
+    return False

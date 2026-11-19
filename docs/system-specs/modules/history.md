@@ -3811,7 +3811,11 @@ Contract:
   `![image](<stored copy>)`, and its `image_location_note` is dropped, since that
   note holds only until the turn's temp cleanup. A picture that cannot be kept
   leaves both lines as written, and nothing the user typed is copied. Feishu passes
-  its pictures; the other channels still persist the temp path.
+  its pictures. A Slack message routed to a linked dashboard slot is stored the same
+  way before the hand-off, through `ConversationLog.store_ingested_images(key,
+  content, images)` (the slot saves its own window, so this is the store without the
+  append); see [slack-gateway](slack-gateway.md). The other channels still persist the
+  temp path.
 - **Bounded scan.** A row with more than `MAX_IMAGE_OPENERS_PER_MESSAGE` (256)
   `![` openers is left as written without scanning: the reference scanner is
   quadratic in the opener count and this runs under the session lock on

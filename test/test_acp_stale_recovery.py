@@ -1,10 +1,10 @@
 """Tests for in-gateway stale-turn auto-recovery on AcpSessionHandle.
 
-The idle window folds in ``_runtime._last_activity`` (stderr thinking keeps a turn
-alive, as ``TestAcpClientStaleTurn`` pins for ``AcpClient``). A turn silent on both
-clocks is probed with ``session/cancel``: an ack completes it, no ack within the grace
-window signals ``STOP_REASON_STALE_RECOVER``. A user cancel still yields
-``error: cancel unacked``.
+The idle window is the session's own: its frames and its keepalive touches, never the
+runtime's process-wide ``_last_activity``, which a co-tenant on a shared process keeps
+fresh. A turn silent on its own clock is probed with ``session/cancel``: an ack completes
+it, no ack within the grace window signals ``STOP_REASON_STALE_RECOVER``. A user cancel
+still yields ``error: cancel unacked``.
 """
 
 import asyncio
@@ -56,9 +56,11 @@ _FAST_WD = WatchdogSettings(
 class _FreshActivityRuntime:
     """Runtime double whose ``_last_activity`` always reads as the current instant.
 
-    Stands in for a stderr drain refreshing the clock while stdout is silent. A
-    property, not a refresher task: a sleep on a loaded runner can overrun the 50ms
-    window. ``AcpSessionHandle`` only reads the attribute, so read-only is faithful.
+    Stands in for a co-tenant on the same process -- a principal blocked in ``wait``
+    pinging its keepalive, or a sibling streaming -- refreshing the clock while this
+    session is silent. A property, not a refresher task: a sleep on a loaded runner can
+    overrun the 50ms window. ``AcpSessionHandle`` only reads the attribute, so read-only
+    is faithful.
     """
 
     def __init__(self) -> None:
@@ -84,7 +86,7 @@ def _make_handle(
     """A handle over a fake runtime with a controllable ``_last_activity``.
 
     ``rt.pid`` is None so the oracle answers UNKNOWN and the timeout rule applies.
-    ``fresh_activity=True`` reports "now" on every read, like an active stderr drain.
+    ``fresh_activity=True`` reports "now" on every read, like a busy co-tenant.
     """
     rt: object
     if fresh_activity:
@@ -105,22 +107,57 @@ async def _drain(handle: AcpSessionHandle, req_id: int, timeout: float) -> list:
     return [ev async for ev in handle._dispatch_events(req_id, timeout)]
 
 
-# ── Fix #1: stderr fold-in prevents false stale ──────────────────────────────
+# ── Fix #1: the stale clock is this session's own ────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_fresh_stderr_activity_prevents_stale_probe():
-    """Recent ``_runtime._last_activity`` (thinking on stderr) keeps the turn
-    alive: no probe cancel is sent even though stdout is silent."""
-    # The activity clock reports "now" on every read, which is what a
-    # continuously-active stderr drain looks like -- and unlike a refresher task
-    # it cannot be late when the event loop is contended.
+async def test_co_tenant_runtime_activity_does_not_defer_stale_probe():
+    """A silent mid-think turn is probed even while a co-tenant keeps the shared
+    runtime's activity clock fresh on every read: the runtime clock is
+    process-wide, so it says nothing about THIS session's turn."""
     handle = _make_handle(fresh_activity=True)
+
+    await _drain(handle, req_id=1, timeout=0.2)  # flake-ok: turn budget past 50ms window
+
+    assert handle._stale_probe is True
+    handle._runtime.send_notification.assert_awaited()  # session/cancel probe
+    assert handle._runtime.send_notification.await_args.args[0] == "session/cancel"
+
+
+class _KeepalivePingedHandle(AcpSessionHandle):
+    """A handle whose own keepalive stamp always reads as the current instant.
+
+    Stands in for a blocking tool of THIS session pinging ``/api/session-keepalive``.
+    A property for the same reason as ``_FreshActivityRuntime``; the setter drops the
+    writes ``__init__`` and ``note_keepalive()`` make.
+    """
+
+    @property  # type: ignore[override]
+    def _keepalive_ts(self) -> float:
+        return time.monotonic()
+
+    @_keepalive_ts.setter
+    def _keepalive_ts(self, _value: float) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_own_keepalive_defers_stale_probe():
+    """This session's own keepalive touches keep the turn alive while the
+    runtime clock is long silent: no probe cancel is sent."""
+    rt = MagicMock()
+    rt._last_activity = time.monotonic() - 10.0
+    rt.pid = None
+    rt.is_alive = MagicMock(return_value=True)
+    rt.send_notification = AsyncMock()
+    handle = _KeepalivePingedHandle("sA", asyncio.Queue(), rt, watchdog=_FAST_WD)
+    handle._turn_done.clear()
+    handle._stale_eligible = True
 
     events = await _drain(handle, req_id=1, timeout=0.3)
 
-    assert handle._stale_probe is False  # fold-in: not falsely stale
-    handle._runtime.send_notification.assert_not_awaited()  # no probe cancel
+    assert handle._stale_probe is False
+    rt.send_notification.assert_not_awaited()  # no probe cancel
     # An overall-timeout terminal event may be yielded, but never a stale-recover.
     assert all(ev.stop_reason != STOP_REASON_STALE_RECOVER for ev in events)
 
@@ -1131,12 +1168,10 @@ async def test_toctou_stale_eligible_path_also_guarded():
 
 
 @pytest.mark.asyncio
-async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
-    """TOCTOU Path C, stale branch only: runtime activity without a frame.
-
-    ``_runtime._last_activity`` (stderr thinking, keepalives, stdin writes) enqueues
-    no frame and leaves ``_ingress_seq`` alone, so the guard also rechecks the
-    runtime clock on this branch.
+async def test_toctou_stale_path_c_own_keepalive_prevents_probe():
+    """TOCTOU Path C on the stale branch: a keepalive for THIS session lands
+    during the oracle await. It enqueues no frame and leaves ``_ingress_seq``
+    alone, so the guard also rechecks the session's keepalive stamp.
     """
     evidence = "no established backend socket and flat counters (io +0B cpu +0t)"
     oracle, oracle_entered, oracle_release, oracle_rechecked = _make_one_shot_oracle(evidence)
@@ -1154,8 +1189,8 @@ async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
     drain_task = asyncio.create_task(do_drain())
     await await_until(oracle_entered, timeout=1.0)
 
-    # Runtime clock advances during the oracle — no frame, no _ingress_seq.
-    handle._runtime._last_activity = time.monotonic()
+    # This session's keepalive lands during the oracle — no frame, no _ingress_seq.
+    handle.note_keepalive()
 
     oracle_release.set()
     # Either outcome ends the wait, so a missing guard fails on the cancel check below.
@@ -1169,7 +1204,7 @@ async def test_toctou_stale_path_c_runtime_activity_prevents_probe():
     except asyncio.CancelledError:
         pass
 
-    # Runtime-clock arm fired → first DEAD skipped → WORKING → no probe.
+    # Keepalive arm fired → first DEAD skipped → WORKING → no probe.
     assert handle._cancelled is False
     assert handle._runtime.send_notification.await_count == 0
 
@@ -1684,3 +1719,64 @@ async def test_tracked_child_still_carries_across_ticks_after_retirement(monkeyp
     host_backend.descendants.assert_not_called()
     host_backend.row.assert_not_called()
     host_backend.cpu_nanos.assert_not_called()
+
+
+# ── A cycle the agent started on its own ends on the stale gate when it goes quiet ─
+
+
+def _thought_frame(sid: str = "sA") -> JsonRpcMessage:
+    return JsonRpcMessage.from_dict(
+        {
+            "jsonrpc": "2.0",
+            "method": METHOD_SESSION_UPDATE,
+            "params": {
+                "sessionId": sid,
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "thinking"},
+                },
+            },
+        }
+    )
+
+
+async def _silent_after_a_thought(req_id: int, sid: str = "sA") -> AcpSessionHandle:
+    """A turn that reads one thought frame and then nothing, past the stale window."""
+    handle = _make_handle(last_activity=time.monotonic() - 10.0)
+    handle._runtime.acp_backend = "claude"
+    handle._stale_eligible = False  # nothing has armed the gate yet
+    handle._queue.put_nowait(_thought_frame(sid))
+    await _drain(handle, req_id=req_id, timeout=0.3)  # flake-ok: turn budget, not a wait
+    return handle
+
+
+@pytest.mark.asyncio
+async def test_an_agent_started_turn_silent_after_a_thought_is_probed_by_the_stale_gate():
+    """claude-agent-acp sends no closing usage_update for a cycle no assistant
+    message set usage for, so only the stale gate can end that cycle."""
+    from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
+
+    handle = await _silent_after_a_thought(AGENT_STARTED_REQUEST_ID)
+
+    assert handle._stale_probe is True
+    assert handle._runtime.send_notification.await_args.args[0] == "session/cancel"
+
+
+@pytest.mark.asyncio
+async def test_a_user_turn_silent_after_a_thought_is_not_probed_by_the_stale_gate():
+    """A prompt still ends on its response; a thought alone does not arm its gate."""
+    handle = await _silent_after_a_thought(1)
+
+    assert handle._stale_probe is False
+    handle._runtime.send_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_childs_thought_does_not_arm_the_agent_started_turns_stale_gate():
+    """A native child's frames are its own work, judged by the tool watchdog."""
+    from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
+
+    handle = await _silent_after_a_thought(AGENT_STARTED_REQUEST_ID, sid="child-1")
+
+    assert handle._stale_probe is False
+    handle._runtime.send_notification.assert_not_awaited()

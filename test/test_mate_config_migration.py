@@ -1515,3 +1515,121 @@ def test_a_retirement_whose_move_fails_puts_the_copy_back(layout, persisted, mon
     assert report.migrated == [] and "rust" in report.repoint_failed
     assert json.loads((user / "rust.json").read_text(encoding="utf-8")) == fork
     assert lineage == {"rust": original}
+
+
+# -- an old agent's `shell` toolsSettings entry is the same tool as `execute_bash` --
+
+_DENIES = ["rm -rf .*", "git push --force.*", "sudo .*"]
+
+
+def _moved_shell_file(layout, persisted, settings: dict):
+    """Migrate one Bot whose old agent has *settings*: its file, ledger and report."""
+    user, mates = layout
+    _write(user, "careful", _template("careful", toolsSettings=settings))
+    cfg = _cfg(ijk=KiroCrewAgentConfig(member_id="ijk", kiro_agent="careful"))
+    persisted(cfg)
+    report = migrate_existing_crewmates(cfg)
+    return report, _file(mates, "ijk"), _ledger_of(mates)
+
+
+def _ledger_of(mates: Path) -> dict:
+    path = mates.parent / "migrated.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def _carried_entry(written: dict) -> dict:
+    merged = mate_worker.merge_worker_spec(BASE, mate_worker.worker_additions(BASE, written))
+    (entry,) = merged["toolsSettings"].values()
+    return entry
+
+
+def _carried_denies(written: dict) -> list[str]:
+    return _carried_entry(written)["deniedCommands"]
+
+
+def test_an_old_agent_with_both_shell_spellings_carries_the_denies_and_holds_nothing(
+    layout, persisted
+):
+    """kiro-cli reads ``shell`` first, so its keys are the ones carried; the
+    other entry adds its denies and nothing else."""
+    settings = {
+        "execute_bash": {
+            "deniedCommands": [*_DENIES, "wget .*"],
+            "autoAllowReadonly": True,
+            "allowedCommands": ["git .*"],
+        },
+        "shell": {"deniedCommands": [*_DENIES, "curl .*"]},
+    }
+
+    report, written, ledger = _moved_shell_file(layout, persisted, settings)
+
+    assert report.migrated == ["ijk"] and report.dry_run_failed == {}
+    assert sorted(_carried_denies(written)) == sorted([*_DENIES, "curl .*", "wget .*"])
+    assert list(written["toolsSettings"]) == ["execute_bash"]
+    assert set(written["toolsSettings"]["execute_bash"]) == {"deniedCommands"}
+    assert "held_rules" not in ledger
+    assert "ask" not in json.dumps(written.get("permissions", {}))
+
+
+def test_an_old_agent_with_only_a_shell_entry_carries_it_and_holds_nothing(layout, persisted):
+    settings = {"shell": {"deniedCommands": _DENIES}}
+
+    report, written, ledger = _moved_shell_file(layout, persisted, settings)
+
+    assert report.migrated == ["ijk"]
+    assert _carried_denies(written) == _DENIES
+    assert "held_rules" not in ledger
+
+
+def test_a_shell_entry_that_cannot_be_carried_exactly_is_still_held(layout, persisted):
+    """``fallbackAction`` is outside what a worker carries, so the entry is held
+    as before, and the Bot's shell calls ask."""
+    settings = {"shell": {"deniedCommands": _DENIES, "fallbackAction": "deny"}}
+
+    report, written, ledger = _moved_shell_file(layout, persisted, settings)
+
+    assert report.migrated == ["ijk"]
+    held = ledger["held_rules"]["ijk"]["rules"]
+    assert held and {h["capability"] for h in held} == {"shell"}
+    assert {"capability": "shell", "effect": "ask"} in written["permissions"]["rules"]
+
+
+def test_two_shell_spellings_that_disagree_on_a_key_carry_the_one_kiro_cli_reads(layout, persisted):
+    settings = {
+        "execute_bash": {"deniedCommands": _DENIES, "denyByDefault": True},
+        "shell": {"deniedCommands": _DENIES, "denyByDefault": False},
+    }
+
+    _report, written, ledger = _moved_shell_file(layout, persisted, settings)
+
+    assert _carried_entry(written)["denyByDefault"] is False
+    assert "held_rules" not in ledger
+
+
+def test_a_shell_spelling_whose_denies_cannot_be_read_is_still_held(layout, persisted):
+    settings = {"shell": {"deniedCommands": _DENIES}, "execute_bash": {"deniedCommands": "rm"}}
+
+    _report, _written, ledger = _moved_shell_file(layout, persisted, settings)
+
+    assert ledger["held_rules"]["ijk"]["rules"]
+
+
+def test_a_denied_command_still_refuses_for_a_bot_whose_shell_entry_was_folded(layout, persisted):
+    """The carried deny is what the spec-denies gate row reads, and that row refuses
+    whatever the approval mode (it runs before any grant)."""
+    from kiro_crew.hooks import ToolCall
+    from kiro_crew.platform.spec_denied_gate import spec_denies_refusal
+    from kiro_crew.platform.spec_denied_grant import SpecDeniedGrant
+
+    settings = {"execute_bash": {"deniedCommands": _DENIES}, "shell": {"deniedCommands": _DENIES}}
+    _report, written, _ledger = _moved_shell_file(layout, persisted, settings)
+    merged = mate_worker.merge_worker_spec(BASE, mate_worker.worker_additions(BASE, written))
+
+    grant = SpecDeniedGrant(denied_commands=tuple(_carried_denies(written)))
+    names = ("execute_bash",)
+    sudo = ToolCall(title="Run Command", is_shell=True, command="sudo reboot")
+    ls = ToolCall(title="Run Command", is_shell=True, command="ls -la")
+    refused = spec_denies_refusal(dataclasses.replace(sudo, spec_denied_grant=grant), names)
+    assert refused and "deniedCommands" in refused
+    assert spec_denies_refusal(dataclasses.replace(ls, spec_denied_grant=grant), names) is None
+    assert merged["toolsSettings"]["execute_bash"]["deniedCommands"] == _DENIES

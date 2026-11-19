@@ -43,6 +43,13 @@ _MAX_CONSECUTIVE_EMPTY = 5
 
 # Timeouts for session initialization steps
 _INIT_TIMEOUT = 240.0  # 4 min — MCP servers can be slow to initialize
+# Scope admission's share of the ``initialize`` window, by the runtime's rule
+# (``runtime_spawn_launch._SCOPE_ADMISSION_RESERVE``): a scoped spawn has no agent
+# until the user systemd manager has moved its pid into the scope, and that wait
+# comes out of the same window. Admission may take the window less the reserve,
+# and ``initialize`` keeps at least the reserve after a slow admission.
+_SCOPE_ADMISSION_RESERVE = 30.0
+_SCOPE_ADMISSION_TIMEOUT = _INIT_TIMEOUT - _SCOPE_ADMISSION_RESERVE
 # set_mode/set_model: fire-and-forget.  kiro-cli accepts these commands
 # but usually never sends a JSON-RPC response — MCP servers load
 # asynchronously.  Any late responses land in _buffer and are harmlessly
@@ -215,7 +222,16 @@ _STALE_TURN_TIMEOUT = 90.0
 # either stream tool_call_update progress frames or ping the session-keepalive
 # endpoint (both reset the clock).  This window — not the ~90s stale-turn
 # cutoff — is what governs an open tool call's silence.
-_TOOL_STALL_TIMEOUT = 600.0
+#
+# It must sit strictly ABOVE the longest wait a harness's own built-in tool may
+# legally spend silent, or a call the model was allowed to make is reaped as a
+# stall: Copilot CLI's `bash` (`initial_wait`) and `read_bash` (`delay`) accept up
+# to 600s and emit no frame meanwhile, as does Claude Code's Bash `timeout`. A
+# window equal to that maximum killed the agent on a legal 600s `read_bash`.
+_LONGEST_NATIVE_TOOL_WAIT = 600.0
+# Room past that wait for the tool to return and its result frame to arrive.
+_TOOL_STALL_MARGIN = 120.0
+_TOOL_STALL_TIMEOUT = _LONGEST_NATIVE_TOOL_WAIT + _TOOL_STALL_MARGIN
 
 
 # After a compaction `failed` status, kiro-cli can leave the turn it was

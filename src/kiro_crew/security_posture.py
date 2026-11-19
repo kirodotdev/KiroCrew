@@ -77,6 +77,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `pending_apply_error`. It emits nothing itself; the dashboard status route
         # that serves that stored text is the egress.
         "update_boot_apply.py",
+        # Gate-side log line: `_log_rule` redacts a lesson rule only for the store's
+        # own INFO lines. The stored rule is unchanged and nothing else is emitted.
+        "learn.py",
+        # The Claude child tool title on the parent session, redacted as the event is
+        # built, like acp/session_handle_dispatch.py above. The event reaches the
+        # browser through the runner's native cards, which are registered sinks.
+        "acp/session_handle_claude_children.py",
+        # The no-tools notice row's agent name, redacted before the row is handed to
+        # `append_and_surface`; the transcript broadcast is the registered sink.
+        "dashboard/agent_no_tools_notice.py",
         # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
         # only caller is `notifications/bridge.py`, the registered sink that hands
         # the copy to a transport.
@@ -584,6 +594,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # client_model_selection before it moved to the opencode client's owner; the
         # refusal reaches the browser through the chat's own sinks.
         "acp/client_opencode_session.py",
+        # The MiMo Code hosted fall-back refusal's model id, scrubbed the same way.
+        "acp/client_mimocode_session.py",
         "acp/client_permissions.py",
         "acp/client_start.py",
         "acp/client_tool_events.py",

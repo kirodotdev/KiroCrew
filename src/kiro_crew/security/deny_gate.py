@@ -102,6 +102,59 @@ def _emit_push_allow_event(command: str) -> None:
         )
 
 
+def _strip_win_program_suffix(word: str) -> str:
+    return next((word[:-4] for s in (".exe", ".cmd", ".bat") if word.endswith(s)), word)
+
+
+def _cmd_line_args(args: "list[str]") -> "list[str] | None":
+    """The words after ``/c`` or ``/k`` in a ``cmd`` argv, past other ``/x`` switches.
+
+    cmd.exe also takes the switch glued to another switch or to the line (``/s/c``,
+    ``/c"dir"``); the rest of that word is then the first word of the line.
+    """
+    for i, arg in enumerate(args):
+        if not arg.startswith("/"):
+            return None
+        low = arg.lower()
+        for switch in ("/c", "/k"):
+            at = low.find(switch)
+            if at != -1:
+                tail = arg[at + 2 :]
+                return ([tail] if tail else []) + args[i + 1 :]
+    return None
+
+
+def _win_program_index(tokens: "list[str]") -> "int | None":
+    """Index of the program word, past ``sudo``/``env``-style wrappers and ``cmd /c``."""
+    start = 0
+    while (found := _submodule("argv_rules")._program_args(tokens[start:])) is not None:
+        program, args = found
+        rest = _cmd_line_args(args) if _strip_win_program_suffix(program) == "cmd" else None
+        if not rest:
+            return len(tokens) - len(args) - 1
+        start = len(tokens) - len(rest)
+    return None
+
+
+def _cmd_c_payload(tokens: "list[str]") -> "list[str]":
+    """The quoted line of ``cmd /c "<line>"`` (or ``/k``), read as a nested command."""
+    found = _submodule("argv_rules")._program_args(tokens)
+    if found is None or _strip_win_program_suffix(found[0]) != "cmd":
+        return []
+    rest = _cmd_line_args(found[1])
+    return rest if rest is not None and len(rest) == 1 and " " in rest[0].strip() else []
+
+
+# An escape INSIDE a word (cmd ``a^w^s``, PowerShell ``a`w`s``) that the shell drops.
+# Only between two ASCII alphanumerics, so a PowerShell line continuation, ``git^``,
+# ``$(...)`` and POSIX command substitution (`` `date` ``) are left alone.
+def _fold_win_in_word_escapes(text: str) -> str:
+    sides = zip(text, " " + text[:-1], text[1:] + " ")  # (char, before, after)
+    return "".join(
+        c for c, b, a in sides if c not in "^`" or not (b + a).isascii() or not (b + a).isalnum()
+    )
+
+
 def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]:
     """The views of ONE shell segment that the deny tiers are matched against.
 
@@ -278,6 +331,12 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             stripped = " ".join(token for token in tokens if token.strip())
             if stripped and stripped not in candidates:
                 candidates.append(stripped)
+            # Windows resolves ``aws.exe`` / ``aws.cmd`` / ``aws.bat`` to the same
+            # program as ``aws``; the program word only, appended, never substituted.
+            at = _win_program_index(tokens)
+            if at is not None and _strip_win_program_suffix(tokens[at]) != tokens[at]:
+                words = [*tokens[:at], _strip_win_program_suffix(tokens[at]), *tokens[at + 1 :]]
+                candidates.append(" ".join(words))
             for candidate in candidates:
                 if not (is_root and not emit_self) and candidate not in seen_views:
                     seen_views.add(candidate)
@@ -288,6 +347,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             )
             # A redirect before the ``-c`` operand hides the script from the payloads.
             payloads = [*payloads, *_submodule("shell_commands").redirect_hidden_payloads(source)]
+            payloads += _cmd_c_payload(tokens)
             programs = _shell_normalizer._argv_programs(tokens) if payloads else []
             # Both values below read ONLY ``tokens``, which is fixed for this
             # whole walk, so they are charged ONCE here instead of once per
@@ -469,6 +529,115 @@ class _DenyWaiver:
         return verdict
 
 
+# Matches the ssh floor's _MAX_SSH_READING_DEPTH; unify the two once both are on main.
+_MAX_SUBSTITUTION_DEPTH = 32
+# Where a shell word starts, for a ``#`` comment and the ``case`` / ``esac`` words.
+_WORD_BREAK = frozenset(" \t\n;&|()<>`")
+_DEPTH_REFUSAL = f"substitution nesting deeper than {_MAX_SUBSTITUTION_DEPTH}"
+_DEPTH_NOTE = (
+    f"a command nested more than {_MAX_SUBSTITUTION_DEPTH} substitutions deep is refused;"
+    " flatten it"
+)
+
+
+def _nested_past_cap(text: str) -> bool:
+    """True once *text* nests command text more than ``_MAX_SUBSTITUTION_DEPTH`` deep.
+
+    One pass, linear in *text*. The floors re-walk every substitution body as its own
+    string, so their cost grows with depth times length; past the cap the command is
+    refused before any floor runs. Bash opens a FRESH quoting context inside each
+    ``$(``, so ``"$(echo "$(``... nests even though the quotes alternate: the scan keeps
+    a stack of contexts rather than one flat quote state. Only ``$(``, ``<(`` and
+    ``>(`` count. A bare ``(`` is tracked, so its ``)`` closes it, and so is a backtick
+    span, so a ``)`` or quote inside it reads right, but neither counts. An unescaped
+    backtick cannot open inside a backtick span (it closes it, even from inside a
+    double-quoted string there), so between two counted levels sits at most one
+    backtick level and the floors' work stays within about twice the cap. Not counting
+    them also keeps strings that are not posix shell from tripping the cap: PowerShell
+    escapes with a backtick (a backtick before a quote), and a non-shell tool string may nest parens.
+    A ``#`` comment runs to its newline, and between ``case`` and ``esac`` a ``)`` ends
+    a pattern rather than a frame, as the floors' own walk reads them.
+    """
+    stack = ["c"]  # c: substitution body, p: bare ( group, d: double quotes, b: backtick body
+    cases = [0]  # open ``case`` words per frame: a pattern's ``)`` closes nothing there
+    depth = 0  # open $( <( >( frames above the outermost command
+    escaped = -1  # index of the last character a backslash escaped
+    i, n = 0, len(text)
+    while i < n:
+        ch, top = text[i], stack[-1]
+        if ch == "\\":
+            escaped = i + 1
+            i += 2
+            continue
+        if top == "d":
+            if ch == '"':
+                stack.pop()
+                cases.pop()
+            elif ch == "$" and text.startswith("(", i + 1):
+                stack.append("c")
+                cases.append(0)
+                depth += 1
+                i += 1
+            elif ch == "`":
+                if stack[-2] == "b":  # bash closes the enclosing backtick span here
+                    del stack[-2:]
+                    del cases[-2:]
+                else:
+                    stack.append("b")
+                    cases.append(0)
+        elif ch == "'":
+            ansi = i > 0 and text[i - 1] == "$"
+            j = i + 1
+            while j < n and text[j] != "'":
+                j += 2 if ansi and text[j] == "\\" else 1
+            i = j + 1
+            continue
+        elif ch == "#" and (i == 0 or text[i - 1] in _WORD_BREAK):
+            newline = text.find("\n", i)
+            if newline < 0:
+                break
+            i = newline  # the comment's own quotes and parens are text
+            continue
+        elif ch in "ce" and (i == 0 or text[i - 1] in _WORD_BREAK):
+            word = text[i : i + 4]
+            j = i - 1  # each blank run is walked only by the word after it: linear
+            while j >= 0 and text[j] in " \t":
+                j -= 1
+            before = text[j] if j >= 0 else ""  # shortcut: reads no reserved-word chain
+            if (
+                word in ("case", "esac")
+                and text[i + 4 : i + 5] in _WORD_BREAK
+                and before in ("", "\n", ";", "&", "|", "(", "`")
+            ):
+                cases[-1] = cases[-1] + 1 if word == "case" else max(0, cases[-1] - 1)
+                i += 4
+                continue
+        elif ch == '"':
+            stack.append("d")
+            cases.append(0)
+        elif ch == "(":
+            if i > 0 and text[i - 1] in "$<>" and escaped != i - 1:
+                stack.append("c")
+                depth += 1
+            else:
+                stack.append("p")
+            cases.append(0)
+        elif ch == ")" and top in "cp" and len(stack) > 1 and not cases[-1]:
+            depth -= stack.pop() == "c"
+            cases.pop()
+        elif ch == "`":
+            if top == "b":
+                stack.pop()
+                cases.pop()
+            else:
+                stack.append("b")
+                cases.append(0)
+        if depth > _MAX_SUBSTITUTION_DEPTH:
+            return True
+        i += 1
+    return False
+
+
 @sharing_views
 def is_denied(
     tool_name: str,
@@ -606,6 +775,11 @@ def is_denied(
         )
 
     glob_patterns = list(extra_patterns or [])
+    # Before any floor: each floor re-walks every nested body, so depth times length.
+    # Never waived: past the cap no floor can read the command in bounded time.
+    if _nested_past_cap(tool_name):
+        _emit_deny_event(tool_name, _DEPTH_REFUSAL, lower)
+        return _reason(_DEPTH_REFUSAL, _DEPTH_NOTE)
     if denied_regexes is None:
         denied_regexes = _rules.compute_effective_denied(
             _rules.BUILTIN_DENIED_RULES, (), False, (), ()
@@ -818,6 +992,10 @@ def is_denied(
             # bytes, so drop to the whole-command span.
             if span is not None and len(lower) != len(tool_name):
                 span = None
+        elif predicate is _argv._reaches_self_over_ssh:
+            # Also the command as submitted: a wrapper's option words keep their
+            # case there (``sudo -H`` is not ``sudo -h``).
+            hit = _argv._reaches_self_over_ssh(lower, raw_text=tool_name)
         else:
             hit = predicate(lower)
         if hit:  # never waived: a self-guard rule (``_DenyWaiver``)
@@ -1056,6 +1234,12 @@ def _deny_pattern_passes(
     # command padded with thousands of interpreter tokens (a stall risk).
     if len(segments) != 1 or segments[0] != folded.strip():
         work.append(("", _deny_segment_views(text, False)))
+    # cmd/PowerShell in-word escapes, folded BEFORE the split (which cuts on
+    # backticks).  Extra segments only: the unfolded ones above still run first.
+    win_folded = _fold_win_in_word_escapes(folded)
+    if win_folded != folded:
+        extra = [s.strip() for s in _split_segments(win_folded)]
+        segments += [s for s in extra if s and s not in segments]
     for seg_raw in segments:
         work.append((seg_raw.lower(), _deny_segment_views(seg_raw)))
     for seg_lower, segment_views in work:

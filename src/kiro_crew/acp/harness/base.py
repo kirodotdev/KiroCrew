@@ -167,6 +167,12 @@ class HarnessReadBack:
     none. The start-time model check reads it to tell a model the operator chose
     from one the host fell back to."""
 
+    hosted_credential: bool = False
+    """Whether the host's own sign-in for its hosted models is present, read by
+    presence only (a file that exists, a variable that is set), never by opening it.
+    Only MiMo Code's read-back sets it: its signed-in and signed-out hosts advertise
+    the same models."""
+
 
 class ProcessSession(Protocol):
     """What a :class:`ProcessAdapter` may read, write and ask of the session it launches.

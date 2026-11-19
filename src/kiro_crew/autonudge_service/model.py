@@ -864,6 +864,24 @@ def unreadable_bound_field(loop: "NudgeLoop") -> str | None:
     return None
 
 
+def terminal_wake_line(loop: "NudgeLoop") -> str:
+    """The news an owed final turn opens with, or ``""`` when no such turn is owed.
+
+    The watched subject ended, so this turn is the watch's last: the line says how
+    it ended and that the loop stops after it, so the agent reports instead of
+    waiting for a wake that will not come.
+    """
+    monitor = getattr(loop, "monitor", None)
+    pending = str(getattr(monitor, "terminal_pending", "") or "") if monitor else ""
+    if not pending:
+        return ""
+    note = str(getattr(monitor, "terminal_note", "") or "")
+    if not note:
+        ending = "merged" if pending == "success" else "closed without merging"
+        note = f"{getattr(monitor, 'target', '') or 'The watched subject'} {ending}."
+    return f"[monitor finished] {note} This is the last wake; the loop stops after this turn."
+
+
 def nudge_cycle_header(loop: "NudgeLoop", now: float | None = None) -> str:
     """The ``[auto-nudge cycle N]`` tag, plus a budget line when the loop has a cap.
 

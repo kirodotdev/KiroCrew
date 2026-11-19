@@ -37,6 +37,7 @@ from kiro_crew.slack.handler import (
     is_yolo_mode,
     slack_cfg,
 )
+from kiro_crew.slack.linked_thread_images import set_inbound_files as set_linked_thread_files
 from kiro_crew.slack.transport_dispatch import handle_message_transport
 from kiro_crew.start_priority import person_priority
 
@@ -600,6 +601,8 @@ async def _dispatch_queued(
         getattr(getattr(slack_cfg(orch), "messaging", None), "use_transport", False) is True
         and _activation != ACTIVATION_REVIEW
     )
+    # This entry's own files, never the ones of the message whose task queued it.
+    set_linked_thread_files(kwargs.get("image_temp_paths") or [])
     try:
         if _use_transport:
             await handle_message_transport(

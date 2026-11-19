@@ -26,7 +26,7 @@ _RM_FLOOR_BY_KIND: dict[str, tuple[str, str]] = {
 }
 _RM_FLOOR_NOTE = "Matched on the rm flags and target, not the pattern text: recursive and force against this directory itself."
 _RM_FLOOR_UNREAD_NOTE = "Refused because the rm check could not read this command. Simplify it."
-_CAN_FIRE_RE = re.compile(r"r[^\w\s]*m")  # a literal rm, quote splices allowed
+_CAN_FIRE_RE = re.compile(r"(?i)r[^\w\s]*m")  # a literal rm, quote splices allowed
 _RM_WORD_RE = re.compile(r"(?<![\w.-])r[^\w\s/]*m(?![\w.-])")  # rm as its own word
 _EXPANDED_HOME = "\2"  # a ``$HOME`` its carrier expands: home whatever quotes the payload adds
 
@@ -78,6 +78,7 @@ _COMMAND_EDGE = frozenset(" \t\n;&|")
 _PLAIN_SEPARATORS = frozenset({"", ";", "&", "&&", "|", "||", "\n"})
 #: kiro-cli's display prefix on a shell call's title (``Running: rm -rf /tmp/x``).
 _TITLE_PREFIX = "Running:"
+_RM_WORDS = frozenset({"rm", "rm.exe", "rm.cmd", "rm.bat"})  # Windows spellings of rm
 
 
 def _is_scratch_entry(word: str) -> bool:
@@ -111,7 +112,7 @@ def scratch_rm_view(command: str) -> "str | None":
         argv = list(cmd.argv)
         if argv and argv[0].start == 0 and argv[0].raw == _TITLE_PREFIX:
             argv = argv[1:]
-        if not argv or argv[0].raw != "rm" or cmd.heredocs or cut:
+        if not argv or argv[0].raw not in _RM_WORDS or cmd.heredocs or cut:
             continue
         before, after = argv[0].start - 1, argv[-1].end
         if before >= 0 and command[before] not in _COMMAND_EDGE:
@@ -205,7 +206,8 @@ def _rm_wipe_targets(command: str) -> "set[str]":
                 words = [bare, *words[1:]] if bare else words[1:]
                 continue
             break
-        if not words or _shell._program_basename(words[0]) != "rm":
+        name = _shell._program_basename(words[0]) if words else ""
+        if name not in _RM_WORDS and name.lower() not in _RM_WORDS - {"rm"}:  # Windows: any case
             continue
         recursive = force = done = False
         operands = []

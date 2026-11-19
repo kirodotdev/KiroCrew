@@ -158,6 +158,17 @@ the cold start, the warm-pool re-apply and a live switch already use. A
 on kiro-cli 3.1.0 listed the same 34 ids as the v2 engine's `models` block, and
 the one `--list-models` row it left out failed the turn with `InvalidModelError`.
 
+A reopened chat's select is not the account's list. From kiro-cli 3.4 (measured on
+3.4.1) `session/load` answers with a select naming one model, the one the session
+runs, while `session/new` on the same account lists every served model, and KAS
+accepts a `session/set_config_option` for a model outside that one entry. Such a
+select (`select_lists_only_its_current_model`: one entry, not `auto`, equal to its
+`currentValue`) still sets the served model, but it keeps the `_kas_served_ids` an
+earlier response gave and `record_catalog` does not record it, as for a response
+with no select. A reopened chat therefore judges no pin before the turn: a pin the
+engine does not serve fails that turn with `InvalidModelError`, and every other pick
+switches the live session.
+
 Saving a pin is judged against the same select before any session sends it:
 with no `models` list on the newest live KAS session, the agent and role-pin
 validators (`dashboard/handlers/core_config_models.py`, `_kas_select_ids`) refuse
@@ -177,7 +188,8 @@ rows in the `chat --list-models` shape — `model_id` / `model_name` / `display_
 (`test/fixtures/acp_frames/kas/bundle-session-live.jsonl`: no `models` object, the
 select alone, no structured context-window field on any option). The recording is
 process-wide and in memory, like the catalog's prices; a response with no select
-clears nothing. A select is what ONE account is served, so the next account must
+clears nothing, and neither does a reopened chat's one-entry select (above). A
+select is what ONE account is served, so the next account must
 see `auto` alone until its own first session (a cold read starts one in the
 background; see the cold-read bullet below): every `session/new` and
 `session/load` notes the vault identity fingerprint it WENT OUT under

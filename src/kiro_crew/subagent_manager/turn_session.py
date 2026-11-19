@@ -2,7 +2,8 @@
 
 ``run_turn._run_inner_impl`` calls these in order: the tool-approval policy the run
 inherits (``resolve_parent_policy``), the session it runs on, shared or dedicated
-(``acquire_session``), the cleanup identity of that session (``capture_cleanup_identity``),
+(``acquire_session``, which holds a new session until its agent spec's MCP servers report,
+at most ``UNATTENDED_MCP_WAIT_SECS``), the cleanup identity of that session (``capture_cleanup_identity``),
 the child's memory, crew activity and folder steering (``prepare_child_context``), the
 records and the spawn event a restart and the panel read (``persist_spawn_records``), and
 the ``AgentSpawn`` and ``UserPromptSubmit`` hooks with their clock bookkeeping
@@ -31,6 +32,8 @@ import sys
 from collections.abc import Callable
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
+
+from kiro_crew.agent_sdk.mcp_problems import UNATTENDED_MCP_WAIT_SECS, wait_for_declared_mcp
 
 if TYPE_CHECKING:
     from ..subagent import SubagentInfo
@@ -249,6 +252,9 @@ async def acquire_session(
     _sa = _facade()
     if use_session_sharing:
         from kiro_crew.agent_sdk.drivers.acp_vocab import AcpRequestTimeout as _StartTimeout
+        from kiro_crew.agent_sdk.drivers.acp_vocab import (
+            AcpScopeAdmissionTimeout as _ScopeAdmissionTimeout,
+        )
 
         try:
             client = await self._manager._create_shared_session(info, session_key, agent)
@@ -263,6 +269,14 @@ async def acquire_session(
             is_new = True
             _resumed = False
             is_cc = False
+        except _ScopeAdmissionTimeout as exc:
+            # The companion runtime's spawn waited past its bound for the user
+            # systemd manager to admit its scope. That is congestion too: a
+            # dedicated process would ask the same manager for one more scope. The
+            # attempt ends the way ``_await_late_start`` ends an ``initialize``
+            # timeout that has no collector. No L3 failure is counted: the runtime
+            # never started, and an L4 escalation cannot make the manager faster.
+            raise RuntimeError(f"start_timeout: {exc}") from exc
         except Exception as exc:
             # The shared runtime itself is unavailable (dead, spawn failed):
             # not congestion. The failure is counted on the ladder's L3
@@ -362,6 +376,11 @@ async def acquire_session(
             self._manager._sessions, session_key, agent, await _claim(), _claim
         )
         is_cc = self._manager._is_cc_provider(client)
+    if is_new:
+        # A spawn prompts the moment its session opens, and nobody reconnects a
+        # slow server mid-run: hold the first prompt (bounded) for the agent
+        # spec's servers, as every other unattended run does.
+        await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
     return client, is_new, _resumed, is_cc, use_session_sharing
 
 

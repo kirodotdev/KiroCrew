@@ -1425,7 +1425,7 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
             "_is_credential_mint",
             "_self_kill_span",
             "_matches_self_subcommand",
-            "_is_ssh_to_self",
+            "_judge_ssh_to_self",
         ],
     )
     def test_the_memo_is_declared_inside_the_frame_loop(self, floor):
@@ -1446,7 +1446,7 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
         import inspect
         import textwrap
 
-        tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(security, floor))))
+        tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(_argv_floor, floor))))
 
         def memo_targets(node) -> "list[int]":
             found = []
@@ -1571,9 +1571,11 @@ class TestOneDecisionWalksEachTextOnce:
         modes: list[bool] = []
         real = walk._close_paren_walk
 
-        def spy(text: str, open_end: int, expansions: bool) -> tuple[int, bool]:
+        def spy(
+            text: str, open_end: int, expansions: bool, at: tuple[int, bool] | None = None
+        ) -> tuple[int, bool]:
             modes.append(expansions)
-            return real(text, open_end, expansions)
+            return real(text, open_end, expansions, at)
 
         monkeypatch.setattr(walk, "_close_paren_walk", spy)
         assert walk._matching_close_paren("$(echo a) b", 2) == (9, True)
@@ -1581,6 +1583,55 @@ class TestOneDecisionWalksEachTextOnce:
         modes.clear()
         assert walk._matching_close_paren("$(: ${v:-)}; printf token)", 2) == (26, True)
         assert modes == [False, True]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git add f && python3 - <<'PY'\n" + "print('a $b \"c\" `d` $(e) f')\n" * 135 + "PY",
+            "echo 2>$(e) f\n" * 300,  # a redirect cut by a substitution, every line
+        ],
+        ids=["heredoc", "redirect-cut-by-substitution"],
+    )
+    def test_one_walk_reads_each_character_a_bounded_number_of_times(self, monkeypatch, command):
+        """With a span on every line, finding each span's close by re-reading the
+        text from its start made one walk quadratic: 31 KB of this heredoc took over 10 s."""
+        from kiro_crew.security import shell_normalizer_walk as walk
+
+        steps = 0
+        real = walk._iter_shell_chars
+
+        def spy(*args, **kwargs):
+            nonlocal steps
+            for step in real(*args, **kwargs):
+                steps += 1
+                yield step
+
+        monkeypatch.setattr(walk, "_iter_shell_chars", spy)
+        assert is_denied(command) is None
+        assert steps < 10 * len(command), (steps, len(command))
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "git push origin my-feature > >(X=')' git push origin main)",
+            "x $(: ${v:-)}; printf token) y",
+            "a $(: # )\nprintf token) b",
+            "$(case x in x) printf token;; esac)",
+            "echo $'a\\'b' $(x) 'q $(y)' \"$(echo \")\")\"",
+            "\\$(x) $$(y) $'$(z)' `a $(b)` <(c) >(d $(e))",
+            'echo "${a:-$(b)}" $(c ${d} "$(e)") \'$(f)\' \\\'$(g) $(h',
+            _HEREDOC,
+        ],
+    )
+    def test_a_span_resumed_at_its_open_closes_where_a_walk_from_the_start_does(self, text):
+        from kiro_crew.security import shell_normalizer_walk as walk
+
+        at = walk._quote_states(text)
+        opens = [i + 2 for i in range(len(text)) if text.startswith(("$(", "<(", ">("), i)]
+        assert opens
+        for open_end in opens:
+            resumed = walk._matching_close_paren(text, open_end, at[open_end])
+            assert resumed == walk._matching_close_paren(text, open_end), (text, open_end)
 
 
 class TestS3DirectionSubstitutionCost:
@@ -1708,3 +1759,46 @@ class TestS3DirectionSubstitutionIsCapped:
         produced = self._spy(monkeypatch, self._cap(line))
         assert s3_direction._reads_all_downloads(line) is True
         assert produced[0] > 0
+
+
+class TestSshGateBracketWordsAreLinear:
+    """The ssh floor's verb gate reads a command's words with ``_gate_words``,
+    a plain character walk that keeps a bracket class (``s[s)]h``) inside one word.
+
+    The walk opens a class at a ``[`` and closes it at a ``]``.  A ``[`` while a
+    class is already open just reopens it at that point, so each character is
+    visited once: a long run of ``[`` with no ``]`` is one linear pass, not a
+    quadratic rescan (the old regex kept the gate busy for ~38 s on 40 KiB of
+    ``[``).  Asserted by counting character visits, never by timing.
+    """
+
+    def test_the_walk_visits_each_character_a_bounded_number_of_times(self):
+        from kiro_crew.security import argv_floor_ssh
+
+        # A per-character counter the walk cannot escape: feed a run of ``[``
+        # that never closes (the shape that made the old regex quadratic) and a
+        # mixed run, and require the visit count to stay within a small constant
+        # times the length.  A quadratic rescan would be O(n^2) visits.
+        for text in ("echo " + "[" * n for n in (500, 5000, 50000)):
+            visits = 0
+
+            class _Counted(str):
+                def __iter__(self):
+                    nonlocal visits
+                    for ch in str.__str__(self):
+                        visits += 1
+                        yield ch
+
+            argv_floor_ssh._gate_words(_Counted(text), group_brackets=True)
+            assert visits <= 2 * len(text), (len(text), visits)
+            # Each character lands in at most one word, so the words' total
+            # length cannot exceed the input: a rescan that re-appended a
+            # character would push this past ``len(text)``.
+            words = argv_floor_ssh._gate_words(text, group_brackets=True)
+            assert sum(len(w) for w in words) <= len(text), (len(text), words[:2])
+
+    @pytest.mark.parametrize("word", ["s[s)]h", "s[sx]h", "[rs]s*", "s[s]h"])
+    def test_a_bracket_class_stays_one_word(self, word):
+        from kiro_crew.security import argv_floor_ssh
+
+        assert argv_floor_ssh._gate_words(word, group_brackets=True) == [word]

@@ -117,6 +117,7 @@ from kiro_crew.dashboard.chat_api.app_admission import (  # noqa: F401
     _app_claim_refused,
     _app_may_send_to_slot,
     _app_resume_refusal,
+    _app_send_refused,
     _app_slot_acquisition_denial,
     _app_slot_acquisition_recheck,
     _deny_app_session_settings,
@@ -402,6 +403,7 @@ from kiro_crew.dashboard.chat_api.source_links import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.sse_write import write_sse_or_abort  # noqa: F401
 from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _cancel_cron_run,
+    _cancel_preparing_runner,
     _cancel_target,
     _compaction_in_flight,
     _make_stop_resolver,
@@ -597,8 +599,10 @@ from kiro_crew.dashboard.slot_buffers import (  # noqa: F401
 )
 from kiro_crew.dashboard.slot_color import write_slot_color  # noqa: F401
 from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
+    BOT_IDENTITY_DENIED,
     SESSION_CONTROL_DENIED,
     app_may_control_session,
+    app_names_bot,
     app_new_key_refusal,
     app_owns_slot_session,
     app_owns_transcript_meta,
@@ -610,6 +614,7 @@ from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     member_thread_grant,
     own_session_key,
     read_session_control_grant,
+    selects_bot_identity,
     session_grant,
     slot_not_found,
     transcript_acquisition_reason,

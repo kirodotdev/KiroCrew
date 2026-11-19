@@ -1013,6 +1013,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.sandbox import (  # noqa: F401
         CANONICAL_TEMP_KEYS,
         SandboxUnavailableError,
+        app_backend_secret_mask_targets,
         classify_declared_temp_env,
         classify_declared_temp_path,
         create_subprocess_limited,

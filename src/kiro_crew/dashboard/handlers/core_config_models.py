@@ -53,6 +53,9 @@ def _advertised_evidence_provider(
     except (KeyError, AttributeError):
         return None
     for provider in reversed(list(providers)):
+        if _spawned_for_another_account(request, provider):
+            # Its list is the previous account's, as on the picker (/api/models).
+            continue
         pb = _provider_backend(provider)
         if backend is not None and (
             pb is None or model_registry_namespace(pb) != model_registry_namespace(backend)
@@ -74,6 +77,24 @@ def _advertised_evidence_provider(
 #: Request key for the vault identity a pin save read off the loop
 #: (:func:`_read_kas_vault_identity`) before the synchronous validator runs.
 _KAS_VAULT_IDENTITY_KEY = "kirocrew.kas_vault_identity"
+#: Request key for the signed-in account's identity fingerprint, read off the loop
+#: by the same awaited step (:func:`live_kiro_identity`).
+_LIVE_IDENTITY_KEY = "kirocrew.live_identity"
+
+
+def _spawned_for_another_account(request: web.Request, provider: object) -> bool:
+    """Whether *provider* provably spawned under another account than the request read.
+
+    False when this request read no identity, so a caller without the awaited step
+    keeps judging by every live session, as before.
+    """
+    from kiro_crew.kiro_prerequisite import identity_stamp_mismatch, spawn_identity_of
+
+    try:
+        live = request.get(_LIVE_IDENTITY_KEY, "")
+    except AttributeError:
+        live = ""
+    return isinstance(live, str) and identity_stamp_mismatch(spawn_identity_of(provider), live)
 
 
 def _kas_select_ids(request: web.Request, backend: str | None) -> list[str]:
@@ -176,6 +197,11 @@ async def _revalidate_role_pin_evidence(
     from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating
 
     await _read_kas_vault_identity(request)
+    from kiro_crew.dashboard.kiro_readiness import live_kiro_identity
+
+    live = await live_kiro_identity(request)
+    if live:
+        request[_LIVE_IDENTITY_KEY] = live
 
     # Reselect the newest evidence provider after each refresh: a newer
     # startup-race session can register DURING the await, and the validator that

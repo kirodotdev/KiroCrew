@@ -689,6 +689,42 @@ def _user_agent_spec(agent: str) -> dict[str, Any] | None:
     return _read_agent_spec(path, operation="session_mcp_servers", source="unknown")
 
 
+def refuse_contested_agent_spec(agent: str | None) -> None:
+    """Refuse a start when differing user-level specs declare *agent*. Blocking.
+
+    :func:`_user_agent_spec` answers such a contest with ``None``, so a host that
+    reads its servers from here would start on Crew's control plane alone. This is
+    the one start check for every host that does not resolve the spec itself
+    (kiro-cli's native projection and KAS already refuse): it asks the resolver KAS
+    starts from, :func:`~kiro_crew.agent_discovery.declared_spec_claim`, and lets
+    its :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError` propagate,
+    a pin that names none of the claimants included. That message names every
+    file and the pin command, and the start's caller wraps it so
+    ``ambiguity_meta`` finds it on the cause chain.
+
+    No refusal, the start goes on as before, for: one file, identical copies, a
+    pin that picks a claimant, no file at all, or a directory that cannot be read.
+    A checkout spec for *agent* is no exemption: a mirrored session never lets an
+    untrusted checkout pick its servers (:func:`_project_mcp_trusted`), so it still
+    reads the user level, and the contest would still drop its servers.
+    """
+    from kiro_crew.agent import is_registered_agent_name, kiro_agents_dir_path
+    from kiro_crew.agent_discovery import AmbiguousAgentSpecError, declared_spec_claim
+    from kiro_crew.config.paths import spec_dir_for
+
+    if not agent or not is_registered_agent_name(agent):
+        return
+    agents_dir = spec_dir_for(agent, kiro_agents_dir_path())
+    try:
+        declared_spec_claim(agents_dir, agent, operation="session_start_spec_check", source="acp")
+    except AmbiguousAgentSpecError as exc:
+        # No claimant on disk is the "no agent file" case, which is not refused here.
+        if exc.paths:
+            raise
+    except OSError:
+        return
+
+
 def _session_spec_and_snapshot_for(
     agent: str, work_dir: str | Path | None = None
 ) -> tuple[dict[str, Any] | None, Any]:
