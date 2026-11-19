@@ -21382,6 +21382,11 @@
         "could_not_read_webhook_status": "webhook の状態を取得できませんでした — ゲートウェイが起動していない可能性があります"
       },
       "connectionsPanel": {
+        "sign_ins_title": "MCP サインイン",
+        "remember_sign_ins": "セッションをまたいで MCP サインインを記憶する",
+        "remember_sign_ins_hint": "オンにすると、Kiro Agent バックエンドの新しいチャットで、すでに行った MCP サーバーへのサインインを再利用します。オフにすると、新しいチャットのたびにもう一度サインインを求められます。保存済みのサインインは消去されず、使われないまま残るだけで、もう一度オンにすると新しいチャットで再び使えます。保存したサインインは、この {{productName}} のすべてのチャットで使え、共有している相手のチャットも含まれます。{{productName}} の再起動後に反映され、チャットと履歴は残ります。",
+        "remember_sign_ins_save_failed": "MCP サインインの設定を保存できませんでした。",
+        "remember_sign_ins_load_failed": "MCP サインインの設定を読み込めませんでした。",
         "loading": "読み込み中…",
         "none": "このインストールのすべてのプロバイダーは OAuth クライアントを自動登録するため、ここで設定するものはありません。",
         "load_failed": "OAuth アプリを読み込めませんでした",

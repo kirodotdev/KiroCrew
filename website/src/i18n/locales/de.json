@@ -21929,6 +21929,11 @@
         "could_not_read_webhook_status": "Webhook-Status konnte nicht gelesen werden — prüfe, ob das Gateway läuft"
       },
       "connectionsPanel": {
+        "sign_ins_title": "MCP-Anmeldungen",
+        "remember_sign_ins": "MCP-Anmeldungen über Sitzungen hinweg merken",
+        "remember_sign_ins_hint": "Wenn aktiviert, verwenden neue Chats im Kiro Agent-Backend die MCP-Server-Anmeldungen wieder, die du bereits vorgenommen hast. Wenn deaktiviert, bittet dich jeder neue Chat erneut um eine Anmeldung; bereits gespeicherte Anmeldungen werden nicht gelöscht, sondern bleiben nur ungenutzt, und neue Chats können sie wieder verwenden, wenn du die Option erneut aktivierst. Eine gespeicherte Anmeldung funktioniert in jedem Chat auf dieser {{productName}}-Instanz, auch in denen von Personen, mit denen du sie teilst. Gilt nach einem Neustart von {{productName}}; deine Chats und ihr Verlauf bleiben erhalten.",
+        "remember_sign_ins_save_failed": "Die Einstellung für MCP-Anmeldungen konnte nicht gespeichert werden.",
+        "remember_sign_ins_load_failed": "Die Einstellung für MCP-Anmeldungen konnte nicht geladen werden.",
         "loading": "Wird geladen…",
         "none": "Jeder Anbieter in dieser Installation registriert seinen OAuth-Client selbst, hier gibt es also nichts zu konfigurieren.",
         "load_failed": "OAuth-Apps konnten nicht geladen werden",
