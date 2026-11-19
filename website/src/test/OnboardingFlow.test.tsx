@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import OnboardingFlow from '../components/OnboardingFlow'
@@ -35,9 +35,15 @@ const patchConfig = vi.mocked(api.patchConfig)
 const kirocrewConfig = vi.mocked(api.kirocrewConfig)
 
 // The flow saves its first-run step in localStorage so a reload resumes it;
-// the store outlives a test, so start each one from step 1.
+// the store outlives a test, so start each one from step 1. Every first-run
+// mount seeds the Translucent panels default, which writes localStorage and
+// the <html> attribute, so clear those too: a test reads them whatever ran
+// before it.
 beforeEach(() => {
   localStorage.removeItem('mc-onboarding-step')
+  localStorage.removeItem(LIQUID_GLASS_STORAGE_KEY)
+  localStorage.removeItem(LIQUID_GLASS_SEEDED_KEY)
+  document.documentElement.removeAttribute('data-reduce-transparency')
 })
 
 const advanceToStep2 = () => {
@@ -479,12 +485,6 @@ describe('OnboardingFlow — About You step', () => {
 })
 
 describe('OnboardingFlow — Pick your look offers the Translucent panels switch', () => {
-  afterEach(() => {
-    localStorage.removeItem(LIQUID_GLASS_STORAGE_KEY)
-    localStorage.removeItem(LIQUID_GLASS_SEEDED_KEY)
-    document.documentElement.removeAttribute('data-reduce-transparency')
-  })
-
   it('shows the Settings switch between the mode row and the theme grid', () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     const sw = screen.getByRole('switch', { name: 'Translucent panels' })
