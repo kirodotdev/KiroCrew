@@ -116,12 +116,14 @@ async def _live_slot_resume_payload(state, existing) -> dict:
         workspace=existing.workspace,
     )
     next_before = (getattr(existing, "_disk_older_count", 0) or 0) + (total - len(recent))
+    from kiro_crew.dashboard.responsive_chat import written_queue_ids
+
     return {
         "ok": True,
         "key": existing.key,
         "history_key": slot_history_key(existing),
         "messages": prepared,
-        "queue": queue_view(existing._queue),
+        "queue": queue_view(existing._queue, written=written_queue_ids(existing)),
         "total": total,
         "has_more": next_before > 0,
         "next_before": next_before,

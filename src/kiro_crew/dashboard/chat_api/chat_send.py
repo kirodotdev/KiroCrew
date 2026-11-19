@@ -1459,6 +1459,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _hold_push.setdefault("meta", {})["durable"] = False
         if _hold_knowledge:
             _hold_push.setdefault("meta", {}).update(_hold_knowledge)
+        from kiro_crew.dashboard import responsive_chat as _rc
+
+        _rc.mark_written_on_push(slot, qid, _hold_push)
         state.broadcast_ws("queue_push", _hold_push)
         if _teardown_hold:
             # Deduped, so this only matters when no decline armed one: the retry

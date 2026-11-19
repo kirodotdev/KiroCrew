@@ -708,6 +708,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
             // not offer the pencil. Cancel/interrupt/reorder stay: they change
             // WHEN or WHETHER the entry runs, never who authored its text.
             const isAppEntry = isAppMessageQueued(m)
+            // Its user row is already in the conversation (the server's
+            // `meta.written`): the queue refuses an edit or cancel of it, so the
+            // card offers only Send now.
+            const isWritten = m.meta?.written === true
             const displayText = queuedDisplayText(m)
             const notDurable = m.meta?.durable === false
             // The card hides the knowledge envelope, so this chip is what says
@@ -865,7 +869,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
                           </button>
                         </>
                       )}
-                      {onEdit && showActions && !isAppEntry && (
+                      {onEdit && showActions && !isAppEntry && !isWritten && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT('components.queueStack.edit_queued_message')}
@@ -887,7 +891,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
                           <Zap size={13} fill="currentColor" />
                         </button>
                       )}
-                      {onCancel && showActions && (
+                      {onCancel && showActions && !isWritten && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT(isAppEntry ? 'components.queueStack.cancel_queued_message' : 'components.queueStack.cancel_and_move_back_to_input')}
