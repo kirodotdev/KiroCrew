@@ -17,12 +17,14 @@ Instance fields read: ``_acp_backend``, ``_announced_children``, ``_announced_ov
 ``_mcp_secret_server``, ``_native_skill_projection``, ``_process``,
 ``_session_harness_states``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
-``_turn_active_sessions``, ``mcp_connect_progress``, ``recording_allowed``.
+``_turn_active_sessions``, ``_workflow_sink``, ``mcp_connect_progress``,
+``recording_allowed``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import re
 import time
@@ -30,11 +32,17 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._frame_record import record_frame
+from kiro_crew.acp.client import _loggable_request_id
 from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.harness import NotificationAliases
 from kiro_crew.acp.runtime_frame_accounting import _DROP_NO_SESSION, _ROSTER_OVERFLOW_REJECT_REASON
 from kiro_crew.acp.runtime_host_requests import _UNREGISTERED_REJECT_REASON
-from kiro_crew.acp.session_handle import AcpFrameTooLarge, AcpModeNotFound, AcpRuntimeError
+from kiro_crew.acp.session_handle import (
+    AcpFrameTooLarge,
+    AcpModeNotFound,
+    AcpRuntimeDead,
+    AcpRuntimeError,
+)
 from kiro_crew.acp.structured_error_data import OVERSIZE_REPLY_DATA
 from kiro_crew.acp.transport_framing import (
     _STDOUT_BUFFER_LIMIT,
@@ -50,6 +58,8 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.json_line import parse_json_object_line
+from kiro_crew.kas_workflows.asks import user_input_no_answer
+from kiro_crew.kas_workflows.router_answers import log_id as kas_log_id
 from kiro_crew.metrics.events import CHILD_PERMISSION_ROUTED, emit_counter
 
 if TYPE_CHECKING:
@@ -371,6 +381,18 @@ async def _route_owned_child_frame(
         await self._session_queues[owner].put(msg)
 
 
+async def _answer_unread_user_input(runtime: AcpRuntime, request_id: int | str) -> None:
+    """Answer a ``_kiro/userInput`` nobody can see as "no person could answer".
+
+    Off the reader loop, like ``_answer_ownerless_request``: a stalled stdin drain
+    must not block stdout demux. A dead runtime has nobody left to answer.
+    """
+    try:
+        await runtime.send_response(request_id, user_input_no_answer(person=False))
+    except AcpRuntimeDead:
+        pass
+
+
 async def _reader_loop(self: AcpRuntime) -> None:
     """Single reader task — owns stdout exclusively. Routes frames by type.
 
@@ -678,6 +700,47 @@ async def _reader_loop(self: AcpRuntime) -> None:
             # _answer_ownerless_request below, rather than being left to
             # hang.
 
+            # A harness-native workflow engine's run notifications name a
+            # run, not a session (node_start names the STEP's session, which
+            # is registered nowhere). On a runtime whose owner installed a
+            # sink they go to it, never to the session demux below: a
+            # broadcast would hand one run's progress to every tenant.
+            _sink = self._workflow_sink
+            if (
+                _sink is not None
+                and msg.id is None
+                and msg.method
+                and _sink.claims_notification(msg.method)
+            ):
+                try:
+                    _sink.on_notification(
+                        msg.method, msg.params if isinstance(msg.params, dict) else {}
+                    )
+                except Exception:  # noqa: BLE001 -- one frame must not cost the demux
+                    logger.warning(
+                        "workflow sink failed on %s; frame dropped",
+                        _loggable_request_id(msg.method),
+                        exc_info=True,
+                    )
+                continue
+            if (
+                _sink is not None
+                and msg.id is None
+                and msg.method
+                and _sink.watches_notification(msg.method)
+            ):
+                # Seen by the sink, then routed below as usual.
+                try:
+                    _sink.on_watched_notification(
+                        msg.method, msg.params if isinstance(msg.params, dict) else {}
+                    )
+                except Exception:  # noqa: BLE001 -- the frame still routes
+                    logger.warning(
+                        "workflow sink failed watching %s",
+                        _loggable_request_id(msg.method),
+                        exc_info=True,
+                    )
+
             # Route notifications by sessionId
             session_id = (msg.params or {}).get("sessionId")
             # Read before routing, so a snapshot for a session that is not
@@ -786,6 +849,67 @@ async def _reader_loop(self: AcpRuntime) -> None:
                     # fail-closed auto-answer below and updates are
                     # counted drops as before.
                     await self._route_owned_child_frame(msg, session_id, self._subagent_owner)
+                elif (
+                    # Only an id the sink can key its one answer on (int or str);
+                    # any other falls to the fail-closed answer below.
+                    isinstance(msg.id, (int, str))
+                    and _sink is not None
+                    and msg.method
+                    and _sink.claims_step_request(session_id, msg.method)
+                ):
+                    # A request on a workflow STEP's session, which the
+                    # harness opened itself. The sink that owns this runtime
+                    # recognised the step and now owes the one answer, so the
+                    # fail-closed auto-reject below does not run. Admitted
+                    # under the same bound as every other answer so a
+                    # flooding backend still trips the dead-pipe cap, and a
+                    # refusal there is recorded as ``_spawn_answer_task``'s is.
+                    # A replay of a request the sink still owes (a
+                    # ``session/load``) is its first reading's: no capacity,
+                    # no second decision or row.
+                    if _sink.holds_step_request(msg.id):
+                        continue
+                    if not await self._wait_for_answer_capacity(
+                        msg,
+                        request_kind="workflow step",
+                        session_id=session_id,
+                        audit_reason="answer_task_cap_runtime_dead",
+                    ):
+                        continue
+                    try:
+                        _step_task = _sink.on_step_request(
+                            msg.id,
+                            session_id,
+                            msg.method,
+                            msg.params if isinstance(msg.params, dict) else {},
+                        )
+                        if _step_task is not None:
+                            # Counted with every other answer this runtime owes,
+                            # so the capacity check above bounds them too.
+                            self._answer_tasks.add(_step_task)
+                            _step_task.add_done_callback(self._answer_tasks.discard)
+                    except Exception:  # noqa: BLE001 -- answer rather than strand
+                        logger.warning(
+                            "workflow sink failed on a step request; auto-rejecting",
+                            exc_info=True,
+                        )
+                        if msg.method == "_kiro/userInput":
+                            # A question has no reject option: the permission
+                            # fallback would send ``cancelled``, which KAS reads
+                            # as yes. Recorded first, as a child's declined
+                            # question is (``_decline_child_question``).
+                            # Its id in the safe shape every step row uses.
+                            _row = dataclasses.replace(msg, id=kas_log_id(msg.id))
+                            _audit_child_question_declined(
+                                self, _row, "", session_id, "workflow_sink_error"
+                            )
+                            _q = asyncio.ensure_future(_answer_unread_user_input(self, msg.id))
+                            self._answer_tasks.add(_q)
+                            _q.add_done_callback(self._answer_tasks.discard)
+                        else:
+                            await self._spawn_answer_task(
+                                msg, session_id, reason="workflow_sink_error"
+                            )
                 elif msg.id is not None and msg.is_method(METHOD_REQUEST_PERMISSION):
                     # Unannounced, ambiguous, or announced past the
                     # recognition cap: nobody on this client can see or

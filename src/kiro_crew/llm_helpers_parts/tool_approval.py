@@ -279,186 +279,20 @@ def _body_field_link_origin() -> str:
         return ""
 
 
-async def _resolve_permission(
-    provider: LLMProvider,
-    event: LLMEvent,
-    policy: ToolApprovalPolicy,
+def tool_input_screen(
+    event: Any,
     hooks: HookManager | None,
-    on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None,
-    session_key: str = "",
-    agent: str = "",
-    app: str = "",
-    on_decision: Callable[[str, str, str], None] | None = None,
-    spec_floor: Callable[[LLMEvent], Awaitable[str | None]] | None = None,
-) -> bool:
-    """Resolve a tool permission request. Returns True if approved.
+    normalized: str,
+    judged_title: str,
+    _denied_regexes: list[str] | None,
+) -> tuple[str, str, str, str] | None:
+    """The title and tool-input tiers of a permission request: ``(kind, reason, matched, tier)``.
 
-    *spec_floor*, when given, is asked first (after a reject-all policy): the
-    agent spec's own PreToolUse hooks on a backend that never runs them. A reason
-    it returns refuses the call under ``mechanism`` ``"spec_hook"``, which, like
-    a governance deny, says nothing about the job: under its own harness the hook
-    refuses the call with no gate decision at all.
-
-    *on_decision*, when given, receives ``(outcome, mechanism, reason)`` for the
-    single decision this call makes — the same values that reach the SEL audit
-    row (``reason`` is the row's ``error``: the refusal text naming the rule that
-    matched, empty for an approval).
-    ``mechanism`` is one of ``"always_deny"`` / ``"always_deny_input"`` (the
-    unconditional checks), ``"always_deny_hook"`` (a HookManager security deny),
-    ``"policy_deny"`` (the governance ceiling, whether reached through the hook
-    gate or through a regex-tier rule that only a governance PIN put back into
-    the effective set), ``"always_deny_transport"`` (the transport's security
-    floor refused an approval), ``"batch_write_guard"`` (the batch write guard
-    deferred an approval to the next step), or ``""`` for an approval, an
-    interactive rejection or an approval prompt that expired unanswered.
-    The ``always_deny`` prefix is therefore what marks a refusal as "the attempt
-    itself was the problem"; everything else describes policy state or an absent
-    approver. Note that the same regex match can land under either label — what
-    decides it is whether the rule survives without its pin.
+    The one screen :func:`_resolve_permission` runs on every chat turn's request,
+    and :func:`kiro_crew.kas_workflows.policy.step_input_denial` runs on a workflow
+    step's, so the two cannot drift. Blocking (regex and path resolution): call it
+    off the event loop. ``None`` when nothing refuses the call.
     """
-    from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
-    from kiro_crew.sel import sel
-
-    def _log(outcome: str, **extra):
-        # Single funnel for every decision path, so the sink cannot miss one.
-        if on_decision is not None:
-            _meta = extra.get("metadata") or {}
-            try:
-                on_decision(
-                    outcome, str(_meta.get("mechanism") or ""), str(extra.get("error") or "")
-                )
-            except Exception:
-                logger.debug("on_decision sink failed", exc_info=True)
-        sel().log_tool_invocation(
-            session_key=session_key,
-            agent=agent,
-            tool_name=event.title,
-            tool_kind=event.tool_kind,
-            outcome=outcome,
-            request_id=event.request_id,
-            **extra,
-        )
-
-    def _log_send_refused() -> None:
-        # ``approve_tool`` answers both the batch write guard and the security
-        # floor with False; only the floor is a security block.
-        from kiro_crew.agent_sdk import batch_guard_refusal_outcome, take_batch_guard_refusal
-
-        reason = take_batch_guard_refusal(provider, event.request_id)
-        if reason is None:
-            _log(OUTCOME_REJECTED_TRANSPORT_FLOOR, metadata={"mechanism": "always_deny_transport"})
-            return
-        outcome, metadata = batch_guard_refusal_outcome(reason)
-        _log(outcome, metadata=metadata)
-
-    # Audit FIRST, before any wire I/O for this decision, at every deny below:
-    # the steer and the rejection both await the ACP pipe, and a backend that
-    # stops reading stdin blocks those awaits until the turn deadline cancels
-    # this coroutine -- an SEL write sequenced after them never runs (see
-    # test_deny_audit_first for the chat runner's statement of the same rule).
-    # The audit raises: a decision whose SEL row cannot be written is not
-    # answered on the wire at all (backend-security-controls), so a deny never
-    # proceeds unaudited. The caller's own deadline bounds the unanswered
-    # request.
-    if policy == ToolApprovalPolicy.REJECT_ALL:
-        _log("rejected", metadata={"reason": "reject_all_policy"})
-        await _steer_host_deny(
-            provider,
-            event,
-            "this surface runs under a reject-all tool policy",
-            cause=DENY_CAUSE_SURFACE_POLICY,
-        )
-        await provider.reject_tool(event.request_id)
-        return False
-
-    if spec_floor is not None:
-        spec_reason = await spec_floor(event)
-        if spec_reason is not None:
-            _log("denied", error=spec_reason, metadata={"mechanism": "spec_hook"})
-            await _steer_host_deny(provider, event, spec_reason, cause=DENY_CAUSE_POLICY)
-            await provider.reject_tool(event.request_id)
-            return False
-
-    # ── Always-enforced deny checks (regardless of approval policy) ──
-    # These run even for AUTO_APPROVE callers (workflows, crons, etc.)
-    # to ensure BUILTIN_DENY_PATTERNS and sensitive-path protection cannot
-    # be bypassed by callers that skip HookManager wiring.
-    # The empty-title guard, the deny-regex/bash tiers and the reported title
-    # all read the RAW title, exactly as the hook side does: its deny tier runs
-    # over BOTH ``GateFacts.normalized`` AND the raw ``call.title``
-    # (``deny_targets``), and a deny rule such as ``^Running: ...`` is written
-    # against the prefixed title, so stripping it here would stop that rule
-    # matching and let a denied tool through. Only the IDENTITY exemption below
-    # reads the normalized title, matching ``GateFacts.exempt_identity`` (which
-    # uses ``self.normalized``): that is the one check the two sides must agree
-    # on -- ``Running: @server/tool`` and ``@server/tool`` name the same
-    # verified identity, so both must be exempt.
-    normalized = event.title or ""
-    if not normalized:
-        _log("denied", error="Blocked: missing tool title", metadata={"mechanism": "always_deny"})
-        await _steer_host_deny(
-            provider, event, "the tool call carried no title", cause=DENY_CAUSE_INVALID_NAME
-        )
-        await provider.reject_tool(event.request_id)
-        return False
-    # The frame named an MCP server or tool Crew cannot read
-    # (``mcp_identity_unreadable``; ``mcp_identity_unreadable_reason`` says which
-    # check): not a call that names no tool but one whose exact per-tool deny
-    # cannot be checked, so it is refused here on every surface -- the same as the
-    # handle does before this tier -- and never judged by its title under an
-    # empty identity.
-    if getattr(event, "mcp_identity_unreadable", False):
-        clause = unreadable_identity_clause(getattr(event, "mcp_identity_unreadable_reason", ""))
-        _log(
-            "denied",
-            error=f"Blocked: MCP tool identity is unreadable ({clause})",
-            metadata={"mechanism": "always_deny"},
-        )
-        await _steer_host_deny(provider, event, clause, cause=DENY_CAUSE_UNREADABLE_IDENTITY)
-        await provider.reject_tool(event.request_id)
-        return False
-    # The title tier judges a shell title in kiro-cli's cut shape (a leading
-    # slice of the recovered command plus ``...``) in its uncut form,
-    # exactly as ``hooks.on_tool_call`` does (``untruncated_shell_title``); any
-    # other title is judged verbatim.
-    _shell_command = getattr(event, "shell_command", None)
-    judged_title = untruncated_shell_title(
-        normalized, _shell_command if isinstance(_shell_command, str) else None
-    )
-    # Honor the user's Settings>Security opt-out + governance pins on this
-    # surface too (cron / Slack / workflow / heartbeat). Without threading the
-    # effective set, is_denied() fails closed to ALL built-ins here, which would
-    # re-introduce "disabled but still blocked" on every non-dashboard surface.
-    # No HookManager (rare) → None → fail-closed default (all built-ins).
-    _denied_regexes = hooks.effective_denied_regexes() if hooks is not None else None
-
-    def _regex_deny_mechanism(probe: str, unconditional: str) -> str:
-        """Classify an already-decided regex-tier deny by its provenance.
-
-        A governance pin re-adds a built-in rule the user disabled, so the SAME
-        match can mean either "this host enforces this rule" or "policy
-        currently overrides this host's opt-out". Only the former says anything
-        about the tool being attempted; treating the latter as a security block
-        durably auto-pauses a cron that a later policy loosening cannot revive,
-        because clearing the pause never restores ``enabled``.
-
-        Re-runs the match against the pin-free set — deny path only, so the
-        common allow path pays nothing — and reports a match that survives ONLY
-        with pins as policy state.
-        """
-        if hooks is None:
-            return unconditional
-        try:
-            _unpinned = hooks.effective_denied_regexes(include_governance_pins=False)
-        except Exception:
-            # Classification must never change the deny itself. An unresolvable
-            # opt-out state falls back to the unconditional label: over-counting
-            # a block is recoverable by an operator, silently not counting one
-            # restores the runaway this gate exists to catch.
-            logger.debug("deny provenance unresolved; reporting unconditional", exc_info=True)
-            return unconditional
-        return unconditional if is_denied(probe, denied_regexes=_unpinned) else "policy_deny"
-
     # Defense-in-depth: the title AND every string in event.tool_input go through
     # the same three predicates. The title usually carries the full path/command
     # (kiro-cli convention), but tool_input may contain additional arguments or
@@ -766,7 +600,192 @@ async def _resolve_permission(
         with bounded_judgment():
             return _scan_off_loop()
 
-    _hit = await asyncio.to_thread(_bounded_scan_off_loop)
+    return _bounded_scan_off_loop()
+
+
+async def _resolve_permission(
+    provider: LLMProvider,
+    event: LLMEvent,
+    policy: ToolApprovalPolicy,
+    hooks: HookManager | None,
+    on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None,
+    session_key: str = "",
+    agent: str = "",
+    app: str = "",
+    on_decision: Callable[[str, str, str], None] | None = None,
+    spec_floor: Callable[[LLMEvent], Awaitable[str | None]] | None = None,
+) -> bool:
+    """Resolve a tool permission request. Returns True if approved.
+
+    *spec_floor*, when given, is asked first (after a reject-all policy): the
+    agent spec's own PreToolUse hooks on a backend that never runs them. A reason
+    it returns refuses the call under ``mechanism`` ``"spec_hook"``, which, like
+    a governance deny, says nothing about the job: under its own harness the hook
+    refuses the call with no gate decision at all.
+
+    *on_decision*, when given, receives ``(outcome, mechanism, reason)`` for the
+    single decision this call makes — the same values that reach the SEL audit
+    row (``reason`` is the row's ``error``: the refusal text naming the rule that
+    matched, empty for an approval).
+    ``mechanism`` is one of ``"always_deny"`` / ``"always_deny_input"`` (the
+    unconditional checks), ``"always_deny_hook"`` (a HookManager security deny),
+    ``"policy_deny"`` (the governance ceiling, whether reached through the hook
+    gate or through a regex-tier rule that only a governance PIN put back into
+    the effective set), ``"always_deny_transport"`` (the transport's security
+    floor refused an approval), ``"batch_write_guard"`` (the batch write guard
+    deferred an approval to the next step), or ``""`` for an approval, an
+    interactive rejection or an approval prompt that expired unanswered.
+    The ``always_deny`` prefix is therefore what marks a refusal as "the attempt
+    itself was the problem"; everything else describes policy state or an absent
+    approver. Note that the same regex match can land under either label — what
+    decides it is whether the rule survives without its pin.
+    """
+    from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
+    from kiro_crew.sel import sel
+
+    def _log(outcome: str, **extra):
+        # Single funnel for every decision path, so the sink cannot miss one.
+        if on_decision is not None:
+            _meta = extra.get("metadata") or {}
+            try:
+                on_decision(
+                    outcome, str(_meta.get("mechanism") or ""), str(extra.get("error") or "")
+                )
+            except Exception:
+                logger.debug("on_decision sink failed", exc_info=True)
+        sel().log_tool_invocation(
+            session_key=session_key,
+            agent=agent,
+            tool_name=event.title,
+            tool_kind=event.tool_kind,
+            outcome=outcome,
+            request_id=event.request_id,
+            **extra,
+        )
+
+    def _log_send_refused() -> None:
+        # ``approve_tool`` answers both the batch write guard and the security
+        # floor with False; only the floor is a security block.
+        from kiro_crew.agent_sdk import batch_guard_refusal_outcome, take_batch_guard_refusal
+
+        reason = take_batch_guard_refusal(provider, event.request_id)
+        if reason is None:
+            _log(OUTCOME_REJECTED_TRANSPORT_FLOOR, metadata={"mechanism": "always_deny_transport"})
+            return
+        outcome, metadata = batch_guard_refusal_outcome(reason)
+        _log(outcome, metadata=metadata)
+
+    # Audit FIRST, before any wire I/O for this decision, at every deny below:
+    # the steer and the rejection both await the ACP pipe, and a backend that
+    # stops reading stdin blocks those awaits until the turn deadline cancels
+    # this coroutine -- an SEL write sequenced after them never runs (see
+    # test_deny_audit_first for the chat runner's statement of the same rule).
+    # The audit raises: a decision whose SEL row cannot be written is not
+    # answered on the wire at all (backend-security-controls), so a deny never
+    # proceeds unaudited. The caller's own deadline bounds the unanswered
+    # request.
+    if policy == ToolApprovalPolicy.REJECT_ALL:
+        _log("rejected", metadata={"reason": "reject_all_policy"})
+        await _steer_host_deny(
+            provider,
+            event,
+            "this surface runs under a reject-all tool policy",
+            cause=DENY_CAUSE_SURFACE_POLICY,
+        )
+        await provider.reject_tool(event.request_id)
+        return False
+
+    if spec_floor is not None:
+        spec_reason = await spec_floor(event)
+        if spec_reason is not None:
+            _log("denied", error=spec_reason, metadata={"mechanism": "spec_hook"})
+            await _steer_host_deny(provider, event, spec_reason, cause=DENY_CAUSE_POLICY)
+            await provider.reject_tool(event.request_id)
+            return False
+
+    # ── Always-enforced deny checks (regardless of approval policy) ──
+    # These run even for AUTO_APPROVE callers (workflows, crons, etc.)
+    # to ensure BUILTIN_DENY_PATTERNS and sensitive-path protection cannot
+    # be bypassed by callers that skip HookManager wiring.
+    # The empty-title guard, the deny-regex/bash tiers and the reported title
+    # all read the RAW title, exactly as the hook side does: its deny tier runs
+    # over BOTH ``GateFacts.normalized`` AND the raw ``call.title``
+    # (``deny_targets``), and a deny rule such as ``^Running: ...`` is written
+    # against the prefixed title, so stripping it here would stop that rule
+    # matching and let a denied tool through. Only the IDENTITY exemption below
+    # reads the normalized title, matching ``GateFacts.exempt_identity`` (which
+    # uses ``self.normalized``): that is the one check the two sides must agree
+    # on -- ``Running: @server/tool`` and ``@server/tool`` name the same
+    # verified identity, so both must be exempt.
+    normalized = event.title or ""
+    if not normalized:
+        _log("denied", error="Blocked: missing tool title", metadata={"mechanism": "always_deny"})
+        await _steer_host_deny(
+            provider, event, "the tool call carried no title", cause=DENY_CAUSE_INVALID_NAME
+        )
+        await provider.reject_tool(event.request_id)
+        return False
+    # The frame named an MCP server or tool Crew cannot read
+    # (``mcp_identity_unreadable``; ``mcp_identity_unreadable_reason`` says which
+    # check): not a call that names no tool but one whose exact per-tool deny
+    # cannot be checked, so it is refused here on every surface -- the same as the
+    # handle does before this tier -- and never judged by its title under an
+    # empty identity.
+    if getattr(event, "mcp_identity_unreadable", False):
+        clause = unreadable_identity_clause(getattr(event, "mcp_identity_unreadable_reason", ""))
+        _log(
+            "denied",
+            error=f"Blocked: MCP tool identity is unreadable ({clause})",
+            metadata={"mechanism": "always_deny"},
+        )
+        await _steer_host_deny(provider, event, clause, cause=DENY_CAUSE_UNREADABLE_IDENTITY)
+        await provider.reject_tool(event.request_id)
+        return False
+    # The title tier judges a shell title in kiro-cli's cut shape (a leading
+    # slice of the recovered command plus ``...``) in its uncut form,
+    # exactly as ``hooks.on_tool_call`` does (``untruncated_shell_title``); any
+    # other title is judged verbatim.
+    _shell_command = getattr(event, "shell_command", None)
+    judged_title = untruncated_shell_title(
+        normalized, _shell_command if isinstance(_shell_command, str) else None
+    )
+    # Honor the user's Settings>Security opt-out + governance pins on this
+    # surface too (cron / Slack / workflow / heartbeat). Without threading the
+    # effective set, is_denied() fails closed to ALL built-ins here, which would
+    # re-introduce "disabled but still blocked" on every non-dashboard surface.
+    # No HookManager (rare) → None → fail-closed default (all built-ins).
+    _denied_regexes = hooks.effective_denied_regexes() if hooks is not None else None
+
+    def _regex_deny_mechanism(probe: str, unconditional: str) -> str:
+        """Classify an already-decided regex-tier deny by its provenance.
+
+        A governance pin re-adds a built-in rule the user disabled, so the SAME
+        match can mean either "this host enforces this rule" or "policy
+        currently overrides this host's opt-out". Only the former says anything
+        about the tool being attempted; treating the latter as a security block
+        durably auto-pauses a cron that a later policy loosening cannot revive,
+        because clearing the pause never restores ``enabled``.
+
+        Re-runs the match against the pin-free set — deny path only, so the
+        common allow path pays nothing — and reports a match that survives ONLY
+        with pins as policy state.
+        """
+        if hooks is None:
+            return unconditional
+        try:
+            _unpinned = hooks.effective_denied_regexes(include_governance_pins=False)
+        except Exception:
+            # Classification must never change the deny itself. An unresolvable
+            # opt-out state falls back to the unconditional label: over-counting
+            # a block is recoverable by an operator, silently not counting one
+            # restores the runaway this gate exists to catch.
+            logger.debug("deny provenance unresolved; reporting unconditional", exc_info=True)
+            return unconditional
+        return unconditional if is_denied(probe, denied_regexes=_unpinned) else "policy_deny"
+
+    _hit = await asyncio.to_thread(
+        tool_input_screen, event, hooks, normalized, judged_title, _denied_regexes
+    )
     if _hit is not None:
         _kind, _reason, _matched, _tier = _hit
         _log(

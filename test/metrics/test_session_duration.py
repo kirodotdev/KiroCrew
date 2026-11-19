@@ -1234,6 +1234,12 @@ class TestEveryRegistryRemovalRecordsAnEnd:
             "activation id -- not the session registry's dict[str, _SessionEntry], "
             "and it writes no crumb, so a removal there cannot leave one behind"
         ),
+        "agent_sdk.kas_step_identity": (
+            "a KAS workflow step's tool-call identity caches, an OrderedDict[str, "
+            "_Caches] keyed by step session id and bounded by an LRU -- not the "
+            "session registry, and it writes no crumb, so dropping a step's caches "
+            "cannot leave one behind"
+        ),
         "shared_crew.send_race": (
             "the send-race registry's OrderedDict[str, _Session] of per-session "
             "send revisions, bounded by an idle-only LRU -- not the session registry, "

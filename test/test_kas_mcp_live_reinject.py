@@ -280,7 +280,7 @@ class TestTheApply:
         await provider.apply_pending_mcp_reinjection()
 
         load = next(params for method, params in sent if method == METHOD_SESSION_LOAD)
-        assert "settings" not in load["_meta"]["kiro"]
+        assert "memory" not in load["_meta"]["kiro"].get("settings", {})
         assert provider._handle is not old
         assert provider._handle.kas_memory_mode == ""
         assert provider._mcp_reinject_pending is False
