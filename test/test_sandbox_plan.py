@@ -396,6 +396,40 @@ def test_seatbelt_write_seals_the_trees_whose_writes_matter() -> None:
     assert not by_path[f"{HOME}/.aws"].write_sealed
 
 
+def test_seatbelt_guards_every_ancestor_of_a_caller_mask_against_rename() -> None:
+    mask = f"{HOME}/data/store/item.bin"
+    host = _host(caller_ancestor_guards=(f"{HOME}/data/store", f"{HOME}/data", HOME, "/other"))
+    profile = sandbox_seatbelt.render_seatbelt_profile(
+        _plan("strict", BACKEND_SEATBELT, host=host, extra_hidden_dirs=(mask,))
+    )
+    for ancestor in (f"{HOME}/data/store", f"{HOME}/data", HOME):
+        assert f'(deny file-write* (literal "{ancestor}"))' in profile
+    # Only the ancestors of a live mask: an unrelated guard the host listed is dropped.
+    assert '(literal "/other")' not in profile
+    namespace = _plan("strict", host=host, extra_hidden_dirs=(mask,))
+    assert f"{HOME}/data/store" not in namespace.runtime_ancestor_guards
+
+
+def test_live_host_guards_only_the_caller_ancestors_that_exist(
+    live_host: Path, tmp_path: Path
+) -> None:
+    present = tmp_path / "present"
+    present.mkdir()
+    request = SandboxRequest(
+        tier="strict",
+        backend=BACKEND_SEATBELT,
+        extra_hidden_dirs=(str(present / "item.bin"), str(tmp_path / "absent" / "item.bin")),
+    )
+    guards = sandbox._live_plan_host(request).caller_ancestor_guards
+    assert str(present) in guards
+    assert str(tmp_path) in guards
+    assert str(tmp_path / "absent") not in guards
+    assert (
+        sandbox._live_plan_host(replace(request, backend=BACKEND_NAMESPACE)).caller_ancestor_guards
+        == ()
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Write carve-outs.
 # --------------------------------------------------------------------------- #
