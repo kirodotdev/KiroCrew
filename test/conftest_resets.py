@@ -15,9 +15,6 @@ import warnings
 import pytest
 from conftest_opt_in import drain_breadcrumb_writes
 
-from kiro_crew.safety_override import reset_singleton as _reset_safety_override
-from kiro_crew.safety_override import reset_yolo_policy_state as _reset_yolo_policy_state
-
 
 @pytest.fixture(autouse=True)
 def _ledger_create_ignores_live_memory(_floor_monkeypatch):
@@ -316,6 +313,11 @@ def _reset_safety_override_between_tests():
     present. Resetting it here makes the next reader resolve the ceiling actually
     installed.
     """
+    # Imported in the body so collection does not load the safety stack
+    # (test/test_conftest_import_budget.py holds that line).
+    from kiro_crew.safety_override import reset_singleton as _reset_safety_override
+    from kiro_crew.safety_override import reset_yolo_policy_state as _reset_yolo_policy_state
+
     _reset_safety_override()
     _reset_yolo_policy_state()
     yield
