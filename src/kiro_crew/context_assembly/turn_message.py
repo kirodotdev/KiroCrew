@@ -405,15 +405,19 @@ def build_message(
         )
         # Not when the harness holds this exact text as the agent's own prompt
         # (recorded from KAS's wire definition) or as its session head; a
-        # compaction re-sends the block.
-        if (
-            agent_prompt
-            and agent_prompt != native_documents.get(f"template://{agent}#prompt")
-            and not _session_head.holds(
-                native_documents, _session_head.AGENT_PROMPT_KEY, agent_prompt
-            )
+        # compaction re-sends the block. A shipped conductor's block is that
+        # recorded text plus the widget pointer, so it carries only the part
+        # after the text the harness holds.
+        block_prompt = agent_prompt
+        native_prompt = native_documents.get(f"template://{agent}#prompt") or ""
+        if native_prompt and agent_prompt.startswith(native_prompt):
+            rest = agent_prompt[len(native_prompt) :]
+            if not rest or rest.startswith("\n"):
+                block_prompt = rest.strip()
+        if block_prompt and not _session_head.holds(
+            native_documents, _session_head.AGENT_PROMPT_KEY, agent_prompt
         ):
-            parts.append(_session_head.agent_prompt_block(agent_prompt))
+            parts.append(_session_head.agent_prompt_block(block_prompt))
         with ctx._prompt_build_embedding_deadline(bool(text), query=text):
             session_ctx = self.build_session_context(
                 session_key,
