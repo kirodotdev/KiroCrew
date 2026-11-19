@@ -1,6 +1,6 @@
 ---
 title: Host memory guard — the gateway stops the heaviest non-gateway tree at critical memory, and the conductor keeps the host healthy
-status: draft
+status: accepted
 author: zejiangg (drafted with an agent session)
 created: 2026-11-18
 last-audited: 2026-11-18
@@ -14,8 +14,9 @@ superseded-by: []
 
 # RFC: Host memory guard
 
-Status: draft. Nothing is built and this document changes no code. Acceptance is
-requested from a maintainer, who records it on this Status line. Every code
+Status: accepted. #39188 was approved and merged 2026-11-18 20:57Z; the
+repository owner approved the design as proposed in the conductor chat on
+2026-11-18. Nothing is built and this document changes no code. Every code
 reference below was read at `6bd6d5b3ce` (origin/main, 2026-11-18T18:04Z).
 Code paths without a leading directory are under `src/kiro_crew/`. Code is cited
 by symbol and file, as `scripts/docs_lint.py` requires; each was checked by grep
