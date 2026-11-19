@@ -1,5 +1,6 @@
 """Regression guard for the electron-builder retry loop in
-``packaging/build-desktop.sh``.
+``packaging/desktop-electron-builder.sh``, which ``packaging/build-desktop.sh``
+sources.
 
 Background
 ----------
@@ -54,12 +55,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 SCRIPT = Path(__file__).parent.parent / "packaging" / "build-desktop.sh"
+#: Where the retry functions live; build-desktop.sh sources it.
+MODULE = Path(__file__).parent.parent / "packaging" / "desktop-electron-builder.sh"
 
 
 def _extract_function(name: str) -> str:
-    text = SCRIPT.read_text()
+    text = MODULE.read_text()
     m = re.search(rf"^{re.escape(name)}\(\) \{{.*?^\}}", text, re.DOTALL | re.MULTILINE)
-    assert m, f"{name}() not found in packaging/build-desktop.sh"
+    assert m, f"{name}() not found in packaging/desktop-electron-builder.sh"
     return m.group(0)
 
 
@@ -117,7 +120,8 @@ class TestElectronBuilderRetryWiring:
         """A revert to a bare/inline electron-builder invocation must fail
         here, not just silently drop the retry+classification logic."""
         text = SCRIPT.read_text()
-        assert "run_electron_builder_with_retry() {" in text
+        assert "run_electron_builder_with_retry() {" in MODULE.read_text()
+        assert '. "$ROOT/packaging/desktop-electron-builder.sh"' in text
         assert re.search(
             r'(?m)^\s*run_electron_builder_with_retry\s+"\$\{EB_ARGS\[@\]\}"\s*$', text
         ), "packaging step must call run_electron_builder_with_retry with EB_ARGS"

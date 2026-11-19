@@ -77,7 +77,7 @@ warnings).
   The mounted-volume phase races Spotlight and XProtect, which start reading
   the freshly-copied app and can hold the volume against ejection ("Resource
   busy"). electron-builder's own dmgbuild step hits the same race, so
-  `run_electron_builder_with_retry` in `packaging/build-desktop.sh` treats an
+  `run_electron_builder_with_retry` in `packaging/desktop-electron-builder.sh` treats an
   hdiutil "Resource busy" as transient: it detaches the device dmgbuild left
   attached through `hdiutil-detach.sh`, then retries within its three-attempt
   budget. The script

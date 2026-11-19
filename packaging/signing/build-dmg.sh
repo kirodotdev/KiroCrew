@@ -55,10 +55,10 @@ trap cleanup EXIT
 # Ejecting on a multitasking OS is inherently cooperative, so the mitigation
 # is layered rather than absolute: keep the volume out of Finder (-nobrowse
 # at both attach sites) and give the eject bounded retries with a force
-# fallback. run_electron_builder_with_retry in packaging/build-desktop.sh
-# retries dmgbuild's "Resource busy" for the same reason, detaching its device
-# through this same helper first. The retry loop itself lives in
-# hdiutil-detach.sh; it addresses the device node and treats "no longer
+# fallback. run_electron_builder_with_retry (packaging/
+# desktop-electron-builder.sh) retries dmgbuild's "Resource busy" for the same
+# reason, detaching its device through this same helper first. The retry loop
+# itself lives in hdiutil-detach.sh; it addresses the device node and treats "no longer
 # attached" as success, because a busy verdict can come from an eject that
 # still completes on its own.
 attach_image() {
