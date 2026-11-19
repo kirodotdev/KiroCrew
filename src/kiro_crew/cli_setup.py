@@ -20,6 +20,7 @@ from kiro_crew import platform_compat, slack_manifest
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.agent_sdk import kas_bundle
 from kiro_crew.cli_chat import _ensure_default_agent_in_config
+from kiro_crew.cli_setup_chat_folder import dashboard_chat_folder_lines
 from kiro_crew.cli_setup_progress import SetupProgress, abort_message, rerun_command
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -629,6 +630,11 @@ def _setup_workspace_dir() -> None:
         label = "Configured"
     print("── Workspace Directory ──\n")
     print("  LLM sessions and task output are stored in a workspace directory.")
+    print("  Change it later by running `kirocrew setup` again, or with KIROCREW_WORKSPACE.")
+    # This answer does not move where dashboard chats start, so name that folder
+    # rather than let the two read as one.
+    for line in dashboard_chat_folder_lines():
+        print(line)
     print(f"  {label}: {default}\n")
     while True:
         # EOF raises _SetupAborted, which _setup reports as a message, not a traceback.
