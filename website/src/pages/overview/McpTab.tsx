@@ -830,6 +830,18 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     },
   })
 
+  // Test one server: the answer is that row's fresh probe, which replaces only that
+  // row, so the other rows keep the state the user is looking at.
+  const testOne = useMutation({
+    mutationFn: (name: string) => api.mcpProbeOne(name),
+    onSuccess: (row) => {
+      // The row is fully annotated server-side, so it replaces the old one: a merge
+      // would keep a stale failing badge or sign-in note the response no longer carries.
+      queryClient.setQueryData<McpServer[]>(['mcp-servers'], prev =>
+        prev?.map(x => (x.name === row.name ? row : x)))
+    },
+  })
+
   const filtered = useMemo(
     () => servers.filter(s => !mcpFilter || (s.name + (s.command || '') + (s.tools || []).join(' ')).toLowerCase().includes(mcpFilter.toLowerCase())),
     [servers, mcpFilter]
@@ -1224,6 +1236,19 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       {i18nT('pages.overview.mcpTab.last_probed')}: {isToday(s.probedAt) ? fmtTime(s.probedAt * 1000) : fmtDateTime(s.probedAt * 1000)}
                     </div>
                   )}
+                  {!disabledInConfig && (
+                    <div className="mt-0.5 flex flex-col items-start gap-1">
+                      <Btn
+                        onClick={() => testOne.mutate(s.name)}
+                        disabled={testOne.isPending}
+                        title={i18nT('pages.overview.mcpTab.test_server_help')}
+                      >
+                        {testOne.isPending && testOne.variables === s.name
+                          ? i18nT('pages.overview.mcpTab.testing_server')
+                          : i18nT('pages.overview.mcpTab.test_server')}
+                      </Btn>
+                    </div>
+                  )}
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-[13px] w-full" style={dimmedCell}>
                   {disabledInConfig && (
@@ -1233,6 +1258,12 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        that carries a failing row's error), rather than in a
                        `title` a keyboard or touch user never reaches (#13075). */
                     <DisabledWhereLine whereKey={whereKey} file={s.disabledInFile ?? null} reason={s.disabledReason} text={disabledInConfigWhereText} />
+                  )}
+                  {testOne.isError && testOne.variables === s.name && (
+                    /* The pressed Test failed, so no probe ran: the wording says the
+                       row's status is the last check's. In the wide cell, wrapping its
+                       hand-off under the text, so it neither breaks mid-word nor clips. */
+                    <ErrorNotice variant="inline" className="flex-wrap" message={i18nT('pages.overview.mcpTab.test_server_failed')} testId="mcp-test-server-failed" askAgent />
                   )}
                   {s.tempRefusals?.map(r => (
                     /* The probe still answered with the managed temp, so the status

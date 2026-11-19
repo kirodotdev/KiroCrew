@@ -750,6 +750,36 @@ async def api_mcp_active(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def _probed_rows(servers: list[Any], overlapped_shutdown: bool) -> list[dict[str, Any]]:
+    """The rows a probe answers with: config state stamped, verdicts recorded, annotated.
+
+    One sequence for ``POST /api/mcp/probe`` and ``POST /api/mcp/probe/{name}``, so
+    a row a single-server Test swaps into the page carries every field the full
+    probe gives it. Raises ``PermissionError`` when ``mcp.json`` stays held; each
+    caller answers that as its own 503.
+    """
+    global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+    kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
+    builtin = await asyncio.to_thread(_builtin_mcp_server_names)
+    result: list[dict[str, Any]] = []
+    for s in servers:
+        d = s.to_dict()
+        spec = global_mcps.get(s.name, {})
+        _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin)
+        if isinstance(spec, dict) and spec.get("disabledTools"):
+            d["disabledTools"] = spec["disabledTools"]
+        result.append(d)
+    if result:
+        if not overlapped_shutdown:
+            await asyncio.to_thread(_record_probe_verdicts, result)
+        await asyncio.to_thread(_annotate_quarantine, result)
+        await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await asyncio.to_thread(_annotate_unconfigured_connection, result)
+        await _annotate_kas_chat_sign_in(result)
+        await asyncio.to_thread(_annotate_agent_drops, result)
+    return result
+
+
 async def api_mcp_probe(request: web.Request) -> web.Response:
     """POST /api/mcp/probe — probe all MCP servers and return live status.
 
@@ -780,7 +810,7 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
         logger.debug("shareability evaluation failed; probe result unaffected", exc_info=True)
     # Read global mcp.json for enabled/disabledTools state
     try:
-        global_mcps: dict[str, Any] = await asyncio.to_thread(_read_global_mcps)
+        result = await _probed_rows(servers, overlapped_shutdown)
     except PermissionError:
         logger.warning(
             "POST /api/mcp/probe: mcp.json stayed unreadable after retries", exc_info=True
@@ -788,24 +818,6 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "MCP config is busy; retry", "code": "mcp_config_busy"}, status=503
         )
-    kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
-    builtin = await asyncio.to_thread(_builtin_mcp_server_names)
-    result: list[dict[str, Any]] = []
-    for s in servers:
-        d = s.to_dict()
-        spec = global_mcps.get(s.name, {})
-        _stamp_config_state(d, global_mcps, kirocrew_mcps, builtin)
-        if isinstance(spec, dict) and spec.get("disabledTools"):
-            d["disabledTools"] = spec["disabledTools"]
-        result.append(d)
-    if result:
-        if not overlapped_shutdown:
-            await asyncio.to_thread(_record_probe_verdicts, result)
-        await asyncio.to_thread(_annotate_quarantine, result)
-        await asyncio.to_thread(_annotate_owner_sign_in, result)
-        await asyncio.to_thread(_annotate_unconfigured_connection, result)
-        await _annotate_kas_chat_sign_in(result)
-        await asyncio.to_thread(_annotate_agent_drops, result)
     _mcp_probe_cache[:] = result
     _mcp_probe_ts = time.time()
     return web.json_response(result)
@@ -1163,3 +1175,51 @@ async def _annotate_kas_chat_sign_in(rows: list[dict]) -> None:
             row["kasChatSignIn"] = mint_kas.KAS_CHAT_SIGN_IN_CHAT
         elif row.get("authGrantPresent") is True and await kas_grant_observed(row["url"]) is False:
             row["kasChatSignIn"] = mint_kas.KAS_CHAT_SIGN_IN_AGAIN
+
+
+async def api_mcp_probe_one(request: web.Request) -> web.Response:
+    """POST /api/mcp/probe/{name} — probe one MCP server and return its live status.
+
+    Read-only for the config: it spawns that one server (or reports a disabled
+    server without spawning it, which ``probe_server`` also enforces) and
+    updates the one row in the probe cache. The returned row carries the same
+    annotations the full probe gives a row, so a row that replaces the old one
+    on the page shows no stale failure or sign-in note. Owner-only, like the
+    full probe.
+    """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "mcp_probe_one")
+    if denied is not None:
+        return denied
+    from kiro_crew.mcp_discovery import _note_denied_env, list_servers
+    from kiro_crew.mcp_discovery_probe import probe_server
+
+    name = request.match_info["name"]
+    # list_servers reads every scope's config from disk: off the event loop.
+    matches = [s for s in await asyncio.to_thread(list_servers) if s.name == name]
+    if not matches:
+        return web.json_response(
+            {"error": "unknown MCP server", "code": "unknown_mcp_server", "name": name}, status=404
+        )
+    server = matches[0]
+    # probe_server refuses a consent-disabled server itself (no spawn, stale
+    # refusals dropped), so every row takes the same path here.
+    await probe_server(server)
+    # The same post-probe note probe_all gives a failed row, so the row this
+    # returns does not read as a broken server when a policy dropped its env.
+    _note_denied_env(server)
+    overlapped_shutdown = process_shutdown_requested(request.app["state"].sessions)
+    try:
+        rows = await _probed_rows([server], overlapped_shutdown)
+    except PermissionError:
+        logger.warning("POST /api/mcp/probe/%s: mcp.json stayed unreadable", name, exc_info=True)
+        return web.json_response(
+            {"error": "MCP config is busy; retry", "code": "mcp_config_busy"}, status=503
+        )
+    row = rows[0]
+    for i, cached in enumerate(_mcp_probe_cache):
+        if cached.get("name") == name:
+            _mcp_probe_cache[i] = row
+            break
+    return web.json_response(row)
