@@ -40,7 +40,7 @@ import {
 import { pickBoundSlot, useArtifactDetailPageCompanion } from './useArtifactDetailPageCompanion'
 import { useArtifactDetailPageMenu, ArtifactDetailPageHeader } from './ArtifactDetailPageHeader'
 import { ArtifactDetailPageBody } from './ArtifactDetailPageBody'
-import { artifactCompanionContextPrompt } from './artifactCompanionContext.prompt'
+import { artifactCompanionContextPrompt } from '../components/artifactCompanionContext.prompt'
 
 export { isEditableKind }
 
