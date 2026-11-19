@@ -34,8 +34,11 @@ from kiro_crew.dashboard.kiro_readiness import (
     turn_gate_target,
 )
 from kiro_crew.dashboard.relay_archive import (
+    CRON_RUN_READ_ONLY_CODE,
+    CRON_RUN_READ_ONLY_ERROR,
     RELAY_ARCHIVE_CODE,
     RELAY_ARCHIVE_ERROR,
+    is_cron_run_read_only,
     is_relay_archive,
 )
 from kiro_crew.dashboard.slot_buffers import flush_restored_hold
@@ -457,31 +460,6 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=409,
             )
-        # A relay archive is read-only. Reaching the local dispatch chokepoint
-        # (`_run_chat`) would append the prompt and emit a WS-only `chat_done`,
-        # leaving this HTTP caller waiting on a turn that never runs. Refuse
-        # BEFORE any mutation. A freshly-created slot is always local, so this
-        # only rejects an existing archive.
-        if is_relay_archive(slot):
-            sel().log_api_access(
-                caller=request.remote or "",
-                operation="openai_compat.chat",
-                outcome="denied",
-                source="openai_compat",
-                resources=f"slot={slot_id}",
-                error="relay archive is read-only",
-            )
-            return web.json_response(
-                {
-                    "error": {
-                        "message": RELAY_ARCHIVE_ERROR,
-                        "type": "invalid_request_error",
-                        "code": RELAY_ARCHIVE_CODE,
-                    },
-                    "code": RELAY_ARCHIVE_CODE,
-                },
-                status=409,
-            )
         # Busy check — prevent concurrent writes to the same slot.
         if slot.running is True:
             return _slot_busy_response(request, slot_id)
@@ -647,6 +625,44 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 error="app does not own the session or transcript this slot uses",
             )
             return _foreign_slot_response()
+
+    # A relay archive is read-only. Reaching the local dispatch chokepoint
+    # (`_run_chat`) would append the prompt and emit a WS-only `chat_done`,
+    # leaving this HTTP caller waiting on a turn that never runs. A cron run's
+    # transcript the History resume marked read-only ends at the same
+    # chokepoint, so it is refused here too, with its own code. Refused BEFORE
+    # any mutation, and AFTER the app-ownership checks above so a foreign app
+    # cannot tell a read-only slot apart from one it cannot reach via the 409.
+    # A slot this request created, the ephemeral one included, is never
+    # read-only, so this only rejects an existing one.
+    cron_run = is_cron_run_read_only(slot)
+    if cron_run or is_relay_archive(slot):
+        code, message = (
+            (CRON_RUN_READ_ONLY_CODE, CRON_RUN_READ_ONLY_ERROR)
+            if cron_run
+            else (RELAY_ARCHIVE_CODE, RELAY_ARCHIVE_ERROR)
+        )
+        sel().log_api_access(
+            caller=request.remote or "",
+            operation="openai_compat.chat",
+            outcome="denied",
+            source="openai_compat",
+            resources=f"slot={slot_id}",
+            error=(
+                "cron run transcript is read-only" if cron_run else "relay archive is read-only"
+            ),
+        )
+        return web.json_response(
+            {
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "code": code,
+                },
+                "code": code,
+            },
+            status=409,
+        )
 
     # Unlike the dashboard, this endpoint has no transcript the caller reads. A
     # turn that ends on its `error` card answers the generic `turn_failed`

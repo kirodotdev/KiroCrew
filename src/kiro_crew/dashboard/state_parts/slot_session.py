@@ -28,7 +28,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
 ``_title_retry_pending``, ``_title_task``, ``_titled``,
 ``_welcome_preview``, ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``backend``,
-``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
+``channel_origin``, ``created_at``, ``crew_mode_agent``, ``cron_run_read_only``, ``executor``, ``forked_from``, ``instance_id``,
 ``jev_route``, ``memory_store``,
 ``remote_slot``, ``served_model``.
 Reads only: ``model``.
@@ -232,6 +232,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     self.executor = "local"
     self.instance_id = ""
     self.remote_slot = ""
+    # In memory only: set by the History resume (``relay_archive``) on a cron
+    # run's transcript whose tab could never save a reply.
+    self.cron_run_read_only = False
     self.created_at = datetime.now(timezone.utc).isoformat()
     self._titled = False  # True once a title has been assigned
     # Provenance of the current title: "auto" (LLM auto-titler or its

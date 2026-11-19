@@ -429,7 +429,12 @@ carrying `instance_id` or `adopt_remote_slot` is refused with
 crew and opened here through its window. A slot already on disk with
 `executor: "remote"` still loads, as a read-only relay archive: a send, regenerate, rewind,
 continue or checklist write, and a change of agent, model, effort or workspace, answer
-`409 relay_archive_read_only` (`dashboard/relay_archive.py`).
+`409 relay_archive_read_only` (`dashboard/relay_archive.py`). A cron run's transcript
+(a sequence agent's `cron_<job id>_<agent>` or a stateless run's `cron_<job id>_<run id>`)
+that the dashboard user reopens from History with no `linked_session_key` is read-only the
+same way: the resume marks the slot `cron_run_read_only` (in memory, on the wire beside
+`executor`), the same actions answer `409 cron_run_read_only`, the turn chokepoint refuses
+any other start with its own notice row, and Resume all skips it.
 
 A create body carrying `app_launch: <app>` is an app's page opening a person's chat
 under that app's `permissions.chatLaunch`: right after the title check it is held to the
