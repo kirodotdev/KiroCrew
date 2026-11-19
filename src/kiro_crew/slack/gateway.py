@@ -176,6 +176,7 @@ from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
     _queued_depth_off_loop,
+    cron_tab_name,
     dashboard_slot_key,
     mint_options_token,
     remember_slack_options,
@@ -228,6 +229,7 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
     DashboardState,
+    _normalize_slot_key,
     load_window_off_loop,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
@@ -331,6 +333,7 @@ from kiro_crew.messaging.dispatch import (
     build_directive_consumer,
     build_tool_gate,
     consume_reinjection,
+    open_turn_crew_log,
     rearm_reinjection,
     rollback_skill_bodies,
     stop_reason_landed,
