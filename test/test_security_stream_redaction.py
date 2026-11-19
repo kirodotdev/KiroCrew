@@ -1202,6 +1202,107 @@ class TestStreamRedactor:
                 out = "".join(r.feed(text[x:y]) for x, y in pieces) + r.flush()
                 assert out == whole, (a, b, out)
 
+    def test_unspaced_cjk_prose_streams_as_it_arrives(self) -> None:
+        """Chinese prose has no blanks, so a hold that only ends at a blank kept a
+        whole reply off the live chat until the turn's next space or its end. A
+        word also ends at a non-ASCII character, so each chunk goes out at once."""
+        from kiro_crew.security import StreamRedactor
+
+        text = "是的，要配。我刚看了仓库，现在的情况是这样的，需要改两处地方才能用。"
+        r = StreamRedactor()
+        for i in range(0, len(text), 3):
+            chunk = text[i : i + 3]
+            assert r.feed(chunk) == chunk
+        assert r.flush() == ""
+
+    @pytest.mark.parametrize("size", [1, 2, 3, 5, 7])
+    def test_a_credential_glued_to_cjk_is_still_redacted(self, size: int) -> None:
+        """The word that ends at a CJK character is still held whole, so a token
+        written right after one is redacted as the whole text redacts it."""
+        from kiro_crew.security import StreamRedactor, redact
+
+        text = f"令牌是{_TOKEN}，请收好。密钥：{_TOKEN}也在这里"
+        r = StreamRedactor()
+        out = "".join(r.feed(text[i : i + size]) for i in range(0, len(text), size)) + r.flush()
+        assert _TOKEN not in out
+        assert out == redact(text)
+
+    def test_a_label_letter_folded_onto_ascii_stays_inside_the_word(self) -> None:
+        """``ſ`` reads as ``s`` in a label match, so a chunk cut right after it
+        must not commit the half label: the value after it is still redacted."""
+        from kiro_crew.security import StreamRedactor, redact
+
+        text = 'paſsword="Zq8vLm2 Kd9pRt4wXy" ok'
+        cuts = [text.index("ſ") + 1, text.index(" Kd") + 1, text.rindex('"') + 1]
+        bounds = [0, *cuts, len(text)]
+        r = StreamRedactor()
+        out = (
+            "".join(r.feed(text[a:b]) for a, b in zip(bounds, bounds[1:], strict=False)) + r.flush()
+        )
+        assert "Zq8vLm2" not in out and "Kd9pRt4wXy" not in out
+        assert out == redact(text)
+
+    def test_a_value_ending_in_cjk_keeps_its_closing_quote_in_the_window(self) -> None:
+        """A word ends after the value's last CJK character, right before its
+        closing quote. The match is held until that quote goes out with it, so
+        every split still equals the whole-text redaction."""
+        from kiro_crew.security import StreamRedactor, redact
+
+        text = ' password="Zq8vLm2Kd9pRt4密" ok'
+        whole = redact(text)
+        assert "Zq8v" not in whole
+        n = len(text)
+        for at_boundary in (False, True):
+            for a in range(1, n):
+                for b in range(a, n):
+                    bounds = sorted({0, a, b, n})
+                    r = StreamRedactor()
+                    out = ""
+                    for x, y in zip(bounds, bounds[1:], strict=False):
+                        out += r.feed(text[x:y])
+                        if at_boundary:
+                            out += r.release_at_boundary()
+                    out += r.flush()
+                    assert out == whole, (at_boundary, a, b, out)
+
+    def test_a_value_ending_in_cjk_is_held_at_a_display_boundary(self) -> None:
+        """A tool call or prompt right after such a value releases the held tail
+        without the closing quote unless the span hold covers it too."""
+        from kiro_crew.security import StreamRedactor, redact
+
+        text = 'Here is the config: password="Zq8vLm2Kd9pRt4密"'
+        r = StreamRedactor()
+        out = r.feed(text) + r.release_at_boundary() + r.flush()
+        assert "Zq8v" not in out
+        assert out == redact(text)
+
+    def test_a_value_whose_label_already_went_out_is_held_at_a_display_boundary(
+        self,
+    ) -> None:
+        """The label streams in one chunk and the quoted value in the next, then
+        a boundary comes. The span check reads the value after the label that
+        already went out, so the value is still held and redacted."""
+        from kiro_crew.security import StreamRedactor, redact
+
+        text = " 密码 password = 'Zq8vLm2Kd9pRt4密'"
+        r = StreamRedactor()
+        out = ""
+        for piece in (text[:10], text[10:]):
+            out += r.feed(piece) + r.release_at_boundary()
+        out += r.flush()
+        assert "Zq8v" not in out
+        assert out == redact(text)
+
+    def test_a_ligature_inside_a_word_is_not_a_word_end(self) -> None:
+        """``ﬁ`` folds onto ``fi``, so a cut right after it would commit the
+        start of a GitHub-token-shaped word; it stays inside the word."""
+        from kiro_crew.security.redaction_structured import compat
+
+        assert not compat.ends_word("\ufb01")
+        assert compat.ends_word("密")
+        assert compat.word_start("ab \ufb01cd", 6) == 3
+        assert compat.word_start("ab密cd", 5) == 3
+
 
 class TestScanMemoryImportGuard:
     """scan_memory()'s optional vector_memory import must degrade gracefully on

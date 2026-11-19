@@ -58,6 +58,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import kiro_crew.security.redaction as redaction
+from kiro_crew.security.redaction_structured import charsets
 
 if TYPE_CHECKING:
     from kiro_crew.security.redaction_structured.model import Hit
@@ -370,15 +371,50 @@ class StreamRead:
 _TAG_HEAD = "[REDACTED"
 
 
+def ends_word(c: str) -> bool:
+    """Whether *c* ends a word for the stream's holds: a blank, or a non-ASCII
+    character that no reader folds onto ASCII. Every anchor literal and credential
+    is ASCII, so a CJK character, which writing in those scripts puts where English
+    puts a blank, cannot sit inside one. A character a label match folds onto an
+    ASCII letter (``ſ`` reads as ``s`` under :func:`.charsets.ascii_lower` and a
+    case-blind regex) can, so it stays inside the word."""
+    if c.isspace():
+        return True
+    if c.isascii():
+        return False
+    folds = (charsets.ascii_lower(c), c.casefold(), c.lower(), c.upper())
+    return not any(f.isascii() for f in folds)
+
+
+def word_start(buf: str, pos: int) -> int:
+    """*pos* moved back to the start of the word it falls in (see :func:`ends_word`).
+
+    The stream snaps the detectors' fixed tail hold back to here. Snapping to a
+    blank alone held a whole Chinese or Japanese paragraph back from the live chat,
+    since that prose has none."""
+    while pos > 0 and not ends_word(buf[pos - 1]):
+        pos -= 1
+    return pos
+
+
+def _last_word_end(buf: str) -> int:
+    """The index of the last character of *buf* that :func:`ends_word`, or -1."""
+    for i in range(len(buf) - 1, -1, -1):
+        if ends_word(buf[i]):
+            return i
+    return -1
+
+
 def _tail_cut(buf: str, base: int, cut: int) -> int:
-    """The fixed tail hold, ending at the last word: ``cut`` moved up past the last blank.
+    """The fixed tail hold, ending at the last word: ``cut`` moved up past the last
+    character that ends a word (:func:`ends_word`).
 
     A partial anchor literal is one word (``ghp_``, ``eyJ``, ``https://``, a key
     spelling); an anchor that spans a blank (a private-key header, a labelled key
     and its value) is a unit the detectors report undecided, or one the passes'
     own stream holds keep. So only the last word needs holding.
     """
-    blank = max(buf.rfind(c) for c in " \t\r\n")
+    blank = _last_word_end(buf)
     if blank == -1:
         return cut
     # A redaction tag holds a blank; a cut inside one would hand half a tag to a
@@ -435,8 +471,10 @@ def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead
         for h in resolved:
             # A hit not committed yet keeps the text it was decided from (its
             # anchor) buffered, so the window that commits it decides it alike.
+            # A cut right at its end, with more text after it, would commit the
+            # hit without the character it was decided by (a closing quote).
             first = h.start if h.anchor < 0 else min(h.start, h.anchor)
-            if first < cut < h.end:
+            if first < cut < h.end or first < cut == h.end < n:
                 cut = max(base, first)
                 moved = undecided = True
     return StreamRead(cut - base, undecided=undecided)
