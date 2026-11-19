@@ -20,6 +20,10 @@ from kiro_crew.dashboard.chat_utils import CRON_NOTIFICATION_KIND, redact_displa
 from kiro_crew.dashboard.chat_utils_slots import cron_tab_name
 from kiro_crew.dashboard.display_floor import DISPLAY_FLOOR_KEY, clip_to_floor, read_display_floor
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
+from kiro_crew.dashboard.slot_persistence.metadata_values import (
+    _mark_source_links_off_unread,
+    _restore_source_links_off,
+)
 from kiro_crew.dashboard.state import (
     DashboardState,
     SlotOrigin,
@@ -742,6 +746,9 @@ def _bind_cron_slot(
         # writing "follow the global limit" over it; a reused slot's limit from
         # a prior binding is dropped for the same reason.
         mark_turn_timeout_unread(state, slot)
+        # The chips-off switch is on that line too: until
+        # restore_cron_turn_timeout's read restores it, saves write the stored value back.
+        _mark_source_links_off_unread(slot)
         if dismissed is not _DISMISSED_UNREAD:
             _restore_dismissed_source_links(slot, dismissed)
         else:
@@ -1260,6 +1267,18 @@ async def ensure_cron_slot(state: DashboardState, job: "CronJob") -> None:
     await restore_cron_turn_timeout(state, job.id)
 
 
+def apply_cron_source_links_off(slot: Any, meta: dict[str, Any]) -> bool:
+    """Restore a bound cron tab's chips-off switch from a READABLE metadata line.
+
+    Fills only a switch still unread: a toggle committed while the read ran is
+    newer than the line in hand, which is then dropped. Returns whether it applied.
+    """
+    if getattr(slot, "_source_links_off_hydrated", True):
+        return False
+    _restore_source_links_off(slot, meta)
+    return True
+
+
 def apply_cron_turn_timeout(slot: Any, meta: dict[str, Any]) -> bool:
     """Restore a bound cron tab's own turn time limit from a READABLE metadata line.
 
@@ -1276,22 +1295,23 @@ def apply_cron_turn_timeout(slot: Any, meta: dict[str, Any]) -> bool:
 
 
 async def restore_cron_turn_timeout(state: DashboardState, job_id: str) -> None:
-    """Off-loop read of a just-bound cron tab's own turn time limit.
+    """Off-loop read of a just-bound cron tab's own turn time limit and chips-off switch.
 
     :func:`_bind_cron_slot` links the tab without reading the transcript's
-    metadata line, so the limit the tab was given before it closed is still on
-    disk only; the tab's saves carry it forward meanwhile. This reads it back
-    once the tab is bound to this job's transcript. A failed or unreadable read,
-    or a tab rebound or already restored while the read ran, leaves the slot as
-    it is, still carrying the on-disk value, and a later bind or run start
-    retries.
+    metadata line, so the limit and the ``source_links_off`` switch the tab had
+    before it closed are still on disk only; the tab's saves carry them forward
+    meanwhile. One read brings both back once the tab is bound to this job's
+    transcript. A failed or unreadable read, or a tab rebound or already restored
+    while the read ran, leaves the slot as it is, still carrying the on-disk
+    values, and a later bind or run start retries. A restored switch that is on
+    republishes the slots frame, which takes the chips off the card.
     """
     log = state.conversation_log
     if log is None:
         return
     slot = state.get_slot(f"cron-{job_id}")
     history_key = f"cron:{job_id}"
-    if slot is None or getattr(slot, "_turn_timeout_hydrated", True):
+    if slot is None or not _cron_line_unread(slot):
         return
     if slot.linked_session_key != history_key:
         return
@@ -1301,9 +1321,19 @@ async def restore_cron_turn_timeout(state: DashboardState, job_id: str) -> None:
         return
     if not readable or state.get_slot(f"cron-{job_id}") is not slot:
         return
-    if slot.linked_session_key != history_key or slot._turn_timeout_hydrated:
+    if slot.linked_session_key != history_key:
         return
+    # Each apply drops the line when its field was set while the read ran.
     apply_cron_turn_timeout(slot, meta)
+    if apply_cron_source_links_off(slot, meta) and slot.source_links_off:
+        state.push_slots_update()
+
+
+def _cron_line_unread(slot: Any) -> bool:
+    """Whether a bound cron tab still holds a field only its metadata line has."""
+    return not getattr(slot, "_turn_timeout_hydrated", True) or not getattr(
+        slot, "_source_links_off_hydrated", True
+    )
 
 
 def hydrate_slot_from_history(

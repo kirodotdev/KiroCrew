@@ -59,6 +59,8 @@ class _ChatSlot:
         "_dismissed_hydrated",
         "_dismissed_txn_depth",
         "_dismissed_txn_pending",
+        "source_links_off",
+        "_source_links_off_hydrated",
         "_closing",
         "_close_recorded",
         "credential_evidence",
@@ -426,6 +428,8 @@ class _ChatSlot:
     _dismissed_hydrated: bool
     _dismissed_txn_depth: int
     _dismissed_txn_pending: set[str]
+    source_links_off: bool
+    _source_links_off_hydrated: bool
     # Initialised by state_parts/slot_transcript.py; see dashboard/slot_row_memo.py.
     _row_summary_memo: tuple[Any, ...] | None
     _row_redacted_memo: tuple[Any, ...] | None
