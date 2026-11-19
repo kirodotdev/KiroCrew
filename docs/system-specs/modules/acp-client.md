@@ -5455,7 +5455,12 @@ the refusal names its cause on an offline host too and a spawn that asks again m
 no network round trip. Which
 version runs is the release's pin, not a file on disk: `acp/kas_pin.py` holds
 `KAS_PIN_VERSION` and `KAS_PIN_MANIFEST_SHA256` (the sha256 of that version's
-published `manifest.json`, which in turn pins every artifact), `kirocrew kas
+published `manifest.json`, which in turn pins every artifact). The version is
+an engine release, optionally followed by `-node<N>` when the same engine build
+is republished with a different bundled Node runtime (a Node security fix is
+never an overwrite of a published `kas/<version>/` key); `KAS_PIN_ENGINE_RELEASE`
+is the part before the suffix, and anything comparing engine versions reads that,
+never the directory name. `kirocrew kas
 install` installs exactly that and refuses a manifest whose bytes do not hash to
 the pin, and `installed_bundle()` looks up exactly that version's directory --
 under the data home's `engines/kas` first, then under the desktop app's staged
