@@ -17578,7 +17578,7 @@
         "import_templates_missing": "কিছু ক্রু এমন এজেন্ট টেমপ্লেট ব্যবহার করে যা এই মেশিনে নেই (ক্রু → টেমপ্লেট): {{crews}}। এই ক্রুগুলো ব্যবহারের আগে বাদ পড়া টেমপ্লেটগুলো ~/.kiro/agents-এ কপি করো।",
         "import_items_refused": "কিছু আইটেম ইমপোর্ট করা যায়নি এবং অপরিবর্তিত রাখা হয়েছে: {{names}}।",
         "import_settings_kept": "এই ইনস্টলটি তার নিজের {{files}} রেখেছে। এর বদলে আর্কাইভেরটি ব্যবহার করতে মোড মার্জ থেকে প্রতিস্থাপন-এ বদলাও, config.json ও hooks.json-ও প্রতিস্থাপন করার চেকবক্সটি বেছে নাও, তারপর আবার ইমপোর্ট করো। প্রতিস্থাপন আগে এই ইনস্টলের ব্যাকআপ নেয়, তারপর আর্কাইভের সেটিংস দিয়ে এর সেটিংস বদলে দেয়।",
-        "import_include_settings": "config.json ও hooks.json-ও প্রতিস্থাপন করো",
+        "import_include_settings": "config.json, config.local.json ও hooks.json-ও প্রতিস্থাপন করো",
         "replace_keeps_settings": "প্রতিস্থাপন এই ইনস্টলের config.json, config.local.json ও hooks.json রেখে দেয়। আর্কাইভেরগুলো দিয়ে এগুলো বদলাতে ইমপোর্ট অংশের চেকবক্সটি বেছে নাও।",
         "replace_overwrites_settings": "প্রতিস্থাপন config.json, config.local.json ও hooks.json আর্কাইভেরগুলো দিয়ে বদলে দেবে। চলমান গেটওয়েতে এগুলো কয়েক সেকেন্ডের মধ্যে কার্যকর হয়, শুধু agent.approval_mode, agent.jail ও agent.dangerously_skip_permissions বাদে, যেগুলোর জন্য রিস্টার্ট লাগে। পুনরুদ্ধার করা হুক ও cron কমান্ড নিষ্ক্রিয় বা বিরতি অবস্থায় ফিরে আসে।",
         "replace_settings_foreign_archive": "এই আর্কাইভ সম্ভবত এই ইনস্টল থেকে আসেনি। এর কনফিগ স্যান্ডবক্স, অনুমোদন ও চ্যানেল সেটিংস বদলে দিতে পারে।",
