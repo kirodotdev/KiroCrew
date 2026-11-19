@@ -287,6 +287,19 @@ Three structural facts explain most of the rest:
   Actions token filed and only that issue's checked state record; the fix line is
   rebuilt from the issue timeline, not copied from the editable body.
   `test/test_main_red_pr_notice.py` runs the step with `gh` stubbed.
+- **A pull request does not run the tests that are red on main.** The `changes`
+  job of `ci.yml` reads the open `Main is red:` issue once per run
+  (`scripts/ci_main_red_skip.py decide`), and every `Backend Tests` shard, Linux
+  and Windows, loads the same file as a pytest plugin that deselects exactly the
+  node ids in the issue's state record and lists them, with the issue link, in
+  the shard's job summary. Only an open issue with the `main-red` label and the
+  GitHub Actions bot as author counts. A node id that is not a plain
+  `test/...py::name` or `src/...py::name` id, or that sits in a test file the
+  pull request changes, still runs. More than 50 ids deselects nothing. A push,
+  merge group or `release/**` run, a `main-red-fix` or `ci-full-run` label, a
+  pull request body that names the issue (`#N` or its URL), and any failure to
+  read or parse the issue all run every test. `test/test_ci_main_red_skip.py`
+  pins each case.
 - **Do not merge a feature PR past a non-green `PR Readiness`.** The ruleset's
   bypass actors can, and a `pending` readiness is not a judgement about a red
   lane: it skips lanes that have not reported yet. #11947 merged 14 s after its

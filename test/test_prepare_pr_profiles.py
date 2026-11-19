@@ -437,6 +437,10 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
     # not provision optional native runtimes, just as it does not grant Linux
     # namespaces or supply the Darwin kernel. Its absence is not FAISS evidence.
     exempt_scripts = {
+        # Reads the open main-red issue over the GitHub API on a pull request
+        # run and lists what PR CI deselects. It judges no code and its input
+        # exists only once CI runs on a pushed head.
+        "scripts/ci_main_red_skip.py",
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
         "scripts/ci-surface-tests.py",
         # Linux-only E2E orchestration, not a static scan: boots isolated

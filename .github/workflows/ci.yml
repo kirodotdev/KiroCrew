@@ -90,9 +90,11 @@ jobs:
     # dorny/paths-filter runs with `token: ''` (below), so it detects changes
     # with local git instead of the REST API and needs no pull-requests:read.
     # Job-level permissions REPLACE the top-level grant, so contents:read is
-    # restated.
+    # restated. issues:read is for the one read of the open main-red issue
+    # ("Read the open main-red issue" below).
     permissions:
       contents: read
+      issues: read
     outputs:
       only_backend: ${{ steps.decide.outputs.only_backend }}
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
@@ -102,6 +104,10 @@ jobs:
       leaf_tests: ${{ steps.leaf.outputs.leaf_tests }}
       leaf_targets: ${{ steps.leaf.outputs.leaf_targets }}
       leaf_gates: ${{ steps.leaf.outputs.leaf_gates }}
+      # JSON {issue, nodeids} of tests red on main that a pull request's backend
+      # shards deselect, or empty for "run everything" (scripts/ci_main_red_skip.py).
+      # An absent output (this job failed) also runs everything.
+      main_red_skip: ${{ steps.main-red.outputs.main_red_skip }}
       # 'false' only on a fork pull request that touches nothing Windows-shaped
       # (see "Decide the fork Windows scope"). Every other run reads 'true', and
       # an absent output (this job failed) reads as "run", never as a skip.
@@ -300,6 +306,26 @@ jobs:
           echo "only_backend=$only_backend"   >> "$GITHUB_OUTPUT"
           echo "only_frontend=$only_frontend" >> "$GITHUB_OUTPUT"
           echo "backend=$BACKEND frontend=$FRONTEND meta=$META full_run=$FULL_RUN -> only_backend=$only_backend only_frontend=$only_frontend"
+
+      # Tests already red on main (`main-red-watch.yml` files one `Main is red:`
+      # issue) fail every pull request opened meanwhile. Read that issue ONCE
+      # per run; the backend shards deselect exactly its node ids. A push,
+      # merge_group or release/** run, a `main-red-fix` or `ci-full-run` label,
+      # a PR body that names the issue, and any read or parse failure all run
+      # everything. The issue body and the PR body reach the script only as
+      # env values. The guards and their tests: scripts/ci_main_red_skip.py.
+      - name: Read the open main-red issue
+        id: main-red
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_BRANCH: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 scripts/ci_main_red_skip.py decide
 
       # A diff that touches ONLY leaf test modules cannot change a production code
       # path, and cannot change another test file's outcome either -- the selector
@@ -1363,6 +1389,13 @@ jobs:
           echo "reduced=true" >> "$GITHUB_OUTPUT"
           echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
 
+      # As the runner identity: the tests below run unprivileged and cannot
+      # write the job summary. Lists what scripts.ci_main_red_skip deselects.
+      - name: List the tests skipped as red on main
+        env:
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+        run: python3 scripts/ci_main_red_skip.py summary
+
       # Experiment (#39368): each xdist worker collects the whole shard and
       # rewrites the asserts of every test file, because a fresh runner has no
       # cached pyc. This writes those pycs once, one process per core, without
@@ -1412,6 +1445,9 @@ jobs:
           LEAF_REPEAT: "3"
           LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # Node ids red on main, deselected by scripts.ci_main_red_skip (see the
+          # `changes` job). Read by the plugin from the environment only.
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
         run: |
           # Reuse payload-free progress on full, reduced and repeated leaf runs.
           # A worker crash stays red; do not replace it and lose its failure report.
@@ -1421,6 +1457,8 @@ jobs:
           # fixed faulthandler_timeout: a dump of a thread still running Python
           # can segfault the worker, so it must never fire inside a test's budget.
           PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir="$RUNNER_TEMP/pytest-progress" --max-worker-restart=0 -p scripts.ci_faulthandler_budget --faulthandler-grace=30)
+          # Every invocation below also deselects the tests red on main, if any.
+          PROGRESS+=(-p scripts.ci_main_red_skip)
           # An explicit worker count, like the macOS lane's `-n 2`, instead of the
           # xdist budget: that budget reserves 5 GiB a worker for a FULL-suite
           # collection (at 3 GiB it granted a file shard 4 of the fleet runner's 8 cores).
@@ -1741,6 +1779,13 @@ jobs:
           echo "reduced=true" >> "$GITHUB_OUTPUT"
           echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
 
+      # Lists what scripts.ci_main_red_skip deselects, in the job summary.
+      - name: List the tests skipped as red on main
+        shell: bash
+        env:
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+        run: python scripts/ci_main_red_skip.py summary
+
       # Same experiment and contract as backend-test's prewarm step (#39368),
       # with the Windows pin file and the test step's shell.
       - name: Prewarm assertion rewrites (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
@@ -1793,6 +1838,8 @@ jobs:
           # A file, never the leaf_gates output as env (see "Select test scope").
           GATES_FILE: ${{ runner.temp }}/leaf-gate-list.txt
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # Node ids red on main, deselected by scripts.ci_main_red_skip.
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
         run: |
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
@@ -1826,6 +1873,8 @@ jobs:
           MEM_SAMPLER=$!
           trap 'kill "$MEM_SAMPLER" 2>/dev/null || true' EXIT
           PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir "$RUNNER_TEMP/pytest-progress")
+          # Every invocation below also deselects the tests red on main, if any.
+          PROGRESS+=(-p scripts.ci_main_red_skip)
           # Reduced and leaf arms as in backend-test: subset lists reach pytest
           # as --file-shard-targets=PATH, never as arguments; the changed leaf
           # files run unsharded on every job, the corpus gates sharded once.
@@ -1872,7 +1921,7 @@ jobs:
               --file-shard-targets="$TARGETS_FILE"
             exit 0
           fi
-          python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards \
+          python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards -p scripts.ci_main_red_skip \
             --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
             -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
