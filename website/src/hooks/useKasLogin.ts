@@ -471,6 +471,8 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
         ? beginLoopback.error.message
         : ''),
     beginErrorCode: apiErrorCode(beginDevice.error),
+    /** The device begin's error, for the SSO form's refusal reason and report. */
+    beginDeviceError: beginDevice.error,
     pick,
     reset,
     switchToCode,

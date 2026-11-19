@@ -18,7 +18,7 @@ import {
   type KasLoginLoopbackSession,
   type KasLoginStatus,
 } from '../api/client'
-import { apiErrorCode } from '../api/apiError'
+import { ApiError, apiErrorCode } from '../api/apiError'
 import { isUnansweredRead } from '../api/queryClient'
 import { reportForError, type ErrorReport } from '../utils/errorReport'
 import {
@@ -48,6 +48,47 @@ const LOOPBACK_SLOW_HINT_MS = 30_000
 // The begin error's DOM id, so the SSO field it names can point at it.
 const SSO_ERROR_ID = 'kas-sso-begin-error'
 const SSO_PREFILLED_ID = 'kas-sso-start-url-prefilled'
+
+/** The `reason` a begin refusal's JSON body names (the start-URL rule it broke), or ''. */
+function refusalReason(err: unknown): string {
+  if (!(err instanceof ApiError)) return ''
+  try {
+    const reason = (JSON.parse(err.body || '{}') as { reason?: unknown }).reason
+    return typeof reason === 'string' ? reason : ''
+  } catch {
+    return ''
+  }
+}
+
+/** A begin refusal the SSO form fixes, said from the catalog in the user's
+ *  language, or '' to show the gateway's text: that text is English, and after an
+ *  AWS refusal it ends with AWS's raw answer. Each known start-URL rule has its own
+ *  plain sentence, except `not_a_url` and `hostname`, which read the same to a user. */
+function ssoRefusalText(code: string, reason: string): string {
+  if (code === 'invalid_region') return i18nT('components.kasLogin.sso_region_not_a_name')
+  if (code === 'start_url_or_region_rejected') {
+    return i18nT('components.kasLogin.sso_refused_in_region')
+  }
+  if (code !== 'invalid_start_url') return ''
+  switch (reason) {
+    case 'characters':
+      return i18nT('components.kasLogin.sso_start_url_characters')
+    case 'not_a_url':
+      return i18nT('components.kasLogin.sso_start_url_not_a_url')
+    case 'not_https':
+      return i18nT('components.kasLogin.sso_start_url_not_https')
+    case 'credentials':
+      return i18nT('components.kasLogin.sso_start_url_credentials')
+    case 'port':
+      return i18nT('components.kasLogin.sso_start_url_port')
+    case 'hostname':
+      return i18nT('components.kasLogin.sso_start_url_hostname')
+    case 'aws_rejected':
+      return i18nT('components.kasLogin.sso_start_url_aws_rejected')
+    default:
+      return ''
+  }
+}
 
 /**
  * Which chrome the flow renders in. `gate` is the full-screen door (scrim +
@@ -366,6 +407,8 @@ function Chooser({
   beginErrorCode,
   companyDefault,
   bare = false,
+  beginErrorReason,
+  beginErrorReport,
   onPick,
 }: {
   busy: boolean
@@ -375,6 +418,10 @@ function Chooser({
   /** The gateway's default company portal (`KasLoginStatus.company_sign_in`). */
   companyDefault?: KasLoginStatus['company_sign_in']
   bare?: boolean
+  /** The begin refusal's `reason`, or '' (see refusalReason). */
+  beginErrorReason: string
+  /** The begin refusal's structured report, so the hand-off keeps it under a translated message. */
+  beginErrorReport?: ErrorReport
   onPick: (provider: KasLoginProvider, extra?: KasLoginExtra) => void
 }) {
   // The company-SSO choice expands an inline form (start URL + region) instead of
@@ -561,7 +608,9 @@ function Chooser({
           role="alert"), with no route change a screen reader would announce.
           The raw backend detail is the `message` (kept verbatim for bug
           reports) under the title — never suffixed onto the connection
-          advice, where "Unknown provider: x" reads as a contradiction. */}
+          advice, where "Unknown provider: x" reads as a contradiction. A
+          refusal the form fixes is said in the user's language instead, and
+          `report` keeps the raw detail for the hand-off. */}
       {/* Hand-off decision per chrome. Gate: none -- the Company SSO start-URL
           field (the form above) is unsaved, and the gate stands between the
           user and the chat the hand-off would navigate to. Card: the chat is
@@ -580,7 +629,8 @@ function Chooser({
                 ? i18nT('components.kasLogin.sso_start_url_invalid')
                 : i18nT('components.kasLogin.could_not_start_sign_in')
         }
-        message={beginError || null}
+        message={ssoRefusalText(beginErrorCode, beginErrorReason) || beginError || null}
+        report={beginErrorReport}
         testId="kas-login-begin-error"
       />
       {/* "Each option starts…" reads wrong over a single option. */}
@@ -1177,6 +1227,10 @@ function KasLoginFlow({
         beginErrorCode={flow.beginErrorCode}
         companyDefault={status.company_sign_in}
         bare={bare}
+        beginErrorReason={refusalReason(flow.beginDeviceError)}
+        beginErrorReport={
+          flow.beginDeviceError ? reportForError(flow.beginDeviceError) : undefined
+        }
         onPick={flow.pick}
       />
       {/* Replacing a signed-in identity is reversible until a new credential
