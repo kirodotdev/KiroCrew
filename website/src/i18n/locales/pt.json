@@ -20655,6 +20655,8 @@
         "show_topbar_search_desc": "Mostra a caixa de busca no meio da barra superior. Desligado, o espaço dela vai para os controles de cada lado, e as leituras de CPU, MEM e DSK continuam visíveis em janelas mais estreitas. O atalho de busca continua abrindo a busca. Enquanto os atalhos estiverem desligados, a caixa continua visível.",
         "reopen_last_page": "Reabrir onde parei",
         "reopen_last_page_desc": "Abrir o app instalado pelo ícone volta à última página aberta neste dispositivo, como o chat de um colega, em vez de Sessions. Um link ou notificação que indica uma página continua abrindo essa página.",
+        "reverse_trackpad_swipe": "Inverter o deslize do trackpad",
+        "reverse_trackpad_swipe_desc": "Ative se, ao deslizar com dois dedos, o painel lateral se mover no sentido oposto aos seus dedos. Isso acontece no Chrome e no Firefox quando a rolagem natural do macOS está desativada, porque esses navegadores não informam à página como ela está configurada. O Safari e o app para desktop detectam isso sozinhos, então lá esta opção não muda nada.",
         "command_bar": "Usar o Command Bar",
         "command_bar_desc": "Cmd+K ou Ctrl+K abre o Command Bar: digite um comando para ir a um aplicativo, uma configuração ou uma sessão. Desligado, o atalho abre a paleta de busca, que também busca em conhecimento, habilidades e prompts.",
         "command_bar_save_failed": "Não foi possível salvar a configuração do Command Bar.",

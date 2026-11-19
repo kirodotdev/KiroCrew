@@ -57,6 +57,7 @@ import { useTrayIcon } from '../../hooks/useTrayIcon'
 import { useMinimizeToTray } from '../../hooks/useMinimizeToTray'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { STANDALONE_REOPEN_KEY, isStandaloneDisplay } from '../../lib/standaloneLastRoute'
+import { REVERSE_TRACKPAD_SWIPE_KEY, shellNaturalScrolling } from '../../lib/scrollTouch'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
@@ -169,6 +170,12 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // app (#29497 decision). lib/standaloneLastRoute.ts reads the same key.
   const [reopenLastPage, setReopenLastPage] = usePersistedBool(STANDALONE_REOPEN_KEY, false)
   const standaloneApp = useMemo(() => isStandaloneDisplay(), [])
+  // "Reverse trackpad swipe", off by default. The side-panel
+  // swipe reads the same key through lib/scrollTouch `naturalScrolling`, only
+  // when neither the wheel nor the desktop shell says how Natural scrolling is
+  // set, so the row is hidden where the shell already knows.
+  const [reverseTrackpadSwipe, setReverseTrackpadSwipe] = usePersistedBool(REVERSE_TRACKPAD_SWIPE_KEY, false)
+  const shellKnowsNaturalScrolling = useMemo(() => shellNaturalScrolling() !== null, [])
   const { botName, directLocal } = useBranding()
   const termFont = useTerminalFont()
   // Probed families become picker rows previewed in their own family, so the
@@ -835,6 +842,18 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               hint={i18nT('pages.settings.displayPanel.reopen_last_page_desc')}
               checked={reopenLastPage}
               onChange={setReopenLastPage}
+            />
+          )}
+          {/* Per browser and off by default. Chrome and Firefox do not tell a
+              page how macOS Natural scrolling is set, so with it off the
+              side-panel swipe runs backwards there until this is on. Hidden in
+              the desktop app on macOS, whose shell reports the setting. */}
+          {!shellKnowsNaturalScrolling && (
+            <SettingsToggle
+              label={i18nT('pages.settings.displayPanel.reverse_trackpad_swipe')}
+              hint={i18nT('pages.settings.displayPanel.reverse_trackpad_swipe_desc')}
+              checked={reverseTrackpadSwipe}
+              onChange={setReverseTrackpadSwipe}
             />
           )}
           {/* Saved in config.json, unlike the switch above: it decides which surface

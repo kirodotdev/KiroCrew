@@ -20129,6 +20129,8 @@
         "show_topbar_search_desc": "Zeigt das Suchfeld in der Mitte der oberen Leiste. Ausgeschaltet bekommen die Bedienelemente links und rechts seinen Platz, sodass die Werte für CPU, MEM und DSK auch in schmaleren Fenstern sichtbar bleiben. Das Tastenkürzel für die Suche öffnet sie weiterhin. Solange die Tastenkürzel ausgeschaltet sind, bleibt das Suchfeld sichtbar.",
         "reopen_last_page": "Dort weitermachen, wo ich aufgehört habe",
         "reopen_last_page_desc": "Wenn du die installierte App über ihr Symbol öffnest, kehrt sie statt zu Sessions zur letzten Seite zurück, die auf diesem Gerät offen war, etwa dem Chat eines Crewmates. Ein Link oder eine Benachrichtigung, die eine Seite nennt, öffnet weiterhin diese Seite.",
+        "reverse_trackpad_swipe": "Trackpad-Wischen umkehren",
+        "reverse_trackpad_swipe_desc": "Schalte das ein, wenn sich die Seitenleiste beim Wischen mit zwei Fingern entgegen deinen Fingern bewegt. Das passiert in Chrome und Firefox, wenn das natürliche Scrollen in macOS aus ist, weil diese Browser der Seite die Einstellung nicht mitteilen. Safari und die Desktop-App erkennen sie selbst, dort ändert dieser Schalter nichts.",
         "command_bar": "Befehlsleiste verwenden",
         "command_bar_desc": "Cmd+K oder Ctrl+K öffnet die Befehlsleiste: Gib einen Befehl ein, um zu einer App, einer Einstellung oder einer Sitzung zu springen. Ausgeschaltet öffnet das Kürzel die Suchpalette, die auch Wissen, Skills und Prompts durchsucht.",
         "command_bar_save_failed": "Die Einstellung für die Befehlsleiste konnte nicht gespeichert werden.",
