@@ -472,6 +472,46 @@ reason a failed run costs nothing the next tick does not re-cover (frequent
 sweeps, full re-derivations, and a job whose model step can write to the
 runner's disk). That test fails for a new scheduled `gh` job that does neither.
 
+A job whose API calls are made inside a third-party action cannot be wrapped:
+the action calls from its own process. For those the same action installs
+`gh-rate-limit-wait [floor]`. It reads the REST (`core`) bucket from
+`/rate_limit` and, when fewer than `floor` requests remain, sleeps until the
+reset out of the same job-wide `max-wait` budget. It prints `waited` or `ready`
+and exits non-zero only when the reset is past the budget, with an `::error::`
+that names the rate limit as CI infrastructure, not the code under test. It
+retries nothing and reports nothing for the action it guards. A job runs it
+before the action. Where the action can be run again in the same job, the job
+runs it once more after a failed attempt: `waited` means the pool was spent and
+has reset, `ready` means quota remained and the fixed pause applies. Two jobs
+use it, both with a floor of 100 requests and a 30-minute budget:
+
+- **CodeQL** (`codeql.yml`). The request the job cannot do without is the
+  results upload, at the end of a scan that can run past 20 minutes, so a wait
+  before the scan would not help. `analyze` runs with `upload: failure-only`
+  and the upload is a separate `upload-sarif` step, right after the wait. There
+  is one upload per job: the action refuses a second upload of one category in
+  the same job before it sends a request (`validateUniqueCategory`), so a
+  failed upload fails the job and is not repeated. The job is green only when
+  the upload succeeded.
+- **Dependency License Gate** (`dependency-review.yml`). It waits before the
+  first review, and the pause before the retry is the wait for the reset when
+  the pool is spent (the fixed 60 s otherwise). When both reviews failed and the
+  pool is spent, the verdict step fails as "could not run" naming the rate
+  limit. It does not probe then, because a probe that waited for the reset
+  would answer and the job would call a rate-limited retry a license finding.
+  A retry that did read the dependency graph and reported a license it does
+  not accept (its `invalid-license-changes` output) is the action's license
+  verdict whatever the pool reads by then.
+
+What this does not cover: a pool that empties between the wait and the action's
+own request still fails that attempt (the CodeQL job then fails as before; the
+license gate's retry is its second attempt), and a request the action makes
+with quota left but refused for another reason fails as before. The wait reads
+only the REST bucket, so a spent GraphQL bucket or a secondary limit inside the
+action is not waited for. Neither job can pass, skip or report success without
+the action having run.
+`test/test_gh_rate_limit_wait.py` runs the command and both jobs' steps.
+
 ### A red that is not your diff: external, or self-inflicted?
 
 Before re-running, read the failing step's `##[error]` line and match it here.
@@ -3245,7 +3285,10 @@ every PR with "Dependency review is not supported on this repository", so a fail
 review is retried once after 60s; when the retry fails too, the job probes
 `dependency-graph/compare` for the PR's range and fails either as the action's
 license verdict (the API answers) or as "could not run" naming the API's answer
-(it does not). Both fail closed; only the message differs.
+(it does not). Both fail closed; only the message differs. A spent API rate
+limit produces the same "not supported" words, so the job waits for the reset
+before each attempt: see
+[a spent API rate limit](#scheduled-workflows-a-spent-api-rate-limit).
 
 **`docker-smoke.yml`** is paths-filtered to the container surface (`docker/**` plus
 the source files the container contract spans: the bind override in
@@ -4610,7 +4653,9 @@ status plus one `readiness:` label**.
   its previous head, and a draft PR is not scanned until it is ready for review.
   GitHub rejects its uploads while default setup is on, so its jobs are
   skipped until an admin has turned default setup off and set the repository
-  variable `CODEQL_ADVANCED_SETUP` to `true`.
+  variable `CODEQL_ADVANCED_SETUP` to `true`. The results upload is its own
+  step and waits for a spent API rate limit to reset: see
+  [a spent API rate limit](#scheduled-workflows-a-spent-api-rate-limit).
 - **The aggregator reads CodeQL from either setup** (#20576). It first resolves
   the analysis run by `path == "dynamic/github-code-scanning/codeql"` (default
   setup); only when the head has no such run does it read this PR's
