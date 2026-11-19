@@ -41,7 +41,7 @@ Kinds:
                     head fails.
 
 ``repo`` is ``owner/name`` for github.com or ``host/owner/name`` for a GitHub
-Enterprise server (``siemens.ghe.com/open/mcp``); it reaches ``gh --repo``
+Enterprise server (``ghe.example.com/owner/name``); it reaches ``gh --repo``
 verbatim. Optional for ``pr_checks``, but validated the same way when given.
     file            a path exists (or, with ``"exists": false``, does not).
                     The evidence names its size and modification time.
