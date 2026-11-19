@@ -7525,8 +7525,9 @@ transport), `ctx.chat_slots` (§41), the SDK's project picker (§18i) and `ctx.w
 (§35); level 9 adds `permissions.bots` (§32c); level 10 adds the agent tool gate's fence
 on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `useChatLauncher().createChat` (§44), `permissions.browserSites` and the SDK's
-`useBrowserMedia` (§45). Several seams share level 7, three share level 8,
-and the open batch that level 10 starts shares level 10, so an app that needs one
+`useBrowserMedia` (§45), and `ctx.embed`'s batch members. Several seams share level 7,
+three share level 8, and the open batch that level 10 starts shares level 10, so an app
+that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -7555,6 +7556,27 @@ process and message), and when called on a running event loop. `run(func, *args,
 **kwargs)` binds the call with `functools.partial` before handing it to
 `executors.run_in_embed_pool`, so no keyword an app passes reaches the pool's own
 parameters. No method raises into the app.
+
+The batch members `embed_batch_sync(texts, instruction=None)` and its pooled
+`embed_batch` (seam level 10) are ungated like the rest of `EmbedSDK`: no manifest key
+could gate them honestly while the single-text members load the same model, so fair
+use comes from the bulk priority and the batch cap. They return an `EmbedBatchResult`
+with `model_id`, `dim` and
+`embeddings_shared.embedding_space_signature(model_id, dim)`, or an empty result with
+a `reason` (`invalid_input`, `too_many_texts` past `MAX_BATCH_TEXTS` = 64,
+`on_event_loop`, `not_ready`, `failed`). They call the shared backend's `embed_batch`
+at `PRIORITY_BULK`, behind memory recall (`PRIORITY_INTERACTIVE`) and explicit memory
+writes (`PRIORITY_NORMAL`), level with the host's own bulk work. A `None` answer is
+the backend's "no embedding available" (a cold model loading, a model swap, a full
+bulk queue) and reads as `not_ready`; `failed` is a raise or malformed vectors. Bulk
+work is paced and never times out, so `embed_batch` runs on `mc-membg`, not `run`'s
+`mc-embed`, whose slots turn context waits on, and under an admission of its own (one
+slot, one thread), not consolidation's, so the host's memory writes never queue
+behind app batches for a slot or a thread. The backend cuts each text, and an
+optional instruction is prefixed as `Instruct: <instruction>\nQuery:`. No new route
+or listener: an app that serves vectors over HTTP does so from its own routes, behind
+its own auth, and a process outside the gateway (a script cron, a backend with its
+own `backend.entryPoint`) has no `ctx.embed`.
 
 **Manifest `l10n`.** An optional block of listing copy per locale (`L10nConfig` in
 `apps/manifest_sections.py`), preserved by `AppManifest.to_dict`, by the built-in
@@ -9623,7 +9645,7 @@ App authors: `docs/app-kit/api-reference.md` § Backend SDK.
 
 ## 41. App-owned chat slots (seam level 7)
 
-Level 7 (`APP_SDK_LEVEL = 7`) publishes what a built-in whose worker is a visible
+Seam level 7 publishes what a built-in whose worker is a visible
 dashboard chat (Spec Builder) reached privately: `chat_runner._run_chat` and
 `_start_next_queued_turn`, `turn_dispatch.bounded_chat_turn`,
 `session_control.containment_meta`, `chat_persistence.rehydrate_slot_from_history_async`
