@@ -4892,8 +4892,11 @@ so absence clears it.
   which first points to the collapsed queue strip) or, for one card,
   `turn_interrupted_restored_card`. The choice is on the count, not the plural
   category, because one card shows its Send now button without opening the stack.
-  A crewmate's chat (no cards, only bubbles) and the crew window (read-only
-  cards) keep the plain Resume hint, since neither lets the user send a card.
+  A crewmate's chat draws its queued messages as bubbles, but a held entry
+  (`meta.held`) keeps a queue card with Send now, edit and cancel, so the hint
+  counts those cards; an entry whose user row is already written
+  (`meta.written`) offers only Send now. The crew window (read-only cards)
+  keeps the plain Resume hint, since it does not let the user send a card.
   A waiting card is not work coming: the slot frame's `queue_held_depth` counts
   the restored cards that wait for a person (`is_held_queue_entry`: not chosen
   with "run this next", and not a parked send the startup drain accepted while

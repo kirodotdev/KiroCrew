@@ -1462,6 +1462,9 @@ def queue_for_next_turn(
     # that case is logged at WARNING and drawn on the card this frame makes.
     if not warn_if_not_durable(slot._queue, qid, slot.key):
         push.setdefault("meta", {})["durable"] = False
+    from kiro_crew.dashboard import responsive_chat as _rc
+
+    _rc.mark_written_on_push(slot, qid, push)
     state.broadcast_ws("queue_push", push)
     start_queue_persist(state, slot)
     return qid
@@ -1773,7 +1776,9 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def queue_view(
-    queue: list[dict[str, Any]], refused: set[str] | None = None
+    queue: list[dict[str, Any]],
+    refused: set[str] | None = None,
+    written: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """The slot-detail ``queue[]`` field: :func:`queue_entry_view` per entry, with
     ``meta.durable: false`` on each prompt the durable write will not keep. Judged
@@ -1781,7 +1786,12 @@ def queue_view(
 
     A caller rendering a trimmed copy of the queue passes ``refused``, read off the
     LIVE entries: the writer weighs fields such a copy drops (source channels, the
-    system-entry stamps), so judging the copy would mark the wrong prompts."""
+    system-entry stamps), so judging the copy would mark the wrong prompts.
+
+    ``written`` holds the ids whose user row is already in the transcript
+    (``responsive_chat.row_already_written``, read off the live slot): each gets
+    ``meta.written: true``, because the cancel and edit endpoints refuse such an
+    entry and the card must not offer either."""
     snapshot = list(queue)
     if refused is None:
         refused = refused_durable_ids(snapshot)
@@ -1789,4 +1799,6 @@ def queue_view(
     for view in views:
         if view["id"] in refused:
             view.setdefault("meta", {})["durable"] = False
+        if written and view["id"] in written:
+            view.setdefault("meta", {})["written"] = True
     return views

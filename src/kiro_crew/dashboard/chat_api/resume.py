@@ -543,6 +543,8 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         return web.json_response(await _live_slot_resume_payload(state, outcome.slot))
     slot, total = outcome.slot, outcome.total
     recent = slot.messages[-200:] if len(slot.messages) > 200 else slot.messages
+    from kiro_crew.dashboard.responsive_chat import written_queue_ids
+
     return web.json_response(
         {
             "ok": True,
@@ -558,7 +560,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
                 live_child=_live_child_instance(state, slot),
                 workspace=slot.workspace,
             ),
-            "queue": queue_view(slot._queue),
+            "queue": queue_view(slot._queue, written=written_queue_ids(slot)),
             "total": total,
             "has_more": total > len(recent),
             "memory_mode": slot.memory_mode,
