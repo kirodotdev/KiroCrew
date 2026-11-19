@@ -641,9 +641,20 @@ and again in the no-await window that commits the switch, so a first message tha
 while resolution awaits still locks it), and a provider-side switch
 mid-turn is vetoed in `chat_runner`; a switch onto the configured conductor in the
 `template` namespace is the one exception, whoever asks (the migration, or a person
-moving a root the migration never visited). Before the
-first user message a switch onto a template that is not a conductor passes: that is
-conductor mode turned off. The agent
+moving a root the migration never visited). A switch onto a template that is not a
+conductor passes before the first user message, and after it while the root's crew is
+idle: its own work ledgers (under its session key and its slot key, the ones its Board
+follows) hold no open item, and no session bound to one of its items
+and no live session stamped with it as `crew_root` is running (an unreadable activity
+probe counts as running). After the first message a name-only pick must also resolve to
+a template. That is conductor mode turned off. The ledger is read off the loop before
+the first check (`agent_switch.read_crew_work`, no reading on a fault or a projection
+rebuild, which keeps the lock shut); the commit window reuses it and refuses when a
+ledger write in this process moved the store's change mark since. The ledger is left
+as it is, so turning conductor mode on again shows its items on the Board. The switch
+that turns it off removes the chat's active `work-ledger` loop
+(`conductor_patrol.retire_patrol`), which would keep sending conductor turns to a plain
+chat; any other loop stays, and the next dispatch arms a fresh patrol. The agent
 catalog (`GET /api/agents/catalog`) carries `crew_mode_agent` and `conductor_agents`, so a
 client reads them instead of naming a conductor itself.
 Turning conductor mode on is an ordinary

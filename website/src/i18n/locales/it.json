@@ -11114,6 +11114,8 @@
       "conductor_mode_row_stalled_detail": "Bloccato: {{name}} · {{duration}}",
       "conductor_mode_recap_empty": "La squadra non ha ancora inviato aggiornamenti.",
       "chip_hint_pressed": "Conductor mode è attivo. Fai clic per disattivarlo prima del tuo primo messaggio.",
+      "composer_off_hint": "Conductor mode è attivo. Fai clic per disattivarlo. Se lo riattivi, le sue attività tornano.",
+      "composer_off_blocked_work": "Conductor mode si può disattivare quando non ci sono attività aperte e nessun membro della squadra è in esecuzione.",
       "conductor_mode_view_status": "Stato",
       "conductor_mode_view_list": "Esecutori",
       "conductor_mode_recap_head": "{{done}} di {{total}} completati",

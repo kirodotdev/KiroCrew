@@ -630,6 +630,42 @@ def worker_holds_open_item(slot_key: str) -> bool:
     return False
 
 
+def crew_lock_reading(
+    ledger_keys: tuple[str, ...],
+) -> tuple[bool, tuple[str, ...], tuple[int, ...]] | None:
+    """``(open, workers, marks)`` over a conductor root's own ledgers. BLOCKING.
+
+    For the conductor mode turn-off lock (``agent_switch.read_crew_work``), which
+    resolves *ledger_keys* from the root's own slot, never from a caller. *open*:
+    some item is not closed; *workers*: every session an item was bound to;
+    *marks*: each store's change mark before its listing. ``None`` when a ledger's
+    projection is being rebuilt or a record on disk did not read (the listing
+    skips it, and it could be the open one); an unlistable directory raises.
+    """
+    marks: list[int] = []
+    items: list[work_ledger.WorkItem] = []
+    for key in ledger_keys:
+        if work_ledger.cache_dirty(key) is not None:
+            return None
+        marks.append(work_ledger.change_mark(key))
+        listed = work_ledger.list_work_items(key)
+        directory = work_ledger.items_dir(key)
+        if directory.is_dir():
+            # The listing reads an unlistable directory as empty; this raises.
+            with os.scandir(directory):
+                pass
+        if set(work_ledger._stored_item_ids(key)) - {item.item_id for item in listed}:
+            return None
+        items.extend(listed)
+    workers = dict.fromkeys(item.worker_session_key for item in items if item.worker_session_key)
+    return any(not item.is_terminal for item in items), tuple(workers), tuple(marks)
+
+
+def ledger_change_marks(ledger_keys: tuple[str, ...]) -> tuple[int, ...]:
+    """Each store's change mark in this process, in order. No I/O."""
+    return tuple(work_ledger.change_mark(key) for key in ledger_keys)
+
+
 def _find_slot(state: DashboardState, key: str):
     if not key:
         return None

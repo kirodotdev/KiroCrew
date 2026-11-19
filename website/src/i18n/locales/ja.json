@@ -10616,6 +10616,8 @@
       "conductor_mode_row_stalled_detail": "停止中: {{name}} · {{duration}}",
       "conductor_mode_recap_empty": "クルーからの報告はまだありません。",
       "chip_hint_pressed": "Conductor mode がオンです。最初のメッセージの前にクリックするとオフにできます。",
+      "composer_off_hint": "Conductor mode がオンです。クリックするとオフにできます。再びオンにするとタスクが戻ります。",
+      "composer_off_blocked_work": "未完了のタスクがなく、実行中のクルーメンバーもいなくなると Conductor mode をオフにできます。",
       "conductor_mode_view_status": "ステータス",
       "conductor_mode_view_list": "ワーカー",
       "conductor_mode_recap_head": "{{total}} 件中 {{done}} 件完了",

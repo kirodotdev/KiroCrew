@@ -11114,6 +11114,8 @@
       "conductor_mode_row_stalled_detail": "Detenido: {{name}} · {{duration}}",
       "conductor_mode_recap_empty": "El equipo aún no ha informado.",
       "chip_hint_pressed": "Conductor mode está activado. Haz clic para desactivarlo antes de tu primer mensaje.",
+      "composer_off_hint": "Conductor mode está activado. Haz clic para desactivarlo. Si lo vuelves a activar, sus tareas vuelven.",
+      "composer_off_blocked_work": "Conductor mode se puede desactivar cuando no quede ninguna tarea abierta ni ningún miembro del equipo en marcha.",
       "conductor_mode_view_status": "Estado",
       "conductor_mode_view_list": "Trabajadores",
       "conductor_mode_recap_head": "{{done}} de {{total}} hechos",

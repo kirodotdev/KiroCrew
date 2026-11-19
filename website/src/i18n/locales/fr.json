@@ -11114,6 +11114,8 @@
       "conductor_mode_row_stalled_detail": "Bloqué : {{name}} · {{duration}}",
       "conductor_mode_recap_empty": "L’équipe n’a encore rien signalé.",
       "chip_hint_pressed": "Conductor mode est activé. Clique pour le désactiver avant ton premier message.",
+      "composer_off_hint": "Conductor mode est activé. Clique pour le désactiver. Si tu le réactives, ses tâches reviennent.",
+      "composer_off_blocked_work": "Conductor mode pourra être désactivé quand aucune tâche ne sera ouverte et qu’aucun membre de l’équipe ne sera en cours.",
       "conductor_mode_view_status": "Statut",
       "conductor_mode_view_list": "Exécutants",
       "conductor_mode_recap_head": "{{done}} sur {{total}} terminés",

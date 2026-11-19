@@ -10616,6 +10616,8 @@
       "conductor_mode_row_stalled_detail": "멈춤: {{name}} · {{duration}}",
       "conductor_mode_recap_empty": "크루가 아직 보고하지 않았습니다.",
       "chip_hint_pressed": "Conductor mode가 켜져 있습니다. 첫 메시지 전에 클릭하면 끌 수 있습니다.",
+      "composer_off_hint": "Conductor mode가 켜져 있습니다. 클릭하면 끌 수 있습니다. 다시 켜면 작업이 돌아옵니다.",
+      "composer_off_blocked_work": "열린 작업이 없고 실행 중인 크루원이 없을 때 Conductor mode를 끌 수 있습니다.",
       "conductor_mode_view_status": "상태",
       "conductor_mode_view_list": "작업자",
       "conductor_mode_recap_head": "{{total}}개 중 {{done}}개 완료",

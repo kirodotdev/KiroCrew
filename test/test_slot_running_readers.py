@@ -347,6 +347,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("handlers/work_ledger_read.py", "_slot_pending"),
                 ("handlers/work_ledger_read.py", "_slot_turn_running"),
                 ("session_activity.py", "session_activity_for_key"),
+                # The conductor mode turn-off lock: a crew member admitted or
+                # executing keeps conductor mode on.
+                ("chat_api/agent_switch.py", "_crew_work_idle"),
                 # The side panel's steer into a Crew Mode worker: a RUNNING turn takes
                 # it as a steer, and only an unreserved slot has its queued text
                 # started now, the composer's own two questions.

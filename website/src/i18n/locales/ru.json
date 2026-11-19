@@ -11338,6 +11338,8 @@
       "conductor_mode_finished": "Завершено · {{n}}",
       "conductor_mode_recap_empty": "Команда ещё не отчиталась.",
       "chip_hint_pressed": "Conductor mode включён. Нажми, чтобы выключить его до первого сообщения.",
+      "composer_off_hint": "Conductor mode включён. Нажми, чтобы выключить его. Если включишь снова, задачи вернутся.",
+      "composer_off_blocked_work": "Conductor mode можно выключить, когда не останется открытых задач и работающих участников команды.",
       "conductor_mode_view_status": "Статус",
       "conductor_mode_view_list": "Исполнители",
       "conductor_mode_recap_head": "Готово {{done}} из {{total}}",

@@ -153,6 +153,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _tail_events,
         api_work_ledger_accept_eval,
         api_work_ledger_get,
+        crew_lock_reading,
+        ledger_change_marks,
         worker_holds_open_item,
     )
     from kiro_crew.dashboard.handlers.work_ledger_recording import (  # noqa: F401

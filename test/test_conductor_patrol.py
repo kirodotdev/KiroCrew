@@ -80,6 +80,13 @@ class _Svc:
         self.loops[kw["slot_key"]] = loop
         return loop
 
+    async def remove(self, loop_id: str, *, precondition: Any = None) -> bool:
+        loop = self.get_by_id(loop_id)
+        if loop is None or (precondition is not None and not precondition(loop)):
+            return False
+        del self.loops[loop.slot_key]
+        return True
+
 
 class _Slot:
     def __init__(self, *, mode: str = "", memory_mode: str = "persistent", created_by: str = ""):
@@ -846,3 +853,41 @@ async def test_each_shipped_patrol_survives_reload_and_passes_the_fixed_payload_
         assert not conductor_patrol.is_fixed_patrol_payload(stored)
     finally:
         reloaded.stop()
+
+
+def _loop(watch: str, *, active: bool = True) -> Any:
+    return SimpleNamespace(id="loop-x", slot_key=CONDUCTOR, watch=watch, active=active)
+
+
+def _patrolled_state() -> SimpleNamespace:
+    _SLOTS[CONDUCTOR] = _Slot()
+    return _state()
+
+
+@pytest.mark.asyncio
+async def test_retire_removes_an_active_work_ledger_patrol(svc):
+    """Conductor mode turning off ends the chat's work-ledger patrol."""
+    svc.loops[CONDUCTOR] = _loop("work-ledger")
+    assert await conductor_patrol.retire_patrol(_patrolled_state(), CONDUCTOR) is True
+    assert svc.get_by_slot(CONDUCTOR) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "loop", [_loop("pr:1"), _loop("work-ledger", active=False)], ids=["other-watch", "stopped"]
+)
+async def test_retire_leaves_any_other_loop_alone(svc, loop):
+    """A loop watching something else, or one already stopped, is kept."""
+    svc.loops[CONDUCTOR] = loop
+    assert await conductor_patrol.retire_patrol(_patrolled_state(), CONDUCTOR) is False
+    assert svc.get_by_slot(CONDUCTOR) is loop
+
+
+@pytest.mark.asyncio
+async def test_retire_never_raises_when_the_store_fails(svc, caplog):
+    """The switch already committed, so a store failure is logged, not raised."""
+    svc.loops[CONDUCTOR] = _loop("work-ledger")
+    svc.remove = AsyncMock(side_effect=RuntimeError("store down"))
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.conductor_patrol"):
+        assert await conductor_patrol.retire_patrol(_patrolled_state(), CONDUCTOR) is False
+    assert "not retired" in caplog.text

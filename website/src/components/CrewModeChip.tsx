@@ -24,9 +24,9 @@ interface CrewModeChipProps {
 }
 
 /** The composer's conductor mode switch. On a NEW chat (before its first message)
- *  it toggles in place -- pressed is on -- and the first message locks it. In a
- *  plain chat that already has messages the same chip, unpressed, sits right of
- *  the permission button and turns the chat on one way. */
+ *  it toggles in place -- pressed is on -- and after the first message the
+ *  composer's bolt is the way off. In a plain chat that already has messages the
+ *  same chip, unpressed, sits right of the permission button and turns the chat on. */
 export function CrewModeChip({ onTurnOn, pressed = false, onTurnOff, disabled = false, busy = false, describedBy, testId = 'crew-mode-chip' }: CrewModeChipProps) {
   const ref = useRef<HTMLElement | null>(null)
   const hint = busy

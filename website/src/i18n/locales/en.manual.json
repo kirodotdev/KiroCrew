@@ -4493,6 +4493,8 @@
       "conductor_mode_row_stalled_detail": "Stalled: {{name}} · {{duration}}",
       "conductor_mode_recap_empty": "The crew has not reported yet.",
       "chip_hint_pressed": "Conductor mode is on. Click to turn it off before your first message.",
+      "composer_off_hint": "Conductor mode is on. Click to turn it off. Its tasks come back if you turn it on again.",
+      "composer_off_blocked_work": "Conductor mode can be turned off once no task is open and no crew member is running.",
       "conductor_mode_view_status": "Status",
       "conductor_mode_view_list": "Workers",
       "conductor_mode_recap_head": "{{done}} of {{total}} done",

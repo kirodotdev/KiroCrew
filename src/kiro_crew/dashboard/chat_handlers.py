@@ -99,15 +99,18 @@ from kiro_crew.dashboard.chat_api import sse_write as _owner_sse_write
 from kiro_crew.dashboard.chat_api import turn_stop as _owner_turn_stop
 from kiro_crew.dashboard.chat_api.agent_switch import (  # noqa: F401
     CREW_MODE_LOCKED,
+    CrewWork,
     SlotAgentSwitchCaller,
     _append_session_switch_notice,
     _channel_pin_refusal,
     _crew_mode_lock_refusal,
+    _crew_work_idle,
     _has_user_message,
     _MemberMemoryRequiresNewConversation,
     agent_switch_outcome,
     api_chat_slot_agent,
     clear_slot_model_binding,
+    read_crew_work,
     switch_slot_agent,
 )
 from kiro_crew.dashboard.chat_api.app_admission import (  # noqa: F401

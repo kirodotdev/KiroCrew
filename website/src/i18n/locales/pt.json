@@ -11114,6 +11114,8 @@
       "conductor_mode_row_stalled_detail": "Parado: {{name}} · {{duration}}",
       "conductor_mode_recap_empty": "A equipe ainda não enviou atualizações.",
       "chip_hint_pressed": "Conductor mode está ativado. Clique para desativá-lo antes da sua primeira mensagem.",
+      "composer_off_hint": "Conductor mode está ativado. Clique para desativá-lo. Se ativar de novo, as tarefas voltam.",
+      "composer_off_blocked_work": "Conductor mode pode ser desativado quando não houver tarefa aberta nem membro da equipe em execução.",
       "conductor_mode_view_status": "Status",
       "conductor_mode_view_list": "Trabalhadores",
       "conductor_mode_recap_head": "{{done}} de {{total}} concluídos",

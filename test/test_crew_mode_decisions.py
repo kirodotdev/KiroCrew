@@ -100,6 +100,182 @@ def test_crew_mode_turns_off_before_the_first_user_message_and_locks_after(_sel)
     assert _refusal(trimmed, "kirocrew").status == 409
 
 
+def _work(open_: bool = False, workers: tuple[str, ...] = (), mark: int = 0):
+    from kiro_crew.dashboard.chat_api.agent_switch import CrewWork
+
+    return CrewWork(("r",), open_, workers, (mark,))
+
+
+@pytest.fixture
+def _running(monkeypatch):
+    """Each session key's live activity, and the live crew rows the slot list stamps."""
+    from kiro_crew import work_ledger
+    from kiro_crew.dashboard import session_activity
+    from kiro_crew.dashboard.session_control_parts import crew_filing
+
+    live = SimpleNamespace(activity={}, crew={})
+    monkeypatch.setattr(
+        session_activity, "session_activity_for_key", lambda _s, key: live.activity.get(key, ())
+    )
+    monkeypatch.setattr(crew_filing, "_frame_parents", lambda _state: None)
+    monkeypatch.setattr(crew_mode, "live_stamp_rows", lambda *_a, **_k: dict(live.crew))
+    monkeypatch.setattr(work_ledger, "change_mark", lambda _key: 0)
+    return live
+
+
+def _off(slot: Any, work: Any, agent: str = "kirocrew", kind: str = "template"):
+    from kiro_crew.dashboard import chat_handlers
+
+    caller = chat_handlers.SlotAgentSwitchCaller(app="", remote="t", owner=True)
+    state = SimpleNamespace(_slots={})
+    return chat_handlers._crew_mode_lock_refusal(slot, agent, kind, caller, state, work)
+
+
+def test_a_root_with_messages_turns_off_once_its_crew_is_idle(_sel, _running):
+    sent = _slot("r", "kirocrew-conductor")
+    # No ledger at all, or only closed items whose workers are idle: it turns off.
+    assert _off(sent, _work()) is None
+    assert _off(sent, _work(workers=("w1", "w2"))) is None
+    assert _sel.calls == []
+    # Still never onto another conductor or a crewmate, idle or not.
+    assert _off(sent, _work(), agent="kirocrew-security-conductor").status == 409
+    assert _off(sent, _work(), kind="member").status == 409
+
+
+def test_a_root_with_messages_stays_locked_while_its_crew_has_work(_sel, _running):
+    sent = _slot("r", "kirocrew-conductor")
+    # One open item, its worker idle: locked, and the refusal says why.
+    resp = _off(sent, _work(open_=True, workers=("w1",)))
+    assert resp.status == 409
+    body = json.loads(resp.text)
+    assert body["code"] == "crew_mode_locked" and "no task is open" in body["error"]
+    # Every item closed, but a worker bound to one is still running: locked.
+    _running.activity["w1"] = ("turn",)
+    assert _off(sent, _work(workers=("w1",))).status == 409
+    # A probe that cannot tell counts as running.
+    _running.activity["w1"] = ("unknown",)
+    assert _off(sent, _work(workers=("w1",))).status == 409
+    _running.activity.clear()
+    # A running crew member bound to no item (the slot list stamps it with this
+    # root): locked too. Another root's running member is not this root's crew.
+    _running.crew = {"w2": {"crew_root": "r"}, "w3": {"crew_root": "other"}}
+    _running.activity["w3"] = ("turn",)
+    assert _off(sent, _work()) is None
+    _running.activity["w2"] = ("subagents",)
+    assert _off(sent, _work()).status == 409
+    # An unreadable ledger, or no ledger reading at all, keeps it locked.
+    assert _off(sent, None).status == 409
+    assert _refusal(sent, "kirocrew").status == 409
+
+
+def test_a_ledger_write_after_the_reading_keeps_the_root_locked(_sel, monkeypatch):
+    from kiro_crew import work_ledger
+
+    monkeypatch.setattr(work_ledger, "change_mark", lambda _key: 8)
+    assert _off(_slot("r", "kirocrew-conductor"), _work(mark=7)).status == 409
+
+
+def test_read_crew_work_reads_the_roots_own_ledger(monkeypatch):
+    from kiro_crew import work_ledger
+    from kiro_crew.dashboard.chat_api.agent_switch import CrewWork, read_crew_work
+
+    listed: list[str] = []
+
+    def _items(key):
+        listed.append(key)
+        return [
+            SimpleNamespace(item_id="it_00000001", is_terminal=True, worker_session_key="w1"),
+            SimpleNamespace(item_id="it_00000002", is_terminal=False, worker_session_key=None),
+        ]
+
+    stored = ["it_00000001", "it_00000002"]
+    monkeypatch.setattr(work_ledger, "_stored_item_ids", lambda _key: list(stored))
+    monkeypatch.setattr(work_ledger, "cache_dirty", lambda _key: None)
+    monkeypatch.setattr(work_ledger, "change_mark", lambda _key: 3)
+    monkeypatch.setattr(work_ledger, "list_work_items", _items)
+    # The dashboard spelling folds to the ledger key.
+    assert read_crew_work(("dashboard_chat-1", "chat-1")) == CrewWork(
+        ("chat-1",), True, ("w1",), (3,)
+    )
+    assert listed == ["chat-1"]
+    # A record on disk the listing skipped (torn or unreadable) could be the open
+    # one: no reading.
+    stored.append("it_00000003")
+    assert read_crew_work(("chat-1",)) is None
+    stored.clear()
+    monkeypatch.setattr(work_ledger, "list_work_items", lambda _key: [])
+    assert read_crew_work(("chat-1",)) == CrewWork(("chat-1",), False, (), (3,))
+    # A projection being rebuilt, or a read that fails, gives no reading.
+    monkeypatch.setattr(work_ledger, "cache_dirty", lambda _key: "rebuild")
+    assert read_crew_work(("chat-1",)) is None
+    monkeypatch.setattr(work_ledger, "cache_dirty", lambda _key: None)
+
+    def _broken(_key):
+        raise OSError("disk")
+
+    monkeypatch.setattr(work_ledger, "list_work_items", _broken)
+    assert read_crew_work(("chat-1",)) is None
+
+
+def test_read_crew_work_lists_no_item_for_a_chat_with_no_ledger(tmp_path, monkeypatch):
+    from kiro_crew import work_ledger
+    from kiro_crew.dashboard.chat_api.agent_switch import read_crew_work
+
+    monkeypatch.setattr(work_ledger, "_work_ledger_root", lambda: tmp_path / "wl")
+    work = read_crew_work(("chat-none",))
+    assert work is not None and not work.open and work.workers == ()
+    # A torn item record on disk: the listing skips it, the lock reads no answer.
+    items = work_ledger.items_dir("chat-torn")
+    items.mkdir(parents=True)
+    (items / "it_0a0b0c0d.json").write_text("{not json", encoding="utf-8")
+    assert read_crew_work(("chat-torn",)) is None
+
+
+def test_read_crew_work_reads_the_ledger_a_linked_session_records_under(tmp_path, monkeypatch):
+    """A cron or channel root's conductor records under its session key, not its
+    slot key: an open item there keeps the chat busy, as the Board shows it."""
+    from kiro_crew import work_ledger
+    from kiro_crew.dashboard.chat_api.agent_switch import read_crew_work
+
+    monkeypatch.setattr(work_ledger, "_work_ledger_root", lambda: tmp_path / "wl")
+    monkeypatch.setattr(
+        work_ledger,
+        "list_work_items",
+        lambda key: (
+            [SimpleNamespace(item_id="it_00000001", is_terminal=False, worker_session_key="")]
+            if key == "cron-abc"
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        work_ledger,
+        "_stored_item_ids",
+        lambda key: ["it_00000001"] if key == "cron-abc" else [],
+    )
+    work = read_crew_work(("cron-abc", "chat-1"))
+    assert work is not None and work.open and work.keys == ("cron-abc", "chat-1")
+
+
+def test_a_name_only_pick_that_resolves_to_a_crewmate_stays_locked_mid_chat(_sel, _running):
+    from kiro_crew.dashboard import chat_handlers
+
+    sent = _slot("r", "kirocrew-conductor")
+    caller = chat_handlers.SlotAgentSwitchCaller(app="", remote="t", owner=True)
+    state = SimpleNamespace(_slots={})
+
+    def refusal(resolved):
+        return chat_handlers._crew_mode_lock_refusal(
+            sent, "writer", "", caller, state, _work(), resolved
+        )
+
+    # Before resolution the pick may still be a template; at the commit check the
+    # namespace resolution chose decides.
+    assert refusal("") is None
+    assert refusal("template") is None
+    assert refusal("member").status == 409
+    assert refusal(None).status == 409
+
+
 def test_the_lock_lets_any_caller_move_a_root_onto_the_configured_conductor(_sel):
     # A root on another conductor (reopened after the migration finished, or stamped
     # with a conductor an update retired) is still Crew Mode; the one move the lock
@@ -154,7 +330,7 @@ def test_the_switch_loads_a_restored_window_off_the_loop_before_the_lock_reads_i
     source = open(agent_switch.__file__, encoding="utf-8").read()
     body = source.split("async def switch_slot_agent(", 1)[1]
     assert body.index("await load_window_off_loop(slot)") < body.index(
-        "_crew_mode_lock_refusal(slot, agent_name, agent_kind, caller)"
+        "_crew_mode_lock_refusal(slot, agent_name, agent_kind, caller, state, crew_work)"
     )
 
 

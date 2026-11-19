@@ -97,6 +97,7 @@ import { openCrewSession } from '../pages/chat/command-center/CrewWorkerList'
 // sentence, which is what the unregistered-surface case below asserts.)
 import '../surfaces/builtins'
 import { turnOffCrewModeAsLts } from './crewModeOff'
+import { panelStripOf } from '../hooks/usePanelTabs'
 
 type Slot = {
   messages: Msg[]; mode?: string; agent?: string; agentKind?: string; origin?: string; memoryMode?: string; slotKeys?: string[]
@@ -116,16 +117,20 @@ type Slot = {
   pendingApproval?: boolean
   /** The gateway connection is up (sends are not refused as offline). */
   connected?: boolean
+  /** Open items on this slot's work ledger (`crew_work.open`). */
+  crewWorkOpen?: number
+  /** A crew member of this slot (`w-1`, its `crew_root`) is running a turn. */
+  crewWorkerRunning?: boolean
 }
 
-function makeStore({ messages, mode = '', agent = 'default', agentKind = '', origin = 'user', memoryMode = 'persistent', slotKeys = ['slot-a'], createdBy, instanceId, crewRoot, crewModeRootStamp, slotRunning = false, listedRunning = false, slotLoading = false, activityOpen = false, pendingApproval = false, connected = false }: Slot) {
+function makeStore({ messages, mode = '', agent = 'default', agentKind = '', origin = 'user', memoryMode = 'persistent', slotKeys = ['slot-a'], createdBy, instanceId, crewRoot, crewModeRootStamp, slotRunning = false, listedRunning = false, slotLoading = false, activityOpen = false, pendingApproval = false, connected = false, crewWorkOpen, crewWorkerRunning = false }: Slot) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
         status: null,
         ...(connected ? { connected: true } : {}),
-        slots: slotKeys.map(key => ({ key, messages: key === 'slot-a' ? messages.length : 0, running: key === 'slot-a' && listedRunning, mode: key === 'slot-a' ? mode : '', agent: key === 'slot-a' ? agent : 'default', agent_kind: key === 'slot-a' ? agentKind : '', origin: key === 'slot-a' ? origin : 'user', memory_mode: key === 'slot-a' ? memoryMode : 'persistent', ...(key === 'slot-a' && createdBy ? { created_by: createdBy } : {}), ...(key === 'slot-a' && instanceId ? { instance_id: instanceId } : {}), ...(key === 'slot-a' && crewRoot ? { crew_root: crewRoot, title: 'Worker B' } : {}), ...(key === 'slot-a' && crewModeRootStamp ? { crew_mode_root: true } : {}), ...(key === 'root-1' ? { title: 'Sample goal', crew_mode_root: true } : {}), pending_approval: key === 'slot-a' && pendingApproval, waiting_for_input: false, last_activity_ts: undefined })),
+        slots: [...slotKeys, ...(crewWorkerRunning ? ['w-1'] : [])].map(key => ({ key, messages: key === 'slot-a' ? messages.length : 0, running: key === 'slot-a' && listedRunning, mode: key === 'slot-a' ? mode : '', agent: key === 'slot-a' ? agent : 'default', agent_kind: key === 'slot-a' ? agentKind : '', origin: key === 'slot-a' ? origin : 'user', memory_mode: key === 'slot-a' ? memoryMode : 'persistent', ...(key === 'slot-a' && createdBy ? { created_by: createdBy } : {}), ...(key === 'slot-a' && instanceId ? { instance_id: instanceId } : {}), ...(key === 'slot-a' && crewRoot ? { crew_root: crewRoot, title: 'Worker B' } : {}), ...(key === 'slot-a' && crewModeRootStamp ? { crew_mode_root: true } : {}), ...(key === 'root-1' ? { title: 'Sample goal', crew_mode_root: true } : {}), ...(key === 'slot-a' && crewWorkOpen !== undefined ? { crew_work: { open: crewWorkOpen, person: 0, items: [] } } : {}), ...(key === 'w-1' ? { crew_root: 'slot-a', created_by: 'slot-a', running: true, title: 'Worker W' } : {}), pending_approval: key === 'slot-a' && pendingApproval, waiting_for_input: false, last_activity_ts: undefined })),
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -199,17 +204,32 @@ describe('Conductor mode on ChatPage', () => {
     await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'better-conductor', 'template'))
   })
 
-  it('shows one conductor mode bolt, not a picker, on a conductor chat', async () => {
+  it('shows one conductor mode bolt, not a picker, on a conductor chat: the switch, pressed', async () => {
     await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template' })
-    expect(screen.getByTestId('crew-mode-composer-chip').textContent).toBe('')
-    const mark = screen.getByTestId('crew-mode-composer-chip')
+    expect(screen.queryByTestId('crew-mode-composer-chip')).toBeNull()
+    const mark = screen.getByTestId('crew-mode-composer-toggle')
     expect(mark.tagName).toBe('BUTTON')
+    expect(mark.textContent).toBe('')
+    // An icon toggle: its name says the mode, pressed says it is on.
+    expect(mark).toHaveAttribute('aria-label', 'Conductor mode')
+    expect(mark).toHaveAttribute('aria-pressed', 'true')
+    expect(mark).not.toHaveAttribute('aria-disabled')
+    expect(mark).not.toHaveAttribute('title')
+    expect(mark.className).toContain('cursor-pointer')
+  })
+
+  it('keeps the read-only bolt where there is nothing to switch back to', async () => {
+    // The default agent is itself a conductor: conductor mode has no way off.
+    agentsState.defaultAgent = 'kirocrew-conductor'
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template' })
+    const mark = screen.getByTestId('crew-mode-composer-chip')
     // A read-only icon: focusable so its name tip reaches keyboard and touch users.
     expect(mark).toHaveAttribute('aria-label', 'This chat runs in conductor mode')
     expect(mark).not.toHaveAttribute('aria-pressed')
     expect(mark).not.toHaveAttribute('title')
     expect(mark.className).toContain('cursor-default')
     expect(mark.className).not.toMatch(/\bborder\b|rounded|hover:/)
+    expect(screen.queryByTestId('crew-mode-composer-toggle')).toBeNull()
   })
 
   it('closes the open attach menu when the composer bolt is pressed, as a press anywhere outside it does', async () => {
@@ -220,7 +240,7 @@ describe('Conductor mode on ChatPage', () => {
     expect(screen.getByRole('button', { name: 'Upload file' })).toBeInTheDocument()
     // The menu's closer is a bubble-phase document mousedown listener, so a
     // bolt that stopped mousedown at itself would leave the menu open.
-    fireEvent.mouseDown(screen.getByTestId('crew-mode-composer-chip'))
+    fireEvent.mouseDown(screen.getByTestId('crew-mode-composer-toggle'))
     expect(plus).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByRole('button', { name: 'Upload file' })).toBeNull()
   })
@@ -228,7 +248,7 @@ describe('Conductor mode on ChatPage', () => {
   it('shows one bolt on every conductor, the pipeline conductor included', async () => {
     setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor', 'kirocrew-pipeline-conductor'])
     await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-pipeline-conductor', agentKind: 'template' })
-    expect(screen.getByTestId('crew-mode-composer-chip').textContent).toBe('')
+    expect(screen.getByTestId('crew-mode-composer-toggle').textContent).toBe('')
   })
 
   it('keeps the crew badge clear of the stationary sessions toggle', async () => {
@@ -511,26 +531,66 @@ describe('Conductor mode on ChatPage', () => {
     expect(screen.queryByTestId('crew-mode-welcome')).toBeNull()
   })
 
-  it('offers no chip and no way off once a message is sent', async () => {
+  it('holds the way off once a message is sent while a task is open, and says why', async () => {
     chatSlotAgent.mockClear()
-    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template' })
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template', crewWorkOpen: 1 })
     expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
     expect(screen.queryByTestId('memory-mode-chip')).toBeNull()
     expect(screen.queryByTestId('crew-mode-note')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Conductor mode' })).toBeNull()
+    const mark = screen.getByTestId('crew-mode-composer-toggle')
+    expect(mark).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(mark)
+    expect(chatSlotAgent).not.toHaveBeenCalled()
+    fireEvent.focus(mark)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Conductor mode can be turned off once no task is open and no crew member is running.')
+  })
+
+  it('holds the way off while a crew member runs, with every task closed', async () => {
+    chatSlotAgent.mockClear()
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template', crewWorkOpen: 0, crewWorkerRunning: true })
+    const mark = screen.getByTestId('crew-mode-composer-toggle')
+    expect(mark).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(mark)
     expect(chatSlotAgent).not.toHaveBeenCalled()
   })
 
-  it('offers no way off while the transcript is still loading, since a sent message may be in it', async () => {
+  it('turns conductor mode off after the first message once its crew is idle, and the tabs go', async () => {
+    chatSlotAgent.mockClear()
+    const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template', crewWorkOpen: 0 })
+    const mark = screen.getByTestId('crew-mode-composer-toggle')
+    fireEvent.focus(mark)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Click to turn it off')
+    fireEvent.click(mark)
+    await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'default', 'template'))
+    await waitFor(() => expect(store.getState().dashboard.slots[0].agent).toBe('default'))
+    // A plain chat again: no bolt, and the ongoing chat's own switch to turn it back on.
+    await waitFor(() => expect(screen.queryByTestId('crew-mode-composer-toggle')).toBeNull())
+    expect(screen.getByTestId('crew-mode-switch')).toBeInTheDocument()
+    expect(panelStripOf('slot-a').ids).not.toContain('workers')
+  })
+
+  it('offers no way off in a crew member chat', async () => {
+    // A conductor a root dispatched is not a root: its bolt stays read-only.
+    await renderWith({ messages: [{ role: 'user', content: 'do part 2' }], agent: 'kirocrew-conductor', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'], crewWorkOpen: 0 })
+    expect(screen.queryByTestId('crew-mode-composer-toggle')).toBeNull()
+    expect(screen.getByTestId('crew-mode-composer-chip')).toBeInTheDocument()
+  })
+
+  it('offers no way off in an incognito or temporary chat on a conductor', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template', memoryMode: 'temporary', crewWorkOpen: 0 })
+    expect(screen.queryByTestId('crew-mode-composer-toggle')).toBeNull()
+  })
+
+  it('offers the way off while the transcript is still loading only on an idle crew', async () => {
     // A reload of a conductor chat: its rows are not read yet, so whether the first
-    // message was sent is unknown. The mark is read-only until they land, as the
-    // server would refuse the switch (`crew_mode_locked`) on a chat that has one.
+    // message was sent is unknown. Either way the server allows the switch on an
+    // idle crew, and refuses it (`crew_mode_locked`) on one with an open task.
     chatSlotAgent.mockClear()
     detail.hold = true
-    await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template', slotLoading: true })
-    const mark = screen.getByTestId('crew-mode-composer-chip')
-    expect(mark).toHaveAttribute('aria-label', 'This chat runs in conductor mode')
-    expect(screen.queryByRole('button', { name: 'Conductor mode', pressed: true })).toBeNull()
+    await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template', slotLoading: true, crewWorkOpen: 1 })
+    const mark = screen.getByTestId('crew-mode-composer-toggle')
+    expect(mark).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(mark)
     expect(chatSlotAgent).not.toHaveBeenCalled()
   })
 
@@ -621,13 +681,13 @@ describe('Conductor mode on ChatPage', () => {
     chatSlotAgent.mockClear()
     const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }] })
     fireEvent.click(screen.getByTestId('crew-mode-switch'))
-    // Gone the moment it is pressed: there is no way back.
+    // Gone the moment it is pressed: the way back is the composer's bolt.
     expect(screen.queryByTestId('crew-mode-switch')).toBeNull()
     await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'kirocrew-conductor', 'template'))
     await waitFor(() => expect(store.getState().dashboard.slots[0].agent).toBe('kirocrew-conductor'))
     await waitFor(() => expect(store.getState().chat.activityOpen).toBe(true))
     expect(screen.queryByTestId('crew-mode-switch')).toBeNull()
-    expect(screen.getByTestId('crew-mode-composer-chip').textContent).toBe('')
+    expect(screen.getByTestId('crew-mode-composer-toggle').textContent).toBe('')
     // The Board shows the conductor mode panel before the gateway's root stamp reaches the row.
     expect(await screen.findByTestId('conductor-mode-crew-panel', {}, { timeout: 5000 })).toBeInTheDocument()
     expect(screen.queryByTestId('crew-workers-none')).toBeNull()

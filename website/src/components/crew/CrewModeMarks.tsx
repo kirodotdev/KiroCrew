@@ -159,13 +159,18 @@ export function ConductorModeTitleMark() {
   )
 }
 
-/** The composer's read-only Conductor mode mark: one lightning bolt whose
+/** The composer's Conductor mode mark: one lightning bolt. Read-only, its
  *  accessible name and tip state the chat's mode and offer no action. Before
  *  the first message the composer shows the labelled, pressed `CrewModeChip`
- *  instead, which is the control that turns the mode off. */
-export function CrewModeComposerChip() {
+ *  instead, which is the control that turns the mode off.
+ *
+ *  On a root chat with messages the bolt is that control (`CrewModeOffToggle`):
+ *  with `onTurnOff` a press turns the mode off; with `blockedHint` it is held
+ *  (`aria-disabled`, so it stays focusable and its tip says why). */
+export function CrewModeComposerChip({ onTurnOff, blockedHint }: { onTurnOff?: () => void; blockedHint?: string } = {}) {
   const reduceMotion = useReducedMotion()
   const fade = { initial: reduceMotion ? { opacity: 0 } : false, animate: { opacity: 1 }, transition: { duration: 0.2 } } as const
+  if (onTurnOff || blockedHint) return <CrewModeOffToggle onTurnOff={onTurnOff} blockedHint={blockedHint} motionProps={fade} />
   return (
     <ReadOnlyBoltMark
       label={i18nT('components.crewMode.composer_chip_label')}
@@ -174,5 +179,37 @@ export function CrewModeComposerChip() {
       className="inline-grid h-7 w-7 place-items-center"
       motionProps={fade}
     />
+  )
+}
+
+/** The composer's bolt as the Conductor mode switch, pressed while the mode is
+ *  on. Held (`blockedHint`), a press does nothing and a touch tap opens the tip,
+ *  which says why; otherwise a press turns the mode off and the tip says so. */
+function CrewModeOffToggle({ onTurnOff, blockedHint, motionProps }: {
+  onTurnOff?: () => void
+  blockedHint?: string
+  motionProps: Pick<HTMLMotionProps<'button'>, 'initial' | 'animate' | 'transition'>
+}) {
+  const held = !!blockedHint || !onTurnOff
+  const { tip, tipHandlers, tipId } = useInstantTip({ openOnTouchRelease: held })
+  return (
+    <>
+      <motion.button
+        type="button"
+        data-testid="crew-mode-composer-toggle"
+        aria-label={i18nT('components.crewMode.chip_off')}
+        aria-pressed={true}
+        aria-disabled={held || undefined}
+        {...tipHandlers}
+        {...motionProps}
+        onClick={() => { if (!held) onTurnOff?.() }}
+        className="mc-touch-hit inline-grid h-7 w-7 shrink-0 place-items-center rounded-md select-none cursor-pointer hover:bg-bg-hover aria-disabled:cursor-not-allowed aria-disabled:opacity-60 aria-disabled:hover:bg-transparent focus-visible:outline-2 focus-visible:outline-accent"
+      >
+        <Zap size={16} aria-hidden="true" className="shrink-0 conductor-mode-accent" />
+      </motion.button>
+      <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[20rem] break-words">
+        {blockedHint ?? i18nT('components.crewMode.composer_off_hint')}
+      </InstantTip>
+    </>
   )
 }

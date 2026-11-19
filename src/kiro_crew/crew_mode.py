@@ -10,9 +10,10 @@ pipeline conductor) is a Crew Mode root as soon as it is loaded and its workers 
 to its side panel. No session, folder or transcript is deleted or moved for that.
 
 ``agent.crew_mode_agent`` is the one place that names THE conductor: the agent a chat
-switches to when Crew Mode is turned on. Until the chat's first user message the
-person can turn it off again (a switch back to a non-conductor template); after that
-the server refuses to move a Crew Mode root onto another agent
+switches to when Crew Mode is turned on. The person can turn it off again (a switch
+back to a non-conductor template) until the chat's first user message, and after it
+while the root's own work ledger holds no open item and none of its workers runs;
+otherwise the server refuses to move a Crew Mode root onto another agent
 (``crew_mode_locked``).
 
 The chat keeps a stamp (``crew_mode_agent`` on the slot, persisted with it) only to

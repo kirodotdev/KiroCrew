@@ -10865,6 +10865,8 @@
       "conductor_mode_row_stalled_detail": "Hängt: {{name}} · {{duration}}",
       "conductor_mode_recap_empty": "Die Crew hat sich noch nicht gemeldet.",
       "chip_hint_pressed": "Conductor mode ist an. Klicke, um ihn vor deiner ersten Nachricht auszuschalten.",
+      "composer_off_hint": "Conductor mode ist an. Klicke, um ihn auszuschalten. Schaltest du ihn wieder ein, sind die Aufgaben wieder da.",
+      "composer_off_blocked_work": "Conductor mode lässt sich ausschalten, sobald keine Aufgabe mehr offen ist und kein Crew-Mitglied mehr läuft.",
       "conductor_mode_view_status": "Status",
       "conductor_mode_view_list": "Worker",
       "conductor_mode_recap_head": "{{done}} von {{total}} erledigt",

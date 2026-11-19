@@ -10865,6 +10865,8 @@
       "conductor_mode_row_stalled_detail": "আটকে আছে: {{name}} · {{duration}}",
       "conductor_mode_recap_empty": "ক্রু এখনও রিপোর্ট করেনি।",
       "chip_hint_pressed": "Conductor mode চালু আছে। প্রথম বার্তার আগে বন্ধ করতে ক্লিক করো।",
+      "composer_off_hint": "Conductor mode চালু আছে। বন্ধ করতে ক্লিক করো। আবার চালু করলে কাজগুলো ফিরে আসবে।",
+      "composer_off_blocked_work": "কোনো কাজ খোলা না থাকলে এবং কোনো দলের সদস্য না চললে Conductor mode বন্ধ করা যাবে।",
       "conductor_mode_view_status": "অবস্থা",
       "conductor_mode_view_list": "কর্মী",
       "conductor_mode_recap_head": "{{total}}টির মধ্যে {{done}}টি শেষ",

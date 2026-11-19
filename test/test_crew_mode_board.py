@@ -502,7 +502,8 @@ async def test_a_first_message_landing_during_resolution_still_locks_the_switch(
     """The lock is read before agent resolution and again in the no-await window that
     commits the switch: a send that lands while resolution awaits (a slash command
     completes without either switch lock) gives an empty root its first user
-    message, and the switch off the conductor is then refused, not committed."""
+    message, and with a task open on its ledger the switch off the conductor is
+    then refused, not committed."""
     from unittest.mock import AsyncMock
 
     from chat_test_helpers import _make_state
@@ -541,12 +542,99 @@ async def test_a_first_message_landing_during_resolution_still_locks_the_switch(
         return bindings
 
     monkeypatch.setattr(f"{mod}.resolve_agent_bindings", _resolve_while_a_send_lands)
+    monkeypatch.setattr(
+        f"{mod}.read_crew_work", lambda key: chat_handlers.CrewWork(tuple(key), True, (), (0,))
+    )
     caller = chat_handlers.SlotAgentSwitchCaller(app="", remote="", owner=True)
     resp = await chat_handlers.switch_slot_agent(state, root, "r", "kirocrew", "template", caller)
     assert resp.status == 409, resp.text
     assert json.loads(resp.text)["code"] == "crew_mode_locked"
     assert root.agent == CONDUCTOR and root.crew_mode_agent == CONDUCTOR
     state.sessions.reset.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_root_with_messages_and_an_idle_ledger_turns_conductor_mode_off(
+    tmp_path, monkeypatch
+):
+    """After the first message the switch back to a plain template commits when the
+    root's own work ledger holds no open item, and is refused while one is open.
+    The ledger itself is read for real and left as it was."""
+    from unittest.mock import AsyncMock
+
+    from chat_test_helpers import _make_state
+
+    from kiro_crew import work_ledger
+    from kiro_crew.config.loader import KiroCrewConfig, ResolvedBindings
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
+    mod = "kiro_crew.dashboard.chat_handlers"
+    bindings = ResolvedBindings(
+        workspace_dir=tmp_path / "ws",
+        effective_memory_config={},
+        memory_store_name="default",
+        requested_resolved=True,
+        resolved_alias="kirocrew",
+        kiro_agent="kirocrew",
+        selection_kind="template",
+        execution_context=ExecutionContext(
+            None, MemoryStoreRef("default"), "template", "kirocrew", selection_name="kirocrew"
+        ),
+    )
+    monkeypatch.setattr(f"{mod}.KiroCrewConfig.load", lambda: KiroCrewConfig())
+    monkeypatch.setattr(f"{mod}.resolve_agent_bindings", lambda *_a, **_k: bindings)
+    monkeypatch.setattr(f"{mod}._workspace_name_for_dir", lambda cfg, ws_dir: "default")
+    monkeypatch.setattr(f"{mod}.warm_project_agent_names", AsyncMock())
+    monkeypatch.setattr(f"{mod}.cached_project_agent_names", lambda project_dir: frozenset())
+    monkeypatch.setattr(f"{mod}.default_project_dir", lambda ws: str(tmp_path / "ws"))
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(work_ledger, "_work_ledger_root", lambda: tmp_path / "wl")
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock()
+    caller = chat_handlers.SlotAgentSwitchCaller(app="", remote="", owner=True)
+
+    busy = state.get_or_create_slot("busy")
+    busy.agent, busy.agent_kind, busy.crew_mode_agent = CONDUCTOR, "template", CONDUCTOR
+    busy.messages.append({"role": "user", "content": "go"})
+    real_read = chat_handlers.read_crew_work
+    read_keys: list = []
+
+    def _read(keys):
+        read_keys.append(keys)
+        if "busy" in keys:
+            return chat_handlers.CrewWork(tuple(keys), True, (), (0,))
+        return real_read(keys)
+
+    monkeypatch.setattr(f"{mod}.read_crew_work", _read)
+    from kiro_crew import conductor_patrol
+
+    retired: list = []
+
+    async def _retire(_state, key):
+        retired.append(key)
+        return True
+
+    monkeypatch.setattr(conductor_patrol, "retire_patrol", _retire)
+    resp = await chat_handlers.switch_slot_agent(
+        state, busy, "busy", "kirocrew", "template", caller
+    )
+    assert resp.status == 409, resp.text
+    assert busy.agent == CONDUCTOR
+    assert retired == []
+
+    root = state.get_or_create_slot("r")
+    root.agent, root.agent_kind, root.crew_mode_agent = CONDUCTOR, "template", CONDUCTOR
+    root.messages.append({"role": "user", "content": "go"})
+    assert work_ledger.list_work_items("r") == []
+    resp = await chat_handlers.switch_slot_agent(state, root, "r", "kirocrew", "template", caller)
+    assert resp.status == 200, resp.text
+    assert root.agent == "kirocrew" and root.crew_mode_agent == ""
+    assert not (tmp_path / "wl").exists()
+    # The ledgers read are the ones the Board follows: the session key, then the slot.
+    assert read_keys[-1] == (chat_handlers.effective_session_key(root), "r")
+    # Its work-ledger patrol ends with the mode, on every key a loop binds to.
+    assert set(retired) == {chat_handlers.effective_session_key(root), "r"}
 
 
 @pytest.mark.asyncio

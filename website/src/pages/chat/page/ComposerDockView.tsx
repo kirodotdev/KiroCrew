@@ -304,12 +304,16 @@ interface ComposerDockViewProps {
   /** The Crew Mode chip (crewModeSwitch): offered on this chat, and its switch on. */
   crewModeOffered: boolean
   /** A plain chat that already has messages: the same chip sits right of the
-   *  permission button and turns this chat into a conductor mode chat, one way. */
+   *  permission button and turns this chat into a conductor mode chat. */
   crewModeMidChatOffered?: boolean
   turnOnCrewMode: () => void
-  /** Set only while Crew Mode is on and no message is sent yet: the composer's
-   *  Crew Mode mark is then a toggle that turns it off. */
+  /** Set while Crew Mode can be turned off: before the first message, the
+   *  pressed chip; after it, on an idle root, the composer's bolt. Either is then
+   *  a toggle that turns it off. */
   turnOffCrewMode?: () => void
+  /** Why Crew Mode cannot be turned off right now (crewModeSwitch): the bolt is
+   *  then a held toggle whose tip says why. */
+  crewModeOffBlocked?: 'work' | 'reply' | null
   /** The Crew Mode switch is in flight for this chat (crewModeSwitch): the
    *  composer is held, its reason as placeholder, like a memory-mode switch. */
   crewModeSwitching?: 'on' | 'off' | null
@@ -354,7 +358,7 @@ export default function ComposerDockView({
   effortSupported, effortAutoNote = false, ultracode, fastMode, fastUnavailable, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, resumeAfterSignIn, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
-  composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
+  composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeOffBlocked = null, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
@@ -752,7 +756,13 @@ export default function ComposerDockView({
               harnessBackend={modelsBackend}
               // A crew member's footer is the conductor's: the Crew Mode mark (never
               // a switch there) in place of the agent picker and its label.
-              agentBadge={crewChipPressed ? undefined : agentPickerHidden || steerWorker !== undefined ? <CrewModeComposerChip /> : undefined}
+              agentBadge={crewChipPressed ? undefined : agentPickerHidden || steerWorker !== undefined
+                ? <CrewModeComposerChip
+                    onTurnOff={steerWorker === undefined && !crewModeSwitching ? turnOffCrewMode : undefined}
+                    blockedHint={steerWorker !== undefined ? undefined
+                      : crewModeOffBlocked === 'work' ? i18nT('components.crewMode.composer_off_blocked_work')
+                        : crewModeOffBlocked === 'reply' ? i18nT('components.crewMode.chip_hint_busy') : undefined} />
+                : undefined}
               onAgentClick={provider.capabilities.agentTemplates && !agentPickerHidden && !agentSwitchLocked && steerWorker === undefined ? (rect, trigger) => { anchorAgentBtn(rect, trigger); setAgentDropdown(!agentDropdown) } : undefined}
               onModelClick={(rect, trigger, composerHadFocus) => {
                 modelPickerReturnsFocusRef.current = !!composerHadFocus

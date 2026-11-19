@@ -332,6 +332,34 @@ def has_active_patrol(state: Any, conductor_key: str) -> bool:
         return False
 
 
+async def retire_patrol(state: Any, conductor_key: str) -> bool:
+    """Remove the slot's ACTIVE ``work-ledger`` watch; whether one was removed.
+
+    Called when conductor mode turns off: the chat is a plain chat from then on,
+    and a work-ledger patrol would keep sending it conductor turns. Any other loop
+    (one watching a pull request, say) is left alone, and so is a stopped row. The
+    next dispatch, once conductor mode is back on, arms a fresh patrol (no loop on
+    the slot). Never raises: the switch that called this has already committed.
+    """
+    svc, loop, _slot = _loop_on(state, conductor_key)
+    if svc is None or loop is None:
+        return False
+
+    def _still_a_patrol(row: Any) -> bool:
+        return bool(getattr(row, "active", False) and svc._observes_work_ledger(row))
+
+    try:
+        if not _still_a_patrol(loop):
+            return False
+        removed = bool(await svc.remove(loop.id, precondition=_still_a_patrol))
+    except Exception:  # noqa: BLE001 - the switch already committed
+        logger.warning("conductor patrol not retired for %s", conductor_key, exc_info=True)
+        return False
+    if removed:
+        logger.info("conductor patrol retired on %s: conductor mode turned off", conductor_key)
+    return removed
+
+
 #: Why :func:`ensure_patrol` answered what it did, surfaced as ``patrol_reason``.
 REASON_NO_LOOP = "no-loop"
 REASON_REPLACED = "replaced-system-stopped"

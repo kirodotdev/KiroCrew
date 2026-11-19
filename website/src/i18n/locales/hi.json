@@ -10865,6 +10865,8 @@
       "conductor_mode_row_stalled_detail": "रुका हुआ: {{name}} · {{duration}}",
       "conductor_mode_recap_empty": "क्रू ने अभी तक रिपोर्ट नहीं दी है।",
       "chip_hint_pressed": "Conductor mode चालू है। पहले संदेश से पहले इसे बंद करने के लिए क्लिक करो।",
+      "composer_off_hint": "Conductor mode चालू है। बंद करने के लिए क्लिक करो। फिर से चालू करने पर इसके कार्य वापस आ जाएँगे।",
+      "composer_off_blocked_work": "कोई कार्य खुला न हो और कोई टीम सदस्य न चल रहा हो, तब Conductor mode बंद किया जा सकता है।",
       "conductor_mode_view_status": "स्थिति",
       "conductor_mode_view_list": "कार्यकर्ता",
       "conductor_mode_recap_head": "{{total}} में से {{done}} पूरे",

@@ -34,12 +34,25 @@ const withoutKey = (set: ReadonlySet<string>, key: string): ReadonlySet<string> 
   return next
 }
 
-export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView, autoOpenBoard }: {
+/** Whether conductor mode root `root` still has work: an open item on its work
+ *  ledger (`crew_work.open`, the gateway's fold) or a session of its crew whose
+ *  turn runs. A row without `crew_work` (no ledger, or one not folded yet) counts
+ *  no open item; the gateway re-checks the ledger on the switch either way. */
+export function crewWorkBusy(root: ChatSlot | undefined, slots: readonly ChatSlot[]): boolean {
+  if (!root) return false
+  if ((root.crew_work?.open ?? 0) > 0) return true
+  return slots.some(s => s.crew_root === root.key && (s.running || s.subagents_running))
+}
+
+export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, crewWorkBusy = false, switchAgent, openView, autoOpenBoard }: {
   currentSlot: ChatSlot | undefined
   /** The catalog's default template: the agent a plain chat runs on. */
   defaultAgent: string
-  /** The chat's transcript has a user message: Crew Mode can no longer be turned off. */
+  /** The chat's transcript has a user message: from then on Crew Mode turns off
+   *  only on a root whose crew is idle. */
   hasUserMessage: boolean
+  /** `crewWorkBusy(currentSlot, slots)`: the chat's crew still has work. */
+  crewWorkBusy?: boolean
   /** Resolves `false` when the switch was refused (it shows its own notice). */
   switchAgent: (agentName: string, kind?: 'member' | 'template') => Promise<boolean>
   /** The side panel's view opener (`usePanelTabs().openView`). */
@@ -164,11 +177,16 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
    *  the switch would then be refused (the server switches no chat mid-turn). The
    *  draft stays in the box; `null` when nothing is in flight. */
   const crewModeSwitching: 'on' | 'off' | null = crewModeLeaving ? 'off' : crewModeArriving ? 'on' : null
-  // Until the first user message Crew Mode can be turned off again (the server
-  // allows it only then): back to the default agent this chat had before, which
-  // is the only agent the switch is offered on. After that it is locked.
+  // Crew Mode can be turned off again until the first user message, and after it
+  // on a ROOT chat whose crew is idle (`crewWorkBusy`): the server allows exactly
+  // that (`crew_mode_locked` otherwise). Back to the default agent this chat had
+  // before, which is the only agent the switch is offered on. The work ledger
+  // stays: turned on again, the chat's Board reads the same tasks.
   // Never when the default agent is itself a conductor: there is nothing to go back to.
-  const crewModeCancellable = crewModeEligible && crewModeOn && !crewModeLeaving && !hasUserMessage && !currentSlot?.running
+  const crewModeOffable = crewModeEligible && crewModeOn && !crewModeLeaving && (!hasUserMessage || isRootSession(currentSlot))
+  const crewModeOffBlocked: 'work' | 'reply' | null = !crewModeOffable ? null
+    : hasUserMessage && crewWorkBusy ? 'work' : currentSlot?.running ? 'reply' : null
+  const crewModeCancellable = crewModeOffable && !crewModeOffBlocked
   const turnOffCrewMode = useCallback(() => {
     if (!crewModeCancellable || !currentSlot) return
     const key = currentSlot.key
@@ -184,12 +202,15 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     }).finally(() => setTurningOff(set => withoutKey(set, key)))
   }, [crewModeCancellable, currentSlot, switchAgent, defaultAgent, dispatch])
   // A plain ROOT chat that already has a message can still be turned into a
-  // conductor mode chat (one way: the gateway then locks it on the conductor). A
-  // crew member's chat is not a root, so it never offers this.
+  // conductor mode chat (back off again only while its crew is idle). A crew
+  // member's chat is not a root, so it never offers this.
   const crewModeMidChat = crewModeEligible && !crewModeChosen && hasUserMessage && isRootSession(currentSlot)
   return {
     crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, crewModeMidChat,
     turnOffCrewMode: crewModeCancellable ? turnOffCrewMode : undefined,
+    /** Why Crew Mode cannot be turned off right now: open or running crew work, or
+     *  this chat's own reply; `null` when it can, or when it is not offered. */
+    crewModeOffBlocked,
     openTaskBoard: taskBoardOffered ? openTaskBoard : undefined,
   }
 }

@@ -286,15 +286,99 @@ def _has_user_message(slot: _ChatSlot) -> bool:
     return any(isinstance(row, dict) and row.get("role") == "user" for row in slot.messages)
 
 
+class CrewWork(NamedTuple):
+    """A Crew Mode root's own work ledgers as the lock reads them (:func:`read_crew_work`)."""
+
+    #: The ledger keys the items were listed under.
+    keys: tuple[str, ...]
+    #: Some item is not closed (accepted, rejected or abandoned).
+    open: bool
+    #: Every session an item was bound to, closed items included.
+    workers: tuple[str, ...]
+    #: :func:`kiro_crew.work_ledger.change_mark` of each key before its listing.
+    marks: tuple[int, ...]
+
+
+def read_crew_work(session_keys: tuple[str, ...]) -> CrewWork | None:
+    """The work ledgers a root's Board follows, for the lock. BLOCKING file IO.
+
+    *session_keys* are the root's session key (the one its turns run on: a
+    channel or cron key for a linked slot) and its slot key; each is read under its
+    ledger spelling, as the slot frame follows them. ``None`` when a ledger cannot
+    be read or its projection is being rebuilt: the lock then treats the chat as
+    busy. A chat with no ledger lists no item. The listing skips a record it
+    cannot read, so every record on disk must be in it: a torn or unreadable item
+    could be the open one.
+    """
+    from kiro_crew import session_ledger
+    from kiro_crew.dashboard.handlers.work_ledger import crew_lock_reading
+
+    keys = tuple(dict.fromkeys(session_ledger.ledger_key(k) for k in session_keys if k))
+    try:
+        reading = crew_lock_reading(keys)
+    except Exception:  # noqa: BLE001 - an unreadable ledger keeps the lock shut
+        logger.debug("agent switch: work ledger of %s unreadable", keys, exc_info=True)
+        return None
+    if reading is None:
+        return None
+    is_open, workers, marks = reading
+    return CrewWork(keys, is_open, workers, marks)
+
+
+def _crew_work_idle(state: DashboardState | None, slot: _ChatSlot, work: CrewWork | None) -> bool:
+    """Whether *work* shows no open item and *slot*'s crew runs nothing, still current. No I/O.
+
+    A ledger write in this process since *work* was read (its change mark moved)
+    makes the reading stale, so it answers False. The crew is every session bound
+    to one of the items and every live session the slot list stamps with *slot* as
+    its ``crew_root``; each is read live, and an unreadable probe counts as busy.
+    """
+    if state is None or work is None or work.open:
+        return False
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard.handlers.work_ledger import ledger_change_marks
+    from kiro_crew.dashboard.session_activity import (
+        session_activity_for_key,
+        session_execution_active,
+    )
+    from kiro_crew.dashboard.session_control_parts.crew_filing import _frame_parents
+
+    if ledger_change_marks(work.keys) != work.marks:
+        return False
+    try:
+        rows = crew_mode.live_stamp_rows(
+            state._slots, _frame_parents(state), settled=crew_mode.lineage_is_settled()
+        )
+    except Exception:  # noqa: BLE001 - an unreadable crew keeps the lock shut
+        logger.debug("agent switch: crew of %s unreadable", slot.key, exc_info=True)
+        return False
+    crew = [k for k, r in rows.items() if r.get(crew_mode.WORKER_FIELD) == slot.key]
+    return not any(
+        session_execution_active(session_activity_for_key(state, key))
+        for key in dict.fromkeys((*work.workers, *crew))
+    )
+
+
 def _crew_mode_lock_refusal(
-    slot: _ChatSlot, agent_name: str, agent_kind: Any, caller: SlotAgentSwitchCaller
+    slot: _ChatSlot,
+    agent_name: str,
+    agent_kind: Any,
+    caller: SlotAgentSwitchCaller,
+    state: DashboardState | None = None,
+    work: CrewWork | None = None,
+    resolved_kind: Any = "",
 ) -> web.Response | None:
     """409 ``crew_mode_locked`` when *slot* is a Crew Mode root and this switch moves it.
 
-    Until the chat's first user message, Crew Mode can be turned off again: a
-    switch onto a template that is not a conductor passes. From the first message
-    on it is locked: a Crew Mode root never moves to another agent, whoever asks
-    (the picker, the in-turn ``/agent`` command, a session-control send of
+    Crew Mode can be turned off, a switch onto a template that is not a
+    conductor, until the chat's first user message, and after it whenever the
+    chat's work is idle: *work* (:func:`read_crew_work`, read off the loop by the
+    caller) holds no open item and none of its crew is running
+    (:func:`_crew_work_idle`). Without *state* and *work* only the first rule
+    applies. After the first message a name-only pick must also resolve to a
+    template: *resolved_kind*, the namespace resolution chose, given at the commit
+    check (empty before resolution, ``None`` when nothing resolved). Otherwise a Crew Mode root never moves to another agent, whoever
+    asks (the picker, the in-turn ``/agent`` command, a session-control send of
     ``/agent``). A re-pick of the agent it is on is a session reset and passes.
     The one other move allowed is onto the configured conductor
     (``agent.crew_mode_agent``) in the template namespace, whoever asks: the Crew
@@ -315,11 +399,12 @@ def _crew_mode_lock_refusal(
     )
     if same:
         return None
-    if (
-        agent_kind in ("", "template")
-        and not crew_mode.stamp_for_switch(agent_name, "template")
-        and not _has_user_message(slot)
-    ):
+    turning_off = agent_kind in ("", "template") and not crew_mode.stamp_for_switch(
+        agent_name, "template"
+    )
+    if turning_off and not _has_user_message(slot):
+        return None
+    if turning_off and resolved_kind in ("", "template") and _crew_work_idle(state, slot, work):
         return None
     if agent_name == crew_mode.crew_mode_agent() and agent_kind == "template":
         # Onto the configured conductor, in the template namespace: still Crew Mode,
@@ -337,13 +422,12 @@ def _crew_mode_lock_refusal(
         resources=f"slot={slot.key}",
         error="a conductor mode chat stays on its own agent",
     )
-    return web.json_response(
-        {
-            "error": "this chat is in conductor mode, which stays on its own agent",
-            "code": CREW_MODE_LOCKED,
-        },
-        status=409,
+    error = (
+        "conductor mode can be turned off once no task is open and no worker is running"
+        if turning_off
+        else "this chat is in conductor mode, which stays on its own agent"
     )
+    return web.json_response({"error": error, "code": CREW_MODE_LOCKED}, status=409)
 
 
 def _channel_pin_refusal(slot: _ChatSlot, agent_name: Any, agent_kind: Any) -> web.Response | None:
@@ -547,7 +631,16 @@ async def switch_slot_agent(
                 },
                 status=503,
             )
-        locked = _crew_mode_lock_refusal(slot, agent_name, agent_kind, caller)
+        # The lock lets a root with messages leave Crew Mode only while its work
+        # ledger is idle; the ledger is files, so it is read here, off the loop.
+        from kiro_crew import crew_mode as _crew_mode_root
+
+        crew_work = (
+            await asyncio.to_thread(read_crew_work, (session_key, slot.key))
+            if _crew_mode_root.slot_is_crew_mode_root(slot)
+            else None
+        )
+        locked = _crew_mode_lock_refusal(slot, agent_name, agent_kind, caller, state, crew_work)
         if locked is not None:
             return locked
         owner_request = caller.owner
@@ -883,8 +976,12 @@ async def switch_slot_agent(
         # The Crew Mode lock, read again in this same no-await window: the check
         # above ran before agent resolution, and a send that lands while resolution
         # awaits (a slash command completes without either switch lock) gives an
-        # empty root its first user message, which is what locks it.
-        locked = _crew_mode_lock_refusal(slot, agent_name, agent_kind, caller)
+        # empty root its first user message, which is what locks it. The ledger
+        # reading is reused: a write to it since then moved its change mark, and a
+        # worker that started since is read live.
+        locked = _crew_mode_lock_refusal(
+            slot, agent_name, agent_kind, caller, state, crew_work, new_agent_kind or None
+        )
         if locked is not None:
             return locked
         # The channel pin, read again in this no-await window with the resolved
@@ -1608,6 +1705,13 @@ async def switch_slot_agent(
         from kiro_crew.metrics import crew_mode as crew_mode_metrics
 
         crew_mode_metrics.record_turned_on("switch", repeat=bool(_cm.known_roots() - {slot.key}))
+    # Conductor mode turned off: the chat's work-ledger patrol would keep sending
+    # conductor turns to what is now a plain chat, so it ends with the mode.
+    if prior_crew_stamp and not new_crew_stamp and not caller.crew_mode_migration:
+        from kiro_crew import conductor_patrol
+
+        for key in dict.fromkeys((session_key, slot.key)):
+            await conductor_patrol.retire_patrol(state, key)
     # The migration moving a chat that never turned Crew Mode on changes nothing on
     # its page either; a stamped root's move keeps the board it has (nothing is
     # adopted over a page already chosen).

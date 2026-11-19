@@ -10,7 +10,7 @@ import { Provider } from 'react-redux'
 import { createTestStore } from '../../../test/helpers'
 import { setCrewModeCatalog } from '../../../lib/crewMode'
 import type { ChatSlot } from '../../../types'
-import { useCrewModeSwitch } from './crewModeSwitch'
+import { crewWorkBusy, useCrewModeSwitch } from './crewModeSwitch'
 import { __resetPanelTabs, dropPanelViews, openPanelView, type ViewKind } from '../../../hooks/usePanelTabs'
 import { closeActivityPanel, openActivityPanel } from '../../../store/chatSlice'
 
@@ -373,5 +373,24 @@ describe("useCrewModeSwitch the welcome page's Board button", () => {
     const { store, openView } = press()
     expect(store.getState().chat.activityOpen).toBe(true)
     expect(openView).toHaveBeenCalledWith('workers')
+  })
+})
+
+describe('crewWorkBusy', () => {
+  const root = (open?: number): ChatSlot => ({ ...plain('r', 'kirocrew-conductor'), ...(open === undefined ? {} : { crew_work: { open, person: 0, items: [] } }) } as ChatSlot)
+  const member = (over: Partial<ChatSlot>): ChatSlot => ({ ...plain('w'), crew_root: 'r', ...over } as ChatSlot)
+
+  it('is idle with no ledger, or with only closed items and no crew member running', () => {
+    expect(crewWorkBusy(root(), [])).toBe(false)
+    expect(crewWorkBusy(root(0), [member({ running: false })])).toBe(false)
+    expect(crewWorkBusy(undefined, [])).toBe(false)
+  })
+
+  it('is busy with an open item, or with a crew member of this root running', () => {
+    expect(crewWorkBusy(root(1), [])).toBe(true)
+    expect(crewWorkBusy(root(0), [member({ running: true })])).toBe(true)
+    expect(crewWorkBusy(root(0), [member({ subagents_running: true })])).toBe(true)
+    // Another root's running crew member is not this root's work.
+    expect(crewWorkBusy(root(0), [member({ crew_root: 'other', running: true })])).toBe(false)
   })
 })

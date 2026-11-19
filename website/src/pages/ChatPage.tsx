@@ -27,7 +27,7 @@ import { useChatPanelTrackpadSwipe } from './chat/page/chatTrackpadSwipe'
 import { useActiveSlotState } from './chat/page/activeSlotState'
 import { useComposerDraftState, ComposerDraftSync, useComposerIntakeRefs, useMainComposerHandoff, useComposerVoiceHost } from './chat/page/composerHost'
 import { useModelPickerModels, useNewSessionPicks, useSessionChoices, useSlotSelectionCapabilitiesQuery } from './chat/page/sessionPicks'
-import { useCrewModeSwitch } from './chat/page/crewModeSwitch'
+import { crewWorkBusy, useCrewModeSwitch } from './chat/page/crewModeSwitch'
 import ConductorModeEffect from '../components/crew/ConductorModeEffect'
 import { crewModeRoot, crewRootOf, mateRootOf, runsCrewMode } from '../lib/crewMode'
 import { useCrewMode } from '../hooks/usePreviewFlag'
@@ -724,11 +724,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     currentSlot?.agent ? sidebarAgents.find(a => a.name === currentSlot.agent)?.session_color : null,
   )
   const headerColorStyle = headerColor ? headerBandStyle(headerColor, headerPalette.boost, headerPalette.boostFor) : undefined
-  // Unknown counts as sent: while the transcript is still loading the mark does not
-  // offer to turn Crew Mode off, since the server refuses that once a message was
-  // sent (`crew_mode_locked`) and the loaded rows are the only way to know.
+  // Unknown counts as sent: while the transcript is still loading the mark offers
+  // to turn Crew Mode off only on an idle root, since the server refuses anything
+  // else once a message was sent (`crew_mode_locked`) and the loaded rows are the
+  // only way to know.
   const hasUserMessage = slotLoading || messages.some(m => m.role === 'user')
-  const { crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, crewModeMidChat, turnOffCrewMode, openTaskBoard } = useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView: tabsCtl.openView, autoOpenBoard: autoOpenConductorBoard })
+  const { crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, crewModeMidChat, turnOffCrewMode, crewModeOffBlocked, openTaskBoard } = useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, crewWorkBusy: crewWorkBusy(currentSlot, slots), switchAgent, openView: tabsCtl.openView, autoOpenBoard: autoOpenConductorBoard })
   // A crew member's message box sends nothing while its conductor is closed
   // (ComposerDockView's gate); the voice auto-submit below honours it too.
   const currentCrewRoot = crewRootOf(currentSlot)
@@ -1307,7 +1308,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // In an LTS build too: the raw `crew_mode_root` stamp is the gateway's
               // own lock (`crew_mode_locked` once the chat has a message), so no switch.
               agentSwitchLocked={hasUserMessage && !!currentSlot?.crew_mode_root}
-              turnOffCrewMode={turnOffCrewMode} crewModeSwitching={crewModeSwitching}
+              turnOffCrewMode={turnOffCrewMode} crewModeOffBlocked={crewModeOffBlocked} crewModeSwitching={crewModeSwitching}
               steerWorker={currentCrewRoot && currentSlot ? (currentSlot.title || i18nT('commandCenter.worker_untitled')) : undefined}
               steerWorkerRoot={currentCrewRoot}
             />
