@@ -4857,9 +4857,18 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   the run costs three stats; a change to any of them, or the window ending,
   evaluates it in full. A failure on a provider that has a route is not
   remembered and is tried on every sweep. The table (`_UNRECLAIMABLE_MEMO`) is
-  process memory only, so a restarted gateway evaluates every run once. A legacy SID present
-  only in agent-folder state/tombstone likewise preserves the folder inside that
-  window: it cannot authorize deletion, but the lookup gives a later trusted
+  process memory only, so a restarted gateway evaluates every run once. A run a
+  full evaluation found still inside its window is skipped the same way
+  (`_NOT_DUE_MEMO`): the sweep keeps the tombstone's inode, size and modification
+  time, sampled before that read, with the death time and whether the cause is
+  `delivered`, and skips the run while the tombstone is unchanged and the death
+  time is later than THIS sweep's cutoff for that cause. The cutoff is recomputed
+  every sweep, so a shortened window applies on the next one; a rewritten
+  tombstone evaluates the run in full and a missing one drops its entry; that
+  table is process memory too, and the first sweep after a restart reads every
+  tombstone. A legacy SID present
+  only in agent-folder state/tombstone likewise preserves the folder inside the
+  90-day window: it cannot authorize deletion, but the lookup gives a later trusted
   migration time to reclaim the transcript. At the hard ceiling, only the run
   folder and protected metadata are reaped; untrusted identity is never used for
   provider-file deletion. Restart registry rebuild likewise accepts only literal
