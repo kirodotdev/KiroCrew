@@ -165,9 +165,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     # the first real turn -- and the eager one publishes its successor over
     # the slot's mapping before the turn runs, so a turn that read the mapping
     # itself would read the successor and name no predecessor at all. Written
-    # only while empty, because the second observation is the successor rather
-    # than an earlier store. Cleared once `session/opened` has carried it, so
-    # the next supersede of this slot latches afresh. "" = nothing to follow.
+    # only while nothing is determined, because the second observation is the
+    # successor rather than an earlier store. Cleared once `session/opened` has
+    # carried it, so the next supersede of this slot latches afresh. "" =
+    # nothing to follow.
     self._crew_log_previous_sid = ""
     # Whether the resolver COULD NOT NAME this slot's predecessor, as opposed to
     # there being none. Both leave the id above empty and they are different
@@ -569,7 +570,9 @@ def latch_crew_log_previous(
     second observation names the successor rather than an earlier store.
     Keeping the FIRST observation keeps the predecessor a `session/opened` can
     cite, and an empty ``sid`` latches nothing rather than latching a store
-    with no name.
+    with no name. A first answer that DETERMINED there is none (``undecided``
+    false) is kept the same way: the turn's later read finds the successor the
+    prefetch mapped, and citing it would cite the store being written.
 
     ``sid`` is what the slot's MAPPING answers, and the mapping is a proxy for
     this question rather than its authority. An allocation whose history replay
@@ -588,7 +591,7 @@ def latch_crew_log_previous(
     resumability instead, and the store's own units carry a wall-clock stamp
     and are written by a background writer that has not run yet.
     """
-    if self._crew_log_previous_sid:
+    if self._crew_log_previous_sid or self._crew_log_previous_undecided is False:
         return
     chosen = self._crew_log_opened_sid or sid
     if chosen:
@@ -615,7 +618,7 @@ def latch_crew_log_previous(
     #
     # ASSIGNED, not merely set. Two latches before one entry is owed is ordinary,
     # since the eager prefetch and the turn each run their own resolver, and a
-    # later answer supersedes an earlier one: a prefetch whose store read REFUSED
+    # later answer supersedes an earlier undetermined one: a prefetch whose store read REFUSED
     # carries no information about the content, so leaving its refusal standing
     # would have the entry report a predecessor as existing-but-unnameable for a
     # slot the turn's own successful read determined has none. The branch above
