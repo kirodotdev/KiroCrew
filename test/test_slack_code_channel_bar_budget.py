@@ -328,6 +328,7 @@ def _no_sandbox(_floor_monkeypatch: Any) -> None:
     # are covered in test_git_config_hooks.py (test_worktree_run_git_carries_the_disable,
     # test_worktree_run_git_scan_failure_reads_as_git_failure).
     _floor_monkeypatch.setattr(wt, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
+    _floor_monkeypatch.setattr(git_ops, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
 
 
 # The board suite's bare remote + clone, copied per test from one per-module template.

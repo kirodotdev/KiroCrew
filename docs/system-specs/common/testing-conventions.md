@@ -2286,9 +2286,15 @@ measures, never above.
   `Backend Tests (Windows) (8)`, and the six-refresh
   `test_the_bar_is_resent_only_when_its_items_change` took 91-95 s at four xdist workers
   and 145-174 s at six, so it ran past `--timeout=180` on unrelated PRs and on main. A
-  test of logic ABOVE git, over repositories with no config hooks, stubs
-  `worktree.config_hook_disable_args_sandboxed` next to its `sandboxed_spawn_argv` stub
-  (#39505); the scan and `_run_git`'s use of it are tested in `test_git_config_hooks.py`.
+  test of logic ABOVE git, over repositories with no config hooks, stubs the scan at EVERY
+  name that binds it, next to its `sandboxed_spawn_argv` stubs:
+  `worktree.config_hook_disable_args_sandboxed` for `_run_git` (#39505) and
+  `git_ops.config_hook_disable_args_sandboxed` for `git_ops.run_git_capped`, the Code-tab
+  diff reader, which imports the scan itself. MEASURED (#39484): the code-channel
+  workspace, board and surface suites with both stubs, four xdist workers, AWS c6i.2xlarge
+  Windows, median of 5: `test_slack_code_channel_workspace.py` 114.6 s -> 42.1 s,
+  `test_slack_code_channel_board_diff.py` 104.6 s -> 40.4 s. The scan and both callers'
+  use of it are tested in `test_git_config_hooks.py`.
 
 - **If you stub the only thing that releases a resource, the fixture owes the release.**
   A permit, an in-flight claim, a lock: when the green-path test replaces the runner
