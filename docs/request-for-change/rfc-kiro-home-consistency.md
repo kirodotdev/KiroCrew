@@ -5,7 +5,7 @@ author: jstrunk (drafted with an agent session)
 created: 2026-11-19
 last-audited: 2026-11-19
 audited-at: 5c9bf25f3e
-doc-pr: null
+doc-pr: 39590
 implementation-prs: []
 tracking-issues: [39215, 12986]
 supersedes: []
