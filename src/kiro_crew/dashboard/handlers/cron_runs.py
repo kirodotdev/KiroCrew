@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime, timezone
 from typing import Any
 
 from aiohttp import web
@@ -54,6 +55,38 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from ._shared import guard_owner_surface_routes, read_bounded_json
 
 
+async def _run_target_missing(state: DashboardState, job_id: str) -> web.Response:
+    """The 404 for a run of a missing job, naming its last run when history kept one.
+
+    A one-shot is removed after it runs but keeps its run history, so a trigger
+    after the run can say the job ran rather than that it never existed.
+    """
+    # Local: a module-level name here would be served by the ``cron`` facade.
+    from kiro_crew.cron_trigger import RAN_AND_REMOVED_CODE
+
+    try:
+        rows, _total = await state.crons.get_history().get_job_history(job_id, 0, 1)
+    except ValueError:
+        rows = []
+    started = rows[0].get("started_at") if rows else None
+    when = ""
+    if isinstance(started, (int, float)) and not isinstance(started, bool) and started > 0:
+        try:
+            when = datetime.fromtimestamp(started, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        except (OverflowError, OSError, ValueError):
+            when = ""
+    if not when:
+        return web.json_response({"error": "job not found", "code": "job_not_found"}, status=404)
+    return web.json_response(
+        {
+            "error": f"job not found: it already ran at {when} and was removed",
+            "code": RAN_AND_REMOVED_CODE,
+            "last_run_at": started,
+        },
+        status=404,
+    )
+
+
 async def api_cron_run(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/run — trigger immediate execution."""
     if request.get("app") == "":
@@ -76,7 +109,7 @@ async def api_cron_run(request: web.Request) -> web.Response:
     # not blocked.
     job = await state.crons.get_job_async(job_id)
     if not job:
-        return web.json_response({"error": "job not found"}, status=404)
+        return await _run_target_missing(state, job_id)
     # trigger_run is await-free, so although the lookup above awaits and two
     # concurrent requests can both reach it, only one passes its guard.
     if not state.crons.trigger_run(job_id):
