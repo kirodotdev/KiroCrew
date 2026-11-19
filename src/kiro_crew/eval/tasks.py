@@ -274,7 +274,15 @@ def apply_reference(case: Case, repo: Path) -> None:
     for cmd in (
         ["git", "add", "-A"],
         ["git", "commit", "-q", "--allow-empty", "-m", "reference"],
-        ["git", "push", "-q", "origin", TASK_BRANCH],
+        # Local transport drops GIT_CONFIG_* before receive-pack, so name the setting here.
+        [
+            "git",
+            "push",
+            "--receive-pack=git -c maintenance.auto=false receive-pack",
+            "-q",
+            "origin",
+            TASK_BRANCH,
+        ],
     ):
         subprocess.run(
             cmd, cwd=repo, check=True, capture_output=True, env=env, timeout=BUILD_TIMEOUT_SECS
