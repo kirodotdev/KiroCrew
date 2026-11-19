@@ -1631,7 +1631,10 @@ constant, so it needs no edit.
 somewhere the group does not exist.** `client-py.yml`'s `test`,
 `crew-image-build.yml`'s `build` and `fork-pr-label.yml`'s `label` use
 `runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}`
-rather than `group:`. A fork running its own copy of one of these files on
+rather than `group:`. In `client-py.yml` that expression sits behind
+`matrix.runner ||`, which only the Python 3.9 entry sets, to `ubuntu-24.04`:
+actions/setup-python has no 3.9 build for the ubuntu-26.04 image the label and
+`ubuntu-latest` boot. A fork running its own copy of one of these files on
 `push`, `schedule` or `workflow_dispatch` cannot reach an organization runner
 group; a job asking for a label no runner it can see carries waits out
 GitHub's pending
