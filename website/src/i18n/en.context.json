@@ -1487,6 +1487,11 @@
     "components.canvas.hue": "Accessible name of the slider for the colour's hue (its position around the colour wheel) in the canvas editor's custom colour picker.",
     "components.canvas.swatch_ice": "Name of a very pale blue-green colour in the canvas editor's colour palette, read out and shown as a tooltip; the colour of ice, not frozen water itself.",
     "components.canvas.swatch_red": "Name of the red colour in the canvas editor's colour palette, read out and shown as a tooltip.",
-    "components.canvas.swatch_sky": "Name of a pale sky-blue colour in the canvas editor's colour palette, read out and shown as a tooltip."
+    "components.canvas.swatch_sky": "Name of a pale sky-blue colour in the canvas editor's colour palette, read out and shown as a tooltip.",
+    "components.crewMode.midchat_confirm_title": "Title of the confirm dialog shown when the person turns conductor mode on in a chat that already has messages. Conductor mode is a product feature name kept in English.",
+    "components.crewMode.midchat_confirm_body": "One short line in the warning color in that confirm dialog, under the conductor mode explanation: once turned on, conductor mode cannot be turned off for this chat.",
+    "components.crewMode.midchat_confirm_action": "Confirm button of that dialog: turns conductor mode on for this chat.",
+    "utils.agentSwitchFeedback.crew_mode_locked": "One-sentence notice shown when the person tries to switch the agent of a chat that is in conductor mode (agent picker, /agent command or keyboard shortcut) and the gateway refuses it. {{agent}} is the agent they picked. Nothing changed: the chat stays on its agent.",
+    "components.crewMode.midchat_confirm_dont_show": "Checkbox label in the confirm dialog shown before conductor mode turns on in a chat that has messages. Checked and confirmed, the dialog is skipped on later switches."
   }
 }

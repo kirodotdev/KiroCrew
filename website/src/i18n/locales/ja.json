@@ -10573,6 +10573,10 @@
       "chip_hint_busy": "返信のあとで使えます。",
       "switching_on": "Conductor mode をオンにしています…",
       "switching_off": "Conductor mode をオフにしています…",
+      "midchat_confirm_title": "このチャットで Conductor mode をオンにしますか？",
+      "midchat_confirm_body": "このチャットでは Conductor mode をオフにできません。",
+      "midchat_confirm_action": "Conductor mode をオンにする",
+      "midchat_confirm_dont_show": "この通知を今後表示しない",
       "title": "Conductor mode",
       "tagline_lead": "目標はあなたが決めます。",
       "tagline_strong": "作業はクルーが行います。",
@@ -22956,6 +22960,7 @@
   "utils": {
     "agentSwitchFeedback": {
       "turn_in_flight": "ターンが進行中です — 完了してからもう一度お試しください。",
+      "crew_mode_locked": "このチャットでは Conductor mode をオフにできないため、「{{agent}}」への切り替えはブロックされました。",
       "model_deferred": "{{model}} は次のメッセージから引き継ぎます。この返答は開始時のモデルのまま完了します。",
       "member_needs_new_chat": "{{name}} には専用のメモリがあるため、新しいチャットでのみ使用できます。このチャットのエージェントは変更されません。",
       "open_session": "セッションを開く",

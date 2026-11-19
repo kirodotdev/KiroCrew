@@ -304,7 +304,7 @@ interface ComposerDockViewProps {
   /** A plain chat that already has messages: the same chip sits right of the
    *  permission button and turns this chat into a conductor mode chat, one way. */
   crewModeMidChatOffered?: boolean
-  turnOnCrewMode: () => void
+  turnOnCrewMode: () => void | Promise<boolean>
   /** Set only while Crew Mode is on and no message is sent yet: the composer's
    *  Crew Mode mark is then a toggle that turns it off. */
   turnOffCrewMode?: () => void

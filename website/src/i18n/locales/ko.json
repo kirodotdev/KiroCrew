@@ -10573,6 +10573,10 @@
       "chip_hint_busy": "답변이 끝나면 사용할 수 있습니다.",
       "switching_on": "Conductor mode를 켜는 중…",
       "switching_off": "Conductor mode를 끄는 중…",
+      "midchat_confirm_title": "이 채팅에서 Conductor mode를 켤까요?",
+      "midchat_confirm_body": "이 채팅에서는 Conductor mode를 끌 수 없습니다.",
+      "midchat_confirm_action": "Conductor mode 켜기",
+      "midchat_confirm_dont_show": "이 알림 다시 표시 안 함",
       "title": "Conductor mode",
       "tagline_lead": "목표는 당신이 정하고,",
       "tagline_strong": "일은 크루가 합니다.",
@@ -22956,6 +22960,7 @@
   "utils": {
     "agentSwitchFeedback": {
       "turn_in_flight": "턴이 진행 중입니다 — 완료된 후 다시 시도하세요.",
+      "crew_mode_locked": "이 채팅에서는 Conductor mode를 끌 수 없어서 ‘{{agent}}’(으)로 전환하는 것이 차단되었습니다.",
       "model_deferred": "{{model}}이(가) 다음 메시지부터 이어받습니다. 이 답변은 시작할 때의 모델로 마무리됩니다.",
       "member_needs_new_chat": "{{name}}은(는) 자체 메모리가 있어 새 채팅에서만 시작할 수 있습니다. 이 채팅은 현재 에이전트를 유지합니다.",
       "open_session": "세션 열기",
