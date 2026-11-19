@@ -25,7 +25,6 @@ import pytest
 from cli_commands_coverage_helpers import _FakeResponse, _http_error, _ns
 
 from kiro_crew import cli_commands as cc
-from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.eval.scenario import AssertionType
 from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
@@ -1106,7 +1105,7 @@ class TestTelemetryCli:
         assert exc.value.code == 1
         assert "Unknown telemetry action" in capsys.readouterr().err
 
-    def test_disable_writes_config_and_acks_privacy(
+    def test_disable_writes_both_switches_only(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         path = tmp_path / "config.json"
@@ -1126,8 +1125,7 @@ class TestTelemetryCli:
         assert data["telemetry"]["beacon_enabled"] is False
         # Both switches: "disable" turns usage data off, not only the heartbeat.
         assert data["telemetry"]["enabled"] is False
-        assert data["dashboard"]["privacy_acked"] is True
-        assert "privacy_ack_version" not in data["dashboard"]
+        assert "dashboard" not in data
         # Unrelated sections survive the rewrite.
         assert data["agent"] == {"model": "auto"}
         assert "DISABLED" in capsys.readouterr().out
@@ -1147,7 +1145,7 @@ class TestTelemetryCli:
         written = json.loads(path.read_text())
         assert written["telemetry"]["beacon_enabled"] is True
         assert written["telemetry"]["enabled"] is True
-        assert written["dashboard"]["privacy_ack_version"] == PRIVACY_NOTICE_VERSION
+        assert "dashboard" not in written
 
     def test_enable_refused_when_governance_pins_off(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

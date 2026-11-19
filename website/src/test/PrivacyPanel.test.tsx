@@ -82,6 +82,12 @@ const SHELL_COMMANDS = [
 ] as const
 
 const TOGGLE_LABEL = 'Send anonymous usage heartbeat'
+const HEARTBEAT_LINE = 'One anonymous ping a day, plus a receipt when you install an official app. Off stops both.'
+
+/** The disclosure lives under a collapsed Details section. */
+async function openDetails() {
+  await userEvent.click(await screen.findByRole('button', { name: 'Details' }))
+}
 
 describe('PrivacyPanel', () => {
   beforeEach(() => {
@@ -89,25 +95,49 @@ describe('PrivacyPanel', () => {
     beaconStatus.mockResolvedValue({ ...ON })
     patchConfig.mockReset()
     patchConfig.mockResolvedValue({})
+    vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false } as never)
   })
 
-  it('uses semantic headings for every disclosure section', () => {
+  it('puts the switches first and the disclosure under a collapsed Details section', async () => {
     renderWithProviders(<PrivacyPanel />)
 
     const panel = screen.getByLabelText('Privacy')
-    const headings = within(panel).getAllByRole('heading', { level: 3 })
+    expect(await screen.findByRole('switch', { name: TOGGLE_LABEL })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Record metrics' })).toBeInTheDocument()
+    expect(screen.getByText(HEARTBEAT_LINE)).toBeInTheDocument()
+    const details = screen.getByRole('button', { name: 'Details' })
+    expect(details).toHaveAttribute('aria-expanded', 'false')
+    expect(within(panel).queryAllByRole('heading', { level: 3 })).toEqual([])
 
+    await userEvent.click(details)
+
+    const headings = within(panel).getAllByRole('heading', { level: 3 })
     expect(headings.map(heading => heading.textContent)).toEqual([
       'Anonymous daily heartbeat',
       'Official app install receipts',
       'Never sent',
       'Stays on your device',
-      'Telemetry controls',
+      'Command line',
     ])
   })
 
-  it('discloses exactly the fixed five-field heartbeat payload', () => {
+  it('shows the Kiro telemetry row only on a build that lists that destination', async () => {
+    vi.mocked(api.collectionStatus).mockResolvedValue({
+      enabled: true,
+      otlp_configured: true,
+      otlp_destinations: [{ name: 'kiro-telemetry', source: 'provider', locked: true }],
+    } as never)
     renderWithProviders(<PrivacyPanel />)
+    await openDetails()
+
+    expect(await screen.findByRole('heading', { name: 'Kiro telemetry' })).toBeInTheDocument()
+    expect(screen.getByText(/one-way hash of the installation ID/)).toBeInTheDocument()
+    expect(screen.getByText(/No account, email or user ID is sent/)).toBeInTheDocument()
+  })
+
+  it('discloses exactly the fixed five-field heartbeat payload', async () => {
+    renderWithProviders(<PrivacyPanel />)
+    await openDetails()
 
     const disclosure = screen.getByText(HEARTBEAT_DISCLOSURE)
     // Contract: the heartbeat's fixed payload is a privacy disclosure, so a field
@@ -118,8 +148,9 @@ describe('PrivacyPanel', () => {
     }
   })
 
-  it('discloses the official-app receipt and its privacy boundary', () => {
+  it('discloses the official-app receipt and its privacy boundary', async () => {
     renderWithProviders(<PrivacyPanel />)
+    await openDetails()
 
     const disclosure = screen.getByText(RECEIPT_DISCLOSURE)
     for (const field of RECEIPT_FIELDS) {
@@ -132,38 +163,39 @@ describe('PrivacyPanel', () => {
     ).toBeInTheDocument()
   })
 
-  it('no longer claims to send the four removed fields', () => {
+  it('no longer claims to send the four removed fields', async () => {
     renderWithProviders(<PrivacyPanel />)
+    await openDetails()
 
-    const panel = screen.getByLabelText('Privacy')
     for (const field of REMOVED_FIELDS) {
       // Scoped to the heartbeat disclosure line, not the whole panel: the
       // never-sent copy legitimately NAMES "operating system" as excluded, so a
       // panel-wide absence assertion would contradict the improvement it states.
       expect(screen.getByText(HEARTBEAT_DISCLOSURE)).not.toHaveTextContent(field)
     }
-    expect(panel).toBeInTheDocument()
   })
 
-  it('pins the excluded data and IP-retention disclosure', () => {
+  it('pins the excluded data and IP-retention disclosure', async () => {
     renderWithProviders(<PrivacyPanel />)
+    await openDetails()
 
     expect(screen.getByText(EXCLUSION_DISCLOSURE)).toBeInTheDocument()
   })
 
-  it('shows persistent and labelled cross-platform telemetry controls', () => {
+  it('shows persistent and labelled cross-platform telemetry controls', async () => {
     renderWithProviders(<PrivacyPanel />)
+    await openDetails()
 
-    const controlsHeading = screen.getByRole('heading', { name: 'Telemetry controls' })
-    const controlsCard = controlsHeading.parentElement
-    expect(controlsCard).not.toBeNull()
+    const controlsHeading = screen.getByRole('heading', { name: 'Command line' })
+    const controlsRow = controlsHeading.parentElement
+    expect(controlsRow).not.toBeNull()
 
-    const commands = Array.from(controlsCard!.querySelectorAll('code'))
+    const commands = Array.from(controlsRow!.querySelectorAll('code'))
       .map(command => command.textContent)
     expect(commands).toEqual(CONTROL_COMMANDS)
 
     for (const [label, command] of SHELL_COMMANDS) {
-      const labelElement = within(controlsCard!).getByText(label)
+      const labelElement = within(controlsRow!).getByText(label)
       expect(labelElement.parentElement).toHaveTextContent(command)
     }
   })
@@ -330,19 +362,5 @@ describe('PrivacyPanel', () => {
       await screen.findByText('No heartbeat is being sent right now.'),
     ).toBeInTheDocument()
     expect(screen.queryByText(/privacyDisclosure\./)).not.toBeInTheDocument()
-  })
-
-  it('shows the first-run gate note before the disclosure is acknowledged', async () => {
-    // The gateway withholds the very first heartbeat until the user has seen the
-    // opt-out; the panel says so rather than looking inertly "on but silent".
-    beaconStatus.mockResolvedValue({
-      ...ON,
-      would_send: false,
-      reason: 'the first-run privacy disclosure has not been shown yet',
-      reason_code: 'awaiting_privacy_ack',
-    })
-    renderWithProviders(<PrivacyPanel />)
-
-    expect(await screen.findByText(/Nothing has been sent yet/)).toBeInTheDocument()
   })
 })

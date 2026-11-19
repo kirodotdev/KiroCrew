@@ -175,7 +175,6 @@ class TestReceiptTransport:
             app_version="1.2.3",
             enabled=False,
             official=True,
-            acked=True,
             kind=install_receipt.KIND_FRESH,
         )
         assert calls == []
@@ -195,7 +194,6 @@ class TestReceiptTransport:
             app_version="1.2.3",
             enabled=True,
             official=True,
-            acked=True,
             kind=install_receipt.KIND_FRESH,
         )
         assert calls == []
@@ -210,7 +208,6 @@ class TestReceiptTransport:
             app_version="1.2.3",
             enabled=True,
             official=False,
-            acked=True,
             kind=install_receipt.KIND_FRESH,
         )
         monkeypatch.setattr(
@@ -222,7 +219,6 @@ class TestReceiptTransport:
             app_version="1.2.3",
             enabled=True,
             official=True,
-            acked=True,
             kind=install_receipt.KIND_FRESH,
         )
         assert calls == []
@@ -237,7 +233,6 @@ class TestReceiptTransport:
             app_version="1.2.3",
             enabled=True,
             official=True,
-            acked=True,
             kind=install_receipt.KIND_UPDATE,
         )
         assert len(calls) == 1
@@ -256,7 +251,6 @@ class TestReceiptTransport:
             app_version="1.2.3",
             enabled=True,
             official=True,
-            acked=True,
             kind=install_receipt.KIND_FRESH,
         )
 
@@ -333,7 +327,6 @@ class TestReceiptTransport:
                         beacon_endpoint="https://telemetry.example",
                         beacon_enabled=True,
                     ),
-                    dashboard=MagicMock(privacy_acked=True),
                 )
             ),
         )
@@ -378,7 +371,6 @@ class TestReceiptTransport:
         load_threads: list[int] = []
         loaded = MagicMock(
             telemetry=MagicMock(beacon_endpoint="https://telemetry.example", beacon_enabled=True),
-            dashboard=MagicMock(privacy_acked=True),
         )
 
         def fake_load():

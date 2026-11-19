@@ -162,7 +162,7 @@ are ignored. The admin's security policy names the collector instead, as
 `capabilities.telemetry.otlp_endpoint`, and metrics go there (still only while
 collection is on). With no endpoint in the policy, no metrics leave the machine.
 The LTS build also sends no daily heartbeat, install receipt or
-feedback survey, and does not show the first-run Privacy chapter.
+feedback survey.
 
 #### Collectors a build ships
 
@@ -190,33 +190,27 @@ list to the Kiro telemetry endpoint (`https://telemetry.us-east-1.kiro.dev/v1/me
 next to any collector of your own. It is listed as `kiro-telemetry` in Settings ->
 Privacy and in `kirocrew telemetry status`.
 
-Unlike your own collectors, it exports while recording is on by default: no
-`"enabled": true` has to be written. It waits for one thing first: the privacy
-notice that names it has been shown. That is the dashboard's Privacy chapter at
-notice version 3 or later showing the line that names it (Keep on, or
-`kirocrew telemetry enable`, records `dashboard.kiro_telemetry_ack_version`), or
-the one-line notice that names it, printed on a terminal by a start with no
-dashboard (`gateway --no-dashboard`, `run`, `chat`). A line that goes to a log or
-a pipe does not count, and neither does a notice from before version 3, which
-said metrics stay on this machine.
+Unlike your own collectors, it exports whenever recording is on, by default or
+by choice: no `"enabled": true` has to be written, and nothing waits for a notice
+to be acknowledged. The data points carry a hash of the install id and nothing
+that names you (see below). Settings -> Privacy shows that it is on, and a start
+prints one line saying so, once per notice version.
 
-Because the notice names it, it does not stop the Settings switch or
-`kirocrew telemetry enable` from turning recording on. Only your own collectors
-do that.
+It does not stop the Settings switch or `kirocrew telemetry enable` from turning
+recording on. Only your own collectors do that.
 
 | Host | Sent? |
 |---|---|
-| Recording on (by default or by choice), notice version 3 or later shown | Yes |
-| Recording on, notice version 3 or later not shown yet | No |
-| Off only by a written `"enabled": false` (see below) | No, unless Turn on is chosen |
-| A dashboard gateway nobody opens (its stderr line goes to a log and does not count) | No, until someone clicks Keep on |
+| Recording on (by default or by choice) | Yes |
 | An upgrade that had turned the heartbeat off, `"enabled": false` or a non-bool value, `kirocrew telemetry disable`, `KIROCREW_TELEMETRY=0`, or `DO_NOT_TRACK=1` | No: recording is off |
 | A policy's `otlp_hosts` list that does not permit `telemetry.us-east-1.kiro.dev` | No |
 | LTS build (the policy names the collector, or none) | No: not part of that build's list |
 | CI runner (`CI`, `GITHUB_ACTIONS`, ...) | No: not listed, same rule as the daily heartbeat |
 | A non-default `KIROCREW_HOME` (a dev home, a pod, a worktree preview) | Yes, by the same rules as any other home; the daily heartbeat still skips it |
 
-Builds before recording was on by default wrote `telemetry.enabled: false` into every new config, so a public-build install that is off only because of that written `false` (the heartbeat on, no env pin, no policy, not CI, the default data home) is shown the version 3 notice once, in an off form that names Kiro telemetry and offers Turn on performance metrics or Keep off. Until Turn on is chosen, only the daily heartbeat and official app install receipts are sent and no performance metrics are recorded; Keep off is not asked again. A start with no dashboard prints one line pointing at `kirocrew telemetry enable`, once, on a terminal.
+A written `"enabled": false` stays off, including the one builds before recording
+was on by default wrote into every new config. Kiro Crew does not ask about it
+again; turn recording on in Settings -> Privacy or with `kirocrew telemetry enable`.
 
 Each data point carries `ClientType=kiro-crew` and `machineId`, the same
 SHA-256 of the install id that every request carries as `x-kiro-machineid`

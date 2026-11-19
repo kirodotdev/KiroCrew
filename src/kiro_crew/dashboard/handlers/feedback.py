@@ -150,7 +150,7 @@ def _telemetry_permitted(audit_tool: str = "") -> bool:
 
     The survey egresses to a third party, so it rides the beacon's consent
     ladder rather than introducing a second default-on egress path. Reads the
-    same two config inputs the beacon and ``kirocrew telemetry status`` use.
+    same config input the beacon and ``kirocrew telemetry status`` use.
     Passing a non-empty ``audit_tool`` records the allow/deny verdict in the
     SEL trail. Callers run this off the event loop (``asyncio.to_thread``) since
     it does config-file I/O and writes the audit record.
@@ -158,7 +158,6 @@ def _telemetry_permitted(audit_tool: str = "") -> bool:
     cfg = KiroCrewConfig.load()
     return beacon.telemetry_permitted(
         enabled=cfg.telemetry.beacon_enabled,
-        acked=cfg.dashboard.privacy_acked,
         audit_tool=audit_tool,
     ).ok
 
@@ -257,9 +256,8 @@ async def api_feedback_submit(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     # Egress consent gate: refuse rather than send when telemetry is not
-    # permitted (opted out, governance-pinned, CI, non-default home, or the
-    # privacy disclosure not yet acknowledged). Off the event loop: it reads
-    # config and writes the SEL audit record.
+    # permitted (opted out, governance-pinned, CI or a non-default home). Off
+    # the event loop: it reads config and writes the SEL audit record.
     if not await asyncio.to_thread(_telemetry_permitted, "feedback_submit"):
         return web.json_response({"code": "telemetry_disabled"}, status=403)
 

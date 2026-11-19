@@ -605,8 +605,7 @@ describe('OnboardingFlow — end of the tour', () => {
   })
 
   // Walk 2 → 3 → 4 → 5. Popovers 3-4 advance with "Next"; popover 5 is the last
-  // step of first run and finishes with "Done". Privacy is NOT part of this flow
-  // — it is its own chapter before Customize (see PrivacyChapter.test.tsx).
+  // step of first run and finishes with "Done".
   const advanceToLastPopover = async () => {
     advanceToStep2()
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
@@ -645,13 +644,12 @@ describe('OnboardingFlow — end of the tour', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     await waitFor(() => expect(onComplete).toHaveBeenCalled())
-    // Finishing is NOT a skip — Privacy is already behind the user here.
+    // Finishing is NOT a skip.
     expect(onSkipAll).not.toHaveBeenCalled()
   })
 
-  // Privacy is mandatory, so every early exit has to be distinguishable from a
-  // completion: the host routes a skip back through the Privacy chapter when the
-  // user has not passed it yet (shell/boot/firstRun.tsx).
+  // Every early exit has to be distinguishable from a completion, so a host
+  // can route the two differently (shell/boot/firstRun.tsx).
   describe('abandoning the tour reports a SKIP, not a completion', () => {
     const cases: Array<[string, () => void]> = [
       ['"Skip all" on the Customize modal', () => {
@@ -721,7 +719,7 @@ describe('OnboardingFlow — end of the tour', () => {
     })
   })
 
-  it('does not render the privacy disclosure — it is its own chapter now', async () => {
+  it('does not render the privacy disclosure', async () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     await advanceToLastPopover()
 

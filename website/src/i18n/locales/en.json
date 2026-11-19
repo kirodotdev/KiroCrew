@@ -3398,7 +3398,6 @@
         "typesetting_hints_one": "{{count}} typesetting hint",
         "typesetting_hints_other": "{{count}} typesetting hints"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "Delete {{file}}",
         "delete_file_button": "Delete file",
@@ -6215,7 +6214,6 @@
       "annotations_count_other": "{{count}} notes",
       "browser_live": "Browser — live"
     },
-    "welcomeView": {},
     "widgetFrame": {
       "could_not_render": "Couldn't render this widget",
       "download_as_html": "Download as HTML",
@@ -10434,7 +10432,6 @@
       "unknown_agent": "sub-agent",
       "unknown_model": "unknown"
     },
-    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_one": "Older than {{days}} days — {{count}} session · {{size}}",
       "age_option_other": "Older than {{days}} days — {{count}} sessions · {{size}}",
