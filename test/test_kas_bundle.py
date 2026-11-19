@@ -1043,6 +1043,26 @@ def _fake_arch(tmp_path: Path, log: Path) -> str:
     return _tool(tmp_path / "arch", f'echo "$1" >> "{log}"\nshift\nexec "$@"\n')
 
 
+def _time_out_x86_64_probes(monkeypatch, *, times: int) -> list[int]:
+    """Make the first *times* ``arch -x86_64 ... --version`` probes time out.
+
+    Returns the list that records each x86_64 probe call; every other
+    subprocess call runs for real.
+    """
+    real_run = kas_bundle.subprocess.run
+    calls: list[int] = []
+
+    def run(argv, *args, **kwargs):
+        if "-x86_64" in argv and argv[-1] == "--version":
+            calls.append(len(calls) + 1)
+            if len(calls) <= times:
+                raise kas_bundle.subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(kas_bundle.subprocess, "run", run)
+    return calls
+
+
 class TestUniversalNode:
     def test_one_root_serves_both_architectures(self, tmp_path):
         src = _darwin_source(tmp_path)
@@ -1093,33 +1113,30 @@ class TestUniversalNode:
         src = _darwin_source(tmp_path)
         installed = _darwin_install(src, tmp_path / "kas")
         log = tmp_path / "arch.log"
-        first = tmp_path / "first-x86_64"
-        arch = _tool(
-            tmp_path / "arch",
-            f'echo "$1" >> "{log}"\n'
-            f'if [ "$1" = "-x86_64" ] && [ ! -e "{first}" ]; then : > "{first}"; exec sleep 5; fi\n'
-            'shift\nexec "$@"\n',
-        )
-        monkeypatch.setattr(kas_bundle, "_NODE_PROBE_TIMEOUT_SECS", 1)
+        x86_calls = _time_out_x86_64_probes(monkeypatch, times=1)
         kas_bundle.make_universal_node(
-            _manifest(src), installed, source=str(src), lipo=_fake_lipo(tmp_path), arch=arch
+            _manifest(src),
+            installed,
+            source=str(src),
+            lipo=_fake_lipo(tmp_path),
+            arch=_fake_arch(tmp_path, log),
         )
-        assert sorted(log.read_text().split()) == ["-arm64", "-x86_64", "-x86_64"]
+        assert x86_calls == [1, 2]
+        assert sorted(log.read_text().split()) == ["-arm64", "-x86_64"]
 
     def test_a_slice_probe_that_keeps_timing_out_fails(self, tmp_path, monkeypatch):
         src = _darwin_source(tmp_path)
         installed = _darwin_install(src, tmp_path / "kas")
-        log = tmp_path / "arch.log"
-        arch = _tool(
-            tmp_path / "arch",
-            f'echo "$1" >> "{log}"\nif [ "$1" = "-x86_64" ]; then exec sleep 5; fi\nshift\nexec "$@"\n',
-        )
-        monkeypatch.setattr(kas_bundle, "_NODE_PROBE_TIMEOUT_SECS", 1)
+        x86_calls = _time_out_x86_64_probes(monkeypatch, times=99)
         with pytest.raises(kas_bundle.KasBundleError, match="timed out"):
             kas_bundle.make_universal_node(
-                _manifest(src), installed, source=str(src), lipo=_fake_lipo(tmp_path), arch=arch
+                _manifest(src),
+                installed,
+                source=str(src),
+                lipo=_fake_lipo(tmp_path),
+                arch=_fake_arch(tmp_path, tmp_path / "arch.log"),
             )
-        assert log.read_text().split().count("-x86_64") == 2
+        assert x86_calls == [1, 2]
 
     def test_a_non_mac_install_is_refused(self, source_dir, tmp_path):
         installed = _install(source_dir, tmp_path / "kas")

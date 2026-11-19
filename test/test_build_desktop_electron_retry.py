@@ -63,7 +63,12 @@ def _extract_function(name: str) -> str:
     return m.group(0)
 
 
-def _run(stub_calls: str, harness: str, tmp_path: Path) -> subprocess.CompletedProcess:
+def _run(
+    stub_calls: str,
+    harness: str,
+    tmp_path: Path,
+    functions: tuple[str, ...] = ("run_electron_builder_with_retry",),
+) -> subprocess.CompletedProcess:
     """Run a bash snippet with a stubbed ``_eb_invoke`` and the real retry
     function sourced above it. ``sleep`` is a no-op so the real backoff
     (``attempt * 10`` seconds for the network class) doesn't slow the suite.
@@ -72,8 +77,8 @@ def _run(stub_calls: str, harness: str, tmp_path: Path) -> subprocess.CompletedP
         "set -uo pipefail\n"  # not -e: the harness itself checks $? after the call
         "sleep() { :; }\n"
         f"{stub_calls}\n"
-        f"{_extract_function('run_electron_builder_with_retry')}\n"
-        f"{harness}"
+        + "".join(f"{_extract_function(name)}\n" for name in functions)
+        + f"{harness}"
     )
     return subprocess.run(
         ["bash", "-c", script],
@@ -261,17 +266,12 @@ _eb_release_busy_dmg() {{ grep -c 'Resource busy' "$1" > "{released}"; }}
         hdiutil.chmod(0o755)
         log = tmp_path / "eb.log"
         log.write_text(_DMG_BUSY_LINE + "\n")
-        root = SCRIPT.parent.parent
-        script = (
-            "set -uo pipefail\n"
-            "sleep() { :; }\n"
-            f'ROOT="{root}"\n'
-            f'PATH="{bindir}:$PATH"\n'
-            f"{_extract_function('_eb_release_busy_dmg')}\n"
-            f'_eb_release_busy_dmg "{log}"; echo "EXIT=$?"\n'
-        )
-        proc = subprocess.run(
-            ["bash", "-c", script], capture_output=True, text=True, encoding="utf-8", timeout=30
+        prelude = f'ROOT="{SCRIPT.parent.parent}"\nPATH="{bindir}:$PATH"\n'
+        proc = _run(
+            prelude,
+            f'_eb_release_busy_dmg "{log}"; echo "EXIT=$?"\n',
+            tmp_path,
+            functions=("_eb_release_busy_dmg",),
         )
         assert "EXIT=0" in proc.stdout, proc.stdout + proc.stderr
         assert "detach /dev/disk5" in calls.read_text().splitlines()
