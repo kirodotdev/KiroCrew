@@ -95,21 +95,21 @@ def test_pr_merged_rejects_a_non_positive_or_non_integer_pr(monkeypatch, bad):
         " owner/name",
         "own\u0435r/name",  # a Cyrillic letter that looks like a Latin "e"
         "https://github.com/owner/name",
-        "https://siemens.ghe.com/open/mcp",
-        "siemens.ghe.com:443/open/mcp",
-        "-siemens.ghe.com/open/mcp",
-        "siemens.ghe.com/-open/mcp",
-        "siemens-.ghe.com/open/mcp",
-        "siemens.ghe.com./open/mcp",
-        "siemens..ghe.com/open/mcp",
-        "siemens.ghe.com/open/mcp/extra",
-        "siemens.ghe.com/open/mcp/pull/198",
-        "siemens.ghe.com//open/mcp",
-        "/open/mcp",
-        "user@siemens.ghe.com/open/mcp",
-        "localhost/open/mcp",
-        "siemens.ghe.com/open/mcp --hostname evil.example",
-        "siemens.ghe.com/open/mcp\n",
+        "https://ghe.example.com/owner/name",
+        "ghe.example.com:443/owner/name",
+        "-ghe.example.com/owner/name",
+        "ghe.example.com/-owner/name",
+        "ghe-.example.com/owner/name",
+        "ghe.example.com./owner/name",
+        "ghe..example.com/owner/name",
+        "ghe.example.com/owner/name/extra",
+        "ghe.example.com/owner/name/pull/7",
+        "ghe.example.com//owner/name",
+        "/owner/name",
+        "user@ghe.example.com/owner/name",
+        "localhost/owner/name",
+        "ghe.example.com/owner/name --hostname evil.example",
+        "ghe.example.com/owner/name\n",
         17,
     ],
 )
@@ -125,7 +125,7 @@ def test_pr_merged_rejects_a_repo_that_is_not_owner_slash_name(monkeypatch, bad)
 
 
 @pytest.mark.parametrize(
-    "good", ["owner/name", "open/mcp", "siemens.ghe.com/open/mcp", "github.com/owner/name"]
+    "good", ["owner/name", "my-org/repo.js", "ghe.example.com/owner/name", "github.com/owner/name"]
 )
 def test_pr_merged_passes_owner_name_or_host_owner_name_verbatim(monkeypatch, good):
     """``gh --repo`` takes ``HOST/OWNER/REPO``; without the host it asks github.com,
@@ -138,7 +138,7 @@ def test_pr_merged_passes_owner_name_or_host_owner_name_verbatim(monkeypatch, go
 
 
 @pytest.mark.parametrize(
-    "bad", ["-R", "--hostname=evil.example", "https://siemens.ghe.com/open/mcp", "a/b/c/d", 17]
+    "bad", ["-R", "--hostname=evil.example", "https://ghe.example.com/owner/name", "a/b/c/d", 17]
 )
 def test_pr_checks_rejects_a_given_repo_outside_the_pattern(monkeypatch, bad):
     """``repo`` is optional for ``pr_checks``, but a given one is held to the same
@@ -153,7 +153,7 @@ def test_pr_checks_rejects_a_given_repo_outside_the_pattern(monkeypatch, bad):
 
 def test_pr_checks_and_its_draft_probe_pass_a_host_repo_verbatim(monkeypatch):
     mod = _load()
-    repo = "siemens.ghe.com/open/mcp"
+    repo = "ghe.example.com/owner/name"
     seen = _wire(mod, monkeypatch, [_Proc(mod._GH_PENDING_EXIT, "pending"), _Proc(0, "false\n")])
     verdict, _ = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 42, "repo": repo}})
     assert verdict == "pending"

@@ -34,7 +34,7 @@ Kinds:
                     required here.
 
 ``repo`` is ``owner/name`` for github.com or ``host/owner/name`` for a GitHub
-Enterprise server (``siemens.ghe.com/open/mcp``); it reaches ``gh --repo``
+Enterprise server (``ghe.example.com/owner/name``); it reaches ``gh --repo``
 verbatim. Optional for ``pr_checks``, but validated the same way when given.
     file            a path exists (or, with ``"exists": false``, does not).
     human_approval  never machine-evaluated; always ``pending``.
