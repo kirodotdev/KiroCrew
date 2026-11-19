@@ -13770,7 +13770,18 @@
         "save_title": "Diesen Workflow speichern",
         "save_workflow": "Workflow speichern",
         "saved_as": "Gespeichert als {{command}}",
-        "source_unavailable": "Der Quelltext des abgeschlossenen Workflows konnte nicht geladen werden."
+        "source_unavailable": "Der Quelltext des abgeschlossenen Workflows konnte nicht geladen werden.",
+        "update_apply": "Übernehmen",
+        "update_done": "{{command}} auf Revision {{revision}} aktualisiert",
+        "update_existing": "Vorhandenen aktualisieren…",
+        "update_format_mismatch": "Dieser Lauf und der gespeicherte Workflow haben unterschiedliche Formate, daher kann er keine Revision davon werden.",
+        "update_help": "Füge den exakten Workflow dieses abgeschlossenen Laufs als nächste Revision eines gespeicherten Workflows hinzu. Frühere Revisionen bleiben erhalten.",
+        "update_pick": "Gespeicherten Workflow auswählen",
+        "update_revision": "Revision {{from}} → {{to}}",
+        "update_stale": "Der gespeicherte Workflow oder dieser Lauf hat sich geändert, während der Dialog offen war. Prüfe den neuen Diff und übernimm ihn erneut.",
+        "update_target": "Gespeicherter Workflow",
+        "update_title": "Gespeicherten Workflow aktualisieren",
+        "update_unchanged": "Der Workflow dieses Laufs ist bereits die aktuelle Revision des gespeicherten Workflows."
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Snapshot konnte nicht geladen werden:",

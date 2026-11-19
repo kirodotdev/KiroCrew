@@ -14105,7 +14105,18 @@
         "save_title": "Salvar este fluxo de trabalho",
         "save_workflow": "Salvar fluxo de trabalho",
         "saved_as": "Salvo como {{command}}",
-        "source_unavailable": "Não foi possível carregar o código do fluxo de trabalho concluído."
+        "source_unavailable": "Não foi possível carregar o código do fluxo de trabalho concluído.",
+        "update_apply": "Aplicar",
+        "update_done": "{{command}} atualizado para a revisão {{revision}}",
+        "update_existing": "Atualizar existente…",
+        "update_format_mismatch": "Esta execução e o fluxo de trabalho salvo usam formatos diferentes, então ela não pode virar uma revisão dele.",
+        "update_help": "Adicione o fluxo de trabalho exato desta execução concluída como a próxima revisão de um fluxo de trabalho salvo. As revisões anteriores são mantidas.",
+        "update_pick": "Escolha um fluxo de trabalho salvo",
+        "update_revision": "Revisão {{from}} → {{to}}",
+        "update_stale": "O fluxo de trabalho salvo ou esta execução mudou enquanto a caixa de diálogo estava aberta. Revise o novo diff e aplique de novo.",
+        "update_target": "Fluxo de trabalho salvo",
+        "update_title": "Atualizar um fluxo de trabalho salvo",
+        "update_unchanged": "O fluxo de trabalho desta execução já é a revisão atual do fluxo de trabalho salvo."
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Não foi possível carregar o snapshot:",

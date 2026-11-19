@@ -76,6 +76,28 @@ async def test_update_run_definition_refuses_without_writing(tmp_path) -> None:
     assert library.get(plan["id"])["revision"] == 1
 
 
+async def test_update_run_definition_refuses_a_ref_that_reaches_another_workflow(
+    tmp_path,
+) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    previewed = library.create(source=GOOD_SCRIPT, name="Demo")
+    other = library.create(source=GOOD_SCRIPT, name="Other")
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+    run_id = await _finished_run(svc, EDITED_SCRIPT)
+
+    refused = await svc.update_run_definition(
+        run_id,
+        other["slug"],
+        expected_revision=1,
+        expected_source_sha256=EDITED_SHA,
+        expected_id=previewed["id"],
+    )
+
+    assert refused["conflict"] is True
+    assert library.get(other["id"])["revision"] == 1
+    assert library.get(previewed["id"])["revision"] == 1
+
+
 async def test_update_run_definition_refuses_a_saved_invocation(tmp_path) -> None:
     library = WorkflowDefinitionLibrary(tmp_path)
     saved = library.create(source=GOOD_SCRIPT, name="Demo")

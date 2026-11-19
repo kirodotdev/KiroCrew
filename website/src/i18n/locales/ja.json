@@ -13435,7 +13435,18 @@
         "save_title": "このワークフローを保存",
         "save_workflow": "ワークフローを保存",
         "saved_as": "{{command}} として保存済み",
-        "source_unavailable": "完了したワークフローのソースを読み込めませんでした。"
+        "source_unavailable": "完了したワークフローのソースを読み込めませんでした。",
+        "update_apply": "適用",
+        "update_done": "{{command}} をリビジョン {{revision}} に更新しました",
+        "update_existing": "既存のワークフローを更新…",
+        "update_format_mismatch": "この実行と保存済みワークフローの形式が異なるため、そのリビジョンにはできません。",
+        "update_help": "この完了した実行のワークフローを、保存済みワークフローの次のリビジョンとしてそのまま追加します。以前のリビジョンは残ります。",
+        "update_pick": "保存済みワークフローを選択",
+        "update_revision": "リビジョン {{from}} → {{to}}",
+        "update_stale": "ダイアログを開いている間に、保存済みワークフローまたはこの実行が変更されました。新しい差分を確認してから、もう一度適用してください。",
+        "update_target": "保存済みワークフロー",
+        "update_title": "保存済みワークフローを更新",
+        "update_unchanged": "この実行のワークフローは、すでに保存済みワークフローの現在のリビジョンです。"
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "スナップショットを読み込めませんでした:",

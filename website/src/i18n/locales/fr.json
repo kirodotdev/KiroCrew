@@ -14105,7 +14105,18 @@
         "save_title": "Enregistrer ce workflow",
         "save_workflow": "Enregistrer le workflow",
         "saved_as": "Enregistré sous {{command}}",
-        "source_unavailable": "Impossible de charger la source du workflow terminé."
+        "source_unavailable": "Impossible de charger la source du workflow terminé.",
+        "update_apply": "Appliquer",
+        "update_done": "{{command}} mis à jour vers la révision {{revision}}",
+        "update_existing": "Mettre à jour un existant…",
+        "update_format_mismatch": "Cette exécution et le workflow enregistré n'ont pas le même format, donc elle ne peut pas en devenir une révision.",
+        "update_help": "Ajoute le workflow exact de cette exécution terminée comme prochaine révision d'un workflow enregistré. Les révisions précédentes sont conservées.",
+        "update_pick": "Choisir un workflow enregistré",
+        "update_revision": "Révision {{from}} → {{to}}",
+        "update_stale": "Le workflow enregistré ou cette exécution a changé pendant que la boîte de dialogue était ouverte. Vérifie le nouveau diff, puis applique à nouveau.",
+        "update_target": "Workflow enregistré",
+        "update_title": "Mettre à jour un workflow enregistré",
+        "update_unchanged": "Le workflow de cette exécution est déjà la révision actuelle du workflow enregistré."
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Impossible de charger l'instantané :",

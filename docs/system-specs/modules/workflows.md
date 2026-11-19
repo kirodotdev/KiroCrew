@@ -1347,6 +1347,20 @@ no longer matches it, because a paused TaskRunner plan can be replanned while th
 owner reads the diff. The diff is `workflow_source_diff`, the change card's diff
 without `WORKFLOW_DIFF_MAX`, because it is never stored in a card.
 
+The dashboard control is **Update existing…** beside **Save workflow**, on the chat
+run card and in the Workflows Runs panel (`components/workflows/UpdateFromRunModal.tsx`).
+Its dialog preselects the suggested target, lets the owner pick another saved
+workflow, shows its name, `revision N → N+1` and the diff (drawn by `ScriptDiff`, the change
+card's renderer), and Apply sends back the revision and digest it showed. Each
+option and the Apply request use a ref left out of the record's `shadowed_refs` (a
+record with none is not offered), so Apply waits for the definitions list; Apply
+sends the previewed id as `expected_id`, so a ref renamed away and taken by another
+workflow answers 409 instead of revising it. A 409 `workflow_definition_conflict` or
+`workflow_run_source_changed` reloads the preview, and Apply stays disabled until a
+reload succeeds. While Apply is pending the dialog cannot be dismissed, since its
+failure shows only there. Neither button is offered on a run of a saved workflow, which the
+server refuses as `already_saved`, nor before the run's snapshot has loaded.
+
 Only explicitly saved definitions participate in local authoring matches.
 `search(intent)` uses deterministic local lexical ranking: a query word matches a
 saved word when they are equal, or when one is a prefix of the other and both are
@@ -1767,7 +1781,7 @@ launch a script under a trusted chat's identity.
 | `GET /api/workflows/runs/{run_id}` | | full snapshot incl. `events`; adds `plan` under `?plan=1` when one is readable (404 if the run is absent) |
 | `POST /api/workflows/runs/{run_id}/promote` | `{name?, description?, slug?}` | save exact source from a finished run or paused TaskRunner plan; 404 when unknown, 409 when not promotable or only a restored redacted source remains |
 | `GET /api/workflows/runs/{run_id}/update-definition` | `?workflow=` id or slug, optional | `{target, diff, unchanged, format_mismatch, run_source_sha256}`: the definition an update would revise (`id`, `slug`, `name`, `revision`, `format` only), the uncapped diff from its current source to the run's (empty when they are equal or their formats differ), and the digest the POST sends back; without `workflow` the target is suggested and may be `null`; refused as the POST is |
-| `POST /api/workflows/runs/{run_id}/update-definition` | `{workflow, expected_revision, expected_source_sha256}` | append the run's exact source as the definition's next revision; 404 `workflow_run_not_found` / `workflow_definition_not_found`, 409 for a saved invocation, an unfinished run, a restored redacted source, a run source that changed since the preview or a stale revision, 400 on an unchanged source, a format mismatch or an invalid script |
+| `POST /api/workflows/runs/{run_id}/update-definition` | `{workflow, expected_revision, expected_source_sha256, expected_id?}` | append the run's exact source as the definition's next revision (with `expected_id`, a `workflow` that now resolves to another id is a 409 `workflow_definition_conflict`); 404 `workflow_run_not_found` / `workflow_definition_not_found`, 409 for a saved invocation, an unfinished run, a restored redacted source, a run source that changed since the preview or a stale revision, 400 on an unchanged source, a format mismatch or an invalid script |
 | `POST /api/workflows/runs/{run_id}/cancel` | | `{run_id, cancelled}` |
 | `POST /api/workflows/runs/{run_id}/rerun` | `{from_index?, source?}` | `{run_id, from, replayed_before, edited}`; 400 on an invalid edited script, 404 on an unknown run |
 | `GET /api/workflows/definitions?q=` | optional local match query | `{definitions: [...]}` |

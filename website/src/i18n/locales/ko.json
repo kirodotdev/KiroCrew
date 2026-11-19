@@ -13435,7 +13435,18 @@
         "save_title": "이 워크플로 저장",
         "save_workflow": "워크플로 저장",
         "saved_as": "{{command}}(으)로 저장됨",
-        "source_unavailable": "완료된 워크플로 소스를 불러올 수 없습니다."
+        "source_unavailable": "완료된 워크플로 소스를 불러올 수 없습니다.",
+        "update_apply": "적용",
+        "update_done": "{{command}}을(를) 리비전 {{revision}}(으)로 업데이트함",
+        "update_existing": "기존 항목 업데이트…",
+        "update_format_mismatch": "이 실행과 저장된 워크플로의 형식이 달라 해당 워크플로의 리비전이 될 수 없습니다.",
+        "update_help": "완료된 이 실행의 워크플로를 그대로 저장된 워크플로의 다음 리비전으로 추가합니다. 이전 리비전은 유지됩니다.",
+        "update_pick": "저장된 워크플로 선택",
+        "update_revision": "리비전 {{from}} → {{to}}",
+        "update_stale": "대화 상자가 열려 있는 동안 저장된 워크플로 또는 이 실행이 변경되었습니다. 새 diff를 검토한 뒤 다시 적용하세요.",
+        "update_target": "저장된 워크플로",
+        "update_title": "저장된 워크플로 업데이트",
+        "update_unchanged": "이 실행의 워크플로는 이미 저장된 워크플로의 현재 리비전입니다."
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "스냅샷을 불러올 수 없습니다:",

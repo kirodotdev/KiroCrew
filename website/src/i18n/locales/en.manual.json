@@ -5821,7 +5821,18 @@
         "save_title": "Save this workflow",
         "save_workflow": "Save workflow",
         "saved_as": "Saved as {{command}}",
-        "source_unavailable": "The completed workflow source could not be loaded."
+        "source_unavailable": "The completed workflow source could not be loaded.",
+        "update_apply": "Apply",
+        "update_done": "Updated {{command}} to revision {{revision}}",
+        "update_existing": "Update existing…",
+        "update_format_mismatch": "This run and the saved workflow use different formats, so it cannot become a revision of it.",
+        "update_help": "Add the exact workflow from this completed run as the next revision of a saved workflow. Earlier revisions are kept.",
+        "update_pick": "Choose a saved workflow",
+        "update_revision": "Revision {{from}} → {{to}}",
+        "update_stale": "The saved workflow or this run changed while the dialog was open. Review the new diff, then apply again.",
+        "update_target": "Saved workflow",
+        "update_title": "Update a saved workflow",
+        "update_unchanged": "This run's workflow is already the saved workflow's current revision."
       },
       "activityViewer": {
         "approval_needed": "Approval Needed",
