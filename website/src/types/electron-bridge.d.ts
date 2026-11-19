@@ -101,7 +101,7 @@ declare global {
     getNaturalScrolling?: () => unknown
     /** `menuBarOverlap` is false when macOS placed the fullscreen window below
      *  the menu bar (a notched display), so no band needs keeping clear. */
-    onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean) => void) => () => void
+    onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean, pageRaised: boolean) => void) => () => void
     setBadgeCount: (count: number) => void
     reportMicDenied: () => void
     reportMemorySample: (sample: ElectronMemorySample) => void

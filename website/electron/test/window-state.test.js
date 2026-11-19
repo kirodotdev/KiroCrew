@@ -92,6 +92,36 @@ test("fullScreen is coerced to a boolean", () => {
   assert.strictEqual(sanitizeWindowState({ width: 1000, height: 700 }, OPTS).fullScreen, false);
 });
 
+test("restoreFullScreen:false drops a saved fullscreen and keeps the normal bounds", () => {
+  const saved = { x: 10, y: 10, width: 1000, height: 700, fullScreen: true };
+  const s = sanitizeWindowState(saved, { ...OPTS, restoreFullScreen: false });
+  assert.strictEqual(s.fullScreen, false);
+  assert.strictEqual(s.width, 1000);
+  assert.strictEqual(s.height, 700);
+  assert.strictEqual(s.x, 10);
+  assert.strictEqual(s.y, 10);
+});
+
+test("restoreFullScreen:true still restores a saved fullscreen", () => {
+  const saved = { width: 1000, height: 700, fullScreen: true };
+  assert.strictEqual(sanitizeWindowState(saved, { ...OPTS, restoreFullScreen: true }).fullScreen, true);
+});
+
+test("the main window restores a saved fullscreen on macOS only", () => {
+  // Windows and Linux fullscreen has no caption buttons and no menu bar, so a
+  // relaunch into it leaves F11 as the only, unseen, way out.
+  const source = require("node:fs")
+    .readFileSync(require("node:path").join(__dirname, "..", "window-lifecycle.js"), "utf8")
+    .replace(/\r\n/g, "\n");
+  const createWindow = source.match(/function createWindow\(\) \{([\s\S]*?)\n  \}\n/);
+  assert.ok(createWindow, "createWindow missing");
+  assert.match(
+    createWindow[1],
+    /sanitizeWindowState\([\s\S]*?restoreFullScreen:\s*IS_MAC,[\s\S]*?\}\);/,
+    "createWindow must pass restoreFullScreen: IS_MAC to sanitizeWindowState",
+  );
+});
+
 // ── sanitizeWindowState: Keep on Top carry-through ──
 
 test("alwaysOnTop flag round-trips with bounds intact", () => {

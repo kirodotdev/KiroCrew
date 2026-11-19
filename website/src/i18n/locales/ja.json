@@ -311,6 +311,7 @@
     "open_command_bar": "Command Bar を開く",
     "focus_mode": "フォーカスモード",
     "focus_mode_on_announce": "フォーカスモードがオンになりました。{{chord}} を押すとオフになります。",
+    "fullscreen_exit_hint": "全画面表示になりました。F11 を押すと全画面表示を終了します。",
     "focus_mode_title": "フォーカスモード · Alt+Shift+M",
     "focus_mode_title_mac": "フォーカスモード · ⌥⇧M",
     "connect_your_phone": "スマホを接続",
