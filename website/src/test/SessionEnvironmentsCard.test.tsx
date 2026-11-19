@@ -27,6 +27,7 @@ interface Section {
   boxd_profiles?: BoxdRow[]
   default_profile?: string
   stop_on_shutdown?: boolean
+  copy_skills?: boolean
   kiro_cloud_profiles?: { id: string; name: string; repositories: string[] }[]
 }
 let stored: { session_environments?: Section }
@@ -648,6 +649,19 @@ describe('Coder setup and saved profile management', () => {
     fireEvent.click(save())
     await waitFor(() => expect(writes).toHaveLength(1))
     expect((writes[0] as { value: Section }).value).toMatchObject({ stop_on_shutdown: false })
+  })
+
+  it('says skills are copied to the workspace, and turns that off', async () => {
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [], copy_skills: true } as Section }
+    await mounted()
+    const copy = () => screen.getByRole('switch', { name: 'Copy skills to the workspace' })
+    expect(copy()).toBeChecked()
+    expect(screen.getByText(/a read-only copy of the skills in Crew’s skill folders goes into its workspace/)).toBeInTheDocument()
+    expect(screen.getByText(/Off: skill scripts can’t run in the workspace/)).toBeInTheDocument()
+    fireEvent.click(copy())
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value).toMatchObject({ copy_skills: false })
   })
 })
 

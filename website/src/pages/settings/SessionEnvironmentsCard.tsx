@@ -76,6 +76,8 @@ interface EnvironmentSettings {
   default_profile?: string
   /** Stop every remote environment when the gateway shuts down. Older gateways omit it. */
   stop_on_shutdown?: boolean
+  /** Copy each remote session's skills into its workspace. Older gateways omit it. */
+  copy_skills?: boolean
 }
 // Symbols stay local to the editor: JSON configuration writes cannot include them.
 const PROFILE_ROW_ID = Symbol('profile-row-id')
@@ -1269,7 +1271,7 @@ export function SessionEnvironmentsCard() {
       {/* Global: these apply to every profile. They follow the numbered
         * steps, which a first setup walks in order. Older gateways omit
         * either key, and then its control stays hidden. */}
-      {(config.default_profile !== undefined || config.stop_on_shutdown !== undefined) && (() => {
+      {(config.default_profile !== undefined || config.stop_on_shutdown !== undefined || config.copy_skills !== undefined) && (() => {
         const all = [...config.profiles, ...spritesProfiles, ...boxdProfiles, ...cloudProfiles].filter(p => p.id)
         const defaultOn = !!config.default_profile
         return (
@@ -1320,6 +1322,13 @@ export function SessionEnvironmentsCard() {
                   </ul>
                 </div>
               })()}
+              {config.copy_skills !== undefined && (
+                <SettingsToggle configKey="session_environments.copy_skills"
+                  label={t('sessionEnvironments.copySkills')}
+                  description={t('sessionEnvironments.copySkillsHint')}
+                  checked={!!config.copy_skills}
+                  onChange={on => change({ ...config, copy_skills: on })} />
+              )}
             </fieldset>
           </section>
         )

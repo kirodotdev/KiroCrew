@@ -27,6 +27,7 @@ _DEFAULTS = {
     "kiro_cloud_profiles": [],
     "default_profile": "",
     "stop_on_shutdown": True,
+    "copy_skills": True,
 }
 
 
@@ -169,6 +170,16 @@ class TestSection:
         with pytest.raises(se.SessionEnvironmentsError):
             se.validate_session_environments([])
 
+    def test_copy_skills_is_a_boolean_and_a_bad_value_copies_nothing(self):
+        good = {"coder_url": "", "profiles": []}
+        assert (
+            se.validate_session_environments({**good, "copy_skills": False})["copy_skills"] is False
+        )
+        with pytest.raises(se.SessionEnvironmentsError, match="copy_skills"):
+            se.validate_session_environments({**good, "copy_skills": "yes"})
+        assert se.load_copy_skills({}) is True
+        assert se.load_copy_skills({"copy_skills": "yes"}) is False
+
 
 class TestLoader:
     def test_absent_section_defaults(self, config_file):
@@ -190,6 +201,7 @@ class TestLoader:
             "kiro_cloud_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
+            "copy_skills": False,
         }
         _write_section(config_file, section)
         cfg = KiroCrewConfig.load()

@@ -363,6 +363,67 @@ describe('SessionEnvironmentChip', () => {
     expect(card).not.toHaveTextContent('Memory is low.')
   })
 
+  it('says the skills were copied into the workspace, where, and what was left out', async () => {
+    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue({ ...envResponse('dev'), locked: true })
+    const root = '/srv/guest/.kirocrew-worker/skills/abc'
+    const health = vi.spyOn(api, 'chatSlotEnvironmentHealth').mockResolvedValue({
+      state: 'running',
+      skills: {
+        state: 'copied', root, count: 12, python: '3.9.18', gateway_python: '3.13', incompatible: 0, skipped_count: 2,
+        outside: [{ path: '/srv/poetry-auth', reason: 'outside' }, { path: '/home/u/tools/lint', reason: 'outside' }],
+        outside_count: 2,
+        dropped: [{ path: '/home/u/.kiro/crew/skills/db', reason: 'config' }],
+        dropped_count: 1,
+      },
+    })
+    const u = userEvent.setup()
+    wrap(<SessionEnvironmentChip slot="chat-1" />)
+    await u.hover(await screen.findByTestId('composer-environment-chip'))
+    const row = within(await screen.findByTestId('environment-skills'))
+    expect(row.getByText('Copied: 12')).toBeInTheDocument()
+    expect(row.getByText(new RegExp(`Read-only copy at ${root}`))).toBeInTheDocument()
+    expect(row.getByText('This workspace’s python3 is 3.9.18, older than the Python 3.13 on this computer.')).toBeInTheDocument()
+    expect(row.getByText(/Files left out .*: 2/)).toBeInTheDocument()
+    // Each skill outside Crew's skill folders is named, with the plain reason.
+    expect(row.getByTestId('environment-skills-outside')).toHaveTextContent(
+      "Outside Crew's skill folders, not copied to remote workspaces (2): poetry-auth, lint",
+    )
+    expect(row.getByTestId('environment-skills-secret')).toHaveTextContent(
+      'Skipped, a file looks like it holds a password or credential (1): db',
+    )
+    expect(row.queryByText(/don’t compile/)).not.toBeInTheDocument()
+
+    // The card states how many copied scripts the workspace's python3 cannot compile.
+    health.mockResolvedValue({
+      state: 'running',
+      skills: { state: 'copied', root, count: 12, python: '3.9.18', gateway_python: '3.13', incompatible: 3, skipped_count: 0 },
+    })
+    cleanup()
+    wrap(<SessionEnvironmentChip slot="chat-1" />)
+    await u.hover(await screen.findByTestId('composer-environment-chip'))
+    const broken = within(await screen.findByTestId('environment-skills'))
+    expect(broken.getByRole('alert')).toHaveTextContent('Copied skill scripts that don’t compile on python3 3.9.18: 3')
+    expect(broken.getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+
+    health.mockResolvedValue({ state: 'running', skills: { state: 'off' } })
+    cleanup()
+    wrap(<SessionEnvironmentChip slot="chat-1" />)
+    await u.hover(await screen.findByTestId('composer-environment-chip'))
+    expect(within(await screen.findByTestId('environment-skills')).getByText('Not copied (off in Settings)')).toBeInTheDocument()
+
+    // A failed copy is an error notice with the agent hand-off, not a status row.
+    health.mockResolvedValue({ state: 'running', skills: { state: 'failed' } })
+    cleanup()
+    wrap(<SessionEnvironmentChip slot="chat-1" />)
+    await u.hover(await screen.findByTestId('composer-environment-chip'))
+    const failed = within(await screen.findByTestId('environment-skills'))
+    // The row names skills, so the notice cannot be read as about anything else.
+    expect(failed.getByText('Skills')).toBeInTheDocument()
+    expect(failed.getByText('Copy failed')).toBeInTheDocument()
+    expect(failed.getByRole('alert')).toHaveTextContent('Skills weren’t copied; retried when this chat next starts')
+    expect(failed.getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+  })
+
   it('advises on low memory and colours only a warning meter', async () => {
     vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue({ ...envResponse('dev'), locked: true })
     vi.spyOn(api, 'chatSlotEnvironmentHealth').mockResolvedValue({

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Activity, Box, Cpu, FolderOpen, HardDrive, MemoryStick, Server, Timer } from 'lucide-react'
+import { Activity, BookOpen, Box, Cpu, FolderOpen, HardDrive, MemoryStick, Server, Timer } from 'lucide-react'
 import { api, type RemoteEnvironmentHealth } from '../api/client'
 import { fmtBytes, fmtDuration, fmtNumber, fmtPercent } from '../i18n/format'
 import ErrorNotice from './ErrorNotice'
@@ -56,6 +56,11 @@ function stateLabel(t: (k: string) => string, state: RemoteEnvironmentHealth['st
   }
 }
 
+/** Each left-out skill by its folder name, so the person can see which. */
+function skillNames(items: { path: string }[] | undefined): string {
+  return (items ?? []).map((s) => s.path.split(/[\\/]/).filter(Boolean).pop() ?? s.path).join(', ')
+}
+
 function uptime(seconds: number): string {
   const d = Math.floor(seconds / 86400)
   const h = Math.floor((seconds % 86400) / 3600)
@@ -87,6 +92,7 @@ export default function EnvironmentHealthCard({ slot, name, icon }: {
   const mem = stats?.memory
   const disk = stats?.disk
   const memUsed = mem ? 1 - mem.available_bytes / mem.total_bytes : 0
+  const skills = data?.skills
   const state = data?.state
   const dot = state === 'running' ? 'bg-ok' : state === 'stopped' || state === 'not_created' ? 'bg-muted' : 'bg-danger'
 
@@ -192,6 +198,74 @@ export default function EnvironmentHealthCard({ slot, name, icon }: {
                 <Row icon={<Timer className="lucide-inline" aria-hidden />} label={t('sessionEnvironments.health.uptime')} value={uptime(stats.uptime_s)} />
               )}
             </>
+          )}
+          {skills?.state === 'failed' && (
+            <div className="grid gap-1 border-t border-border pt-2" data-testid="environment-skills">
+              {/* The row names what failed, so the notice below reads as about skills. */}
+              <Row
+                icon={<BookOpen className="lucide-inline" aria-hidden />}
+                label={t('sessionEnvironments.health.skills')}
+                value={t('sessionEnvironments.health.skillsFailedValue')}
+              />
+              <ErrorNotice
+                variant="inline"
+                message={t('sessionEnvironments.health.skillsFailed')}
+                askAgent
+              />
+            </div>
+          )}
+          {skills && skills.state !== 'failed' && (
+            // Says plainly that skill files were copied onto this machine, and
+            // where, so nothing lands there unannounced (Settings turns it off).
+            <div className="grid gap-1 border-t border-border pt-2" data-testid="environment-skills">
+              <Row
+                icon={<BookOpen className="lucide-inline" aria-hidden />}
+                label={t('sessionEnvironments.health.skills')}
+                value={skills.state === 'copied'
+                  ? t('sessionEnvironments.health.skillsCopied', { n: fmtNumber(skills.count ?? 0) })
+                  : t('sessionEnvironments.health.skillsOff')}
+              />
+              {skills.state === 'copied' && skills.root && (
+                <p className="m-0 text-[11px] leading-snug text-muted">
+                  {t('sessionEnvironments.health.skillsHint', { root: skills.root })}
+                </p>
+              )}
+              {skills.gateway_python && skills.python && (
+                <p className="m-0 text-[11px] leading-snug text-warn">
+                  {t('sessionEnvironments.health.skillsOldPython', { python: skills.python, gateway: skills.gateway_python })}
+                </p>
+              )}
+              {!!skills.incompatible && skills.python && (
+                // Scripts that cannot run there are an error the agent can act on.
+                <ErrorNotice
+                  variant="inline"
+                  message={t('sessionEnvironments.health.skillsIncompatible', { n: fmtNumber(skills.incompatible), python: skills.python })}
+                  askAgent
+                />
+              )}
+              {!!skills.skipped_count && (
+                <p className="m-0 text-[11px] leading-snug text-muted">
+                  {t('sessionEnvironments.health.skillsLeftOut', { n: fmtNumber(skills.skipped_count) })}
+                </p>
+              )}
+              {!!skills.outside_count && (
+                // Each skill left out whole, by folder name, so the person can see which.
+                <p className="m-0 text-[11px] leading-snug text-muted" data-testid="environment-skills-outside">
+                  {t('sessionEnvironments.health.skillsOutside', {
+                    n: fmtNumber(skills.outside_count),
+                    names: skillNames(skills.outside),
+                  })}
+                </p>
+              )}
+              {!!skills.dropped_count && (
+                <p className="m-0 text-[11px] leading-snug text-muted" data-testid="environment-skills-secret">
+                  {t('sessionEnvironments.health.skillsSecret', {
+                    n: fmtNumber(skills.dropped_count),
+                    names: skillNames(skills.dropped),
+                  })}
+                </p>
+              )}
+            </div>
           )}
           {data.state === 'stopped' && (
             <p className="m-0 text-muted leading-snug">{t('sessionEnvironments.health.stoppedHint')}</p>
