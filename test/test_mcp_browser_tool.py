@@ -294,6 +294,18 @@ def test_not_installed_tells_the_user_where_to_install(monkeypatch: pytest.Monke
     assert "playwright" not in out.lower()
 
 
+def test_a_repair_under_way_reaches_the_agent_as_a_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    detail = "the browser engine is being reinstalled after an update; try again in a minute"
+    monkeypatch.setattr(
+        mod,
+        "_post_command",
+        _capture_post([], 200, {"ok": False, "code": "browser_repairing", "error": detail}),
+    )
+    out = mod.browser("browser", {"op": "snapshot"})
+    assert out != mod._NOT_INSTALLED_TEXT
+    assert "try again in a minute" in out
+
+
 class _Clock:
     """``mcp_core.time`` stand-in: monotonic advances only when the test says so."""
 
