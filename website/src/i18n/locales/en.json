@@ -11740,6 +11740,7 @@
         "keeps_running": "Keeps running if you leave this page.",
         "launch": "Launch",
         "launch_another": "Launch another crew",
+        "launch_cancelled": "Cancelled",
         "launch_done": "Done — your new crew is ready and now appears in My Crews.",
         "launch_done_unsigned": "The crew is ready and appears in My Crews, but Kiro is not signed in on it yet. Finish the sign-in above.",
         "launch_failed_title": "Launch failed",

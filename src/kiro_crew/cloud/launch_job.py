@@ -523,12 +523,28 @@ class LaunchJobStore:
         state honest — the stack itself may well have finished in AWS, so the
         message points at the crew list rather than claiming nothing happened.
 
+        A cancelled job whose provision step is still ``active`` lost its rollback
+        to a restart, so that step is failed with a "may still be billing" error.
+
         Call once per process, after the store is constructed. Returns the ids
         reaped, for logging.
         """
         reaped: List[str] = []
         for job in self.list():
-            if job.terminal or job.id in self._owned:
+            if job.id in self._owned:
+                continue
+            if job.status == CANCELLED and job.step(STEP_PROVISION).state == STEP_ACTIVE:
+                job.step(STEP_PROVISION).state = STEP_FAILED
+                prior = f"{job.error} " if job.error else ""
+                job.error = (
+                    f"{prior}Interrupted — Kiro Crew restarted while removing the "
+                    f"{_resource_noun(job)} {job.tag}. Check your crews — it may still "
+                    "be running and billing."
+                )
+                self.save(job)
+                reaped.append(job.id)
+                continue
+            if job.terminal:
                 continue
             if job.step(STEP_CONNECT).state == STEP_DONE:
                 # Only a sign-in RETRY (:func:`run_signin_retry`) is non-terminal
@@ -879,11 +895,14 @@ def _rollback_cancelled_stack(
 
     Ack, then confirm: the cancelled state is saved BEFORE the delete is awaited,
     and "removed" is written only once AWS confirms, so a delete that later reaches
-    DELETE_FAILED is never reported as "Removed".
+    DELETE_FAILED is never reported as "Removed". The provision step stays
+    ``active`` while the delete runs, so a reader of the saved job can tell the
+    removal is still going; it ends ``done`` on a confirmed delete, else ``failed``.
 
     Best-effort and never raises: this runs while unwinding a cancellation.
     """
     step = job.step(STEP_PROVISION)
+    step.state = STEP_ACTIVE
     step.detail = f"Removing {job.tag}…"
     store.save(job)
     # Anything already recorded (e.g. an unconfirmed abort of the remote login)
@@ -892,6 +911,7 @@ def _rollback_cancelled_stack(
     try:
         confirmed = engine.teardown(tag=job.tag, profile=job.profile, region=job.region)
     except Exception as exc:  # noqa: BLE001 - reported on the job, never propagated
+        step.state = STEP_FAILED
         job.error = (
             f"{prior}Cancelled, but the {_resource_noun(job)} {job.tag} could not be removed "
             f"automatically ({str(exc)[:200]}). Delete it from your crews — or with "
@@ -900,6 +920,7 @@ def _rollback_cancelled_stack(
         logger.warning("Could not roll back stack %s after cancellation: %s", job.tag, exc)
         return
     if confirmed:
+        step.state = STEP_DONE
         step.detail = f"Removed {job.tag} after cancellation."
         if job.error == ABORT_UNCONFIRMED_NOTE:
             # The note warns that a login left polling could still sign the crew
@@ -908,6 +929,7 @@ def _rollback_cancelled_stack(
             # to inspect a machine that is gone.
             job.error = ""
         return
+    step.state = STEP_FAILED
     job.error = (
         f"{prior}Cancelled, and the delete of {_resource_noun(job)} {job.tag} was requested but "
         "did NOT confirm (it may be DELETE_FAILED). Check your crews — it may still be "

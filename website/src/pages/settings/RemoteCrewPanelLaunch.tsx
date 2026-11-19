@@ -32,7 +32,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
 import { fmtCurrency } from '../../i18n/format'
 import {
-  isTerminal, isRegistered, needsSignin, connectWaiting, isSsoLaunch, cancelCopy, type SizeTier,
+  isTerminal, isRemoving, isRegistered, needsSignin, connectWaiting, isSsoLaunch, cancelCopy, type SizeTier,
   tierLabel, tierWhy, gatewayIsDown, failureSentence, type SigninNotice, HOURS_PER_MONTH, SIZE_FLAG,
 } from './remoteCrewPanelModel'
 
@@ -740,6 +740,8 @@ export function LaunchProgressCard({
           ? unsigned
             ? <Badge variant="warn" title={i18nT('pages.settings.remoteCrewPanel.needs_sign_in_hint')}><KeyRound className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.needs_sign_in')}</Badge>
             : <Badge variant="ok">{i18nT('pages.settings.instancesPanel.connect')}</Badge>
+          : job.status === 'cancelled'
+            ? <Badge variant="muted">{i18nT('pages.settings.remoteCrewPanel.launch_cancelled')}</Badge>
           : job.status === 'failed'
             ? <Badge variant="err">{i18nT('pages.settings.remoteCrewPanel.launch_failed_title')}</Badge>
             // "Launching…" under a card whose whole body is asking the reader to
@@ -829,15 +831,18 @@ export function LaunchProgressCard({
       {/* No hand-off: this card sits in the setup flow whose form fields
           (name, host, size) are still live — navigating away discards them. */}
       {job.error ? <ErrorNotice message={job.error} className="mt-3" /> : null}
-      <p className="mt-3 text-[12px] text-muted">
-        {job.status === 'done'
-          ? unsigned
-            // "your new instance is ready" under a Needs sign-in badge is the
-            // exact claim this whole card exists to stop making.
-            ? i18nT('pages.settings.remoteCrewPanel.launch_done_unsigned')
-            : i18nT('pages.settings.remoteCrewPanel.launch_done')
-          : i18nT('pages.settings.remoteCrewPanel.runs_on_gateway')}
-      </p>
+      {/* A cancelled launch has nothing left to run once its removal ends. */}
+      {(job.status !== 'cancelled' || isRemoving(job)) && (
+        <p className="mt-3 text-[12px] text-muted">
+          {job.status === 'done'
+            ? unsigned
+              // "your new instance is ready" under a Needs sign-in badge is the
+              // exact claim this whole card exists to stop making.
+              ? i18nT('pages.settings.remoteCrewPanel.launch_done_unsigned')
+              : i18nT('pages.settings.remoteCrewPanel.launch_done')
+            : i18nT('pages.settings.remoteCrewPanel.runs_on_gateway')}
+        </p>
+      )}
     </Card>
   )
 }

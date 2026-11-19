@@ -21803,6 +21803,7 @@
         "keeps_running": "Läuft weiter, wenn du diese Seite verlässt.",
         "launch": "Starten",
         "launch_another": "Weitere Crew starten",
+        "launch_cancelled": "Abgebrochen",
         "launch_done": "Fertig — deine neue Crew ist bereit und erscheint jetzt unter „Meine Crews“.",
         "launch_done_unsigned": "Die Crew ist bereit und erscheint unter „Meine Crews“, aber Kiro ist darauf noch nicht angemeldet. Schließ die Anmeldung oben ab.",
         "launch_failed_title": "Start fehlgeschlagen",

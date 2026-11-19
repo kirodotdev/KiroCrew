@@ -21257,6 +21257,7 @@
         "keeps_running": "이 페이지를 떠나도 계속 실행됩니다.",
         "launch": "시작",
         "launch_another": "크루 하나 더 시작",
+        "launch_cancelled": "취소됨",
         "launch_done": "완료 — 새 크루가 준비되어 이제 내 Crew에 표시됩니다.",
         "launch_done_unsigned": "크루가 준비되어 내 Crew에 표시되지만, 아직 Kiro에 로그인되어 있지 않습니다. 위에서 로그인을 마치세요.",
         "launch_failed_title": "시작하지 못했습니다",

@@ -21257,6 +21257,7 @@
         "keeps_running": "このページを離れても動作し続けます。",
         "launch": "起動",
         "launch_another": "別のクルーを起動",
+        "launch_cancelled": "キャンセル済み",
         "launch_done": "完了 — 新しいクルーの準備ができ、「自分の Crew」に表示されます。",
         "launch_done_unsigned": "クルーは準備でき、「自分の Crew」に表示されていますが、まだ Kiro にサインインしていません。上のサインインを完了してください。",
         "launch_failed_title": "起動に失敗しました",
