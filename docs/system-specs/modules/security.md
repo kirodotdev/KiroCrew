@@ -1287,8 +1287,17 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   the raw text that preceded it (`compat.look_behind`), so the stream yields the
   batch result (`test_stream_table_parity.py`). A unit still open whose start lies
   in that already-sent text (a label streamed before its value) holds the window
-  from its first character (`engine.scan` clamps it to `origin`). The fixed tail hold ends at the last
-  blank, and `StreamRedactor.release_at_boundary()` skips it: the dashboard turn
+  from its first character (`engine.scan` clamps it to `origin`).
+  The fixed tail hold ends at the last
+  word, and a word ends at a blank or at a non-ASCII character that no reader folds
+  onto ASCII (`compat.ends_word`; `ſ`, the Kelvin sign or `ß` fold onto letters and
+  stay inside the word): every anchor and credential is ASCII, and unspaced Chinese
+  or Japanese prose would otherwise be held whole until its next blank. The stream
+  snaps the hold back to the start of that word (`compat.word_start`) and holds a
+  hit the cut would end exactly at while more text follows it (its closing quote
+  goes out with it); `text_redaction._outside_batch_spans` holds such a span too,
+  reading the buffer after the text already sent, and
+  `StreamRedactor.release_at_boundary()` skips it: the dashboard turn
   calls it at a tool call or prompt and Slack at a tool card, a `wait` and the
   turn's end. `display_battery.RULE_SOURCES` lists every `redaction_structured/`
   file and `pass_compose.py`, so a table change gives stored verdicts a new version.

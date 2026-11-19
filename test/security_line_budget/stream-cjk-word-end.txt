@@ -1,0 +1,2 @@
++7
+The live stream redactor ends a word at a non-ASCII character so unspaced Chinese and Japanese text streams as it arrives. text_redaction._outside_batch_spans now reads the buffer after the text already sent and holds a span the cut would end exactly at, so a quoted value ending in such a character keeps its closing quote and is still redacted at a tool call or the turn's end.
