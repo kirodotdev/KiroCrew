@@ -83,6 +83,7 @@ Links to the pull requests, issues and commits that carry the decision.
 
 | Entry | Decision |
 |---|---|
+| [2026-11-13-the-cloud-launch-card-shows-elapsed-time-and-a-sub-step.md](2026-11-13-the-cloud-launch-card-shows-elapsed-time-and-a-sub-step.md) | While a cloud crew installs, the launch card and "Setting up" row show the time since Launch ("Past the 6-minute estimate" on a built-in job past 6 minutes) and a "Creating the instance…" / "Installing Kiro Crew on the instance…" sub-step. |
 | [2026-06-14-chat-composer-model-and-effort-are-one-control.md](2026-06-14-chat-composer-model-and-effort-are-one-control.md) | The chat composer offers model and reasoning effort as one control, never two. |
 | [2026-11-11-fork-with-another-model-opens-the-new-chats-model-picker.md](2026-11-11-fork-with-another-model-opens-the-new-chats-model-picker.md) | "Fork with another model" forks with the earlier messages and opens the new chat's own model picker, so model and effort are picked in that one control; the fork request carries no model. |
 | [2026-07-20-sessions-sidebar-create-button-says-new.md](2026-07-20-sessions-sidebar-create-button-says-new.md) | The Sessions sidebar's primary create button shows the visible label "New". |

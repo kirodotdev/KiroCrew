@@ -203,7 +203,36 @@ class TestRunLaunch:
 
         out = lj.run_launch(job, s, eng)
 
-        assert mid_deploy["detail"] == "No default VPC in us-east-2, so ..."
+        # The sub-step the engine reports first sits on its own line below it.
+        assert mid_deploy["detail"] == "No default VPC in us-east-2, so ...\n" + le.SUBSTEP_CREATING
+        assert out.status == lj.DONE
+
+    def test_the_fallback_and_the_sub_step_share_the_provision_detail(self, tmp_path):
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-2", size_key="balanced")
+        mid = []
+
+        class ProgressEngine(FakeEngine):
+            def provision(
+                self, *, tag, size_key, profile, region, on_network_fallback, on_progress
+            ):
+                on_network_fallback("No default VPC in us-east-2, so ...")
+                on_progress("Creating the instance…")
+                mid.append(s.get(job.id).step(lj.STEP_PROVISION))
+                on_progress("Installing Kiro Crew on the instance…")
+                mid.append(s.get(job.id).step(lj.STEP_PROVISION))
+                return "i-0abc123456789def0"
+
+        out = lj.run_launch(job, s, ProgressEngine())
+
+        assert [(st.state, st.detail) for st in mid] == [
+            (lj.STEP_ACTIVE, "No default VPC in us-east-2, so ...\nCreating the instance…"),
+            (
+                lj.STEP_ACTIVE,
+                "No default VPC in us-east-2, so ...\nInstalling Kiro Crew on the instance…",
+            ),
+        ]
+        assert out.step(lj.STEP_PROVISION).detail == "i-0abc123456789def0"
         assert out.status == lj.DONE
 
     def test_verified_identity_mismatch_registers_then_fails_not_done(self, tmp_path):

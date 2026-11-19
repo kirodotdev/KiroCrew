@@ -1113,7 +1113,8 @@ runs, the other actions stand down.
 A launch still creating its machine is a **Setting up** row. Its status (for
 example "Setting up · 2 of 4") is a disclosure button that opens the launch
 steps, "Keeps running if you leave this page." and the Cancel that removes the
-crew.
+crew. While the provision step runs, a line under the status shows the time
+since Launch (cloud.md).
 
 Every configured row carries separate source and transport badges from the
 instance record. `connection_method="ssm"` shows **SSM**; every other transport
@@ -1523,8 +1524,9 @@ transition, so progress survives navigating away and a reload. The steps are
 `preflight → provision → signin → connect`, and
 `RealLaunchEngine` (`cloud/launch_engine.py`) binds them to the existing
 `iam.reachability_check`, `ec2.deploy`, `login.start_device_login` and
-`connect.register_instance` — the dashboard path adds no AWS logic of its own,
-and registration lands in this registry exactly as the CLI's does. A failed
+`connect.register_instance` — the dashboard path adds no AWS logic of its own
+beyond reading `ec2.list_stack_events` for the provision step's sub-step
+(cloud.md), and registration lands in this registry exactly as the CLI's does. A failed
 provision step is rolled back through `teardown` whether or not a stack was
 created. The engine's optional `resource_exists` (`ec2.find_stack` for the EC2
 lane; for the Fargate lane its `startedBy` task lookup, the one teardown uses) is
