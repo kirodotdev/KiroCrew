@@ -1375,12 +1375,16 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByTestId('crew-profile-workspace')).toHaveTextContent('default')
   })
 
-  it('the identity pill carries a chevron, so it reads as a door and not as a second switcher chip', async () => {
+  it('the identity pill carries a chevron, revealed on hover or focus, so it reads as a door', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     const pill = await screen.findByTestId('member-identity-pill')
     const chevron = within(pill).getByTestId('member-identity-pill-chevron')
     expect(chevron).toHaveAttribute('aria-hidden', 'true')
+    // Hidden at rest; the stack's hover or keyboard focus reveals it.
+    expect(chevron.getAttribute('class')).toContain('opacity-0')
+    expect(chevron.getAttribute('class')).toContain('group-hover:opacity-100')
+    expect(chevron.getAttribute('class')).toContain('group-focus-visible:opacity-100')
     // Decorative: the pill's name stays the crewmate's.
     expect(pill).toHaveAccessibleName(/oncall/)
   })

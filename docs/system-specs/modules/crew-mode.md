@@ -2364,21 +2364,32 @@ below the header by that height only while the inner box has a height (no
 with controls is never under the glass, and the pane is under the header only
 when it is the thing directly below it. The row and its cells pass input through
 (`pointer-events-none`); only the controls catch it, so a wheel beside the pill
-reaches the transcript. It sits at z-20 — above the pane's own chrome (its
+reaches the transcript. Its cells align to the top (`items-start`): the
+identity stack is taller than the chips beside it, and centring would push the
+switcher and the panel opener down to its middle. It sits at z-20 — above the pane's own chrome (its
 dock), below the floating Profile card (z-30), whose scrim covers it. No hairline under it.
 
-The identity pill shows the Bot's face (with its loop mark), its name and
-its activity line at rest, and ends in the chevron. The words never fold away
+The identity pill is a stack (#39321): the Bot's face (with its loop mark,
+52px; 36px in the phone bar) on top, resting on a Glass name chip whose top
+edge it overlaps by 4px. The chip holds the name and the activity line,
+centred. The whole stack is the one button. In the phone shell bar it leaves
+the bar's grid (`fixed`, centred on the viewport, an empty cell holding the
+middle column), keeps its face inside the 42px bar and hangs its chip below it;
+the transcript's inset is how far the measured stack reaches past the bar, and
+while the floating Profile card is open the whole stack is `invisible`, since
+its face is already hidden for the card. The words never fold away
 (#19045): this pill is how the reader knows which Bot the page is talking
 to, and a face alone does not say that. The loop mark (`CrewLoopIndicator`, "On
 watch") is a solid accent ring with one dot orbiting it; under reduced motion
 the ring stays and a still dot replaces the orbit. It never uses the green of
 the working presence dot.
 
-The centred identity pill opens `CrewProfilePanel`, not the editor. It ends in a
-small `ChevronRight` (decorative, `aria-hidden`): the one visible sign that this
-Glass chip is a door, since the switcher chip beside it is another Glass chip
-with faces in it. The pill is a toggle, as its `aria-expanded` says: with Profile
+The centred identity pill opens `CrewProfilePanel`, not the editor. Its name
+row carries a small `ChevronRight` (decorative, `aria-hidden`), the visible sign
+that the stack is a door. At rest it is hidden: it grows in from zero width
+beside the name on the stack's hover or keyboard focus, so name and chevron
+stay centred as one group (owner, 2026-11-19). A phone has no hover, so there
+the face and chip carry the cue alone. The pill is a toggle, as its `aria-expanded` says: with Profile
 already open a press CLOSES it through the same schedule-draft guard as the
 card's own close control (`requestCloseProfile`). It must not re-open on the
 default tab: `profile.tab` is part of the card's React key, so a card the reader

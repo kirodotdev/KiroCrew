@@ -96,6 +96,9 @@ function freshStartFailureKey(err: unknown): string {
  *  an at-a-glance status, and a per-second re-render of the whole drawer for
  *  a readout that already drops seconds above a minute buys nothing. */
 const PATROL_TICK_MS = 15_000
+/** The phone identity stack's offset from the top of the viewport: the
+ *  header's `top-1` on the stack button (MembersPageThreadHeader.tsx). */
+const PHONE_STACK_TOP_PX = 4
 
 interface MembersPageThreadStateOptions {
   profileCard: MembersPageProfileState
@@ -428,9 +431,12 @@ export function useMembersPageThreadView({
   // sight. Asking again once `open` is reported finds the shell's current one.
   const topbarSlot = useShellSlot('mobile-topbar-slot', isMobile && rosterBar === 'open')
   const headerInBar = !!topbarSlot
-  /** The transcript's top inset: the floating header's height, or nothing
-   *  once the header sits in the shell bar above the pane. */
-  const headerInset = headerInBar ? 0 : threadHeaderH
+  /** The transcript's top inset: the floating header's height, or, once the
+   *  header sits in the shell bar, how far the identity stack (measured by
+   *  the same ref) hangs below that bar. */
+  const headerInset = headerInBar
+    ? Math.max(0, threadHeaderH + PHONE_STACK_TOP_PX - (topbarSlot?.offsetHeight ?? 0))
+    : threadHeaderH
   const [betweenHeaderRef, betweenHeaderH] = useMeasuredHeight<HTMLDivElement>()
   const pillStreamState = useAppSelector((s) => (pillSlotKey ? selectSlotStreamState(s, pillSlotKey) : 'idle'))
   const pillLiveSlot = useAppSelector((s) => (pillSlotKey ? slotRowByKey(s.dashboard.slots, pillSlotKey) : undefined))

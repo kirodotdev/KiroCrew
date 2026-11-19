@@ -101,10 +101,12 @@ export function MembersPageThreadHeader({
       ref={headerInBar ? undefined : threadHeaderRef}
       // Phone: the row lives in the shell's one top bar (`#mobile-topbar-slot`,
       // the chat page's single-bar hand-off), so it is a plain flex row
-      // there, with no fade and nothing to pad the transcript for.
+      // there, with no fade. Off the phone the cells align to the top: the
+      // identity stack is taller than the chips beside it, and centring would
+      // push the switcher and the panel opener down to its middle.
       className={headerInBar
-        ? 'grid grid-cols-[minmax(max-content,1fr)_minmax(0,auto)_minmax(max-content,1fr)] items-center gap-1.5 w-full min-w-0 h-full'
-        : 'absolute top-0 inset-x-0 z-20 grid grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-2 px-3 py-2 pointer-events-none'}
+        ? 'relative grid grid-cols-[minmax(max-content,1fr)_minmax(0,auto)_minmax(max-content,1fr)] items-center gap-1.5 w-full min-w-0 h-full'
+        : 'absolute top-0 inset-x-0 z-20 grid grid-cols-[1fr_minmax(0,auto)_1fr] items-start gap-2 px-3 py-2 pointer-events-none'}
       data-testid="member-thread-header"
       data-in-topbar={headerInBar ? '' : undefined}
     >
@@ -205,23 +207,28 @@ export function MembersPageThreadHeader({
            layoutId). An empty middle cell keeps the header's grid. */
         <span aria-hidden="true" data-testid="member-identity-pill-placeholder" />
       ) : (
-      <Glass
-        as="button"
+      <>
+      {/* In the shell bar the stack leaves the grid (it is `fixed`), so an
+          empty cell holds the middle column and the trailing controls stay right. */}
+      {headerInBar && <span aria-hidden="true" />}
+      <button
         type="button"
-        variant="chip"
-        radius={999}
         // Profile is the read surface; its pencil owns the editor door.
         // A toggle, as `aria-expanded` says: with the card already open the
         // press closes it (through the draft guard — see requestCloseProfile)
         // instead of re-opening on the default tab, which remounted the card.
         onClick={() => { if (profile) requestCloseProfile(); else openProfile() }}
-        // The left padding equals the vertical gap around the face, so the
-        // round face sits concentric with the pill's round end.
-        className={`glass-shadow flex items-center gap-2.5 pr-3.5 ${headerInBar ? 'pl-0.5 py-0' : 'pl-1.5 py-1.5'} min-w-0 max-w-full justify-self-center cursor-pointer text-left focus-ring pointer-events-auto`}
+        // The identity stack (#39321): a face on top, resting on the name
+        // chip's top edge. In the 42px shell bar it is centred on the
+        // viewport and hangs below the bar; the transcript's inset clears it.
+        // While the floating card is open there its face is hidden, so the
+        // whole stack steps out instead of leaving a bare chip in the bar.
+        className={`group flex flex-col items-center min-w-0 max-w-full justify-self-center cursor-pointer focus-ring pointer-events-auto bg-transparent border-none p-0 rounded-2xl ${headerInBar ? `fixed left-1/2 -translate-x-1/2 top-1 z-30 ${profile ? 'invisible' : ''}` : 'relative'}`}
         title={t('pages.membersPage.profile_card')}
         aria-expanded={!!profile}
         data-testid="member-identity-pill"
-        {...uiLocation('members.edit')}
+        // In the shell bar the stack is what the transcript's inset measures.
+        {...uiLocation('members.edit', headerInBar ? threadHeaderRef : undefined)}
       >
         {/* The same reactive CrewStateAvatar as before — a plain face,
             no scrim, no badge (issue #9425). */}
@@ -232,7 +239,7 @@ export function MembersPageThreadHeader({
             empty, reserved width and all, for the face to fly into it. */}
         <span
           ref={pillFaceRef}
-          className="relative flex shrink-0 rounded-full"
+          className="relative z-10 flex shrink-0 rounded-full -mb-1"
           style={faceFlight || (profile && profile.placement === 'floating') || entranceFaceHidden ? { visibility: 'hidden' } : undefined}
           data-testid="member-pill-face"
           data-entrance-empty={entranceFaceHidden ? '' : undefined}
@@ -247,23 +254,34 @@ export function MembersPageThreadHeader({
             // row's ring: a monitor on the slot OR the heartbeat on.
             watch={isLoopOn(active)}
             indicatorTestId="member-pill-loop-indicator"
-            // Smaller in the shell bar, which is 42px tall: the pill sits
-            // there with no vertical padding, at the height of the 32px
-            // controls beside it, so it does not reach the bar's edges.
-            size={headerInBar ? 26 : 30}
+            // Smaller in the shell bar, which is 42px tall, so the face
+            // stays inside the bar and only the name chip hangs below it.
+            size={headerInBar ? 36 : 52}
             working="full"
           />
         </span>
-        {/* The name and activity line stay open at rest: this pill is
-            how the reader knows which crewmate the page is talking to,
-            and a face alone does not say that (issue #19045). */}
-        <div className="min-w-0 leading-tight">
-          {/* Title row = the crewmate's display name; the ID is not shown. */}
-          <div className="min-w-0 flex items-center gap-1.5" data-testid="member-title-row">
+        {/* The name and activity line stay open at rest: this chip is how
+            the reader knows which crewmate the page is talking to, and a
+            face alone does not say that (issue #19045). */}
+        <Glass
+          as="span"
+          variant="chip"
+          radius={headerInBar ? 11 : 13}
+          className={`glass-shadow glass-hover flex items-center justify-center ${headerInBar ? 'min-w-[7rem] px-3 pt-1.5 pb-1' : 'min-w-[8.5rem] px-4 pt-2 pb-1.5'} max-w-full`}
+        >
+        <div className="min-w-0 leading-tight text-center">
+          {/* Title row = the crewmate's display name; the ID is not shown.
+              The chevron says the stack OPENS something, but only on hover
+              or keyboard focus: at rest it sat beside the name as noise. It
+              grows in from zero width, so name and chevron stay centred as
+              one group. Decorative: the tooltip and `aria-expanded` say it
+              for assistive tech. */}
+          <div className="min-w-0 flex items-center justify-center" data-testid="member-title-row">
             <div
-              className="text-[13.5px] font-semibold truncate max-w-[24rem]"
+              className={`${headerInBar ? 'text-[12.5px]' : 'text-[13.5px]'} font-semibold truncate max-w-[24rem]`}
               data-testid="member-pill-name"
             >{crewDisplayName(active)}</div>
+            <ChevronRight size={12} className="lucide-inline shrink-0 text-muted w-0 ml-0 opacity-0 transition-[width,margin,opacity] duration-150 group-hover:w-3 group-hover:ml-1 group-hover:opacity-100 group-focus-visible:w-3 group-focus-visible:ml-1 group-focus-visible:opacity-100 motion-reduce:transition-none" aria-hidden="true" data-testid="member-identity-pill-chevron" />
           </div>
           {/* Activity line — what the crewmate is doing right now, text
               only (the face above already carries presence, so no dot
@@ -282,13 +300,9 @@ export function MembersPageThreadHeader({
             aria-hidden="true"
           >{pillActivity.label}{isLoopOn(active) ? ` · ${t('pages.membersPage.loop_on')}` : ''}</div>
         </div>
-        {/* The one visible sign that this chip OPENS something. Without
-            it the pill and the switcher beside it are two controls
-            with faces in them, and only one of them is a door to
-            the Profile. Decorative: the tooltip and `aria-expanded`
-            already say it for assistive tech. */}
-        <ChevronRight size={14} className="lucide-inline shrink-0 text-muted" aria-hidden="true" data-testid="member-identity-pill-chevron" />
-      </Glass>
+        </Glass>
+      </button>
+      </>
       )}
       {/* The panel's opener. Same icon and hit-target as the chat
           page's side-panel toggle, so the two surfaces teach one
