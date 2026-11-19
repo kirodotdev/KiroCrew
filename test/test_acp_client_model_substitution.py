@@ -9,7 +9,6 @@ from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401
 from redaction_structured_cases import github_classic
 
 import kiro_crew.acp.client as acp_client
-import kiro_crew.acp.client_claude_seed as client_claude_seed
 from kiro_crew.acp.client import (
     AcpClient,
     AcpError,
@@ -347,9 +346,7 @@ class TestSubstitutionFollow:
                 # shape that can be neither governed nor left out of the session's
                 # setting sources. Patched rather than built with a real symlink,
                 # so the case runs on hosts without symlink privilege.
-                monkeypatch.setattr(
-                    client_claude_seed, "_claude_settings_usable", lambda _path: False
-                )
+                monkeypatch.setattr(acp_client, "_claude_settings_usable", lambda _path: False)
             return len(sent)
 
         waits = 0
