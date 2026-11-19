@@ -20715,6 +20715,8 @@
         "slack_settings_are_managed_on_the_machine_runnin": "Slack 설정은 {{productName}}을(를) 실행하는 머신에서 관리되며 원격 세션에서는 읽기 전용입니다.",
         "slash_command": "슬래시 명령",
         "talk_to_your_agents_from_slack_over_socket_mode": "Socket Mode를 통해 Slack에서 에이전트와 대화합니다. 연결된 봇이 응답할 수 있도록 허용된 멤버 ID를 추가하세요.",
+        "slack_tools_hint": "에이전트는 Slack의 MCP 서버를 통해 사용자를 대신해 Slack을 검색하고 읽을 수도 있습니다.",
+        "slack_tools_link": "연결의 Slack 카드에서 설정하기",
         "the_one_member_who_can_always_interact_with_the": "Slack 멤버 ID입니다(KIROCREW_OWNER_ID). Slack에서 프로필을 열고 ⋮ 메뉴에서 멤버 ID 복사를 선택하세요. U 또는 W로 시작합니다.",
         "trigger_word_for_the_slack_slash_command_without": "Slack 슬래시 명령의 트리거 단어입니다(맨 앞의 / 제외).",
         "u0123abc456": "U0123ABC456",

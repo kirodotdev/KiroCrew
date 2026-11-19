@@ -21262,6 +21262,8 @@
         "slack_settings_are_managed_on_the_machine_runnin": "Slack सेटिंग्स {{productName}} चलाने वाली मशीन पर प्रबंधित होती हैं और रिमोट सेशन से केवल-पढ़ने योग्य रहती हैं।",
         "slash_command": "स्लैश कमांड",
         "talk_to_your_agents_from_slack_over_socket_mode": "Socket Mode के ज़रिए Slack से अपने एजेंट से बात करें। कनेक्टेड बॉट जवाब दे सकें, इसके लिए अनुमत सदस्य ID जोड़ें।",
+        "slack_tools_hint": "तुम्हारे एजेंट Slack के MCP सर्वर के ज़रिए तुम्हारी ओर से Slack खोज और पढ़ भी सकते हैं।",
+        "slack_tools_link": "इसे कनेक्शन में Slack कार्ड पर सेट करो",
         "the_one_member_who_can_always_interact_with_the": "तुम्हारा Slack सदस्य ID (KIROCREW_OWNER_ID): Slack में अपनी प्रोफ़ाइल खोलो, ⋮ चुनो, फिर Copy member ID चुनो। यह U या W से शुरू होता है।",
         "trigger_word_for_the_slack_slash_command_without": "Slack स्लैश कमांड के लिए ट्रिगर शब्द (शुरुआती / के बिना)।",
         "u0123abc456": "U0123ABC456",

@@ -19,6 +19,8 @@ import { SlackCodeSection, slackCodeDraftFrom, slackCodePayload, type SlackCodeD
 import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
 import { forgetSlackInstallReading } from './SlackManifestUpdate'
 import { lazyRetry } from '../../components/lazyRetry'
+import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
+import { connectionCardHref } from '../connections/connectionsLinks'
 import type { SlackOwnerClaimProps } from './SlackOwnerClaim'
 // Its own chunk, for the same budget reason as SlackSharedAccess below. A failed
 // load shows an inline notice with Try again; the manual member-ID field beside
@@ -267,6 +269,8 @@ export function SlackPanel() {
     // object and clobber unsaved edits via the sync effect below.
     refetchOnWindowFocus: false,
   })
+  // The Slack card under Settings → Connections exists only while that gallery is on.
+  const connectionsUi = useConnectionsUiEnabled()
 
   const [draft, setDraft] = useState<Draft | null>(null)
   const [botToken, setBotToken] = useState('')
@@ -506,6 +510,22 @@ export function SlackPanel() {
           <p className="text-[12px] text-muted mt-1">
             {i18nT('pages.settings.slackPanel.talk_to_your_agents_from_slack_over_socket_mode')}
           </p>
+          {/* Slack's MCP tools are a separate sign-in from this bot, made on the
+              Slack card under Settings → Connections. A new tab, so this form and
+              its unsaved fields stay put; the tab shares this session's cookie. */}
+          {connectionsUi && (
+            <p className="text-[12px] text-muted mt-1">
+              {i18nT('pages.settings.slackPanel.slack_tools_hint')}{' '}
+              <a
+                data-testid="slack-connections-link"
+                href={connectionCardHref('slack')}
+                target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 font-medium text-accent hover:underline"
+              >
+                {i18nT('pages.settings.slackPanel.slack_tools_link')} <ExternalLink size={12} />
+              </a>
+            </p>
+          )}
           {/* No hand-off: `botToken` / `appToken` (SecretField drafts, never
               persisted) and the unsaved `draft` (owner id, enterprise allow-list,
               command, session folder) live in this panel's local state —

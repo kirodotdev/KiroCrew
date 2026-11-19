@@ -21262,6 +21262,8 @@
         "slack_settings_are_managed_on_the_machine_runnin": "Slack সেটিংস যে মেশিনে {{productName}} চলছে সেখানেই পরিচালিত হয় এবং রিমোট সেশন থেকে কেবল-পঠনযোগ্য।",
         "slash_command": "স্ল্যাশ কমান্ড",
         "talk_to_your_agents_from_slack_over_socket_mode": "Socket Mode-এর মাধ্যমে Slack থেকে আপনার এজেন্টদের সঙ্গে কথা বলুন। সংযুক্ত বট যাতে উত্তর দিতে পারে, সে জন্য অনুমোদিত মেম্বার আইডি যোগ করুন।",
+        "slack_tools_hint": "তোমার এজেন্টরা Slack-এর MCP সার্ভারের মাধ্যমে তোমার হয়ে Slack খুঁজতে ও পড়তেও পারে।",
+        "slack_tools_link": "সংযোগে Slack কার্ডে এটি সেট আপ করো",
         "the_one_member_who_can_always_interact_with_the": "তোমার Slack মেম্বার ID (KIROCREW_OWNER_ID): Slack-এ তোমার প্রোফাইল খোলো, ⋮ বেছে নাও, তারপর Copy member ID বেছে নাও। U বা W দিয়ে শুরু।",
         "trigger_word_for_the_slack_slash_command_without": "Slack স্ল্যাশ কমান্ডের জন্য ট্রিগার শব্দ (শুরুর / ছাড়া)।",
         "u0123abc456": "U0123ABC456",
