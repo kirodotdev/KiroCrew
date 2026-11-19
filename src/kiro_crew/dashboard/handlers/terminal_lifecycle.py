@@ -566,8 +566,8 @@ async def _sweep_terminals(app: web.Application, now: float) -> None:
     if not registry:
         return
     # Read per sweep, off the loop, so an edit applies without a restart. On the
-    # pool reserved for periodic sweeps: every live PTY reader parks a blocking
-    # read on the default executor, and browser-driven scans share the discovery
+    # pool reserved for periodic sweeps: every to_thread caller in the gateway
+    # queues on the default executor, and browser-driven scans share the discovery
     # one, so either could starve the very sweep that ends idle shells.
     cfg = await asyncio.get_running_loop().run_in_executor(
         maintenance_executor(), _read_terminal_config

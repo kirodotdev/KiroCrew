@@ -1001,8 +1001,8 @@ class TestSweepTerminals:
 
     @pytest.mark.asyncio
     async def test_reads_config_off_the_default_executor(self):
-        # Every live PTY reader parks a blocking read on the default executor, so a
-        # config read queued there could wait behind the very shells it would end.
+        # Every to_thread caller in the gateway queues on the default executor, so a
+        # config read queued there could wait behind work that never finishes.
         sess = _make_session(session_id="s1", alive=True, disconnect=_DETACHED_AT)
         app, registry = _sweep_app(sess, bus=MagicMock())
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
