@@ -407,7 +407,40 @@ def test_seatbelt_guards_every_ancestor_of_a_caller_mask_against_rename() -> Non
     # Only the ancestors of a live mask: an unrelated guard the host listed is dropped.
     assert '(literal "/other")' not in profile
     namespace = _plan("strict", host=host, extra_hidden_dirs=(mask,))
-    assert f"{HOME}/data/store" not in namespace.runtime_ancestor_guards
+    assert f"{HOME}/data/store" in namespace.runtime_ancestor_guards
+
+
+def test_namespace_guards_every_ancestor_of_a_caller_mask_against_rename() -> None:
+    mask = f"{HOME}/data/store/item.bin"
+    guards = (f"{HOME}/data/store", f"{HOME}/data", HOME, "/other")
+    plan = _plan("strict", host=_host(caller_ancestor_guards=guards), extra_hidden_dirs=(mask,))
+    for ancestor in (f"{HOME}/data/store", f"{HOME}/data", HOME):
+        assert ancestor in plan.runtime_ancestor_guards
+    # Only the ancestors of a live mask: an unrelated guard the host listed is dropped.
+    assert "/other" not in plan.runtime_ancestor_guards
+    assert plan.runtime_ancestor_guards == _plan("strict", host=_host()).runtime_ancestor_guards + (
+        f"{HOME}/data/store",
+        f"{HOME}/data",
+        HOME,
+    )
+
+
+def test_a_caller_mask_file_is_sealed_and_its_parent_guarded_on_both_backends() -> None:
+    mask = f"{HOME}/data/store/item.bin"
+    host = _host(caller_ancestor_guards=(f"{HOME}/data/store", f"{HOME}/data", HOME))
+    macos = _plan("strict", BACKEND_SEATBELT, host=host, extra_hidden_dirs=(mask,))
+    profile = sandbox_seatbelt.render_seatbelt_profile(macos)
+    assert f'(deny file-write* (literal "{mask}"))' in profile
+    assert f'(deny file-write* (literal "{HOME}/data/store"))' in profile
+    linux = _plan("strict", host=host, extra_hidden_dirs=(mask,))
+    assert mask in [m.path for m in linux.masks]
+    assert f"{HOME}/data/store" in linux.runtime_ancestor_guards
+    # The built-in paths plan the same with and without a caller entry.
+    base = _host()
+    assert (
+        _plan("strict", host=base, extra_hidden_dirs=(mask,)).runtime_ancestor_guards
+        == _plan("strict", host=base).runtime_ancestor_guards
+    )
 
 
 def test_live_host_guards_only_the_caller_ancestors_that_exist(
@@ -420,14 +453,59 @@ def test_live_host_guards_only_the_caller_ancestors_that_exist(
         backend=BACKEND_SEATBELT,
         extra_hidden_dirs=(str(present / "item.bin"), str(tmp_path / "absent" / "item.bin")),
     )
-    guards = sandbox._live_plan_host(request).caller_ancestor_guards
-    assert str(present) in guards
-    assert str(tmp_path) in guards
-    assert str(tmp_path / "absent") not in guards
-    assert (
-        sandbox._live_plan_host(replace(request, backend=BACKEND_NAMESPACE)).caller_ancestor_guards
-        == ()
+    for backend in (BACKEND_SEATBELT, BACKEND_NAMESPACE):
+        guards = sandbox._live_plan_host(replace(request, backend=backend)).caller_ancestor_guards
+        assert str(present) in guards
+        assert str(tmp_path) in guards
+        assert str(tmp_path / "absent") not in guards
+
+
+def _namespace_host(request: SandboxRequest) -> PlanHost:
+    return sandbox._live_plan_host(replace(request, backend=BACKEND_NAMESPACE))
+
+
+def test_live_host_filters_caller_parents_by_what_this_uid_can_rename(
+    live_host: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = tmp_path / "shared"
+    parent.mkdir()
+    seen: list[int] = []
+
+    def _can_rename(path: str, uid: int) -> bool:
+        seen.append(uid)
+        return path != str(parent)
+
+    from kiro_crew import sandbox_workspace
+
+    monkeypatch.setattr(sandbox_workspace, "_caller_can_rename", _can_rename)
+    request = SandboxRequest(
+        tier="strict", backend=BACKEND_NAMESPACE, extra_hidden_dirs=(str(parent / "item.bin"),)
     )
+    guards = _namespace_host(request).caller_ancestor_guards
+    assert str(parent) not in guards
+    assert str(tmp_path) in guards
+    assert set(seen) == {os.getuid()}
+
+
+def test_live_host_pins_a_caller_parent_that_is_an_app_folder_after_the_masks(
+    live_host: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app_dir = live_host / ".kiro" / "crew" / "apps" / "demo"
+    data = app_dir / "data"
+    data.mkdir(parents=True)
+    monkeypatch.setattr(
+        sandbox, "_app_declared_leaves", lambda: ("apps/demo/data/tokens/oauth.json",)
+    )
+    request = SandboxRequest(
+        tier="strict", backend=BACKEND_NAMESPACE, extra_hidden_dirs=(str(data / "item.bin"),)
+    )
+    host = _namespace_host(request)
+    assert str(app_dir) not in host.caller_ancestor_guards
+    assert str(app_dir) not in host.readonly_ancestor_guards
+    assert str(app_dir) in host.mask_parent_pins
+    # Every other folder above the entry stays pinned before the masks.
+    assert str(data) in host.caller_ancestor_guards
+    assert str(app_dir.parent) in host.caller_ancestor_guards
 
 
 # --------------------------------------------------------------------------- #
