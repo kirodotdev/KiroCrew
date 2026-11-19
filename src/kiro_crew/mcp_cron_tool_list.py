@@ -503,6 +503,27 @@ def _list_tools() -> list[dict[str, Any]]:
     return with_titles("kirocrew-cron", tools)
 
 
+def _redeem_pickup() -> None:
+    """Redeem an enforced harness's one-time pickup, when this process carries one.
+
+    The same step as ``mcp_core_tool_list._redeem_pickup``, on a different port
+    resolver: every cron tool call with a resolvable identity is dispatched through
+    ``mcp_core``'s request helper, so the pickup is redeemed on the gateway port that
+    helper resolves (``mcp_core_parts.gateway._api_port``). A second call finds no
+    pickup and does nothing.
+    """
+    from kiro_crew.agent_ipc_client import redeem_at_startup
+
+    def _port() -> int:
+        # Imported only when a pickup exists: the gateway helper's import graph
+        # would otherwise load before every tools/list (the listing import budget).
+        from kiro_crew.mcp_core_parts.gateway import _api_port
+
+        return _api_port()
+
+    redeem_at_startup(_port)
+
+
 #: The server as ``initialize`` describes it. ``kiro_crew.mcp_cron.run_mcp_server``
 #: passes the loop these same values, so the answers written before the handlers load
 #: and the ones the loop writes after cannot differ.
@@ -513,4 +534,5 @@ SERVER = StdioServer(
     advertise_caller_identity=True,
     error_prefix_is_error=True,
     instructions=_INSTRUCTIONS,
+    before_first_request=_redeem_pickup,
 )

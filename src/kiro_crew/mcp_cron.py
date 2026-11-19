@@ -1452,6 +1452,10 @@ ADVERTISE_CALLER_IDENTITY = SERVER.advertise_caller_identity
 
 def run_mcp_server() -> None:
     """Run MCP stdio server — reads JSON-RPC from stdin, writes to stdout."""
+    # Before the first request (a no-op when the server already answered its first
+    # two before importing this module): see ``mcp_cron_tool_list._redeem_pickup``.
+    if SERVER.before_first_request is not None:
+        SERVER.before_first_request()
     run_mcp_stdio_loop(
         SERVER.name, SERVER.version, _list_tools, _call_tool, **SERVER.loop_options()
     )
@@ -1554,6 +1558,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_cron_tool_list import (  # noqa: F401
         _ALERT_AFTER_DESCRIPTION,
         _AUTO_PAUSE_AFTER_DESCRIPTION,
+        _redeem_pickup,
     )
     from kiro_crew.mcp_cron_vet import (  # noqa: F401
         _CRON_FOLDER_ID_RE,
