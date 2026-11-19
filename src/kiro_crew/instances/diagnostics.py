@@ -49,6 +49,7 @@ from kiro_crew.instances.validation import (
     validate_ssm_target,
 )
 from kiro_crew.platform_compat import kill_and_reap
+from kiro_crew.sandbox import SandboxUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -396,12 +397,18 @@ async def _probe_ssm_managed(ssm_target: str, profile: str = "", region: str = "
     whose agent never registered, or the wrong account/region); or :data:`_NODE_UNREACHABLE` for everything else --
     agent offline, an IAM denial, a timeout -- all of which are "the SSM path
     can't reach the target".
+
+    Raises :class:`~kiro_crew.sandbox.SandboxUnavailableError` when this host's
+    own sandbox refused to start ``aws``: no SSM call ran, so the answer is not
+    "unreachable".
     """
     try:
         status = await asyncio.wait_for(
             asyncio.to_thread(cloud_ssm.managed_node_ping_status, ssm_target, profile, region),
             timeout=_SSM_PING_TIMEOUT_SECS,
         )
+    except SandboxUnavailableError:
+        raise
     except Exception:  # timeout, AWSError, dispatch failure — all "unreachable"
         return _NODE_UNREACHABLE
     if status == "Online":
@@ -559,7 +566,12 @@ async def diagnose_instance_ssm(
 
     probes: list[dict] = []
 
-    node = await _probe_ssm_managed(target, profile, region)
+    try:
+        node = await _probe_ssm_managed(target, profile, region)
+    except SandboxUnavailableError as e:
+        # The local sandbox, not SSM or IAM, is what failed: say so.
+        probes.append({"name": "ssm_managed_node", "ok": False})
+        return DiagnosisResult(UNKNOWN, str(e), probes)
     probes.append({"name": "ssm_managed_node", "ok": node == _NODE_ONLINE})
     if node == _NODE_MISSING:
         return DiagnosisResult(SSM_TARGET_MISSING, _REASONS[SSM_TARGET_MISSING], probes)
@@ -644,7 +656,11 @@ async def diagnose_instance_fargate(
 
     probes: list[dict] = []
 
-    ready, reason = await _probe_task_exec_ready(cluster, task_id, profile, region)
+    try:
+        ready, reason = await _probe_task_exec_ready(cluster, task_id, profile, region)
+    except SandboxUnavailableError as e:
+        probes.append({"name": "task_exec_ready", "ok": False})
+        return DiagnosisResult(UNKNOWN, str(e), probes)
     probes.append({"name": "task_exec_ready", "ok": ready})
     if not ready:
         return DiagnosisResult(SSM_UNREACHABLE, reason, probes)
