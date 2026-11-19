@@ -125,7 +125,14 @@ kirocrew`). Onto that base:
    store's keys win and the edition's other keys stay. The spec then carries
    exactly those two sets: a key the store set on an earlier build but leaves
    out of its `env` now is removed, and a key the edition ships stays; to turn
-   one off, set it to another value in the store.
+   one off, set it to another value in the store. A spec built from
+   `build_agent_config` rather than by this rebuild (a Bot's worker, research and
+   the team lead among them) gets the same merged `env` on the edition entry it
+   is seeded with (`mcp_sources.seed_edition_servers`), emitted as here: `PATH`
+   and home names expanded. A store key holding a `secret://` reference is left
+   out of it (the shipped value, if any, stands): that reference resolves only
+   where the gateway starts the server for a session, and some sessions of such
+   a spec are handed no gateway stub.
 
 Kiro global outranks any seam-contributed provider global because Kiro Crew is
 kiro-cli-only. Managed servers are skipped by every merge loop: their
