@@ -15,24 +15,29 @@ const localGatewayAPI = (): LocalGatewayAPI | undefined => window.localGatewayAP
  * shipped default instead of flashing the opposite state.
  */
 export function useLocalGateway() {
-  const supported = !!localGatewayAPI()
+  const [refused, setRefused] = useState(false)
+  const supported = !!localGatewayAPI() && !refused
   const [enabled, setEnabled] = useState(true)
 
+  // main.js answers only the main window's dashboard. A refused read means this
+  // window (a connection window to another machine) cannot change the choice,
+  // so the control is hidden rather than shown with a value it cannot know.
   useEffect(() => {
     const api = localGatewayAPI()
     if (!api) return
     let alive = true
-    void api.get().then(v => { if (alive) setEnabled(v) }).catch(() => {})
+    void api.get().then(v => { if (alive) setEnabled(v) }).catch(() => { if (alive) setRefused(true) })
     return () => { alive = false }
   }, [])
 
   // The stored value is authoritative, so the switch renders what main.js
-  // actually wrote rather than what was asked for.
+  // actually wrote rather than what was asked for, and a refused write puts
+  // the switch back where it was.
   const setLocalGatewayEnabled = useCallback((next: boolean) => {
     const api = localGatewayAPI()
     if (!api) return
     setEnabled(next)
-    void api.set(next).then(v => setEnabled(v)).catch(() => {})
+    void api.set(next).then(v => setEnabled(v)).catch(() => setEnabled(!next))
   }, [])
 
   return { localGatewayEnabled: enabled, localGatewaySupported: supported, setLocalGatewayEnabled }
