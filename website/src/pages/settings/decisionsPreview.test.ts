@@ -31,6 +31,7 @@ const OFF = {
   configuredEndpoint: '',
   endpointMoved: false,
   withdrawn: false,
+  consentRecorded: false,
   // The tool-argument egress scope reads FALSE for an unreadable body, on the same
   // fail-closed terms as `enabled`: a body nobody could parse grants nothing.
   toolArgs: false,
@@ -61,6 +62,7 @@ describe('readConsent', () => {
         configuredEndpoint: ENDPOINT,
         endpointMoved: false,
         withdrawn: false,
+        consentRecorded: false,
         // Consent to SEND is not consent to send tool arguments: a body that does
         // not mention the scope grants none of it.
         toolArgs: false,
@@ -170,6 +172,7 @@ describe('readDecisions', () => {
         configuredEndpoint: ENDPOINT,
         endpointMoved: false,
         withdrawn: false,
+        consentRecorded: false,
         bucket: 25,
         toolArgs: false,
         compaction: false,

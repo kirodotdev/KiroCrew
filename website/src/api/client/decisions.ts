@@ -20,6 +20,9 @@ export interface DecisionsConsentData {
   /** The administrator's policy refuses the configured model, which is why `permits`
    *  is false: not a moved address. Absent on an older gateway. */
   withdrawn?: boolean
+  /** Consent is recorded for the configured address, whatever `withdrawn` says: a surface
+   *  the ceiling permits still sends under it. Absent on an older gateway. */
+  covers_configured?: boolean
   /**
    * Whether the owner consented to sending TOOL-CALL ARGUMENTS — the extra egress
    * category `tool.risk` needs. Absent on a gateway older than the scope, which
@@ -165,6 +168,12 @@ export interface DecisionsProviderData {
    * does not govern it. Absent on an older gateway.
    */
   provider_permitted?: Record<string, boolean>
+  /**
+   * While the dashboard's ceiling refuses the configured model: the other surfaces
+   * (`slack`, `cli`, `cron`, ...) whose ceiling permits it, so a recorded consent still
+   * sends from them. Empty when the dashboard permits it. Absent on an older gateway.
+   */
+  permitted_surfaces?: string[]
 }
 
 /** A SageMaker endpoint as the picker names it; the gateway builds the address. */

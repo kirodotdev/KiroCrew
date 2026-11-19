@@ -263,6 +263,38 @@ def is_decisions_denied(
     return any(denied)
 
 
+def offer_denied(surface_key: str, *, local: bool, provider: str | None) -> bool:
+    """:func:`is_decisions_denied`'s answer for *surface_key*, without an SEL row.
+
+    For the settings read that names which OTHER surfaces still send to a model the
+    dashboard's ceiling refuses: those are offers, not requests, like
+    :func:`permitted_providers`. The rows and the ``providers:<id>`` item are answered
+    inside one policy-generation bracket, failing closed if it moved. Blocking: call
+    off the event loop.
+    """
+    _prime_profiles()
+    before = _answer_generation()
+    denied = [_row_denied(surface_key, DECISIONS_SCOPE, audit=False)]
+    if local:
+        denied.append(_row_denied(surface_key, DECISIONS_LOCAL_SCOPE, audit=False))
+    if provider is not None and provider != PROVIDER_NONE:
+        item = f"{PROVIDERS_LIST}:{provider}"
+        denied.append(_row_denied(surface_key, DECISIONS_SCOPE, item, audit=False))
+    if any(denied):
+        return True
+    return before is None or _answer_generation() != before
+
+
+def offer_generation() -> int | None:
+    """The governance answer token after priming the profiles, ``None`` when unreadable.
+
+    For a reading that brackets SEVERAL offers (``decisions_surfaces``) in one
+    generation: read it before and after, and discard the reading if it moved.
+    """
+    _prime_profiles()
+    return _answer_generation()
+
+
 def permitted_providers(surface_key: str = DASHBOARD_SURFACE_KEY) -> dict[str, bool]:
     """``{provider id: whether the list allows it}`` for every id :func:`provider_ids` names.
 
