@@ -19,7 +19,7 @@ import { copyRichToClipboard } from '../../utils/clipboard'
 import { HOVER_NONE_ACTION_BTN_CLS } from '../../utils/touchActions'
 import { i18nT } from '../../i18n/t'
 import { markdownToCleanHtml } from './richTextClipboard'
-import { InQuoteCtx, MdSourceCtx } from './contexts'
+import { DirOwnerCtx, MdSourceCtx } from './contexts'
 import { REMARK_BASE_PLUGINS } from './remarkBase'
 import { ALLOWED_TAGS, VERBATIM_CONTENT_TAGS } from './sanitize'
 import { remarkLatexDelimiters } from '../../utils/remarkLatexDelimiters'
@@ -144,6 +144,8 @@ function quoteInnerMarkdown(
 export function CopyableBlockquote({ node, children }: { node?: HastElement; children?: React.ReactNode }) {
   const nested = useContext(InsideBlockquote)
   const source = useContext(MdSourceCtx)
+  // A quote directly inside a quote leaves `dir` off, so the outer one reads its text.
+  const inQuote = useContext(DirOwnerCtx) === 'quote'
   const [copied, setCopied] = useState(false)
   const [copyFailed, setCopyFailed] = useState(false)
   // A raw-HTML `<blockquote>` has no `>` markdown source to copy, so it gets no button.
@@ -171,8 +173,8 @@ export function CopyableBlockquote({ node, children }: { node?: HastElement; chi
   const label = copied ? i18nT('components.blockquote.copied') : i18nT('components.blockquote.copy')
   return (
     <InsideBlockquote.Provider value={nested || copyable}>
-      <InQuoteCtx.Provider value={true}>
-      <blockquote dir="auto" data-sourcepos={typeof sourcepos === 'string' ? sourcepos : undefined} className={`border-s-[3px] border-accent ps-3 my-2 text-muted italic${copyable ? ' group/quote relative pe-7' : ''}`}>
+      <DirOwnerCtx.Provider value="quote">
+      <blockquote dir={inQuote ? undefined : 'auto'} data-sourcepos={typeof sourcepos === 'string' ? sourcepos : undefined} className={`border-s-[3px] border-accent ps-3 my-2 text-muted italic${copyable ? ' group/quote relative pe-7' : ''}`}>
         {children}
         {copyable && copyFailed && (
           <>
@@ -198,7 +200,7 @@ export function CopyableBlockquote({ node, children }: { node?: HastElement; chi
           </button>
         )}
       </blockquote>
-      </InQuoteCtx.Provider>
+      </DirOwnerCtx.Provider>
     </InsideBlockquote.Provider>
   )
 }

@@ -77,7 +77,7 @@ import {
   MdBlockStartCtx,
   ParagraphNoticeSlotCtx,
   ChatProjectDirCtx,
-  InQuoteCtx,
+  useTextBlockDir,
   PathActionCtx,
   PathProbeCtx,
   ReadOnlyCodeCtx,
@@ -575,7 +575,7 @@ function MdParagraph({ node, children }: React.HTMLAttributes<HTMLParagraphEleme
   const override = useContext(LinkOverrideCtx)
   const { enabled: cardsOn, live } = useContext(LinkUnfurlCtx)
   const jiraHosts = useContext(JiraHostsCtx)
-  const dir = useContext(InQuoteCtx) ? undefined : 'auto'
+  const { dir, cls: bidiCls } = useTextBlockDir()
   const sole = soleLinkInParagraph(node)
   const jira = useMemo(() => {
     if (!sole?.href || !cardsOn || live) return null
@@ -614,17 +614,17 @@ function MdParagraph({ node, children }: React.HTMLAttributes<HTMLParagraphEleme
   // portals into it). Below the paragraph, the notice leaves the sentence whole
   // whether the reference ends it or sits mid-sentence. Only such a paragraph
   // gets the slot, so every other paragraph keeps its exact DOM.
-  if (holdsSessionRef(node)) return <ParagraphWithNoticeSlot node={node} dir={dir}>{children}</ParagraphWithNoticeSlot>
-  return <p {...sp(node)} dir={dir} className={MD_PARAGRAPH_CLS}>{children}</p>
+  if (holdsSessionRef(node)) return <ParagraphWithNoticeSlot node={node} dir={dir} bidiCls={bidiCls}>{children}</ParagraphWithNoticeSlot>
+  return <p {...sp(node)} dir={dir} className={MD_PARAGRAPH_CLS + bidiCls}>{children}</p>
 }
 
-function ParagraphWithNoticeSlot({ node, dir, children }: { node?: HastElement; dir?: 'auto'; children?: React.ReactNode }) {
+function ParagraphWithNoticeSlot({ node, dir, bidiCls, children }: { node?: HastElement; dir?: 'auto'; bidiCls: string; children?: React.ReactNode }) {
   // State, not a ref: the slot element must exist before a notice can portal
   // into it, and the provider's value has to change once it does.
   const [slot, setSlot] = useState<HTMLElement | null>(null)
   return (
     <ParagraphNoticeSlotCtx.Provider value={slot}>
-      <p {...sp(node)} dir={dir} className={MD_PARAGRAPH_CLS}>{children}</p>
+      <p {...sp(node)} dir={dir} className={MD_PARAGRAPH_CLS + bidiCls}>{children}</p>
       {/* A `div` so the notices stack as blocks; empty, it takes no height. */}
       <div ref={setSlot} data-paragraph-notices="" />
     </ParagraphNoticeSlotCtx.Provider>

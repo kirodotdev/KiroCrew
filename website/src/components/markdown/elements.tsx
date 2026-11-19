@@ -1,8 +1,9 @@
-import React from 'react'
+import React, { useContext } from 'react'
 import type { Components } from 'react-markdown'
 import type { Element as HastElement } from 'hast'
 import { TAG_ATTRS } from './sanitize'
 import { CopyableBlockquote } from './CopyableBlockquote'
+import { DirOwnerCtx, useTextBlockDir } from './contexts'
 import {
   MD_EM_CLS,
   MD_HEADING_CLS,
@@ -117,16 +118,16 @@ function slugify(children: React.ReactNode): string | undefined {
 
 export const ELEMENT_OVERRIDES = {
   // Headers carry the column's meaning, so never break them mid-label.
-  th({ node, children }) { return <th dir="auto" {...spa('th', node)} className={`${MD_TABLE_HEAD_CELL_CLS} whitespace-nowrap`}>{children}</th> },
-  td({ node, children }) { return <td dir="auto" {...spa('td', node)} className={MD_TABLE_CELL_CLS}>{children}</td> },
+  th({ node, children }) { return <DirOwnerCtx.Provider value="item"><th dir="auto" {...spa('th', node)} className={`${MD_TABLE_HEAD_CELL_CLS} whitespace-nowrap`}>{children}</th></DirOwnerCtx.Provider> },
+  td({ node, children }) { return <DirOwnerCtx.Provider value="item"><td dir="auto" {...spa('td', node)} className={MD_TABLE_CELL_CLS}>{children}</td></DirOwnerCtx.Provider> },
   blockquote({ node, children }) { return <CopyableBlockquote node={node}>{children}</CopyableBlockquote> },
   hr({ node }) { return <hr {...sp(node)} className="border-border my-4" /> },
-  h1({ node, children }) { const id = slugify(children); return <h1 {...sp(node)} dir="auto" id={id} className={MD_HEADING_CLS[0]}>{children}</h1> },
-  h2({ node, children }) { const id = slugify(children); return <h2 {...sp(node)} dir="auto" id={id} className={MD_HEADING_CLS[1]}>{children}</h2> },
-  h3({ node, children }) { const id = slugify(children); return <h3 {...sp(node)} dir="auto" id={id} className={MD_HEADING_CLS[2]}>{children}</h3> },
-  h4({ node, children }) { const id = slugify(children); return <h4 {...sp(node)} dir="auto" id={id} className={MD_HEADING_CLS[3]}>{children}</h4> },
-  h5({ node, children }) { const id = slugify(children); return <h5 {...sp(node)} dir="auto" id={id} className={MD_HEADING_CLS[4]}>{children}</h5> },
-  h6({ node, children }) { const id = slugify(children); return <h6 {...sp(node)} dir="auto" id={id} className={MD_HEADING_CLS[5]}>{children}</h6> },
+  h1({ node, children }) { return <MdHeading level={1} node={node}>{children}</MdHeading> },
+  h2({ node, children }) { return <MdHeading level={2} node={node}>{children}</MdHeading> },
+  h3({ node, children }) { return <MdHeading level={3} node={node}>{children}</MdHeading> },
+  h4({ node, children }) { return <MdHeading level={4} node={node}>{children}</MdHeading> },
+  h5({ node, children }) { return <MdHeading level={5} node={node}>{children}</MdHeading> },
+  h6({ node, children }) { return <MdHeading level={6} node={node}>{children}</MdHeading> },
   ul({ node, children, className }) { const isTasks = className?.includes('contains-task-list'); return <ul {...sp(node)} className={isTasks ? MD_TASK_LIST_CLS : MD_UL_CLS}>{children}</ul> },
   // `start` must reach the DOM, not be dropped while attaching a className: a
   // fenced block SPLITS the message into independent markdown documents
@@ -157,9 +158,25 @@ export const ELEMENT_OVERRIDES = {
       </ol>
     )
   },
-  li({ node, children, className }) {
-    const isTask = className?.includes('task-list-item')
-    if (!isTask) return <li dir="auto" {...spa('li', node)} className={MD_LIST_ITEM_CLS}>{children}</li>
+  li({ node, children, className }) { return <MdListItem node={node} task={!!className?.includes('task-list-item')}>{children}</MdListItem> },
+  strong({ node, children }) { return <strong {...sp(node)} className={MD_STRONG_CLS}>{children}</strong> },
+  em({ node, children }) { return <em {...sp(node)} className={MD_EM_CLS}>{children}</em> },
+} as Components
+
+function MdHeading({ level, node, children }: { level: 1 | 2 | 3 | 4 | 5 | 6; node?: HastElement; children?: React.ReactNode }) {
+  const { dir, cls } = useTextBlockDir()
+  const Tag = `h${level}` as const
+  return <Tag {...sp(node)} dir={dir} id={slugify(children)} className={MD_HEADING_CLS[level - 1] + cls}>{children}</Tag>
+}
+
+/** A list item picks its own direction, so its marker and indent sit on the
+ *  side its text starts from; directly under a quote it leaves `dir` off (the
+ *  quote reads its text) and lays its own lines out with plaintext. */
+function MdListItem({ node, task, children }: { node?: HastElement; task: boolean; children?: React.ReactNode }) {
+  const inQuote = useContext(DirOwnerCtx) === 'quote'
+  const dir = inQuote ? undefined : 'auto'
+  const bidiCls = inQuote ? ' [unicode-bidi:plaintext]' : ''
+  if (!task) return <DirOwnerCtx.Provider value="item"><li dir={dir} {...spa('li', node)} className={MD_LIST_ITEM_CLS + bidiCls}>{children}</li></DirOwnerCtx.Provider>
     // Task items use block flow, NOT flex. The previous `flex items-start` row
     // broke two ways: (1) an item containing a NESTED list (tasks.md shape)
     // laid the child <ul> out BESIDE the text; (2) any item long enough to
@@ -179,15 +196,14 @@ export const ELEMENT_OVERRIDES = {
     // uses a descendant combinator (`[&_input…]`) rather than direct-child so
     // it also lands on the loose-mode checkbox nested inside that first <p>.
     return (
+      <DirOwnerCtx.Provider value="item">
       <li
-        dir="auto"
+        dir={dir}
         {...spa('li', node)}
-        className="text-sm leading-normal break-words ps-5 -indent-5 [&_input[type=checkbox]]:mr-1.5 [&_input[type=checkbox]]:align-middle [&>ul]:indent-0 [&>ol]:indent-0 [&>p:not(:first-child)]:indent-0"
+        className={`text-sm leading-normal break-words ps-5 -indent-5 [&_input[type=checkbox]]:mr-1.5 [&_input[type=checkbox]]:align-middle [&>ul]:indent-0 [&>ol]:indent-0 [&>p:not(:first-child)]:indent-0${bidiCls}`}
       >
         {children}
       </li>
+      </DirOwnerCtx.Provider>
     )
-  },
-  strong({ node, children }) { return <strong {...sp(node)} className={MD_STRONG_CLS}>{children}</strong> },
-  em({ node, children }) { return <em {...sp(node)} className={MD_EM_CLS}>{children}</em> },
-} as Components
+}

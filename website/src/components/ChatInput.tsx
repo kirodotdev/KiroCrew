@@ -1520,7 +1520,6 @@ function ChatInput({
             playwright/composer-paste-highlight-scrollbar.spec.ts the second. */}
         <textarea
           ref={composedTextareaRef}
-          dir="auto"
           aria-label={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
           data-composer-input=""
           spellCheck={spellCheck}

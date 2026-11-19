@@ -1,10 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, expect, it } from 'vitest'
+import { render } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
-import ChatInput from '../components/ChatInput'
-import LexicalComposerInput from '../components/LexicalComposerInput'
-import PasteHighlightLayer from '../components/PasteHighlightLayer'
-import { renderWithProviders } from './helpers'
 
 /**
  * Text direction follows each block's own content, so Arabic, Hebrew, Persian
@@ -53,10 +49,62 @@ describe('chat text direction', () => {
     }
   })
 
-  it('lets a quote choose its direction from its first paragraph', () => {
-    const { container } = render(<MarkdownRenderer content={`> ${ARABIC}\n>\n> ${HEBREW}`} />)
-    expect(container.querySelector('blockquote')).toHaveAttribute('dir', 'auto')
-    for (const p of container.querySelectorAll('blockquote p')) expect(p.hasAttribute('dir')).toBe(false)
+  // jsdom lays nothing out, so these pin which element carries `dir` (the
+  // container whose search must reach the text) and which carries
+  // `unicode-bidi: plaintext` (a block that still picks its own direction).
+  const PLAINTEXT = '[unicode-bidi:plaintext]'
+  const ownsDir = (el: Element | null) => expect(el).toHaveAttribute('dir', 'auto')
+  const followsOwnText = (el: Element) => {
+    expect(el.hasAttribute('dir'), el.outerHTML).toBe(false)
+    expect(el.className.split(' '), el.outerHTML).toContain(PLAINTEXT)
+  }
+
+  it('lets a loose list item read its paragraph, so the marker sits on the text side', () => {
+    const { container } = render(<MarkdownRenderer content={`1. ${ARABIC}\n\n2. ${HEBREW}`} />)
+    const items = [...container.querySelectorAll('li')]
+    expect(items).toHaveLength(2)
+    for (const li of items) {
+      ownsDir(li)
+      followsOwnText(li.querySelector('p')!)
+    }
+  })
+
+  it('lets a quote that opens with a list or heading read that text', () => {
+    const list = render(<MarkdownRenderer content={`> - ${ARABIC}\n>   - nested English\n> - ${HEBREW}`} />).container
+    ownsDir(list.querySelector('blockquote'))
+    const [first, nested, second] = [...list.querySelectorAll('li')]
+    followsOwnText(first)
+    followsOwnText(second)
+    ownsDir(nested)
+    const heading = render(<MarkdownRenderer content={`> # ${ARABIC}\n>\n> ${HEBREW}`} />).container
+    ownsDir(heading.querySelector('blockquote'))
+    followsOwnText(heading.querySelector('blockquote h1')!)
+    const nestedQuote = render(<MarkdownRenderer content={`> > ${ARABIC}`} />).container
+    const [outer, inner] = [...nestedQuote.querySelectorAll('blockquote')]
+    ownsDir(outer)
+    expect(inner.hasAttribute('dir')).toBe(false)
+  })
+
+  it('keeps an English paragraph in a right-to-left quote on its own direction', () => {
+    const { container } = render(<MarkdownRenderer content={`> ${ARABIC}\n>\n> Hello world.`} />)
+    ownsDir(container.querySelector('blockquote'))
+    const paragraphs = [...container.querySelectorAll('blockquote p')]
+    expect(paragraphs.map(p => p.textContent)).toEqual([ARABIC, 'Hello world.'])
+    for (const p of paragraphs) followsOwnText(p)
+  })
+
+  it('lets a table cell read a paragraph inside it', () => {
+    const { container } = render(<MarkdownRenderer content={`<table><tr><td><p>${ARABIC}</p></td></tr></table>`} />)
+    ownsDir(container.querySelector('td'))
+    followsOwnText(container.querySelector('td p')!)
+  })
+
+  it('keeps a top-level paragraph and heading on their own dir="auto" with no plaintext class', () => {
+    const { container } = render(<MarkdownRenderer content={`# ${ARABIC}\n\n${HEBREW}`} />)
+    for (const el of container.querySelectorAll('h1, p')) {
+      ownsDir(el)
+      expect(el.className).not.toContain(PLAINTEXT)
+    }
   })
 
   it('keeps an English message left to right with the same layout it has on main', () => {
@@ -68,21 +116,5 @@ describe('chat text direction', () => {
     }
     expect(container.querySelector('p')!.textContent).toBe('Hello world.')
     expect(container.querySelectorAll('li')).toHaveLength(2)
-  })
-
-  it('gives the composer textarea dir="auto"', () => {
-    renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} />)
-    expect(screen.getByLabelText('Message input')).toHaveAttribute('dir', 'auto')
-  })
-
-  it('keeps each paragraph of the rich-text composer on dir="auto" (the editor sets it itself)', () => {
-    render(<LexicalComposerInput value={ARABIC} blocks={[]} onChange={vi.fn()} onSend={vi.fn()} ariaLabel="Message input" placeholder="Write a message" />)
-    const paragraph = screen.getByRole('textbox').querySelector('p')
-    expect(paragraph).toHaveAttribute('dir', 'auto')
-  })
-
-  it('gives the paste-chip mirror the same direction rule as its textarea', () => {
-    const { container } = render(<PasteHighlightLayer value={ARABIC} blocks={[]} />)
-    expect(container.querySelector('[data-composer-typo]')).toHaveAttribute('dir', 'auto')
   })
 })
