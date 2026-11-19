@@ -34,6 +34,7 @@ from typing import Any, Callable
 # it carries its own copy of SQLite, and a second copy's close of memory.db drops
 # the locks the gateway's connection holds on it (sqlite.org/howtocorrupt.html 2.2.1).
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.sqlite_uri import read_only_uri
 
 logger = logging.getLogger(__name__)
 
@@ -600,7 +601,7 @@ def probe_embedding_coverage(ctx: ProbeContext) -> dict[str, Any]:
     # -wal there is nothing to miss, and immutable=1 keeps the read from creating
     # -shm/-wal beside the file.
     wal = path.with_name(path.name + "-wal")
-    uri = path.resolve().as_uri() + ("?mode=ro" if wal.exists() else "?mode=ro&immutable=1")
+    uri = read_only_uri(path.resolve()) + ("" if wal.exists() else "&immutable=1")
     db = sqlite3.connect(uri, uri=True, timeout=1.0)
     try:
         tables: dict[str, dict[str, Any]] = {}

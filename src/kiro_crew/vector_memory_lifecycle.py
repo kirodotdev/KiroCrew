@@ -36,6 +36,7 @@ from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_stores, platform_compat, sqlite_wal
 from kiro_crew.boot_timing import timed_step
 from kiro_crew.owner_only_files import prepare_owner_only_sqlite
+from kiro_crew.sqlite_uri import read_only_uri
 
 if TYPE_CHECKING:
     from types import FrameType
@@ -165,7 +166,7 @@ class ReaderPool:
     def enable(self, db_path: Path) -> None:
         with self._mutex:
             self._generation += 1
-            self._uri = db_path.resolve().as_uri() + "?mode=ro"
+            self._uri = read_only_uri(db_path.resolve())
 
     def disable(self) -> None:
         """Stop handing out connections, interrupt in-flight reads, close them all."""
@@ -458,7 +459,7 @@ def _init_database(self: VectorMemoryStore) -> None:
         return
     # Private files must never enter the legacy schema/migration path.
     if self._db_path.exists():
-        probe = sqlite3.connect(self._db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        probe = sqlite3.connect(read_only_uri(self._db_path.resolve()), uri=True)
         try:
             if probe.execute("SELECT 1 FROM sqlite_schema WHERE name='member_database'").fetchone():
                 raise ValueError("Private memory requires canonical member admission")

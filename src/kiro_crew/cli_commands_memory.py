@@ -43,6 +43,7 @@ from kiro_crew.memory_stores import (
     resolve_declared_store,
 )
 from kiro_crew.security import scan_memory
+from kiro_crew.sqlite_uri import read_only_uri
 from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE, safe_terminal_line
 from kiro_crew.vector_memory import VectorMemoryStore, _lesson_display_text, declared_store
 
@@ -699,7 +700,7 @@ def _memory_dream(args: argparse.Namespace) -> None:
         sys.exit(1)
     listing: dict = {"proposals": [], "last_run": None, "state": {}}
     if db_path.exists():
-        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        conn = sqlite3.connect(read_only_uri(db_path.resolve()), uri=True)
         try:
             listing = memory_dream.read_list(conn)
         except (sqlite3.Error, StdlibSQLiteError):

@@ -42,6 +42,7 @@ from kiro_crew.memory_kind_routing import (
 )
 from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.project_scope import canonical_scope, scope_is_admissible
+from kiro_crew.sqlite_uri import read_only_uri
 from kiro_crew.validation import normalize_lesson_category
 from kiro_crew.vector_memory_constants import (
     _MAX_EPISODIC_PER_CONSOLIDATION,
@@ -146,7 +147,7 @@ def read_member_database_identity(path: Path) -> tuple[str, str]:
         kept = _IDENTITY_CACHE.get(resolved)
         if kept is not None and kept[0] == before:
             return kept[1]
-    db = sqlite3.connect(resolved.as_uri() + "?mode=ro", uri=True)
+    db = sqlite3.connect(read_only_uri(resolved), uri=True)
     try:
         identity = _member_identity(db)
     finally:
