@@ -956,7 +956,16 @@ async def follow_current_tab(
     if owner not in (None, key):
         logger.debug("browser live: current tab %s belongs to %s, not streamed", target, owner)
         return None
-    if url != "about:blank":
+    # A popup that has not committed its first document reports url "": it is left
+    # to load (not sent to about:blank) but not streamed either, so no frame of the
+    # page it lands on is published before a later follow judges that URL. Only the
+    # exact string passes: a missing or non-string url is still judged.
+    if tab.get("url") == "":
+        if target in set(_ledgered_targets(supervisor)):
+            hub.bind_target(key, target)
+        await hub.stop_stream(key)
+        return None
+    if tab.get("url") != "about:blank":
         refused = await harness_ops._refuse_committed_url(
             build_context(key, supervisor, hub, caller_key=caller_key, sites=sites), url
         )
@@ -1539,7 +1548,9 @@ async def _bound_op(
     if denied is not None:
         return denied
     if not hub.in_control(key):
-        await _follow_popup_after_op(hub, key, supervisor, ctx)
+        await _follow_popup_after_op(hub, key, supervisor, ctx, op)
+    if not hub.in_control(key):
+        # Asked again: the person may have taken the tab during the late looks.
         refused = await follow_current_tab(hub, key, supervisor, caller_key=caller_key, sites=sites)
         if refused is not None:
             _audit(request, "denied", str(refused.get("code") or ""))
@@ -1553,17 +1564,46 @@ async def _bound_op(
     return result
 
 
+#: Ops whose page action may open a popup a little after the op answers: a click
+#: handler or an Enter that calls ``window.open`` after a fetch. They get
+#: :data:`POPUP_LATE_READS` more looks, :data:`POPUP_LATE_POLL_S` apart.
+POPUP_LATE_OPS = frozenset({"click", "press_key"})
+POPUP_LATE_READS = 3
+POPUP_LATE_POLL_S = 0.15
+
+
 async def _follow_popup_after_op(
-    hub: LiveHub, key: str, supervisor: Any, ctx: harness_ops.OpContext
+    hub: LiveHub,
+    key: str,
+    supervisor: Any,
+    ctx: harness_ops.OpContext,
+    op: str,
 ) -> dict[str, Any] | None:
     """:func:`follow_popup` after the op answered; a failure leaves the answer as it was.
 
-    A deny that lands here is still caught: the check after it reports it.
+    After a :data:`POPUP_LATE_OPS` op, a popup that is not there on the first look
+    is looked for again, a bounded number of times, and never once the person
+    holds the tab. A deny that lands here is still caught: the check after it
+    reports it.
     """
+
+    async def _look() -> dict[str, Any] | None:
+        view = await follow_popup(hub, key, supervisor, ctx.helper, ctx.url_allowed)
+        if op not in POPUP_LATE_OPS:
+            return view
+        for _ in range(POPUP_LATE_READS):
+            if view is not None or hub.in_control(key):
+                break
+            await asyncio.sleep(POPUP_LATE_POLL_S)
+            # The op already finished, so a takeover during the wait cancels
+            # nothing: it holds the lock and waits on the fence this poll holds.
+            if hub.in_control(key):
+                break
+            view = await follow_popup(hub, key, supervisor, ctx.helper, ctx.url_allowed)
+        return view
+
     try:
-        return await asyncio.wait_for(
-            follow_popup(hub, key, supervisor, ctx.helper, ctx.url_allowed), timeout=OP_TIMEOUT_S
-        )
+        return await asyncio.wait_for(_look(), timeout=OP_TIMEOUT_S)
     except Exception:  # noqa: BLE001 - the op itself already answered
         logger.debug("browser: following a popup after the op failed", exc_info=True)
         return None

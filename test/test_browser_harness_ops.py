@@ -1061,6 +1061,30 @@ def test_link_to_private_page_is_refused_before_the_card_follows(fake) -> None:
     assert fake.calls[-1] == ("goto", {"url": "about:blank"})
 
 
+def test_a_tab_with_no_document_yet_is_left_to_load(fake) -> None:
+    """A popup reports url "" until its first page commits: sending it to about:blank
+    would cancel the navigation its opener started."""
+    from kiro_crew.browser_harness.url_gate import url_allowed
+
+    fake.helpers["current_tab"] = {"url": ""}
+    ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
+    out = run(ops.run_op("click", {"x": 1, "y": 2}, ctx))
+    assert out["ok"] is True, out
+    assert ("goto", {"url": "about:blank"}) not in fake.calls
+
+
+@pytest.mark.parametrize("tab", ["not-a-dict", {}, {"url": None}])
+def test_a_malformed_current_tab_is_still_refused(fake, tab) -> None:
+    """Only an exact "" url is left to load: the gate stays closed on anything else."""
+    from kiro_crew.browser_harness.url_gate import url_allowed
+
+    fake.helpers["current_tab"] = tab
+    ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
+    out = run(ops.run_op("click", {"x": 1, "y": 2}, ctx))
+    assert out["code"] == "redirect_refused"
+    assert fake.calls[-1] == ("goto", {"url": "about:blank"})
+
+
 # --- screenshot options: whole page, one element, a region, a size cap ---------
 
 
