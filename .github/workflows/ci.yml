@@ -1801,15 +1801,11 @@ jobs:
           # An explicit worker count, as in backend-test, instead of the xdist
           # budget: that budget reserves 5 GiB a worker for a
           # FULL-suite collection and grants a file shard only 2 of the fleet
-          # runner's 8 cores. The shards are CPU-bound, not memory-bound: at 4
-          # workers one kept 3.6-3.7 of 8 vCPU busy and peaked at 8,603-8,901 of
-          # 16,111 MiB; at 6 it ran 8-14% faster per shard (CPU model normalized)
-          # and peaked at 9,858-11,234 MiB (runs 44434126975, 44440752272). So one
-          # worker per 2 GiB after 2 GiB for the host, capped at the core count:
-          # 6 on the 16 GiB fleet runner, 4 on a 4-core hosted runner. The step
-          # prints its peak memory after the run.
+          # runner's 8 cores. One worker per 3 GiB after 2 GiB for the host,
+          # capped at the core count: 4 on the 15 GiB fleet runner and on a
+          # 4-core hosted runner. The step prints its peak memory after the run.
           mem_mib=$(python -c "from kiro_crew.platform_compat import host_total_mib; print(host_total_mib(), end='')")
-          by_mem=$(( (mem_mib - 2048) / 2048 ))
+          by_mem=$(( (mem_mib - 2048) / 3072 ))
           WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$WORKERS" -ge 1 ] || WORKERS=1
           echo "pytest workers: $WORKERS"
