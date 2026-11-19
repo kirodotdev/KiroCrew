@@ -18570,7 +18570,7 @@
         "gateway_auto_update_mandatory_note": "策略要求使用比当前更新的版本；有可用版本时，无论此开关如何设置都会准备好，并在你下次重启网关时开始运行。",
         "gateway_auto_update_description": "更新会自动下载，并在你下次重启 {{productName}} 时生效。不会自行重启。关闭后，保留当前版本。",
         "gateway_updates_heading": "网关更新",
-        "gateway_auto_update_desktop_context": "代理和聊天在名为网关的后台程序中运行，网关与{{productName}}分开安装。此开关使网关保持最新，而不是此应用；网关不会自行重启。",
+        "gateway_auto_update_desktop_context": "代理和聊天在名为网关的后台程序中运行，网关与 {{productName}} 分开安装。此开关使网关保持最新，而不是此应用；网关不会自行重启。",
         "automatic_updates_are_unavailable_in_this_build": "此构建版本不支持自动更新",
         "automatic_updates_unavailable_dev_build": "此构建版本不支持自动更新（开发版本）。",
         "automatic_updates_unavailable_channel": "自动更新不可用，因为该发布通道尚未提供适用于你所在平台的构建。在上方切换通道即可恢复更新。",
