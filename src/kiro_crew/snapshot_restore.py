@@ -24,6 +24,7 @@ import os
 import shutil
 import stat as _stat
 from contextlib import ExitStack, closing
+from contextvars import ContextVar
 from datetime import timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable, cast
@@ -64,6 +65,10 @@ from kiro_crew.snapshot_components import (
     safe_tree_root,
 )
 from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
+
+host_local_installable: ContextVar[frozenset[str]] = ContextVar(
+    "host_local_installable", default=frozenset()
+)
 
 
 def _save_locked_document_to(backup: Path, rel: str) -> Callable[[Path], None]:
@@ -334,8 +339,13 @@ def _backup_and_copy(
     ``O_EXCL``, not by name through ``shutil.copy2``: a by-name write follows a data-home
     component swapped for a link, or a symlink left at the core file's name. A name still
     occupied after the backup move is refused instead of written through.
+
+    A component's ``host_local`` files are neither moved nor installed unless this
+    caller explicitly marks one installable for its checked import. The others name
+    paths on the machine that made the archive, so this install's copy stays.
     """
-    host_local = COMPONENTS[component].host_local
+    installable = host_local_installable.get()
+    host_local = frozenset(f for f in COMPONENTS[component].host_local if f not in installable)
     for f in host_local:
         if os.path.lexists(snap / f):
             kept = "; this install's copy is kept" if os.path.lexists(mc / f) else ""
@@ -622,6 +632,8 @@ def _refuse_corrupt_source_databases(
         if not _want(components, component):
             continue
         for name in files:
+            if name in COMPONENTS[component].host_local:
+                continue  # never installed, so its bundle copy cannot refuse the restore
             src = snap / name
             if not src.exists() and not platform_compat.is_link_or_junction(src):
                 continue  # absent from a selective bundle; nothing to validate
