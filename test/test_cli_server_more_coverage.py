@@ -486,10 +486,34 @@ class TestUpdateGitPath:
             cli_server._update()
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert "will be discarded" in out
+        assert "uncommitted changes in 1 file" in out
         assert " M src/a.py" in out
         assert "?? scratch.txt" not in out  # untracked files are preserved, not listed
-        assert "Aborted." in out
+        assert "Answer N to keep them" in out
+        # The stash steps act on the installed checkout, not the shell's folder.
+        assert f"go to the checkout:\n      {git_checkout}\n  and run there:\n" in out
+        assert "git stash\n" in out
+        assert "      kirocrew update\n" in out
+        assert "git stash pop" in out
+        assert "Your changes were kept" in out
+        assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_local_changes_prompt_counts_files_and_repeats_force(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        stub = _GitStub()
+        stub.status_out = "".join(f" M src/f{i}.py\n" for i in range(12))
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "")
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update(force=True)
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "uncommitted changes in 12 files" in out
+        assert " M src/f9.py" in out
+        assert " M src/f10.py" not in out
+        assert "… and 2 more" in out
+        assert "kirocrew update --force" in out
         assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
 
     def test_local_changes_confirmed_proceeds_to_reset(

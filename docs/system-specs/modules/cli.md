@@ -1896,7 +1896,11 @@ One flag is a MODE rather than a check and short-circuits before the list above 
    flag lets a real update discard diverged work, it does not delete commits
    when there is nothing to update to). An unreadable comparison refuses
    (fail closed). Uncommitted tracked changes still prompt before being
-   discarded — and because that prompt makes the gap to the reset unbounded,
+   discarded: the prompt counts the changed files, lists the first ten, says
+   that answering N keeps them, and names the way to keep them and still
+   update (`git stash`, the same `kirocrew update` command, `git stash pop`,
+   run in the checkout, whose folder it prints on a line of its own);
+   only an explicit `y` resets them away — and because that prompt makes the gap to the reset unbounded,
    the divergence count is re-taken immediately before the reset and refuses
    commits that appeared while the update was waiting (committing the listed
    edits in another terminal to rescue them is the natural response to the
