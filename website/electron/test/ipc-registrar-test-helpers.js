@@ -556,6 +556,7 @@ const SHELL_LISTENERS = [
 ].sort();
 
 const UPDATE_HANDLES = [
+  "update:can-relaunch",
   "update:check",
   "update:download",
   "update:get-info",
