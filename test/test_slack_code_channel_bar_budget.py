@@ -23,7 +23,6 @@ from typing import Any
 import pytest
 import test_slack_code_channel_board as suite
 
-from kiro_crew import git_config_hooks
 from kiro_crew.dashboard.handlers import worktree as wt
 from kiro_crew.slack import features
 from kiro_crew.slack.code_channels import agent_bar
@@ -319,20 +318,10 @@ def _passthrough_spawn(argv: Any, mode: str = "standard", **kw: Any) -> Any:
     return list(argv), dict(os.environ), None
 
 
-def _no_hook_scan(cwd: Any, **kw: Any) -> list[str]:
-    # The pins only: these repositories define no config hooks, and the scan is
-    # tested in test_git_config_hooks.py.
-    return git_config_hooks._disable_args_for_names([])
-
-
 @pytest.fixture(autouse=True)
 def _no_sandbox(_floor_monkeypatch: Any) -> None:
     _floor_monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
     _floor_monkeypatch.setattr(git_ops, "sandboxed_spawn_argv", _passthrough_spawn)
-    # A git read otherwise spawns three scan gits (config, rev-parse, ls-files)
-    # before its own, and a refresh makes several reads: on a loaded Windows
-    # runner that is minutes per test. One spawn per read keeps the bar the subject.
-    _floor_monkeypatch.setattr(wt, "config_hook_disable_args_sandboxed", _no_hook_scan)
 
 
 # The board suite's bare remote + clone, copied per test from one per-module template.
