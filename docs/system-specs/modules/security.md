@@ -3683,6 +3683,31 @@ It refuses the session for its own entry only; a sub-agent registered beside it
 (`acp/kas_subagent_targets.py`) that carries either is left out of the batch and
 named in the session-start notice (`REMOTE_SUBAGENTS_RESTRICTED`).
 
+**KAS native sub-agent ceiling** — a sub-agent the KAS engine runs
+(`invoke_sub_agent`) gets its parent's ceiling or a tighter one, never a wider one,
+and every gap fails closed:
+
+- *Which agents.* Every batch entry that mounts the tool carries a `subagent` deny
+  naming `agent_files.OWNED_KIRO_AGENT_NAMES` (the stems of `OWNED_KIRO_AGENT_FILES`),
+  with or without an `availableAgents` list (`kas_subagent_targets.deny_own_agents`,
+  applied by `acp/kas_native_batch.py`). A deny only narrows.
+- *Gate-only limits.* A native child's request shares the session's id and is told
+  apart by the id its `agentSubtaskId` frame recorded. `_build_permission_event`
+  stamps the session agent's LIMITS on it (`_stamp_parent_limits`): the shell and
+  write allowlists, the read-only flag beside the shell allowlist, a Bot worker's
+  unjudged denies, and the deny record with its grants emptied
+  (`spec_denied_grant.denies_only`). The `spec_granted_*` and `spec_hook_held`
+  grants stay off, so the `spec-shell-allowlist`, `spec-write-allowlist`,
+  `spec-denies` and unjudged-denies rows refuse the child as they refuse the parent,
+  and no grant row answers for it.
+- *Its tools.* The one agent Kiro Crew ships for the tool, `kirocrew-helper`
+  (`acp/kas_engine_subagent_target.py`), exists only in memory: built-in tools only,
+  no server of its own, no hooks, and every session-level server excluded whole
+  (`@server` in `excludedTools`), so it reaches no Kiro Crew tool.
+- *Its finished calls.* The session agent's spec `postToolUse` hooks fire for a
+  child's finished call (`acp/kas_child_finished.py`, see
+  [acp-client](acp-client.md)), once per call.
+
 **claude spec allowlists** — claude reads neither `toolsSettings` allowlist, so for
 a backend in `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude only; kiro-cli
 enforces the field itself and must never join) the direct `AcpClient` records both

@@ -242,6 +242,22 @@ class ChannelTurnHooks:
             acp_session_id=sid if self.spec.hooks and sid else None,
         )
 
+    async def on_child_result(self, event: Any) -> None:
+        """Fire ``PostToolUse`` for a native sub-agent's FINISHED call, as for the turn's own.
+
+        Only an activity event the session marked finished
+        (``acp.kas_child_finished``) carries the call's outcome, once per call; it
+        names the call and is then judged by :meth:`on_tool_result`.
+        """
+        # deferred: see prepare
+        from kiro_crew.acp.kas_child_finished import is_finished_child_call
+
+        if not is_finished_child_call(event):
+            return
+        self._titles[str(event.tool_call_id)] = _title(event)
+        self._name(event, is_shell=bool(getattr(event, "is_shell", False)), keep=True)
+        await self.on_tool_result(event)
+
     async def on_tool_result(self, event: Any) -> None:
         """Fire ``PostToolUse`` once per call, on its terminal result."""
         # deferred: see prepare

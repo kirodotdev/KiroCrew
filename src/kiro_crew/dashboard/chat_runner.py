@@ -281,7 +281,7 @@ from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _on_permission_request,
     _slot_is_trusted,
 )
-from kiro_crew.dashboard.chat_turn.tool_results import _on_tool_result
+from kiro_crew.dashboard.chat_turn.tool_results import _on_child_tool_finished, _on_tool_result
 from kiro_crew.dashboard.chat_turn.tool_rows import (
     _MAX_TCID_SOURCES,
     _on_tool_call,
@@ -1336,6 +1336,7 @@ async def _run_chat(
                 await _on_subagent_list(turn, event)
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
                 await _on_subagent_activity(turn, event)
+                await _on_child_tool_finished(turn, event)
             elif event.kind == EVENT_COMPLETE:
                 await _settle_echo_hold(turn)
                 _flow = await _on_complete(turn, event)

@@ -564,6 +564,7 @@ async def _run_inner_impl(
     # Mirrors the chat turn's ``turn._pending_tools`` (dashboard/chat_turn).
     _pending_tools: dict[str, str] = {}
     # tool_call_id -> the tool id the call's PostToolUse spec hooks match on.
+    from kiro_crew.acp.kas_child_finished import is_finished_child_call as _child_call_finished
     from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_TOOL_CALL_UPDATE
     from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, post_tool_identity
     from kiro_crew.hooks import pre_tool_match_names
@@ -1452,12 +1453,25 @@ async def _run_inner_impl(
         elif event.kind == EVENT_TOOL_CALL_UPDATE:
             self._manager._note_tool_update(info, event)
             await _card_titles.refine(self._manager, info, event)
-        elif event.kind == EVENT_TOOL_RESULT:
-            # A FINAL result means the tool is done: drop the attribution
-            # snapshot so a later idle stretch is not judged against a
-            # command that has already returned. A non-final progress frame
-            # is not the end of the tool — the gate is in _note_tool_result.
-            self._manager._note_tool_result(info, event)
+        elif event.kind == EVENT_TOOL_RESULT or _child_call_finished(event):
+            if event.kind != EVENT_TOOL_RESULT:
+                # A native sub-agent's finished call (``acp.kas_child_finished``):
+                # no tool_call frame named it here, so its event names it now.
+                _pending_tools[event.tool_call_id] = (event.title or "").removeprefix("Running: ")
+                _named = post_tool_identity(
+                    client,
+                    event,
+                    is_shell=bool(event.is_shell),
+                    earlier=_pending_tool_ids.get(event.tool_call_id),
+                )
+                if _named is not None:
+                    _pending_tool_ids[event.tool_call_id] = _named
+            else:
+                # A FINAL result means the tool is done: drop the attribution
+                # snapshot so a later idle stretch is not judged against a
+                # command that has already returned. A non-final progress frame
+                # is not the end of the tool — the gate is in _note_tool_result.
+                self._manager._note_tool_result(info, event)
             # Fire PostToolUse hooks (parity with chat_runner). Until this
             # branch existed, hooks registered for subagent-spawned tools
             # received PreToolUse but never PostToolUse — losing the

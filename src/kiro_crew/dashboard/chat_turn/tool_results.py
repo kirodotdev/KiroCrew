@@ -963,3 +963,40 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
             state, slot, client, session_key
         )
         turn._compact_after_turn_noticed = _compact_after_turn_noticed
+
+
+async def _on_child_tool_finished(turn: _ChatTurn, event) -> None:
+    """Fire PostToolUse for a native sub-agent's FINISHED call, as for the turn's own.
+
+    Only an activity event the session marked finished (``acp.kas_child_finished``)
+    carries the call's outcome, once per call. The same redaction, output cut and
+    names as :func:`_on_tool_result`'s fire; the hooks' output is dropped in both,
+    so it never reaches the model.
+    """
+    from kiro_crew.acp.kas_child_finished import is_finished_child_call
+    from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
+
+    if not is_finished_child_call(event):
+        return
+    _raw = event.title or ""
+    if _raw.startswith("Running: "):
+        _raw = _raw[9:]
+    # The id the call's permission request named it by, when it raised one.
+    _named = post_tool_identity(
+        turn.client,
+        event,
+        is_shell=bool(event.is_shell),
+        earlier=turn._pending_tool_ids.pop(event.tool_call_id, None),
+    )
+    try:
+        await _fire(
+            turn,
+            HOOK_EVENT_POST_TOOL_USE,
+            tool_name=_raw,
+            tool_response={"output": _redact_tool_field(event.tool_output)[:2000]},
+            tool_id=(_named.tool_id or None) if _named else None,
+            tool_identity=_named.tool_identity if _named else "",
+            mcp_server=_named.mcp_server if _named else "",
+        )
+    except Exception:
+        logger.debug("PostToolUse hook error on a sub-agent call", exc_info=True)
