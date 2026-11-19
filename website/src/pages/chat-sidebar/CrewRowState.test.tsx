@@ -16,7 +16,7 @@ describe('Conductor mode row state word', () => {
     expect(run.tone).not.toBe(wait.tone)
   })
 
-  it('Running draws a solid green dot before the word', () => {
+  it('Running draws a solid muted dot before the word', () => {
     render(<CrewStateWord kind="running" title="Thinking" />)
     const state = screen.getByTestId('crew-root-state')
     expect(state).toHaveTextContent(/^Running$/)
@@ -27,7 +27,7 @@ describe('Conductor mode row state word', () => {
     expect(mark).toHaveAttribute('data-mark', 'filled')
     expect(mark).toHaveAttribute('fill', 'currentColor')
     expect(mark).toHaveAttribute('aria-hidden', 'true')
-    expect(mark).toHaveClass('text-[var(--ok)]')
+    expect(mark).toHaveClass('crew-tone-muted')
     // Same glyph size as the session count's bubble.
     expect(mark).toHaveAttribute('width', '11')
     // The mark never moves.

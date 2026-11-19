@@ -584,5 +584,7 @@
   "pages.settings.slackSharedAccess.confirm_title",
   "pages.settings.slackSharedAccess.confirm_label",
   "components.globalChatSearch.more_matches",
-  "pages.settings.slackPanel.slackCode.box_slack_mcp"
+  "pages.settings.slackPanel.slackCode.box_slack_mcp",
+  "pages.chatSidebar.show_linked_items",
+  "pages.chatSidebar.show_linked_items_failed"
 ]

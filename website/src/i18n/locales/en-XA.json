@@ -15092,7 +15092,12 @@
       "kind_section_mate": "[Ƒŕøɱ ƀøţş ··············]",
       "filter_crew_description": "[Şĥøẁ øñĺý çøñðùçţøŕ ɱøðè çĥàţş ·····················]",
       "reclick_toggles_side_panel": "[Çĺìçķ àğàìñ ţø şĥøẁ øŕ ĥìðè ţĥè şìðè þàñèĺ ·····················]",
-      "reclick_toggles_side_panel_shortcut": "[Çĺìçķ àğàìñ ţø şĥøẁ øŕ ĥìðè ţĥè şìðè þàñèĺ ({{shortcut}}) ·······················]"
+      "reclick_toggles_side_panel_shortcut": "[Çĺìçķ àğàìñ ţø şĥøẁ øŕ ĥìðè ţĥè şìðè þàñèĺ ({{shortcut}}) ·······················]",
+      "show_linked_items_one": "[Şĥøẁ {{count}} ĺìñķèð ìţèɱ ···············]",
+      "show_linked_items_other": "[Şĥøẁ {{count}} ĺìñķèð ìţèɱş ················]",
+      "hide_linked_items": "[Ĥìðè ĺìñķèð ìţèɱş ···············]",
+      "show_linked_items_failed_one": "[Şĥøẁ {{count}} ĺìñķèð ìţèɱ, à çĥèçķ ƒàìĺèð ·················]",
+      "show_linked_items_failed_other": "[Şĥøẁ {{count}} ĺìñķèð ìţèɱş, à çĥèçķ ƒàìĺèð ·················]"
     },
     "contextBreakdown": {
       "axis_turn_n": "[Ţùŕñ {{n}} ········]",

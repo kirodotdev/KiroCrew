@@ -50,7 +50,7 @@ import { memberThreadTitle } from '../../lib/memberThreadTitle'
 import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick, reclickDoubleClick, reclickPanelTitle, reclickTogglesPanel } from './chrome'
-import { SessionSourceChips } from './SessionSourceChips'
+import { SessionStatusLinksLine } from './SessionLinksLine'
 import { useSessionCardLines, cardLineClass } from './cardLines'
 import { RowTrailingMeta, SearchHitTail } from './searchHits'
 import { connectedChannelLinks } from './connectedChannelLinks'
@@ -1308,7 +1308,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       // The open session's row shows its actions only while a guide step
       // points at one (sessions.row-menu resolves to the open row's copy).
       // No `title` here: IconButton then shows each aria-label as an instant tip.
-      <IconButtonGroup className={`absolute top-1/2 -translate-y-1/2 right-1.5 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible]:opacity-100 has-[[data-state=open]]:opacity-100 ${isActive && guideOnRowControl ? '!opacity-100' : ''}`}>
+      // Anchored to the top, over the meta and title lines: centred, its 28px
+      // reached into the status line and took a press aimed at the links count.
+      <IconButtonGroup className={`absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible]:opacity-100 has-[[data-state=open]]:opacity-100 ${isActive && guideOnRowControl ? '!opacity-100' : ''}`}>
         <DropdownMenu guideScope="menu:sessions.row-menu">
           <DropdownMenuTrigger asChild>
             <IconButton aria-label={i18nT('pages.chatSidebar.more_options')} {...uiLocation('sessions.row-menu')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
@@ -1622,10 +1624,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             // shifted left by the missing chevron.
             <span className="mt-2.5 mr-0.5 w-4 h-4 shrink-0" aria-hidden="true" />
           ))}
-          {/* The `:has` rules hide the title line below, and the bolt that leads it, while a crewmate
-              head (`MemberRowHead`), which already carries the name, is drawn on the first line. Not
-              while renaming: the rename box lives in that title line. `relative` anchors the bolt. */}
-          <div className={`relative flex-1 min-w-0 overflow-x-clip ${renamingHere ? '' : '[&:has([data-member-head])>[data-session-title]]:hidden [&:has([data-member-head])>[data-read-only-bolt]]:hidden'}`}>
+          {/* The `:has` rule hides the title line below while a crewmate head (`MemberRowHead`),
+              which already carries the name, is drawn on the first line. Not while renaming: the
+              rename box lives in that title line. */}
+          <div className={`relative flex-1 min-w-0 overflow-x-clip ${renamingHere ? '' : '[&:has([data-member-head])>[data-session-title]]:hidden'}`}>
             <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
               {/* Plain keyed span, deliberately unanimated: 200+ per-row
                 *  AnimatePresence trees each paid child-diffing bookkeeping on
@@ -1634,9 +1636,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  framer-only (no new CSS @keyframes). */}
               {/* A crewmate's own thread has no agent chip (its title is the name), so the
                 *  line starts at the Members-page chip with no placeholder gap before it. */}
-              {/* A Conductor mode root leaves this line empty. Its coloured bolt
-                *  sits before the title below, so the title and the mark scan as
-                *  one item without repeating the mode name. */}
+              {/* A Conductor mode root wears its coloured bolt where every other
+                *  row names its agent, so each row's title starts at the same x
+                *  and the mode is read in the slot that says who runs the chat. */}
+              {memberTitle === null && crewRoot && <ConductorModeTitleMark />}
               {/* A code-channel row's agent name gives way first, so the Slack
                 *  mark and the time keep their room; other rows keep `shrink-0`. */}
               {memberTitle === null && !crewRoot && (
@@ -1854,12 +1857,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 on some rows, which reads as ragged, so wrapping to 2 or 3 lines
                 is the user's opt-in (Title Lines on Session Cards). The full
                 string stays reachable through the `title` attribute, and the
-                rename box below shows it in full. A Conductor mode root's bolt sits
-                outside this line box, over the indent the title reserves for it. */}
-            {crewRoot && !renamingHere && <ConductorModeTitleMark />}
+                rename box below shows it in full. */}
             <div
               data-session-title
-              className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : cardLineClass(cardLines.title)}${crewRoot && !renamingHere ? ' indent-6' : ''}`}
+              className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : cardLineClass(cardLines.title)}`}
               {...(renamingHere ? {} : offlineProps(connected, i18nT('utils.offline.rename_sessions')))}
               // AFTER the spread, deliberately: `offlineProps` would otherwise
               // replace this with its own tooltip, and this one is the only
@@ -1918,24 +1919,16 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 is unread with nothing said yet still renders the line, because the
                 dot IS the content then. A crew card's workers summary takes the
                 tail's place (ONE line); a search's snippet stands in for the tail. */}
-            {crewRoot
-              // A conductor mode row shows only what needs attention (counts in the tooltip), else the usual tail.
-              ? <CrewRootSummaryLine root={s.key} fallback={<SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />} own={crewOwnState} work={s.crew_work} dot={unreadDot}
-                  // What the main chat itself holds for the person: an approval, a question, a
-                  // spawn approval, or an armed loop asking (a ledger item on the person is counted from `crew_work`).
-                  rootOwes={s.pending_approval || s.needs_input || subagentAwaiting > 0 || (loopWaiting && !(crewWork?.person ?? 0)) ? 1 : 0} />
-              : <SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />}
-            {s.source_links && s.source_links.length > 0 && (
-              <SessionSourceChips
-                slotKey={s.key}
-                links={s.source_links}
-                total={s.source_links_total}
-                connected={connected}
-                isActive={isActive}
-                onOpenSource={onOpenSource}
-                onActivateSlot={() => { dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true })); onSelectSlot?.(s.key) }}
-              />
-            )}
+            <SessionStatusLinksLine
+              status={crewRoot
+                // A conductor mode row shows only what needs attention (counts in the tooltip), else the usual tail.
+                ? <CrewRootSummaryLine root={s.key} fallback={<SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />} own={crewOwnState} work={s.crew_work} dot={unreadDot}
+                    // What the main chat itself holds for the person: an approval, a question, a
+                    // spawn approval, or an armed loop asking (a ledger item on the person is counted from `crew_work`).
+                    rootOwes={s.pending_approval || s.needs_input || subagentAwaiting > 0 || (loopWaiting && !(crewWork?.person ?? 0)) ? 1 : 0} />
+                : <SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />}
+              slotKey={s.key} links={s.source_links} total={s.source_links_total} connected={connected} isActive={isActive} onOpenSource={onOpenSource}
+              onActivateSlot={() => { dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true })); onSelectSlot?.(s.key) }} />
             {/* No tag chips here: every tag renders in the meta line above as
              *  tinted `· name` text. A chip row would print each tag twice. */}
           </div>

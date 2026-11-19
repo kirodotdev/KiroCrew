@@ -15072,7 +15072,10 @@
       "show_sessions_count_other": "세션 {{n}}개 표시",
       "hide_sessions_count_other": "세션 {{n}}개 숨기기",
       "reclick_toggles_side_panel": "다시 클릭하면 사이드 패널을 표시하거나 숨깁니다",
-      "reclick_toggles_side_panel_shortcut": "다시 클릭하면 사이드 패널을 표시하거나 숨깁니다 ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "다시 클릭하면 사이드 패널을 표시하거나 숨깁니다 ({{shortcut}})",
+      "show_linked_items_other": "연결된 항목 {{count}}개 보기",
+      "hide_linked_items": "연결된 항목 숨기기",
+      "show_linked_items_failed_other": "연결된 항목 {{count}}개 보기, 실패한 검사 있음"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

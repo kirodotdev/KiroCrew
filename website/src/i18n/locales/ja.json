@@ -15072,7 +15072,10 @@
       "show_sessions_count_other": "{{n}} 件のセッションを表示",
       "hide_sessions_count_other": "{{n}} 件のセッションを非表示",
       "reclick_toggles_side_panel": "もう一度クリックするとサイドパネルの表示を切り替えます",
-      "reclick_toggles_side_panel_shortcut": "もう一度クリックするとサイドパネルの表示を切り替えます（{{shortcut}}）"
+      "reclick_toggles_side_panel_shortcut": "もう一度クリックするとサイドパネルの表示を切り替えます（{{shortcut}}）",
+      "show_linked_items_other": "関連項目を {{count}} 件表示",
+      "hide_linked_items": "関連項目を隠す",
+      "show_linked_items_failed_other": "関連項目を {{count}} 件表示（失敗したチェックあり）"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

@@ -58,6 +58,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 import ChatSidebar from '../pages/ChatSidebar'
 import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
+import { expandSessionLinks } from './SessionLinksTestUtils'
 
 /** GitHub URLs for two different projects, both with issue #1. */
 const URL_A1 = 'https://github.com/group-a/svc/issues/1'
@@ -110,6 +111,7 @@ function renderWithSlots(rows: ChatSlot[]) {
       </Provider>
     </QueryClientProvider>,
   )
+  expandSessionLinks()
 }
 
 describe('ChatSidebar – sidebar chip project qualifier', () => {

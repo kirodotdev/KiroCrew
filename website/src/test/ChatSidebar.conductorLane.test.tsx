@@ -250,11 +250,12 @@ describe('chat sidebar — conductor lane', () => {
     expect(within(card).queryByTestId('crew-ghost-badge')).toBeNull()
     const title = card.querySelector('[data-session-title]') as HTMLElement
     const bolt = within(card).getByTestId('conductor-mode-title-mark')
-    // The bolt leads the title from outside its line box (see the layout test below).
-    expect(bolt.nextElementSibling).toBe(title)
+    // The bolt takes the agent-name slot on the first line, not the title line (#38200).
+    expect(card.querySelector('.session-agent-label')?.contains(bolt)).toBe(true)
+    expect(title.contains(bolt)).toBe(false)
     expect(bolt.querySelectorAll('.lucide-zap')).toHaveLength(1)
     expect(bolt.querySelector('.lucide-zap')).toHaveClass('conductor-mode-accent')
-    expect(bolt.querySelector('.lucide-zap')).toHaveAttribute('width', '14')
+    expect(bolt.querySelector('.lucide-zap')).toHaveAttribute('width', '12')
     expect(bolt).toHaveAttribute('aria-label', 'Conductor mode')
     expect(title).toHaveTextContent('Crew root')
     // The conductor's name is not shown: Crew Mode chooses it.
@@ -271,7 +272,7 @@ describe('chat sidebar — conductor lane', () => {
     expect(getByTestId('crew-root-attention')).toHaveAttribute('title', '2 sessions, 1 needs you, and 1 waiting')
   })
 
-  it('keeps a conductor root row the height of a plain row: the 24px bolt is out of the 20px title line', () => {
+  it('keeps a conductor root title where a plain row puts it: the bolt sits on the first line', () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
@@ -282,22 +283,13 @@ describe('chat sidebar — conductor lane', () => {
     const title = card.querySelector('[data-session-title]') as HTMLElement
     const plainTitle = plain.querySelector('[data-session-title]') as HTMLElement
     const bolt = within(card).getByTestId('conductor-mode-title-mark')
-    // No box of the bolt's sits in the title's line box, so nothing there can
-    // be taller than the 20px line: the title holds only text and inline marks.
-    expect(title.contains(bolt)).toBe(false)
+    // No indent: the title is the plain row's title, so both start at the same x.
+    expect(title.className).toBe(plainTitle.className)
     expect(title.querySelector('button')).toBeNull()
-    // Out of flow at its static position, centred on the line, with a real 24px box.
-    expect(bolt).toHaveClass('absolute', 'h-6', 'w-6', '-mt-0.5')
-    // Its target stays inside that reserved box, even on a coarse pointer.
+    // The bolt is in flow on the 12px first line, in the agent-name slot.
+    expect(bolt.closest('.session-agent-label')).not.toBeNull()
+    expect(bolt).toHaveClass('h-3', 'w-3')
     expect(bolt).not.toHaveClass('mc-touch-hit')
-    // The title reserves the box's width; it is otherwise the plain row's title.
-    expect(title).toHaveClass('indent-6', 'leading-[20px]', 'truncate')
-    expect(title.className.replace(' indent-6', '')).toBe(plainTitle.className)
-    // The column anchors the bolt and hides it with the title under a crewmate head.
-    const column = title.parentElement as HTMLElement
-    expect(bolt.parentElement).toBe(column)
-    expect(column).toHaveClass('relative')
-    expect(column.className).toContain('[&:has([data-member-head])>[data-read-only-bolt]]:hidden')
     expect(plain.querySelector('[data-read-only-bolt]')).toBeNull()
   })
 
@@ -309,13 +301,14 @@ describe('chat sidebar — conductor lane', () => {
     const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
     expect(within(card).queryByTestId('crew-root-summary')).toBeNull()
     expect(within(card).queryByTestId('session-row-time')).toBeNull()
+    // The first line holds only the bolt: no agent name, no text.
     expect(card.querySelector('.session-agent-label')?.textContent).toBe('')
     const title = card.querySelector('[data-session-title]') as HTMLElement
     const bolt = within(card).getByTestId('conductor-mode-title-mark')
     expect(title.parentElement).toHaveClass('relative', 'overflow-x-clip')
     expect(title.parentElement).not.toHaveClass('overflow-hidden', 'overflow-x-hidden')
     expect(title).toHaveClass('truncate', 'leading-[20px]')
-    expect(bolt).toHaveClass('h-6', 'w-6', 'focus-visible:-outline-offset-2')
+    expect(bolt).toHaveClass('h-3', 'w-3', 'focus-visible:-outline-offset-2')
   })
 
   it('a tapped row bolt keeps its tip through the replayed mouse leave until focus leaves', () => {
@@ -467,7 +460,8 @@ describe('chat sidebar — conductor lane', () => {
     ])
     expect(parts.map(p => p.querySelector('svg')?.getAttribute('width'))).toEqual(['11', '11'])
     expect(parts[0].className).toContain('crew-tone-warn')
-    expect(parts[1].className).toContain('text-[var(--ok)]')
+    // Only "needs you" carries colour on the row (#38200); running is muted.
+    expect(parts[1].className).toContain('crew-tone-muted')
     expect(queryByTestId('crew-root-counts')).toBeNull()
   })
 

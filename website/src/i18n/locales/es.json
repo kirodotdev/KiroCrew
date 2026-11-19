@@ -15874,7 +15874,14 @@
       "hide_sessions_count_many": "Ocultar {{n}} sesiones",
       "hide_sessions_count_other": "Ocultar {{n}} sesiones",
       "reclick_toggles_side_panel": "Haz clic de nuevo para mostrar u ocultar el panel lateral",
-      "reclick_toggles_side_panel_shortcut": "Haz clic de nuevo para mostrar u ocultar el panel lateral ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "Haz clic de nuevo para mostrar u ocultar el panel lateral ({{shortcut}})",
+      "show_linked_items_one": "Mostrar {{count}} elemento vinculado",
+      "show_linked_items_many": "Mostrar {{count}} elementos vinculados",
+      "show_linked_items_other": "Mostrar {{count}} elementos vinculados",
+      "hide_linked_items": "Ocultar elementos vinculados",
+      "show_linked_items_failed_one": "Mostrar {{count}} elemento vinculado, una comprobación falló",
+      "show_linked_items_failed_many": "Mostrar {{count}} elementos vinculados, una comprobación falló",
+      "show_linked_items_failed_other": "Mostrar {{count}} elementos vinculados, una comprobación falló"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
