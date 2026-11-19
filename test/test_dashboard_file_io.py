@@ -8,6 +8,7 @@ import io
 import json
 import os
 import stat
+import sys
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import quote
@@ -319,7 +320,7 @@ class TestFileRead:
         f = tmp_path / "latin1.txt"
         f.write_bytes(b"caf\xe9 au lait\n")
         plain = tmp_path / "utf8.txt"
-        plain.write_text("café au lait\n", encoding="utf-8")
+        plain.write_bytes("café au lait\n".encode("utf-8"))
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-read?path={f}")
             assert resp.status == 200
@@ -530,7 +531,12 @@ class TestFileReadReservedCharacterPaths:
         [
             "Ada Lovelace (ada).md",
             "Q1 2026 (draft) #2.md",
-            "is it done?.md",
+            pytest.param(
+                "is it done?.md",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32", reason="Windows file names cannot contain '?'"
+                ),
+            ),
             "a & b, c'd.md",
             "50% done [final]+1.md",
         ],
