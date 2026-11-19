@@ -723,7 +723,9 @@ def _reinjecting_factory(
 def pool_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """An ACP pool on Kiro CLI with no config file behind it."""
     monkeypatch.setattr(llm_pool, "_read_config", lambda: {})
-    monkeypatch.setattr(llm_pool, "_get_acp_backend", lambda config=None: ACP_BACKEND_KIRO)
+    monkeypatch.setattr(
+        llm_pool, "_get_acp_backend", lambda config=None, *, sessions=None: ACP_BACKEND_KIRO
+    )
     monkeypatch.setattr(llm_pool, "_get_sandbox_mode", lambda config=None: "auto")
 
 

@@ -103,6 +103,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         transient_retry_delay,
     )
     from kiro_crew.llm_helpers_parts.background_turns import (  # noqa: F401
+        BackgroundAdmissionRefused,
         _background_crew_log_owner,
         _background_spawn_backend,
         _cleanup_memory_consolidation_session,
@@ -116,6 +117,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _rewrite_lite_spec,
         _start_fresh_conversation,
         background_turn,
+        repair_lite_spec,
         run_bg_oneliner,
     )
     from kiro_crew.llm_helpers_parts.model_fallback import (  # noqa: F401
