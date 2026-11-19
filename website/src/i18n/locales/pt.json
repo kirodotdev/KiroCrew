@@ -11795,6 +11795,7 @@
       "job_name_paused": "{{name}} (em pausa)"
     },
     "grillCard": {
+      "add_picture": "Adicionar imagem",
       "decline": "Não, obrigado",
       "label": "Proposta de discussão",
       "minutes_many": "Cerca de {{count}} minutos",
@@ -11803,6 +11804,7 @@
       "must": "Deve",
       "not_sent": "Esta visualização não tem caixa de chat para enviar.",
       "question": "Pergunta",
+      "remove_picture": "Remover {{name}}",
       "send_decline": "Não precisa de discussão",
       "send_failed": "Não foi enviado. Tente de novo.",
       "send_must": "Deve: {{text}}",
@@ -11815,6 +11817,7 @@
       "staged": "Colocado na caixa de chat. Envie a partir dela.",
       "start": "Começar",
       "unconfirmed": "Não confirmado. Pode já ter sido enviado. Se não estiver no chat, recarregue a página para tentar de novo.",
+      "uploading": "Enviando…",
       "who": "Quem participa"
     },
     "voiceMuteButton": {

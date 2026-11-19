@@ -11277,12 +11277,14 @@
       "job_name_paused": "{{name}}（一時停止中）"
     },
     "grillCard": {
+      "add_picture": "画像を追加",
       "decline": "やめておく",
       "label": "ディスカッションの提案",
       "minutes_other": "約 {{count}} 分",
       "must": "必須",
       "not_sent": "この画面には送信先のチャット欄がありません。",
       "question": "問い",
+      "remove_picture": "{{name}} を削除",
       "send_decline": "ディスカッションは不要",
       "send_failed": "送信されませんでした。もう一度お試しください。",
       "send_must": "必須：{{text}}",
@@ -11295,6 +11297,7 @@
       "staged": "チャット欄に入れました。そこから送信してください。",
       "start": "開始",
       "unconfirmed": "未確認です。送信済みの可能性があります。チャットにない場合は、ページを再読み込みしてもう一度お試しください。",
+      "uploading": "アップロード中…",
       "who": "参加者"
     },
     "voiceMuteButton": {

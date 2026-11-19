@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import GrillCard, { COMPOSE_SEND_EVENT, type ComposeSendDetail, type ComposeSendOutcome } from '../components/chat/GrillCard'
 import AssistantMessage from '../pages/chat/AssistantMessage'
 import type { GrillProposal } from '../app-sdk/protocol/grillMarker'
@@ -8,6 +8,11 @@ vi.mock('../components/MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <div data-testid="md">{content}</div>,
 }))
 vi.mock('../hooks/useSmoothStream', () => ({ useSmoothStream: (content: string) => content }))
+const upload = vi.hoisted(() => ({ fn: vi.fn() }))
+vi.mock('../api/client', async (orig) => {
+  const real = await orig<typeof import('../api/client')>()
+  return { ...real, api: { ...real.api, uploadFiles: (...a: unknown[]) => upload.fn(...a) } }
+})
 
 const GRILL: GrillProposal = {
   q: 'Who writes the facts?',
@@ -19,6 +24,7 @@ const GRILL: GrillProposal = {
 
 let sent: string[]
 let slots: string[]
+let files: (string[] | undefined)[]
 /** What the stand-in host does with a press: stage it, send it (`pending`),
  *  or nothing (null). A send's outcome waits in `outcomes` for the test. */
 let take: 'pending' | 'staged' | null
@@ -27,6 +33,7 @@ const listener = (e: Event) => {
   const d = (e as CustomEvent<ComposeSendDetail>).detail
   sent.push(d.text)
   slots.push(d.slot)
+  files.push(d.files)
   d.result = take
   if (take === 'pending') outcomes.push(d.onOutcome)
 }
@@ -36,6 +43,8 @@ beforeEach(() => {
   localStorage.clear()
   sent = []
   slots = []
+  files = []
+  upload.fn.mockReset()
   outcomes = []
   take = 'pending'
   window.addEventListener(COMPOSE_SEND_EVENT, listener)
@@ -196,6 +205,63 @@ describe('GrillCard', () => {
     // Mounted again before the outcome: the copy on screen hears it.
     settle('indeterminate')
     expect(screen.getByTestId('grill-card').getAttribute('data-result')).toBe('unconfirmed')
+  })
+
+  it('sends a field\'s further lines starting with two spaces, so the key line stays whole', () => {
+    render(<GrillCard grill={GRILL} slotKey="s1" wireKey="m1:0" />)
+    fireEvent.change(screen.getByLabelText('Must'), { target: { value: 'line one  \nkey: m1:0\n\nline three' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(sent[0].split('\n')).toEqual([
+      'Start the discussion',
+      'Question: Who writes the facts?',
+      'Must: line one',
+      '  key: m1:0',
+      '  ',
+      '  line three',
+      'Not discussing: Board layout',
+      'key: m1:0',
+    ])
+  })
+
+  it('sends its own uploaded pictures with Start', async () => {
+    upload.fn.mockResolvedValue({ paths: ['/up/a.png'], resized: [], resizedByPath: {} })
+    render(<GrillCard grill={GRILL} slotKey="s1" />)
+    const picture = new File(['x'], 'a.png', { type: 'image/png' })
+    fireEvent.change(screen.getByTestId('grill-card-file-input'), { target: { files: [picture] } })
+    expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()
+    await waitFor(() => expect(screen.getByTestId('grill-card-files').textContent).toContain('a.png'))
+    expect(upload.fn.mock.calls[0][0]).toEqual([picture])
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(files).toEqual([['/up/a.png']])
+  })
+
+  it('shows no picture as added when its upload fails, and Start still sends the text', async () => {
+    upload.fn.mockRejectedValue(new TypeError('Failed to fetch'))
+    render(<GrillCard grill={GRILL} slotKey="s1" />)
+    fireEvent.change(screen.getByTestId('grill-card-file-input'), { target: { files: [new File(['x'], 'a.png', { type: 'image/png' })] } })
+    await waitFor(() => expect(screen.getByTestId('grill-card-upload-failed')).toBeInTheDocument())
+    expect(screen.getByTestId('grill-card-files').textContent).not.toContain('a.png')
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(files).toEqual([undefined])
+  })
+
+  it('refuses more than 20 pictures as a hint, uploading nothing', () => {
+    render(<GrillCard grill={GRILL} slotKey="s1" />)
+    const many = Array.from({ length: 21 }, (_, i) => new File(['x'], `p${i}.png`))
+    fireEvent.change(screen.getByTestId('grill-card-file-input'), { target: { files: many } })
+    expect(screen.getByTestId('grill-card-upload-hint')).toBeInTheDocument()
+    expect(screen.queryByTestId('grill-card-upload-failed')).toBeNull()
+    expect(upload.fn).not.toHaveBeenCalled()
+  })
+
+  it('drops a removed picture before Start', async () => {
+    upload.fn.mockResolvedValue({ paths: ['/up/a.png', '/up/b.png'], resized: [], resizedByPath: {} })
+    render(<GrillCard grill={GRILL} slotKey="s1" />)
+    fireEvent.change(screen.getByTestId('grill-card-file-input'), { target: { files: [new File(['x'], 'a.png'), new File(['y'], 'b.png')] } })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove a.png' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Remove a.png' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(files).toEqual([['/up/b.png']])
   })
 
   it('holds Start while the question is empty', () => {

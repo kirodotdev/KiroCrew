@@ -11277,12 +11277,14 @@
       "job_name_paused": "{{name}} (일시 중지됨)"
     },
     "grillCard": {
+      "add_picture": "사진 추가",
       "decline": "괜찮아요",
       "label": "토론 제안",
       "minutes_other": "약 {{count}}분",
       "must": "반드시",
       "not_sent": "이 화면에는 보낼 채팅 입력란이 없습니다.",
       "question": "질문",
+      "remove_picture": "{{name}} 제거",
       "send_decline": "토론은 필요 없어",
       "send_failed": "보내지 못했습니다. 다시 시도하세요.",
       "send_must": "반드시: {{text}}",
@@ -11295,6 +11297,7 @@
       "staged": "채팅 입력란에 넣었습니다. 거기서 보내세요.",
       "start": "시작",
       "unconfirmed": "확인되지 않았습니다. 이미 보내졌을 수 있습니다. 채팅에 없으면 페이지를 새로고침한 뒤 다시 시도하세요.",
+      "uploading": "업로드 중…",
       "who": "참여자"
     },
     "voiceMuteButton": {

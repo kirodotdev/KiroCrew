@@ -282,7 +282,10 @@ export function useComposerSend({
   // or a correlated echo), never for a `response-late` or `unknown` receipt the
   // boolean above counts as delivered. The composer's prompt stash deletes a
   // restored draft's only durable copy on it, so a guess must not reach it.
-  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean | 'auto', isolated = false, sendNow = false, onUndelivered?: (kind: 'refused' | 'indeterminate', reason?: string) => void, reportConfirmed?: (confirmed: boolean) => void): Promise<boolean> => {
+  // `ownFiles` is for an isolated send that carries its own uploaded files (a
+  // discussion card's pictures): only these paths go with it, never what the
+  // composer has staged. Ignored on a composer send.
+  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean | 'auto', isolated = false, sendNow = false, onUndelivered?: (kind: 'refused' | 'indeterminate', reason?: string) => void, reportConfirmed?: (confirmed: boolean) => void, ownFiles: readonly string[] = []): Promise<boolean> => {
     const ownsFailureReport = !!onUndelivered
     // Defense-in-depth: ChatInput already gates Send/Optimize buttons and
     // the keyboard Enter shortcut on `connected`, but a future caller (a
@@ -481,8 +484,13 @@ export function useComposerSend({
     // recovery path below that hands the text back puts the record back too.
     const wasDictated = !isolated && !optionText && takeDictated(uiSlot)
     const dictationNote = wantsDictationNote(wasDictated)
+    // An isolated send with its own files builds them in the composer's order
+    // and keeps its folder tokens verbatim. Not `typedOnly`: the raw text alone
+    // cannot put those files back, so a queued cancel takes the parser path.
     const turn = isolated
-      ? { wire: raw, bubble: raw, inlined: raw, meta: {}, pastes: [], storedPaste: undefined, typedOnly: true }
+      ? (ownFiles.length
+          ? { ...buildOutgoingTurn({ text: raw, files: [...ownFiles], keepFolderTokens: true, project: currentProjectRef.current || '' }, 'send'), typedOnly: false }
+          : { wire: raw, bubble: raw, inlined: raw, meta: {}, pastes: [], storedPaste: undefined, typedOnly: true })
       : buildOutgoingTurn({ text: raw, files: sentFiles, pastes: activePastes, sessionRefs: sentSessionRefs, knowledge: knowledgeBlock, quote: sentQuote, project: currentProjectRef.current || '', dictationNote }, 'send')
     if (!isolated) knowledgeFetchRef.current.clearPending()
     const sendId = mintSendId()

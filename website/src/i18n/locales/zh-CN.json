@@ -11277,12 +11277,14 @@
       "job_name_paused": "{{name}}（已暂停）"
     },
     "grillCard": {
+      "add_picture": "加图片",
       "decline": "不用了",
       "label": "讨论提议",
       "minutes_other": "大约 {{count}} 分钟",
       "must": "必须",
       "not_sent": "这里没有聊天框，发不出去。",
       "question": "问题",
+      "remove_picture": "移除 {{name}}",
       "send_decline": "不用讨论了",
       "send_failed": "没发出去，请再试一次。",
       "send_must": "必须：{{text}}",
@@ -11295,6 +11297,7 @@
       "staged": "已放进聊天框，请从那里发送。",
       "start": "开始",
       "unconfirmed": "未确认。可能已经发出。聊天里没有的话，刷新页面再试。",
+      "uploading": "上传中…",
       "who": "谁来聊"
     },
     "voiceMuteButton": {
