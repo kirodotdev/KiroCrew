@@ -30,7 +30,14 @@
  *  lists. It hides the row for those sessions (`lib/resumeAllDismissed`, kept in
  *  the browser); a session that becomes interrupted afterwards brings it back
  *  with that session alone. The sessions stay interrupted and keep their own
- *  Resume. */
+ *  Resume.
+ *
+ *  Every session the outcome line counts as not resumed is named once. The
+ *  ones the owner must act on are named in the problems notice below the row.
+ *  The rest, the benign skips, are named under the outcome line with the reason
+ *  the run left each alone. A skipped session that is still interrupted after
+ *  the line clears keeps that reason under its name in the list of sessions a
+ *  press would resume, so the next press is not a guess. */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { RotateCcw, X } from 'lucide-react'
@@ -108,10 +115,34 @@ export type ResumeAllResult = {
  *  will drain on its own, began stopping, closed, or started sub-agents). A queue
  *  a restart restored from disk is no skip: the run resumes that session. Every other skip, and every failure, is one
  *  the owner must act on, so the row reports it through `ErrorNotice`. */
-export const RESUME_ALL_BENIGN_SKIPS: ReadonlySet<string> = new Set([
+const BENIGN_SKIP_CODES = [
   'turn_not_failed', 'slot_running', 'slot_queue_pending', 'slot_stopping',
   'slot_not_found', 'slot_subagents_running',
-])
+] as const
+export type ResumeAllBenignSkipCode = typeof BENIGN_SKIP_CODES[number]
+export const RESUME_ALL_BENIGN_SKIPS: ReadonlySet<string> = new Set(BENIGN_SKIP_CODES)
+
+/** One session a run left alone for a benign reason, by its skip code. */
+export type ResumeAllSkip = { slot: string; code: ResumeAllBenignSkipCode }
+
+/** The benign skips in *res*, in the order the server listed them. They need
+ *  nothing from the owner, so they stay out of the problems notice, but the
+ *  outcome line counts them as not resumed and the row names them under it. */
+export function resumeAllSkips(res: ResumeAllResult): ResumeAllSkip[] {
+  return res.skipped.filter((s): s is ResumeAllSkip => RESUME_ALL_BENIGN_SKIPS.has(s.code))
+}
+
+/** Why a run left a session alone, written under the session's name. */
+export function resumeAllSkipText(code: ResumeAllBenignSkipCode): string {
+  switch (code) {
+    case 'turn_not_failed': return i18nT('pages.chatSidebar.resume_all_skip_finished')
+    case 'slot_running': return i18nT('pages.chatSidebar.resume_all_skip_running')
+    case 'slot_queue_pending': return i18nT('pages.chatSidebar.resume_all_skip_queued')
+    case 'slot_stopping': return i18nT('pages.chatSidebar.resume_all_skip_stopping')
+    case 'slot_not_found': return i18nT('pages.chatSidebar.resume_all_skip_closed')
+    case 'slot_subagents_running': return i18nT('pages.chatSidebar.resume_all_skip_subagents')
+  }
+}
 
 /** One session a run did not resume for a reason the owner must act on. */
 export type ResumeAllProblem = { slot: string; reason: 'start_repeat' | 'approval' | 'error' | 'other' }
@@ -229,10 +260,25 @@ export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; co
   // The sessions the last run left for the owner to act on. Kept until
   // dismissed or the next press, not for the outcome line's six seconds.
   const [problems, setProblems] = useState<ResumeAllProblem[]>([])
+  // Why the last run left each session alone, for the benign skips. Kept past
+  // the outcome line, so a session still interrupted after the run says why
+  // under its name. A session leaves the map once a slots push shows it
+  // running, no longer interrupted or gone, so a later interruption starts clean.
+  const [skipCodes, setSkipCodes] = useState<ReadonlyMap<string, ResumeAllBenignSkipCode>>(() => new Map())
   const settle = (res: ResumeAllResult) => {
     setResult(res)
     setProblems(resumeAllProblems(res))
+    setSkipCodes(new Map(resumeAllSkips(res).map(s => [s.slot, s.code])))
   }
+  useEffect(() => {
+    if (skipCodes.size === 0) return
+    const byKey = new Map(localSlots.map(s => [s.key, s]))
+    const kept = [...skipCodes].filter(([key]) => {
+      const row = byKey.get(key)
+      return !!row && !row.running && !!row.interrupted
+    })
+    if (kept.length !== skipCodes.size) setSkipCodes(new Map(kept))
+  }, [localSlots, skipCodes])
   // The run this row waits on: its id, its candidate count, and whether it is
   // another press's run that this press found already going (the 409).
   // The ref is written where the 202/409 body is read, not from render: the
@@ -363,7 +409,7 @@ export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; co
       })
       if (!ok || !connectedRef.current) return
     }
-    setError(''); setResult(null); setProblems([])
+    setError(''); setResult(null); setProblems([]); setSkipCodes(new Map())
     pressedKeysRef.current = keys
     requestOpenRef.current = true
     mutation.mutate(keys)
@@ -377,11 +423,24 @@ export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; co
   const titles = useMemo(() => new Map(localSlots.map(s => [s.key, s.title || s.key])), [localSlots])
   const titleOf = (key: string) => titles.get(key) ?? key
   // The sessions a press would resume, by name, in the order the count counts
-  // them, so the row says which ones before a click restarts any of them.
-  const candidateTitles = useMemo(() => candidates.map(s => ({ key: s.key, title: s.title || s.key })), [candidates])
+  // them, so the row says which ones before a click restarts any of them. A
+  // session the last run left alone carries that skip's code.
+  const candidateTitles = useMemo(
+    () => candidates.map(s => ({ key: s.key, title: s.title || s.key, code: skipCodes.get(s.key) })),
+    [candidates, skipCodes],
+  )
+  // The sessions the last run left alone for a benign reason, named under its
+  // outcome line while it shows. Read from the outcome itself, not from
+  // `skipCodes`: the line reports the run, including the sessions that have
+  // moved on since.
+  const skippedTitles = useMemo(
+    () => (result ? resumeAllSkips(result).map(s => ({ key: s.slot, title: titles.get(s.slot) ?? s.slot, code: s.code })) : []),
+    [result, titles],
+  )
   return {
     count,
     candidateTitles,
+    skippedTitles,
     result,
     error,
     setError,
@@ -437,6 +496,38 @@ function ResumeAllProblemsNotice({ text, onDismiss }: { text: string; onDismiss:
   )
 }
 
+/** The names list's own box: ten 16px lines in 160px, scrolling past that, so
+ *  a run that left many sessions alone never pushes the action off the panel.
+ *  Taller than the problems list's six lines because a name with a reason
+ *  under it takes two or three lines, and five candidates is a common list. */
+export const RESUME_ALL_NAMES_CLASS = 'leading-4 max-h-40 overflow-y-auto'
+
+type NamedSession = { key: string; title: string; code?: ResumeAllBenignSkipCode }
+
+/** The sessions the row names under its sentence, one title per line, and
+ *  under a title, muted, why the last run left that session alone when it did.
+ *  The bottom edge fades while lines sit below it, as the problems list's does. */
+function ResumeAllNames({ items, testId }: { items: NamedSession[]; testId: string }) {
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLUListElement>()
+  // A rename, a language switch or a new skip changes the lines while the box
+  // keeps its height, which the hook's observer does not report.
+  useEffect(() => { remeasureList() }, [items, remeasureList])
+  return (
+    <ul
+      ref={attachList}
+      className={`mt-1 ml-[22px] min-w-0 text-text ${RESUME_ALL_NAMES_CLASS}${listEdges.bottom ? ` ${MORE_BELOW_MASK}` : ''}`}
+      data-testid={testId}
+    >
+      {items.map(({ key, title, code }) => (
+        <li key={key} className="min-w-0" title={title}>
+          <span className="block truncate">{title}</span>
+          {code && <span className="block text-muted">{resumeAllSkipText(code)}</span>}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 /** The shelf row. Rendered only while there is something to resume, a run in
  *  flight, a result to show, or an error to report -- an idle install carries
  *  no row. A failed request renders through `ErrorNotice` BELOW the status row,
@@ -444,7 +535,7 @@ function ResumeAllProblemsNotice({ text, onDismiss }: { text: string; onDismiss:
  *  status region would announce it twice. */
 export function renderResumeAllRow(shell: SidebarScope): React.ReactNode {
   const {
-    count, candidateTitles, result, error, setError, dismissError, dismissDismissError, problems, dismissProblems, titleOf, pending, alreadyRunning, run, dismiss, connected, confirmDialog,
+    count, candidateTitles, skippedTitles, result, error, setError, dismissError, dismissDismissError, problems, dismissProblems, titleOf, pending, alreadyRunning, run, dismiss, connected, confirmDialog,
   } = shell.resumeAll
   if (count === 0 && !result && !error && !dismissError && !pending && problems.length === 0) return confirmDialog
   const label = i18nT('pages.chatSidebar.resume_all_sessions', { count })
@@ -482,15 +573,18 @@ export function renderResumeAllRow(shell: SidebarScope): React.ReactNode {
               </Btn>
             )}
           </div>
+          {/* The sessions the run counts as not resumed for a benign reason,
+              named under its outcome line with that reason. The rest are
+              named in the problems notice below, so each session the line
+              counts is named once. */}
+          {result && skippedTitles.length > 0 && (
+            <ResumeAllNames items={skippedTitles} testId="resume-all-skipped" />
+          )}
           {/* Which sessions a press restarts, named before it does. Only up to
               the count a press resumes without asking: above it the
               confirmation stands between the click and the restart. */}
           {!result && !alreadyRunning && !pending && count > 0 && count <= RESUME_ALL_CONFIRM_ABOVE && (
-            <ul className="mt-1 ml-[22px] min-w-0 text-text" data-testid="resume-all-names">
-              {candidateTitles.map(({ key, title }) => (
-                <li key={key} className="truncate" title={title}>{title}</li>
-              ))}
-            </ul>
+            <ResumeAllNames items={candidateTitles} testId="resume-all-names" />
           )}
           {/* On its own line, aligned with the sentence, like the folder-reorder
               hint beside it: beside the text the two fight for the sidebar's width.
