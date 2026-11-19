@@ -10,7 +10,8 @@ those servers and for a non-managed server the base declares
 (:func:`base_server_selections`). Its restrictions (``excludedTools``, ``disabledTools``, MCP-page
 switch-offs, :func:`globally_disabled_refs`) narrow whoever declared them;
 its ``hooks``, ``permissions`` and ``toolsSettings`` are layered on exactly
-(:mod:`kiro_crew.mate_spec_policy`); ``model`` is ignored. Nothing from the file
+(:mod:`kiro_crew.mate_spec_policy`); ``model`` is ignored, and a file that
+names one is logged once (``crewmate_harness.note_unread_file_model``). Nothing from the file
 reaches the conductor. The merged spec is governed
 and the projection re-applies the ceiling, so an addition never lifts the worker
 above POLICY ∩ PROFILE. Stateless.
@@ -712,6 +713,13 @@ def resolve_worker_spec(
             f"Bot {member_id!r}: its worker file {name!r} cannot be read, so its "
             f"worker would run without the Bot's own limits; fix or re-save the file"
         ) from exc
+    from kiro_crew.agent_discovery import spec_model
+
+    file_model = spec_model(mate_spec).strip()
+    if file_model and file_model != "auto":
+        from kiro_crew.crewmate_harness import note_unread_file_model
+
+        note_unread_file_model(member_id, name, file_model)
     if mcp_tool_limits_carried:
         limits = uncarried_tool_limits_of(
             mate_spec, native_tool_limits_carried=native_tool_limits_carried

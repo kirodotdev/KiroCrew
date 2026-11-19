@@ -262,6 +262,31 @@ class TestMateFileForMember:
         spec = mate_worker.resolve_worker_spec(dict(BASE), "pixel")
         assert spec["prompt"] == BASE["prompt"]
 
+    @pytest.mark.parametrize(
+        ("file_model", "warned"),
+        [("example-model-9", 1), ("auto", 0), (None, 0)],
+    )
+    def test_a_model_in_the_bots_own_file_is_logged_once_as_unread(
+        self, monkeypatch, tmp_path, caplog, file_model, warned
+    ):
+        from kiro_crew import crewmate_harness
+
+        self._home(monkeypatch, tmp_path)
+        spec = _mate() if file_model is None else _mate(model=file_model)
+        (paths_mod.mate_agents_dir() / "pixel.json").write_text(json.dumps(spec), encoding="utf-8")
+        monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member_id: "pixel")
+        monkeypatch.setattr(crewmate_harness, "_file_model_logged", set(), raising=False)
+        with caplog.at_level("WARNING", logger=crewmate_harness.logger.name):
+            first = mate_worker.resolve_worker_spec(dict(BASE), "pixel")
+            second = mate_worker.resolve_worker_spec(dict(BASE), "pixel")
+        hits = [r for r in caplog.records if "is not read" in r.getMessage()]
+        assert len(hits) == warned
+        if warned:
+            assert hits[0].levelname == "WARNING"
+            assert "'pixel'" in hits[0].getMessage()
+            assert "'example-model-9'" in hits[0].getMessage()
+        assert "model" not in first and first == second
+
     def test_an_approval_revoked_in_approvals_stays_off_though_the_base_grants_it(
         self, monkeypatch, tmp_path
     ):

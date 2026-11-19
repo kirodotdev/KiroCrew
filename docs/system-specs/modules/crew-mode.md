@@ -4669,7 +4669,10 @@ parts:
   worker is refused, naming it. A host that applies none of the three
   (`mate_spec_policy.applies_spec_policy`, KAS only) refuses a file
   that sets any (`resolve_worker_spec(refuse_spec_policy=True)`). Every other
-  field (`tools` for built-ins, `model`) is ignored. Crew fires the worker
+  field (`tools` for built-ins, `model`) is ignored; a file whose `model` is not
+  empty or `auto` logs one warning per Bot and value
+  (`crewmate_harness.note_unread_file_model`), naming the Bot's Model and Worker
+  model settings, which are what its sessions run on. Crew fires the worker
   session's merged spec's hooks on KAS (`spec_hooks._agent_spec` with the
   session key, via `mate_worker.mate_service_scope_spec`), on a chat turn and on
   a sub-agent or task-runner turn alike (`spec_hooks.provider_session_key` reads
