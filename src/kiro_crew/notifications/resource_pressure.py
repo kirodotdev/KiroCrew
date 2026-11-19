@@ -135,8 +135,11 @@ def disk_posture(readings: "list[TempHeadroom]") -> tuple[str, str]:
         critical = reading.free_space_pct < DISK_CRITICAL_FREE_PCT or (
             reading.counts_inodes and reading.free_inodes < DISK_CRITICAL_FREE_INODES
         )
-        this = POSTURE_CRITICAL if critical else POSTURE_TIGHT if reading.low else POSTURE_AMPLE
-        if this == POSTURE_AMPLE:
+        if critical:
+            this = POSTURE_CRITICAL
+        elif reading.low:
+            this = POSTURE_TIGHT
+        else:
             continue
         # ``text()`` names the axis that tripped (space, inodes or both).
         named.append(f"{reading.root} {reading.text()}")
@@ -475,20 +478,17 @@ class ResourcePressureNotifier:
         title = f"{subject} still critically low" if realert else f"{subject} critically low"
         ceiling = status.agent_ceiling
         self._alerted_agent_ceiling = ceiling is not None
+        # The ceiling keeps the host responsive, so only a host-bound reading
+        # warns that the host itself may stop answering.
         if ceiling is None:
             figure = f"Available memory is down to {status.available_gb:.1f} GB"
+            risk = "Agent processes may be killed and the host can become unresponsive"
         else:
             figure = (
                 f"Agent processes have {status.available_gb:.1f} GB left under their "
                 f"{gb_text(ceiling.ceiling_gb)} GB memory ceiling"
             )
-        # The ceiling keeps the host responsive, so only a host-bound reading
-        # warns that the host itself may stop answering.
-        risk = (
-            "Agent processes may be killed and the host can become unresponsive"
-            if ceiling is None
-            else "Agent processes may be killed if their memory keeps growing"
-        )
+            risk = "Agent processes may be killed if their memory keeps growing"
         self._bus.push(
             NotificationPayload(
                 source="system",
