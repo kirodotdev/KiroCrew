@@ -48,8 +48,12 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   (`await_until`; `LoopHop` for a hook that must run a coroutine on the loop from an
   executor thread), and a ceiling of 30 s or more only names a hang -- a
   `wait_for(..., timeout=2)`, a `.result(timeout=5)` or a poll of N short sleeps bets
-  on the runner's speed, and `test/test_wait_discipline_ratchet.py` holds each test
-  file to the number of those it already has: on a pull request each touched file is
+  on the runner's speed. A wait for work that spawns real processes is the commonest
+  case: a PR-watcher pass with an isolated clone is about 40 `git` spawns, a fraction
+  of a second on Linux and past a 10 s deadline on a loaded Windows shard. The ratchet
+  below scans `test/` only, so an in-package app suite (`src/kiro_crew/**/tests/`)
+  gets no warning: use `wait_until` there by default. `test/test_wait_discipline_ratchet.py`
+  holds each test file to the number of those it already has: on a pull request each touched file is
   compared to its count at the PR's merge-base, and also to its committed baseline
   entry, so a PR is not blamed for drift it did not cause but a rename without a
   baseline-entry update is still caught.  A new file the PR splits off may declare

@@ -199,16 +199,19 @@ def _reg(**kwargs: Any) -> W.PRWatcherRegistry:
     return W.PRWatcherRegistry(**kwargs)
 
 
-def _await_status(
-    reg: W.PRWatcherRegistry, fp: str, statuses: set[str], timeout: float = WAIT_S
-) -> dict[str, Any]:
+def _await_status(reg: W.PRWatcherRegistry, fp: str, statuses: set[str]) -> dict[str, Any]:
+    """Wait for one of ``statuses`` under ``wait_until``'s lost-run bound.
+
+    A watcher pass spawns real ``git`` children, so its duration is the runner's, not
+    the code's; the bound only names a watcher that never gets there.
+    """
+
     def reached() -> dict[str, Any] | None:
         snapshot = reg.status(fp) or {}
         return snapshot if snapshot.get("status") in statuses else None
 
     return wait_until(
         reached,  # type: ignore[arg-type]
-        timeout=timeout,
         describe=lambda: f"watcher never reached {statuses}; last={reg.status(fp) or {}}",
     )
 
@@ -1578,7 +1581,6 @@ class TestRunWatcher:
         assert runner.calls == []
         wait_until(
             lambda: not reg.is_alive("fp1"),
-            timeout=WAIT_S,
             describe=lambda: "a finished watcher leaked a live thread",
         )
 
