@@ -4329,7 +4329,7 @@ record writes (`PUT /api/agents/{name}`, create), a cron job's `approval_mode: "
 (`cron_service.fields`), a spawn's `approval_mode: "auto"` and the config fallback in
 the subagent admission gate and `resolve_parent_policy`, and the Trust buttons of the
 messaging transports (`messaging.session_trust.add_trusted_session`, the Slack and
-Telegram press handlers, the decider's `_grant_session_trust`, a channel's `trust`
+Telegram press handlers, the typed Trust reply's grant in `deliver_verdict`, a channel's `trust`
 decision): a press there approves the one tool. A crewmate's unset or stored Profile
 mode is clamped to the highest permitted mode (`clamp_session_mode`). Read sites mask
 a grant made before the deny: `_ChatSlot._trust` / `._trust_reads` read back only what
