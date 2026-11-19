@@ -305,6 +305,14 @@ pages from closed chats are not reopened; cookies and logins are kept. The
 user's own Chrome or Edge is never touched. `browser.choice` (`auto|user_chrome|kiro_chromium|headless`)
 overrides the order by hand.
 
+Under `auto`, each start first checks that the person's Chrome or Edge accepts
+debugging connections (a live `DevToolsActivePort`). When it does not (remote
+debugging is off), the start uses Kiro's Chromium, with a window, instead of
+failing, and status reports Kiro's Chromium until a later start finds the
+person's browser usable. If Kiro's Chromium is not downloaded yet, the start
+fails saying so, and Settings shows Install on the main card. A hand pick of
+`user_chrome` never falls back: it fails with the remote-debugging step.
+
 A Kiro's Chromium that exits before the daemon answers fails the start at once
 with `Kiro's Chromium exited with code <n>`. On macOS and Linux its stderr goes
 to a pipe of the gateway's own, drained for the browser's whole life (only the
