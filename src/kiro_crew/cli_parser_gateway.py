@@ -360,6 +360,15 @@ def register_token_parser(sub: _Commands) -> None:
     )
     token_parser.add_argument("--ttl", default="20h", help="Token TTL, e.g. 1h, 30m (default: 20h)")
     token_parser.add_argument(
+        "--bearer",
+        action="store_true",
+        help=(
+            "Print the credential alone, instead of a dashboard link, for a client "
+            "to send in 'Authorization: Bearer' to the Crew API paths under /v1/. "
+            "POST /v1/chat/completions does not read that header."
+        ),
+    )
+    token_parser.add_argument(
         "--embed-parent-port",
         type=int,
         default=None,

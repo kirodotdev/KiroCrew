@@ -566,11 +566,14 @@ from kiro_crew.slack.gateway_runtime.process_entry import (
     _live_session_work_dirs,
     _main_stored_as_kiro,
     _reconcile_live_config_with_kiro_verdict,
+    _record_ordinary_mode,
+    _run_boot_io_bounded,
     _run_signing_key_preflight_bounded,
     _start_coder_retention,
     _start_kas_cli_floor,
     _stop_session_environments,
     _sweep_predecessor_session_work_dirs,
+    _write_gateway_mode_bounded,
     run_gateway,
     signing_key_preflight,
 )
@@ -742,6 +745,7 @@ class GatewayOrchestrator:
     # The constructor's fields (gateway_runtime/orchestrator_init.py):
     _cfg: KiroCrewConfig
     _no_dashboard: bool
+    _headless: bool
     _no_crons: bool
     _no_open: bool
     _port_override: str | None
@@ -893,6 +897,7 @@ class GatewayOrchestrator:
             cfg: KiroCrewConfig,
             *,
             no_dashboard: bool = False,
+            headless: bool = False,
             no_crons: bool = False,
             no_open: bool = False,
             port_override: str | None = None,

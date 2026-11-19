@@ -540,8 +540,14 @@ def refusal_response(request: web.Request, reason: str) -> web.Response:
 
     message = _REFUSAL_TEXT.get(reason, _REFUSAL_DEFAULT)
     heading = "You can't open this Crew"
+    from kiro_crew.dashboard.headless import HEADLESS_KEY
+
     accept = request.headers.get("Accept", "")
-    if request.method in ("GET", "HEAD") and "text/html" in accept:
+    if (
+        request.app.get(HEADLESS_KEY, False) is not True
+        and request.method in ("GET", "HEAD")
+        and "text/html" in accept
+    ):
         body = (
             '<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'

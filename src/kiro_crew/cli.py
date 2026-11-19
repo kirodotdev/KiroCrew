@@ -139,9 +139,12 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
     """
     from kiro_crew import lts_signin_gateway as signin
 
-    # A test or scripted start (`--test-mode`, `--json-ready`) waits for a ready
-    # line, not a browser sign-in, so it gets the refusal exit as before.
-    if getattr(args, "test_mode", False) or getattr(args, "json_ready", False):
+    # A scripted or headless start cannot use the browser-only sign-in server.
+    if (
+        getattr(args, "test_mode", False)
+        or getattr(args, "json_ready", False)
+        or getattr(args, "headless", False)
+    ):
         return
     if not signin.applies(exc):
         return
@@ -451,6 +454,16 @@ def main() -> None:
         "--slack-only",
         action="store_true",
         help="Slack-only mode — skip dashboard web server and SSH tunnel instructions",
+    )
+    gw_parser.add_argument(
+        "--headless",
+        action="store_true",
+        help=(
+            "Serve the gateway's HTTP services with no dashboard: no dashboard pages or "
+            "assets, no browser opened, no sign-in link printed. Listens on loopback "
+            "only. Cannot be combined with --slack-only. "
+            "Get a credential for a Crew API client with `kirocrew token --bearer`."
+        ),
     )
     gw_parser.add_argument(
         "--no-crons",

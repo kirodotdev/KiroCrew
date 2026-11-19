@@ -1859,6 +1859,74 @@ own guard against a failed `accept()`, reconciled against the live socket. A lat
 `clear_late_marker_write`, which never deletes a credential and touches nothing
 when the pid record names another process.
 
+### Consumer 3: preserve the gateway mode on CLI restart
+
+`gateway-mode.json`, in the run-marker directory, records boolean `headless`, the
+writer's positive integer `pid`, and optional string `start_token` for this data
+home's single gateway (`gateway.lock` owns that singleton). The token comes from
+`pid_start_token`, shared with the pid sidecars; if unreadable, only the pid is
+recorded, leaving pid reuse undetected when a token cannot be compared.
+On a headless start, `GatewayOrchestrator.run` awaits `write_gateway_mode` after the signing key preflight and
+before starting any service or listener; failure aborts boot. The headless write uses the signing-key preflight's
+daemon-worker mechanism and existing 30-second deadline, so a blocked headless write cannot hold up interpreter
+exit. A timeout logs critical, prints one stderr line naming the deadline and asking the owner to
+check data-home reachability, and raises `SystemExit(1)`.
+On an ordinary start it writes the record on a
+tracked background task once the listener is up; failure logs one warning and startup continues, leaving a
+stale record that can only say headless. Every start overwrites the field,
+including a normal start after a headless one and the reverse. This JSON sidecar
+reuses the run-marker directory without changing the plain launcher, pid or
+start-token formats that installed clients read. The background discovery writer
+never writes it, so a late discovery write cannot restore an old mode.
+
+`cli_server_restart._restart` reads it before stopping the foreground gateway.
+The pure `gateway_mode_decision` compares it to this home's live lock-holder
+identity: pid equality is required, and start-token equality is required when
+both tokens are readable. The foreground restart waits only while a live holder
+is not named by the record (including an absent record or mismatched pid/start token).
+Each poll reads the holder, listeners, then the record. It stops waiting when:
+- The record names the live holder: judge by the record.
+- The holder's pid is among `platform_compat.find_listening_pids(port)` and the
+  record still does not name it: ordinary, with one warning only if the stale
+  record said headless. Headless boot publishes before listening or exits.
+- The holder is gone: apply the no-live-gateway rule to the current record.
+
+A different live holder does not reset the deadline. The wait uses the headless
+record-write deadline of 30 seconds, shared as
+`instances.run_marker.GATEWAY_MODE_WRITE_TIMEOUT_SECS`, and restart's existing
+`_RESTART_READY_POLL_INTERVAL`. Without a listener lookup tool, only a named holder
+or no live holder ends the wait. At the deadline restart exits 1, stops and spawns
+nothing, and prints one stderr line, never falling back to ordinary:
+`❌ The gateway of this data home is still starting and its mode cannot be checked; restart refused. Stop it with kirocrew stop, then start it with kirocrew gateway --headless or kirocrew gateway for one with the dashboard.`
+All other states return without waiting. The later restart listener lookup remains
+independent. In-app re-exec preserves argv and the successor rewrites its identity.
+With no live gateway, a headless record cannot be checked: restart refuses with
+exit 1 before any stop or spawn and tells the operator to start explicitly with
+`kirocrew gateway --headless` or `kirocrew gateway` for the dashboard. An absent
+or ordinary record restarts ordinary. An indeterminate lock probe retains the
+validated recorded mode, subject to restart's existing stop and spawn guards.
+The service path makes the same
+comparison to the gateway holding the home lock after service restart, to choose
+API output or a sign-in link. It first waits, bounded by the restart readiness
+timeout, until a live gateway holds the lock and the record names it, because the
+replacement takes the lock before it publishes its record. If the bound passes
+with no live holder and a headless record, it prints the cannot-read-mode line
+and returns without an API banner or a sign-in link; the service already restarted.
+A unit started by systemd or launchd itself uses its own command line and never
+reads this record.
+Only `true` adds the fixed `--headless` flag to the detached replacement; no
+other launch flag comes from disk. An absent file or absent headless field means
+ordinary mode. A present non-object, malformed JSON, invalid mode or identity
+field, or read error other than not-found refuses before foreground stop or spawn.
+Stop, late marker cleanup and pruning leave the record intact; it cannot prove
+mode after shutdown or a crash. The next boot atomically replaces it.
+
+The gateway writes owner-only through `atomic_write` in the owner-only `run/`
+directory. The sandbox seals that directory read-only through its runtime-parent
+protection; agent file tools also deny it. The owner outside the sandbox and
+privileged host processes can change it. This is local owner state, not an
+independently authenticated claim: an owner who removes it chooses legacy mode.
+
 ### 12.1 The internal-API credential is keyed to one listener
 
 `<data-home>/run/gateway-<port>.secret` holds the internal-API credential of the

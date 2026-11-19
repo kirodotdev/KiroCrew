@@ -50,6 +50,7 @@ class TestNoFlags:
         result = _resolve_gateway_args(_ns())
         assert result == {
             "no_dashboard": False,
+            "headless": False,
             "no_crons": False,
             "no_tunnel": False,
             "no_open": False,
@@ -69,6 +70,11 @@ class TestNoFlags:
         assert result["json_ready"] is False
         assert result["approval_mode"] is None
         assert result["test_mode"] is False
+
+    def test_headless_passes_through_and_is_not_slack_only(self):
+        result = _resolve_gateway_args(_ns(headless=True))
+        assert result["headless"] is True
+        assert result["no_dashboard"] is False
 
     def test_no_tunnel_passes_through_alone(self):
         # --no-tunnel is independent of every other flag: it is the ONLY way an
@@ -405,3 +411,38 @@ class TestIsReadOnlyTool:
         # ["read", "setter", "field"]. None equal an entry in
         # _WRITE_INDICATORS (which lists "set", not "setter").
         assert _is_read_only_tool("read_setter_field") is True
+
+
+@pytest.mark.parametrize(
+    "flags", [("--headless", "--slack-only"), ("--headless",), ("--slack-only",)]
+)
+def test_gateway_cli_refuses_only_the_incompatible_pair(monkeypatch, capsys, flags):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew import cli, cli_server
+
+    start = AsyncMock()
+    monkeypatch.setattr(cli_server, "_gateway", start)
+    monkeypatch.setattr(cli, "maybe_reexec", MagicMock())
+    monkeypatch.setattr(cli, "_start_gateway_log_after_lock", MagicMock())
+    monkeypatch.setattr(cli, "_install_child_watcher", MagicMock())
+    monkeypatch.setattr(cli, "_install_crash_guard", MagicMock())
+    monkeypatch.setattr(cli.faulthandler, "enable", MagicMock())
+    monkeypatch.setattr(
+        cli.platform_compat, "limit_malloc_arenas", cli.platform_compat.MallocArenaCap
+    )
+    monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway", *flags])
+    if len(flags) == 2:
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 2
+        error = capsys.readouterr().err
+        assert "--headless" in error and "--slack-only" in error
+        assert "Drop one" in error
+        assert len(error.strip().splitlines()) == 1
+        start.assert_not_called()
+    else:
+        cli.main()
+        start.assert_awaited_once()
+        assert start.await_args.kwargs["headless"] == ("--headless" in flags)
+        assert start.await_args.kwargs["no_dashboard"] == ("--slack-only" in flags)

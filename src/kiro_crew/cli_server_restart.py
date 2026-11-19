@@ -307,7 +307,9 @@ def _gateway_log_lines_since(mark: _GatewayLogMark | None) -> list[str]:
     return [line for line in safe if line.strip()][-_RESTART_LOG_RELAY_LINES:]
 
 
-def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
+def _spawn_detached_gateway(
+    port: int | None = None, *, headless: bool = False
+) -> subprocess.Popen[bytes]:
     """Spawn a detached ``kirocrew gateway`` so the calling shell returns.
 
     Used by :func:`_restart` when no platform service is active. The
@@ -368,6 +370,8 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
         argv = platform_compat.isolated_python_argv("-P", "-m", "kiro_crew", "gateway")
     if port is not None:
         argv += ["--port", str(int(port))]
+    if headless:
+        argv.append("--headless")
 
     # Detach so closing the calling terminal doesn't take the gateway with it.
     # Pass both flags explicitly (NOT **dict unpack — that breaks mypy's Popen
@@ -932,6 +936,9 @@ def _restart(cli_port: int | None = None) -> None:
     bypassed: the systemd unit name is not bound to a specific port, so
     short-circuiting through it would target the wrong gateway.
     """
+    from kiro_crew.cli_gateway_mode import restart_gateway_headless, service_gateway_headless
+    from kiro_crew.dashboard.headless import print_client_access
+
     port = resolve_client_port(cli_port)
     # Before either path signals or refuses anything: both stop the gateway's cron
     # runs, and the line stays true when a refusal below follows it.
@@ -947,7 +954,17 @@ def _restart(cli_port: int | None = None) -> None:
                 resources=f"port={port} via=service",
             )
             print("✅ Restarted kirocrew service.")
-            _print_token_url(port)
+            try:
+                service_headless = service_gateway_headless(
+                    _resolve_restart_ready_timeout(), _RESTART_READY_POLL_INTERVAL
+                )
+            except (OSError, ValueError):
+                print("⚠️ Cannot read the gateway launch mode; no sign-in link printed.")
+                return
+            if service_headless:
+                print_client_access(port)
+            else:
+                _print_token_url(port)
             return
         if report.attempted or service_controller.is_service_active():
             # A managed unit was there and the restart did not take. An ATTEMPTED
@@ -1097,6 +1114,8 @@ def _restart(cli_port: int | None = None) -> None:
     # so a 200 from the OUTGOING gateway can never be mistaken for the new one
     # coming up. None (no marker, e.g. after a crash) simply means there is no
     # old identity to exclude.
+    # Read before _stop: no restart may drop a mode it could not decode.
+    headless = restart_gateway_headless(port, _RESTART_READY_POLL_INTERVAL)
     prior_marker_pid = run_marker.read_pid(port)
     listeners = platform_compat.find_listening_pids(port)
     incumbents = [p for p in listeners if _is_kirocrew_process(p)]
@@ -1217,7 +1236,9 @@ def _restart(cli_port: int | None = None) -> None:
     _refuse_if_lock_held("gateway_restart", port)
 
     log_mark = _gateway_log_mark()
-    proc = _spawn_detached_gateway(port)
+    proc = (
+        _spawn_detached_gateway(port, headless=True) if headless else _spawn_detached_gateway(port)
+    )
     pid = proc.pid
     # A pid is not a running gateway. The replacement can be refused by the
     # ownership guard, crash on a bad config, or hang before it binds — all of
@@ -1268,7 +1289,7 @@ def _restart(cli_port: int | None = None) -> None:
                 f"{ready_timeout}s. It is still running but not "
                 f"serving port {port}.\n"
                 f"   It may be slow to start or wedged during startup; nothing is "
-                f"serving the dashboard yet.\n"
+                f"serving {'the API' if headless else 'the dashboard'} yet.\n"
                 f"   To follow its startup, run: kirocrew logs -f"
             )
         sys.exit(1)
@@ -1281,4 +1302,7 @@ def _restart(cli_port: int | None = None) -> None:
         resources=f"port={port} via=fork pid={pid}",
     )
     print(f"✅ Started detached gateway (pid {pid}). Logs: kirocrew logs -f")
-    _print_token_url(port)
+    if headless:
+        print_client_access(port)
+    else:
+        _print_token_url(port)

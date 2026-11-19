@@ -354,7 +354,7 @@ concurrency or wake limit was hit).
 | 401 | `authentication_error` | `stale_session_reauth` | Owner tier only: this first-party session signed in before an owner was configured; sign in again |
 | 403 | `permission_error` | `entitlement_required` | The app lacks the entitlement this capability needs; the body's `entitlement` names it. Checked before the scope |
 | 403 | `permission_error` | `insufficient_scope` | Missing scope. The user can grant it on the consent page |
-| 403 | `permission_error` | `owner_only` | A delegated or embed credential called an Owner endpoint |
+| 403 | `permission_error` | `owner_only` | A delegated, embed or local app credential called an Owner endpoint, or a Public endpoint currently restricted to the owner (`GET /v1/models`). A valid credential refused by the app API allowlist gets this permission error too, without a `WWW-Authenticate` challenge |
 | 403 | `permission_error` | `approval_requires_first_party` | A delegated credential tried to answer an approval |
 | 403 | `permission_error` | `tool_not_registered` | A tool in the request is not in the grant's manifest |
 | 403 | `permission_error` | `connector_definition_changed` | The app's manifest changed its tools or permissions and the user has not consented again. The grant is paused with `pause.by: reconsent` and returns only this code |

@@ -527,6 +527,12 @@ def _deny(request: web.Request, reason: str, code: str = "") -> web.Response:
             request_id_for(request),
             headers,
         )
+    from kiro_crew.dashboard.headless import HEADLESS_KEY
+
+    if request.app.get(HEADLESS_KEY, False) is True:
+        return web.json_response(
+            {"error": reason, "code": code or "forbidden"}, status=403, headers=headers
+        )
     return web.Response(
         text=_403_HTML.format(reason=reason),
         status=403,

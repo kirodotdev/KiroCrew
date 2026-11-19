@@ -5,7 +5,8 @@ dashboard or API-only server; ``run`` itself, which brings everything up in orde
 and blocks until shutdown; and the post-bind session-start sizing log.
 
 Orchestrator fields read: ``_approval_mode``, ``_background_tasks``, ``_bot_token``,
-``_cfg``, ``_cron_injecting``, ``_json_ready``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
+``_cfg``, ``_cron_injecting``, ``_headless``, ``_json_ready``, ``_no_crons``, ``_no_dashboard``,
+``_no_open``,
 ``_owner_id``, ``_port_override``, ``_runner_admission_adopted``, ``_slack_enabled``,
 ``_test_mode``,
 ``_tracking_channels``, ``autonudge_svc``, ``cron_svc``, ``subagent_mgr``.
@@ -54,10 +55,12 @@ if TYPE_CHECKING:
         Task,
         TaskRunner,
         _live_session_work_dirs,
+        _record_ordinary_mode,
         _run_signing_key_preflight_bounded,
         _session_work_dir,
         _start_coder_retention,
         _sweep_predecessor_session_work_dirs,
+        _write_gateway_mode_bounded,
         build_dashboard_url,
         build_provider_factory,
         cautious_boot,
@@ -726,7 +729,7 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         dashboard_port = int(self._port_override)
     self._dashboard_port = dashboard_port
     self._configured_host = configured_host
-    self._local_only = is_local_only(configured_host, self._slack_enabled)
+    self._local_only = self._headless or is_local_only(configured_host, self._slack_enabled)
     self._dashboard_runner, self.dashboard_state = await start_dashboard(
         sessions=self.sessions,
         crons=self.cron_svc,
@@ -748,6 +751,7 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         defer_channel_agent_resume=True,
         schedule_memory_preparation=self._schedule_memory_preparation,
         approval_mode=self._approval_mode,
+        headless=self._headless,
     )
     # When --port auto was requested, read the OS-assigned ephemeral port
     # back from the runner so subsequent URL building and the READY line
@@ -910,6 +914,13 @@ async def run(self: GatewayOrchestrator) -> None:
         )
         print(f"❌ Cannot run the signing key preflight: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
+
+    # A headless start records its mode before anything listens, on a daemon with
+    # the preflight's deadline. A failed write stops the boot: a record still saying
+    # "not headless" would let a CLI restart bring a crashed headless gateway back
+    # with the dashboard. An ordinary start records it after the listener is up.
+    if self._headless:
+        await _write_gateway_mode_bounded()
 
     # An update a person armed applies HERE, at the start, before the listeners bind
     # and before any session is restored: nothing is serving, so nothing is cut. A
@@ -1138,6 +1149,17 @@ async def run(self: GatewayOrchestrator) -> None:
     try:
         from kiro_crew.instances import run_marker
 
+        if not self._headless:
+            # The ordinary start's mode record, on the same kind of tracked task.
+            # A failure only warns: the stale record it leaves can only say
+            # "headless". The record is written while this process holds
+            # gateway.lock, so a write still pending at exit cannot land on a
+            # later gateway's record.
+            # The default executor is joined before gateway.lock is released,
+            # keeping a late write off a later gateway's record.
+            _mode_task = asyncio.create_task(_record_ordinary_mode())
+            self._background_tasks.add(_mode_task)
+            _mode_task.add_done_callback(self._background_tasks.discard)
         if self._dashboard_port:
             _marker_task = asyncio.create_task(
                 asyncio.to_thread(self._write_marker_worker, run_marker, self._dashboard_port)
@@ -1551,7 +1573,13 @@ async def run(self: GatewayOrchestrator) -> None:
     # ~mcp_probe_timeout_secs+15 of "no URL on screen" from every boot, and
     # all of it from the timed-out path.
     dashboard_url = ""
-    if not self._no_dashboard:
+    if self._headless:
+        # No page to open and no sign-in link to print: the address and how to get
+        # a credential, which is never printed here.
+        from kiro_crew.dashboard.headless import print_client_access
+
+        print_client_access(self._dashboard_port)
+    elif not self._no_dashboard:
         try:
             host = resolve_dashboard_host(self._local_only, self._configured_host)
             _cfg_url = self._cfg.dashboard.url

@@ -13,6 +13,52 @@ alone never grants a mode. Origin-chat injection keeps the chat's own policy.
 Cron execution binding is published off the event loop before mode admission
 and provider allocation, using the run's already captured execution context.
 
+Every boot records boolean `headless`, writer `pid`, and a readable `start_token`
+in the run-marker directory's `gateway-mode.json`. The start token uses the pid
+sidecars' `pid_start_token` producer; an unreadable token is omitted.
+(`instances.run_marker.write_gateway_mode`). A headless boot awaits the write after the
+signing key preflight and before any service or listener starts. The headless write reuses
+the preflight's daemon-worker mechanism and its existing 30-second deadline, so a stalled
+headless write cannot hold up interpreter exit. A headless timeout logs critical, prints
+one stderr line naming the deadline and asking the owner to check data-home reachability,
+and exits with `SystemExit(1)`; a write error also aborts
+that boot, because a record still saying ordinary would let a CLI restart bring a crashed
+headless gateway back with the dashboard. An ordinary boot adds no work before listening:
+the write runs on a tracked background task scheduled beside the launcher/pid marker
+task once the listener is up, and a failure logs one warning and never stops startup. A
+stale record that write leaves can only say headless. The write runs while the process
+holds `gateway.lock`, so a pending write cannot land on a later gateway's record. The
+mode survives shutdown and is replaced at the next boot; the detached CLI restart reads
+it before stopping this gateway. A live gateway is identified by this home's lock
+holder. The record counts only if its pid matches and, when both start tokens are
+readable, they match. Foreground restart waits while a live holder is not named by
+the record, including an absent record or mismatched pid/start token. Each poll reads
+the holder, listeners, then the record. Waiting ends when:
+- The record names the holder: judge by the record.
+- The holder's pid is among `find_listening_pids(port)` and the record still does
+  not name it: ordinary.
+- The holder is gone: apply the no-live-gateway rule below.
+
+Headless boot publishes before listening or exits. An ignored stale headless record
+prints one warning. A different live holder does not reset the wait.
+The deadline is the headless record write's 30 seconds, shared through
+`instances.run_marker.GATEWAY_MODE_WRITE_TIMEOUT_SECS`; polling uses restart's
+`_RESTART_READY_POLL_INTERVAL`. Without a listener lookup tool only a named holder
+or no live holder ends the wait. At the deadline an unnamed, unconfirmed holder
+causes exit 1 before any stop or spawn, never an ordinary fallback, with one stderr line:
+`❌ The gateway of this data home is still starting and its mode cannot be checked; restart refused. Stop it with kirocrew stop, then start it with kirocrew gateway --headless or kirocrew gateway for one with the dashboard.`
+Other states need no wait; restart still does its own listener lookup after mode selection.
+With no live gateway, restart refuses a headless record with exit 1 before any
+stop or spawn and asks the operator to start with `kirocrew gateway --headless`
+or `kirocrew gateway` for the dashboard; an absent or ordinary record restarts
+ordinary. An indeterminate lock probe retains the validated record and leaves
+restart's stop and spawn guards in charge. Unreadable start identity leaves pid
+reuse undetected. After a managed restart, no live holder and a headless record
+at the wait bound suppress both the API banner and the sign-in link. A unit
+started by systemd or launchd itself runs its own command line and never reads
+the mode record.
+The launcher/pid marker worker never rewrites this mode.
+
 Startup wires memory objects behind one gateway-lifetime in-process barrier.
 Both dashboard and API-only servers receive the orchestrator's existing context
 builder. Post-bind workflow initialization uses that same object for essentials
@@ -328,7 +374,7 @@ there; the responsibilities below live in private owners under
 | `slack/gateway_runtime/cron_turn.py` | A message job's agent turn: the agent sequence, and the single-agent turn with its dispatch, ACP-death and transient retries and cleanup, whose flags stay locals of one method |
 | `slack/gateway_runtime/cron_delivery.py` | Delivering a single-agent cron result: the duplicate and silent paths, the dashboard tab and bell, the channel the job came from, the Slack post and its uploads |
 | `slack/gateway_runtime/cron_failure.py` | Telling the user a cron run failed, once per distinct failure: the alert threshold and the four one-spelling helpers and their two failure callers, the command/script/denial alert and the single-agent turn's failure path; and the notice for a run the cron service's stop cut short (`_alert_cron_interrupted`, wired by `set_interrupt_alert`), which rings the bell and then takes the same one-surface delivery but is not a failure: it counts nothing and leaves the dedup anchor alone |
-| `slack/gateway_runtime/orchestrator_init.py` | Constructing the orchestrator: `__init__`, which records the run's options and credentials, runs each channel's hoist, registers the config appliers and gives every service, task and update field its not-yet-started value |
+| `slack/gateway_runtime/orchestrator_init.py` | Constructing the orchestrator: `__init__` rejects `headless=True` with `no_dashboard=True` before initialization, so every caller either uses the full headless route table or is refused; it records the run's options and credentials, runs each channel's hoist, registers the config appliers and gives every service, task and update field its not-yet-started value |
 | `slack/gateway_runtime/channel_boot.py` | Each channel's boot state, the live config appliers and the channel transports: the per-channel `_hoist_*` (`restart_channel` re-runs exactly one), `_register_config_appliers` with `_SLACK_APPLIER_PREFIXES`, `_start_channel_transports` |
 | `slack/gateway_runtime/subagent_wiring.py` | Building the sub-agent manager and the callbacks it reports through (`_init_subagents`): the status and event frames, spawn approval, the orphan notices, and `_subagent_done`, the one consumer every terminal report goes through, which resolves the parent's tab, composes the report, peeks at the wave, then hands the completion to the digest and its delivery route; the manager reads made off the loop, the scale coalescer, the slot a workflow step's spawn answers to |
 | `slack/gateway_runtime/subagent_report.py` | What a sub-agent completion says: `_compose_subagent_completion` (status, detail, announce and card facts, pure apart from redaction) and the wave digest `_subagent_wave_digest`, synchronous from reading the wave's record to the hold-or-flush decision |

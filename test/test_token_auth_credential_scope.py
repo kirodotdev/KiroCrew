@@ -407,7 +407,7 @@ async def test_an_app_token_on_an_owner_route_is_refused_as_owner_only(monkeypat
     monkeypatch.setattr(_ta, "_app_api_allowlist", lambda name: ())
     mw = token_auth_middleware()
     token = generate_token("file-explorer", app="file-explorer")
-    req = _make_request(path="/v1/crew/owner/bots", query={"token": token})
+    req = _make_request(path="/v1/crew/owner/bots", headers={"Authorization": f"Bearer {token}"})
     resp = await mw(req, _ok_handler)
     assert resp.status == 403
     error = json.loads(resp.body)["error"]

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     import logging
     import sys
     import threading
+    from collections.abc import Callable
 
     from kiro_crew.slack.gateway import (
         Any,
@@ -101,6 +102,55 @@ async def _run_signing_key_preflight_bounded(timeout: float | None = None) -> No
     ``TimeoutError`` at the deadline, and ``RuntimeError`` when no thread can be
     started.
     """
+    await _run_boot_io_bounded(
+        signing_key_preflight, name="kc-signing-key-preflight", timeout=timeout
+    )
+
+
+async def _record_ordinary_mode() -> None:
+    """Record ordinary mode on the default executor; failure only warns."""
+    from kiro_crew.instances import run_marker
+
+    try:
+        await asyncio.to_thread(run_marker.write_gateway_mode, headless=False)
+    except Exception as exc:
+        logger.warning(
+            "Could not record this gateway's mode in gateway-mode.json (%s). "
+            "A record left by an earlier headless start stays, so a later "
+            "`kirocrew restart` refuses if no live gateway can confirm it, or "
+            "if the record cannot be read.",
+            exc,
+        )
+
+
+async def _write_gateway_mode_bounded(timeout: float | None = None) -> None:
+    """Publish the mode on a daemon; headless boot refuses a missed deadline."""
+    from kiro_crew.instances import run_marker
+
+    def _write() -> None:
+        run_marker.write_gateway_mode(headless=True)
+
+    seconds = run_marker.GATEWAY_MODE_WRITE_TIMEOUT_SECS if timeout is None else timeout
+    try:
+        await _run_boot_io_bounded(_write, name="kc-gateway-mode", timeout=seconds)
+    except (TimeoutError, asyncio.TimeoutError) as exc:
+        message = (
+            f"The gateway mode record could not be written within {seconds:g} seconds. "
+            "Check that the data home is reachable."
+        )
+        logger.critical("%s Refusing to start.", message)
+        print(f"❌ {message}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    except RuntimeError as exc:
+        logger.critical("Cannot run the gateway mode write; refusing to start: %s", exc)
+        print(f"❌ Cannot run the gateway mode write: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+
+async def _run_boot_io_bounded(
+    work: Callable[[], None], *, name: str, timeout: float | None = None
+) -> None:
+    """Bound filesystem work without a default-executor join holding up exit."""
     loop = asyncio.get_running_loop()
     outcome: asyncio.Future[BaseException | None] = loop.create_future()
 
@@ -111,7 +161,7 @@ async def _run_signing_key_preflight_bounded(timeout: float | None = None) -> No
     def _worker() -> None:
         result: BaseException | None = None
         try:
-            signing_key_preflight()
+            work()
         except BaseException as exc:  # noqa: BLE001 - re-raised on the loop
             result = exc
         try:
@@ -119,7 +169,7 @@ async def _run_signing_key_preflight_bounded(timeout: float | None = None) -> No
         except RuntimeError:
             pass  # the loop already closed: the boot gave up on this thread
 
-    threading.Thread(target=_worker, name="kc-signing-key-preflight", daemon=True).start()
+    threading.Thread(target=_worker, name=name, daemon=True).start()
     exc = await asyncio.wait_for(
         outcome, _SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS if timeout is None else timeout
     )
@@ -436,6 +486,7 @@ async def run_gateway(
     cfg: KiroCrewConfig,
     *,
     no_dashboard: bool = False,
+    headless: bool = False,
     no_crons: bool = False,
     no_tunnel: bool = False,
     no_open: bool = False,
@@ -752,6 +803,7 @@ async def run_gateway(
     orchestrator = GatewayOrchestrator(
         cfg,
         no_dashboard=no_dashboard,
+        headless=headless,
         no_crons=no_crons,
         no_open=no_open,
         port_override=port_override,
