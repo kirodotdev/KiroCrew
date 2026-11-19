@@ -3,8 +3,9 @@
 These tests pin the drop of a non-JSON or non-object line and of a frame with neither id nor method,
 the swallowed heartbeat pong, an unknown response id dropped, a response restored to its stub's
 original id with its latency metric, the initialize and MCP Apps sentinel responses, a progress
-notification routed to its one owner, a global notification broadcast and an unattributable
-request-scoped one dropped. Most of the file is resource-update routing: an update reaches only the
+notification routed to its one owner, a ``subscriptions/listen`` stream frame routed to its listener
+under the listener's own id, a global notification broadcast and an unattributable request-scoped
+one dropped. Most of the file is resource-update routing: an update reaches only the
 subscribers of its URI and is never routed by ``relatedRequestId``; one subscribe per URI is
 forwarded while later subscribers join the granted lease locally or park until the server's verdict;
 a refusal grants nobody, an update racing the grant is dropped and a refused final unsubscribe keeps
@@ -195,6 +196,42 @@ class TestRouteBackendLine:
                 }
             )
         )
+        assert inbox1.empty() and inbox2.empty()
+
+    @pytest.mark.asyncio
+    async def test_a_listen_stream_frame_reaches_its_listener_under_its_own_id(self) -> None:
+        """A ``subscriptions/listen`` stream tags each frame with the listen's
+        request id, which the server saw as the gateway's forward id. The
+        acknowledgement reaches only the stub that listened, tagged with that
+        stub's own id; a tag naming no pending listen is still dropped."""
+        backend = _make_backend()
+        inbox1 = await backend.attach_stub("s1")
+        inbox2 = await backend.attach_stub("s2")
+        backend._pending_requests["gw-1"] = _PendingRequest(
+            "s1", "listen-1", "subscriptions/listen"
+        )
+        backend._pending_requests["gw-2"] = _PendingRequest("s2", 7, "tools/call")
+        key = "io.modelcontextprotocol/subscriptionId"
+
+        def ack(tag: str) -> bytes:
+            return _line(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/subscriptions/acknowledged",
+                    "params": {"notifications": {"toolsListChanged": True}, "_meta": {key: tag}},
+                }
+            )
+
+        await backend._route_backend_line(ack("gw-1"))
+        delivered = await _drain(inbox1)
+        assert delivered["method"] == "notifications/subscriptions/acknowledged"
+        assert delivered["params"] == {
+            "notifications": {"toolsListChanged": True},
+            "_meta": {key: "listen-1"},
+        }
+        assert inbox1.empty() and inbox2.empty()
+        await backend._route_backend_line(ack("gw-2"))
+        await backend._route_backend_line(ack("gw-unknown"))
         assert inbox1.empty() and inbox2.empty()
 
     @pytest.mark.asyncio
