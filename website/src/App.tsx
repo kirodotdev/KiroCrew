@@ -116,7 +116,10 @@ import { useAppShell } from './shell/appShell'
 import { ShellHeader } from './shell/topbar/shellHeader'
 import { hiddenChromeProps } from './shell/focus/focusChrome'
 import { RelayReconnectingView } from './shell/RelayReconnectingView'
+import { WaitGame } from './components/laundry/WaitGame'
 import { FOCUSABLE, useDialogFocusTrap } from './hooks/useDialogFocusTrap'
+import { useScrollEdgesY } from './hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from './components/ModelEffortDropdown'
 import { ShellNavRail } from './shell/nav/navRail'
 import { NavItem, NavBadge } from './shell/nav/navRow'
 import { DockMatesTiles, useDockMates } from './shell/nav/matesDock'
@@ -251,6 +254,9 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   // the dashboard it hides. It has no Escape: Cancel and Dismiss are its only ways out.
   const overlayRef = useRef<HTMLDivElement>(null)
   useDialogFocusTrap(overlayRef, NO_ESCAPE, { handleEscape: false })
+  // The card scrolls on a short window (the restart wait adds the game): the fade says more sits below. It sits on the
+  // scroll box, not on the root, which paints the backdrop a mask would thin.
+  const [attachScroll, scrollEdges, , attachContent] = useScrollEdgesY<HTMLDivElement>()
 
   // Track elapsed time for stuck detection
   useEffect(() => {
@@ -284,15 +290,17 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler only stops keystrokes reaching page shortcuts behind the modal; it performs no action
     <div
       ref={overlayRef}
+      data-testid="update-overlay"
       role="dialog"
       aria-modal="true"
       aria-label={i18nT('app.updating_kirocrew')}
       tabIndex={-1}
       onKeyDown={isolateOverlayKeys}
       data-relay-pane-overlay=""
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe outline-hidden"
+      className="fixed inset-0 z-[100] bg-bg/80 backdrop-blur-xs animate-rise outline-hidden"
     >
-      <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
+      <div ref={attachScroll} data-testid="update-overlay-scroll" className={`flex h-full overflow-y-auto p-safe ${scrollEdges.bottom ? MORE_BELOW_MASK : ''}`}>
+      <div ref={attachContent} className="m-auto bg-card border border-border rounded-xl p-8 max-w-md w-[calc(100%-2rem)] shadow-xl text-center">
         {/* A terminal step is not in progress, so it does not pulse. */}
         <div className={`text-4xl mb-4 ${isFailed ? 'text-danger' : 'animate-pulse'}`} data-testid="update-overlay-step-icon">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
         <div className="text-lg font-bold text-text-strong mb-2">{i18nT('app.updating_kirocrew')}</div>
@@ -344,12 +352,16 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
           // leaving a frozen step list that reads as a hang. On reconnect the
           // restart latch (useWebSocket) reloads this tab, which is what
           // finally clears the overlay.
-          <div className="text-[13px] text-accent flex items-center justify-center gap-1.5" role="status" data-testid="update-reconnecting">
-            <RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('app.gateway_restarting_reconnecting')} ({elapsedStr})
-          </div>
+          <>
+            <div className="text-[13px] text-accent flex items-center justify-center gap-1.5" role="status" data-testid="update-reconnecting">
+              <RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('app.gateway_restarting_reconnecting')} ({elapsedStr})
+            </div>
+            <WaitGame surface="card" className="mt-4 h-[min(15rem,32dvh)]" />
+          </>
         ) : (
           <div className="text-[13px] text-muted">{i18nT('app.page_will_reconnect_when_ready')}</div>
         )}
+      </div>
       </div>
     </div>
   )
@@ -465,6 +477,11 @@ export default function App() {
   const paneWithoutHeader = relayCrewPane && !relayPaneHeader
   // A calm offline view covers <main> and the docked terminal (see `offlineCover`).
   const contentCovered = offlineCoverKind !== null
+  // INVARIANT: at most one wait game is on screen. Every surface that mounts its own `WaitGame` is named here, and the
+  // host-offline cover offers its game only when none of them is up (it would sit behind their modal dialogs, running and
+  // reachable by a screen reader). A new surface that mounts a `WaitGame` joins this predicate.
+  const [restartDialogUp, setRestartDialogUp] = useState(false) // UpdateFoundModal's restart wait
+  const waitGameOwnedElsewhere = updating || showUpdateModal /* UpdateOverlay */ || restartDialogUp
   // The first-run sign-in hides this app behind it, so the local layers hide too.
   const signInHeld = useFirstRunSignInHeld()
   // "Run in terminal" from a code block outside every chat, on any route.
@@ -951,7 +968,7 @@ export default function App() {
           <UpdateModal held={showChangelog || shortcutsOpen || updating || showUpdateModal} />
           {updateAvailable && (
             <Suspense fallback={null}>
-              <UpdateFoundModal held={showChangelog || shortcutsOpen || updating || showUpdateModal} />
+              <UpdateFoundModal held={showChangelog || shortcutsOpen || updating || showUpdateModal} onRestartingChange={setRestartDialogUp} />
             </Suspense>
           )}
           <MobileConnectDialog mobileConnect={mobileConnect} />
@@ -987,7 +1004,7 @@ export default function App() {
         <div className={`relative flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
         {/* Mounted for the page's life in a relay Crew window, so its live
             region exists before the drop; the host view joins it on a drop. */}
-        {(relayCrewWindow || offlineCoverKind === 'host') && <RelayReconnectingView cover={offlineCoverKind} />}
+        {(relayCrewWindow || offlineCoverKind === 'host') && <RelayReconnectingView cover={offlineCoverKind} offerGame={!waitGameOwnedElsewhere} />}
         {/* `outline-hidden`: main is a programmatic focus target (the skip
             link, and focus mode's hand-off when the chrome hides), not a
             control, so it opts out of the global :focus-visible ring the way

@@ -93,6 +93,9 @@ globalThis.ResizeObserver = class {
 
 import App from '../App'
 import { api } from '../api/client'
+import { MORE_BELOW_MASK } from '../components/ModelEffortDropdown'
+import { QUIET_RECONNECT_GRACE_MS } from '../utils/reconnectBackoff'
+import { WAIT_GAME_DELAY_MS } from '../components/laundry/WaitGame'
 
 /** Status payload the shell diffs `mc-last-version` against. */
 // `update_can_apply` is what licenses the in-app "Update Now" path: availability
@@ -329,7 +332,7 @@ describe('App — update progress overlay', () => {
     // Every step label is listed; the two before "building" have completed.
     expect(screen.getByText('Pulling latest changes')).toBeInTheDocument()
     expect(screen.getByText('Rebuilding package')).toBeInTheDocument()
-    expect(screen.getByText('Restarting server')).toBeInTheDocument()
+    expect(screen.getByText('Restarting gateway')).toBeInTheDocument()
     expect(screen.getByText('0s')).toBeInTheDocument()
   })
 
@@ -351,11 +354,16 @@ describe('App — update progress overlay', () => {
     // The idle copy stands down: both lines together would say "waiting" and
     // "dialing" about the same moment.
     expect(screen.queryByText('Page will reconnect when ready…')).toBeNull()
+    // The restart wait offers the laundry game below its line (after 30 s, or on Space); the line stays.
+    act(() => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })) })
+    expect(screen.getByTestId('wait-game')).toBeInTheDocument()
+    expect(screen.getByTestId('update-reconnecting')).toBeInTheDocument()
 
     // Reconnected (the gateway is back, the reload latch takes it from here):
-    // the transient line yields back to the idle copy.
+    // the transient line yields back to the idle copy, and the game goes with it.
     await act(async () => { store.dispatch(sseConnected()) })
     expect(screen.queryByTestId('update-reconnecting')).toBeNull()
+    expect(screen.queryByTestId('wait-game')).toBeNull()
     expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
   })
 
@@ -419,6 +427,82 @@ describe('App — update progress overlay', () => {
     } finally {
       behind.remove()
     }
+  })
+
+  it('keeps one game, the overlay\'s, when the host-offline cover comes up behind it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { store } = await startProgress()
+    await act(async () => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
+    await act(async () => { store.dispatch(sseConnected()) })
+    await act(async () => { store.dispatch(sseDisconnected()) })
+    act(() => { vi.advanceTimersByTime(QUIET_RECONNECT_GRACE_MS) })
+    expect(screen.getByTestId('host-offline')).toBeTruthy() // the cover is up behind the overlay
+    // At 30 s every wait surface starts its own game (Space starts only the first listener's): the cover's would sit behind the modal.
+    act(() => { vi.advanceTimersByTime(WAIT_GAME_DELAY_MS) })
+    expect(screen.getAllByTestId('wait-game')).toHaveLength(1)
+    expect(within(screen.getByTestId('update-overlay')).getByTestId('wait-game')).toBeTruthy()
+    vi.useRealTimers()
+  })
+
+  it('keeps one game, the dialog\'s, when the restart-to-update dialog is waiting and the host-offline cover then comes up', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    ;(api as unknown as Record<string, unknown>).restartGateway = vi.fn().mockResolvedValue({})
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ auto_update: true, dashboard: { update_nudge: {} } } as never)
+    localStorage.setItem('mc-last-version', '0.4.0') // no changelog gate
+    vi.mocked(api.status).mockResolvedValue({ ...STATUS, update_latest_version: '8.8.8', update_restart_ready: true } as never)
+    const { store } = renderWithProviders(<App />, { route: '/chat' })
+    // Chain: the lazy UpdateFoundModal import resolves, then its mc-config-update-nudge query answers and it opens.
+    const dialog = await screen.findByRole('dialog', { name: /Update/ }, namedCeiling('UPDATE_PROMPT_READY', 5000))
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Restart to update' })) })
+    await within(dialog).findByText('Updating and restarting…')
+    await act(async () => { store.dispatch(sseDisconnected()) })
+    act(() => { vi.advanceTimersByTime(QUIET_RECONNECT_GRACE_MS) })
+    expect(screen.getByTestId('host-offline')).toBeTruthy() // the cover is up behind the dialog
+    act(() => { vi.advanceTimersByTime(WAIT_GAME_DELAY_MS) })
+    expect(screen.getAllByTestId('wait-game')).toHaveLength(1)
+    expect(within(dialog).getByTestId('wait-game')).toBeTruthy()
+    vi.useRealTimers()
+  })
+
+  describe('bottom edge cue', () => {
+    // jsdom does no layout: the overlay's root and its scroll box get a stubbed geometry, keyed by test id.
+    const stub = (hidden: number) => {
+      vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(200)
+      vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return 200 + (['update-overlay', 'update-overlay-scroll'].includes(this.dataset.testid ?? '') ? hidden : 0)
+      })
+    }
+    afterEach(() => { vi.restoreAllMocks() })
+    const mask = MORE_BELOW_MASK.split(' ')[0]
+    const faded = (root: HTMLElement) => [root, ...root.querySelectorAll<HTMLElement>('*')].filter(el => el.className.includes?.(mask))
+    const measure = async () => {
+      const root = await screen.findByTestId('update-overlay')
+      for (const el of [root, root.querySelector<HTMLElement>('[data-testid="update-overlay-scroll"]')]) if (el) fireEvent.scroll(el) // the scroll listener re-measures, as the observer's first delivery does
+      return root
+    }
+
+    it('fades the overlay\'s bottom edge while its content runs past a short window', async () => {
+      stub(120)
+      await startProgress()
+      expect(faded(await measure())).toHaveLength(1)
+    })
+
+    it('puts the fade on the scroll box, never on the element that paints the backdrop it would thin', async () => {
+      stub(120)
+      await startProgress()
+      const root = await measure()
+      const [box] = faded(root)
+      expect(box.dataset.testid).toBe('update-overlay-scroll')
+      expect(root.className).toMatch(/bg-bg\/80/)
+      expect(root.className).toContain('backdrop-blur')
+      expect(box.className).not.toMatch(/bg-bg|backdrop-blur/)
+    })
+
+    it('leaves the overlay unfaded when its content fits', async () => {
+      stub(0)
+      await startProgress()
+      expect(faded(await measure())).toHaveLength(0)
+    })
   })
 
   it.each(['failed', 'error'] as const)('treats the %s step as terminal', async (step) => {

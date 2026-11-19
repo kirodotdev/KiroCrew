@@ -24,7 +24,10 @@ import { foldStableStamp } from '../utils/displayVersion'
 import { stagedConsumesOffer } from '../utils/releaseVersion'
 import { editionOwnsUpdatePrompts, type UpdateState } from '../hooks/useUpdateSubscription'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
+import { useScrollEdgesY } from '../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from './ModelEffortDropdown'
 import { reportForError } from '../utils/errorReport'
+import { WaitGame } from './laundry/WaitGame'
 
 /**
  * Proactive "update found" modal — the one interruption between an update
@@ -91,10 +94,12 @@ type Candidate = {
 }
 
 /**
+ * `onRestartingChange`: told whether the dialog is on screen in its restart wait, where it offers the wait game, so the shell
+ *   can keep the host-offline cover from mounting a second one behind it.
  * `held`: another update dialog (What's new) is on screen. The popup stays
  * mounted, so its per-version session state survives, and opens once released.
  */
-export default function UpdateFoundModal({ held = false }: { held?: boolean } = {}) {
+export default function UpdateFoundModal({ held = false, onRestartingChange }: { held?: boolean; onRestartingChange?: (restarting: boolean) => void } = {}) {
   const queryClient = useQueryClient()
   const { data: desktop } = useQuery<UpdateState | null>({
     queryKey: ['update-state'],
@@ -240,6 +245,8 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   const [copied, setCopied] = useState(false)
   const [copyError, setCopyError] = useState('')
   const [restarting, setRestarting] = useState(false)
+  // The body scrolls inside a height-capped dialog (the restart wait adds the game below the fold): the fade says more sits below.
+  const [attachBody, bodyEdges, , attachBodyContent] = useScrollEdgesY<HTMLDivElement>()
   const [applyError, setApplyError] = useState('')
   const [persistError, setPersistError] = useState('')
 
@@ -271,6 +278,11 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
       && !sessionDismissed
       && shouldNudge(candidate.version, record, Date.now() / 1000)
     ))
+  // The restart wait offers the game only while the dialog is on screen, so that is the fact the shell is told.
+  useEffect(() => {
+    onRestartingChange?.(restarting && open)
+    return () => onRestartingChange?.(false)
+  }, [restarting, open, onRestartingChange])
 
   // Gateway notes are fetched only when the modal actually opens: the status
   // frame deliberately omits the changelog blob, and GET /api/update/check
@@ -591,7 +603,8 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
           )}
         </div>
 
-        <div className="px-4 py-3 text-sm text-text">
+        <div ref={attachBody} data-testid="update-found-body" className={`min-h-0 overflow-y-auto px-4 py-3 text-sm text-text ${bodyEdges.bottom ? MORE_BELOW_MASK : ''}`}>
+          <div ref={attachBodyContent}>
           {/* No body sentence where the one button names the version (the in-app
               Update): the title and that button say it all. */}
           {!(candidate.source === 'gateway' && candidate.affordance === 'arm') && (
@@ -687,6 +700,8 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
             testId="update-found-persist-error"
           />
           {restarting && <p className="mt-2 text-[12px] text-muted">{i18nT('components.updateFoundModal.updating_and_restarting')}</p>}
+          {/* The gateway is down until it comes back on the new version: something to do meanwhile. */}
+          {restarting && <WaitGame surface="card" className="mt-3 h-[min(15rem,32dvh)]" />}
           {candidate.affordance === 'restart' && !restarting && (
             <p data-testid="update-restart-ready-note" className="mt-2 text-[12px] text-muted">
               {gwArmedVersion && !gwRestartReadyForOffer
@@ -739,6 +754,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
             </button>
           </p>
           )}
+          </div>
         </div>
 
         {/* flex-wrap: two localized buttons (de runs long) can exceed a 320px
@@ -818,7 +834,7 @@ function UpdateFoundDialog({ label, children }: { label: string; children: React
     <div
       ref={dialogRef}
       tabIndex={-1}
-      className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] flex flex-col overflow-hidden outline-hidden"
+      className="bg-card border border-border rounded-xl shadow-xl w-[460px] max-w-[90vw] max-h-[calc(100dvh-2rem)] flex flex-col overflow-hidden outline-hidden"
       role="dialog"
       aria-modal="true"
       aria-label={label}
