@@ -1407,6 +1407,8 @@ class TestRuntimeShieldSurvivesAFailedAppend:
             kill_process_tree_pinned=lambda pid, start, sig: (
                 (kill_tree(pid, sig) is None or True) if start == f"start-{pid}" else False
             ),
+            # A kill whose root exited inside the grace waits for the root's group.
+            pgroup_exists=lambda pgid: pgid in groups.values(),
             file_lock=platform_compat.file_lock,
             open_lock_file=platform_compat.open_lock_file,
         )

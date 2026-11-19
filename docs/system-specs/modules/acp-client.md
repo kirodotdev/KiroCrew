@@ -5348,6 +5348,23 @@ is deliberately three-valued: only a read that happened and disagreed may
 describe the root as no longer ours, while an unrecorded or unreadable identity
 refuses just as firmly but reports itself as unmeasured.
 
+**A root that dies at once does not end the kill for its group.** The Linux
+sandbox launcher forks the agent into the root's own process group and waits for
+it under the default `SIGTERM` disposition, so the group's `SIGTERM` ends the
+launcher at once. The root's `wait()` then returns when the agent's exit closes
+the root's pipes, while the agent is still in the group: exiting, or a zombie
+the init it was reparented to has not reaped. So when the root's identity held
+at the `SIGTERM` and the root exited inside the grace, `_kill_inner` waits for
+the group to empty (`runtime_tree_kill._wait_for_group_exit`, polling
+`platform_compat.pgroup_exists`) for the rest of the same `_KILL_TERM_TIMEOUT`
+grace before it prunes the descendants. Without the wait the prune retains the
+agent as a survivor and a sub-agent reset's survivor check force-kills it with
+the reason `graceful reset hung`. The root's number cannot be reissued while its
+group has a member, so the probe reads this runtime's group. The wait sends no
+signal, and a member still there when the grace ends is left to the survivor
+tracking. Pinned by
+`test_acp_runtime_kill.py::test_kill_waits_for_the_group_a_root_that_dies_at_once_leaves`.
+
 **What no signal reached still reads EOF.** Once its signal ladder has run,
 whatever that reached, the POSIX kill releases the gateway's write end of the
 root's stdin before it drops the handle (`runtime_tree_kill._release_stdin`). A
