@@ -1412,6 +1412,7 @@ jobs:
           by_mem=$(( (mem_mib - 2048) / 2048 ))
           WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$WORKERS" -ge 1 ] || WORKERS=1
+          WORKERS=8  # ci-probe run 2: worker-count experiment
           echo "pytest workers: $WORKERS"
           # Host memory in use (MemTotal - MemAvailable), sampled every 5s; the
           # "Report peak memory" step prints the high-water mark.
@@ -1712,6 +1713,7 @@ jobs:
           by_mem=$(( (mem_mib - 2048) / 3072 ))
           WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$WORKERS" -ge 1 ] || WORKERS=1
+          WORKERS=6  # ci-probe run 2: worker-count experiment
           echo "pytest workers: $WORKERS"
           # Host memory in use (total - available), sampled every 5s; the
           # "Report peak memory" step prints the high-water mark.

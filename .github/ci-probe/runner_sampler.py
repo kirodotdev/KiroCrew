@@ -70,6 +70,7 @@ def _proc_stat():
 def _python_procs():
     count = 0
     rss = 0
+    each = []
     for proc in psutil.process_iter(["name", "memory_info"]):
         name = (proc.info.get("name") or "").lower()
         if name.startswith("python"):
@@ -77,7 +78,9 @@ def _python_procs():
             mem = proc.info.get("memory_info")
             if mem is not None:
                 rss += mem.rss
-    return count, rss // (1024 * 1024)
+                each.append(mem.rss // (1024 * 1024))
+    each.sort(reverse=True)
+    return count, rss // (1024 * 1024), each[:12]
 
 
 def main():
@@ -116,7 +119,7 @@ def main():
             except (AttributeError, OSError):
                 pass
             row.update(_proc_stat())
-            row["py_procs"], row["py_rss_mib"] = _python_procs()
+            row["py_procs"], row["py_rss_mib"], row["py_rss_top_mib"] = _python_procs()
             out.write(json.dumps(row) + "\n")
             out.flush()
 
