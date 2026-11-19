@@ -125,7 +125,7 @@ deliberately from the published table — see the appendix.)
 **Per-locale style guides exist for all nine non-English locales and are
 machine-enforced** (`website/src/i18n/style/*.md` + `*Style.test.ts`). I am aware
 of no comparable public example, though I have not surveyed systematically.
-`zhStyle.test.ts` is the strongest — 21 zero-tolerance
+`zhStyle.test.ts` is the strongest — 22 zero-tolerance
 assertions and a 12-pair terminology denylist gated on the *English* source
 rather than blind substring matching.
 
