@@ -15073,7 +15073,9 @@
       "kind_section_crew": "[Çøñðùçţøŕ ɱøðè ·············]",
       "kind_section_normal": "[Ñøŕɱàĺ ·········]",
       "kind_section_mate": "[Ƒŕøɱ ƀøţş ··············]",
-      "filter_crew_description": "[Şĥøẁ øñĺý çøñðùçţøŕ ɱøðè çĥàţş ·····················]"
+      "filter_crew_description": "[Şĥøẁ øñĺý çøñðùçţøŕ ɱøðè çĥàţş ·····················]",
+      "reclick_toggles_side_panel": "[Çĺìçķ àğàìñ ţø şĥøẁ øŕ ĥìðè ţĥè şìðè þàñèĺ ·····················]",
+      "reclick_toggles_side_panel_shortcut": "[Çĺìçķ àğàìñ ţø şĥøẁ øŕ ĥìðè ţĥè şìðè þàñèĺ ({{shortcut}}) ·······················]"
     },
     "contextBreakdown": {
       "axis_turn_n": "[Ţùŕñ {{n}} ········]",

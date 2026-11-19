@@ -15454,7 +15454,9 @@
       "show_sessions_count_one": "{{n}} Sitzung anzeigen",
       "show_sessions_count_other": "{{n}} Sitzungen anzeigen",
       "hide_sessions_count_one": "{{n}} Sitzung ausblenden",
-      "hide_sessions_count_other": "{{n}} Sitzungen ausblenden"
+      "hide_sessions_count_other": "{{n}} Sitzungen ausblenden",
+      "reclick_toggles_side_panel": "Erneut klicken, um das Seitenpanel ein- oder auszublenden",
+      "reclick_toggles_side_panel_shortcut": "Erneut klicken, um das Seitenpanel ein- oder auszublenden ({{shortcut}})"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

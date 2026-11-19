@@ -15855,7 +15855,9 @@
       "show_sessions_count_other": "Mostra {{n}} sessioni",
       "hide_sessions_count_one": "Nascondi {{n}} sessione",
       "hide_sessions_count_many": "Nascondi {{n}} sessioni",
-      "hide_sessions_count_other": "Nascondi {{n}} sessioni"
+      "hide_sessions_count_other": "Nascondi {{n}} sessioni",
+      "reclick_toggles_side_panel": "Fai di nuovo clic per mostrare o nascondere il pannello laterale",
+      "reclick_toggles_side_panel_shortcut": "Fai di nuovo clic per mostrare o nascondere il pannello laterale ({{shortcut}})"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

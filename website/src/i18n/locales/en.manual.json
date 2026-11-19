@@ -7285,7 +7285,9 @@
       "kind_section_crew": "Conductor mode",
       "kind_section_normal": "Normal",
       "kind_section_mate": "From bots",
-      "filter_crew_description": "Show only conductor mode chats"
+      "filter_crew_description": "Show only conductor mode chats",
+      "reclick_toggles_side_panel": "Click again to show or hide the side panel",
+      "reclick_toggles_side_panel_shortcut": "Click again to show or hide the side panel ({{shortcut}})"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

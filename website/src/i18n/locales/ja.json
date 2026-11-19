@@ -15053,7 +15053,9 @@
       "skip_running_sessions_other": "実行中のセッション {{n}} 件をスキップ",
       "cleanup_move_count_other": "{{n}} 件のセッションが以前のセッションに移動されます。",
       "show_sessions_count_other": "{{n}} 件のセッションを表示",
-      "hide_sessions_count_other": "{{n}} 件のセッションを非表示"
+      "hide_sessions_count_other": "{{n}} 件のセッションを非表示",
+      "reclick_toggles_side_panel": "もう一度クリックするとサイドパネルの表示を切り替えます",
+      "reclick_toggles_side_panel_shortcut": "もう一度クリックするとサイドパネルの表示を切り替えます（{{shortcut}}）"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

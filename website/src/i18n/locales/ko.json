@@ -15053,7 +15053,9 @@
       "skip_running_sessions_other": "실행 중인 세션 {{n}}개 건너뛰기",
       "cleanup_move_count_other": "세션 {{n}}개가 이전 세션으로 이동됩니다.",
       "show_sessions_count_other": "세션 {{n}}개 표시",
-      "hide_sessions_count_other": "세션 {{n}}개 숨기기"
+      "hide_sessions_count_other": "세션 {{n}}개 숨기기",
+      "reclick_toggles_side_panel": "다시 클릭하면 사이드 패널을 표시하거나 숨깁니다",
+      "reclick_toggles_side_panel_shortcut": "다시 클릭하면 사이드 패널을 표시하거나 숨깁니다 ({{shortcut}})"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

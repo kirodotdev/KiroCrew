@@ -15454,7 +15454,9 @@
       "show_sessions_count_one": "{{n}}টি সেশন দেখাও",
       "show_sessions_count_other": "{{n}}টি সেশন দেখাও",
       "hide_sessions_count_one": "{{n}}টি সেশন লুকাও",
-      "hide_sessions_count_other": "{{n}}টি সেশন লুকাও"
+      "hide_sessions_count_other": "{{n}}টি সেশন লুকাও",
+      "reclick_toggles_side_panel": "সাইড প্যানেল দেখাতে বা লুকাতে আবার ক্লিক করো",
+      "reclick_toggles_side_panel_shortcut": "সাইড প্যানেল দেখাতে বা লুকাতে আবার ক্লিক করো ({{shortcut}})"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

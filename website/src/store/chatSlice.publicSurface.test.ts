@@ -71,7 +71,7 @@ const sourceFiles = (readdirSync(SRC, { recursive: true }) as string[])
 const INITIAL_STATE = {
   activeSlot: null, activeSlotMoves: 0, activeSlotAutoMoves: 0, activeSlotRequestMoves: 0, requestSeq: 0, requestBurst: 0, activatedRequestSeq: 0, lastResumeActivation: null, messages: [], slotRunning: false, slotStopping: false, slotState: 'idle',
   slotStatusDetail: {}, slotHasMore: false, slotOldestIndex: 0, slotCursorKey: null,
-  slotSwitchRequestId: null, slotSwitchTarget: null, slotSwitchLatestRequestId: null, slotSwitchOrigin: null, switchSlotGone: null,
+  slotSwitchRequestId: null, slotSwitchTarget: null, slotSwitchLatestRequestId: null, slotSwitchOrigin: null, switchSlotGone: null, slotOpenFailed: null,
   loadingOlder: false, slotOlderError: false, lastChunkSeq: undefined, lastChunkGen: undefined,
   _wsChunkedDuringFetch: false, liveFrameSeq: 0, refreshAppliedSeq: {}, _redeliveredFramesDropped: 0, history: [], historyHasMore: false,
   historyOffset: 0, unresumableResume: null, lastResumeRequestId: null, pendingResumes: {}, undeletableHistory: null,

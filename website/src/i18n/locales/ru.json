@@ -16256,7 +16256,9 @@
       "hide_sessions_count_one": "Скрыть {{n}} сессию",
       "hide_sessions_count_few": "Скрыть {{n}} сессии",
       "hide_sessions_count_many": "Скрыть {{n}} сессий",
-      "hide_sessions_count_other": "Скрыть {{n}} сессии"
+      "hide_sessions_count_other": "Скрыть {{n}} сессии",
+      "reclick_toggles_side_panel": "Нажми ещё раз, чтобы показать или скрыть боковую панель",
+      "reclick_toggles_side_panel_shortcut": "Нажми ещё раз, чтобы показать или скрыть боковую панель ({{shortcut}})"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",
