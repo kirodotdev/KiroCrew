@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -83,6 +83,15 @@ def _raise_if_unfinished(event: object, text: str) -> None:
     raise error
 
 
+class BackgroundAdmissionRefused(RuntimeError):
+    """A background helper was not started because host memory is critical.
+
+    A ``RuntimeError``, so every caller's existing failure path still catches it;
+    its own type lets a caller that must not record the failure as an ordinary
+    one (the knowledge pool) tell it apart.
+    """
+
+
 async def _refuse_while_memory_critical(what: str) -> None:
     """Raise instead of starting background helper work while host memory is critical.
 
@@ -98,7 +107,9 @@ async def _refuse_while_memory_critical(what: str) -> None:
     decision = await asyncio.to_thread(admission_check)
     if not decision.admitted:
         logger.info("Background helper %s not started: %s", what, decision.reason)
-        raise RuntimeError(f"background helper {what!r} not started: {decision.reason}")
+        raise BackgroundAdmissionRefused(
+            f"background helper {what!r} not started: {decision.reason}"
+        )
 
 
 @trace_surfaces.rooted(trace_surfaces.TRIGGER_BACKGROUND)
@@ -117,9 +128,15 @@ async def run_bg_oneliner(
     retry_rejected_model: bool = True,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     memory_gate: bool = True,
+    confirm_session: Callable[[Any], Awaitable[None]] | None = None,
 ) -> str:
     """Stream a single prompt through an ephemeral background session and return
     the accumulated text.
+
+    ``confirm_session`` is awaited with the acquired session after its model is
+    set and before anything is sent; raising refuses the turn, and the session
+    is destroyed as after any other failure. For a caller that must judge what
+    this session itself consumed, which a check before acquisition cannot see.
 
     ``start_priority`` orders the session's start; FOREGROUND only for a caller a
     person is waiting on (rule: ``kiro_crew.start_priority``). A BACKGROUND call
@@ -220,6 +237,8 @@ async def run_bg_oneliner(
             raise RuntimeError(
                 "run_bg_oneliner(strict_model=True) requires a session with set_model()"
             )
+        if confirm_session is not None:
+            await confirm_session(session)
         # A one-liner's prompt is text ABOUT a session, so an image path in it is
         # quoted history, not an attachment. Inlining it would send image blocks
         # that a text-only background model rejects, so the turn goes out
@@ -519,6 +538,22 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
     logger.info("Background session %s: reset to a new runtime for a fresh conversation", key)
 
 
+async def repair_lite_spec(sessions: Any) -> None:
+    """Repair the ``kirocrew-lite`` spec and reset the sessions that may have loaded it.
+
+    The one way to repair that file: it counts the rewrite (``_lite_rewrites``), so a
+    ``background_turn`` whose pre-spawn read raced it stops vouching for its session,
+    and it is shielded, so a cancelled caller cannot leave the count open or skip the
+    resets. Raises nothing but a cancellation.
+    """
+    _lite_rewrites["begun"] += 1
+    _lite_rewrites["running"] += 1
+    repair = asyncio.ensure_future(_rewrite_lite_spec(sessions))
+    _lite_rewrite_tasks.add(repair)
+    repair.add_done_callback(_lite_rewrite_tasks.discard)
+    await asyncio.shield(repair)
+
+
 async def _rewrite_lite_spec(sessions: Any) -> None:
     """Repair the ``kirocrew-lite`` spec, then reset the sessions that may have loaded the old one.
 
@@ -704,12 +739,7 @@ async def background_turn(
         if verdict is False:
             # Another tool may have written its server into Crew's own file; put the
             # template back and let a second read decide.
-            _lite_rewrites["begun"] += 1
-            _lite_rewrites["running"] += 1
-            repair = asyncio.ensure_future(_rewrite_lite_spec(sessions))
-            _lite_rewrite_tasks.add(repair)
-            repair.add_done_callback(_lite_rewrite_tasks.discard)
-            await asyncio.shield(repair)
+            await repair_lite_spec(sessions)
             verdict = await asyncio.to_thread(
                 authored_spec_toolless_verdict, BACKGROUND_AGENT, backend=spawn_backend
             )
