@@ -288,8 +288,7 @@ async def test_cancel_releases_the_port_for_reuse(tmp_path, loopback_shape):
     first = await service.begin_loopback("google")
     assert not _port_is_closed(first["port"])
     await service.cancel(first["login_id"])
-    # Let the cancelled listener task unwind and close its socket.
-    await asyncio.sleep(0.05)
+    # cancel() returns only once the listener has closed its socket.
     assert _port_is_closed(first["port"])
     with pytest.raises(UnknownLoginError):
         await service.poll_device(first["login_id"])
@@ -308,8 +307,7 @@ async def test_close_releases_pending_loopback_logins(tmp_path, loopback_shape):
     service, _ = _service(tmp_path)
     begin = await service.begin_loopback("google")
     await service.close()
-    await asyncio.sleep(0.05)
-    # The listener is gone, and a fresh service can bind again.
+    # The listener is gone as soon as close() returns, and a fresh service can bind again.
     assert _port_is_closed(begin["port"])
     other, _ = _service(tmp_path)
     again = await other.begin_loopback("google")
@@ -317,6 +315,27 @@ async def test_close_releases_pending_loopback_logins(tmp_path, loopback_shape):
         assert not _port_is_closed(again["port"])
     finally:
         await other.cancel(again["login_id"])
+
+
+@pytest.mark.asyncio
+async def test_a_listener_cancelled_before_its_first_step_closes_its_socket(
+    tmp_path, loopback_shape, monkeypatch
+):
+    # Hold every bound socket, as a reference cycle under load can, so the port
+    # is released by the service and not by the garbage collector.
+    held: list[socket.socket] = []
+
+    def _bind_and_hold():
+        sock, port = _bind_ephemeral()
+        held.append(sock)
+        return sock, port
+
+    monkeypatch.setattr(portal, "bind_allowed_port", _bind_and_hold)
+    service, _ = _service(tmp_path)
+    begin = await service.begin_loopback("google")
+    await service.close()
+    assert held[0].fileno() == -1
+    assert _port_is_closed(begin["port"])
 
 
 @pytest.mark.asyncio
