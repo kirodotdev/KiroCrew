@@ -19617,7 +19617,6 @@
         "tagline": "お使いのどの Apple デバイスの Messages アプリからでもエージェントにメッセージを送れます。ボットもトークンも不要—ゲートウェイがこの Mac 上で Messages を操作します。"
       },
       "instancesPanel": {
-        "20h": "20h",
         "add_instance": "リモートクルーを追加",
         "add_remote_crew": "リモートクルーを追加",
         "adding": "追加中…",

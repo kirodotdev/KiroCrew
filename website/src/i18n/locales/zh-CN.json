@@ -19617,7 +19617,6 @@
         "tagline": "在你任意一台 Apple 设备上，用 Messages 应用给你的代理发消息。无需机器人，也无需令牌——网关会驱动这台 Mac 上的 Messages。"
       },
       "instancesPanel": {
-        "20h": "20h",
         "add_instance": "添加远程 Crew",
         "add_remote_crew": "添加远程 Crew",
         "adding": "正在添加…",

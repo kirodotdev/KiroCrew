@@ -11067,7 +11067,6 @@
         "review_supported_sessions_memories_workspaces_mc": "Review supported sessions, memories, workspaces, MCP servers, skills,\n                  schedules, and compatible settings."
       },
       "instancesPanel": {
-        "20h": "20h",
         "add_instance": "Add remote crew",
         "aws_fargate_task": "AWS Fargate task (chat API)",
         "aws_profile": "AWS profile",
