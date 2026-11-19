@@ -45,7 +45,7 @@ differently.
 |---|---|---|
 | Inbound port on the remote | needs SSH reachable, directly or through a bastion | none |
 | What authorizes you | an SSH key your agent holds | IAM — `ssm:StartSession` on that instance, plus `ssm:SendCommand` and `ssm:GetCommandInvocation`, which the token mint runs over. Granting only the first brings the tunnel up and then fails the mint |
-| Needed on the hub | `ssh` | AWS CLI plus `session-manager-plugin` |
+| Needed on the hub | `ssh` | AWS CLI plus `session-manager-plugin`, and a working sandbox (on Ubuntu 23.10+ the AppArmor profile from `kirocrew service install`) |
 | Needed on the remote | `sshd` | the SSM agent and an instance role for SSM |
 | Revoking access | rotate or remove the key | edit the IAM policy |
 
@@ -553,6 +553,7 @@ reports the first broken link, which is usually the whole answer.
 | `remote_down` | The machine is reachable but no gateway is listening on the port you configured. |
 | `not_connected` | Everything is fine; this instance just has no tunnel yet. Click **Connect**. |
 | `tunnel_down` | The forward died. Reconnect. |
+| "Sandbox backend unavailable" (Diagnose on an SSM crew, or a token mint that fails) | The hub's own sandbox refused to start `aws`, so no SSM call ran. On Ubuntu 23.10+ run `kirocrew service install` to add the AppArmor profile and start the gateway through it, then reconnect. |
 | An SSH auth error on connect | Re-add your key to `ssh-agent`. Kiro Crew never prompts for a password, so a missing credential fails immediately — and the tunnel heals itself once the key is back. |
 | A blank or black pane | The embedded dashboard never announced itself. Use **Retry** on the error panel. |
 | "local port N was taken while connecting" | Something grabbed the port first. Retry, or move `instances.tunnel_base_port` somewhere quieter. |

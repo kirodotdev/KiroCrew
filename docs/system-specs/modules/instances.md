@@ -2172,6 +2172,11 @@ nothing, and a read that errors all read as `ssm_unreachable`, so if SSM answers
 unknown id with an error rather than an empty list the result is the less specific code,
 never a wrong one. Nothing resolves a fixed `ssm_target` to its replacement.
 
+A `SandboxUnavailableError` from rung 1's `aws` spawn is not an SSM answer: the hub's
+own sandbox refused to start the CLI, so no call reached AWS. The ladder stops there
+with `unknown` and the error's own message, never `ssm_unreachable` and its SSM agent
+and IAM advice.
+
 ### Reuse of the launcher's SSM primitives
 
 Argv building and remote execution delegate to `cloud.ssm`
@@ -3342,7 +3347,9 @@ broken link:
    Not ready answers `ssm_unreachable` with the preflight's own reason. An `aws`
    CLI that cannot be started (any `OSError` other than a missing binary, which
    the preflight already reports) answers `ssm_unreachable` with that reason, not
-   an error out of the ladder.
+   an error out of the ladder. A `SandboxUnavailableError` (the hub's own sandbox
+   refused to start `aws`) answers `unknown` with the error's message, as in the
+   SSM ladder.
 2. If no local port is recorded, `not_connected`.
 3. `local_forward`: a TCP connect to `127.0.0.1:<local_port>`. Refused answers
    `tunnel_down`.
