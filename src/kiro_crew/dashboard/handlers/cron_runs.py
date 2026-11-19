@@ -446,10 +446,11 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
     app = _app_caller(request)
     if app:
         # An app sees only the runs of jobs it owns, judged by the same
-        # ``created_by`` stamp ``_refuse_foreign_app_job`` reads. The filter
-        # runs before pagination so ``total`` counts the app's own runs; the
-        # index is capped by ``cron_max_index_records``, so the full read is
-        # bounded. Function-local import for the reason ``api_crons`` gives.
+        # ``created_by`` stamp ``_refuse_foreign_app_job`` reads. The store
+        # filters before pagination so ``total`` counts the app's own runs; the
+        # read is bounded because each job file is capped by
+        # ``cron_max_records_per_job`` and the index by ``cron_max_index_records``.
+        # Function-local import for the reason ``api_crons`` gives.
         from kiro_crew.apps.cron_sdk import app_owner_name
 
         owned = {
@@ -457,12 +458,9 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
             for j in state.crons.list_jobs(include_disabled=True)
             if app_owner_name(j.created_by) == app
         }
-        rows, _ = await state.crons.get_history().get_all_history(
-            job_id=job_id, limit=sys.maxsize, offset=0
+        runs, total = await state.crons.get_history().get_all_history(
+            job_ids=owned & {job_id} if job_id else owned, limit=limit, offset=offset
         )
-        rows = [row for row in rows if row.get("job_id") in owned]
-        total = len(rows)
-        runs = rows[offset : offset + limit]
         # Record the ownership scoping decision: this branch applies an
         # access-control filter to an app token's read, and token-auth events
         # log only authentication while dashboard GET auditing is excluded, so
@@ -471,7 +469,7 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
         _audit_app_cron(app, "crons.history_all", "allowed", f"rows={total}")
     else:
         runs, total = await state.crons.get_history().get_all_history(
-            job_id=job_id, limit=limit, offset=offset
+            job_ids=[job_id] if job_id else None, limit=limit, offset=offset
         )
     # Enrich with job_name
     jobs_by_id = {j.id: j for j in state.crons.list_jobs(include_disabled=True)}
