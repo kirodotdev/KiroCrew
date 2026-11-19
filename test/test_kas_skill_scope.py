@@ -170,6 +170,13 @@ async def test_an_agent_that_may_not_inherit_loads_no_skill(home):
     assert _kas_offers(kiro, entry) == set()
 
 
+def _skill_rules(entry: dict) -> list[dict]:
+    """*entry*'s rules other than the deny on Kiro Crew's own agents every
+    sub-agent tool carries (``kas_subagent_targets.deny_own_agents``)."""
+    rules = (entry.get("permissions") or {}).get("rules") or []
+    return [r for r in rules if r.get("capability") != "subagent"]
+
+
 @pytest.mark.asyncio
 async def test_the_whole_catalog_worker_is_not_narrowed(home):
     kiro, checkout, _package = home
@@ -178,7 +185,7 @@ async def test_the_whole_catalog_worker_is_not_narrowed(home):
     entry = await _entry("kirocrew-worker", checkout)
 
     assert _v2_skills("kirocrew-worker", checkout) is None
-    assert "permissions" not in entry
+    assert _skill_rules(entry) == []
 
 
 @pytest.mark.asyncio
@@ -212,7 +219,7 @@ async def test_a_failed_scope_costs_the_narrowing_not_the_session(home, monkeypa
     entry = await _entry("mapped", checkout)
 
     assert entry["id"] == "mapped"
-    assert "permissions" not in entry
+    assert _skill_rules(entry) == []
 
 
 @pytest.mark.asyncio

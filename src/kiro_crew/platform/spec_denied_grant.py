@@ -47,6 +47,24 @@ class SpecDeniedGrant:
     web_fetch_trusted: tuple[str, ...] = ()
 
 
+def denies_only(value: Any) -> SpecDeniedGrant | None:
+    """*value*'s denies with every grant it carries emptied, or ``None``.
+
+    For a native sub-agent's request: the child is held to its parent's denies
+    and is given none of its parent's grants.
+    """
+    grant = as_spec_denied_grant(value)
+    if grant is None:
+        return None
+    return SpecDeniedGrant(
+        denied_commands=grant.denied_commands,
+        denied_write_paths=grant.denied_write_paths,
+        cwd=grant.cwd,
+        web_fetch_blocked=grant.web_fetch_blocked,
+        web_fetch_blocked_complete=grant.web_fetch_blocked_complete,
+    )
+
+
 def as_spec_denied_grant(value: Any) -> SpecDeniedGrant | None:
     """*value* when it is a :class:`SpecDeniedGrant`, else ``None`` (no grant)."""
     return value if isinstance(value, SpecDeniedGrant) else None

@@ -13,8 +13,8 @@ Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster`
 ``_goose_steers``, ``_input_wait_emitted``,
 ``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``, ``_legacy_subagent_tool_ids``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``,
-``_native_child_overflow``, ``_native_child_sids``,
-``_native_child_tool_call_ids``, ``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
+``_native_child_finished``, ``_native_child_overflow``, ``_native_child_sids``,
+``_native_child_titles``, ``_native_child_tool_call_ids``, ``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
 ``_permission_gate_events``, ``_permission_options``, ``_prompt_starts``,
 ``_prompt_written``, ``_skill_reads``, ``_stale_eligible``, ``_stale_probe``,
 ``_status_rejected``, ``_steers_accepted``, ``_steers_proven``,
@@ -558,6 +558,8 @@ async def _run_turn(
     self._tool_call_harness_tool_name.clear()
     self._tool_call_identity_unreadable.clear()
     self._native_child_tool_call_ids.clear()
+    self._native_child_finished.clear()
+    self._native_child_titles.clear()
     self._permission_options.clear()
     self._permission_gate_events.clear()
     # Per-turn reset (parity with kiro-cli's authoritative full subagent_list
