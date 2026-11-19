@@ -388,7 +388,7 @@ export function AgentBackendTab() {
    * cheaper than the answer it re-reads, and the endpoint is a resolver read behind
    * that TTL cache rather than a fresh shell-out per request.
    */
-  const probeQ = useQuery<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean; crewmate_harness?: CrewmateHarnessReadout }>({
+  const probeQ = useQuery<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean; kiro_cli_runs_on_kas?: boolean; crewmate_harness?: CrewmateHarnessReadout }>({
     queryKey: ['acpBackends'],
     queryFn: () => api.acpBackends(),
     retry: false,
@@ -473,7 +473,7 @@ export function AgentBackendTab() {
    * survives inside the poll's TTL window.
    */
   const spliceProbeRow = (row: AcpBackendProbe) =>
-    qc.setQueryData<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean; crewmate_harness?: CrewmateHarnessReadout }>(['acpBackends'], prev =>
+    qc.setQueryData<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean; kiro_cli_runs_on_kas?: boolean; crewmate_harness?: CrewmateHarnessReadout }>(['acpBackends'], prev =>
       prev
         ? {
             // The response's other fields (the Kiro CLI → Kiro Agent flag) are
@@ -1606,9 +1606,10 @@ export function AgentBackendTab() {
             const row = probe(value)
             const selected = value === shown
             const isCurrent = value === current
-            // The saved Kiro CLI setting, while sessions run it on Kiro Agent. Use
-            // on this row would save the value that is already saved.
-            const savedPickRunsElsewhere = value === KIRO && kiroPickRunsOnKas
+            // New sessions run on Kiro Agent, and a Kiro CLI pick would run there
+            // too, so Use on this row would change nothing new sessions run.
+            const kiroRowRunsOnKas =
+              value === KIRO && current === KAS && probeQ.data?.kiro_cli_runs_on_kas === true
             return (
               <AgentPickerRow
                 key={value}
@@ -1685,9 +1686,10 @@ export function AgentBackendTab() {
                         switched anything yet. One sentence, directly above the
                         button, names the from and the to. Absent on the running row
                         (there is no button), on a harness this build never
-                        offers (same), and on the saved Kiro CLI setting that runs
-                        on Kiro Agent, which says that instead. */}
-                    {savedPickRunsElsewhere && (
+                        offers (same), and on the Kiro CLI row while new sessions run
+                        on Kiro Agent and a Kiro CLI pick would too, which says that
+                        instead. */}
+                    {kiroRowRunsOnKas && (
                       <p
                         data-testid="kiro-row-runs-on-kas"
                         className="text-[12px] leading-relaxed text-muted"
@@ -1695,7 +1697,7 @@ export function AgentBackendTab() {
                         {i18nT('pages.developer.agentBackendTab.kiro_row_runs_on_kas')}
                       </p>
                     )}
-                    {!buildExcluded(value) && !isCurrent && !savedPickRunsElsewhere && (
+                    {!buildExcluded(value) && !isCurrent && !kiroRowRunsOnKas && (
                       <p className="mb-0 text-[12px] leading-relaxed text-muted">
                         {i18nT('pages.developer.agentBackendTab.use_switches_new_sessions', {
                           current: nameOf(current),
@@ -1711,7 +1713,7 @@ export function AgentBackendTab() {
                     <AgentDetailActions
                       name={nameOf(value)}
                       onUse={
-                        !buildExcluded(value) && !isCurrent && !savedPickRunsElsewhere
+                        !buildExcluded(value) && !isCurrent && !kiroRowRunsOnKas
                           ? () => {
                               // A PATCH writing the value already stored still
                               // resolves, which would run `onSuccess` and reset the
