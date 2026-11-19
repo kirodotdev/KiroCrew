@@ -1309,6 +1309,16 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system -e ".[voice,desktop,otlp]" --group dev
 
+      # ci-probe/runner-utilization (throwaway draft): sample host CPU,
+      # memory, disk and pressure every 5 s from a separate venv.
+      - name: Start runner probe
+        run: |
+          mkdir -p "$RUNNER_TEMP/runner-probe"
+          uv venv "$RUNNER_TEMP/probe-venv"
+          uv pip install --python "$RUNNER_TEMP/probe-venv/bin/python" psutil
+          { lscpu; echo; nproc; free -m; df -h; cat /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory; } > "$RUNNER_TEMP/runner-probe/host.txt" 2>&1 || true
+          nohup "$RUNNER_TEMP/probe-venv/bin/python" .github/ci-probe/runner_sampler.py "$RUNNER_TEMP/runner-probe/samples.jsonl" "$RUNNER_TEMP/runner-probe/STOP" 5 > "$RUNNER_TEMP/runner-probe/sampler.log" 2>&1 &
+
       # Setup/install stays under the runner identity. Select test scope also
       # stays there because it writes the runner-owned GITHUB_OUTPUT file.
       - uses: ./.github/actions/run-as-runner
@@ -1510,6 +1520,22 @@ jobs:
           total=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
           echo "peak memory in use: $(cat "$RUNNER_TEMP/mem-peak-mib" 2>/dev/null || echo unknown) MiB of ${total} MiB"
 
+      - name: Stop runner probe
+        if: ${{ always() }}
+        run: |
+          touch "$RUNNER_TEMP/runner-probe/STOP"
+          sleep 7
+          { echo; cat /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory; } >> "$RUNNER_TEMP/runner-probe/host.txt" 2>&1 || true
+
+      - name: Upload runner probe
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner-probe-linux-${{ matrix.group }}
+          path: ${{ runner.temp }}/runner-probe/
+          if-no-files-found: ignore
+          retention-days: 3
+
       - name: Upload Linux pytest progress
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1615,6 +1641,22 @@ jobs:
         shell: bash
         run: python .github/actions/setup-windows-tests/probe.py
 
+      # ci-probe/runner-utilization (throwaway draft): sample host CPU,
+      # memory and disk every 5 s from a separate venv.
+      - name: Start runner probe
+        shell: pwsh
+        run: |
+          $probe = Join-Path $env:RUNNER_TEMP "runner-probe"
+          $venv = Join-Path $env:RUNNER_TEMP "probe-venv"
+          New-Item -ItemType Directory -Force -Path $probe | Out-Null
+          uv venv $venv
+          $py = Join-Path $venv "Scripts\python.exe"
+          uv pip install --python $py psutil
+          Get-CimInstance Win32_Processor | Format-List Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed | Out-File (Join-Path $probe "host.txt")
+          Get-CimInstance Win32_ComputerSystem | Format-List TotalPhysicalMemory,Model,Manufacturer | Out-File -Append (Join-Path $probe "host.txt")
+          Get-CimInstance Win32_LogicalDisk | Format-List DeviceID,Size,FreeSpace | Out-File -Append (Join-Path $probe "host.txt")
+          Start-Process -FilePath $py -ArgumentList @(".github/ci-probe/runner_sampler.py", (Join-Path $probe "samples.jsonl"), (Join-Path $probe "STOP"), "5") -RedirectStandardError (Join-Path $probe "sampler.log")
+
       # No surface selector here, unlike the POSIX backend-test job. Narrowing
       # this job to the cross-surface subset on a frontend-only diff was
       # measured as a PESSIMISATION: 4 shards x ~18 min = 70 job-min for the
@@ -1705,6 +1747,22 @@ jobs:
         run: |
           total=$(python -c "from kiro_crew.platform_compat import host_total_mib; print(host_total_mib(), end='')")
           echo "peak memory in use: $(cat "$RUNNER_TEMP/mem-peak-mib" 2>/dev/null || echo unknown) MiB of ${total} MiB"
+
+      - name: Stop runner probe
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          touch "$RUNNER_TEMP/runner-probe/STOP"
+          sleep 7
+
+      - name: Upload runner probe
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner-probe-windows-${{ matrix.group }}
+          path: ${{ runner.temp }}/runner-probe/
+          if-no-files-found: ignore
+          retention-days: 3
 
       - name: Upload Windows pytest progress
         # Job timeout can skip even always() steps; periodic CI_PROGRESS lines
