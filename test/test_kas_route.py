@@ -363,6 +363,67 @@ class TestCrewEntrySkipsLauncher:
         assert kas_route.crew_entry_skips_launcher("/opt/kiro/my-kiro", {}) is False
 
 
+class TestResolveCrewAuth:
+    """``resolve_kas_route`` marks the relay ``crew_auth`` only where Crew's sign-in alone starts it."""
+
+    @pytest.fixture
+    def host(self, monkeypatch):
+        """A kiro-cli at /opt/kiro, the vault and its chat sibling set per test."""
+        state = {"bin": "/opt/kiro/kiro-cli", "vault": True, "sibling": True, "signed_out": False}
+        monkeypatch.setattr(kas_route.sys, "platform", "linux")
+        monkeypatch.setattr("kiro_crew.acp.client._resolve_kiro_bin", lambda **k: state["bin"])
+        monkeypatch.setattr(
+            "kiro_crew.auth.bridge.vault_holds_identity", lambda *a, **k: state["vault"]
+        )
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli.chat_sibling",
+            lambda *a, **k: "/opt/kiro/kiro-cli-chat" if state["sibling"] else None,
+        )
+        monkeypatch.setattr("kiro_crew.kiro_cli.resolved_kiro_cli_version", lambda b: (2, 35, 2))
+        monkeypatch.setattr(kas_route, "kiro_cli_signed_out", lambda **k: state["signed_out"])
+        monkeypatch.setattr(kas_route, "sharing_preview_selects_bundle", lambda **k: False)
+        monkeypatch.setattr(
+            kas_route,
+            "automatic_switch_allowed",
+            lambda pin="": pin != kas_route.STORED_BACKEND_KIRO,
+        )
+        return state
+
+    def test_a_vault_spawn_through_kiro_cli_chat_is_crew_auth(self, tmp_path, host):
+        route = kas_route.resolve_kas_route(environ={}, home=tmp_path)
+        assert route == kas_route.KasRoute(bundle=False, crew_auth=True)
+        assert route.name == "relay" and route.as_dict()["reason"] == ""
+
+    @pytest.mark.parametrize(
+        ("change", "environ", "pin"),
+        [
+            ({"sibling": False}, {}, ""),
+            ({"vault": False}, {}, ""),
+            ({}, {"KIROCREW_KIRO_BIN": "/opt/kiro/kiro-cli"}, ""),
+            ({}, {}, "kiro"),
+        ],
+        ids=["launcher", "no-vault", "operator-override", "kiro-cli-pin"],
+    )
+    def test_every_other_relay_is_not(self, tmp_path, host, change, environ, pin):
+        host.update(change)
+        assert kas_route.resolve_kas_route(environ=environ, home=tmp_path, pin=pin) == (
+            kas_route.RELAY
+        )
+
+    @pytest.mark.parametrize(
+        ("change", "reason"),
+        [
+            ({"bin": None}, kas_route.REASON_NO_KIRO_CLI),
+            ({"sibling": False, "signed_out": True}, kas_route.REASON_KIRO_CLI_SIGNED_OUT),
+        ],
+        ids=["no-kiro-cli", "signed-out-launcher"],
+    )
+    def test_a_bundle_route_is_never_crew_auth(self, tmp_path, host, change, reason):
+        host.update(change)
+        route = kas_route.resolve_kas_route(environ={}, home=tmp_path)
+        assert route == kas_route.KasRoute(bundle=True, reason=reason)
+
+
 class TestCrewSignInStartsSpawn:
     @pytest.fixture
     def vault(self, monkeypatch):
@@ -576,6 +637,14 @@ class TestHarnessRoute:
         else:
             assert plan.argv == build_kas_argv(relay_entry, host_auth=True, client_flag=True)
             assert kas_route.last_spawn_route() == kas_route.RELAY
+        # The predictor agrees: a Crew-owned relay is ``crew_auth``, the launcher is the bundle.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client._resolve_kiro_bin", lambda **k: "/opt/kiro/kiro-cli"
+        )
+        monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda *a, **k: True)
+        predicted = kas_route.resolve_kas_route(environ={}, home=tmp_path)
+        assert predicted.bundle is (relay_entry is None)
+        assert predicted.crew_auth is (relay_entry is not None)
 
     @pytest.mark.asyncio
     async def test_a_working_kiro_cli_keeps_the_relay(self, tmp_path, switch_open, monkeypatch):
