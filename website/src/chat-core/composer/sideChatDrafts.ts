@@ -28,6 +28,12 @@ import { carryPastes, mergeCarriedDraft, pruneBlocks, type PasteBlock } from '..
  * survive the remounts the text survives and go when the text goes. Writing
  * the text prunes blocks whose token is no longer in it.
  *
+ * The attachment paths staged for the question (uploaded images and files,
+ * shown as chips) live in the entry too, beside the text rather than in it:
+ * they are typed work the same way, so a remount keeps them and a refused send
+ * hands them back. Writing the text never touches them; only a send, a chip's
+ * remove or a hand-back does.
+ *
  * In-memory on purpose: a Side Chat is a scratch conversation that is never
  * persisted ("Nothing here is saved to the chat"), so its draft should not
  * outlive the page either — unlike the main composer's per-slot draft store,
@@ -44,10 +50,13 @@ interface SideChatDraft {
   seedTick: number
   /** Blocks behind the `[ Paste #N · M lines ]` tokens in `text`. */
   pastes: PasteBlock[]
+  /** Uploaded attachment paths staged for the question, in staging order. */
+  files: string[]
 }
 
 const NO_PASTES: PasteBlock[] = []
-const EMPTY: SideChatDraft = { text: '', seedTick: 0, pastes: NO_PASTES }
+const NO_FILES: string[] = []
+const EMPTY: SideChatDraft = { text: '', seedTick: 0, pastes: NO_PASTES, files: NO_FILES }
 const drafts = new Map<string, SideChatDraft>()
 const listeners = new Set<() => void>()
 
@@ -60,7 +69,7 @@ function entry(slot: string): SideChatDraft {
 }
 
 function set(slot: string, next: SideChatDraft): void {
-  if (!next.text && next.seedTick === 0 && !next.pastes.length) drafts.delete(slot)
+  if (!next.text && next.seedTick === 0 && !next.pastes.length && !next.files.length) drafts.delete(slot)
   else drafts.set(slot, next)
   notify()
 }
@@ -75,14 +84,31 @@ export function readSideChatDraft(slot: string): string {
 export function writeSideChatDraft(slot: string, text: string): void {
   const cur = entry(slot)
   if (cur.text === text) return
-  set(slot, { text, seedTick: cur.seedTick, pastes: pruneBlocks(text, cur.pastes) })
+  set(slot, { ...cur, text, pastes: pruneBlocks(text, cur.pastes) })
 }
 
 /** Replace the slot's paste blocks — the composer's `onPasteBlocksChange`. */
 export function writeSideChatPastes(slot: string, pastes: PasteBlock[]): void {
   const cur = entry(slot)
   if (cur.pastes === pastes) return
-  set(slot, { text: cur.text, seedTick: cur.seedTick, pastes: pastes.length ? pastes : NO_PASTES })
+  set(slot, { ...cur, pastes: pastes.length ? pastes : NO_PASTES })
+}
+
+/** Replace the slot's staged attachment paths (a chip removed, a send). */
+export function writeSideChatFiles(slot: string, files: readonly string[]): void {
+  const cur = entry(slot)
+  if (cur.files === files || (!cur.files.length && !files.length)) return
+  set(slot, { ...cur, files: files.length ? [...files] : NO_FILES })
+}
+
+/** Stage `paths` after the slot's current ones, skipping any already staged. */
+export function addSideChatFiles(slot: string, paths: readonly string[]): void {
+  const cur = entry(slot)
+  writeSideChatFiles(slot, unionFiles(cur.files, paths))
+}
+
+function unionFiles(cur: readonly string[], more: readonly string[]): string[] {
+  return [...cur, ...more.filter((path, i) => !cur.includes(path) && more.indexOf(path) === i)]
 }
 
 /** Hand a payload the server never accepted back to the slot's draft: the
@@ -92,12 +118,15 @@ export function writeSideChatPastes(slot: string, pastes: PasteBlock[]): void {
  *  text instead would lose the tokens' identity: a paste whose content happens
  *  to contain a token-shaped string would then be re-claimed by the next
  *  paste's block on retry. */
-export function restoreSideChatDraft(slot: string, text: string, pastes: PasteBlock[] = []): void {
+export function restoreSideChatDraft(slot: string, text: string, pastes: PasteBlock[] = [], files: readonly string[] = []): void {
   const cur = entry(slot)
   const carried = carryPastes(text, pastes, cur.pastes)
   // The recovery merge, not the plain append: a payload the composer already
   // holds whole (an undo put it back before the refusal landed) is not added.
-  set(slot, { text: mergeCarriedDraft(cur.text, carried), seedTick: cur.seedTick, pastes: carried.pastes.length ? carried.pastes : NO_PASTES })
+  // Its attachments join as a set union, so a file staged again meanwhile is
+  // not staged twice.
+  const staged = unionFiles(cur.files, files)
+  set(slot, { ...cur, text: mergeCarriedDraft(cur.text, carried), pastes: carried.pastes.length ? carried.pastes : NO_PASTES, files: staged.length ? staged : NO_FILES })
 }
 
 /** Select-to-Ask: append `selection` to the slot's draft as a blockquote and
@@ -106,7 +135,7 @@ export function seedSideChatDraft(slot: string, selection: string): void {
   const sel = selection.trim()
   if (!sel) return
   const cur = entry(slot)
-  set(slot, { text: quoteIntoDraft(cur.text, sel), seedTick: cur.seedTick + 1, pastes: cur.pastes })
+  set(slot, { ...cur, text: quoteIntoDraft(cur.text, sel), seedTick: cur.seedTick + 1 })
 }
 
 /** The panel has acted on the pending seed (caret placed). Clears the seed
@@ -115,7 +144,7 @@ export function seedSideChatDraft(slot: string, selection: string): void {
 export function consumeSideChatSeed(slot: string): void {
   const cur = entry(slot)
   if (cur.seedTick === 0) return
-  set(slot, { text: cur.text, seedTick: 0, pastes: cur.pastes })
+  set(slot, { ...cur, seedTick: 0 })
 }
 
 // Module-private: `useSideChatDraft` is the one subscription surface.
