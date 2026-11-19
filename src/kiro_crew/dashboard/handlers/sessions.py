@@ -273,17 +273,22 @@ from kiro_crew.dashboard.handlers.kiro_vault_identity import (
 )
 from kiro_crew.dashboard.handlers.sessions_parts.usage_scrape import (
     _REASON_ACCOUNT_UNPROVEN,
+    _REASON_API_KEY,
+    _REASON_SIGNIN_REQUIRED,
     _WHOAMI_DIFFERENT,
     _WHOAMI_SAME,
     _WHOAMI_UNPROVEN,
     _account_type_only,
+    _credential_rejected,
     _fetch_whoami,
     _fetch_whoami_or_none,
+    _kiro_api_key_configured,
     _normalize_text_usage,
     _parse_usage,
     _redact_strings,
     _same_identity,
     _text_scrape_regresses_api_value,
+    _unavailable_reason,
     _whoami_agreement,
     _wrap_argv_usage_scrape,
 )
@@ -512,44 +517,6 @@ def _record_scrape_outcome(success: bool) -> None:
             _usage_scrape_failures,
             _USAGE_SCRAPE_BACKOFF_SECS,
         )
-
-
-#: Pill ``reason`` for an auth-class usage failure: no live credential could be
-#: read, or the API refuses the one that was. The remedy is a fresh sign-in.
-_REASON_SIGNIN_REQUIRED = "signin_required"
-
-
-def _unavailable_reason(api_result: kiro_usage_api.UsageResult) -> str | None:
-    """Pick the pill's ``reason`` for a refresh that ends without a reading.
-
-    An auth-class ``auth_state`` (no live credential was readable, or the API
-    rejected the one that was) reports ``signin_required``: the free API was
-    never answered about this account, and the ``/usage`` scrape needs the same
-    sign-in, so the one remedy is signing in again. Anything the API path could
-    not prove was an auth problem reports no reason -- a spurious "sign in again"
-    on a working sign-in would be the same class of defect in the other direction.
-
-    This is a message only; the scrape decision does not consult it. An empty
-    candidate list does NOT prove kiro-cli cannot authenticate, because kiro-cli
-    may authenticate from a store this module does not enumerate (see
-    :func:`_identity_matches_account`), so the scrape still runs and its own
-    outcome decides what the pill shows.
-    """
-    if api_result.auth_state in (
-        kiro_usage_api.AUTH_NO_CREDENTIAL,
-        kiro_usage_api.AUTH_REJECTED,
-    ):
-        return _REASON_SIGNIN_REQUIRED
-    return None
-
-
-def _credential_rejected(api_result: kiro_usage_api.UsageResult) -> bool:
-    """True when the API refused a credential it was shown, not when none was read.
-
-    Rides the ``signin_required`` marker as ``credential_rejected`` so the
-    dashboard can tell a failed sign-in from a missing one.
-    """
-    return api_result.auth_state == kiro_usage_api.AUTH_REJECTED
 
 
 def _cache_without_scrape(
@@ -1405,6 +1372,22 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
             )
 
         skip_usage_api = _is_api_key(identity)
+        # A KIRO_API_KEY in the environment makes the sessions bill THE KEY'S
+        # account, but kiro-cli's `whoami` and `/usage` keep answering from its
+        # stored login whenever one exists (verified on kiro-cli 3.3.0), so every
+        # number below would be the login's while the credits go elsewhere. When
+        # whoami answered with a login that is NOT the key itself, no source here
+        # can name the key's balance: publish that instead of the login's number,
+        # which is the one outcome that misleads the user into thinking nothing is
+        # being spent. An empty identity is a whoami that failed or named no one,
+        # so it proves no login and takes the ordinary path below.
+        if identity and not skip_usage_api and await asyncio.to_thread(_kiro_api_key_configured):
+            logger.info(
+                "Kiro usage: sessions run on KIRO_API_KEY but kiro-cli reports its own "
+                "login; not showing the login's balance as this session's usage"
+            )
+            _publish_usage({"available": False, "reason": _REASON_API_KEY})
+            return None
         if skip_usage_api:
             logger.info("Kiro usage: API-key auth; skipping the API path, using the /usage scrape")
         # The ExternalIdP type and nothing that names the user: no reading could

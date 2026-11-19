@@ -18,6 +18,7 @@ import os
 import re
 
 from kiro_crew.cloud.login_target import parse_whoami_output
+from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.kiro_cli import chat_agent_engines_at, pin_kiro_cli
 from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
@@ -307,6 +308,70 @@ def _whoami_agreement(before: dict[str, object], after: dict[str, object]) -> st
 #: Unavailable-marker ``reason`` for a sign-in whose whoami names its provider
 #: and no user (see :func:`_account_type_only`).
 _REASON_ACCOUNT_UNPROVEN = "account_unproven"
+
+#: Pill ``reason`` for an auth-class usage failure: no live credential could be
+#: read, or the API refuses the one that was. The remedy is a fresh sign-in.
+_REASON_SIGNIN_REQUIRED = "signin_required"
+
+
+def _unavailable_reason(api_result: kiro_usage_api.UsageResult) -> str | None:
+    """Pick the pill's ``reason`` for a refresh that ends without a reading.
+
+    An auth-class ``auth_state`` (no live credential was readable, or the API
+    rejected the one that was) reports ``signin_required``: the free API was
+    never answered about this account, and the ``/usage`` scrape needs the same
+    sign-in, so the one remedy is signing in again. Anything the API path could
+    not prove was an auth problem reports no reason -- a spurious "sign in again"
+    on a working sign-in would be the same class of defect in the other direction.
+
+    This is a message only; the scrape decision does not consult it. An empty
+    candidate list does NOT prove kiro-cli cannot authenticate, because kiro-cli
+    may authenticate from a store this module does not enumerate (see
+    :func:`_identity_matches_account`), so the scrape still runs and its own
+    outcome decides what the pill shows.
+    """
+    if api_result.auth_state in (
+        kiro_usage_api.AUTH_NO_CREDENTIAL,
+        kiro_usage_api.AUTH_REJECTED,
+    ):
+        return _REASON_SIGNIN_REQUIRED
+    return None
+
+
+def _credential_rejected(api_result: kiro_usage_api.UsageResult) -> bool:
+    """True when the API refused a credential it was shown, not when none was read.
+
+    Rides the ``signin_required`` marker as ``credential_rejected`` so the
+    dashboard can tell a failed sign-in from a missing one.
+    """
+    return api_result.auth_state == kiro_usage_api.AUTH_REJECTED
+
+
+#: Pill ``reason`` when the sessions run on a ``KIRO_API_KEY`` while kiro-cli's own
+#: login is a different identity. Neither ``whoami`` nor ``/usage`` reports the key's
+#: account in that state (kiro-cli answers both from its stored login), so any
+#: balance read here would belong to the login and not to the credits being spent.
+_REASON_API_KEY = "api_key"
+
+
+def _kiro_api_key_configured() -> bool:
+    """Whether a ``KIRO_API_KEY`` is set for the Kiro sessions this gateway spawns.
+
+    Looks where the spawn paths do: the process environment first (the ``.env``
+    line is propagated into it at boot, and live), then the data home's ``.env``
+    itself, which is where a Docker install keeps it after the entrypoint scrubs
+    the environment. An unreadable ``.env`` answers ``False``, as the spawn paths'
+    own read does. Blocking file IO; call off the event loop.
+    """
+    from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
+
+    if (os.environ.get(CRED_KIRO_API_KEY) or "").strip():
+        return True
+    try:
+        return bool(read_env_file_credential(CRED_KIRO_API_KEY).strip())
+    except Exception:  # noqa: BLE001 - an unreadable .env proves no key
+        logger.debug("could not read KIRO_API_KEY from .env for the usage meter", exc_info=True)
+        return False
 
 
 def _account_type_only(identity: dict[str, object]) -> bool:

@@ -29,6 +29,8 @@ import kiro_crew.dashboard.handlers.sessions as sessions_mod
 from kiro_crew.dashboard import kiro_readiness
 from kiro_crew.testing.wait import async_wait_until, await_until
 
+pytestmark = pytest.mark.usefixtures("no_ambient_kiro_api_key")
+
 
 class TestPollNeverRefreshesInsideTheInterval:
     """The 30s dashboard poll must not be able to trigger a refresh inside the
