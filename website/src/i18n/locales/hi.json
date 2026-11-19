@@ -8139,7 +8139,7 @@
       "if_you_are_diagnosing_this_from_a_terminal_kiro": "यदि इसका निदान टर्मिनल से किया जा रहा है, तो ध्यान दो कि kiro-cli diagnostic तब तक कुछ नहीं बताता जब तक Kiro CLI ऐप स्वयं चल न रहा हो — पहले उसे kiro-cli launch से शुरू करो। वह इनकार इसका कारण नहीं है।",
       "install_kiro_cli_sign_in_once_and_kiro_crew_will": "Kiro CLI इंस्टॉल करो, एक बार साइन इन करो, और आगे का काम {{productName}} संभाल लेगा।",
       "kiro_cli_is_installed_but_too_old": "Kiro CLI इंस्टॉल है, लेकिन यह संस्करण उस acp कमांड से पुराना है जिसके ज़रिए {{productName}} हर सत्र चलाता है। इसे अपडेट करो और यह पेज स्वयं आगे बढ़ जाएगा।",
-      "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI इंस्टॉल है, लेकिन उसे सत्यापित नहीं किया जा सका",
+      "the_agent_sandbox_could_not_be_started": "एजेंट सैंडबॉक्स शुरू नहीं किया जा सका",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI इंस्टॉल है। जारी रखने के लिए साइन-इन पूरा करो।",
       "kiro_cli_s_reason": "अस्वीकार होने का कारण",
       "kiro_cli_update_needed": "Kiro CLI अपडेट आवश्यक",

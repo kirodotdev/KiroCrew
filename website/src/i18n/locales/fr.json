@@ -8349,7 +8349,7 @@
       "if_you_are_diagnosing_this_from_a_terminal_kiro": "Si vous diagnostiquez ce problème depuis un terminal, notez que kiro-cli diagnostic ne signale rien tant que l'application Kiro CLI elle-même n'est pas en cours d'exécution — lancez-la d'abord avec kiro-cli launch. Ce refus n'en est pas la cause.",
       "install_kiro_cli_sign_in_once_and_kiro_crew_will": "Installez Kiro CLI, connectez-vous une fois, et {{productName}} prend le relais.",
       "kiro_cli_is_installed_but_too_old": "Kiro CLI est installé, mais cette version est antérieure à la commande acp que {{productName}} utilise pour chaque session. Mets-le à jour et cette page continuera d'elle-même.",
-      "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI est installé, mais n'a pas pu être vérifié",
+      "the_agent_sandbox_could_not_be_started": "Impossible de démarrer le bac à sable de l'agent",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI est installé. Termine la connexion pour continuer.",
       "kiro_cli_s_reason": "Motif du refus",
       "kiro_cli_update_needed": "Mise à jour de Kiro CLI requise",

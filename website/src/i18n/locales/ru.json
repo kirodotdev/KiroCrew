@@ -8559,7 +8559,7 @@
       "if_you_are_diagnosing_this_from_a_terminal_kiro": "Если вы диагностируете это из терминала, учтите, что kiro-cli diagnostic ничего не сообщает, пока не запущено само приложение Kiro CLI — сначала запустите его командой kiro-cli launch. Этот отказ не является причиной проблемы.",
       "install_kiro_cli_sign_in_once_and_kiro_crew_will": "Установите Kiro CLI, войдите один раз — дальше всё сделает {{productName}}.",
       "kiro_cli_is_installed_but_too_old": "Kiro CLI установлен, но эта версия старше команды acp, через которую {{productName}} запускает каждый сеанс. Обнови его, и эта страница продолжит работу сама.",
-      "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI установлен, но проверить его не удалось",
+      "the_agent_sandbox_could_not_be_started": "Не удалось запустить песочницу агента",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI установлен. Заверши вход, чтобы продолжить.",
       "kiro_cli_s_reason": "Причина отказа",
       "kiro_cli_update_needed": "Требуется обновление Kiro CLI",

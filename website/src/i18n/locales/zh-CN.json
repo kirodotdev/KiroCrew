@@ -7929,7 +7929,7 @@
       "if_you_are_diagnosing_this_from_a_terminal_kiro": "如果你正在通过终端诊断此问题，请注意：在 Kiro CLI 应用本身运行之前，kiro-cli diagnostic 不会报告任何内容 — 请先使用 kiro-cli launch 启动它。该拒绝并非此问题的原因。",
       "install_kiro_cli_sign_in_once_and_kiro_crew_will": "安装 Kiro CLI，登录一次，剩下的交给 {{productName}}。",
       "kiro_cli_is_installed_but_too_old": "Kiro CLI 已安装，但此版本早于 {{productName}} 每个会话所使用的 acp 命令。更新后本页面将自动继续。",
-      "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI 已安装，但无法验证",
+      "the_agent_sandbox_could_not_be_started": "无法启动代理沙箱",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI 已安装。完成登录即可继续。",
       "kiro_cli_s_reason": "拒绝原因",
       "kiro_cli_update_needed": "需要更新 Kiro CLI",
