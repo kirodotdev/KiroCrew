@@ -16,6 +16,9 @@ Four checks read that record, each against a committed per-harness expectation i
 3. no server from the harness's OWN user or project config starts;
 4. Crew's own tool specs on a model request stay under a ceiling.
 
+A fifth check runs the harness again with a spec that mounts nothing (a tool-less
+helper) and asserts which of the harness's own config servers still start.
+
 Each check first asserts the run matches the expectation EXACTLY, so a harness
 that changes behaviour in either direction goes red here and the expectation is
 re-measured. Where the expectation records a known defect, the check then marks
@@ -112,7 +115,7 @@ _ADAPTERS: dict[str, list[tuple[str, Path | None, str, str]]] = {
 #: refuse a turn without a provider key: their session runs, their turn does not.
 _NO_TURN = {"deepseek", "strands"}
 
-_RUNS: dict[str, dict] = {}
+_RUNS: dict[tuple[str, bool], dict] = {}
 
 
 def _run(
@@ -121,10 +124,13 @@ def _run(
     *,
     git_s: float = 60.0,
     run_s: float = 600.0,
+    toolless: bool = False,
 ) -> dict:
-    """The one probe run for *backend*, shared by its four checks."""
-    if backend in _RUNS:
-        return _RUNS[backend]
+    """The one probe run for *backend*, shared by its four checks.
+
+    *toolless* is a second run whose spec mounts nothing (``PROBE_TOOLLESS``)."""
+    if (backend, toolless) in _RUNS:
+        return _RUNS[(backend, toolless)]
     entries = {}
     for env, default, what, install in _ADAPTERS[backend]:
         resolved = _entry(env, default)
@@ -132,7 +138,7 @@ def _run(
         entries[env] = resolved
     node = shutil.which("node")
     require_real_adapter(node, what="node", install="install Node 22 or newer")
-    root = tmp_path_factory.mktemp(f"probe-{backend}")
+    root = tmp_path_factory.mktemp(f"probe-{backend}{'-toolless' if toolless else ''}")
     home, crew, work = root / "home", root / "crew", root / "work"
     for path in (home, crew, work, root / "tmp"):
         path.mkdir()
@@ -182,6 +188,7 @@ def _run(
         "NO_BROWSER": "1",
         "DO_NOT_TRACK": "1",
         "PROBE_SANDBOX_STAND_IN": os.environ.get("PROBE_SANDBOX_STAND_IN", ""),
+        "PROBE_TOOLLESS": "1" if toolless else "0",
         **entries,
     }
     completed = subprocess.run(
@@ -199,7 +206,7 @@ def _run(
     ), f"{backend}: no out.json\n{completed.stdout[-3000:]}\n{completed.stderr[-3000:]}"
     result = json.loads(out_file.read_text(encoding="utf-8"))
     assert result.get("ok"), f"{backend}: {result.get('error')}\n{result.get('traceback')}"
-    _RUNS[backend] = result
+    _RUNS[(backend, toolless)] = result
     return result
 
 
@@ -254,6 +261,22 @@ def test_the_harness_own_mcp_config_stays_out_of_the_session(backend, tmp_path_f
     if expected:
         pytest.xfail(
             f"{backend} mounts its own config's servers {expected}: {ISSUES['ambient_config']}"
+        )
+
+
+@pytest.mark.real_adapter
+@pytest.mark.parametrize("backend", _backends(needs="toolless_ambient"))
+def test_a_toolless_helper_starts_none_of_the_harness_own_mcp_config(backend, tmp_path_factory):
+    run = _run(backend, tmp_path_factory, toolless=True)
+    expected = sorted(_expected(backend)["toolless_ambient"])
+    assert run["decoys"] == expected, (
+        f"{backend}: a tool-less helper started the ambient decoys {run['decoys']}, "
+        f"expectations.json says {expected}; re-measure and update it"
+    )
+    if expected:
+        pytest.xfail(
+            f"{backend} helper mounts its own config's servers {expected}: "
+            f"{ISSUES['ambient_config']}"
         )
 
 
