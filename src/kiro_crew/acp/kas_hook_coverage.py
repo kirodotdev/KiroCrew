@@ -10,7 +10,7 @@ size; that module re-exports every public name here and owns the tables read.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 from kiro_crew.acp.kas_hook_mcp import (
@@ -63,6 +63,9 @@ def hook_gated_capabilities(
     (:data:`HOOK_GATEABLE_CAPABILITIES`): no allow rule reaches them from here, but
     a saved session answer can still decide their calls without a request.
 
+    * A matcher stands for the alternatives the gate reads it as
+      (``hooks._hook_matcher_alternatives``), each read on its own as below and
+      the coverage their union.
     * An empty matcher, or ``*``, covers every tool.
     * ``@builtin`` covers every built-in capability and no MCP; ``@builtin/<glob>``
       covers the built-ins its glob names, read as a plain glob is below but with
@@ -93,8 +96,7 @@ def hook_gated_capabilities(
       name for a built-in tool.
     """
     covered: set[str] = set()
-    for raw in matchers:
-        matcher = raw.strip() if isinstance(raw, str) else ""
+    for matcher in _alternatives(matchers):
         if not matcher or matcher == "*":
             return set(HOOK_GATEABLE_CAPABILITIES)
         lowered = matcher.lower()
@@ -127,6 +129,19 @@ def hook_gated_capabilities(
         # Every MCP tool is covered already; the per-tool entries add nothing.
         covered = {c for c in covered if not c.startswith(HOOK_GATED_MCP_PREFIX)}
     return covered
+
+
+def _alternatives(matchers: Iterable[str]) -> Iterator[str]:
+    """Each of *matchers*' alternatives as the gate reads them; a blank matcher is one entry."""
+    # Deferred: this module imports nothing of Crew's, and the hook store's is heavy.
+    from kiro_crew.hooks import _hook_matcher_alternatives
+
+    for raw in matchers:
+        matcher = raw.strip() if isinstance(raw, str) else ""
+        if not matcher:
+            yield ""
+        else:
+            yield from _hook_matcher_alternatives(matcher)
 
 
 def hook_gated_auto_approved(covered: Iterable[str], approved: Iterable[str]) -> set[str]:

@@ -230,6 +230,8 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _granted_names,
     _granted_patterns,
     _has_global_inline_flags,
+    _hook_matcher_alternatives,
+    _hook_tool_matches,
     _host_builtin_alias,
     _is_declared_builtin_mcp_server,
     _is_deepseek_read_only_builtin,

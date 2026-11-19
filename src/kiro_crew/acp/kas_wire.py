@@ -57,7 +57,7 @@ from kiro_crew.hooks import (
     HOOK_EVENT_STOP,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
     TOOL_DENY,
-    _tool_matches,
+    _hook_tool_matches,
     hook_gate_kwargs,
 )
 from kiro_crew.sel import sel
@@ -476,7 +476,7 @@ def select_hooks(
         if hook.matcher:
             if trigger not in _TOOL_TRIGGERS or not tool_id:
                 continue
-            if not _tool_matches(hook.matcher, tool_id):
+            if not _hook_tool_matches(hook.matcher, tool_id):
                 continue
         if len(out) >= HOOKS_LIST_MAX:
             truncated += 1

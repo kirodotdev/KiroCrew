@@ -149,7 +149,7 @@ class TestHookFields:
         """``matcher_mode`` is read for the message events only.
 
         ``ScriptHookStore.fire`` routes a tool event's matcher through
-        ``_tool_matches`` (a fixed glob vocabulary, no mode) and every other
+        ``_hook_tool_matches`` (a fixed glob vocabulary, no mode) and every other
         event's through ``_context_matches`` (mode-driven). The doc states that
         split, so the two tool events it names must be the two the dispatch
         branches on -- a third tool event would silently make the claim wrong.
