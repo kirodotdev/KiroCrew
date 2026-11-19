@@ -5,7 +5,7 @@ author: atrasatti
 created: 2026-11-18
 last-audited: 2026-11-18
 audited-at: 576272264c
-doc-pr: null
+doc-pr: 39329
 implementation-prs: []
 tracking-issues: [39323]
 supersedes: []
