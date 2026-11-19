@@ -1,5 +1,5 @@
-"""The notification feed (list, delete, clear, ack, unack, ack-all) and the
-per-channel notification settings.
+"""The notification feed (list, delete, clear, ack, unack, ack-all), the
+per-channel notification settings and the gateway's Do Not Disturb.
 """
 
 from __future__ import annotations
@@ -319,3 +319,38 @@ async def api_notification_channel_settings(request: web.Request) -> web.Respons
         return web.json_response({"error": str(exc)}, status=400)
     state.broadcast_ws("notification_channel_settings", {"channel": channel, "settings": entry})
     return web.json_response({"ok": True, "channel": channel, "settings": entry})
+
+
+async def api_notification_dnd_get(request: web.Request) -> web.Response:
+    """GET /api/notifications/dnd — ``{"until": epoch seconds | null}``.
+
+    ``null`` when Do Not Disturb is off, including once its end time has passed.
+    """
+    state: DashboardState = request.app["state"]
+    return web.json_response({"until": state.notification_dnd.until()})
+
+
+async def api_notification_dnd_put(request: web.Request) -> web.Response:
+    """PUT /api/notifications/dnd — start or end the gateway's Do Not Disturb.
+
+    Body: ``{"until": epoch seconds | null}``; ``null`` ends it. An end time that
+    is not a number, is not in the future, or is too far ahead is refused with 400.
+    """
+    from kiro_crew.notifications.dnd import DndError
+
+    state: DashboardState = request.app["state"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict) or "until" not in body:
+        return web.json_response(
+            {"error": "body must be an object with until", "code": "invalid_until"}, status=400
+        )
+    try:
+        # set() persists via atomic_write (blocking file I/O): keep it off the loop.
+        until = await asyncio.to_thread(state.notification_dnd.set, body["until"])
+    except DndError as exc:
+        return web.json_response({"error": str(exc), "code": "invalid_until"}, status=400)
+    state.broadcast_ws("notification_dnd", {"until": until})
+    return web.json_response({"until": until})

@@ -25,6 +25,7 @@ import { GUIDE_PENDING_QUERY_KEY } from '../../api/guide'
 import { CHANGE_CARDS_QUERY_PREFIX } from '../../api/cards'
 import { slotChangeUrls } from '../../utils/pullRequestLinks'
 import { dashboardSessionKey, SESSION_CONTROL_STATUS_KEY } from '../useSessionControls'
+import { NOTIFICATION_DND_KEY } from '../useNotificationDnd'
 import type { ChatSlot, PullRequestStatusBatch } from '../../types'
 import { emitArtifactDeleted } from './browserEvents'
 import type { FrameData } from './frames'
@@ -329,6 +330,8 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   queryClient.invalidateQueries({ queryKey: ['command-center'] })
   // The command center shares the app shell's approvals cache.
   queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
+  // A Do Not Disturb change made while the socket was down has no frame replay.
+  queryClient.invalidateQueries({ queryKey: NOTIFICATION_DND_KEY })
   // Same one-shot problem for the artifact library: `artifact_update`
   // frames pushed while the socket was down were never delivered, and a
   // list query that ERRORED during the gap (gateway restart 403s /

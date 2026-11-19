@@ -11,6 +11,7 @@ from concurrent.futures import Executor
 from typing import Any
 
 from kiro_crew.notifications.bus import PRIORITIES
+from kiro_crew.notifications.dnd import DoNotDisturb
 from kiro_crew.notifications.settings import PROTECTED_CHANNELS
 
 # Byte cap on a native-notification tag, counted in serialized bytes (the UTF-8
@@ -108,6 +109,16 @@ def session_is_muted(state: Any, session_key: str) -> bool:
         seen.add(key)
         key = creator._created_by
     return False
+
+
+def dnd_suppresses(state: Any) -> bool:
+    """Whether the gateway's timed Do Not Disturb is running (``notifications/dnd.py``).
+
+    A state with no Do Not Disturb store (a bare or mocked test state) never
+    suppresses.
+    """
+    dnd = getattr(state, "notification_dnd", None)
+    return isinstance(dnd, DoNotDisturb) and dnd.suppresses()
 
 
 def unread_count(notes: Iterable[dict[str, Any]]) -> int:
@@ -260,7 +271,9 @@ class NotificationCoordinator:
         # toasts from, the stored row, the Web Push payload) carries one tag.
         note["tag"] = native_notification_tag(note)
         # Applied last, so a channel priority override cannot undo the mute.
-        if publisher and not urgent and session_is_muted(state, publisher):
+        if not urgent and (
+            dnd_suppresses(state) or (publisher and session_is_muted(state, publisher))
+        ):
             note["silenced"] = True
             note["priority"] = "passive"
         self._sweep_expired(state._notification_log)

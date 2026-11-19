@@ -10,6 +10,7 @@ import { setSlotStatusDetail, refreshSlot, warmSlotCache, selectSidebarSubagentC
 import { dispatchMcNotification, TURN_DONE_KIND, shouldChimeOnTurnDone } from '../notificationEvent'
 import { shouldNotifyOnChatComplete } from '../chatCompleteNotify'
 import { appsMutingSessions, isSlotMuted } from '../sessionMute'
+import { dndEndMs, NOTIFICATION_DND_KEY, type NotificationDnd } from '../useNotificationDnd'
 import { takeTurnErrored } from '../turnError'
 import { isMemberThreadSlot, takeMemberThreadSpoke } from '../unreadOnAttention'
 import { postNativeNotification } from '../../lib/nativeNotify'
@@ -98,6 +99,11 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         // and a silenced failure stalls it unseen. The unread badge is a
         // separate axis (criterion 7), exempt only for that failure.
         const muteSuppresses = muted && !completionNeedsInput && !turnErrored
+        // The gateway's Do Not Disturb quiets a routine finish the same way, on
+        // every session, with the same two exemptions. It silences the alert
+        // only; the unread badge below is history and still marks.
+        const dndSuppresses = dndEndMs(queryClient.getQueryData<NotificationDnd>(NOTIFICATION_DND_KEY), Date.now()) !== null
+          && !completionNeedsInput && !turnErrored
         // A Crew Mode worker's finished turn is its conductor's to read: no chime
         // and no toast for the person. Gated like the mute above: a worker that
         // paused on a question or errored has stopped, and until the conductor's
@@ -108,7 +114,7 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
           reconnecting: reconnectingRef.current,
           continuing,
           needsInput: completionNeedsInput,
-        }) && !muteSuppresses && !crewWorkerQuiet
+        }) && !muteSuppresses && !dndSuppresses && !crewWorkerQuiet
         // A live question card already requested audio. Keep its named
         // desktop toast eligible, but do not request a second chime.
         if (completionNeedsAttention && !questionPending) dispatchMcNotification(TURN_DONE_KIND)

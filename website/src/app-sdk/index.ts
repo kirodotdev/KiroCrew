@@ -128,6 +128,7 @@ const WS_GLOBAL_EVENT_TO_SCOPE: Record<string, string> = {
   notification_dismiss: 'notification',
   notifications_clear: 'notification',
   notification_channel_settings: 'notification',
+  notification_dnd: 'notification',
   sessions_restarting: 'sessions',
   // Bare {ts} refresh signal: the session-health verdict moved. Carries no slot,
   // session key or counts, so it rides the same `sessions` declaration.

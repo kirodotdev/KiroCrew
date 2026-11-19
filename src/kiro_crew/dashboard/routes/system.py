@@ -61,6 +61,8 @@ def register(app: web.Application) -> None:
     app.router.add_put(
         "/api/notifications/channels/settings", handlers.api_notification_channel_settings
     )
+    app.router.add_get("/api/notifications/dnd", handlers.api_notification_dnd_get)
+    app.router.add_put("/api/notifications/dnd", handlers.api_notification_dnd_put)
     # Web Push (dashboard-user): browser subscription lifecycle + VAPID key.
     app.router.add_get("/api/notifications/push/vapid-public-key", handlers.api_vapid_public_key)
     app.router.add_post("/api/notifications/push/subscribe", handlers.api_push_subscribe)

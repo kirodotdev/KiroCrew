@@ -1886,6 +1886,13 @@
       "description": "Fallback sound when no category-specific override is set"
     },
     {
+      "id": "notifications.do-not-disturb",
+      "label": "Do not disturb",
+      "tab": "notifications",
+      "route": "/settings/notifications/alerts?highlight=notifications.do-not-disturb",
+      "hint": "Stops notification badges, banners, sounds, push and chat app messages on every device for a while, then turns them back on by itself. Notifications still land in the bell as read. Critical notifications and approvals still come through."
+    },
+    {
       "id": "notifications.sound-category-heartbeat",
       "label": "Heartbeat",
       "tab": "notifications",
