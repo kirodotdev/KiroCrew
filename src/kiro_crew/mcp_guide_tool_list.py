@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from kiro_crew.mcp_instructions import GUIDE as _INSTRUCTIONS
-from kiro_crew.mcp_shared_listing import StdioServer
+from kiro_crew.mcp_shared_listing import StdioServer, redeem_agent_ipc_pickup
 
 SERVER_NAME = "kirocrew-guide"
 
@@ -409,4 +409,6 @@ SERVER = StdioServer(
     list_tools=_list_tools,
     advertise_caller_identity=True,
     instructions=_INSTRUCTIONS,
+    # Before the early listing reads this session's tool policy (``mcp_sel_forward``).
+    before_first_request=redeem_agent_ipc_pickup,
 )

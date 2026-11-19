@@ -64,6 +64,16 @@ PROTOCOL_VERSION = "2024-11-05"
 EARLY_FRAME_WAIT_SECS = 1.0
 
 
+def redeem_agent_ipc_pickup() -> None:
+    """Redeem this server's agent-socket pickup; a ``before_first_request`` step.
+
+    Imported on use, so the listing path pays nothing until a server runs it.
+    """
+    from kiro_crew.agent_ipc_client import redeem_for_this_server
+
+    redeem_for_this_server()
+
+
 class StdioServer(NamedTuple):
     """One stdio MCP server, declared where importing it loads no tool handler.
 

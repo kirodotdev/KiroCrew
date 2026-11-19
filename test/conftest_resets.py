@@ -548,17 +548,26 @@ def _forget_registry_ssh_sign_in_refusals():
 
 @pytest.fixture(autouse=True)
 def _forget_sandbox_launch_mark():
-    """Forget that an entry point saw the sandbox marker.
+    """Forget that an entry point saw the sandbox marker or marked an MCP stdio server.
 
     ``sandbox_launch_mark`` never forgets within a process, by design. A test that sets
     ``KIROCREW_SANDBOX_ACTIVE`` and runs ``cli.main`` would otherwise make every later
     enterprise test in the worker boot as a sandboxed child.
     """
-    from kiro_crew import sandbox_launch_mark
+    import sys
 
-    sandbox_launch_mark._launched_in_sandbox = False
+    from kiro_crew import mcp_server_mark, sandbox_launch_mark
+
+    def _forget() -> None:
+        sandbox_launch_mark._launched_in_sandbox = False
+        mcp_server_mark._mcp_stdio_server = False
+        sel_module = sys.modules.get("kiro_crew.sel")
+        if sel_module is not None:
+            sel_module._withheld_warned.clear()
+
+    _forget()
     yield
-    sandbox_launch_mark._launched_in_sandbox = False
+    _forget()
 
 
 @pytest.fixture(autouse=True)

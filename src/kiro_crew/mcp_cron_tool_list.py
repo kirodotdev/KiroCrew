@@ -22,7 +22,7 @@ from kiro_crew.cron_service.model import (
     _AUTO_PAUSE_THRESHOLD,
 )
 from kiro_crew.mcp_instructions import CRON as _INSTRUCTIONS
-from kiro_crew.mcp_shared_listing import StdioServer
+from kiro_crew.mcp_shared_listing import StdioServer, redeem_agent_ipc_pickup
 from kiro_crew.mcp_tool_titles import with_titles
 
 # ``auto_pause_after_failures`` description for the ``cron_add`` and ``cron_update``
@@ -531,4 +531,6 @@ SERVER = StdioServer(
     advertise_caller_identity=True,
     error_prefix_is_error=True,
     instructions=_INSTRUCTIONS,
+    # Before the early listing reads this session's tool policy (``mcp_sel_forward``).
+    before_first_request=redeem_agent_ipc_pickup,
 )

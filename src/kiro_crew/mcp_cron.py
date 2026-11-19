@@ -1462,6 +1462,12 @@ ADVERTISE_CALLER_IDENTITY = SERVER.advertise_caller_identity
 
 def run_mcp_server() -> None:
     """Run MCP stdio server — reads JSON-RPC from stdin, writes to stdout."""
+    # An enforced harness hands this server a one-time pickup in place of the secret
+    # and trust root it withholds; redeem it before the first request, so its audit
+    # records reach the gateway (``mcp_sel_forward``) and its calls are not refused.
+    from kiro_crew.agent_ipc_client import redeem_for_this_server
+
+    redeem_for_this_server()
     run_mcp_stdio_loop(
         SERVER.name, SERVER.version, _list_tools, _call_tool, **SERVER.loop_options()
     )
@@ -1596,6 +1602,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.mcp_instructions import CRON as _INSTRUCTIONS  # noqa: F401
     from kiro_crew.mcp_shared_listing import (  # noqa: F401
         StdioServer,
+        redeem_agent_ipc_pickup,
     )
     from kiro_crew.mcp_tool_titles import (  # noqa: F401
         with_titles,

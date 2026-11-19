@@ -186,6 +186,11 @@ def slim_server(argv: list[str]) -> Callable[[], None] | None:
     """
     if len(argv) != 1 or argv[0] not in SLIM_SERVERS:
         return None
+    from kiro_crew import mcp_server_mark
+
+    # Before anything can build the SEL, and before the port check: the full-CLI
+    # fallback below serves the same stdio server in this same process.
+    mcp_server_mark.note_mcp_stdio_server()
     if not _port_env_ok():
         return None  # the full CLI prints the port error
 

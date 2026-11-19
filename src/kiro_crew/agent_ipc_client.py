@@ -176,6 +176,16 @@ def redeem_at_startup(port_fn: Callable[[], int]) -> None:
         current_capability(port_fn)
 
 
+def redeem_for_this_server() -> None:
+    """:func:`redeem_at_startup` against this server's own gateway port.
+
+    The one call every Kiro Crew MCP stdio server makes before its first request.
+    """
+    from kiro_crew.port_resolution import resolve_client_port_src
+
+    redeem_at_startup(lambda: resolve_client_port_src(None)[0])
+
+
 def capability_request(
     req: "urllib.request.Request | str", capability: str
 ) -> urllib.request.Request:

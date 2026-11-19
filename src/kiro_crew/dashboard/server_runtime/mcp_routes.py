@@ -150,6 +150,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     # The same shape: the listing relay's code stamp is read off-loop at startup, and
     # until it is in, a server that asks builds its own list.
     app.on_startup.append(mcp_listing_gateway.startup_stamp)
+    # An MCP stdio server under an enforcing harness's mask hands its audit records
+    # to the gateway here, over the agent socket only (``dashboard.handlers.ipc_sel``).
+    app.router.add_post("/api/ipc/sel", _deferred("ipc_sel", "handle_ipc_sel"))
     app.router.add_post("/api/spawn", handlers.api_spawn)
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
     app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)

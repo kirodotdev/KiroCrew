@@ -31,7 +31,23 @@ from kiro_crew.providers.mirrors.identity import with_env
 logger = logging.getLogger(__name__)
 
 #: The Kiro Crew servers that redeem a pickup at startup (``agent_ipc_client``).
-PICKUP_SERVERS: frozenset[str] = frozenset({"kirocrew-core", "kirocrew-dashboard"})
+PICKUP_SERVERS: frozenset[str] = frozenset(
+    {
+        "kirocrew-core",
+        "kirocrew-dashboard",
+        # Every other Kiro Crew MCP stdio server, so each can hand its audit records
+        # to the gateway when the mask withholds the trust root (``mcp_sel_forward``).
+        "kirocrew-computer",
+        "kirocrew-cron",
+        "kirocrew-crew-log",
+        "kirocrew-debug",
+        "kirocrew-guide",
+        "kirocrew-mate",
+        "kirocrew-panel",
+        "kirocrew-secrets",
+        "kirocrew-work",
+    }
+)
 
 
 def _launches_server_directly(element: dict[str, Any]) -> bool:

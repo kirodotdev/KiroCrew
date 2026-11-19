@@ -13,7 +13,7 @@ from typing import Any
 
 from kiro_crew import member_goals as _goals
 from kiro_crew.constants import MAX_SHORT_STRING
-from kiro_crew.mcp_shared_listing import StdioServer
+from kiro_crew.mcp_shared_listing import StdioServer, redeem_agent_ipc_pickup
 
 SERVER_NAME = "kirocrew-mate"
 
@@ -455,4 +455,6 @@ SERVER = StdioServer(
     version=SERVER_VERSION,
     list_tools=_list_tools,
     advertise_caller_identity=True,
+    # Before the early listing reads this session's tool policy (``mcp_sel_forward``).
+    before_first_request=redeem_agent_ipc_pickup,
 )

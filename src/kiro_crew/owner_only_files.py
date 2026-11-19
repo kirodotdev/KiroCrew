@@ -188,12 +188,38 @@ def mkdirs_owner_only(path: str | os.PathLike[str]) -> None:
         mkdirs_owner_only(parent)
         try:
             os.mkdir(target, OWNER_ONLY_DIR_MODE)
+        except OSError as exc:
+            _raise_unless_directory(target, exc)
+    except OSError as exc:
+        _raise_unless_directory(target, exc)
+
+
+def _raise_unless_directory(target: str, exc: OSError) -> None:
+    """Accept *exc* from ``mkdir`` when *target* is a directory, else raise.
+
+    ``EEXIST`` beside an ``isdir()`` of False usually means a non-directory is at
+    the name, and that ``FileExistsError`` is re-raised. It can also mean the name
+    exists but cannot be inspected: a sandbox that withholds it (macOS Seatbelt
+    under an enforcing harness) denies the ``stat`` behind ``isdir()``.
+    Reporting that as "File exists" sends the reader to a file that is not there,
+    so a denied ``lstat`` is raised as the ``PermissionError`` it is.
+    """
+    if os.path.isdir(target):
+        return
+    if isinstance(exc, FileExistsError):
+        try:
+            os.lstat(target)
+        except PermissionError as denied:
+            raise PermissionError(
+                denied.errno,
+                f"mkdir reported {target!r} exists, but it cannot be inspected "
+                f"({os.strerror(denied.errno) if denied.errno else denied}); "
+                "a sandbox may be withholding it",
+                target,
+            ) from exc
         except OSError:
-            if not os.path.isdir(target):
-                raise
-    except OSError:
-        if not os.path.isdir(target):
-            raise
+            pass
+    raise exc
 
 
 def ensure_directory(path: str | os.PathLike[str]) -> None:

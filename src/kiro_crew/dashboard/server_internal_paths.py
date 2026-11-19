@@ -27,6 +27,9 @@ from kiro_crew.apps.builtin_host_grants import (
 _STRICT_INTERNAL_API_PATHS = frozenset(
     {
         "/api/send-message",
+        # An MCP stdio server's audit records, written by the gateway's SEL. The
+        # handler refuses anything the agent socket did not admit with a capability.
+        "/api/ipc/sel",
         "/api/delete-message",
         "/api/update-message",
         # The ``browser`` MCP tool's op leg onto the Browser Harness: the shim posts

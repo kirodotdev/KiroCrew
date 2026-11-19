@@ -68,10 +68,14 @@ def _now() -> float:
     return time.monotonic()
 
 
-def _take(app: str) -> tuple[bool, bool]:
-    """``(allowed, log_denial)`` for one write by *app*."""
+def _take(app: Any, buckets: dict[Any, list[float]] | None = None) -> tuple[bool, bool]:
+    """``(allowed, log_denial)`` for one write by *app*, in *buckets* (this route's own
+    by default; ``dashboard.handlers.ipc_sel`` passes its own, keyed by session and
+    server)."""
     now = _now()
-    b = _buckets.setdefault(app, [float(_BURST), now, -_DENY_LOG_EVERY])
+    b = (_buckets if buckets is None else buckets).setdefault(
+        app, [float(_BURST), now, -_DENY_LOG_EVERY]
+    )
     b[0] = min(float(_BURST), b[0] + (now - b[1]) * _RATE)
     b[1] = now
     if b[0] >= 1.0:

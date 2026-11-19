@@ -134,6 +134,26 @@ first later touch, on its caller's thread. `critical=True` writes are
 synchronous by design and their call sites still offload themselves when
 reached from the loop.
 
+An enforcing harness's credential mask withholds `trust/` and `sel_hmac.key`
+from the harness's process tree, so a Kiro Crew MCP stdio server it starts
+cannot sign its own records. `sel()` then returns a forwarder
+(`mcp_sel_forward.ForwardingLog`) when all three hold: `mcp_entry` marked the
+process as an MCP stdio server (`mcp_server_mark`, a process-role flag), init
+raised `PermissionError` or `FileExistsError`, and `lstat` of `trust/` itself
+fails with anything but "not there". The forwarder hands each `log_tool_invocation` and `log_api_access`
+record to the gateway over the agent socket (`POST /api/ipc/sel`,
+`dashboard/handlers/ipc_sel.py`), which signs and appends it as the
+capability's session with `source=mcp` and a `process_role`/`server` tag. A
+missing capability, a refusal, a transport error or any other SEL method raises
+`PermissionError` naming the trust root: the tool call is refused, except at
+the audit sites that already swallow SEL errors, which log it as on main. The forwarder redacts each string and metadata value at full length, then clips
+it to the route's caps and keeps the encoded body under the route's body cap. The route takes no actor from the body, allows those two
+kinds only, caps fields and the body, rate-limits per session and server, and
+records each refusal. It is not cached: a readable trust root restores the
+local writer on the next call. Every other process and every other init error
+raise as before. Every Kiro Crew MCP stdio server redeems an agent-socket pickup at startup
+(`acp/ipc_pickup.PICKUP_SERVERS`).
+
 Private-member authorization denials keep their typed 403 responses even when
 SEL initialization or event submission fails. Their shared denial audit resolves
 the singleton and submits the event in a worker thread, including after an

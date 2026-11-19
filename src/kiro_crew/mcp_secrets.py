@@ -438,6 +438,12 @@ ADVERTISE_CALLER_IDENTITY = True
 def run_mcp_server() -> None:
     """Run the stdio MCP server. Entry point for ``kirocrew mcp-secrets``."""
     logging.basicConfig(level=os.environ.get("KIROCREW_LOG_LEVEL", "WARNING"), stream=None)
+    # An enforced harness hands this server a one-time pickup in place of the secret
+    # and trust root it withholds; redeem it before the first request, so its audit
+    # records reach the gateway (``mcp_sel_forward``) and its calls are not refused.
+    from kiro_crew.agent_ipc_client import redeem_for_this_server
+
+    redeem_for_this_server()
     run_mcp_stdio_loop(
         SERVER_NAME,
         SERVER_VERSION,

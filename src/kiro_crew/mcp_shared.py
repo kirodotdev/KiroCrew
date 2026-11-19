@@ -296,6 +296,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         caller_tool_policy,
         initialize_result,
         listable_tools,
+        redeem_agent_ipc_pickup,
         serve_before_handlers,
         take_early_frames,
         within_policy,

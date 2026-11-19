@@ -56,6 +56,7 @@ from typing import IO, TYPE_CHECKING, Literal, NamedTuple, overload  # noqa: F40
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import platform_compat  # noqa: F401
+from kiro_crew import mcp_server_mark
 from kiro_crew import sel_append as _sel_append
 from kiro_crew import sel_chain_lock as _sel_chain_lock
 from kiro_crew import sel_reader as _sel_reader
@@ -1163,9 +1164,122 @@ def audit_sources() -> tuple[str, ...]:
     return _AUDIT_SOURCES
 
 
+#: Set once :func:`sel` has warned that this process runs without its trust root.
+_withheld_warned = threading.Event()
+
+
+def _trust_root_withheld() -> bool:
+    """True when the trust directory's own name exists but cannot be inspected.
+
+    That is the shape an enforcing harness's mask leaves: on macOS the Seatbelt
+    profile denies ``file-read*`` (metadata included) on ``trust/``, so ``lstat``
+    fails. Any ``OSError`` other than "not there" counts, so the answer does not rest
+    on which errno a sandbox picks. Widening it cannot open anything: in a marked
+    stdio server this only decides between re-raising the init error and handing
+    records to the gateway, and the forwarder refuses the call whenever it cannot
+    hand one over, so both outcomes fail closed. A missing ``trust/`` (create it)
+    and an inspectable one (a mode-000 key, a planted file) keep main's behaviour.
+    """
+    try:
+        os.lstat(_default_dir() / _TRUST_SUBDIR)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True
+    return False
+
+
+_FORWARD_PRIMITIVES = (int, float, bool, type(None))
+
+
+def _forwardable_shape(value: object, *, depth: int = 0) -> bool:
+    """Whether *value* is text, a primitive, or a dict/list/tuple of those.
+
+    Those are the shapes :func:`_redacted_metadata_copy` redacts leaf by leaf. Any
+    other value would have to be rendered first and redacted as a whole, which
+    misses credentials anchored on the text around them, so it is refused instead.
+    """
+    if isinstance(value, (str, *_FORWARD_PRIMITIVES)):
+        return True
+    if depth > 32:
+        return False
+    if isinstance(value, dict):
+        return all(
+            isinstance(k, str) and _forwardable_shape(v, depth=depth + 1)
+            for k, v in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return all(_forwardable_shape(v, depth=depth + 1) for v in value)
+    return False
+
+
+def forwardable_fields(fields: dict) -> dict:
+    """*fields* of one ``log_tool_invocation``/``log_api_access`` call, redacted at
+    full length for a record that leaves this process (``mcp_sel_forward``).
+
+    The same passes the local writer applies (:func:`_redact_text`, and
+    :func:`_redacted_metadata_copy` on ``metadata`` leaf by leaf at full depth), run
+    here, in the registered SEL sink. A top-level field must be text or a primitive,
+    and ``metadata`` a dict of text, primitives and dict/list/tuple of those: any
+    other shape raises ``TypeError``, as the local writer cannot write it either, and
+    the forwarder refuses the call. A nested metadata value is rendered only after
+    every leaf in it was redacted, and as JSON, which runs no caller code.
+    """
+    out: dict = {}
+    for key, value in fields.items():
+        if key == "metadata":
+            if not isinstance(value, dict) or not _forwardable_shape(value):
+                raise TypeError("metadata is not a dict of text, numbers and containers")
+            # json renders int/float subclasses and str subclasses by value, never by a
+            # caller's __repr__, so nothing it writes was unseen by the redaction above.
+            out[key] = {
+                k: (v if isinstance(v, (str, *_FORWARD_PRIMITIVES)) else json.dumps(v))
+                for k, v in _redacted_metadata_copy(value).items()
+            }
+        elif isinstance(value, str):
+            out[key] = _redact_text(value)
+        elif isinstance(value, _FORWARD_PRIMITIVES):
+            out[key] = value
+        else:
+            raise TypeError(f"{key} is not text")
+    return out
+
+
 def sel() -> SecurityEventLog:
-    """Module-level accessor for the singleton SEL instance."""
-    return SecurityEventLog()
+    """Module-level accessor for the singleton SEL instance.
+
+    One exception lives here, for a Kiro Crew MCP stdio server only. Under an
+    enforcing harness (codex, opencode, goose, pi) the credential mask withholds
+    ``trust/`` and ``sel_hmac.key`` from the harness's process tree on purpose
+    (``sandbox_leaves._CREW_CHILD_WITHHELD_LEAVES``): the key must not be readable
+    or forgeable from inside, so the SEL cannot be built there. When this process
+    is marked as an MCP stdio server (``mcp_server_mark``, set by ``mcp_entry``),
+    the init raises ``PermissionError`` or ``FileExistsError``, and the trust
+    directory itself cannot be inspected, this returns a
+    :class:`~kiro_crew.mcp_sel_forward.ForwardingLog`. It hands every record to the
+    gateway over the agent socket, which signs and appends it, and it refuses the
+    call when it cannot. Each call tries the init again, so a readable trust root
+    restores the local writer. Any other init error, any other cause of those two,
+    and every error in an unmarked process (gateway, dashboard, CLI) raises as
+    before.
+    """
+    try:
+        return SecurityEventLog()
+    except (PermissionError, FileExistsError) as exc:
+        if not mcp_server_mark.is_mcp_stdio_server() or not _trust_root_withheld():
+            raise
+        from kiro_crew.mcp_sel_forward import ForwardingLog
+
+        if not _withheld_warned.is_set():
+            _withheld_warned.set()
+            logger.warning(
+                "SEL trust root withheld from this MCP server (%s, errno %s, on %s): "
+                "audit records go to the gateway over the agent socket",
+                type(exc).__name__,
+                exc.errno,
+                exc.filename,
+            )
+        return ForwardingLog(str(exc.filename or _default_dir() / _TRUST_SUBDIR))  # type: ignore[return-value]
 
 
 async def warm_sel_singleton() -> None:
