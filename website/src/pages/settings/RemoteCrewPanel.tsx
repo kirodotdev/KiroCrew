@@ -313,6 +313,8 @@ export function RemoteCrewPanel() {
   // row disappears on its own when the teardown finishes.
   const [deletingTags, setDeletingTags] = useState<Set<string>>(new Set())
   const [actionErr, setActionErr] = useState<string | null>(null)
+  // A launch refused for its subnet: shown under the Subnet ID field, not at the top.
+  const [subnetErr, setSubnetErr] = useState<string | null>(null)
   // A crew connected HERE that the gateway showing this page declined to adopt as
   // a tab of its own. Separate from `actionErr` because the connect succeeded:
   // folding it in would report a working crew as a failed connect.
@@ -860,7 +862,7 @@ export function RemoteCrewPanel() {
   const launchMutation = useMutation({
     mutationFn: (body: { provider_id?: string; profile: string; region: string; size_key: string; subnet_id?: string }) =>
       api.cloudLaunch(body),
-    onMutate: () => setActionErr(null),
+    onMutate: () => { setActionErr(null); setSubnetErr(null) },
     onSuccess: job => {
       setActiveLaunchId(job.id)
       reloadLaunches()
@@ -869,7 +871,12 @@ export function RemoteCrewPanel() {
       if (sentLaunchDraft.current) dispatch(dropLaunchedCrewDraft(sentLaunchDraft.current))
       if (sentLaunchKey.current) setLaunchedKey(sentLaunchKey.current)
     },
-    onError: e => setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))),
+    onError: (e, body) => {
+      const msg = errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))
+      // Under the field only while the form is open and still holds the refused subnet.
+      if (e instanceof ApiError && parseErrorCode(e.body) === 'invalid_subnet' && addMode === 'setup' && body.subnet_id === subnetId.trim()) setSubnetErr(msg)
+      else setActionErr(msg)
+    },
     onSettled: () => { sentLaunchDraft.current = null; sentLaunchKey.current = null },
   })
   const enableMutation = useMutation({
@@ -1021,6 +1028,8 @@ export function RemoteCrewPanel() {
   const launchReady = blockingOk && regionOk && identityOk && !launchMutation.isPending && !setupRunning
   const launchBuiltin = () => {
     sentLaunchDraft.current = currentLaunchDraft
+    // Held again: an earlier launch's success dropped it.
+    dispatch(setCrewLaunchDraft(currentLaunchDraft))
     sentLaunchKey.current = builtinLaunchKey
     if (identityMode === 'identity_center') rememberCompanySignIn(identityStartUrl, identityRegion)
     launchMutation.mutate(builtinLaunchBody)
@@ -1229,7 +1238,7 @@ export function RemoteCrewPanel() {
 
         <LaunchFormCard
           region={region} sizeKey={sizeKey} setSizeKey={setSizeKey} showMoreSizes={showMoreSizes} setShowMoreSizes={setShowMoreSizes}
-          subnetId={subnetId} setSubnetId={setSubnetId} identityQuery={identityQuery} identityChosen={identityChosen}
+          subnetId={subnetId} setSubnetId={v => { setSubnetId(v); setSubnetErr(null) }} subnetErr={subnetErr} identityQuery={identityQuery} identityChosen={identityChosen}
           identityUnknownCause={identityUnknownCause} identityRadioShown={identityRadioShown} identityMode={identityMode}
           identityStartUrl={identityStartUrl} identityStartUrlOk={identityStartUrlOk} identityRegion={identityRegion}
           identityRegionOk={identityRegionOk} onIdentity={chooseIdentity} launchBuiltin={launchBuiltin}
