@@ -552,6 +552,17 @@ custom-rules:
           ordering of the checks, or a table whose rows each carry their
           expected rule at that rule's bound, is fine (testing-conventions §
           Refusal tests).
+      17. A probe of a crew log's kernel lock (`file_lock(..., wait=False)` on
+          a unit's `.lease`, or a helper that wraps one) made after
+          `assert_drained()` / `emit.flush()` alone, with no `eager.drain()`
+          before it. The eager folder writes savepoints under this process's
+          share of the same lease on its own thread, and the seal a
+          `session/closed` triggers is one of them, so the probe can read
+          "still owned" while the emitter has already let go: macOS reds
+          about once a day (#39402). Probe through `_owned_elsewhere` /
+          `_can_take_ownership` in `test/crew_log_emit_helpers.py`, which
+          drain the folder first, or drain it yourself (testing-conventions §
+          Filesystem tests).
 
       Allowed (do NOT flag):
       - a sleep inside a stub that simulates slow work while the test waits
