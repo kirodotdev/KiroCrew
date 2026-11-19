@@ -2329,9 +2329,10 @@ pill goes. Past `UNREAD_PILLS` (4) the rest fold into one "+N" pill
 whose rows carry the same dot, so nothing is lost to the cap (the "+N" pill
 bumps the page's `openRequest` counter, which the chip reads to open its list).
 No unread, no column. The column (`CrewmateUnreadColumn`, exported beside the
-chip) hangs from the thread header's bottom edge, absolutely (`absolute left-3
-top-full -mt-2`, the header's own `py-2` pulled back so the first pill sits a
-gap under the chip): it adds NOTHING to the header's measured height, so the
+chip) hangs from the switcher chip's bottom edge, absolutely (`absolute left-3
+top-[calc(0.5rem+42px)]`, the header's own `py-2` plus the 42px chip, so the
+first pill sits right under the chip; not the header's bottom edge, which the
+taller identity stack pushes well below the chip): it adds NOTHING to the header's measured height, so the
 thread's top inset stays the chip row's and the conversation keeps scrolling up
 under the band — and under these Glass pills — the way it scrolls under the
 identity pill. Pills float over the text; they never push it. Each pill sits in
@@ -2374,10 +2375,26 @@ The identity pill is a stack (#39321): the Bot's face (with its loop mark,
 edge it overlaps by 4px. The chip holds the name and the activity line,
 centred. The whole stack is the one button. In the phone shell bar it leaves
 the bar's grid (`fixed`, centred on the viewport, an empty cell holding the
-middle column), keeps its face inside the 42px bar and hangs its chip below it;
-the transcript's inset is how far the measured stack reaches past the bar, and
-while the floating Profile card is open the whole stack is `invisible`, since
-its face is already hidden for the card. The words never fold away
+middle column), keeps its face inside the 42px bar and hangs its chip below it.
+There it is capped to the viewport's width less 6rem a side
+(`max-w-[calc(100vw-12rem)]`), so a long name or activity line truncates
+instead of reaching the side controls, and the button passes input through
+(`pointer-events-none`) with only the face and the chip catching it. The bar's
+two side cells (the drawer toggle; the channel chip and panel opener) sit above
+the stack (`relative z-40`, passing input through to their controls only), so
+where a long chip still reaches a side control the control takes the tap. The
+shell's phone offline strip (`mobile-offline-strip`, z-40, the same stacking
+context) paints over the hanging chip while it shows, so the phone's only
+offline message is never hidden behind the stack;
+the transcript's inset is how far the measured stack reaches past the bar. The
+bar's stacking context (the shell header, z-45) paints the stack over every
+page overlay that opens under the bar, so the whole stack steps out while
+one is on screen: the floating Profile card (whose face is already hidden for
+the card), the side panel sheet, and the roster drawer (open or mid-slide).
+It steps out as `opacity-0` with its face and chip no longer catching taps
+(`pointer-events-none`), not as `invisible`: the button stays focusable and in
+the accessibility tree, so a keyboard user who opened Profile from it keeps
+focus there and can press it again to close the card. The words never fold away
 (#19045): this pill is how the reader knows which Bot the page is talking
 to, and a face alone does not say that. The loop mark (`CrewLoopIndicator`, "On
 watch") is a solid accent ring with one dot orbiting it; under reduced motion
@@ -2385,10 +2402,11 @@ the ring stays and a still dot replaces the orbit. It never uses the green of
 the working presence dot.
 
 The centred identity pill opens `CrewProfilePanel`, not the editor. Its name
-row carries a small `ChevronRight` (decorative, `aria-hidden`), the visible sign
-that the stack is a door. At rest it is hidden: it grows in from zero width
-beside the name on the stack's hover or keyboard focus, so name and chevron
-stay centred as one group (owner, 2026-11-19). A phone has no hover, so there
+chip carries a small `ChevronRight` (decorative, `aria-hidden`), the visible sign
+that the stack is a door. It sits absolutely at the chip's right edge, centred
+on the chip's height, inside the chip's padding, so it never takes width from
+the name, which stays centred. At rest it is hidden and it fades in on the
+stack's hover or keyboard focus (owner, 2026-11-19). A phone has no hover, so there
 the face and chip carry the cue alone. The pill is a toggle, as its `aria-expanded` says: with Profile
 already open a press CLOSES it through the same schedule-draft guard as the
 card's own close control (`requestCloseProfile`). It must not re-open on the

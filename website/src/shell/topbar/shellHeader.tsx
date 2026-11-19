@@ -766,7 +766,11 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             noHandoffReason="The gateway is offline, so a hand-off to the agent cannot be delivered."
             message={gatewayStatusAnnounce}
             messageClassName="text-danger-text"
-            className="absolute left-0 right-0 top-full z-[1] pointer-events-none justify-center h-6 font-medium bg-danger-subtle border-b border-danger/30"
+            // z-40: on the Crewmates page the identity stack hangs its name
+            // chip below the bar (fixed, z-30, in this header's stacking
+            // context: `.topbar-glass` has a transform). The offline message
+            // is the transient one and the phone's only one, so it wins.
+            className="absolute left-0 right-0 top-full z-40 pointer-events-none justify-center h-6 font-medium bg-danger-subtle border-b border-danger/30"
             testId="mobile-offline-strip"
           />
         )}
