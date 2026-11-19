@@ -30,8 +30,14 @@ from kiro_crew.providers.mirrors.identity import with_env
 
 logger = logging.getLogger(__name__)
 
-#: The Kiro Crew server that redeems a pickup at startup (``agent_ipc_client``).
-PICKUP_SERVERS: frozenset[str] = frozenset({"kirocrew-core"})
+#: The Kiro Crew servers that redeem a pickup at startup (``agent_ipc_client``).
+#:
+#: ``kirocrew-panel`` is here because a member session mounts it LATE, as a direct
+#: launch (``runtime_session_setup._mount_member_panel``) rather than a broker stub,
+#: so under the mask it has no secret and no capability: its ``tools/list`` is
+#: refused and the member's own webview tools never appear. It redeems through the
+#: same ``redeem_at_startup`` seam as ``kirocrew-core``.
+PICKUP_SERVERS: frozenset[str] = frozenset({"kirocrew-core", "kirocrew-panel"})
 
 
 def _launches_server_directly(element: dict[str, Any]) -> bool:
