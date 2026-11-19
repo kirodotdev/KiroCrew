@@ -203,6 +203,16 @@ describe('changelog modal labeling', () => {
     expect(document.activeElement).toBe(opener)
   })
 
+  it('gives the card the auto cursor so the click-away scrim\'s pointer does not reach the notes', async () => {
+    renderWithProviders(<App />, { route: '/chat', preloadedState: stateFor('0.7.1') })
+
+    const dialog = await screen.findByTestId('changelog-modal')
+    // The scrim is a role="button" (click-away) and `cursor` inherits, so the
+    // card resets it: arrow on the card, text cursor over the notes.
+    expect(dialog.parentElement).toHaveAttribute('role', 'button')
+    expect(dialog).toHaveClass('cursor-auto')
+  })
+
   it('is sized for a real release and keeps its width when the full changelog opens', async () => {
     renderWithProviders(<App />, { route: '/chat', preloadedState: stateFor('0.7.1') })
 
