@@ -25,6 +25,16 @@ retype every conversation.
 |---|---|---|
 | Global (`user`) | `~/.kiro/steering/**/*.md` | every session |
 | Workspace (`workspace`) | `<project>/.kiro/steering/**/*.md` | sessions whose project directory is that project |
+| Organization (`organization`) | `~/.kiro/cloud-cache/resolved/config/organization/steering/**/*.md` | sessions kiro-cli runs |
+
+The organization root is the steering a Kiro profile distributes through Kiro
+Enterprise Management. kiro-cli syncs it and loads it into its own sessions;
+the gateway does not add it on the other backends. The Steering files tab lists
+and reads it but refuses to create, edit or delete there
+(`readonly_steering_source`), because kiro-cli overwrites the folder on each sync.
+Organization skills, synced beside it to `.../organization/skills`, are listed
+the same way under the `kiro-organization/` key prefix and expand with a `$name`
+token like a local skill; a local skill of the same name wins.
 
 Two different mechanisms put them there. kiro-cli loads both roots itself: the
 global one for every session it starts, and the workspace one because the

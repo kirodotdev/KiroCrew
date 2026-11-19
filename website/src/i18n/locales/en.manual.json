@@ -8496,7 +8496,8 @@
         "sort_default": "Default order",
         "sort_most_used": "Most used",
         "sort_recently_used": "Recently used",
-        "sort_newest_first": "Newest first"
+        "sort_newest_first": "Newest first",
+        "organization": "Organization"
       },
       "steeringTab": {
         "delete_confirm": "Delete “{{path}}”?",
@@ -8517,7 +8518,8 @@
         "conflict_while_editing": "This file belongs to a project that is no longer active, so it cannot be saved here. Copy your changes somewhere safe before closing the editor.",
         "conflict_list_refreshed": "The active project changed, so this list has been refreshed.",
         "linked_read_only": "Linked from {{target}} — read-only. Edit the target file instead.",
-        "linked_not_shown": "Linked, not shown. This link points outside the folders the dashboard may read, so its contents are not opened here. Sessions can still load it."
+        "linked_not_shown": "Linked, not shown. This link points outside the folders the dashboard may read, so its contents are not opened here. Sessions can still load it.",
+        "organization": "Organization"
       },
       "displayTab": {
         "change_the_dashboard_font_family_persists_across": "Change the dashboard font family. Persists across sessions.",

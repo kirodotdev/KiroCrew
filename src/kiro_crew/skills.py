@@ -54,6 +54,7 @@ from kiro_crew.atomic_write import (  # noqa: F401
 )
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir  # noqa: F401
+from kiro_crew.config.paths import kiro_organization_dir
 from kiro_crew.cron import referenced_skill_names  # noqa: F401
 from kiro_crew.dep_sync import normalize as normalize_distribution_name  # noqa: F401
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
@@ -504,6 +505,27 @@ class SkillsLoader:
                 self._edition_extra_paths.append(resolved)
             else:
                 logger.debug("Edition skill path does not exist: %s", edition_path)
+
+        # The Kiro profile's organization skills, which kiro-cli syncs from Kiro
+        # Enterprise Management. Kept with the edition roots so a
+        # ``skills.extra_paths`` change does not drop it, and last, so a local
+        # skill of the same name still wins. Without it a ``$name`` token for an
+        # organization skill expands to nothing. Checked at construction like the
+        # roots above, so a folder first synced after boot is picked up on the
+        # next gateway start.
+        org_skills = kiro_organization_dir() / "skills"
+        try:
+            org_resolved = org_skills.resolve()
+        except (OSError, RuntimeError):
+            org_resolved = None
+        if (
+            org_resolved is not None
+            and org_resolved not in self._extra_paths
+            and org_resolved.is_dir()
+            and not is_sensitive_path(str(org_resolved))
+        ):
+            self._extra_paths.append(org_resolved)
+            self._edition_extra_paths.append(org_resolved)
 
         # Persistent usage ledger for hotness-ranked lazy skill injection.
         # Co-located with the skills root's parent (the KiroCrew home) so it

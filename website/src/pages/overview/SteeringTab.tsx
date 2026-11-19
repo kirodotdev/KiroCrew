@@ -32,6 +32,7 @@ import { useLatestMutationError } from '../../utils/latestMutationError'
 const SOURCE_LABEL_KEY: Record<string, string> = {
   user: 'pages.overview.steeringTab.global',
   workspace: 'pages.overview.steeringTab.workspace',
+  organization: 'pages.overview.steeringTab.organization',
 }
 
 /**

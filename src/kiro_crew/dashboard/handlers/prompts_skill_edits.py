@@ -73,8 +73,10 @@ def _under_skill_write_lock(fn: Any, *args: Any) -> Any:
 # core-root copy. The literals must match the prefixes _resolve_skill_root and
 # _skill_key_roots use so read and write agree on territory. The ``package/``
 # prefix is intentionally NOT listed here — that territory is handled separately;
-# this guard covers the untracked kiro-user/ and kiro-workspace/ siblings.
-READONLY_SKILL_KEY_PREFIXES = ("kiro-user/", "kiro-workspace/")
+# this guard covers the untracked kiro-user/, kiro-workspace/ and
+# kiro-organization/ siblings (the last is synced by kiro-cli from the Kiro
+# profile and overwritten on each sync).
+READONLY_SKILL_KEY_PREFIXES = ("kiro-user/", "kiro-workspace/", "kiro-organization/")
 
 
 async def api_skill_pin(request: web.Request) -> web.Response:
@@ -344,7 +346,7 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
             {
                 "error": (
                     f"skill '{name}' is in a read-only territory "
-                    "(kiro-user/ and kiro-workspace/ skills are managed on disk, "
+                    "(kiro-user/, kiro-workspace/ and kiro-organization/ skills are managed on disk, "
                     "not through this endpoint)"
                 ),
                 "code": "readonly_skill_prefix",
@@ -540,9 +542,7 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
                 )
     # A package key no listed row answers goes to the resolver, which still
     # refuses a bare key naming two distinct files.
-    if content is None and (
-        name.startswith("kiro-user/") or name.startswith("kiro-workspace/") or package_row_missed
-    ):
+    if content is None and (name.startswith(READONLY_SKILL_KEY_PREFIXES) or package_row_missed):
         # Open-standard kiro-cli skills are read-only here — load via the
         # same path-resolution logic used by the tree/file endpoints so the
         # detail modal can fetch SKILL.md regardless of which root the
@@ -631,7 +631,7 @@ async def api_skills_create(request: web.Request) -> web.Response:
             {
                 "error": (
                     f"skill name '{safe_name}' is in a reserved read-only territory "
-                    "(kiro-user/ and kiro-workspace/ skills are managed on disk)"
+                    "(kiro-user/, kiro-workspace/ and kiro-organization/ skills are managed on disk)"
                 ),
                 "code": "reserved_skill_prefix",
             },

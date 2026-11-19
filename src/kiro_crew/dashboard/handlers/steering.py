@@ -49,6 +49,7 @@ from kiro_crew.atomic_write import (
     open_access_control_source,
     pinned_parent_replace_supported,
 )
+from kiro_crew.config.paths import kiro_organization_dir
 from kiro_crew.context import steering_target_admissible
 from kiro_crew.dashboard.handlers.prompts_paths import _is_path_too_long_error
 from kiro_crew.dashboard.state import DashboardState
@@ -73,8 +74,13 @@ logger = logging.getLogger(__name__)
 STEERING_MAX_FILES = 500
 STEERING_FILE_MAX_BYTES = 262_144  # 256 KiB per steering document
 
-# ``user`` → ~/.kiro/steering, ``workspace`` → <project>/.kiro/steering
-STEERING_SOURCES = ("user", "workspace")
+# ``user`` → ~/.kiro/steering, ``workspace`` → <project>/.kiro/steering,
+# ``organization`` → the Kiro profile's organization steering that kiro-cli
+# syncs from Kiro Enterprise Management (``kiro_organization_dir()/steering``).
+STEERING_SOURCES = ("user", "workspace", "organization")
+# kiro-cli owns and overwrites the organization folder on each sync, so it is
+# listed and read but never written.
+READONLY_STEERING_SOURCES = frozenset({"organization"})
 
 # The ``inclusion`` modes the Kiro steering format defines
 # (https://kiro.dev/docs/steering/). The tab REPORTS what each document
@@ -247,6 +253,9 @@ def steering_roots(project_dir: Path | None = None) -> list[tuple[str, Path]]:
         ws_dir = Path(project_dir) / ".kiro" / "steering"
         if not is_sensitive_path(str(ws_dir)) and ws_dir != user_dir:
             out.append(("workspace", ws_dir))
+    org_dir = kiro_organization_dir() / "steering"
+    if not is_sensitive_path(str(org_dir)):
+        out.append(("organization", org_dir))
     return out
 
 
@@ -458,7 +467,7 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
                 "inclusion_declared": _redact_meta(meta["inclusion_declared"]),
                 "file_match_pattern": _redact_meta(meta["file_match_pattern"]),
                 "linked": linked,
-                "editable": not linked,
+                "editable": not linked and source not in READONLY_STEERING_SOURCES,
                 "readable": True,
                 "target": _redact_meta(_display_path(resolved)) if linked else "",
             })
@@ -485,7 +494,7 @@ def _split_key(key: str) -> tuple[str, str] | None:
 
 def _base_for(source: str, project_dir: Path | None) -> Path | None:
     """The trust base a steering root must resolve underneath."""
-    if source == "user":
+    if source in ("user", "organization"):
         return Path.home()
     return Path(project_dir) if project_dir else None
 
@@ -606,6 +615,8 @@ def resolve_steering_file(
     if parts is None:
         return None
     source, rel = parts
+    if for_write and source in READONLY_STEERING_SOURCES:
+        return None
     root = next((p for s, p in steering_roots(project_dir) if s == source), None)
     base = _base_for(source, project_dir)
     if root is None or base is None:
@@ -1196,7 +1207,7 @@ async def api_steering_create(request: web.Request) -> web.Response:
         )
     project_dir, project_state = active_project_state(state, _read_session_key(request))
     source = str(body.get("source") or ("workspace" if project_dir else "user"))
-    if source not in STEERING_SOURCES:
+    if source not in STEERING_SOURCES or source in READONLY_STEERING_SOURCES:
         return web.json_response({"error": "invalid source", "code": "invalid_source"}, status=400)
     if source == "workspace" and project_dir is None:
         # Refuse rather than write to a guess. ``reason`` lets the dialog say
@@ -1359,6 +1370,18 @@ async def api_steering_detail(request: web.Request) -> web.Response:
     # Only ``workspace/`` keys resolve against the mutable project; ``user/``
     # keys are anchored to $HOME and need no precondition.
     workspace_scoped = key.split("/", 1)[0] == "workspace"
+    # Organization steering is synced by kiro-cli and overwritten on each sync,
+    # so PUT and DELETE are refused before any resolution. Update and delete
+    # resolve with ``for_write=False``, so the guard in resolve_steering_file
+    # does not cover them.
+    if request.method in ("PUT", "DELETE") and key.split("/", 1)[0] in READONLY_STEERING_SOURCES:
+        return web.json_response(
+            {
+                "error": "organization steering is managed by your Kiro profile and is read-only",
+                "code": "readonly_steering_source",
+            },
+            status=403,
+        )
 
     if request.method == "GET":
 

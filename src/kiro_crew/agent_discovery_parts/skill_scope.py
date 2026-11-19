@@ -133,17 +133,39 @@ def mate_conductor_scope(
     spec that may not inherit get *globs* unchanged. The crewmate worker's mapping
     is the crewmate's own Abilities choice, so it keeps the rule every mapped
     agent follows.
+
+    Every non-empty mapping also gets :func:`organization_skill_globs`, so this
+    is where a mapped agent keeps its Kiro profile's organization skills.
     """
     from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
 
+    if not globs:
+        return globs
     if (
         not MATE_CONDUCTOR_INHERITS_USER_SKILLS
         or agent != MATE_CONDUCTOR_AGENT
-        or not globs
         or not can_inherit_skills(spec)
     ):
-        return globs
-    return list(dict.fromkeys([*globs, *inherited_skill_globs(project_dir)]))
+        return list(dict.fromkeys([*globs, *organization_skill_globs()]))
+    return list(
+        dict.fromkeys([*globs, *inherited_skill_globs(project_dir), *organization_skill_globs()])
+    )
+
+
+def organization_skill_globs() -> list[str]:
+    """The glob for the Kiro profile's organization skills, or ``[]`` with none synced.
+
+    Kiro Enterprise Management syncs a profile's skills to
+    :func:`kiro_crew.config.paths.kiro_organization_dir`, and kiro-cli and KAS load
+    them into every session whatever the agent maps. So they belong to every
+    resolved scope: without them a mapped agent's ``skill_search`` would not find
+    them, and on KAS the skill-scope deny rule (``kas_skill_scope``) would take them
+    away from the session.
+    """
+    from kiro_crew.config import paths
+
+    tree = paths.kiro_organization_dir() / "skills"
+    return [str(tree / "*" / "SKILL.md")] if tree.is_dir() else []
 
 
 def inherited_skill_globs(
@@ -162,7 +184,8 @@ def inherited_skill_globs(
     A missing tree is left out. The workspace tree is workspace-controlled (a link
     to a network share, for one), so it is asked through
     :func:`kiro_crew.skills.project_skill_tree_present`: trust first, then the
-    no-follow traversal, never a path-following probe.
+    no-follow traversal, never a path-following probe. The organization skills
+    (:func:`organization_skill_globs`) come last.
     """
     from kiro_crew.agent_sdk.drivers import acp as acp_driver
     from kiro_crew.config import paths
@@ -176,7 +199,7 @@ def inherited_skill_globs(
 
     if project_dir and project_skill_tree_present(project_dir):
         globs.append(str(Path(project_dir) / ".kiro" / "skills" / "*" / "SKILL.md"))
-    return globs
+    return [*globs, *organization_skill_globs()]
 
 
 def agent_skill_globs(

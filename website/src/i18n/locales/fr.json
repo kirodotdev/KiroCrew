@@ -18292,7 +18292,8 @@
         "sort_default": "Ordre par défaut",
         "sort_most_used": "Plus utilisé",
         "sort_recently_used": "Utilisé récemment",
-        "sort_newest_first": "Plus récents d’abord"
+        "sort_newest_first": "Plus récents d’abord",
+        "organization": "Organisation"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Conventions Markdown que l’agent lit. Le mode d’inclusion de chaque fichier décide quand : toujours, uniquement pour les fichiers correspondants, ou à la demande. Les fichiers globaux se trouvent dans ~/.kiro/steering et s’appliquent partout ; ceux de l’espace de travail sont dans <project>/.kiro/steering et ne s’appliquent qu’à ce projet.",
@@ -18345,7 +18346,8 @@
         "scope_hint_no_project": "La portée espace de travail nécessite un projet. Ouvrez un chat, choisissez un dossier avec le bouton de projet à côté du champ de saisie, puis rouvrez cette boîte de dialogue.",
         "scope_hint_project_conflict": "Vos chats ouverts portent sur des projets différents, donc aucun projet unique ne s’applique. Fermez-en un ou réorientez-le vers un autre projet, puis rouvrez cette boîte de dialogue.",
         "conflict_while_editing": "Ce fichier appartient à un projet qui n’est plus actif, il ne peut donc pas être enregistré ici. Copie tes modifications en lieu sûr avant de fermer l’éditeur.",
-        "conflict_list_refreshed": "Le projet actif a changé, cette liste a donc été actualisée."
+        "conflict_list_refreshed": "Le projet actif a changé, cette liste a donc été actualisée.",
+        "organization": "Organisation"
       },
       "tokenDailyChart": {
         "all": "Tous",

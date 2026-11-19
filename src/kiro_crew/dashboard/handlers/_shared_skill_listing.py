@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew.agent_discovery import expand_skill_uri, parsed_agent_specs
-from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.config.paths import kiro_agents_dir, kiro_organization_dir
 from kiro_crew.dashboard.handlers._shared_skill_catalog import package_skill_catalog
 from kiro_crew.dashboard.handlers._shared_skill_roots import (
     _edition_skill_roots,
@@ -42,8 +42,10 @@ _KIRO_SKILL_FRONTMATTER_BYTES = 4096
 def _kiro_skill_roots(project_dir: Path | None = None) -> list[tuple[str, Path]]:
     """Return ``(label, path)`` pairs for the open-standard skill locations.
 
-    label is one of: ``kiro-user``, ``kiro-workspace``.  Used as the
-    ``source`` field on listed skills so the UI can show provenance.
+    label is one of: ``kiro-user``, ``kiro-workspace``, ``kiro-organization``.
+    Used as the ``source`` field on listed skills so the UI can show provenance.
+    ``kiro-organization`` is the Kiro profile's organization skills, synced by
+    kiro-cli (see :func:`kiro_crew.config.paths.kiro_organization_dir`).
     """
     out: list[tuple[str, Path]] = []
     user_dir = Path.home() / ".kiro" / "skills"
@@ -53,6 +55,9 @@ def _kiro_skill_roots(project_dir: Path | None = None) -> list[tuple[str, Path]]
         ws_dir = project_dir / ".kiro" / "skills"
         if ws_dir.is_dir() and not is_sensitive_path(str(ws_dir)):
             out.append(("kiro-workspace", ws_dir))
+    org_dir = kiro_organization_dir() / "skills"
+    if org_dir.is_dir() and not is_sensitive_path(str(org_dir)):
+        out.append(("kiro-organization", org_dir))
     return out
 
 

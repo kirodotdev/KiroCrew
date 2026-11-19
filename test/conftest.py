@@ -909,6 +909,49 @@ def _isolate_aim_skills_dir(_floor_monkeypatch):
     _floor_monkeypatch.setattr(DefaultMcpToolingProvider, "extra_skills", lambda self: [])
 
 
+#: The real home at collection, before any test fakes ``pathlib.Path.home``.
+_REAL_HOME_FOR_ORG_DIR = pathlib.Path.home()
+
+#: Every module that binds ``kiro_organization_dir`` by name, so each is patched.
+_ORG_DIR_CONSUMERS = (
+    "kiro_crew.skills",
+    "kiro_crew.dashboard.handlers._shared_skill_listing",
+    "kiro_crew.dashboard.handlers._shared_skill_roots",
+    "kiro_crew.dashboard.handlers._shared_skill_catalog",
+    "kiro_crew.dashboard.handlers.steering",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_kiro_organization_dir(_floor_monkeypatch):
+    """Keep a developer's synced Kiro profile skills and steering out of the suite.
+
+    kiro-cli syncs a Kiro profile's organization config to
+    ``~/.kiro/cloud-cache/resolved/config/organization``. A test that builds a
+    ``SkillsLoader`` or lists steering without faking ``$HOME`` would otherwise
+    read the developer's real organization skills, the same leak
+    ``_isolate_aim_skills_dir`` closes for edition roots. A test that fakes
+    ``pathlib.Path.home`` still gets the folder under its fake home, so the organization
+    source stays testable.
+    """
+    import kiro_crew.config.paths as config_paths
+
+    def _org_dir() -> pathlib.Path:
+        home = pathlib.Path.home()
+        if home == _REAL_HOME_FOR_ORG_DIR:
+            return home / ".kiro" / "cloud-cache-isolated-by-test-suite"
+        return home / ".kiro" / "cloud-cache" / "resolved" / "config" / "organization"
+
+    # The source module first, so a consumer first imported DURING the test binds
+    # the isolated function. Consumers already imported are patched in place; one
+    # not yet imported is left alone rather than imported here for every test.
+    _floor_monkeypatch.setattr(config_paths, "kiro_organization_dir", _org_dir)
+    for name in _ORG_DIR_CONSUMERS:
+        module = sys.modules.get(name)
+        if module is not None and hasattr(module, "kiro_organization_dir"):
+            _floor_monkeypatch.setattr(module, "kiro_organization_dir", _org_dir)
+
+
 #: The per-test timeout of every test in a ``tree_scan_*`` xdist group that carries no
 #: ``pytest.mark.timeout`` of its own. Those groups hold the gates that parse or walk a
 #: whole tree. Most take 10-37 s of CPU alone on a fast host, and a hosted runner is

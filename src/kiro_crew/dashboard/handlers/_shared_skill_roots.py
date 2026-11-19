@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.paths import kiro_organization_dir
 from kiro_crew.dashboard.handlers._shared_workspace import active_project_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path
@@ -377,6 +378,8 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
     - ``utils/tiny-url`` → ``~/.kiro/crew/skills/utils/tiny-url``
     - ``package/<skill>`` → resolved via _resolve_package_skill_path() lookup
     - ``kiro-user/<skill>`` → ``~/.kiro/skills/<skill>``
+    - ``kiro-organization/<skill>`` → the Kiro profile's organization skills
+      (``kiro_organization_dir()/skills/<skill>``)
     - ``kiro-workspace/<skill>`` → ``<project>/.kiro/skills/<skill>``
 
     *session_key* scopes ``kiro-workspace/`` to the requesting chat slot's
@@ -396,6 +399,11 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
     if name.startswith("kiro-user/"):
         rel = name[len("kiro-user/") :]
         root = Path.home() / ".kiro" / "skills"
+    elif name.startswith("kiro-organization/"):
+        # The Kiro profile's organization skills. kiro-cli owns and re-syncs
+        # this folder, so it is read-only here (READONLY_SKILL_KEY_PREFIXES).
+        rel = name[len("kiro-organization/") :]
+        root = kiro_organization_dir() / "skills"
     elif name.startswith("kiro-workspace/"):
         rel = name[len("kiro-workspace/") :]
         # NOT trust-gated, deliberately: reading a SKILL.md is how the operator

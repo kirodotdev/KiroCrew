@@ -102,6 +102,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         can_inherit_skills,
         inherited_skill_globs,
         mate_conductor_scope,
+        organization_skill_globs,
         served_provider_label,
         session_skill_globs,
         skill_search_refusal,

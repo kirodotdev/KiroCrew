@@ -124,14 +124,58 @@ def _make_app(state):
 class TestRoots:
     def test_user_root_listed_even_when_missing(self, fake_home):
         roots = steering_roots(None)
-        assert [s for s, _ in roots] == ["user"]
+        assert [s for s, _ in roots] == ["user", "organization"]
         assert roots[0][1] == fake_home / ".kiro" / "steering"
 
     def test_workspace_root_added_when_project_set(self, fake_home, tmp_path):
         proj = tmp_path / "proj"
         roots = steering_roots(proj)
-        assert [s for s, _ in roots] == ["user", "workspace"]
+        assert [s for s, _ in roots] == ["user", "workspace", "organization"]
         assert roots[1][1] == proj / ".kiro" / "steering"
+
+    def test_organization_root_is_the_kiro_profile_cache(self, fake_home):
+        roots = dict(steering_roots(None))
+        assert roots["organization"] == fake_home.joinpath(*_ORG_STEERING)
+
+
+_ORG_STEERING = (".kiro", "cloud-cache", "resolved", "config", "organization", "steering")
+
+
+class TestOrganizationSteering:
+    """Steering kiro-cli syncs from the Kiro profile: listed and read, never written."""
+
+    def test_listed_read_only_with_its_inclusion(self, fake_home):
+        body = "---\ninclusion: always\n---\n# Org rules\n"
+        _write_steering(fake_home.joinpath(*_ORG_STEERING), "rules.md", body)
+        files = [f for f in list_steering_blocking(None)["files"] if f["source"] == "organization"]
+        assert [(f["key"], f["inclusion"], f["editable"]) for f in files] == [
+            ("organization/rules.md", "always", False)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_reads_the_document(self, fake_home):
+        _write_steering(fake_home.joinpath(*_ORG_STEERING), "rules.md", "# Org rules\n")
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            resp = await client.get("/api/steering/organization/rules.md")
+            assert resp.status == 200
+            assert "Org rules" in (await resp.json())["content"]
+
+    @pytest.mark.asyncio
+    async def test_put_delete_and_create_are_refused(self, fake_home):
+        path = _write_steering(fake_home.joinpath(*_ORG_STEERING), "rules.md", "# Org rules\n")
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            put = await client.put("/api/steering/organization/rules.md", json={"content": "x"})
+            delete = await client.delete("/api/steering/organization/rules.md")
+            create = await client.post(
+                "/api/steering", json={"name": "new.md", "content": "x", "source": "organization"}
+            )
+        assert (put.status, delete.status, create.status) == (403, 403, 400)
+        assert path.read_text() == "# Org rules\n"
+        assert not (fake_home.joinpath(*_ORG_STEERING) / "new.md").exists()
+
+    def test_write_resolution_refuses_the_source(self, fake_home):
+        fake_home.joinpath(*_ORG_STEERING).mkdir(parents=True)
+        assert resolve_steering_file("organization/x.md", None, for_write=True) is None
 
 
 class TestListing:
@@ -147,8 +191,9 @@ class TestListing:
         assert by_key["user/personal.md"]["description"] == "Personal"
         assert by_key["user/personal.md"]["source"] == "user"
         assert by_key["workspace/api-standards.md"]["source"] == "workspace"
-        assert [r["source"] for r in out["roots"]] == ["user", "workspace"]
-        assert all(r["exists"] for r in out["roots"])
+        assert [r["source"] for r in out["roots"]] == ["user", "workspace", "organization"]
+        # No Kiro profile has synced organization steering into the fixture home.
+        assert [r["exists"] for r in out["roots"]] == [True, True, False]
 
     def test_a_comment_only_front_matter_block_is_not_the_description(self, fake_home):
         """A closed fence around nothing but a comment is still a closed fence.
@@ -826,7 +871,7 @@ class TestProjectResolution:
         state = self._multi_slot_state(tmp_path / "a", tmp_path / "b")
         async with TestClient(TestServer(_make_app(state))) as client:
             data = await (await client.get("/api/steering")).json()
-        assert [r["source"] for r in data["roots"]] == ["user"]
+        assert [r["source"] for r in data["roots"]] == ["user", "organization"]
         assert data["files"] == []
 
 

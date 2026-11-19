@@ -17356,7 +17356,8 @@
         "sort_default": "標準の順序",
         "sort_most_used": "よく使う順",
         "sort_recently_used": "最近使った順",
-        "sort_newest_first": "新しい順"
+        "sort_newest_first": "新しい順",
+        "organization": "組織"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "エージェントが読む Markdown 規約。適用タイミングは各ファイルのインクルードモードで決まります: 常時、一致するファイルのときだけ、または必要時。グローバルファイルは ~/.kiro/steering にあり、どこでも適用されます。ワークスペースファイルは <project>/.kiro/steering にあり、そのプロジェクトだけに適用されます。",
@@ -17409,7 +17410,8 @@
         "scope_hint_no_project": "ワークスペーススコープにはプロジェクトが必要です。チャットを開き、コンポーザーの横にあるプロジェクトボタンでフォルダーを選択してから、このダイアログを開き直してください。",
         "scope_hint_project_conflict": "開いているチャットが別々のプロジェクトを使用しているため、単一のプロジェクトを特定できません。いずれかを閉じるか別のプロジェクトに切り替えてから、このダイアログを開き直してください。",
         "conflict_while_editing": "このファイルは現在アクティブではないプロジェクトに属しているため、ここには保存できません。エディターを閉じる前に、変更内容を安全な場所にコピーしてください。",
-        "conflict_list_refreshed": "アクティブなプロジェクトが変わったため、この一覧を更新しました。"
+        "conflict_list_refreshed": "アクティブなプロジェクトが変わったため、この一覧を更新しました。",
+        "organization": "組織"
       },
       "tokenDailyChart": {
         "all": "すべて",

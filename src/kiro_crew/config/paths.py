@@ -1145,6 +1145,20 @@ def _in_linked_git_worktree(path: Path) -> bool:
     return False
 
 
+def kiro_organization_dir() -> Path:
+    """Return the folder kiro-cli syncs a Kiro profile's organization config into.
+
+    Kiro Enterprise Management distributes a profile's skills and steering to
+    ``~/.kiro/cloud-cache/resolved/config/organization/{skills,steering}``, and
+    kiro-cli loads them into every session. The dashboard only lists and reads
+    them: kiro-cli owns the folder and overwrites it on each sync.
+
+    Resolved against the host ``~/.kiro`` like the sibling ``~/.kiro/skills``
+    and ``~/.kiro/steering`` readers (see :func:`kiro_home`'s scope caveat).
+    """
+    return Path.home() / ".kiro" / "cloud-cache" / "resolved" / "config" / "organization"
+
+
 def kiro_home() -> Path:
     """Return the kiro home (``~/.kiro``), honoring a ``KIRO_HOME`` override.
 

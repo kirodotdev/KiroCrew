@@ -21,6 +21,7 @@ from kiro_crew.agent_discovery import (
     skill_resource_uris,
     skill_uri_for_path,
 )
+from kiro_crew.config.paths import kiro_organization_dir
 from kiro_crew.dashboard.handlers._shared_skill_roots import (
     LEAF_SYMLINK_PREFIX,
     _canonical_skill_roots,
@@ -65,6 +66,7 @@ def _skill_key_roots(state: DashboardState, session_key: str = "") -> list[tuple
     proj = active_project_dir(state, session_key)
     if proj is not None:
         out.append(("kiro-workspace/", proj / ".kiro" / "skills"))
+    out.append(("kiro-organization/", kiro_organization_dir() / "skills"))
     out.extend(("", root) for root in _canonical_skill_roots()[1:])
     # ``package/`` covers only the edition roots the core does not already key
     # above — via the same helper the resolver uses, so enumeration and

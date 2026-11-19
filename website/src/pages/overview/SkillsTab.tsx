@@ -97,6 +97,7 @@ function sourceLabel(source: Skill['source']): string | null {
     case 'package': return i18nT('pages.overview.skillsTab.package')
     case 'kiro-user': return '~/.kiro/skills'
     case 'kiro-workspace': return i18nT('pages.overview.skillsTab.workspace')
+    case 'kiro-organization': return i18nT('pages.overview.skillsTab.organization')
     default: return null  // kirocrew — the default home, no badge needed
   }
 }

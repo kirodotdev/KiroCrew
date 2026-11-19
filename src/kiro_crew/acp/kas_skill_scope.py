@@ -120,13 +120,15 @@ def skill_names(globs: list[str]) -> set[str]:
 
 def _default_tree_globs(work_dir: str | Path | None) -> list[str]:
     """The skill trees KAS loads for every session, whatever the agent maps."""
+    from kiro_crew.agent_discovery import organization_skill_globs
     from kiro_crew.config import paths
     from kiro_crew.skills import project_skill_tree_present
 
     globs = [str(paths.kiro_home() / "skills" / "*" / "SKILL.md")]
     if work_dir and project_skill_tree_present(work_dir):
         globs.append(str(Path(work_dir) / ".kiro" / "skills" / "*" / "SKILL.md"))
-    return globs
+    # KAS loads the Kiro profile's organization skills too.
+    return [*globs, *organization_skill_globs()]
 
 
 def _spec_globs(
