@@ -1287,6 +1287,11 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         if exc.status == 409:
             return web.json_response({"error": exc.message, "code": exc.code}, status=409)
         return web.json_response({"error": exc.message, "code": exc.code}, status=500)
+    if not request_app:
+        # The person's own close, which a cron job set to start fresh reopens empty.
+        from kiro_crew.dashboard.cron_inject import note_cron_tab_closed_by_person
+
+        await note_cron_tab_closed_by_person(state, slot)
     closed, failed = await _close_managed(state, name, line) if line else ([], [])
     if not closed and not failed:
         return web.json_response({"ok": True})

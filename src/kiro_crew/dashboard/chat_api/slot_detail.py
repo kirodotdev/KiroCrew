@@ -830,6 +830,18 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         )
     # The rows composed: the reader's page, reaching back to its cursor's span.
     read_limit = slot_detail_delta.read_limit(limit, delta_cursor)
+    # Rows at or before the transcript's display floor are not this tab's to show
+    # (``display_floor``); read before the rows, so a floor written meanwhile
+    # applies to the next read instead of to half of this one. Only a ``cron:`` line
+    # carries one. Imported here like ``slot_detail_delta`` above.
+    from kiro_crew.dashboard.display_floor import clip_to_floor, read_display_floor
+
+    floor_key = slot_history_key(slot)
+    floor = (
+        await asyncio.to_thread(read_display_floor, state.conversation_log, floor_key)
+        if state.conversation_log and floor_key.startswith("cron:")
+        else ""
+    )
 
     # No limit → load ALL messages (chained across gateway restarts).
     # In-memory slot.messages is authoritative for the current session.
@@ -1242,6 +1254,14 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             has_more = start > 0
             next_before = start
 
+    floor_reached = False
+    if floor:
+        messages, next_before, floor_reached = await asyncio.to_thread(
+            clip_to_floor, messages, next_before, floor
+        )
+        if floor_reached:
+            has_more = False
+
     # Snapshot every slot field the response needs BEFORE leaving the event
     # loop: the render below runs in a worker thread, and it must not read
     # attributes the loop keeps mutating mid-turn. `messages` is already a
@@ -1387,7 +1407,12 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 )
         page_fields: dict[str, Any] = {"has_more": page_has_more, "next_before": page_next_before}
         if plan is not None:
-            page_fields = {"has_more": plan.has_more, "next_before": plan.next_before}
+            # A page that met the display floor offers only the rows between the
+            # floor and the first row it sends (cut by the window or the byte budget).
+            page_fields = {
+                "has_more": plan.next_before > next_before if floor_reached else plan.has_more,
+                "next_before": plan.next_before,
+            }
             if plan.cursor is not None:
                 page_fields["cursor"] = plan.cursor
             if plan.delta is not None:
