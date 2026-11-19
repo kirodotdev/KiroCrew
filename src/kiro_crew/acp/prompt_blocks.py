@@ -35,6 +35,7 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
+from kiro_crew.acp.sheet_digest import sheet_digests
 from kiro_crew.hooks import (
     is_unc_shape,
     safe_read_file_bytes,
@@ -540,6 +541,8 @@ def build_prompt_blocks(
                 max_prompt_image_blocks,
             )
         text = _rewrite_text(message, candidates, markers, notes)
+        # Off by default: a stored CSV or TSV gets a bounded digest, its typed markers escaped.
+        text += _rewrite_text(sheet_digests(scan, user_spans), [], {}, {})
     else:
         # The path stays as written, but a typed marker must not claim an
         # attachment on a backend that takes none either.

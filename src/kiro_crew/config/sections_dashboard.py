@@ -454,6 +454,18 @@ class DashboardConfig:
             "effect on the next upload; no restart.",
         ),
     )
+    attachment_sheet_digest: bool = field(
+        default=False,
+        metadata=_meta(
+            "Digest Attached CSV And TSV Files",
+            "When on, a CSV or TSV file attached in chat is followed in the prompt by "
+            "a short digest: column names, an inferred type for each column, a row "
+            "count and the first three rows. Only the first 256 KiB is read; each "
+            "prompt shows at most 3 files, 20 columns each, with cells cut to 40 "
+            "characters. Off by default: the agent then gets the path alone. Takes "
+            "effect on the next message; no restart.",
+        ),
+    )
     mcp_probe_timeout_secs: int = field(
         default=15,
         metadata=_meta(
