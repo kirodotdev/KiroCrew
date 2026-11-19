@@ -10457,6 +10457,7 @@
         "bot_name": "",
         "avatar": "",
         "merge_queued_messages": false,
+        "title_refresh_enabled": true,
         "title_refresh_every_turns": 0,
         "title_ticket_prefix": false,
         "upload_max_mb": 100,
@@ -11273,6 +11274,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.title_refresh_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Refresh Auto Titles",
+      "help": "Re-examine a session's auto-generated title as the conversation goes on, on the schedule set by title_refresh_every_turns. Off keeps the first auto title: the only refresh left is the one after the first turn for a title that began as a bare link, a ticket key or the truncated first message. Takes effect on the next turn; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "dashboard.title_refresh_every_turns",

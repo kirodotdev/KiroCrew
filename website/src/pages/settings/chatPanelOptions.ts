@@ -91,6 +91,7 @@ export const TURN_LIMIT_DEFAULT = 14400
 /** `dashboard.title_refresh_every_turns`: 0 is the built-in schedule, any other
  *  value is MIN..MAX (config/sections.py TITLE_REFRESH_EVERY_TURNS_MIN / _MAX). */
 export const TITLE_REFRESH_PATH = 'dashboard.title_refresh_every_turns'
+export const TITLE_REFRESH_ENABLED_PATH = 'dashboard.title_refresh_enabled'
 export const TITLE_REFRESH_MIN = 4
 export const TITLE_REFRESH_MAX = 1000
 
@@ -209,5 +210,5 @@ export type KirocrewConfigShape = {
     fallback_model?: string
     refusal_fallback_model?: string
   }
-  dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string; prevent_sleep?: boolean; title_refresh_every_turns?: number }
+  dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string; prevent_sleep?: boolean; title_refresh_enabled?: boolean; title_refresh_every_turns?: number }
 }

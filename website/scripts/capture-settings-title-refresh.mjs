@@ -1,30 +1,29 @@
 /**
- * Screenshot harness for "Auto-title refresh interval (turns)" in Settings ->
- * Chat -> Sessions.
- *
- * The row is a +/- stepper over `dashboard.title_refresh_every_turns`, like
- * Message Font Size: a plain text readout, no typed input box. It saves through
- * PATCH /api/config/kirocrew and reads back from GET /api/config/kirocrew. The
- * harness answers that route from one stateful fixture, so a save is read back
- * the way the gateway would return it, and the frames show what the server
- * holds rather than an optimistic display that a refetch would undo.
+ * Screenshot harness for auto-title refresh in Settings -> Chat -> Sessions:
+ * the "Refresh auto titles" toggle (`dashboard.title_refresh_enabled`) and,
+ * below it while it is on, "Auto-title refresh interval (turns)"
+ * (`dashboard.title_refresh_every_turns`), a +/- stepper whose box also takes
+ * a typed number. Both save through PATCH /api/config/kirocrew and read back
+ * from GET /api/config/kirocrew. The harness answers that route from one
+ * stateful fixture, so a save is read back the way the gateway would return
+ * it, and the frames show what the server holds rather than an optimistic
+ * display that a refetch would undo.
  *
  * Runs the REAL built SPA (website/dist) behind this folder's shared
  * `lib/serve-dist.mjs`, answering every other /api/** call from fixtures. No
  * gateway, no dashboard auth, no kiro-cli spawn.
  *
  * Shots:
- *  1. Sessions page, nothing stored: the row reads "Default", the built-in
- *     schedule, with − disabled, beside Session summaries.
- *  2. After one + click from Default: the row reads 4 (the minimum cadence),
- *     and the harness asserts the PATCH carried exactly that value.
- *  3. The row's info tip open, so its full explanation is readable.
- *  4. Light theme, the same minimum cadence, so the row is shown in both themes.
- *  5. A failed save: the PATCH for one + click answers 500, the "Failed to save
- *     title refresh setting" banner shows, and the row reads the stored 4 again.
- *     The banner sits at the top of the panel and the row low in the Sessions
- *     card, so the frame is taken with the banner at the top edge and the row in
- *     it when the viewport fits both.
+ *  1. Sessions page, nothing stored: the toggle is on and the interval box
+ *     shows "Default", the built-in schedule, with − disabled.
+ *  2. After typing 50 and Enter: the box reads 50, and the harness asserts the
+ *     PATCH carried exactly that value.
+ *  3. The interval row's info tip open, so its full explanation is readable.
+ *  4. Light theme, the same cadence, so the rows are shown in both themes.
+ *  5. The toggle switched off: the harness asserts the PATCH carried false and
+ *     the interval row is gone.
+ *  6. A failed save: switching the toggle back on answers 500, the "Failed to
+ *     save title refresh setting" banner shows, and the toggle reads off again.
  *
  * Labels are read from the CATALOG, so a key rename breaks the capture loudly
  * instead of silently screenshotting the wrong element.
@@ -40,17 +39,17 @@ import { openSettingsPage } from './lib/settings-capture.mjs'
 const OUT = process.argv[2] || '../temp-screenshots/settings-title-refresh'
 const LOCALES = fileURLToPath(new URL('../src/i18n/locales/', import.meta.url))
 const KEY = 'dashboard.title_refresh_every_turns'
+const ENABLED_KEY = 'dashboard.title_refresh_enabled'
 
 mkdirSync(OUT, { recursive: true })
 
 const chat = JSON.parse(readFileSync(LOCALES + 'en.manual.json', 'utf-8')).pages?.settings?.chatPanel
 const MORE_INFO = JSON.parse(readFileSync(LOCALES + 'en.json', 'utf-8')).components?.infoTip?.more_information
 const LABEL = chat?.title_refresh_every_turns
-// The readout for 0, and the banner a failed save raises; both come from the
-// catalog for the same reason as the label.
+const TOGGLE = chat?.title_refresh_enabled
 const DEFAULT = chat?.title_refresh_default
 const SAVE_FAILED = chat?.failed_to_save_title_refresh
-if (!LABEL || !DEFAULT || !SAVE_FAILED || !chat?.session_summaries || !MORE_INFO) {
+if (!LABEL || !TOGGLE || !DEFAULT || !SAVE_FAILED || !MORE_INFO) {
   throw new Error('catalog keys missing -- pages.settings.chatPanel.title_refresh_* or components.infoTip.more_information renamed?')
 }
 
@@ -59,10 +58,10 @@ const { browser, page, srv, base } = await openSettingsPage({ tab: 'chat' })
 // Registered after the shared catch-all, so these take precedence for their paths.
 // The shared fixture answers /api/models with an object, which the model catalog
 // reads as a degraded list and flags with a "Failed to load config." banner that
-// has nothing to do with this row; a one-entry live list keeps the frame clean.
+// has nothing to do with these rows; a one-entry live list keeps the frame clean.
 await page.route('**/api/models', route => json(route, [{ model_name: 'auto', description: 'Auto' }]))
-let stored
-// Frame 5 arms this: the next PATCH is recorded but answered 500 and not stored,
+const stored = {}
+// Frame 6 arms this: the next PATCH is recorded but answered 500 and not stored,
 // so the refetch after the failure reads back the value the server still holds.
 let failNextPatch = false
 const patches = []
@@ -75,47 +74,46 @@ await page.route('**/api/config/kirocrew', route => {
       failNextPatch = false
       return json(route, { error: 'config file is read-only' }, 500)
     }
-    if (path === KEY) stored = value
+    if (path === KEY) stored.title_refresh_every_turns = value
+    if (path === ENABLED_KEY) stored.title_refresh_enabled = value
     return json(route, { ok: true })
   }
-  return json(route, stored === undefined ? {} : { dashboard: { title_refresh_every_turns: stored } })
+  return json(route, Object.keys(stored).length ? { dashboard: { ...stored } } : {})
 })
+const sentFor = key => patches.filter(p => p.path === key).map(p => p.value)
 
 await page.goto(`${base}/settings/chat/sessions`, { waitUntil: 'domcontentloaded' })
-const rowSel = `[data-setting-key="${KEY}"]`
-const row = page.locator(rowSel)
-await row.waitFor({ state: 'visible', timeout: 15_000 })
+const row = page.locator(`[data-setting-key="${KEY}"]`)
+const toggle = page.getByRole('switch', { name: TOGGLE })
+const box = row.getByRole('spinbutton', { name: LABEL })
 const inc = row.getByRole('button', { name: /increase/i })
 const dec = row.getByRole('button', { name: /decrease/i })
-await page.waitForFunction(el => !el.disabled, await inc.elementHandle())
-await row.scrollIntoViewIfNeeded()
-await page.waitForTimeout(400)
 
-// The readout is a plain text span (no input box), like Message Font Size. The
-// box also holds invisible, aria-hidden copies of the widest values it must fit
-// (`reserveWidthFor`), so the shown value is read with those stripped out.
-const shownText = el => {
-  const copy = el.cloneNode(true)
-  copy.querySelectorAll('[aria-hidden="true"]').forEach(n => n.remove())
-  return copy.textContent?.trim()
+async function waitForRows() {
+  await row.waitFor({ state: 'visible', timeout: 15_000 })
+  await page.waitForFunction(el => !el.disabled, await inc.elementHandle())
+  await toggle.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(400)
 }
-const readout = async () => row.locator('span.cursor-default').evaluate(shownText)
+// An empty box shows its placeholder, which is what the reader sees.
+const readout = () => box.evaluate(el => el.value === '' ? el.placeholder : el.value)
 
-// 0 reads as "Default", and − is disabled there: nothing is below the built-in schedule.
+await waitForRows()
+if (!(await toggle.isChecked())) throw new Error('expected the toggle to be on by default')
 if ((await readout()) !== DEFAULT) throw new Error(`expected "${DEFAULT}" with nothing stored, saw ${await readout()}`)
 if (!(await dec.isDisabled())) throw new Error('expected − to be disabled at Default')
 await page.screenshot({ path: join(OUT, '01-sessions-built-in-schedule.png'), fullPage: false })
 console.log('captured 01-sessions-built-in-schedule.png')
 
-// One + from Default jumps to the minimum cadence of 4, and − comes alive.
-await inc.click()
+await box.fill('50')
+await box.press('Enter')
 await page.waitForTimeout(600)
-const sent = patches.filter(p => p.path === KEY).map(p => p.value)
-if (sent.length !== 1 || sent[0] !== 4) throw new Error(`expected one PATCH of 4, saw ${JSON.stringify(sent)}`)
-if ((await readout()) !== '4') throw new Error(`expected the row to read back 4, saw ${await readout()}`)
-if (await dec.isDisabled()) throw new Error('expected − to be enabled at the minimum cadence')
-await page.screenshot({ path: join(OUT, '02-sessions-every-4-turns.png'), fullPage: false })
-console.log('captured 02-sessions-every-4-turns.png')
+const typed = sentFor(KEY)
+if (typed.length !== 1 || typed[0] !== 50) throw new Error(`expected one PATCH of 50, saw ${JSON.stringify(typed)}`)
+if ((await readout()) !== '50') throw new Error(`expected the box to read back 50, saw ${await readout()}`)
+await page.mouse.move(0, 0)
+await page.screenshot({ path: join(OUT, '02-sessions-typed-50.png'), fullPage: false })
+console.log('captured 02-sessions-typed-50.png')
 
 await row.getByRole('button', { name: MORE_INFO }).hover()
 await page.getByRole('tooltip').waitFor({ state: 'visible', timeout: 5_000 })
@@ -131,49 +129,38 @@ await page.route('**/api/theme/boot', route => json(route, { mode: 'light', them
 await page.reload({ waitUntil: 'domcontentloaded' })
 // The pointer still rests on the info tip from frame 3; move it off so the tip closes.
 await page.mouse.move(0, 0)
-await row.waitFor({ state: 'visible', timeout: 15_000 })
-await page.waitForFunction(el => !el.disabled, await inc.elementHandle())
-await row.scrollIntoViewIfNeeded()
-await page.waitForTimeout(400)
-if ((await readout()) !== '4') throw new Error(`expected the row to read back 4 in light theme, saw ${await readout()}`)
+await waitForRows()
+if ((await readout()) !== '50') throw new Error(`expected the box to read back 50 in light theme, saw ${await readout()}`)
 await page.screenshot({ path: join(OUT, '04-sessions-light.png'), fullPage: false })
 console.log('captured 04-sessions-light.png')
 
-// A save that fails. The + click shows 5 at once, the PATCH answers 500, and
-// the failure raises the banner and rolls the readout back to the stored 4.
+await toggle.click()
+await row.waitFor({ state: 'detached', timeout: 5_000 })
+await page.waitForTimeout(400)
+const off = sentFor(ENABLED_KEY)
+if (off.length !== 1 || off[0] !== false) throw new Error(`expected one PATCH of false, saw ${JSON.stringify(off)}`)
+if (await toggle.isChecked()) throw new Error('expected the toggle to read back off')
+await page.screenshot({ path: join(OUT, '05-sessions-refresh-off.png'), fullPage: false })
+console.log('captured 05-sessions-refresh-off.png')
+
+// A save that fails. The click shows the toggle on at once, the PATCH answers
+// 500, and the failure raises the banner and rolls the toggle back to off.
 failNextPatch = true
-await inc.click()
+await toggle.click()
 const banner = page.getByRole('alert').filter({ hasText: SAVE_FAILED })
 await banner.waitFor({ state: 'visible', timeout: 5_000 })
-// Same reading as `shownText`, inlined: a page function cannot reach a Node closure.
-await page.waitForFunction(
-  ([sel, want]) => {
-    const el = document.querySelector(`${sel} span.cursor-default`)
-    if (!el) return false
-    const copy = el.cloneNode(true)
-    copy.querySelectorAll('[aria-hidden="true"]').forEach(n => n.remove())
-    return copy.textContent?.trim() === want
-  },
-  [rowSel, '4'],
-  { timeout: 5_000 },
-)
-const failed = patches.filter(p => p.path === KEY).map(p => p.value)
-if (failed.length !== 2 || failed[1] !== 5) throw new Error(`expected a second PATCH of 5, saw ${JSON.stringify(failed)}`)
-if (stored !== 4) throw new Error(`expected the failed PATCH to leave 4 stored, saw ${stored}`)
+await page.waitForFunction(el => el.getAttribute('aria-checked') === 'false', await toggle.elementHandle(), { timeout: 5_000 })
+const failed = sentFor(ENABLED_KEY)
+if (failed.length !== 2 || failed[1] !== true) throw new Error(`expected a second PATCH of true, saw ${JSON.stringify(failed)}`)
+if (stored.title_refresh_enabled !== false) throw new Error(`expected the failed PATCH to leave false stored, saw ${stored.title_refresh_enabled}`)
 // The panel smooth-scrolls the banner to the viewport's centre and focuses it.
-// Once that scroll has settled, put the banner at the top edge instead: that
-// is the most room the row below can get, and the frame then holds both when
-// the viewport is tall enough.
+// Once that scroll has settled, put the banner at the top edge so the toggle
+// below it fits in the frame when the viewport is tall enough.
 await page.waitForTimeout(800)
 await banner.evaluate(el => el.scrollIntoView({ block: 'start' }))
 await page.waitForTimeout(400)
-const rowInFrame = await row.evaluate(el => {
-  const r = el.getBoundingClientRect()
-  return r.top >= 0 && r.bottom <= window.innerHeight
-})
-console.log(rowInFrame ? 'row is in frame below the banner' : 'row is below the fold; the banner alone is in frame')
-await page.screenshot({ path: join(OUT, '05-sessions-save-failed.png'), fullPage: false })
-console.log('captured 05-sessions-save-failed.png')
+await page.screenshot({ path: join(OUT, '06-sessions-save-failed.png'), fullPage: false })
+console.log('captured 06-sessions-save-failed.png')
 
 await browser.close()
 srv.close()

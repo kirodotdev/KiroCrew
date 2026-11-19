@@ -1416,6 +1416,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         bot_name=section.get("bot_name"),
         avatar=section.get("avatar"),
         merge_queued_messages=section.get("merge_queued_messages"),
+        title_refresh_enabled=section.read("title_refresh_enabled", _safe_bool),
         title_refresh_every_turns=section.read(
             "title_refresh_every_turns", _title_refresh_every_turns, unclamped=_safe_int
         ),

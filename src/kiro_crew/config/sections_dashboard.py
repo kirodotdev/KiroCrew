@@ -420,6 +420,17 @@ class DashboardConfig:
             "Concatenate follow-up messages while the agent is busy instead of queueing them separately.",
         ),
     )
+    title_refresh_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Refresh Auto Titles",
+            "Re-examine a session's auto-generated title as the conversation "
+            "goes on, on the schedule set by title_refresh_every_turns. Off keeps "
+            "the first auto title: the only refresh left is the one after the "
+            "first turn for a title that began as a bare link, a ticket key or "
+            "the truncated first message. Takes effect on the next turn; no restart.",
+        ),
+    )
     title_refresh_every_turns: int = field(
         default=0,
         metadata=_meta(

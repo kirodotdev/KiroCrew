@@ -328,6 +328,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "min": 0,
         "max": TITLE_REFRESH_EVERY_TURNS_MAX,
     },
+    "dashboard.title_refresh_enabled": {"type": "bool"},
     # The sidebar's folder sort mode. A view preference the sidebar menu writes and
     # the kirocrew-dashboard MCP server reads back, so the two draw the tree in
     # the same order; the enum is the loader's own list, spelled once.

@@ -307,6 +307,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # ever starts it. No value lets an agent launch anything.
         "dashboard.terminal.external_app",
         "dashboard.terminal.reuse_current",
+        "dashboard.title_refresh_enabled",
         "dashboard.title_refresh_every_turns",
         "dashboard.unfiled_sessions_above_folders",
         "dashboard.update_nudge",
