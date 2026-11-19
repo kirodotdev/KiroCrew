@@ -32,6 +32,19 @@ def _ledger_create_ignores_live_memory(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_host_posture_published(_floor_monkeypatch):
+    """No test inherits a host posture an earlier notifier test published.
+
+    The work-ledger probe wakes on ``resource_pressure.current_posture()``, a
+    module value the notifier writes on every sample; left set, it would add a
+    posture wake to whichever probe test runs next on the worker.
+    """
+    from kiro_crew.notifications import resource_pressure
+
+    _floor_monkeypatch.setattr(resource_pressure, "_current_posture", None)
+
+
+@pytest.fixture(autouse=True)
 def _small_default_host(_floor_monkeypatch):
     """Size every ``"auto"`` start limit from a fixed small host, not this machine.
 

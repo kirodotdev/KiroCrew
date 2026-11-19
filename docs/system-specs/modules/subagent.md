@@ -1269,7 +1269,16 @@ about that session; a dashboard owner gets 403 and is pointed at
 control routes apply; a continued run is found by its `session_key`. The answer
 holds counts, sizes and a `shared` flag only (`rss_mb`, `procs`, `mcp`, `shared`,
 and for runs `count`, `unsampled`, `shared`): no session key, title, agent, task
-text, run id or pid, and no other session's figures or host totals. On a runtime
+text, run id or pid, and no other session's figures or host totals, with one
+exception: a conductor's own workers. For a caller that holds a work-ledger board,
+`caller_worker_rows` adds a `workers` list, one row per open item on that board
+whose worker's binding file names that board and item (`read_binding`), keyed by the
+caller's own `item_id` and carrying `rss_mb`, `procs`, `test_mb` (the largest
+test-runner tree, from one `/proc` child map on Linux, else `null`), `turn`
+(`busy`/`idle`) and `volume_free_pct` of the worker's working directory. A session
+bound to another board is never listed, a remote item is skipped, and a shared
+runtime withholds `procs` and `test_mb` as above
+(`docs/request-for-change/rfc-host-memory-guard.md` §5.3). On a runtime
 shared with other sessions only the caller's size share is sent; the runtime-wide
 process and MCP counts, and the number of co-tenants, are withheld. A run not yet
 measured reads as unmeasured, never 0. The route runs its own
@@ -1277,7 +1286,7 @@ measured reads as unmeasured, never 0. The route runs its own
 Sessions panel's history and CPU baselines are untouched; one sample is reused by
 every caller for `_SAMPLE_REUSE_SECS`, behind a lock. Any failure prints one
 `unavailable` line and the rest of `resource_status` still answers. Pinned by
-`test_session_memory_scope.py`.
+`test_session_memory_scope.py` and, for the `workers` rows, `test_host_posture_wake.py`.
 
 ### `set_effective_cap(cap | None) -> int` — the adaptive-controller seam
 

@@ -69,7 +69,10 @@ from kiro_crew.resource_status import (
     POSTURE_CRITICAL,
     POSTURE_TIGHT,
     ResourceStatus,
+    TempHeadroom,
     probe,
+    temp_headroom,
+    temp_roots,
 )
 from kiro_crew.resource_status_agent_ceiling import gb_text
 from kiro_crew.sandbox import check_agents_slice_pressure, reclaim_agents_slice_page_cache
@@ -105,6 +108,70 @@ PROBE_TIMEOUT_SECS = 2.0
 # The most slice OOM reports held for the loop. Older ones are counted, not
 # kept, so probes that keep finishing late cannot grow the stash without end.
 MAX_PENDING_OOM_REPORTS = 50
+
+# Disk posture (rfc-host-memory-guard.md §5.2): a temp root is ``tight`` by the
+# existing ``TempHeadroom.low`` rule and ``critical`` under these floors.
+DISK_CRITICAL_FREE_PCT = 3.0
+DISK_CRITICAL_FREE_INODES = 200
+
+_POSTURE_RANK = {POSTURE_AMPLE: 0, POSTURE_TIGHT: 1, POSTURE_CRITICAL: 2}
+
+# The combined host posture last sampled, as ``(level, reading)``, or ``None``
+# before the first sample. Written on the loop by the gateway's one notifier and
+# read by the work-ledger probe on its worker thread; a tuple swap is atomic.
+_current_posture: tuple[str, str] | None = None
+
+
+def current_posture() -> tuple[str, str] | None:
+    """The combined memory-and-disk posture and its one-line reading, or ``None``."""
+    return _current_posture
+
+
+def disk_posture(readings: "list[TempHeadroom]") -> tuple[str, str]:
+    """The worst posture over *readings* and the text naming the volumes not ample."""
+    level = POSTURE_AMPLE
+    named: list[str] = []
+    for reading in readings:
+        critical = reading.free_space_pct < DISK_CRITICAL_FREE_PCT or (
+            reading.counts_inodes and reading.free_inodes < DISK_CRITICAL_FREE_INODES
+        )
+        this = POSTURE_CRITICAL if critical else POSTURE_TIGHT if reading.low else POSTURE_AMPLE
+        if this == POSTURE_AMPLE:
+            continue
+        # ``text()`` names the axis that tripped (space, inodes or both).
+        named.append(f"{reading.root} {reading.text()}")
+        if _POSTURE_RANK[this] > _POSTURE_RANK[level]:
+            level = this
+    return level, "; ".join(named)
+
+
+def _read_disk_posture() -> tuple[str, str]:
+    """Measure every temp root. Blocking; runs in the probe's worker thread."""
+    readings = [r for r in (temp_headroom(root) for root in temp_roots()) if r is not None]
+    return disk_posture(readings)
+
+
+def combined_posture(status: ResourceStatus, disk: tuple[str, str]) -> tuple[str, str] | None:
+    """The worse of memory and disk, with its reading; ``None`` while memory is unknown."""
+    memory = status.posture
+    if memory not in _POSTURE_RANK:
+        return None
+    disk_level, disk_text = disk
+    level = memory if _POSTURE_RANK[memory] >= _POSTURE_RANK[disk_level] else disk_level
+    reading = f"memory {status.available_gb:.1f} GB free"
+    if disk_text:
+        reading += f"; {disk_text}"
+    return level, reading
+
+
+def _pull_watching_conductors() -> None:
+    """Pull every watching conductor's work-ledger patrol forward. Never raises."""
+    try:
+        from kiro_crew import conductor_wake
+
+        conductor_wake.wake_for_posture_change()
+    except Exception:
+        logger.debug("posture-change wake could not be scheduled", exc_info=True)
 
 
 def _fmt_load(status: ResourceStatus) -> str:
@@ -146,10 +213,18 @@ class ResourcePressureNotifier:
         *,
         probe_fn: Callable[[], ResourceStatus] = probe,
         clock: Callable[[], float] = time.monotonic,
+        disk_fn: Callable[[], tuple[str, str]] = _read_disk_posture,
+        on_posture_change: Callable[[], None] = _pull_watching_conductors,
     ) -> None:
         self._bus = bus
         self._probe = probe_fn
         self._clock = clock
+        self._disk_fn = disk_fn
+        self._on_posture_change = on_posture_change
+        # The disk reading taken beside the last memory probe, in the worker thread.
+        self._disk: tuple[str, str] = (POSTURE_AMPLE, "")
+        # The combined level last published; a change of it pulls conductors forward.
+        self._posture_level: str | None = None
         self._next_sample = 0.0
         self._inflight = False
         # Set by the worker thread at entry, read on the loop side after a
@@ -227,6 +302,7 @@ class ResourcePressureNotifier:
                 except Exception:
                     logger.debug("agents-slice OOM push failed", exc_info=True)
             self.observe(status, now)
+            self.observe_posture(status)
         except Exception:
             logger.debug("resource-pressure sample failed", exc_info=True)
 
@@ -268,6 +344,10 @@ class ResourcePressureNotifier:
                 reclaim_agents_slice_page_cache()
             except Exception:
                 logger.debug("agents-slice page-cache reclaim failed", exc_info=True)
+            try:
+                self._disk = self._disk_fn()
+            except Exception:
+                logger.debug("disk posture read failed", exc_info=True)
             return self._probe()
         finally:
             self._inflight = False
@@ -313,6 +393,25 @@ class ResourcePressureNotifier:
                     self._push_recovery(status, agent_ceiling=agent_ceiling)
         # unknown: non-signal — keep the episode state untouched (see module
         # docstring).
+
+    def observe_posture(self, status: ResourceStatus) -> None:
+        """Publish the combined memory-and-disk posture; pull conductors on a change.
+
+        The pull only moves each watching conductor's patrol tick forward
+        (``conductor_wake.wake_for_posture_change``); the work-ledger probe reads
+        :func:`current_posture` on that tick and decides the one wake per level
+        change. An unknown memory reading is a non-signal here too. The first
+        reading after start pulls only when it is not ample.
+        """
+        global _current_posture
+        combined = combined_posture(status, self._disk)
+        if combined is None:
+            return
+        _current_posture = combined
+        previous, self._posture_level = self._posture_level, combined[0]
+        if combined[0] == previous or (previous is None and combined[0] == POSTURE_AMPLE):
+            return
+        self._on_posture_change()
 
     # ── note builders ────────────────────────────────────────────────────
 

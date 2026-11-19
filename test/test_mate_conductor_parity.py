@@ -653,7 +653,6 @@ def test_the_team_lead_check_sees_a_lost_rule(
 SKILL_POINTERS: dict[str, str] = {
     "dependent_calls": "your prompt's rule on dependent calls",
     "goal_plan": "the five parts your prompt's goal-plan rule names",
-    "resource_wave": "as your prompt says, resource_status decides the wave",
     "own_files": "your prompt's rules on one owner per shared file",
     "item_budget": "your prompt's item-budget rule",
     "bind_before_seed": "bind before you seed, as your prompt's rule says",
@@ -665,10 +664,37 @@ SKILL_POINTERS: dict[str, str] = {
     "bar_pr_merged": "as your prompt's rule on landed code says",
     "plan_reviewer": "as your prompt's plan-reviewer rule says",
     "wake_check": "a wake with no news is a check, as your prompt's rule says",
+    "host_health": "keep the host healthy, as your prompt's host-health rule says",
     "reuse_worker": "your prompt's worker-reuse rule",
     "read_message_detail": "as your prompt's read-message rule says",
     "patrol_final_report": "end the patrol as your prompt's patrol rules say",
 }
+
+
+def test_the_host_health_rule_has_one_source_and_the_skill_points_at_it() -> None:
+    """rfc-host-memory-guard.md §8 test 14, with one deviation: the §5.4 rule is the
+    same text in ``spec_prompts.py`` and the crewmate piece (its ``{host_health}``
+    placeholder), and the goal-conductor skill POINTS at it instead of restating it,
+    so the rule has one source and the anti-copy check stays universal."""
+    rule = _words(agent._LEDGER_CONDUCTOR_RULES["host_health"])
+    assert "host_health" in crewmate_prompts.placeholders(_MATE_PIECE)
+    assert rule in _words(_mate_ledger_text())
+    assert SKILL_POINTERS["host_health"] in _skill_text("goal-conductor")
+    assert rule not in _skill_text("goal-conductor")
+
+
+def test_the_host_health_rule_keeps_its_bounds_and_stays_task_agnostic() -> None:
+    """The owner's ruling: a goal, the facts, hard bounds; actions only as examples."""
+    rule = _words(agent._LEDGER_CONDUCTOR_RULES["host_health"])
+    for phrase in (
+        "never stop or slow the gateway",
+        "without asking the owner",
+        "tell the affected worker",
+        "examples only, not a rulebook",
+    ):
+        assert phrase in rule
+    for recipe in ("pytest", "-n ", "xdist", "browser tab"):
+        assert recipe not in rule
 
 
 def test_every_reference_the_goal_conductor_skill_names_exists() -> None:

@@ -977,6 +977,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _memory_count,
         _memory_mb,
         _memory_runtime_line,
+        _worker_line,
         render_session_memory,
     )
     from kiro_crew.mcp_tools.spawn_parts.wave import (  # noqa: F401

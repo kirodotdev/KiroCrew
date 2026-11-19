@@ -79,6 +79,9 @@ _REPORT_KEY = "report"
 #: Prefix for a silence wake's dedupe key.
 _STALL_KEY = "stall"
 
+#: Prefix for a host posture-change wake's dedupe key (rfc-host-memory-guard.md §5.2).
+_POSTURE_KEY = "posture"
+
 #: Prefix for an undelivered-report wake's dedupe key
 #: (:mod:`kiro_crew.work_ledger_undelivered`).
 _UNDELIVERED_KEY = "undelivered"
@@ -249,9 +252,12 @@ class WorkLedgerProbe(irq.Probe):
             # only a stop or the loop's own bounds end it. Requires at least one
             # item, so an empty ledger (a watch armed before the first item) says
             # nothing.
-            return irq.Tick(epoch=epoch, observations=self._all_closed(key, items))
+            return irq.Tick(
+                epoch=epoch,
+                observations=self._all_closed(key, items) + self._posture_observations(key),
+            )
 
-        observations: list[irq.Observation] = []
+        observations: list[irq.Observation] = self._posture_observations(key)
         for item in items:
             if item.is_terminal:
                 continue
@@ -303,6 +309,44 @@ class WorkLedgerProbe(irq.Probe):
                 irq.Severity.WAKE,
                 detail + ". The watch stays armed: create the next item, or call autonudge_stop "
                 "if the goal is done.",
+                irq.ResetsOn.NEVER,
+            )
+        ]
+
+    def _posture_observations(self, conductor_key: str) -> list[irq.Observation]:
+        """One wake when the host's memory-and-disk posture changed since the last one.
+
+        rfc-host-memory-guard.md §5.2. The posture is read live from the gateway's
+        notifier, never from a record file. The seen set keeps one ``posture:<level>``
+        token per watcher (``replaces``), so a repeat of the level wakes nobody and a
+        new level wakes once. With no level seen yet, ``ample`` is the baseline and
+        wakes nobody. Charged to its own rate entry, so a flapping posture is bounded
+        by the hourly budget and never spends a real item's.
+        """
+        from kiro_crew.conductor_wake import POSTURE_ITEM
+        from kiro_crew.notifications import resource_pressure
+
+        current = resource_pressure.current_posture()
+        if current is None:
+            return []
+        level, reading = current
+        token = f"{_POSTURE_KEY}:{level}"
+        if level == "ample" and not any(
+            ledger_wake.already_woke(
+                conductor_key, POSTURE_ITEM, f"{_POSTURE_KEY}:{other}", watcher=self._watcher
+            )
+            for other in ("tight", "critical")
+        ):
+            return []
+        if not self._spend(conductor_key, POSTURE_ITEM, token, replaces=f"{_POSTURE_KEY}:"):
+            return []
+        return [
+            irq.Observation(
+                # Unique per change: the kernel masks a key for ``realert_secs``, and
+                # tight -> ample -> tight inside that window is two changes.
+                f"{token}:{time.time():.3f}",
+                irq.Severity.WAKE,
+                f"[work-ledger wake] host posture is {level} ({reading})",
                 irq.ResetsOn.NEVER,
             )
         ]
@@ -727,9 +771,14 @@ def person_wait_fingerprint(
             if lost is not None:
                 undelivered[item.item_id] = lost["at"]
         revision = worker_report_revision(items)
-        if not undelivered:
-            return revision
-        return f"{revision}|undelivered:{ledger_wake.revision(undelivered)}"
+        if undelivered:
+            revision = f"{revision}|undelivered:{ledger_wake.revision(undelivered)}"
+        # The host posture is news no report carries either (rfc-host-memory-guard.md
+        # §5.2): a level change releases the hold for the tick that wakes on it.
+        from kiro_crew.notifications import resource_pressure
+
+        posture = resource_pressure.current_posture()
+        return revision if posture is None else f"{revision}|posture:{posture[0]}"
     except Exception:  # noqa: BLE001 - a read fault must never hold a patrol
         logger.debug("work-ledger probe: person-wait read failed for %s", conductor_key)
         return None

@@ -255,7 +255,7 @@
     "{dispatch_seed}",
     "{bind_before_seed}",
     "{send_files}",
-    "{resource_wave}",
+    "{host_health}",
     "{item_budget}",
     "{own_files}",
     "{merge_lines}",
