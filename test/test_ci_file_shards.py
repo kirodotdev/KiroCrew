@@ -810,6 +810,10 @@ class TestFileShards(unittest.TestCase):
                 # Changed files run unsharded on all eight Windows shards; one
                 # pass each keeps a heavy leaf diff inside the 60-minute job.
                 self.assertEqual(run_env["LEAF_REPEAT"], "1")
+                # The ~45 KB gate list would pass Windows' 32,767-character env
+                # var limit and break every test that spawns a child.
+                self.assertNotIn("LEAF_GATES", run_env)
+                self.assertIn('done < "$GATES_FILE"', leaf)
                 self.assertNotIn("--cov=", command)
                 self.assertIn("--no-cov", command)
         for name, job in workflow["jobs"].items():
@@ -861,6 +865,7 @@ class TestFileShards(unittest.TestCase):
                 "PATH": os.environ.get("PATH", ""),
                 "GITHUB_OUTPUT": str(out),
                 "TARGETS_FILE": str(self.root / "targets.txt"),
+                "GATES_FILE": str(self.root / "gates.txt"),
                 **caps,
                 **inputs,
             },

@@ -1644,6 +1644,10 @@ jobs:
           WINDOWS_PATHS: ${{ needs.changes.outputs.windows_paths }}
           EVENT: ${{ github.event_name }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # The gate list goes to the test step as a FILE: as an env var it is
+          # ~45 KB, past Windows' 32,767-character limit, and every test that
+          # spawns a child with os.environ then fails (measured on #39314).
+          GATES_FILE: ${{ runner.temp }}/leaf-gate-list.txt
           # Leaf weight budget: the changed files run on EVERY shard, so their
           # Windows weight must fit the 60-minute job. In run 44376034204 every
           # file outside scripts/ci_file_shard_pins_windows.txt took <= 30 s on
@@ -1663,7 +1667,8 @@ jobs:
           if [ "$LEAF_TESTS" = "true" ] && [ -n "${LEAF_TARGETS//[[:space:]]/}" ]; then
             printf '%s\n' "$LEAF_TARGETS" | grep . > "$TARGETS_FILE" || true
             if [ -s "$TARGETS_FILE" ]; then
-              changed="$(grep -vxF -f <(printf '%s\n' "$LEAF_GATES" | grep . || true) "$TARGETS_FILE" || true)"
+              printf '%s\n' "$LEAF_GATES" | grep . > "$GATES_FILE" || true
+              changed="$(grep -vxF -f "$GATES_FILE" "$TARGETS_FILE" || true)"
               files=$(printf '%s\n' "$changed" | grep -c . || true)
               pinned=$(printf '%s\n' "$changed" | awk 'NR==FNR { sub(/\r$/, ""); if ($0 !~ /^#/ && NF == 2) pin[$2] = 1; next } { sub(/\r$/, "") } ($0 in pin)' scripts/ci_file_shard_pins_windows.txt - | grep -c . || true)
               if [ "$files" -le "$WINDOWS_LEAF_MAX_FILES" ] && [ "$pinned" -le "$WINDOWS_LEAF_MAX_PINNED" ]; then
@@ -1730,7 +1735,8 @@ jobs:
           # Windows runs them several times slower (the budget in "Select test
           # scope"). Eight independent shard runs still roll each file 8 times.
           LEAF_REPEAT: "1"
-          LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
+          # A file, never the leaf_gates output as env (see "Select test scope").
+          GATES_FILE: ${{ runner.temp }}/leaf-gate-list.txt
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
         run: |
           # Same as backend-test (#7296): the `python` matcher annotates any
@@ -1775,7 +1781,9 @@ jobs:
           fi
           if [ "$LEAF" = "true" ]; then
             GATES=()
-            while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then GATES+=("$line"); fi; done <<< "$LEAF_GATES"
+            if [ -s "$GATES_FILE" ]; then
+              while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then GATES+=("$line"); fi; done < "$GATES_FILE"
+            fi
             CHANGED=()
             for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
               keep=1
