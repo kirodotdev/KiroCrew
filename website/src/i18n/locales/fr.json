@@ -13384,8 +13384,10 @@
         "host_sandbox_teammate_named": "L’ordinateur de cette Crew ne peut pas lancer de chats pour l’instant. Demande à {{owner}} (propriétaire de la Crew) de vérifier."
       },
       "folderPanel": {
+        "back": "Retour",
         "clear_search": "Effacer la recherche",
         "empty_folder": "Dossier vide",
+        "forward": "Suivant",
         "includes_subfolders": "sous-dossiers inclus",
         "listing_timed_out": "Délai de listage du dossier dépassé",
         "loading": "Chargement…",

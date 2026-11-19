@@ -5933,8 +5933,10 @@
         "link": "Link"
       },
       "folderPanel": {
+        "back": "Back",
         "clear_search": "Clear search",
         "empty_folder": "Empty folder",
+        "forward": "Forward",
         "includes_subfolders": "includes subfolders",
         "listing_timed_out": "Folder listing timed out",
         "loading": "Loading…",

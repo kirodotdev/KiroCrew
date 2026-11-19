@@ -12798,8 +12798,10 @@
         "host_sandbox_teammate_named": "这个 Crew 的电脑现在无法开始聊天。请让 {{owner}}（Crew 所有者）检查一下。"
       },
       "folderPanel": {
+        "back": "后退",
         "clear_search": "清除搜索",
         "empty_folder": "空目录",
+        "forward": "前进",
         "includes_subfolders": "包含子文件夹",
         "listing_timed_out": "文件夹列表超时",
         "loading": "正在加载…",

@@ -13091,8 +13091,10 @@
         "host_sandbox_teammate_named": "Der Computer dieser Crew kann gerade keine Chats starten. Bitte {{owner}} (Besitzer der Crew), das zu prüfen."
       },
       "folderPanel": {
+        "back": "Zurück",
         "clear_search": "Suche löschen",
         "empty_folder": "Leerer Ordner",
+        "forward": "Vorwärts",
         "includes_subfolders": "einschließlich Unterordner",
         "listing_timed_out": "Zeitüberschreitung beim Auflisten des Ordners",
         "loading": "Wird geladen…",

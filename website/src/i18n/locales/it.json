@@ -13384,8 +13384,10 @@
         "host_sandbox_teammate_named": "Il computer di questa Crew non può avviare chat in questo momento. Chiedi a {{owner}} (proprietario della Crew) di controllare."
       },
       "folderPanel": {
+        "back": "Indietro",
         "clear_search": "Cancella ricerca",
         "empty_folder": "Cartella vuota",
+        "forward": "Avanti",
         "includes_subfolders": "include sottocartelle",
         "listing_timed_out": "Elenco della cartella scaduto",
         "loading": "Caricamento…",

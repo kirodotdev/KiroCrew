@@ -12798,8 +12798,10 @@
         "host_sandbox_teammate_named": "この Crew のコンピューターは今チャットを開始できません。{{owner}}（Crew のオーナー）に確認を頼んでください。"
       },
       "folderPanel": {
+        "back": "戻る",
         "clear_search": "検索をクリア",
         "empty_folder": "空のフォルダー",
+        "forward": "進む",
         "includes_subfolders": "サブフォルダーを含む",
         "listing_timed_out": "フォルダーの一覧表示がタイムアウトしました",
         "loading": "読み込み中…",

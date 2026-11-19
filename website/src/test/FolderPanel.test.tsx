@@ -6,8 +6,9 @@
  * behaviour: list the directory, navigate into it, and hand files off to the
  * normal file-tab path.
  */
+import { useState } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 
 import FolderPanel from '../pages/chat/FolderPanel'
 import { renderWithProviders } from './helpers'
@@ -105,6 +106,47 @@ describe('FolderPanel', () => {
     renderWithProviders(<FolderPanel path="/" onClose={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('Empty folder')).toBeTruthy())
     expect(screen.queryByText('Parent folder')).toBeNull()
+  })
+
+  it('steps Back and Forward through the folders the tab has shown, dropping Forward on a new folder change', async () => {
+    const listings: Record<string, typeof LISTING> = {
+      '/Users/me/ws': LISTING,
+      '/Users/me': { path: '/Users/me', parent: '/Users', dirs: [{ name: 'ws', path: '/Users/me/ws', mtime: 1 }], files: [] },
+      '/Users/me/ws/src': { path: '/Users/me/ws/src', parent: '/Users/me/ws', dirs: [], files: [] },
+    }
+    vi.spyOn(api, 'browseFiles').mockImplementation(async (p: string) => listings[p])
+    // The production round trip: the tab record takes the reported path and hands it back.
+    function Tab() {
+      const [path, setPath] = useState('/Users/me/ws')
+      return <FolderPanel path={path} onClose={vi.fn()} onPathChange={setPath} />
+    }
+    renderWithProviders(<Tab />)
+    const back = screen.getByRole('button', { name: 'Back' })
+    const forward = screen.getByRole('button', { name: 'Forward' })
+    const header = within(back.closest('div')!)
+    expect(header.getByText('ws')).toBeTruthy()
+    expect(back).toHaveAttribute('aria-disabled', 'true')
+    expect(forward).toHaveAttribute('aria-disabled', 'true')
+
+    fireEvent.click(await screen.findByText('Parent folder'))
+    expect(header.getByText('me')).toBeTruthy()
+    expect(back).toHaveAttribute('aria-disabled', 'false')
+
+    fireEvent.click(back)
+    expect(header.getByText('ws')).toBeTruthy()
+    expect(back).toHaveAttribute('aria-disabled', 'true')
+    expect(forward).toHaveAttribute('aria-disabled', 'false')
+
+    fireEvent.click(forward)
+    expect(header.getByText('me')).toBeTruthy()
+    expect(forward).toHaveAttribute('aria-disabled', 'true')
+
+    fireEvent.click(back)
+    fireEvent.click(await screen.findByText('src'))
+    expect(header.getByText('src')).toBeTruthy()
+    expect(forward).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(back)
+    expect(header.getByText('ws')).toBeTruthy()
   })
 
   it('surfaces a listing failure instead of rendering a silently empty folder', async () => {
