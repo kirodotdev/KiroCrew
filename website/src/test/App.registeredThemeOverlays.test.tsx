@@ -12,7 +12,6 @@ const themeState = {
   mode: 'light' as const,
   onboarded: true,
   importOnboarded: true,
-  privacyAcked: true,
   themeBootReady: true,
   themeBootRead: true,
   themes: [],
@@ -21,7 +20,7 @@ const themeState = {
   setTheme: vi.fn(),
   markOnboarded: vi.fn(),
   markImportOnboarded: vi.fn(),
-  markPrivacyAcked: vi.fn(),
+
   setColorTheme: vi.fn(),
   setMode: vi.fn(),
 }
@@ -47,7 +46,6 @@ registerThemeBranding({ 'registered-overlay-app': { overlays: [() => <div data-t
 beforeEach(() => {
   localStorage.clear()
   localStorage.setItem('mc-import-onboarded', '1')
-  localStorage.setItem('mc-privacy-acked', '1')
 })
 
 describe("App – a registered theme's overlays", () => {

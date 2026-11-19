@@ -2,12 +2,11 @@
 
 Consent + local-first:
   * ``telemetry.enabled`` defaults **True**: local recording is on unless the
-    user turned it off, and every user is told (the dashboard's Privacy chapter,
-    or a one-line notice on a CLI or headless start, see :mod:`metrics.notice`).
+    user turned it off. Settings > Privacy shows it, and a start prints a
+    one-line notice once per notice version (see :mod:`metrics.notice`).
     When off, ``get_recorder()`` returns a no-op recorder.
   * Off switches: ``telemetry.enabled: false`` in ``~/.kiro/crew/config.json``
-    (what the Privacy chapter's Turn off and ``kirocrew telemetry disable``
-    write), the ``KIROCREW_TELEMETRY`` env var (``0``/``false``/``off``
+    (what Settings > Privacy and ``kirocrew telemetry disable`` write), the ``KIROCREW_TELEMETRY`` env var (``0``/``false``/``off``
     force-disables, ``1``/``true``/``on`` force-enables), or a truthy
     ``DO_NOT_TRACK``, which wins over everything. The env vars gate LOCAL
     collection only; network egress needs a destination AND
@@ -797,14 +796,13 @@ def _resource_attributes(harness: str) -> "dict[str, str | int]":
 _READ_NOW = object()
 
 
-def _endpoints_key(tel: object, ceiling: object = _READ_NOW, full_cfg: object = None) -> object:
+def _endpoints_key(tel: object, ceiling: object = _READ_NOW) -> object:
     """A fingerprint of the endpoint settings the OTLP readers are built from.
 
     A sha256 over ``telemetry.otlp_endpoint`` and ``telemetry.otlp_endpoints``,
     so module state keeps no second copy of a header value. Compared as-is by the
     consent worker: a changed fingerprint means a reader may point at an entry
-    that is gone or turned off. ``None`` when the values cannot be read. It also
-    covers whether the Kiro notice was shown, read from *full_cfg*, the build's load.
+    that is gone or turned off. ``None`` when the values cannot be read.
 
     An LTS build adds the policy's ``capabilities.telemetry.otlp_endpoint``
     under *ceiling* (a build passes the snapshot its destinations came from), so a
@@ -812,7 +810,6 @@ def _endpoints_key(tel: object, ceiling: object = _READ_NOW, full_cfg: object = 
     """
     try:
         raw = [getattr(tel, "otlp_endpoint", None), getattr(tel, "otlp_endpoints", None)]
-        raw.append(kiro_export.notice_shown(full_cfg))  # same snapshot as the build's
         if edition.is_lts():
             if ceiling is _READ_NOW:
                 # A process with no context reads an already-composed provider
@@ -849,7 +846,7 @@ def _build_recorder() -> _Build:
 
     consent = _held_consent(full_cfg, _consent_enabled(cfg))
     agent_key = _agent_key(full_cfg)
-    endpoints_key = _endpoints_key(cfg, full_cfg=full_cfg)
+    endpoints_key = _endpoints_key(cfg)
     if not consent:
         return _Build(MetricsRecorder(None), None, consent, agent_key, endpoints_key)
 
@@ -887,7 +884,7 @@ def _build_recorder() -> _Build:
     # landing mid-build moves the key the next recheck compares.
     ceiling = _policy_ceiling() if edition.is_lts() else _READ_NOW
     destinations = _otlp_destinations(cfg, ceiling)
-    endpoints_key = _endpoints_key(cfg, ceiling, full_cfg)
+    endpoints_key = _endpoints_key(cfg, ceiling)
     # Recording on alone exports only to the built-in Kiro destination (kiro_export).
     outbound: Optional[bool] = None
     if destinations:
@@ -897,7 +894,7 @@ def _build_recorder() -> _Build:
             "telemetry export to configured destinations waits for an explicit opt-in "
             "to recording (telemetry.enabled: true in config.json, or KIROCREW_TELEMETRY=1)"
         )
-    destinations = kiro_export.exported(destinations, full_cfg, outbound)
+    destinations = kiro_export.exported(destinations, outbound)
 
     # PeriodicExportingMetricReader starts its ticker thread in __init__, so a
     # later raise (e.g. in MeterProvider) leaves it running and logging export
@@ -1609,7 +1606,7 @@ def _consent_worker(generation: int) -> None:
             full_cfg = KiroCrewConfig.load()
             consent: Optional[bool] = _held_consent(full_cfg, _consent_enabled(full_cfg.telemetry))
             agent_key = _agent_key(full_cfg)
-            endpoints_key = _endpoints_key(full_cfg.telemetry, full_cfg=full_cfg)
+            endpoints_key = _endpoints_key(full_cfg.telemetry)
             # Re-ask about export only when the live build had a destination to
             # gate; a local-only host reads nothing extra here.
             if consent and _built_outbound is not None:

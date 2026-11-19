@@ -431,7 +431,33 @@ closed), and no read probes on the event loop or per read; a process that is not
 probes once off-loop so it agrees. Off Linux, and on a Linux host without user namespaces (a
 container), nothing seals these files, so the loaders serve them as written. Where it
 applies, a file that differs from an EXISTING endorsed copy is PENDING, never silently
-adopted or silently dropped: it keeps loading as the endorsed copy, Settings > Security lists
+adopted or silently dropped, with one exception. **Known-writer adoption:** a `config.json`
+(that leaf only) that Kiro Crew itself wrote is taken as the new endorsed copy instead
+(`loosening_provenance.adopt_known_writer`), so no restart, update or crash leaves every later
+save refused. Kiro Crew wrote it when its writer stamp `meta.lastTouchedVersion` names a
+release (`major.minor.patch`, read with the config migration's stamp pattern) OLDER than the
+running build (a release from before the endorsed copy saves the file without updating it) and
+every change is on an ALLOW list (`_OLDER_WRITER_KEYS`: `meta`, the two usage-data switches
+turned off only, and dashboard look-and-feel keys; a section added or removed whole counts as
+each key under it). Any other change, a key added in a later release included, stays pending
+whatever the stamp says: a list of dangerous keys would miss one. Or, at the next start only
+(`adopt_interrupted_save`, from `adopt_unendorsed`), its bytes match the note a save left in
+`config-provenance/inflight/config.json.sha256`: a save notes the digest of the copy it replaces
+before it endorses and removes the note when it finishes or fails, so a gateway stopped in
+between leaves the version endorsed before plus the note. The note lives in the read-only
+provenance directory, names only bytes the gateway endorsed, and is read, used and dropped
+under the config writers' lock taken without waiting (a writer holding it owns the note and
+the start leaves it alone; a recovery that cannot be written keeps it). The stamp path runs on any read outside a sandbox
+that finds the difference (the load's `reconcile`, the save check `leaf_pending`, the scan
+`pending_changes`), only when it can take the config writers' lock at once (a save in flight
+is never undone), logs one WARNING naming the reason, and records
+`security.config_pending.adopt_known_writer` in the security event log. Any other content, a
+file not stored as Kiro Crew writes one (byte-order mark or carriage return), a read inside a
+sandbox, and every other leaf keep the hold below. Accepted risk, by the security owner's
+ruling: a process that can write `config.json` past a detached bind can also write an old
+stamp, and the gateway then loads its changes to the allow-listed keys (a theme, a language,
+usage data turned off). Otherwise the
+file keeps loading as the endorsed copy, Settings > Security lists
 its changed keys (`loosening_provenance.pending_changes`; a value under a credential-like key
 or an env/headers section is withheld, and so is any string the credential redactor would
 alter; the module is a registered `redaction_paths` sink in `_REDACTION_SINKS`), and one bell note per on-disk version links there. The note goes on `system.approval`,

@@ -405,7 +405,7 @@ export default function App() {
   const {
     isEmbed, isPopout, initialPopoutPath, appPopoutRoute, updateAvailable, settingsDotLabel, terminalEnabled, terminalPoppedOut,
     bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
-    colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
+    colorTheme, onboarded, markOnboarded, markImportOnboarded, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
     topReservePx, focusActive, topPeek, railPeek, topPeekTrigger, railPeekTrigger, topChromeShown,
     gatewayStatusAnnounce, relayCrewWindow, relayRetrying, focusModeExitMsg, focusChromeInert,
@@ -889,7 +889,7 @@ export default function App() {
           <MobileConnectDialog mobileConnect={mobileConnect} />
           <RemoteUpdateOffer />
 
-          <FirstRunChapters firstRun={firstRun} onboarded={onboarded} privacyAcked={privacyAcked} markOnboarded={markOnboarded} markImportOnboarded={markImportOnboarded} markPrivacyAcked={markPrivacyAcked} />
+          <FirstRunChapters firstRun={firstRun} onboarded={onboarded} markOnboarded={markOnboarded} markImportOnboarded={markImportOnboarded} />
         </>
       )}
 
