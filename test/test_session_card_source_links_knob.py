@@ -375,8 +375,13 @@ class _OwnerState:
 
 
 @pytest.fixture()
-def handler_app(cfg_file, mock_sel):
+def handler_app(cfg_file, mock_sel, monkeypatch):
     from kiro_crew.dashboard.handlers.files import api_dashboard_config
+    from kiro_crew.dashboard.source_providers import hosts
+
+    # A PUT publishes the switch into a module global; put it back afterwards so
+    # a PUT of ``False`` does not turn the chips off for later tests in the worker.
+    monkeypatch.setattr(hosts, "_session_card_chips_snapshot", True)
 
     app = web.Application()
     app.router.add_put("/api/dashboard/config", api_dashboard_config)
