@@ -21,7 +21,9 @@
  * security boundary, because app page code runs in the owner's page (section 3
  * of the RFC). The gateway's own checks are the boundary.
  */
-import { useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+
+import { api } from '../api/client'
 
 import { browserLiveStore, useBrowserLiveCurrent, type BrowserLiveState } from '../hooks/useBrowserLive'
 import { drawnRect, type FrameSize } from '../hooks/useBrowserLive.input'
@@ -54,11 +56,37 @@ export interface BrowserViewInfo {
   claim(): Promise<boolean>
   /** Hand the page back, with an optional note for the Bot (or the hand-back bar's note and choice). */
   release(note?: string | BrowserHandbackSaid): Promise<boolean>
+  /** The slot's own tabs, to show one in a second `BrowserView` (`tabId`); empty when not allowed. */
+  tabs(): Promise<BrowserViewTab[]>
+}
+
+/** One of a slot's own tabs. `current` is the tab its Bot is on. */
+export interface BrowserViewTab {
+  readonly tabId: string
+  readonly url: string
+  readonly title: string
+  readonly current: boolean
+}
+
+function readTabs(raw: unknown): BrowserViewTab[] {
+  const list = raw && typeof raw === 'object' ? (raw as { tabs?: unknown }).tabs : undefined
+  if (!Array.isArray(list)) return []
+  return list.flatMap((t) => {
+    if (!t || typeof t !== 'object') return []
+    const r = t as Record<string, unknown>
+    if (typeof r.tab_id !== 'string' || !r.tab_id) return []
+    return [{
+      tabId: r.tab_id,
+      url: typeof r.url === 'string' ? r.url : '',
+      title: typeof r.title === 'string' ? r.title : '',
+      current: r.current === true,
+    }]
+  })
 }
 
 const selectSlotApp = (key: string) => (s: RootState): string | null => {
-  const slot = s.dashboard.slots.find(x => x.key === key)
-  return slot ? slot.app ?? '' : null
+  const exactSlot = s.dashboard.slots.find(x => x.key === key)
+  return exactSlot ? (exactSlot.app ?? '') : null
 }
 
 /** The access rule in the module comment, as a hook. */
@@ -93,6 +121,10 @@ export function useBrowserView(slot: string): BrowserViewInfo {
     },
     [ok, slot],
   )
+  const tabs = useCallback(async () => {
+    if (!ok) return []
+    try { return readTabs(await api.browserLiveViewTabs(slot)) } catch { return [] }
+  }, [ok, slot])
   return {
     access,
     state: turn?.state ?? 'idle',
@@ -100,8 +132,67 @@ export function useBrowserView(slot: string): BrowserViewInfo {
     title: turn?.title ?? '',
     claim,
     release,
+    tabs,
   }
 }
+
+/**
+ * A second live view of *tabId*, one of *slot*'s own tabs, while *enabled*: its key,
+ * or the gateway's refusal. Opened on mount and closed on unmount or a new tab. A
+ * reload or a closed page runs no cleanup, so the gateway also ends a view nobody
+ * has looked at for a while (`live_hub_views.VIEW_IDLE_S`); `BrowserView` keeps its
+ * view looked at (`VIEW_KEEPALIVE_MS`) and opens it again if it was ended. A view
+ * is for looking only.
+ *
+ * Returns `turnId` alongside the key so the caller can pass it to `browserLiveViewClose`,
+ * which checks it matches the current turn — preventing a stale component from
+ * accidentally closing a later view that received the same key.
+ */
+export function useBrowserSecondView(slot: string, tabId: string | undefined, enabled: boolean): { viewKey: string | null; turnId: string | null; error: string; reopen(): void } {
+  const [opened, setOpened] = useState<{ for: string; viewKey: string | null; error: string }>({ for: '', viewKey: null, error: '' })
+  // Bumped to open the view again, after the gateway ended it (idle, `VIEW_IDLE_S`).
+  const [round, setRound] = useState(0)
+  const want = enabled && tabId ? `${slot}\n${tabId}\n${round}` : ''
+  const reopen = useCallback(() => setRound(n => n + 1), [])
+  // The turn the gateway assigned this open: passed on close so the backend can
+  // reject closes from stale components that happen to hold the same key.
+  const openTurnRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!want || !tabId) return
+    let gone = false
+    let key = ''
+    openTurnRef.current = null
+    void api.browserLiveViewOpen(slot, tabId).then((r) => {
+      const viewKey = typeof r?.view_key === 'string' ? r.view_key : ''
+      const turnId = typeof r?.turn_id === 'string' ? r.turn_id : ''
+      if (gone) {
+        if (viewKey) {
+          void api.browserLiveViewClose(viewKey, turnId).catch(() => {})
+          browserLiveStore.forgetView(viewKey)
+        }
+        return
+      }
+      key = viewKey
+      openTurnRef.current = turnId
+      // Clear the tombstone for this key: a fresh open should receive its events.
+      if (viewKey) browserLiveStore.reviveView(viewKey)
+      setOpened({ for: want, viewKey: viewKey || null, error: '' })
+    }, (e: unknown) => {
+      if (!gone) setOpened({ for: want, viewKey: null, error: e instanceof Error ? e.message : String(e) })
+    })
+    return () => {
+      gone = true
+      if (key) {
+        void api.browserLiveViewClose(key, openTurnRef.current ?? '').catch(() => {})
+        browserLiveStore.forgetView(key)
+      }
+    }
+  }, [want, slot, tabId])
+  return opened.for === want && want ? { viewKey: opened.viewKey, turnId: openTurnRef.current, error: opened.error, reopen } : { viewKey: null, turnId: null, error: '', reopen }
+}
+
+/** How often a mounted second view on screen tells the gateway it is still looked at; well inside `VIEW_IDLE_S` (120 s). */
+export const VIEW_KEEPALIVE_MS = 30_000
 
 // ---- coordinates -------------------------------------------------------------
 

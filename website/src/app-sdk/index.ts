@@ -678,7 +678,7 @@ export type { BrowserSite, BrowserSiteResult, BrowserSites } from './browserSite
 export { default as BrowserView } from './BrowserView'
 export type { BrowserViewProps, BrowserViewMark } from './BrowserView'
 export { useBrowserView, useBrowserCoords } from './browserViewHooks'
-export type { BrowserViewAccess, BrowserViewState, BrowserViewInfo, BrowserCoords } from './browserViewHooks'
+export type { BrowserViewAccess, BrowserViewState, BrowserViewInfo, BrowserViewTab, BrowserCoords } from './browserViewHooks'
 // The transcript's row registry, so an app can add a row type or replace one
 // instead of forking the message list.
 export {
