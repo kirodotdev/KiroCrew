@@ -1380,6 +1380,10 @@ jobs:
         # also measures vendored and standalone scripts outside that boundary.
         # The two explicit directories contain already-measured source whose
         # synthetic/app-local module names otherwise make tracing import-order dependent.
+        # `--cov-report=` (empty) writes the data file and prints no terminal
+        # table: the controller spent 227-326 s a shard on that table, on one
+        # core, after the last test ended (run 44434126975). coverage-combine
+        # builds the report from the shard data files.
         env:
           PYTHONPATH: ${{ github.workspace }}
           REDUCED: ${{ steps.scope.outputs.reduced }}
@@ -1502,7 +1506,8 @@ jobs:
             --file-shard-pins scripts/ci_file_shard_pins.txt \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
-            --cov=src/kiro_crew/apps/builtins/code_review_sage/tests
+            --cov=src/kiro_crew/apps/builtins/code_review_sage/tests \
+            --cov-report=
         # The shard union plus backend-test-ipv6 retains the full test population.
         # The eleven sandbox files -- the two sandbox suites, the two ops git/gh
         # suites, and the seven auto_improvement suites --
