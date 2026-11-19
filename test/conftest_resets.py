@@ -42,6 +42,9 @@ def _no_host_posture_published(_floor_monkeypatch):
     from kiro_crew.notifications import resource_pressure
 
     _floor_monkeypatch.setattr(resource_pressure, "_current_posture", None)
+    _floor_monkeypatch.setattr(resource_pressure, "_worsened", None)
+    _floor_monkeypatch.setattr(resource_pressure, "_worker_growth", {})
+    _floor_monkeypatch.setattr(resource_pressure, "_session_marks", {})
 
 
 @pytest.fixture(autouse=True)

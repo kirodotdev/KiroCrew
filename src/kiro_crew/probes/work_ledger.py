@@ -51,6 +51,7 @@ from collections import OrderedDict
 from typing import Callable
 
 from kiro_crew import irq, ledger_wake, work_ledger, work_preview
+from kiro_crew.session_ledger_layout import ledger_key
 from kiro_crew.work_vocab import (
     WORK_BLOCKED_REASONS,
     WORK_REASON_STATUSES,
@@ -85,6 +86,10 @@ _STALL_KEY = "stall"
 
 #: Prefix for a host posture-change wake's dedupe key (rfc-host-memory-guard.md §5.2).
 _POSTURE_KEY = "posture"
+
+#: Prefixes for a same-level worsening wake and a worker growth wake (same budget).
+_WORSE_KEY = "worse"
+_GROWTH_KEY = "growth"
 
 #: Prefix for an undelivered-report wake's dedupe key
 #: (:mod:`kiro_crew.work_ledger_undelivered`).
@@ -258,10 +263,10 @@ class WorkLedgerProbe(irq.Probe):
             # nothing.
             return irq.Tick(
                 epoch=epoch,
-                observations=self._all_closed(key, items) + self._posture_observations(key),
+                observations=self._all_closed(key, items) + self._posture_observations(key, items),
             )
 
-        observations: list[irq.Observation] = self._posture_observations(key)
+        observations: list[irq.Observation] = self._posture_observations(key, items)
         for item in items:
             if item.is_terminal:
                 continue
@@ -317,15 +322,20 @@ class WorkLedgerProbe(irq.Probe):
             )
         ]
 
-    def _posture_observations(self, conductor_key: str) -> list[irq.Observation]:
-        """One wake when the host's memory-and-disk posture changed since the last one.
+    def _posture_observations(
+        self, conductor_key: str, items: list[work_ledger.WorkItem]
+    ) -> list[irq.Observation]:
+        """Host wakes: a posture change, a further fall at the same level, a worker's growth.
 
         rfc-host-memory-guard.md §5.2. The posture is read live from the gateway's
         notifier, never from a record file. The seen set keeps one ``posture:<level>``
         token per watcher (``replaces``), so a repeat of the level wakes nobody and a
         new level wakes once. With no level seen yet, ``ample`` is the baseline and
-        wakes nobody. Charged to its own rate entry, so a flapping posture is bounded
-        by the hourly budget and never spends a real item's.
+        wakes nobody. A same-level step of decline (``worsened``, rfc-resource-control.md
+        §4.2) wakes once per token and is charged to the posture rate entry like a
+        level change, so a flapping value is bounded by its hourly budget. A growth
+        step of one open item's worker tree (``worker_growth``, §4.3) wakes once per
+        step and is charged to THAT item's budget.
         """
         from kiro_crew.conductor_wake import POSTURE_ITEM
         from kiro_crew.notifications import resource_pressure
@@ -334,26 +344,54 @@ class WorkLedgerProbe(irq.Probe):
         if current is None:
             return []
         level, reading = current
-        token = f"{_POSTURE_KEY}:{level}"
-        if level == "ample" and not any(
+        found: list[irq.Observation] = []
+
+        def wake(token: str, replaces: str, brief: str, entry: str = POSTURE_ITEM) -> None:
+            if self._spend(conductor_key, entry, token, replaces=replaces):
+                # Unique per wake: the kernel masks a key for ``realert_secs``, and
+                # tight -> ample -> tight inside that window is two changes.
+                found.append(
+                    irq.Observation(
+                        # The entry too: two workers' growth in one tick share a stamp.
+                        f"{entry}:{token}:{time.time():.3f}",
+                        irq.Severity.WAKE,
+                        f"[work-ledger wake] {brief}",
+                        irq.ResetsOn.NEVER,
+                    )
+                )
+
+        if level != "ample" or any(
             ledger_wake.already_woke(
                 conductor_key, POSTURE_ITEM, f"{_POSTURE_KEY}:{other}", watcher=self._watcher
             )
             for other in ("tight", "critical")
         ):
-            return []
-        if not self._spend(conductor_key, POSTURE_ITEM, token, replaces=f"{_POSTURE_KEY}:"):
-            return []
-        return [
-            irq.Observation(
-                # Unique per change: the kernel masks a key for ``realert_secs``, and
-                # tight -> ample -> tight inside that window is two changes.
-                f"{token}:{time.time():.3f}",
-                irq.Severity.WAKE,
-                f"[work-ledger wake] host posture is {level} ({reading})",
-                irq.ResetsOn.NEVER,
+            wake(
+                f"{_POSTURE_KEY}:{level}",
+                f"{_POSTURE_KEY}:",
+                f"host posture is {level} ({reading})",
             )
-        ]
+        worse = resource_pressure.worsened()
+        if worse is not None and level != "ample":
+            wake(f"{_WORSE_KEY}:{worse[0]}", f"{_WORSE_KEY}:", worse[1])
+        growth = resource_pressure.worker_growth()
+        for item in items:
+            step = growth.get(ledger_key(item.worker_session_key or ""))
+            # A remote worker's key names a peer's session, never a local tree.
+            if item.is_terminal or not item.worker_session_key or item.worker_instance_id:
+                continue
+            if step is None:
+                continue
+            stamp, size_mb, share, grown_mb = step
+            if grown_mb > 0:
+                text = (
+                    f"worker {item.item_id} grew to {size_mb / 1024:.1f} GB ({share:.0f}% of "
+                    f"RAM; +{grown_mb / 1024:.1f} GB since the last wake)"
+                )
+            else:
+                text = f"worker {item.item_id} holds {size_mb / 1024:.1f} GB ({share:.0f}% of RAM)"
+            wake(f"{_GROWTH_KEY}:{stamp}", f"{_GROWTH_KEY}:", text, entry=item.item_id)
+        return found
 
     def _item_observations(
         self,
@@ -778,11 +816,23 @@ def person_wait_fingerprint(
         if undelivered:
             revision = f"{revision}|undelivered:{ledger_wake.revision(undelivered)}"
         # The host posture is news no report carries either (rfc-host-memory-guard.md
-        # §5.2): a level change releases the hold for the tick that wakes on it.
+        # §5.2): a level change, a further fall at the level, or an open item's
+        # worker growth step releases the hold for the tick that wakes on it.
         from kiro_crew.notifications import resource_pressure
 
         posture = resource_pressure.current_posture()
-        return revision if posture is None else f"{revision}|posture:{posture[0]}"
+        if posture is None:
+            return revision
+        growth = resource_pressure.worker_growth()
+        steps = {
+            item.item_id: growth[key][0]
+            for item in open_items
+            if not item.worker_instance_id
+            and (key := ledger_key(item.worker_session_key or "")) in growth
+        }
+        worse = resource_pressure.worsened()
+        revision = f"{revision}|posture:{posture[0]}:{worse[0] if worse else ''}"
+        return f"{revision}|growth:{ledger_wake.revision(steps)}" if steps else revision
     except Exception:  # noqa: BLE001 - a read fault must never hold a patrol
         logger.debug("work-ledger probe: person-wait read failed for %s", conductor_key)
         return None
