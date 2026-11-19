@@ -55,6 +55,13 @@ def _passthrough_spawn(argv, mode="standard", **kw):
 def _no_sandbox(_floor_monkeypatch):
     _floor_monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
     _floor_monkeypatch.setattr(git_ops, "sandboxed_spawn_argv", _passthrough_spawn)
+    # The board suites prove what the board publishes, not hook handling, and their
+    # repositories define no config hooks. The hook scan starts three git processes
+    # before every `run_git` call, and one board pass makes dozens of those calls.
+    # `run_git` carrying the disable flags and failing closed on a scan error are
+    # covered in test_git_config_hooks.py (test_worktree_run_git_carries_the_disable,
+    # test_worktree_run_git_scan_failure_reads_as_git_failure).
+    _floor_monkeypatch.setattr(wt, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
 
 
 class _LiveConfig:
