@@ -62,6 +62,8 @@ import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useSessionPalette } from '../hooks/useSessionPalette'
+import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../hooks/useTranscriptAnnouncement'
+import { useUserRowSpeaker } from '../pages/chat/shared-crew/MessageByline'
 import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
 import { legacyCodexEffort } from '../hooks/useInteractiveModels'
 import { selectionCapabilitiesFailed } from '../lib/effort'
@@ -710,8 +712,21 @@ export default function ChatPane({
   } = useChatPaneUploads({ slotKey, slotKeyRef, mountedRef, setInput, dashCfg, dashCfgError })
 
 
+  // Text for the transcript's one live region, the same decision ChatPage
+  // makes; a crewmate's replies are spoken under the crewmate's name.
+  const paneTail = messages[messages.length - 1]
+  const paneApprovals = useMemo(() => pendingApprovalsOf(messages), [messages])
+  const paneUserSpeaker = useUserRowSpeaker(
+    paneTail?.meta ?? undefined,
+    slotKey,
+    paneTail?.content,
+    onSessionOpen ? sessions : undefined,
+  )
+  const { announcement, announceSent } = useTranscriptAnnouncement(
+    announcementTail(messages), paneTail?.role === 'streaming' || running, crewmate ? (crewmate.label || crewmate.name) : undefined, slotKey, paneApprovals, messages.length, paneUserSpeaker,
+  )
   const { messageQuote, paneHiddenCommands, slashError, setSlashError, doSend, doSteer, onDirectQuestionSend } = useChatPaneSend({
-    slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent,
+    slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent, announceSent,
   })
   const { recoverInto: recoverQuoteInto } = messageQuote
 
@@ -1075,6 +1090,7 @@ export default function ChatPane({
             onArtifactOpen={onArtifactOpen}
             transcript={{
               sessionId: `pane:${slotKey}`,
+              announcement,
               scrollerRef,
               onScroll: onScrollPin,
               onAtBottomChange: setIsAtBottom,

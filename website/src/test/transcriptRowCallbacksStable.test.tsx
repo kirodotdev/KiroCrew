@@ -226,6 +226,20 @@ describe('row callbacks keep their identity across streamed frames', () => {
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat/replaceMessages', payload: next }))
   })
 
+  it('useMessageActions: edit-and-resend speaks the resent text', () => {
+    const announceSent = vi.fn()
+    const base = {
+      dispatch: vi.fn() as never, navigate: vi.fn() as never, filteredSlotsRef: { current: [] }, connected: true, activeSlot: 'slot-a',
+      slotRunning: false, activityOpen: false, activeSlotRef: { current: 'slot-a' }, activeSlotRemoteBound: false,
+      showActionError: vi.fn(), handleFileOpen: vi.fn() as never, handleFolderOpen: vi.fn(), search: { isOpen: false } as never,
+      tabsCtl: {} as never, sessionTitles: new Map(), selectSessionTab: vi.fn(), linkPreviewsOn: false, planTaskId: '',
+      setSidebarPinned: vi.fn(), sidebarAutoHidden: { current: null }, sidebarWidth: 280, setRegenerating: vi.fn(), announceSent,
+    }
+    const { result } = renderHook(() => useMessageActions({ ...base, messages: first, messagesRef: { current: first } }), { wrapper })
+    act(() => { result.current.handleEditResend(2, 't3', 'edited') })
+    expect(announceSent).toHaveBeenCalledWith('edited')
+  })
+
   it('useMessageActions: a refused edit-and-resend answers false so the open editor keeps its draft', () => {
     // An editor opened before a turn started stays open with Send enabled. When
     // the turn is running at the press, nothing is sent; UserMessage keeps the
