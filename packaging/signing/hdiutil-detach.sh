@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Detach helpers for disk images mounted by hdiutil. Sourced by build-dmg.sh.
+# Detach helpers for disk images mounted by hdiutil. Sourced by build-dmg.sh
+# and by _eb_release_busy_dmg in packaging/build-desktop.sh.
 #
 # The helpers address the device node (/dev/diskN) that `hdiutil attach`
 # reports, never the mount path. `hdiutil detach` is two operations -- unmount

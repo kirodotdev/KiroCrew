@@ -222,7 +222,7 @@ _eb_invoke() {{
 
 
 _DMG_BUSY_LINE = (
-    'dmgbuild.core.DMGError: Unable to detach device cleanly: '
+    "dmgbuild.core.DMGError: Unable to detach device cleanly: "
     'hdiutil: couldn\'t eject "disk5" - Resource busy'
 )
 
@@ -248,7 +248,22 @@ _eb_release_busy_dmg() {{ grep -c 'Resource busy' "$1" > "{released}"; }}
         proc = _run(stub, 'run_electron_builder_with_retry; echo "EXIT=$?"', tmp_path)
         assert "EXIT=0" in proc.stdout, proc.stdout + proc.stderr
         assert len(counter.read_text()) == 2, "must retry exactly once then succeed"
-        assert released.read_text().strip() == "1", "the busy device must be released before the retry"
+        assert (
+            released.read_text().strip() == "1"
+        ), "the busy device must be released before the retry"
+
+    def test_a_device_that_stays_attached_is_not_retried(self, tmp_path: Path) -> None:
+        counter = tmp_path / "calls"
+        counter.write_text("")
+        line = tmp_path / "line"
+        line.write_text(_DMG_BUSY_LINE + "\n")
+        stub = f"""
+_eb_invoke() {{ printf 'x' >> "{counter}"; cat "{line}" >&2; return 1; }}
+_eb_release_busy_dmg() {{ return 1; }}
+"""
+        proc = _run(stub, 'run_electron_builder_with_retry; echo "EXIT=$?"', tmp_path)
+        assert "EXIT=1" in proc.stdout, proc.stdout + proc.stderr
+        assert len(counter.read_text()) == 1, "a held device must stop the retries"
 
     def test_release_detaches_the_device_named_in_the_log(self, tmp_path: Path) -> None:
         bindir = tmp_path / "bin"

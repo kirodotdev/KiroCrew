@@ -440,9 +440,10 @@ _eb_invoke() {
 
 # Detach the disk image dmgbuild left attached when its eject reported
 # "Resource busy" (device read from the log line, e.g. "disk5"). Only a device
-# hdiutil still lists is touched. Never fails: if the device stays held, the
-# retry fails on its own and the bounded budget ends the build. Split out so a
-# test of the retry loop can shadow it.
+# hdiutil still lists is touched. Returns non-zero when the device is still
+# attached after hdiutil-detach.sh's retries and force, so the caller fails the
+# build instead of retrying beside a held image. Split out so a test of the
+# retry loop can shadow it.
 _eb_release_busy_dmg() {
   local disk
   disk="$(grep -oE 'couldn.t (eject|unmount) "disk[0-9]+"' "$1" | head -n 1 | grep -oE 'disk[0-9]+' || true)"
@@ -454,7 +455,7 @@ _eb_release_busy_dmg() {
       sync
       dmg_detach_device "/dev/$disk"
     fi
-  ) || true
+  )
 }
 
 # Run electron-builder (EB_ARGS as "$@"), retrying a bounded number of times
@@ -481,7 +482,8 @@ _eb_release_busy_dmg() {
 #     build-dmg.sh handles for its own mounts). Before the retry the device
 #     dmgbuild left behind is detached through hdiutil-detach.sh, which waits
 #     with bounded retries and a force fallback, so the next attempt does not
-#     mount a second copy beside it.
+#     mount a second copy beside it. A device that stays attached fails the
+#     build without a retry.
 #
 # Split out of the packaging step (rather than left inline) so the
 # retry/classification logic is testable in isolation, mirroring
@@ -523,7 +525,11 @@ run_electron_builder_with_retry() {
         eb_backoff=2
       elif [ "$eb_transient" = "dmg_busy" ]; then
         echo "  ⚠ dmgbuild could not eject its disk image (Resource busy, attempt $attempt/$max_attempts); detaching it and retrying…" >&2
-        _eb_release_busy_dmg "$eb_log"
+        if ! _eb_release_busy_dmg "$eb_log"; then
+          rm -f "$eb_log"
+          echo "❌ the disk image dmgbuild left attached could not be detached; not retrying." >&2
+          return 1
+        fi
         eb_backoff=5
       else
         echo "  ⚠ transient network/TLS/HTTP failure in an electron-builder fetch (attempt $attempt/$max_attempts); retrying…" >&2
@@ -1884,9 +1890,9 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
 
   # Each electron-builder invocation below goes through
   # run_electron_builder_with_retry (defined above, alongside rm_rf_resilient)
-  # so the macOS .DS_Store/ENOTEMPTY race AND transient network/TLS failures
-  # in electron-builder's own mid-build fetches are both retried, not just
-  # the former.
+  # so the macOS .DS_Store/ENOTEMPTY race, dmgbuild's "Resource busy" eject
+  # and transient network/TLS failures in electron-builder's own mid-build
+  # fetches are all retried.
   if [ "$OS" = "darwin" ]; then
     EB_ARGS+=( --mac )
     if [ "$UNIVERSAL" = "1" ]; then
