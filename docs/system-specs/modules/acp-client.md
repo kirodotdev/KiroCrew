@@ -5526,8 +5526,21 @@ and a failed install is an `AcpRuntimeError` naming the route, the cause and
 the next attempt finds the same host -- never a fallback to the relay, because a relay spawn
 after a bundle failure would make a bundle problem look like a kiro-cli one. The argv is `build_kas_bundle_argv`:
 `node --experimental-wasm-modules <acp-server.js> --transport=stdio
---auth=acp-callback`, byte-for-byte what kiro-cli's relay builds for the engine
-minus kiro-cli. There is no `--auth-method` on this route, so the plan carries
+--auth=acp-callback --cloud-config-endpoint=<bff>`. The shared builder resolves
+`<bff>` from the launch environment for both the harness and diagnostic argv.
+`KIRO_AUTH_PORTAL_URL` selects gamma or beta when its trimmed, trailing-slash-free
+value is that stage's exact HTTPS portal; every other portal selects production.
+`CLOUD_CONFIG_ENDPOINT` overrides that default only for HTTPS on `app.kiro.dev`,
+`gamma.app.kiro.dev` or `beta.app.kiro.dev`, or HTTP(S) on `localhost`,
+`127.0.0.1` or `::1` for local fixtures. Blank values use the stage default.
+Untrusted hosts, malformed URLs, userinfo, backslashes and control characters
+produce a value-free warning and use the stage default. The bundle's environment
+repair removes `CLOUD_CONFIG_ENDPOINT` after inherited and `agent.env` layers
+merge, so the validated explicit argument is the only process-level source.
+KAS uses the signed-in profile for regional routing. The endpoint enables its
+per-user native memory resolution and cloud configuration machinery; account
+and organization consent still govern synchronization, and Crew's session
+memory policy is unchanged. There is no `--auth-method` on this route, so the plan carries
 `host_auth=True` unconditionally: Crew's vault is the only credential
 ([kas-auth.md](kas-auth.md)), and an empty vault surfaces as the engine's own
 "not signed in" prompt failure, which maps to a sign-in prompt as on the relay.

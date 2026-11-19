@@ -223,7 +223,12 @@ See [Memory across surfaces and channels](#memory-across-surfaces-and-channels).
 
 Everything above is Kiro Crew's memory. The KAS engine keeps a SEPARATE local
 store of the host's own memories, which Kiro Crew neither writes nor reads: it
-is reached only by the engine, inside the session.
+is reached only by the engine, inside the session. Crew's bundle launch supplies
+a validated stage BFF endpoint, as specified in [ACP client](acp-client.md), so
+KAS can resolve the signed-in user's store and cloud synchronization settings.
+This does not grant session writes or reflection, and account and organization
+consent still apply. Existing native memories may synchronize when the account's
+cloud choice is on; Crew does not change that choice or upload its own memory.
 
 `agent.orchestrator_memory` (default off, KAS only) controls whether Crew states
 a native memory policy for the sessions it starts. While it is off, Crew

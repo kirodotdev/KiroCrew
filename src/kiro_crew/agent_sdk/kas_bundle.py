@@ -28,6 +28,7 @@ place (``test_mirrored_owner_storage``).
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from collections.abc import Callable, Mapping
 from types import ModuleType
@@ -215,7 +216,9 @@ def bundle_spawn_argv(installed: InstalledKasBundle) -> list[str]:
     """The exact argv the harness spawns for *installed*, for diagnostics."""
     from kiro_crew.acp.kas_transport import build_kas_bundle_argv
 
-    return build_kas_bundle_argv(str(installed.node_bin), str(installed.acp_server))
+    return build_kas_bundle_argv(
+        str(installed.node_bin), str(installed.acp_server), environ=os.environ
+    )
 
 
 def kas_operator_override(binary: str, environ: Mapping[str, str]) -> bool:

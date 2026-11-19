@@ -623,13 +623,14 @@ class TestBundledRoot:
 
 class TestArgv:
     def test_bundle_argv_is_the_engine_cli(self):
-        argv = build_kas_bundle_argv("/n/bin/node", "/e/acp-server.js")
+        argv = build_kas_bundle_argv("/n/bin/node", "/e/acp-server.js", environ={})
         assert argv == [
             "/n/bin/node",
             KAS_BUNDLE_NODE_FLAG,
             "/e/acp-server.js",
             KAS_BUNDLE_TRANSPORT_ARG,
             KAS_BUNDLE_AUTH_ARG,
+            "--cloud-config-endpoint=https://app.kiro.dev",
         ]
         assert "--auth-method" not in " ".join(argv)  # no kiro-cli owner on this route
 
@@ -664,7 +665,7 @@ class TestSpawnRoute:
         ):
             plan = await KasHarness().resolve_spawn(_ctx(tmp_path))
         assert plan.argv == build_kas_bundle_argv(
-            str(installed.node_bin), str(installed.acp_server)
+            str(installed.node_bin), str(installed.acp_server), environ={}
         )
         assert plan.host_auth is True
         assert plan.spawn_label == KAS_BUNDLE_SPAWN_LABEL
@@ -693,7 +694,7 @@ class TestSpawnRoute:
             plan = await KasHarness().resolve_spawn(_ctx(tmp_path))
         assert len(calls) == 1
         assert plan.argv == build_kas_bundle_argv(
-            str(installed.node_bin), str(installed.acp_server)
+            str(installed.node_bin), str(installed.acp_server), environ={}
         )
         assert plan.host_auth is True
 
