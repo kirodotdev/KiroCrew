@@ -35,13 +35,24 @@ name: CodeQL
 # pending.
 #
 # THE UPLOAD WAITS FOR THE API RATE LIMIT. The job's token draws on the
-# installation's hourly REST pool, which the rest of the fleet can spend, and
-# the one request this job cannot do without is the results upload at the end
-# of a scan that can run past 20 minutes. So `analyze` does not upload, and the
-# upload is its own step after a `gh-rate-limit-wait` (see
-# `.github/actions/gh-rate-limit`), which sleeps until the reset when the pool
-# is already spent. A failed upload fails the job: the wait never stands in for
-# it, so the job is green only when the upload succeeded.
+# installation's hourly REST pool, which the rest of the fleet can spend. Two
+# requests in this job fail it when that pool is spent:
+#
+# - The analysis key. Before any upload the action post-processes the results,
+#   and for that it asks the API which workflow file this run belongs to. It
+#   does so inside `analyze` whatever `upload:` says, unless `init` already
+#   got the answer -- which `init` does not on a spent pool, where its own
+#   requests fail without failing the step. The key is `<workflow path>:<job
+#   id>` and never changes, so the job sets it in
+#   `CODEQL_ACTION_ANALYSIS_KEY`, the variable the action reads before it
+#   asks. `analyze` then makes no request it cannot do without.
+# - The results upload, at the end of a scan that can run past 20 minutes. So
+#   `analyze` does not upload, and the upload is its own step after a
+#   `gh-rate-limit-wait` (see `.github/actions/gh-rate-limit`), which sleeps
+#   until the reset when the pool is already spent.
+#
+# A failed upload fails the job: the wait never stands in for it, so the job is
+# green only when the upload succeeded.
 on:
   pull_request:
     branches: [main]
@@ -94,6 +105,11 @@ jobs:
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # The scan, plus the 30 minutes the upload may wait for a rate-limit reset.
     timeout-minutes: 75
+    env:
+      # The analysis key code scanning files these results under: this file's
+      # path and this job's id. Set here so that no step has to ask the API
+      # for it (see the header). test_gh_rate_limit_wait.py holds it to both.
+      CODEQL_ACTION_ANALYSIS_KEY: .github/workflows/codeql.yml:analyze
     permissions:
       actions: read
       contents: read

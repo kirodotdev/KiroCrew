@@ -234,7 +234,9 @@ def _named(steps: list[dict], name: str) -> dict:
     return found
 
 
-CODEQL = _job("codeql.yml", "analyze")["steps"]
+CODEQL_FILE, CODEQL_JOB_ID = "codeql.yml", "analyze"
+CODEQL_JOB = _job(CODEQL_FILE, CODEQL_JOB_ID)
+CODEQL = CODEQL_JOB["steps"]
 WAIT_STEP = "Wait for API quota before the upload"
 UPLOAD_STEP = "Upload the results"
 
@@ -247,6 +249,19 @@ def test_codeql_uploads_in_its_own_step_right_after_a_quota_wait() -> None:
     assert names.index(ACTION_REF) < names.index(analyze["uses"]) < names.index(WAIT_STEP)
     assert names.index(WAIT_STEP) + 1 == names.index(UPLOAD_STEP)
     assert _named(CODEQL, WAIT_STEP)["run"].split()[0] == WAIT
+
+
+def test_codeql_names_its_analysis_key_so_no_step_asks_the_api_for_it() -> None:
+    """`analyze` post-processes the results before any upload, and for that it
+    asks the API which workflow file the run belongs to unless this variable
+    already says. On a spent pool that request failed the job before the wait
+    ran. The value is what the action would have computed: the workflow file's
+    path and the job's id."""
+    workflow = (WORKFLOWS / CODEQL_FILE).relative_to(ROOT).as_posix()
+    expected = f"{workflow}:{CODEQL_JOB_ID}"
+    assert (CODEQL_JOB.get("env") or {}).get("CODEQL_ACTION_ANALYSIS_KEY") == expected
+    for step in CODEQL:
+        assert "CODEQL_ACTION_ANALYSIS_KEY" not in (step.get("env") or {}), step
 
 
 def test_codeql_uploads_the_scan_it_ran_under_the_same_category() -> None:

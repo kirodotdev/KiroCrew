@@ -510,14 +510,27 @@ runs it once more after a failed attempt: `waited` means the pool was spent and
 has reset, `ready` means quota remained and the fixed pause applies. Two jobs
 use it, both with a floor of 100 requests and a 30-minute budget:
 
-- **CodeQL** (`codeql.yml`). The request the job cannot do without is the
-  results upload, at the end of a scan that can run past 20 minutes, so a wait
-  before the scan would not help. `analyze` runs with `upload: failure-only`
-  and the upload is a separate `upload-sarif` step, right after the wait. There
-  is one upload per job: the action refuses a second upload of one category in
-  the same job before it sends a request (`validateUniqueCategory`), so a
-  failed upload fails the job and is not repeated. The job is green only when
-  the upload succeeded.
+- **CodeQL** (`codeql.yml`). Two requests fail this job on a spent pool, and
+  each is handled where it is made.
+  The first is the analysis key. Before any upload the action post-processes
+  the results, and `getAnalysisKey` asks the API which workflow file the run
+  belongs to (`GET actions/runs/<id>`, then the workflow). That happens inside
+  `analyze` for every value of `upload:`, unless `init` already stored the
+  answer -- and on a spent pool `init`'s requests fail without failing the
+  step, so `analyze` asks, and fails right after `Adding fingerprints to SARIF
+  file`. The key is `<workflow path>:<job id>` and never changes, so the job
+  sets `CODEQL_ACTION_ANALYSIS_KEY` to `.github/workflows/codeql.yml:analyze`,
+  the variable the action reads before it asks; `analyze` then makes no
+  request it cannot do without. A wrong value would file the results under
+  another configuration, so `test/test_gh_rate_limit_wait.py` holds it to the
+  file's path and the job's id.
+  The second is the results upload, at the end of a scan that can run past 20
+  minutes, so a wait before the scan would not help. `analyze` runs with
+  `upload: failure-only` and the upload is a separate `upload-sarif` step,
+  right after the wait. There is one upload per job: the action refuses a
+  second upload of one category in the same job before it sends a request
+  (`validateUniqueCategory`), so a failed upload fails the job and is not
+  repeated. The job is green only when the upload succeeded.
 - **Dependency License Gate** (`dependency-review.yml`). It waits before the
   first review, and the pause before the retry is the wait for the reset when
   the pool is spent (the fixed 60 s otherwise). When both reviews failed and the
