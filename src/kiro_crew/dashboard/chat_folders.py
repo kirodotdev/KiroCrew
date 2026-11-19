@@ -283,7 +283,9 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
             # into the folder it already sits in changes nothing.
             claim_for_person=folder_id != previous and _audit_origin(request)[0] == "dashboard",
         ):
-            slot.folder_id = previous
+            # `previous` was captured before the await, and a delete of that folder
+            # can land inside it: put the slot back only into a folder that exists.
+            slot.folder_id = previous if any(f["id"] == previous for f in state._folders) else ""
             slot._folder_changed = previous_changed
             return web.json_response(
                 {"error": "folder not found", "code": "folder_not_found"}, status=400
@@ -297,7 +299,10 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
             # have committed a newer placement that an unconditional restore
             # would erase (the same guard _restore_unfiled applies).
             if slot.folder_id == folder_id:
-                slot.folder_id = previous
+                # Only into a folder that still exists, as the refusal above.
+                slot.folder_id = (
+                    previous if any(f["id"] == previous for f in state._folders) else ""
+                )
                 slot._folder_changed = previous_changed
             # The UNPINNED periodic flush may have persisted the provisional
             # value while this save awaited: mark dirty so the
