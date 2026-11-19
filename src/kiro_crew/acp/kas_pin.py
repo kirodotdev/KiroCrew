@@ -37,6 +37,7 @@ from __future__ import annotations
 import os
 
 __all__ = [
+    "KAS_PIN_ENGINE_RELEASE",
     "KAS_PIN_MANIFEST_SHA256",
     "KAS_PIN_VERSION",
     "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
@@ -45,11 +46,18 @@ __all__ = [
     "pinned_version",
 ]
 
-#: Engine version this release runs.
-KAS_PIN_VERSION = "0.66.104"
+#: Engine version this release runs. A ``-node<N>`` suffix names a republish of
+#: the same engine build with a different bundled Node runtime; the engine release
+#: is the part before it.
+KAS_PIN_VERSION = "0.66.117-node22.23.4"
+
+#: The engine release the pin runs: :data:`KAS_PIN_VERSION` without its
+#: ``-node<N>`` suffix. This is the version the engine reports about itself, so
+#: anything comparing engine versions reads this, never the directory name.
+KAS_PIN_ENGINE_RELEASE = KAS_PIN_VERSION.split("-node", 1)[0]
 
 #: sha256 of ``<base>/kas/<KAS_PIN_VERSION>/manifest.json`` as published.
-KAS_PIN_MANIFEST_SHA256 = "263d3d1e59c2d32987d2a09cb066f650b6455cc9de94473693bd0a07aec151f4"
+KAS_PIN_MANIFEST_SHA256 = "58600c49bdd758709982051b11043f0f91194b9fe0dfa1cfd34d086ea341d95e"
 
 #: The engine and Node build keys the pinned manifest publishes, the matrix
 #: ``scripts/kas_bundle_publish.py`` builds. Read without the network, so a host

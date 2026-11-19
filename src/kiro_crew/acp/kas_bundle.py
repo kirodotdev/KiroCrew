@@ -13,10 +13,10 @@ the only auth owner this route has.
 
 What is on disk, under ``<data home>/engines/kas/``::
 
-    0.66.33/
+    0.66.117/
       install.json                what was installed, and where its two entry points are
       bundle/node_modules/@kiro/agent/dist/server/acp-server.js
-      node/node-v22.20.0-linux-x64/bin/node
+      node/node-v22.23.3-linux-x64/bin/node
 
 The desktop app stages the same layout into its resources. A universal Mac app
 stages it once, with a Node binary holding both architectures
@@ -40,16 +40,16 @@ The manifest's own sha256 is pinned beside the version, which makes the
 manifest the trust root for everything else. Its shape::
 
     {
-      "version": "0.66.33",
+      "version": "0.66.117",
       "package": "@kiro/agent",
       "platforms": {
-        "linux-x64": {"file": "kas-linux-x64.tar.xz", "sha256": "...", "size": 25630996},
+        "linux-x64": {"file": "kas-linux-x64.tar.xz", "sha256": "...", "size": 21280012},
         ...
       },
       "node": {
-        "version": "22.20.0",
+        "version": "22.23.3",
         "builds": {
-          "linux-x64": {"file": "node-v22.20.0-linux-x64.tar.xz", "sha256": "...", "size": ...},
+          "linux-x64": {"file": "node-v22.23.3-linux-x64.tar.xz", "sha256": "...", "size": ...},
           ...
         }
       }
