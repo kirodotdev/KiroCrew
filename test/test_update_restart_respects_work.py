@@ -151,6 +151,37 @@ async def test_a_restart_with_a_turn_in_flight_is_refused_and_admission_reopens(
 
 
 @pytest.mark.asyncio
+async def test_a_refused_restart_broadcasts_no_name_of_the_work_it_waits_on(gateway):
+    """``update_progress`` goes to every app token, so it carries counts only."""
+    from kiro_crew.dashboard import ws_event_scope
+    from kiro_crew.dashboard.state import DashboardState
+
+    sent: list[dict] = []
+    gateway.state._broadcast = sent.append
+    gateway.state.push_update_progress = lambda step, detail="": (
+        DashboardState.push_update_progress(gateway.state, step, detail)
+    )
+    gateway.orch._session_tasks["slack:quokka.123"] = asyncio.get_running_loop().create_future()
+    gateway.orch._running_script_ids.add("job-7f3a")
+    gateway.orch.cron_svc = SimpleNamespace(
+        get_job=lambda _id: SimpleNamespace(name="zebra-cron-name"),
+        running_since=lambda _id: None,
+    )
+    # The names exist: the host-only reader sees them.
+    named = quiescence.assess(gateway.orch, quiet_window_secs=0.0).named_holders()[0]
+    assert {h["name"] for h in named} == {"slack:quokka.123", "zebra-cron-name"}
+
+    assert await gateway.restart() is False
+
+    tier0 = [e for e in sent if e.get("_type") in ws_event_scope._TIER0_ALWAYS]
+    assert [e["step"] for e in tier0 if e["_type"] == "update_progress"][-1] == "error"
+    for event in tier0:
+        text = json.dumps(event)
+        assert "quokka" not in text and "zebra" not in text and "job-7f3a" not in text
+    assert "turns 1, background 1" in tier0[-1]["detail"]
+
+
+@pytest.mark.asyncio
 async def test_an_idle_restart_pauses_drains_fences_then_closes(gateway):
     assert await gateway.restart() is True
 
@@ -545,6 +576,9 @@ async def test_the_restart_endpoint_refuses_under_work_when_asked_not_to_interru
     body = _json(resp)
     assert body["code"] == "work_in_flight"
     assert body["turns"] == 1
+    # Every dashboard client can ask this, so it carries the counts and no name.
+    assert "holders" not in body
+    assert "chat" not in json.dumps({k: v for k, v in body.items() if k != "error"})
     assert body["force_available"] is True
     restarted.assert_not_awaited()
 

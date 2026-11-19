@@ -87,6 +87,21 @@ class TestRoute:
         body = json.loads(resp.body)
         assert (body["idle"], body["turns"], body["background"]) == (False, 2, 5)
 
+    async def test_a_busy_gateway_names_what_the_counts_are_to_its_own_host(self):
+        script = quiescence.Holder("script", "nightly-sync", 21.4)
+        probe = MagicMock(return_value=_census(background=1, holders=(script,)))
+
+        body = json.loads((await restart_gate.api_restart_when_idle(_request(probe))).body)
+
+        assert body["holders"] == [
+            {"kind": "script", "name": "nightly-sync", "since_secs": 21, "count": 1}
+        ]
+        assert body["holders_more"] == 0
+        idle = MagicMock(return_value=_census())
+        assert "holders" not in json.loads(
+            (await restart_gate.api_restart_when_idle(_request(idle))).body
+        )
+
     async def test_a_commit_ask_takes_the_restart_admission_unforced(self, monkeypatch):
         probe = MagicMock(return_value=_census())
         admit = AsyncMock(return_value=restart_admission.RestartAdmission(True, "", _census()))
@@ -319,6 +334,19 @@ class TestCli:
 
         assert cli.restarts == [None]
         assert cli.clock.sleeps == [idle_cli.POLL_SECS]
+
+    def test_a_busy_wait_says_which_work_it_waits_on(self, cli, capsys, monkeypatch):
+        monkeypatch.setattr(idle_cli, "_stdout_is_terminal", lambda: True)
+        cli.answers.append(idle_cli._Verdict("busy", 0, 1, waiting_on="nightly-sync script (21 s)"))
+
+        with pytest.raises(SystemExit) as exc:
+            idle_cli._restart_when_idle(None, max_wait_secs=0)
+
+        assert exc.value.code == idle_cli.EXIT_BUSY
+        out = capsys.readouterr().out
+        assert "0 chat turn(s) and 1 background task(s) (nightly-sync script (21 s))" in out
+        # The marker a remote caller parses carries the counts only, as before.
+        assert out.splitlines()[-1] == idle_cli.busy_marker(0, 1)
 
     def test_a_turn_admitted_after_the_idle_answer_is_not_restarted_over(self, cli):
         """The census is a snapshot: the idle answer is asked again before the restart."""
@@ -682,6 +710,15 @@ class TestAskGate:
             {"idle": True, "turns": 0, "background": 0, "service_identity": "unknown"},
         )
         assert idle_cli._ask_gate(5476).service_identity == "unknown"
+
+    def test_reads_the_work_a_busy_gateway_names(self, monkeypatch):
+        busy = {"idle": False, "turns": 0, "background": 1}
+        named = [{"kind": "script", "name": "nightly-sync", "since_secs": 21, "count": 1}]
+        self._answer(monkeypatch, {**busy, "holders": named, "holders_more": 2})
+        assert idle_cli._ask_gate(5476).waiting_on == "nightly-sync script (21 s), +2 more"
+        # An answer whose holders are not a list of entries reads as none named.
+        self._answer(monkeypatch, {**busy, "holders": "nightly-sync"})
+        assert idle_cli._ask_gate(5476).waiting_on == ""
 
     def test_the_body_says_whether_only_the_service_may_answer(self, monkeypatch):
         sent: list = []

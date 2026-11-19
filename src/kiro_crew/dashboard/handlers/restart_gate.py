@@ -160,6 +160,11 @@ async def api_restart_when_idle(request: web.Request) -> web.Response:
         # pid), so the CLI can tell that a service restart would reach it.
         "service_managed": service_managed,
     }
+    named = getattr(census, "named_holders", None)
+    if not idle and callable(named):
+        # Which sessions and jobs the counts are. This answer goes to the host's
+        # own CLI (the secret and loopback checks above), the one reader of names.
+        answer["holders"], answer["holders_more"] = named()
     if identity is not None:
         answer["service_identity"] = identity
     if reason:

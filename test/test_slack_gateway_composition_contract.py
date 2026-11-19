@@ -345,6 +345,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
     ),
     "update_schedule": (
         ("_UPDATE_STOP_GRACE_SECS", "value", "'float'"),
+        ("_in_flight_work_census", "method", "(self) -> 'list[work_holders.Holder]'"),
         ("_in_flight_work_counts", "method", "(self) -> 'tuple[int, int]'"),
         ("_count_in_flight_work", "method", "(self) -> 'int'"),
         ("_live_update_handler_tasks", "method", "(self) -> 'list[asyncio.Task[Any]]'"),

@@ -2501,6 +2501,10 @@ owner-verified transport `update approve` uses. That route READS the quiescence
 census (see [slack-gateway](slack-gateway.md), "The restart idle check is a read,
 until its last ask"). While the gateway is busy the command prints the counts and
 asks again every 10s, for up to `--max-wait` (default 600s; `0` checks once).
+When its stdout is a terminal and the gateway names the work (`holders` in the
+answer), it adds the sessions and jobs the counts are, for example
+`(nightly-sync script (21 s))`, cleaned and redacted again on this side. A
+captured run prints the counts alone, and so does the busy marker line.
 An idle answer is asked a second time at once, before the restart, with `commit`: the
 gateway then pauses and fences new turns like the dashboard restart, so a turn admitted
 after the first answer reads busy on the second and is waited on (or, past `--max-wait`,

@@ -746,6 +746,58 @@ take the hold in `cli.main` after argument parsing.
   user-clicked restart below. No unattended path reads it. A source that cannot answer (a queue
   or an approval probe that raises, the typed-reply prompts included) counts as
   one waiting item, so the answer fails toward busy.
+- **The census names what it counts, for the host only.** `_in_flight_work_census`
+  is the one walk: it returns a `work_holders.Holder` (`kind`, `name`,
+  `since_secs`, `count`) for every item, and `_in_flight_work_counts` is the sum
+  over those holders, so a number and the names behind it cannot disagree.
+  `quiescence.assess` adds the queue and approval holders
+  (`queued_message_holders`, `pending_approval_holders`) and, only when
+  something is counted, puts the merged list on `Quiescence.holders`: one entry
+  per `(kind, name)`, longest running first, entries with no recorded start
+  last. The counts decide; the holders describe them and change no admission
+  outcome. `kind` is one of `turn`, `script`, `workflow`, `subagent`,
+  `channel_handler`, `queued`, `approval`, `callback`, `refusal_write`,
+  `update_build`, `task_runner`, or `unreadable` for a source that raised (its
+  `name` says which source and nothing else). `name` is an identifier the
+  gateway already keys the work by: the dashboard slot key, the channel session
+  key, the cron job name, the workflow run id, the channel name. It is never
+  message text, a session title or a path.
+  - **Who may read a name.** A name identifies another session's or job's work,
+    which the slot-visibility filter withholds from an app token, so names have
+    ONE reader: `Quiescence.named_holders()`, called only by the host-only
+    `POST /api/restart/when-idle` (the local secret's `internal_auth` mark and a
+    loopback peer), whose busy answer carries the first five as `holders` and
+    the rest as the number `holders_more`. Everything a dashboard client or an
+    app can receive carries the counts alone: `Quiescence.payload()`,
+    `RestartAdmission.detail()` (the `update_progress` error step, a tier-0
+    event delivered to every app token, and the "Restart refused" log line) and
+    `POST /api/restart`'s `409 work_in_flight`.
+    `kirocrew restart --when-idle` prints the names after the counts only when
+    its stdout is a terminal; a captured run (Remote Crew over SSH or SSM, whose
+    output tail the calling dashboard relays) prints the counts alone.
+  - **What a name may contain.** A name can be text an agent or a remote party
+    chose (a cron job name, a session key). `Holder.__post_init__` cleans every
+    one where it is made (`work_holders.clean_name`:
+    `terminal_safe.safe_terminal_line`, format characters such as the bidi
+    overrides dropped, whitespace runs folded, `security.redact` for credentials
+    and credentials inside URLs, then at most 64 characters), and
+    `work_holders.describe` cleans the kind and name of each entry it is handed
+    again, since the CLI reads them from another process.
+  - **One piece of work, one entry.** Work a session runs is named by its
+    dashboard slot when it has one: the provider and the channel queue are filed
+    under the session key (`effective_session_key`, `dashboard:<slot>` or a
+    channel-born slot's channel key) and the slot task under the slot key, and
+    `work_holders.slot_names` maps the first onto the second. Work with no
+    identifier (sub-agents, callbacks, typed approval prompts) is an entry with
+    an empty name and a `count`.
+  - **Ages.** `since_secs` comes from the slot's task stamp (`_task_started_at`,
+    on the run clock) and, for a script or command cron, from the cron service:
+    `cron_svc.running_since` for the start and `cron_svc.get_job` (cache-only)
+    for the name. A run in `_running_script_ids` that the service cannot
+    describe (no service, a job removed mid-run, a claim already taken) is still
+    counted and listed by kind only.
+  - An orchestrator that has no `_in_flight_work_census` (a stub, an edition's
+    own) answers with its counts and an empty list.
 - **The dashboard restart takes the same fence.** `updates_apply._restart_gateway`
   calls `DashboardState._restart_admission` (`restart_admission.admit_restart`,
   wired by `restart_admission.wire` at dashboard boot) after it resolves its
