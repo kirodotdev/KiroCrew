@@ -433,6 +433,7 @@ async def close_all(self: SessionLifecycleService, drain_timeout: float | None =
                         sid,
                         provider=provider_label,
                         cwd=cwd_str,
+                        kas_memory=getattr(sess.provider, "kas_memory_mode", ""),
                     )
             elif claude_code_provider_type is not None and isinstance(
                 sess.provider,
@@ -457,6 +458,7 @@ async def close_all(self: SessionLifecycleService, drain_timeout: float | None =
                         sid,
                         provider=constants.provider_label_claude,
                         cwd=cwd_str,
+                        kas_memory="",
                     )
 
         # set() defers disk writes. aclose() is the durability point before

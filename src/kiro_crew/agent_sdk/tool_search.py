@@ -436,10 +436,13 @@ def with_client_meta_settings(
 ) -> dict[str, Any]:
     """``capabilities`` with ``settings`` merged into ``_meta.kiro.settings``.
 
-    A deep copy: the input is the harness's shared constant and must stay the
-    pristine object every other spawn sends. Existing settings keys are kept
-    and the new ones win on collision. Empty ``settings`` returns an equal copy,
-    so a caller can apply it unconditionally.
+    Serves the ``initialize`` capabilities and the ``session/new`` and
+    ``session/load`` params alike. A deep copy: the capabilities are the
+    harness's shared constant and must stay the pristine object every other
+    spawn sends. Existing settings keys are kept and the new ones win on
+    collision. Empty ``settings`` still creates an empty ``_meta.kiro.settings``;
+    the capabilities already carry one, so for them it returns an equal copy and
+    can be applied unconditionally.
     """
     merged = copy.deepcopy(capabilities)
     meta = merged.setdefault("_meta", {})

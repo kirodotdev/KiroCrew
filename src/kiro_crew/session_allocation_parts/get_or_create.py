@@ -67,6 +67,7 @@ from kiro_crew.runtime_ownership import (
     is_shared_chat_runtime,
     release_session_lease,
 )
+from kiro_crew.session_allocation_parts import memory_policy as _memory_policy
 from kiro_crew.session_allocation_parts.errors import (
     SessionBusyError,
     SessionClosingError,
@@ -709,6 +710,7 @@ async def _get_or_create_impl(
                             session.provider.session_id,
                             provider=constants.provider_label_claude,
                             cwd="" if session.cwd_retracted else session.provider.cwd,
+                            kas_memory="",
                         )
                     # The semaphore may be held for a full turn; claim it
                     # only after releasing the global registry lock.
@@ -991,6 +993,8 @@ async def _get_or_create_impl(
         owner._pool_cwd,
     )
     provider_switched = False
+    plan = None
+    memory_withdrawn = False
     cwd_blocks_pool = bool(cwd and cwd != owner._pool_cwd)
     if not owner._pool_size:
         pool_decision = "disabled"
@@ -1039,6 +1043,8 @@ async def _get_or_create_impl(
         # ``""`` is a Kiro request, and under a non-Kiro default the pooled
         # child is on the wrong backend for it too.
         pool_decision = "bypass_backend_override"
+    elif _memory_policy.warm_pool_requires_cold_start(owner):
+        pool_decision = "bypass_restricted_context"
     elif await _session_runs_remotely(key):
         # A pooled child is a LOCAL engine: claiming it would run a remote session here.
         pool_decision = "bypass_remote_environment"
@@ -1268,9 +1274,22 @@ async def _get_or_create_impl(
                 cast(Any, candidate).app_launch_agent = app_launch_agent
                 # Trusted: the caller's slot app, never transcript metadata.
                 cast(Any, candidate).owning_app = owning_app
+                # A rebuilt provider states the memory plan its first build chose.
+                if plan is not None:
+                    cast(Any, candidate).kas_memory_mode = plan.mode
+                    cast(Any, candidate).kas_memory_new_mode = plan.mode
             return candidate
 
         provider = build_provider()
+        if self._deps.is_acp_provider(provider):
+            plan = await _memory_policy.configure_provider_memory(
+                provider,
+                owner=owner,
+                session_key=key,
+                execution=execution,
+                channel_id=channel_id,
+                crew_agent=str(extra_factory_kwargs.get("crew_agent") or ""),
+            )
         # Bound here so the helper below can clear it; set from resume_sid below.
         restores_history = False
 
@@ -1313,6 +1332,15 @@ async def _get_or_create_impl(
                 owner._session_map.clear_sid(key)
         _drop_a_resume_that_would_move()
 
+        memory_withdrawn = bool(resume_sid) and plan is not None and plan.rotate
+        if memory_withdrawn:
+            resume_sid = None
+            owner._session_map.clear_sid(key)
+            self._deps.logger.info(
+                "Native memory withdrawn from %s; replaying into a fresh session",
+                key,
+            )
+
         # Whether this start asks its process to restore a saved session.
         restores_history = bool(resume_sid)
         recorded_scratch: Path | None = None
@@ -1334,6 +1362,9 @@ async def _get_or_create_impl(
         def configure_resume() -> None:
             if resume_sid:
                 if self._deps.is_acp_provider(provider):
+                    if plan is not None:
+                        # A loaded session keeps the memory mode it was created with.
+                        cast(Any, provider).kas_memory_mode = plan.resume_mode
                     cast(Any, provider).client.set_resume_session_id(resume_sid)
                     self._deps.logger.info(
                         "Attempting session/load for %s (sid=%s)", key, resume_sid
@@ -1635,7 +1666,7 @@ async def _get_or_create_impl(
                     and provider.defer_replay_sid_promotion is True
                     and provider_label == constants.provider_label_default
                 )
-                if provider_switched or replay_needed:
+                if provider_switched or memory_withdrawn or replay_needed:
                     session.provider_switch_replay = True
                 if replay_needed and provider_label != constants.provider_label_default:
                     owner._session_map.clear_sid(key)
@@ -1723,6 +1754,7 @@ async def _get_or_create_impl(
                             sid,
                             provider=provider_label,
                             cwd=provider_cwd,
+                            kas_memory=cast(Any, provider).kas_memory_mode,
                         )
                     elif sid:
                         self._deps.logger.info(
@@ -1738,6 +1770,7 @@ async def _get_or_create_impl(
                             sid,
                             provider=constants.provider_label_claude,
                             cwd=provider_cwd,
+                            kas_memory="",
                         )
 
                 # Cleanup owns its task slot; allocation only asks the

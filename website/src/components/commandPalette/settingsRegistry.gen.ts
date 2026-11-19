@@ -62,6 +62,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Each change is checked before it saves. Change a setting here, or follow its link to the page where it lives. A read-only row says why."
   },
   {
+    "id": "agent.kiro-memory",
+    "label": "Kiro Memory",
+    "labelKey": "pages.developer.agentBackendTab.orchestrator_memory_label",
+    "description": "Use existing Kiro memories in personal chats. Changes apply when an agent session starts; start a new chat to use the updated setting.",
+    "hint": "Uses Kiro Memory alongside Kiro Crew’s existing memory to access memories saved by other Kiro clients. These memories are read-only here. Kiro Crew’s learning behavior and each Bot’s separate memory are unchanged.",
+    "tab": "agent",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "agent.orchestrator_memory"
+  },
+  {
     "id": "agent.kiro-sign-in",
     "labelKey": "pages.developer.kiroSignInCard.search_label",
     "tab": "agent",
