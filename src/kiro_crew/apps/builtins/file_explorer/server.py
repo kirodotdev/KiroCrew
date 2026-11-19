@@ -91,15 +91,37 @@ if _HOME == Path(_HOME.anchor):  # home resolved to the filesystem root — unus
 _TMP = Path(tempfile.gettempdir()).resolve()
 
 
-def _compute_allowed_roots(home: Path, tmp: Path) -> list[Path]:
-    """Ordered allow-list of browsing roots: home, tmp, then POSIX conventions.
+def _extra_roots_from_env() -> list[Path]:
+    """Operator-declared extra browsing roots from ``FE_EXTRA_ROOTS``.
+
+    Entries are separated by ``os.pathsep``. Only existing directories are kept,
+    and a drive or filesystem root (``D:\\`` or ``/``) is rejected so the
+    allow-list cannot be widened to a whole volume by accident.
+    """
+    out: list[Path] = []
+    for raw in os.environ.get("FE_EXTRA_ROOTS", "").split(os.pathsep):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            p = Path(os.path.expanduser(raw)).resolve()
+        except (OSError, RuntimeError):
+            continue
+        if p == Path(p.anchor) or not p.is_dir():
+            continue
+        out.append(p)
+    return out
+
+
+def _compute_allowed_roots(home: Path, tmp: Path, extra: list[Path] | None = None) -> list[Path]:
+    """Ordered allow-list of browsing roots: home, tmp, extras, then POSIX conventions.
 
     Order matters — the health endpoint serves this list and the frontend
     falls back to roots[0] as its default folder, so the dedupe must preserve
     insertion order (home first) rather than use a set, whose iteration order
     varies between interpreter runs.
     """
-    roots = [home, tmp]
+    roots = [home, tmp, *(extra or [])]
     if platform_compat.IS_POSIX:
         # /home, /opt and /workplace are POSIX-only conventions; on Windows they
         # resolve to nonexistent C:\home / C:\opt / C:\workplace and would be
@@ -115,7 +137,7 @@ def _compute_allowed_roots(home: Path, tmp: Path) -> list[Path]:
     return list(dict.fromkeys(p for p in roots if p.exists()))
 
 
-ALLOWED_ROOTS = _compute_allowed_roots(_HOME, _TMP)
+ALLOWED_ROOTS = _compute_allowed_roots(_HOME, _TMP, _extra_roots_from_env())
 
 # Default ignore patterns for tree + search
 IGNORE_DIRS = {
