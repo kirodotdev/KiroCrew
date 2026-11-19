@@ -221,15 +221,12 @@ async def _handle(
             else:
                 await respond(f"*{title}* isn't running.")
             return "idle"
-        text = (
-            actions.NOT_AUTHORIZED_TEXT
-            if verdict in {"unauthorized sender", _CHANNEL_REFUSED}
-            else (
-                NOT_THIS_TAB_TEXT
-                if verdict == "not this channel's Workers tab"
-                else NOT_ON_BOARD_TEXT
-            )
-        )
+        if verdict in {"unauthorized sender", _CHANNEL_REFUSED}:
+            text = actions.NOT_AUTHORIZED_TEXT
+        elif verdict == "not this channel's Workers tab":
+            text = NOT_THIS_TAB_TEXT
+        else:
+            text = NOT_ON_BOARD_TEXT
         return await deny(verdict, text)
     slot, cancel_key, generation = verdict
     now = time.monotonic()
