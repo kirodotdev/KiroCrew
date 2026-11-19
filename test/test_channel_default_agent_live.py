@@ -33,6 +33,7 @@ _ROUTES: dict[str, tuple[Hashable, Callable[[Any], str]]] = {
     "webex": ("a@example.com", lambda d: d._session_key("a@example.com")),
     "teams": ("a@x.com", lambda d: d._session_key("a@x.com")),
     "imessage": ("+15550100000", lambda d: d._session_key("+15550100000")),
+    "signal": ("+15550100000", lambda d: d._session_key("+15550100000")),
     "whatsapp": (
         "15550100000@s.whatsapp.net",
         lambda d: d._session_key("15550100000@s.whatsapp.net"),

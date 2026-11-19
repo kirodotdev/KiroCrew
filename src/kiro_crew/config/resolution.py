@@ -58,6 +58,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "feishu",
         "teams",
         "imessage",
+        "signal",
         "dashboard",
         "tunnel",
         "hooks",

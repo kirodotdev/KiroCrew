@@ -558,6 +558,21 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # can reassemble a credential that scan could not see.
         "imessage/client.py",
         "imessage/transport.py",
+        # The same gate-side log hygiene for Signal, whose identity is a phone
+        # number or an ACI: ``redact_identifier`` shortens it before a gateway
+        # log line or a SEL ``caller`` field. ``signal_cli/renderer.py`` is the
+        # channel's real egress sink and is registered above, as iMessage's is, and
+        # ``signal_cli/transport_dispatch.py`` is the session-title sink beside it.
+        "signal_cli/client.py",
+        "signal_cli/gateway.py",
+        # Where ``redact_identifier`` is DEFINED (the dependency-free identity
+        # module ``client.py`` re-exports); it writes no outbound byte itself.
+        "signal_cli/identifiers.py",
+        "signal_cli/transport.py",
+        # ``kirocrew doctor``'s Signal section prints to the operator's own
+        # terminal, not to a channel; ``redact_identifier`` there only keeps the
+        # operator's phone numbers out of a report they may paste elsewhere.
+        "doctor_checks/channels.py",
         # The WhatsApp turn lifecycle. What the scan matches here is the
         # post-answer redaction NOTICE pair -- ``count_redaction_tags`` over the
         # delivered chunks and ``redaction_notice`` to build the follow-up

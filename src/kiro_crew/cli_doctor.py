@@ -1081,6 +1081,7 @@ def _doctor(
     # prerequisites are an optional wheel and a local credential store, neither of
     # which any other channel has, and both of which fail silently.
     channels._doctor_whatsapp(cfg, issues)
+    channels._doctor_signal(cfg, issues)  # binary, Java, account store: all outside us
 
     # ── Every other channel (optional) ──
     channels._doctor_other_channels(

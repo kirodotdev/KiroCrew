@@ -134,7 +134,16 @@ class TestEveryChannelPersisterScrubsTheStoredTurn:
 #: Modules whose OWN redactor call feeds a copy that bypasses the write boundary.
 _TITLE_SCRUBBERS = tuple(
     f"{channel}/transport_dispatch.py"
-    for channel in ("feishu", "imessage", "teams", "webex", "wecom", "weixin", "whatsapp")
+    for channel in (
+        "feishu",
+        "imessage",
+        "signal_cli",
+        "teams",
+        "webex",
+        "wecom",
+        "weixin",
+        "whatsapp",
+    )
 )
 
 
