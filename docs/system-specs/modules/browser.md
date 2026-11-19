@@ -524,6 +524,21 @@ undo a page already read.
   a window of their own.
   The setting is read at each op; turning it off moves a chat to a tab in the
   default context on its next op, and its context tabs close when the chat ends.
+- **Popups.** A page an agent tab opens itself (`window.open`, a `target=_blank`
+  link, a "Sign in with ..." window) is created by the page, so no create reply
+  names it. At start the relay sends its own `Target.setDiscoverTargets`, and any
+  `page` target whose `openerId` is already ledgered joins the ledger with focus
+  emulation and its opener's browser context (so under `per_session` a
+  popup stays in the chat's context), the relay keeping the popup-to-opener link (`CdpRelay.opener_of`,
+  bounded at 1,024 links, oldest dropped). A page the person's own tab opens has
+  no ledgered opener and stays out. The discovery events
+  (`targetCreated` / `targetInfoChanged` / `targetDestroyed`) reach a daemon
+  client only after that client sends `Target.setDiscoverTargets` itself, so the
+  daemon's event buffer is unchanged. The op route binds first (which records the
+  context this op browses in) and then follows a new popup only if it sits in that
+  context: after a flip of `browser.isolation`, a popup opened by the chat's tab
+  from the other side is still claimed (session end closes it) but never switched
+  to, streamed or described.
 - Late `screencastFrameAck` errors after a stop are swallowed; close is clean.
 
 ### The stream
@@ -661,7 +676,37 @@ daemon moved), adopts the daemon's current tab when no other session owns it,
 and otherwise opens a tab of its own; a daemon whose current tab was closed (an
 ended chat's, or one the person closed) counts as having none. Chat B therefore
 never clicks on chat A's page, `tabs` lists and switches only the caller's own
-tabs, and a takeover in chat A fences A's tab while B keeps browsing. With `browser.live.enabled` off
+tabs, and a takeover in chat A fences A's tab while B keeps browsing. A popup
+belongs to the chat that owns its nearest owned ancestor by opener links, which
+outlive a closed popup, and the walk stops at another chat's tab
+(`browser_ops.claim_popups`): before the
+bind and again after the op, a popup that chat has not claimed yet becomes its
+current tab (`follow_popup`, `switch_tab` with `activate=False`), and the op's
+answer carries `popup: {target_id, url, title, hint}`, with `url` and `title`
+left out when the navigate gate refuses the address, and capped at 2048 and 300
+characters (the live hub's page caps) when it admits it. When the bound tab is gone
+and it was a popup, the bind walks the opener links back to the nearest tab the
+chat still has instead of opening a blank one, so a sign-in window that closes
+itself returns the agent to the page that opened it. When the op's own action
+closes the popup (a "Log in" button that calls `window.close()`), the daemon loses
+its session mid-op; if the bound tab was a popup and leaves the ledger within
+`POPUP_CLOSE_GRACE_S` (1 s), the route returns the session to the opener and the
+op answers `ok` with `popup_closed: {target_id, returned_to, hint}` instead of
+`browser_error`. A bind whose bound popup closed under it binds again onto the
+opener. Every popup move of the chat's tab (following a popup, or going back to
+a closed popup's opener) is kept on the live session until an answer reports it
+(`LiveHub.note_tab_moved`); the route adds it to the next answer it returns, as
+`popup` or `popup_closed` with a hint, whether that answer succeeded, refused or
+failed (the browser tool prints it after the error text too), and a HOLD, an
+interrupted op, a quick ask's answer or a governance deny leaves it pending,
+because their text cannot carry it. While it is pending, an
+op that acts on an element or point of the page (`click`, `drag`, `scroll`,
+`type`, `press_key`, `hover`, `select_option`, `dialog`, `reflex`) is refused
+with `popup_opened` or `popup_closed` and `ok: false`, because a ref or coordinate
+belongs to the page it came from; every other op still runs on the new tab. A failure caused by the op's own action
+closing its popup is answered `ok` with `popup_closed`. If following the opener then hits the navigate gate (the popup sent the opener to a refused address as it closed), the answer is that refusal, audited `denied`. Any other failure stays an error. `tabs list` claims first,
+and a chat's end claims before it closes its tabs, so its popups close with it.
+With `browser.live.enabled` off
 the hub publishes no event at all, so no card is mounted; the ops still run. While the owner's Chrome shows its Allow sheet the op route tells
 the hub `waiting_allow`, bounded at 60 s per op (the Allow sheet itself outlasts
 the op). The session key the shim resolves (`dashboard:<slot>` or the bare slot)
@@ -1196,7 +1241,7 @@ the last navigate or snapshot.
 | `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land. `type {ref?, steps: [{text} | {key, modifiers?}]}` (`browser_harness/type_steps.py`, reached from `ops.py` by a call-time import) runs its steps in order in one op: `ref` is focused once, each text step runs the focused-field checks above and each key step `press_key`'s guards, and the first refusal, a `dialog_open` included, ends it with the step's 0-based index as `step` and at the front of its `error`. A malformed list (not 1 to `STEPS_CAP` (50) steps, a step that is neither shape, a key step whose key `press_key` would refuse as unknown, `text` or a truthy `submit` beside `steps`) is refused `bad_steps` before anything runs; `TEXT_CAP` bounds the text of all steps together. A `\t` in `text` inserts a tab character, not the Tab key |
 | `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named |
 | `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path |
-| `tabs` | lists and switches `relay.agent_targets()` only |
+| `tabs` | lists and switches `relay.agent_targets()` only, the popups the caller's tabs opened included |
 | `reflex` | a loop of the ops above over a closed move set, judged by the decision seam, in `step`, `realtime` or `virtual_time` mode; `not_available` when it is off ("The fast loop" below) |
 
 Every op calls `live_hub.step`; `run_op`'s own `in_control` check is the backstop
