@@ -835,7 +835,12 @@ Chromium performs its own resolution to connect. `route.continue()` in
 validated, so a name that answers public then private across those two
 resolutions is the window. It cannot be closed at the route layer without
 aborting **all** cross-origin subresources, which would drop legitimate CDN
-fonts and images from the rendered screenshot. **Status: ACCEPTED, bounded.**
+fonts and images from the rendered screenshot. A WebSocket to a host other than
+the pinned base has the same window: the guard's `routeWebSocket` handler checks
+the host once and then calls `ws.connectToServer()`, which also takes no
+address, so the browser resolves the name again to connect
+([#9004](https://github.com/kirodotdev/KiroCrew/issues/9004) accepted it as the
+same class). **Status: ACCEPTED, bounded.**
 Reaching it requires an attacker to control both a critiqued page and a rebinding
 DNS name; the base-host and same-host vectors are already closed. The complete
 fix is below-the-browser egress filtering independent of Chromium's resolver — a
