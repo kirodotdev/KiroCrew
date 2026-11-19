@@ -306,6 +306,7 @@ class TestSelfHealRefreshRestart:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             return "TOK"
@@ -491,6 +492,7 @@ class TestSelfHealRefreshRestart:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             mints["n"] += 1
@@ -943,6 +945,7 @@ class TestSelfHealRefreshRestart:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             nonlocal minted
@@ -1002,6 +1005,7 @@ class TestSelfHealRefreshRestart:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             minted["n"] += 1
@@ -1391,6 +1395,7 @@ class TestSelfHealRefreshRestart:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             seen.append(remote_port)

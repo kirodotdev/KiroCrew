@@ -8,8 +8,8 @@ export const {
   fmtNumber, fmtCurrency, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText,
   // The App Kit seam level, so an app can feature-detect what this host provides.
   APP_SDK_LEVEL,
-  // An app's own origin on the dashboard's port (level 8).
-  appWebOrigin,
+  // An app's own origin on the dashboard's port (level 8), and why it has one or not (feature-detect by name).
+  appWebOrigin, appWebOriginStatus,
   // Marker protocol. Naming an export the host does not provide is a load-time failure for the
   // whole app, so this list is checked against the protocol barrel by chatProtocolBoundary.test.ts.
   parseOptions, deriveFollowUpOptions, extractSteeringAcks, stripPartialOptionMarker,

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
+from claude_settings_tier_helpers import empty_claude_settings_tiers
 from redaction_structured_cases import github_classic
 
 import kiro_crew.acp.client as acp_client
@@ -251,6 +252,11 @@ class TestSubstitutionFollow:
     next step (set_config_option) crashes on the uninitialized-session guard.
     This is the no-sessionId path the earlier suite did not cover.
     """
+
+    @pytest.fixture(autouse=True)
+    def _empty_user_and_managed_tiers(self, tmp_path, _floor_monkeypatch):
+        """The re-seed compares rendered bytes, which the host's ``~/.claude`` would change."""
+        empty_claude_settings_tiers(tmp_path, _floor_monkeypatch)
 
     def _advisory_resp(self):
         # Mirrors what _wait_for_response returns on the advisory: empty dict,

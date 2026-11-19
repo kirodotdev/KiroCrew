@@ -1073,6 +1073,7 @@ class TestALentCredentialIsShortLived:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             seen.append(ttl)
