@@ -15359,6 +15359,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}: {{text}}",
         "approval": "{{speaker}} espera tu aprobación: {{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "No se pudo cargar el consejo. Comprueba la conexión con el gateway y vuelve a intentarlo."
       }
     },
     "chatPage": {

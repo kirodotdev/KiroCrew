@@ -14998,6 +14998,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}: {{text}}",
         "approval": "{{speaker}} तुम्हारी स्वीकृति की प्रतीक्षा कर रहा है: {{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "टिप लोड नहीं हो सकी। गेटवे से कनेक्शन जाँचो, फिर दोबारा कोशिश करो।"
       }
     },
     "chatPage": {

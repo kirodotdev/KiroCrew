@@ -15359,6 +15359,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}} : {{text}}",
         "approval": "{{speaker}} attend ton approbation : {{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "L’astuce n’a pas pu se charger. Vérifie la connexion à la passerelle, puis réessaie."
       }
     },
     "chatPage": {

@@ -14637,6 +14637,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}：{{text}}",
         "approval": "{{speaker}} 正在等待你的批准：{{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "提示加载失败。请检查与网关的连接，然后重试。"
       }
     },
     "chatPage": {

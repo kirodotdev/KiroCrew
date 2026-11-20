@@ -14637,6 +14637,9 @@
       "transcriptAnnouncement": {
         "spoken": "{{speaker}}: {{text}}",
         "approval": "{{speaker}}이(가) 승인을 기다리고 있습니다: {{operation}}"
+      },
+      "thinkingTip": {
+        "load_failed": "팁을 불러오지 못했습니다. 게이트웨이 연결을 확인한 뒤 다시 시도하세요."
       }
     },
     "chatPage": {
