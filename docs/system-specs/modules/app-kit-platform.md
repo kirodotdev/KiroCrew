@@ -7687,7 +7687,8 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `useChatLauncher().createChat` (§44), `permissions.browserSites` and the SDK's
 `useBrowserMedia` (§45), and `ctx.embed`'s batch members; level 11 adds the SDK's `BrowserView`,
 `useBrowserView` and `useBrowserCoords` (RFC app-sdk-browser, step 1c) and the SDK's
-`appWebOriginStatus` (§18k). Several seams share level 7,
+`appWebOriginStatus` (§18k); level 12 adds `permissions.kiroOperations`, its route and
+`ctx.kiro_call` (§47). Several seams share level 7,
 three share level 8, and the open batch that level 10 starts shares level 10, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
@@ -10319,6 +10320,110 @@ Writers: `apps/browser_sdk.py`, `apps/manifest_sections.py` (`Permissions.browse
 Tests: `test/test_app_browser_sdk.py`, `website/src/test/AppDetailPageCoverage.test.tsx`,
 `website/src/test/TrustAppModalWorkerAutoApprove.test.tsx`,
 `website/src/test/previewSurfaces.test.tsx`.
+
+## 47. An app calls the Kiro operations the owner approved, as the person (seam level 12)
+
+A Kiro feature that serves customers puts its API behind the Kiro BFF: one Smithy RPC v2
+CBOR service, `POST <origin>/service/KiroWebBearerService/operation/<Op>`, authorized by
+the person's Kiro bearer token. An app for such a feature needs a fixed set of those
+operations. Before this seam the only way was an in-gateway hook importing
+`kiro_crew.auth`, which App Kit reserves for built-ins and which hands the app the whole
+token. Design: RFC #39709.
+
+**The declaration.** `permissions.kiroOperations` is a list of at most 64 exact operation
+names. A name is 1 to 64 ASCII characters, an upper-case letter then letters or digits,
+checked one character at a time (`apps/kiro_operations.is_operation_name`); no wildcard,
+prefix or service name. `AppManifest.validate` reports a bad entry, a repeat or a
+non-list (`Permissions.list_errors`); the readers keep only valid names, each once.
+
+**The grant.** Each name is an entry of the `kiroOperations` family of the app's approved
+set, registered explicit-only in `point_grants` and listed in
+`manager_records._OWNER_APPROVED_FAMILIES`: an install or first registration approves none.
+The trust prompt lists the names (`trust-kiro-operations`; the catalog discloses them
+before install through `official_catalog._disclosed_permissions_manifest`), an update that
+adds a name holds it while the old names keep working, and the host owner approves each
+name on the app's page. A Shared Crew teammate passes the dashboard's owner gate but may
+not approve these, since the calls run with the host owner's sign-in
+(`routes_kiro.kiro_consent_refusal`, called from `POST /api/apps/{name}/enable`: 403
+`owner_only`). The page shows them through `kiroOperationsGrant` on the app row
+(`staged-kiro-operations`; the Permissions card lists every declared name and marks the held-back ones, `kiro-operations`),
+and a dropped name needs nothing. A set stored before this family existed approves none.
+`kiro_operations.app_kiro_operations(app)` is the one reader: read fresh on every call,
+empty unless the app is enabled, `third_party_ceiling_closed` admits it, and the live
+manifest declares the names the approved set holds.
+
+**Callers.** Two, each named positively:
+
+- `POST /api/apps/{name}/kiro/{operation}` (`apps/routes_kiro.py`): a JSON object in, the
+  operation's output map out as JSON. Admitted: an app token whose verified claim is
+  exactly `{name}` and that did not come through the internal secret (a process in an agent
+  sandbox can read that secret), or the host owner's own dashboard session
+  (`is_host_owner_dashboard_request`; a Shared Crew teammate is refused, since the call
+  runs as the owner's sign-in). Anything else is 403 `forbidden`. The path is in
+  the app's own namespace, so no `permissions.api` entry is needed; `kiro` is listed in
+  `CORE_APP_ROUTE_SEGMENTS` so no app can claim it, and an app hook route at the same
+  path is shadowed by the core route.
+- `await ctx.kiro_call(operation, input)` (`AppContext.kiro_call`): the same core function,
+  keyed on the context's own app name, raising `KiroCallError`.
+
+An app's future `agentTools` handler (RFC app-agent-tools-third-party-grant) reaches the
+seam the same way: its handler holds the app's token or its `ctx`.
+
+**The call** (`apps/kiro_calls.call_kiro_operation`), in a fixed order; a refusal at any
+step sends nothing: exact membership in `app_kiro_operations` (an app that is not enabled
+is 403 `app_disabled`, declared but not approved is 403 `operation_not_approved`, undeclared
+is 404 `unknown_operation`); the input is a
+JSON object of at most 1 MiB and 32 levels, read until the body ends (the route reads it in
+chunks, refusing past 1 MiB), and a value CBOR cannot carry (an integer past 64 bits, a lone
+surrogate) is 400 `invalid_json`; at most 8 calls of one app in flight (429
+`too_many_calls` with `Retry-After: 1`); the upstream signs; the call goes out with no redirect followed, the
+system proxy honoured, and a 30-second bound; the reply must carry
+`smithy-protocol: rpc-v2-cbor`, at most 8 MiB, checked on `Content-Length` and on the
+bytes read. A CBOR byte string comes back as base64 text and a timestamp as ISO-8601.
+The codec is `apps/rpc_cbor.py`, shared with the Kiro Space client.
+
+**The upstream seam.** Which credential and which fixed endpoint a call uses is one
+`Upstream` (`kiro_calls.KIRO_UPSTREAM`), answering a `SignedCall` (base URL and the
+credential headers, hidden from `repr`). Nothing else reads the vault or picks a host.
+Kiro's is `KiroSignIn`: `KasAuthProvider(default_token_store(), allow_env_api_key=False)`,
+so never kiro-cli's login and never `KIRO_API_KEY`; headers `Authorization`, `X-Kiro-Idp`
+(from the stored provider), `X-Kiro-Profile-Arn` (`kas_profile_arn`) and `TokenType`; the
+origin from `profile_region` through `KIRO_ORIGINS` (`us-east-1` → `https://app.kiro.dev`,
+`eu-central-1` → `https://eu-central-1.app.kiro.dev`; no profile ARN is `us-east-1`). A
+region not in the table is 503 `kiro_region_unsupported` and is never sent to another
+region's host. No app config, manifest key or environment variable changes the origin or
+the service. A 401 or 403 renews the sign-in once (`rejected_access_token`) and retries
+once, rebuilding the URL from the renewed sign-in, since it may name another region;
+nothing else is retried.
+
+**Errors.** `{"error": <message>, "code": <code>, "upstream": <upstream error or null>}`, the
+gateway's error contract (`test_error_code_contract.py`); `upstream` is `{status, type, message}`
+when the upstream answered an error. No status is 401, because an app client renews its app token on a 401.
+Signed out is 409 `kiro_sign_in_required`; a read or renewal that failed is 503
+`kiro_sign_in_unavailable` naming only the exception type; a 401 to the renewed token is 409
+`kiro_sign_in_refused`; all three say to sign in to Kiro in Settings. Any other upstream error, a 403
+after the renewal included (an operation can refuse a valid sign-in, which signing in again
+cannot fix), is 502 `kiro_operation_failed`; a timeout 504 and a network error 502 `kiro_unreachable`; a
+reply too large or not RPC v2 CBOR 502 `kiro_bad_reply`.
+
+**The token stays in the gateway.** It is in no answer, error body, log line, audit row
+or process environment. Every token this call sent is replaced in the upstream's error
+message, the credential redactor runs over the whole text, and only then is it cut to 300
+characters (`redact_and_truncate`), so a secret the cut would split is still recognized. One log
+line per call names the app, operation, status, duration and input size; one SEL row
+(`kiro_call`, `kiro_calls.audit_kiro_call`) names the caller kind, the app, the operation and
+the grant entry. A refused caller and a refused approval each write a `denied` row too, and
+an operation that is not a valid name is recorded as `<invalid>`.
+
+Writers: `apps/kiro_operations.py`, `apps/kiro_calls.py`, `apps/routes_kiro.py`,
+`apps/rpc_cbor.py`, `apps/market_client.py`, `apps/context.py`, `apps/manifest_sections.py`
+(`Permissions.kiroOperations`, `list_errors`), `apps/manifest.py`
+(`CORE_APP_ROUTE_SEGMENTS`), `apps/point_grants.py`, `apps/manager_lookup.py`,
+`apps/routes.py`, `apps/app_sdk_level.py`, `website/src/apps/coreAppRoutes.ts`,
+`website/src/components/appstore/TrustAppModal.tsx`,
+`website/src/components/appstore/trustGrants.ts`, `website/src/pages/AppDetailPage.tsx`,
+`website/src/pages/AppDetailGrantBoxes.tsx`, `website/src/pages/appDetailPageStagedGrants.ts`.
+Tests: `test/test_app_kiro_calls.py`.
 
 ## Windows stale-backend cleanup capacity
 

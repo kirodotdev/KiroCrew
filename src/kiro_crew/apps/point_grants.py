@@ -236,6 +236,18 @@ def _browser_grant_entries(permissions: Any) -> dict[str, list[str]]:
 register_permission_grants(("browser",), _browser_grant_entries, explicit_only=True)
 
 
+def _kiro_operation_grant_entries(permissions: Any) -> dict[str, list[str]]:
+    # Deferred, like ``browser_sites`` above: off the MCP server's pre-list budget.
+    from kiro_crew.apps.kiro_operations import kiro_operation_grant_entries  # noqa: PLC0415
+
+    return kiro_operation_grant_entries(permissions)
+
+
+#: ``kiro_operations.GRANT_FAMILY`` (``permissions.kiroOperations``), named here so
+#: registering it imports nothing.
+register_permission_grants(("kiroOperations",), _kiro_operation_grant_entries, explicit_only=True)
+
+
 def _frame_source_grant_entries(ui: Any) -> dict[str, list[str]]:
     # Deferred: ``frame_sources`` stays off the path an MCP server walks before its
     # tool list, which has a module budget (``test_mcp_listing_import_budget``).

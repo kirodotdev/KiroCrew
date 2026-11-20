@@ -10,6 +10,9 @@ browses the pages the owner approved without a card per step, and the page's
 Level 11 adds the page's ``BrowserView``, ``useBrowserView`` and ``useBrowserCoords``:
 the live view of the app's own chat slot, with take over and hand back, behind the
 ``app_browser_sdk`` preview; and the SDK's ``appWebOriginStatus``.
+Level 12 adds ``permissions.kiroOperations``: ``POST /api/apps/<name>/kiro/<operation>``
+and ``ctx.kiro_call`` call the Kiro operations the owner approved for the app, with
+the person's Kiro sign-in, which never reaches the app.
 """
 
-APP_SDK_LEVEL = 11
+APP_SDK_LEVEL = 12
