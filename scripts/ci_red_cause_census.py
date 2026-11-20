@@ -9,13 +9,18 @@ read-only report says how often it means something else:
 
 It reads every workflow's runs created in the window and writes three files to
 ``--out-dir``. A bound is a UTC day (``2026-11-20``; as ``--until`` the whole day
-is included) or a UTC minute (``2026-11-20T09:00Z``).
+is included) or a UTC minute (``2026-11-20T09:00Z``). ``--last-days 1`` is
+yesterday, the whole UTC day, in place of both bounds.
 
     red-jobs.csv   one row per red job: run id, job id, workflow, job name,
                    event, head SHA, PR number, cause, and the evidence that
-                   decided the cause (80 printable ASCII characters at most)
+                   decided the cause (80 printable ASCII characters at most); no
+                   cell holds a control character
+    ci-pushes.csv  the event and head SHA of every push the `CI` workflow ran
+                   for, so that days can be added up without counting a
+                   push twice (`scripts/ci_red_census_week.py`)
     summary.md     the three goal numbers with their n, and the cause counts
-    summary.json   the same numbers as data
+    summary.json   the same numbers as data, with the window they cover
 
 The summary, the GraphQL and REST call counts and the run time are printed too.
 
@@ -84,13 +89,20 @@ workflow and head SHA, is left out and counted in ``suites_unread``, so no job
 is reported with a cause a complete read could have changed. It still writes its files,
 says ``Partial`` at the top of the summary with the reason and the span of the
 runs it did read, sets ``partial`` in the JSON and exits 3 (1 is a failed
-read): its counts cover only what was read. A whole day or more belongs in a
-workflow, under the workflow's own token and after
-``.github/actions/gh-rate-limit``, read one day an hour with ``--max-points``
-raised to fit; do not spend a person's bucket on it.
+read): its counts cover only what was read. A whole day belongs in a workflow,
+under the workflow's own token and after ``.github/actions/gh-rate-limit``,
+with ``--max-points`` raised to fit (`ci-red-census.yml` reads yesterday every
+night); do not spend a person's bucket on it.
 
-Annotation and log text is untrusted. It is never placed in a shell command,
-and what reaches a file is cut to printable ASCII.
+Read a day soon after it ends. Runs are listed newest first and GitHub has no
+date filter for them, so reaching a window pages through every run created
+since: a day read the next morning costs little more than its own runs, a day
+read a week later costs the week.
+
+Annotation and log text is untrusted, and so is a job's name. None of it is
+placed in a shell command. Annotation and log text is cut to printable ASCII
+before it reaches a file; a name reaches the CSV only, with its control
+characters replaced, and never the summary or what is printed.
 """
 
 from __future__ import annotations
@@ -98,6 +110,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import functools
 import importlib.util
 import json
 import re
@@ -129,11 +142,17 @@ MAX_WORKERS = 8
 EVIDENCE_CHARS = 80
 ATTEMPTS = 3
 BACKOFF_SECONDS = (2, 10)
+# One `gh` call. Behind `.github/actions/gh-rate-limit` a call also sleeps out a
+# spent rate limit inside `gh`, so a workflow raises this by the wrapper's whole
+# wait budget (``--gh-timeout-seconds``): a call ended mid-sleep has spent the
+# budget and read nothing.
 GH_TIMEOUT_SECONDS = 300
 CAUSES = ("rate_limit", "broken_main", "infrastructure", "flaky", "diff")
 LOG_MODES = ("undecided", "never")
 CI_WORKFLOW = "CI"
 MAIN_RED_LABEL = "main-red"
+PUSH_COLUMNS = ("event", "head_sha")
+PUSH_EVENTS = ("pull_request", "push")
 CSV_COLUMNS = (
     "run_id",
     "job_id",
@@ -189,6 +208,7 @@ _GH_ERROR = "gh: "
 # The Linux shards are `Backend Tests (<python>, <shard>)`, the Windows ones
 # `Backend Tests (Windows) (<shard>)`.
 BACKEND_SHARD = re.compile(r"Backend Tests (?:\([0-9.]+, \d+\)|\(Windows\) \(\d+\))")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _GENERIC = re.compile(r"Process completed with exit code \d+\.?|The operation was canceled\.?")
 
 
@@ -294,12 +314,36 @@ class LogFacts(NamedTuple):
     failures: dict[str, str]
 
 
+class RunStats(NamedTuple):
+    """What the summary needs of the runs read: how many, their span, the CI pushes."""
+
+    runs: int
+    read_from: str | None
+    read_to: str | None
+    ci_pushes: frozenset[tuple[str, str]]
+
+
+def run_stats(runs: list[Run]) -> RunStats:
+    return RunStats(
+        runs=len(runs),
+        read_from=min((run.created_at for run in runs), default=None),
+        read_to=max((run.created_at for run in runs), default=None),
+        ci_pushes=frozenset(
+            (run.event, run.head_sha)
+            for run in runs
+            if run.workflow == CI_WORKFLOW and run.event in PUSH_EVENTS
+        ),
+    )
+
+
 class Census:
     """What one census read: a row per red job, the runs behind them, the totals."""
 
     def __init__(self) -> None:
         self.rows: list[dict[str, Any]] = []
         self.runs: list[Run] = []
+        # Set by a census put together from stored days, which keeps no runs.
+        self.stats: RunStats | None = None
         self.partial: str | None = None
         self.workflows = 0
         self.log_unread = 0
@@ -422,14 +466,14 @@ def classify(
 GhRunner = Callable[[list[str]], tuple[int, str, str]]
 
 
-def run_gh(argv: list[str]) -> tuple[int, str, str]:
+def run_gh(argv: list[str], timeout: float = GH_TIMEOUT_SECONDS) -> tuple[int, str, str]:
     try:
         done = subprocess.run(  # noqa: S603 - fixed argv, no shell
             ["gh", *argv],
             capture_output=True,
             encoding="utf-8",
             errors="replace",
-            timeout=GH_TIMEOUT_SECONDS,
+            timeout=timeout,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -453,9 +497,11 @@ class Api:
         sleep: Callable[[float], None] = time.sleep,
         reserve: int = DEFAULT_RESERVE_POINTS,
         max_points: int = DEFAULT_MAX_POINTS,
+        now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.timezone.utc),
     ) -> None:
         self._run = run
         self._sleep = sleep
+        self.now = now
         self._lock = threading.Lock()
         self.reserve = reserve
         self.max_points = max_points
@@ -1022,6 +1068,7 @@ def _share(part: int, whole: int) -> float | None:
 def summarize(census: Census, days: float) -> dict[str, Any]:
     """The three goal numbers, each with its n, and the counts behind them."""
     rows = census.rows
+    stats = census.stats or run_stats(census.runs)
     by_cause = {cause: sum(row["cause"] == cause for row in rows) for cause in CAUSES}
 
     pushes: dict[str, set[str]] = {}
@@ -1038,19 +1085,15 @@ def summarize(census: Census, days: float) -> dict[str, Any]:
     ]
     flaky = sum(row["cause"] == "flaky" for row in shards)
     infra = sum(row["cause"] == "infrastructure" for row in shards)
-    ci_pushes = {
-        (run.event, run.head_sha)
-        for run in census.runs
-        if run.workflow == CI_WORKFLOW and run.event in ("pull_request", "push")
-    }
+    ci_pushes = stats.ci_pushes
     return {
         "days": round(days, 4),
         "partial": census.partial,
-        "runs_read_from": min((run.created_at for run in census.runs), default=None),
-        "runs_read_to": max((run.created_at for run in census.runs), default=None),
+        "runs_read_from": stats.read_from,
+        "runs_read_to": stats.read_to,
         "suites_unread": census.suites_unread,
         "workflows": census.workflows,
-        "runs": len(census.runs),
+        "runs": stats.runs,
         "red_jobs": len(rows),
         "by_cause": by_cause,
         "log_unread": census.log_unread,
@@ -1125,9 +1168,12 @@ def render_markdown(summary: dict[str, Any], repo: str, since: str, until: str) 
 
 
 def _cell(value: Any) -> str:
-    """One CSV cell that a spreadsheet cannot read as a formula."""
-    text = str(value)
-    return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+    """One CSV cell: no control character, and nothing a spreadsheet reads as a formula.
+
+    A job name is whatever a pull request's workflow file calls the job.
+    """
+    text = _CONTROL.sub(" ", str(value))
+    return "'" + text if text.lstrip()[:1] in ("=", "+", "-", "@") else text
 
 
 def write_outputs(out_dir: Path, census: Census, summary: dict[str, Any], markdown: str) -> None:
@@ -1137,9 +1183,24 @@ def write_outputs(out_dir: Path, census: Census, summary: dict[str, Any], markdo
         writer.writerow(CSV_COLUMNS)
         for row in census.rows:
             writer.writerow([_cell(row[column]) for column in CSV_COLUMNS])
+    stats = census.stats or run_stats(census.runs)
+    with open(out_dir / "ci-pushes.csv", "w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(PUSH_COLUMNS)
+        writer.writerows(sorted(stats.ci_pushes))
     (out_dir / "summary.md").write_text(markdown, encoding="utf-8", newline="\n")
     text = json.dumps(summary, indent=2, sort_keys=True) + "\n"
     (out_dir / "summary.json").write_text(text, encoding="utf-8", newline="\n")
+
+
+def _positive(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number of 1 or more")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1149,22 +1210,26 @@ def build_parser() -> argparse.ArgumentParser:
             "Cost: one day of kirodotdev/KiroCrew (2026-11-19) was 1,828 GraphQL calls and "
             "2,786 points. The bucket is shared (5,000 points an hour for every session of a "
             "person's account), so the defaults stop early: read a few hours by hand, and run "
-            "a day or more from a workflow, under its own token and after "
+            "a day from a workflow, the morning after, under its own token and after "
             ".github/actions/gh-rate-limit. A census the budget stopped exits "
             f"{PARTIAL_EXIT} and marks its files partial."
         ),
     )
     parser.add_argument(
         "--since",
-        required=True,
         type=parse_bound,
         help="UTC start: 2026-11-20 or 2026-11-20T09:00Z",
     )
     parser.add_argument(
         "--until",
-        required=True,
         type=parse_bound,
         help="UTC end: a day (included whole) or a time such as 2026-11-20T12:00Z",
+    )
+    parser.add_argument(
+        "--last-days",
+        type=_positive,
+        default=None,
+        help="in place of --since and --until: this many whole UTC days, ending yesterday",
     )
     parser.add_argument("--repo", required=True, help="owner/name")
     parser.add_argument("--out-dir", required=True, type=Path)
@@ -1196,6 +1261,13 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"stop after spending this many GraphQL points (default {DEFAULT_MAX_POINTS}, "
         "about half a day of runs; a full day is about 2,800)",
     )
+    parser.add_argument(
+        "--gh-timeout-seconds",
+        type=_positive,
+        default=GH_TIMEOUT_SECONDS,
+        help="the longest one gh call may take; behind .github/actions/gh-rate-limit, "
+        f"its max-wait and {GH_TIMEOUT_SECONDS} more (default {GH_TIMEOUT_SECONDS})",
+    )
     return parser
 
 
@@ -1204,8 +1276,15 @@ def main(
     api: Api | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> int:
-    args = build_parser().parse_args(argv)
-    api = api or Api()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    api = api or Api(run=functools.partial(run_gh, timeout=args.gh_timeout_seconds))
+    if args.last_days is not None and args.since is None and args.until is None:
+        today = api.now().date()
+        args.since = parse_bound((today - dt.timedelta(days=args.last_days)).isoformat())
+        args.until = parse_bound((today - dt.timedelta(days=1)).isoformat())
+    elif args.last_days is not None or args.since is None or args.until is None:
+        parser.error("give --since and --until, or --last-days alone")
     api.reserve, api.max_points = args.reserve_points, args.max_points
     began = clock()
     try:
@@ -1217,7 +1296,7 @@ def main(
         print(f"ci_red_cause_census: {exc}", file=sys.stderr)
         status = 1
     else:
-        summary = summarize(census, days)
+        summary = {**summarize(census, days), "since": start, "until": end}
         markdown = render_markdown(summary, args.repo, args.since.text, args.until.text)
         write_outputs(args.out_dir, census, summary, markdown)
         print(markdown)
