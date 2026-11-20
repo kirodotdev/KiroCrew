@@ -263,6 +263,32 @@ async def test_the_key_is_sent_only_as_the_header_and_never_returned(
 
 
 @pytest.mark.asyncio
+async def test_a_key_replaced_mid_read_is_never_sent_to_the_old_instance(
+    tmp_path, table, monkeypatch
+) -> None:
+    # The owner moves the credential from acme to beta while a read is under way:
+    # the instance and the key must come from one snapshot, never one of each.
+    _store(tmp_path)
+    beta_key = "now_" + "b" * 40
+    real_get = SecretVault.get
+    moved: list[bool] = []
+
+    def get_then_move(self: SecretVault, name: str) -> Any:
+        value = real_get(self, name)
+        if not moved:
+            moved.append(True)
+            _store(tmp_path, instance="beta.service-now.com", key=beta_key)
+        return value
+
+    monkeypatch.setattr(SecretVault, "get", get_then_move)
+    status, _payload = await _search()
+    assert status in (200, 400)
+    for url, key in zip(table.urls, table.keys):
+        assert (urlsplit(url).hostname, key) != (_HOST, beta_key)
+    assert table.keys in ([], [_KEY])
+
+
+@pytest.mark.asyncio
 async def test_a_key_with_whitespace_is_refused_unsent(tmp_path, table) -> None:
     _store(tmp_path, key="now key")
     status, payload = await _search()
@@ -605,6 +631,40 @@ async def test_a_raw_query_that_could_widen_or_reorder_is_refused(stored, table,
     status, payload = await _search(raw=raw)
     assert status == 400 and payload["code"] == "invalid_request"
     assert table.urls == []
+
+
+# Every non-ASCII character whose one-character upper or lower case (as Java's
+# case-blind compare maps it) is an ASCII letter of "javascript": U+0130, U+0131,
+# U+017F and the Kelvin sign U+212A (which only maps to "k", absent here).
+_JAVA_FOLDS = {"i": ("İ", "ı"), "s": ("ſ",)}
+_SCRIPT_SPELLINGS = sorted(
+    {
+        "javascript:"[:index] + look_alike + "javascript:"[index + 1 :]
+        for index, char in enumerate("javascript:")
+        for look_alike in _JAVA_FOLDS.get(char, ())
+    }
+    | {"JAVASCRIPT:", "javascript：", "ｊａｖａｓｃｒｉｐｔ:"}
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spelling", _SCRIPT_SPELLINGS)
+@pytest.mark.parametrize("field", ["raw", "assignee", "author", "text"])
+async def test_every_case_blind_spelling_of_a_script_is_refused(
+    stored, table, spelling, field
+) -> None:
+    value = f"{spelling}gs.getUserID()"
+    body = {"raw": f"short_descriptionLIKE{value}"} if field == "raw" else {field: value}
+    status, payload = await _search(**body)
+    assert status == 400 and payload["code"] == "invalid_request"
+    assert table.urls == []
+
+
+@pytest.mark.asyncio
+async def test_non_ascii_text_that_is_no_script_is_searched(stored, table) -> None:
+    status, _payload = await _search(text="Straße İstanbul ıġ", raw="short_descriptionLIKEcafé")
+    assert status == 200
+    assert "short_descriptionLIKEcafé" in table.params()["sysparm_query"]
 
 
 @pytest.mark.asyncio

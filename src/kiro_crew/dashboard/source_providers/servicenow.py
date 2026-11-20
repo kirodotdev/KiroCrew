@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import string
+import unicodedata
 from dataclasses import replace
 from datetime import datetime
 from typing import Any
@@ -139,16 +140,19 @@ _REDIRECT_MESSAGE = "ServiceNow answered with a redirect, which is not followed.
 # ── Credential and transport ────────────────────────────────────────────────
 
 
-def _vault_secret(vault: SecretVault, name: str) -> str:
-    secret = vault.get(name)
+def _revealed(secret: Any) -> str:
     return secret.reveal().strip() if secret is not None else ""
 
 
 def _stored_credential() -> tuple[str, str]:
-    """``(instance, key)`` from the vault, ``""`` for each one absent or unreadable."""
+    """``(instance, key)`` from the vault, ``""`` for each one absent or unreadable.
+
+    Both come from ONE snapshot of the store, so a key replaced between two reads
+    can never be paired with the instance it replaced.
+    """
     try:
-        vault = SecretVault(config_loader.config_dir())
-        return _vault_secret(vault, INSTANCE_NAME), _vault_secret(vault, API_KEY_NAME)
+        stored = SecretVault(config_loader.config_dir()).get_many([INSTANCE_NAME, API_KEY_NAME])
+        return _revealed(stored.get(INSTANCE_NAME)), _revealed(stored.get(API_KEY_NAME))
     except Exception:
         logger.debug("ServiceNow credential unavailable", exc_info=True)
         return "", ""
@@ -368,13 +372,21 @@ async def _fetch_servicenow_record(ref: SourceRef) -> dict[str, Any]:
 
 
 def _ascii_fold(char: str) -> str:
-    """*char*, or the ASCII letter a case-blind compare would take it for
-    (``ſ`` -> ``S``, ``ı`` -> ``I``, the Kelvin sign -> ``k``)."""
+    """*char*, or the ASCII character a case-blind or compatibility compare could
+    take it for.
+
+    Java's case-blind compare maps one character at a time, so ``ſ`` -> ``S``,
+    ``ı`` -> ``I``, ``İ`` -> ``i`` and the Kelvin sign -> ``k`` each match an ASCII
+    letter. Python's full case mapping can answer with more than one character
+    (``'İ'.lower()`` is ``i`` plus a combining dot), so the first character of each
+    form is what counts. The compatibility form (NFKD) folds wider still
+    (``ｊ`` -> ``j``, ``：`` -> ``:``), which only refuses more.
+    """
     if char.isascii():
         return char
-    for cased in (char.upper(), char.lower()):
-        if cased.isascii():
-            return cased
+    for form in (char.upper(), char.lower(), unicodedata.normalize("NFKD", char)):
+        if form and form[:1].isascii():
+            return form[:1]
     return char
 
 

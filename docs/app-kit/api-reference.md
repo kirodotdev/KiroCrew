@@ -915,8 +915,9 @@ instance can limit the key to the Table API and `GET`.
 - **One instance.** `host` must be a `<name>.service-now.com` host (no port, path or
   userinfo; letter case and a trailing dot are ignored), and exactly the stored
   `SERVICENOW_INSTANCE`. Any other host is refused (400) before any call, so an app
-  cannot send the key to another instance, and a redirect is never followed. A
-  custom domain in front of an instance is not supported.
+  cannot send the key to another instance, and a redirect is never followed. Only
+  standard `*.service-now.com` instance domains are supported: a custom domain in
+  front of an instance, or another ServiceNow cloud's domain, is refused.
 - **One table.** `scope` is `incident`, `problem`, `change_request`, `sc_req_item` or
   `sc_task`; anything else is refused. The gateway fixes the field list, ordering
   (`sort`, `order`) and paging.
@@ -941,6 +942,8 @@ instance can limit the key to the Table API and `GET`.
   links, extra query parameters) are not supported. Its comments section is empty
   and listed in `partialSections`: comments and work notes are not read.
 - **Errors** are the gateway's own text, never ServiceNow's.
+- **Validation.** This provider is tested against a mocked Table API only, not
+  yet against a live instance.
 
 ## Issue List
 
