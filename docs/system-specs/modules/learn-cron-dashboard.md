@@ -7649,7 +7649,13 @@ mis-keys ten `credential-exfil` rules: their patterns name the AWS credential
 environment variables, so rules that block moving credentials OUT draw
 credential-READ prose inviting the caller to run the command it wanted. The
 subject is read on the generic path only, because a command refused for moving a
-credential necessarily contains that credential's name. A census in
+credential necessarily contains that credential's name. The full AWS credential
+variable names (`AWS_SECRET_ACCESS_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SESSION_TOKEN`)
+are read only from the pattern a refusal names, never its other text or the
+subject, at the AWS row's place in the order (`_NAMED_PATTERN_ANCHORS`): a
+glob-tier refusal names them as its pattern, while an outbound transfer's title
+and a governance refusal's quoted command name them without reading them, and keep
+the answer they get without these names. A census in
 `test_deny_guidance.py` fails when a rule in a remediation category resolves to no
 guidance, and when any rule's class comes from the anchor scan rather than its
 identity. A rule that carries its own `note` (`DeniedCommandRule.note`, empty on
