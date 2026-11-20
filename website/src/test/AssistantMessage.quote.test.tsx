@@ -120,6 +120,13 @@ describe('AssistantMessage quotes what the reader sees', () => {
     expect(onQuote).toHaveBeenCalledWith('first answer, long enough to keep')
   })
 
+  it('quotes a reply without its trailing option-action close tag', () => {
+    const onQuote = vi.fn()
+    render(<AssistantMessage content={`${LONG}\n<!-- option-action:close=Done -->`} isStreaming={false} slotRunning={false} onQuoteMessage={onQuote} />)
+    fireEvent.click(screen.getByTestId('quote-message'))
+    expect(onQuote).toHaveBeenCalledWith(LONG)
+  })
+
   it('offers no Quote at all on a reply whose text parsing consumed entirely (options-only)', () => {
     render(<AssistantMessage content={'[OPTIONS: a | b]'} isStreaming={false} slotRunning={false} onQuoteMessage={() => {}} />)
     expect(screen.queryByTestId('quote-message')).not.toBeInTheDocument()

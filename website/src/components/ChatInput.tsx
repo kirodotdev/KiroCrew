@@ -125,6 +125,7 @@ const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
 // gate. Extensions align the picker exactly with the verified server allowlist
 // instead of broadening the dialog to neighboring unsupported formats.
 const AUDIO_ACCEPT = '.mp3,.m4a,.wav,.ogg,.oga,.opus,.flac'
+const NO_FOLLOW_UP_OPTIONS: readonly string[] = Object.freeze([])
 // Half the one-row box: the 44px text line plus its 1px border each side.
 const COMPOSER_ONE_ROW_RADIUS = 23
 // The one-row text line's padding, equal above and below so the line sits on
@@ -279,6 +280,9 @@ function ChatInput({
   followUpPendingOptions,
   followUpRefusedOptions,
   followUpError,
+  followUpAction,
+  onFollowUpAction,
+  followUpActionNeedsSecondClick,
   pasteBlocks: pasteBlocksProp = [],
   onPasteBlocksChange: onPasteBlocksChangeProp,
   showFullPastes: showFullPastesProp,
@@ -1051,8 +1055,9 @@ function ChatInput({
       )}
 
       {/* Ghost follow-up bubbles floating above input */}
-      {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={selectFollowUp} onSend={fireFollowUp} quickSend={quickSend} multi={followUpMulti} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError} />
+      {!showGhost && ((followUpOptions && followUpOptions.length > 0) || (followUpAction && onFollowUpAction)) && onFollowUpSelect && (
+          <FollowUpBar options={followUpOptions ?? NO_FOLLOW_UP_OPTIONS} picked={followUpPicked ?? new Set()} onSelect={selectFollowUp} onSend={fireFollowUp} quickSend={quickSend} multi={followUpMulti} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError}
+            action={onFollowUpAction ? followUpAction : null} onAction={onFollowUpAction} actionNeedsSecondClick={followUpActionNeedsSecondClick} actionScope={slotId} />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always

@@ -7,6 +7,7 @@ import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
 import { findLastOptionMarker, stripMarkersForDisplay, optionsOf } from './optionMarker'
 import { extractInlineThinking } from './inlineThinking'
 import { hasGrillCard } from './grillMarker'
+import { optionActionOf, type OfferedAction } from './optionActionTag'
 
 /** A message split into the prose the user reads and the choices offered alongside it. */
 export interface ParsedOptions {
@@ -64,13 +65,15 @@ export interface FollowUpDerivation {
    * options are on offer, so a caller that ignores it keeps multi-select.
    */
   followUpMulti: boolean
+  /** The zero-turn action the same row's control tag offers, or `null`. */
+  followUpAction: OfferedAction | null
 }
 
 /** The one "no options on offer" array. A fresh `[]` per derivation changes
  *  identity on every streamed chunk and re-renders every memoized consumer of
  *  `followUpOptions`, so every empty result returns this same frozen array. */
 const NO_FOLLOW_UPS: readonly string[] = Object.freeze([])
-const NONE: FollowUpDerivation = Object.freeze({ followUpOptions: NO_FOLLOW_UPS, followUpSourceKey: null, followUpMulti: true })
+const NONE: FollowUpDerivation = Object.freeze({ followUpOptions: NO_FOLLOW_UPS, followUpSourceKey: null, followUpMulti: true, followUpAction: null })
 
 /**
  * Identity of the transcript row *m* sits at index *i* of, stable across
@@ -170,6 +173,8 @@ export function deriveFollowUpOptions(
   let sawError = false
   // A row newer than the offering row that shows the running turn moved on.
   let movedOn = false
+  // A crossed user turn is still owed an answer, so no action from before it is offered.
+  let crossedUser = false
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     if (movedOnRow?.(m)) { movedOn = true; continue }
@@ -187,6 +192,7 @@ export function deriveFollowUpOptions(
       // Cross this failed turn and keep looking. Re-armed only by another error,
       // so a SUCCESSFUL turn further back still stops the scan.
       sawError = false
+      crossedUser = true
       continue
     }
     if (isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))) continue
@@ -202,7 +208,9 @@ export function deriveFollowUpOptions(
         if (movedOn) return NONE
         // A note row still gets an identity: the bar keys its render off it, and a note whose
         // options never re-key would let a later identical note reuse the earlier row's key.
-        return { followUpOptions: parsed.options, followUpSourceKey: rowIdentity(m, i), followUpMulti: parsed.multi }
+        // A note comes from a cron or another session, never this session's agent, so it
+        // cannot offer to close this session.
+        return { followUpOptions: parsed.options, followUpSourceKey: rowIdentity(m, i), followUpMulti: parsed.multi, followUpAction: null }
       }
       continue
     }
@@ -216,12 +224,14 @@ export function deriveFollowUpOptions(
       // offer, so no error may reach back past it to an older turn's chips.
       if (hasGrillCard(cleaned)) return NONE
       const { options, multi } = parseOptions(cleaned)
+      const action = crossedUser ? null : optionActionOf(cleaned)
+      const offers = options.length > 0 || action !== null
       // A failed turn can flush the text it streamed as a real assistant row before the
       // error, and that option-less row shadowed the question exactly as the `user` row did.
       // Crossing does NOT consume the error licence: the `user` row below still needs it.
-      if (!options.length && sawError) continue
-      if (!options.length || movedOn) return NONE
-      return { followUpOptions: options, followUpSourceKey: rowIdentity(m, i), followUpMulti: multi }
+      if (!offers && sawError) continue
+      if (!offers || movedOn) return NONE
+      return { followUpOptions: options.length ? options : NO_FOLLOW_UPS, followUpSourceKey: rowIdentity(m, i), followUpMulti: multi, followUpAction: action }
     }
   }
   return NONE

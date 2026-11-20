@@ -60,6 +60,17 @@ vi.mock('../components/sessionEnvironmentHooks', async (orig) => ({
 }))
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+
+const closeAsk = vi.hoisted(() => ({ prompt: null as unknown, closed: [] as string[], asked: [] as string[] }))
+vi.mock('../lib/closeConfirmPrompt', async (orig) => ({
+  ...(await orig<typeof import('../lib/closeConfirmPrompt')>()),
+  closeConfirmPrompt: (_state: unknown, slot: string) => { closeAsk.asked.push(slot); return closeAsk.prompt },
+}))
+vi.mock('../hooks/useSessionActions', async (orig) => ({
+  ...(await orig<typeof import('../hooks/useSessionActions')>()),
+  closeSessionAsking: (_d: unknown, slot: string) => { closeAsk.closed.push(slot) },
+}))
+
 import ComposerDockView from './chat/page/ComposerDockView'
 import { dismissFollowupItem } from '../store/chatSlice'
 import { i18nT } from '../i18n/t'
@@ -226,5 +237,27 @@ describe('ComposerDockView', () => {
     const quote = { role: 'user' as const, text: 'q', ts: 't1' }
     act(() => { (seen.chatInput!.onJumpToQuote as (q: typeof quote) => void)(quote) })
     expect(onJumpToQuote).toHaveBeenCalledWith(quote)
+  })
+
+  it('asks for a second click only where the shared close would not ask, and closes the active slot', () => {
+    const action = { label: 'Done' }
+    closeAsk.closed = []
+    closeAsk.asked = []
+    render(<ComposerDockView {...dockProps({ followUpAction: action })} />)
+    expect(seen.chatInput!.followUpAction).toEqual(action)
+    const needsSecond = seen.chatInput!.followUpActionNeedsSecondClick as () => boolean
+    closeAsk.prompt = null
+    expect(needsSecond()).toBe(true)
+    closeAsk.prompt = { title: 'Close this session?' }
+    expect(needsSecond()).toBe(false)
+    expect(closeAsk.asked).toEqual(['slot-a', 'slot-a'])
+    closeAsk.prompt = null
+    act(() => { (seen.chatInput!.onFollowUpAction as (a: typeof action) => void)(action) })
+    expect(closeAsk.closed).toEqual(['slot-a'])
+  })
+
+  it('offers no close chip in an embedded panel', () => {
+    render(<ComposerDockView {...dockProps({ embedded: true, followUpAction: { label: 'Done' } })} />)
+    expect(seen.chatInput!.followUpAction).toBeNull()
   })
 })

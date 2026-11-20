@@ -51,6 +51,7 @@ const NONE: FollowUpDerivation = Object.freeze({
   followUpOptions: Object.freeze([]) as readonly string[],
   followUpSourceKey: null,
   followUpMulti: true,
+  followUpAction: null,
 })
 
 /**

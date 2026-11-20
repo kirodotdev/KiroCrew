@@ -58,6 +58,17 @@
    pre-existing rendering on wide screens. */
 .followup-chip{max-width:min(100%,clamp(18rem,calc(50% - 0.1875rem),26rem))}
 
+/* The ACTION chip's cap, wider than a content chip's on purpose. Its label is
+   "Close session — <label>" and wraps (`break-words`), so a 26rem cap would stack a
+   long label into a tall narrow chip. The two-column arithmetic above exists so two
+   CONTENT chips share a row; there is one action chip, in its own container after them.
+
+   No subtraction from 100%: that percentage resolves against the ActionGroup, which is
+   shrink-to-fit in the scroll layout, so `calc(100% - 0.375rem)` came out exactly
+   0.375rem narrower than the label it held and clipped it every time. */
+.followup-action-chip{max-width:min(100%,44rem)}
+@container followup (min-width:32rem){[data-followup-scroll-row] > .followup-action-group{max-width:min(40%,26rem)}}
+
 /* ── Skeleton shimmer placeholder ── */
 /* The highlight is its OWN element, moved with transform, so a sweep costs a
    compositor transform instead of repainting a gradient every frame -- which

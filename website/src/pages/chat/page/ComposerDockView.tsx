@@ -36,6 +36,8 @@ import { sessionMemoryTag } from '../../../lib/agentMemorySource'
 import { dismissFollowupItem, type FollowupItem } from '../../../store/chatSlice'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { FOLLOWUP_START_SENDS_KEY } from '../followupStartSends'
+import type { OfferedAction } from '../../../app-sdk/protocol/optionActionTag'
+import { closeAskFor, closeSessionAsking } from '../../../hooks/useSessionActions'
 import { Input } from '../../../components/ui'
 import { KnowledgeBubbleChip } from '../ChatPageMessageContent'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
@@ -206,6 +208,8 @@ interface ComposerDockViewProps {
   followUpPicked: Set<string>
   followUpPickedRef: MutableRefObject<Set<string>>
   followUpSourceKey: string | null
+  /** The zero-turn action the newest reply offers, or `null`. */
+  followUpAction: OfferedAction | null
   toggleFollowUpOption: (o: string) => void
   dashCfg: ReturnType<typeof usePageFlags>['dashCfg']
   jevAutoConsented: boolean
@@ -345,7 +349,7 @@ export default function ComposerDockView({
   automationSnapshotFailed, setAutomationOpen, prefillHint, setPrefillHint, pasteSlice, pendingFiles, pendingSessions, resizedInfo, unstageSessionRef, uploading, agentBtnRect, anchorAgentBtn,
   projectPickerOpen, setProjectPickerOpen, anchorProjectBtn, projectBtnRect, pendingDirs, composerRef, composerVoiceOptions, isMac, cancelUpload, composerUploadFiles, dropTargetProps, handleCapture,
   handleFileOpen, handleOptimizeResult, search, tabsCtl, uploadCount, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
-  followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, composerSend, pickModel, setProject, projectSwitching, switchAgent,
+  followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, followUpAction, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, composerSend, pickModel, setProject, projectSwitching, switchAgent,
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
@@ -859,6 +863,11 @@ export default function ComposerDockView({
               followUpLayout={chatConfig.followUpLayout}
               followUpSourceKey={followUpSourceKey}
               followUpMulti={followUpMulti}
+              // Only the main chat page offers the close; an embedded panel's host owns its lifetime.
+              followUpAction={embedded ? null : followUpAction}
+              onFollowUpAction={() => closeSessionAsking(dispatch, activeSlot)}
+              // Click twice only where the shared close would not ask on its own.
+              followUpActionNeedsSecondClick={() => closeAskFor(activeSlot) === null}
               onFollowUpSelect={(o: string, e: React.MouseEvent, _key: string | null | undefined, sendNow: (text: string) => void) => {
                 // One-click: enabled + no shift + not busy + not already in multi-select.
                 // `sendNow` is the composer's chip send: it steers or queues per the slot's busy-send mode.
