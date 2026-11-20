@@ -1,0 +1,6 @@
++33
+The self-kill floor reads the Windows programs that end a process by name
+(taskkill, Stop-Process and its spps alias, wmic with a delete or terminate word),
+with the product name in an argument as pkill and killall are read, and a
+Stop-Process fed by a pipe whose earlier stage names the product (#38615). The
+vocabulary module holds the new program set and its comment.

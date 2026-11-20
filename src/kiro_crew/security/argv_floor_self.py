@@ -60,7 +60,7 @@ from .shell_normalizer import (
     _substitution_bodies,
     _substitution_depth_delta,
 )
-from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_NAME_RE
+from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_NAME_RE, _WINDOWS_KILL_BY_NAME_PROGRAMS
 
 # ── Self-protection floor (argv-structural, not a regex) ──
 # The two self-protection rules below are enforced by TOKENIZING the command
@@ -178,6 +178,12 @@ def _is_kill_by_name_program(token: str) -> bool:
     if base in _KILL_BY_NAME_PROGRAMS:
         return True
     return _glob_could_expand_to(base, _KILL_BY_NAME_PROGRAMS)
+
+
+def _windows_kill_by_name_program(token: str) -> str:
+    """The Windows by-name kill program *token* invokes (``.exe`` optional), or ``""``."""
+    base = _shell_normalizer._program_basename(token).removesuffix(".exe")
+    return base if base in _WINDOWS_KILL_BY_NAME_PROGRAMS else ""
 
 
 # ``env -S`` splits its argument into a command and execs it.
@@ -858,13 +864,32 @@ def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
         # Once per FRAME, not once per trigger token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
         for i, token in enumerate(tokens):
-            if not _is_kill_by_name_program(token):
+            windows = _windows_kill_by_name_program(token)
+            if not windows and not _is_kill_by_name_program(token):
                 continue
             # ``echo pkill kirocrew`` prints two words; it does not kill anything.
             if disqualified is None:
                 disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
             if _data_consumer_exempt(i, token, programs, tokens, command_disqualified=disqualified):
                 continue
+            if windows == "wmic":
+                # ``wmic process where name='<name>' get processid`` only reads.
+                own = []
+                for arg in tokens[i + 1 :]:
+                    if _ends_argv(arg):
+                        break
+                    own.append(arg)
+                if not {"delete", "terminate"}.intersection(own):
+                    continue
+            if windows in ("stop-process", "spps") and i and tokens[i - 1] == "|":
+                # ``Get-Process <name> | Stop-Process``: the name sits in an earlier
+                # stage of the same pipeline, not in this argv.  Walk back to the
+                # first separator that is not a pipe.
+                for prev in reversed(tokens[: i - 1]):
+                    if prev in ("&", "&&", "||", ";", ";;", "\n") or ";" in prev:
+                        break
+                    if _SELF_NAME_RE.search(_debracket(prev)):
+                        return whole
             # A program token ending with an operator (``pkill;``) is NOT skipped: the
             # quotes are already off, so ``'pkill;' -f kirocrew`` (a symlink literally so
             # named) reads like a closed argv, and the skip would be the kill.  A glob
