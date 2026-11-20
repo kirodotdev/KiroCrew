@@ -214,6 +214,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'FeaturePreviewsSection.tsx': DEVELOPER_PREVIEWS,
   // The URL is offered only while its preview is enabled (settingsSearchCore).
   'SessionEnvironmentsCard.tsx': 'session-environments',
+  'ConnectedComputersCard.tsx': 'session-environments',
+  'LocalSharingCard.tsx': 'instances',
   // The Reply threads row FeaturePreviewsSection mounts in its Crew and bots
   // group (`dashboard.crewmate_threads`). Same tab, so a SettingRef to that
   // key deep-links to the row.

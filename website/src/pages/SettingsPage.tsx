@@ -87,7 +87,9 @@ import { SettingsCard } from '../components/settings'
 import { i18nT } from '../i18n/t'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { useConfigPendingCount } from './settings/configPendingQuery'
-import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_CONNECTED_COMPUTERS, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { ConnectedComputersCard } from './settings/ConnectedComputersCard'
+import { LocalSharingCard } from './settings/LocalSharingCard'
 import { GuideTrustRootRegion } from '../guide/trustRoot'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
 // whenever this string changes), so they are resolved inside `buildTabs()` —
@@ -283,10 +285,12 @@ export default function SettingsPage() {
   // would drop a draft typed into them when the read flips the page to on.
   const connectionsUiPending = useConnectionsUiPending()
   const sessionEnvironmentsPreview = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
+  const connectedComputersPreference = usePreviewFlag(PREVIEW_CONNECTED_COMPUTERS)
   // People exists only while the gateway reports the Shared Crew preview
   // (`KIROCREW_SHARED_CREW_PREVIEW=1`); a browser setting cannot turn it on.
   const sharedCrew = useSharedCrewCapabilities()
   const sharedCrewPreview = sharedCrewPreviewOn(sharedCrew.capabilities)
+  const connectedComputersPreview = connectedComputersPreference && !sharedCrewPreview
   // The Kiro account tab exists while the build offers Kiro sign-in or there is
   // a credit reading to show (the phone's only place for it); an unanswered
   // schema hides nothing, so a deep link never lands on a missing tab.
@@ -425,6 +429,13 @@ export default function SettingsPage() {
             <PeoplePanel />
           </Suspense>
         )}
+        {/* This computer's own sharing (29949): the backend still refuses a share while
+            its switch is off; stopping a share works either way. */}
+        {tab === 'instances' && connectedComputersPreview && (
+          <SettingsCard>
+            <LocalSharingCard />
+          </SettingsCard>
+        )}
         {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <GuideTrustRootRegion><SecurityPanel basePath={SETTINGS_BASE_PATH} /></GuideTrustRootRegion>}
         {tab === 'connections' && (
@@ -447,6 +458,11 @@ export default function SettingsPage() {
             <Suspense fallback={<ContentSkeleton rows={6} />}>
               <SessionEnvironmentsCard />
             </Suspense>
+          </SettingsCard>
+        )}
+        {tab === 'session-environments' && sessionEnvironmentsPreview && connectedComputersPreview && (
+          <SettingsCard>
+            <ConnectedComputersCard />
           </SettingsCard>
         )}
         {tab === 'developer' && <DeveloperPanel basePath={SETTINGS_BASE_PATH} />}
