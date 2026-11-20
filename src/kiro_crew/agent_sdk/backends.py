@@ -1016,6 +1016,15 @@ def kiro_cli_offers_kas() -> bool:
     return _kiro_cli_offers_kas
 
 
+def kiro_cli_pick_verdict_open() -> bool:
+    """Whether a Kiro CLI pick could still move onto KAS: no v3 confirmed, KAS still selectable.
+
+    A gap or a refusal marks KAS unservable (except where KAS is the governance
+    floor), so in practice an unknown verdict is what leaves this true.
+    """
+    return not _kiro_cli_offers_kas and KIRO_SELECTION_BACKEND in selectable_backends()
+
+
 def ensure_kiro_cli_kas_verdict() -> None:
     """Establish this process's Kiro-CLI-offers-v3 evidence, probing once if needed.
 
