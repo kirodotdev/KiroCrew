@@ -205,8 +205,13 @@ def test_the_manifest_reads_only_the_widget_fields_and_their_record_rows():
         "accepted_series",
         "ci_state",
         "_row_ci_state",
+        "_at_waiting",
     }
     assert "unbound_secret" not in manifest.fields
+    assert (manifest.fields["_at_waiting"].fold, manifest.fields["_at_waiting"].path) == (
+        "waiting",
+        "updated_at",
+    )
     assert manifest.fields["_row_ci_state"].fold == "custom"
     assert manifest.fields["_row_ci_state"].path == "latest.ci"
 
@@ -447,11 +452,36 @@ def test_provenance_custom_latest_record_with_failed_at():
     }
 
 
-def test_provenance_fold_field_has_no_clock_and_is_current_as_read():
-    # The feed keeps a fold's value and seq but no write time: at is null, never made up,
-    # and the block cannot go stale on a time it does not have.
+def test_provenance_fold_field_at_is_the_folds_newest_entry_time():
+    read = _read()
+    read.fields["_at_waiting"] = "2026-11-18T00:25:00+00:00"
+    fresh = _block(_snapshot(read), "Waiting on you")["freshness"]
+    assert fresh == {
+        "state": "current",
+        "at": "2026-11-18T00:25:00Z",
+        "stale_after": None,
+        "failed_at": None,
+        "source": "fold",
+    }
+
+
+def test_the_stamped_folds_render_their_newest_entry_time():
+    # The stamp path is the fold renderer's own key; a rename fails here, not on a phone.
+    from kiro_crew.crew_log import projection_crewmate as pc
+
+    for render, start in (
+        (pc._waiting_render, pc._waiting_start),
+        (pc._goal_render, pc._goal_start),
+    ):
+        assert "updated_at" in render(start())
+    assert set(ws._STAMPED_FOLDS) == {"goal", "waiting"}
+
+
+def test_provenance_fold_field_with_no_clock_is_null_and_current_as_read():
+    # The feed keeps an unstamped fold's value and seq but no write time: at is null,
+    # never made up, and the block cannot go stale on a time it does not have.
     late = datetime(2027, 1, 1, tzinfo=timezone.utc)
-    fresh = _block(_snapshot(now=late), "Waiting on you")["freshness"]
+    fresh = _block(_snapshot(now=late), "Accepted per hour")["freshness"]
     assert fresh == {
         "state": "current",
         "at": None,
@@ -520,13 +550,14 @@ class _Reader:
 
 
 @pytest.mark.asyncio
-async def test_a_pinned_package_serves_its_widget(_home):
+async def test_a_pinned_package_serves_its_widget(_home, monkeypatch):
     instance.adopt(SLUG, "fixture-board")
     instance.apply_package(
         SLUG, package_slug="pebble-board", package_version=12, content=json.dumps(_package())
     )
     reader = _Reader(_read())
-    snap = await ws.resolve_snapshot(SLUG, CREW, "build-health", now=NOW, reader=reader)
+    monkeypatch.setattr(md, "read_fields", reader)
+    snap = await ws.resolve_snapshot(SLUG, CREW, "build-health", now=NOW)
     assert snap is not None
     assert snap["layout_version"] == 12
     assert _block(snap, "Open PRs")["value"] == 7
@@ -551,8 +582,9 @@ async def test_no_package_in_force_gives_only_the_default_widget(_home, monkeypa
     assert calls == [(SLUG, CREW)]
     assert [w["id"] for w in ws.widgets_of(package)] == ["status"]
     reader = _Reader(FieldRead(fields={"waiting_count": 1, "workers_total": 0}))
-    assert await ws.resolve_snapshot(SLUG, CREW, "build-health", reader=reader) is None
-    snap = await ws.resolve_snapshot(SLUG, CREW, "status", name="Pebble", now=NOW, reader=reader)
+    monkeypatch.setattr(md, "read_fields", reader)
+    assert await ws.resolve_snapshot(SLUG, CREW, "build-health") is None
+    snap = await ws.resolve_snapshot(SLUG, CREW, "status", name="Pebble", now=NOW)
     assert snap is not None
     assert snap["widget"]["default"] is True
     assert snap["layout_version"] == 0
@@ -568,7 +600,13 @@ async def test_no_package_in_force_gives_only_the_default_widget(_home, monkeypa
         },
     }
     assert _block(snap, "Waiting on you")["tone"] == "warn"
-    assert set(reader.manifests[0].fields) == {"waiting_count", "workers_total", "waiting_items"}
+    assert set(reader.manifests[0].fields) == {
+        "waiting_count",
+        "workers_total",
+        "waiting_items",
+        "waiting_omitted",
+        "_at_waiting",
+    }
 
 
 @pytest.mark.asyncio
@@ -631,3 +669,55 @@ async def test_an_older_record_serves_only_the_version_a_person_cut(
     package, version = await ws.package_in_force(SLUG, CREW)
     assert version == expect
     assert (package is not None) == bool(expect)
+
+
+# ----------------------------------------------------------------- two-field blocks
+
+
+def test_a_stale_denominator_makes_the_progress_block_stale():
+    types = _types()
+    types["milestones_total"] = {**types["milestones_total"], "stale_after_s": 3600}
+    types["milestones_done"] = {**types["milestones_done"], "stale_after_s": 3600}
+    widget = _widget()
+    read = _read()
+    read.written_at["milestones_done"] = "2026-11-18T00:20:00Z"
+    read.written_at["milestones_total"] = "2026-11-17T23:00:00Z"
+    manifest = ws.cut_manifest(types, widget, slug=SLUG, version=12)
+    snap = ws.shape_snapshot(widget, types, read, manifest, bot=BOT, layout_version=12, now=NOW)
+    fresh = _block(snap, "Milestones")["freshness"]
+    assert fresh == {
+        "state": "stale",
+        "at": "2026-11-17T23:00:00Z",
+        "stale_after": "2026-11-18T00:00:00Z",
+        "failed_at": None,
+        "source": "agentic",
+    }
+
+
+def test_a_missing_denominator_makes_the_progress_block_missing():
+    read = _read()
+    del read.fields["milestones_total"]
+    read.missing = ["milestones_total"]
+    block = _block(_snapshot(read), "Milestones")
+    assert (block["value"], block["total"]) == (3, None)
+    assert block["freshness"]["state"] == "missing"
+
+
+def test_the_default_waiting_list_counts_the_rows_the_fold_cut():
+    # Ten waiting, the fold keeps 6 and says omitted 4; the widget shows 3.
+    rows = [{"text": f"item {i}"} for i in range(6)]
+    read = FieldRead(
+        fields={
+            "waiting_count": 10,
+            "waiting_items": rows,
+            "waiting_omitted": 4,
+            "workers_total": 1,
+        }
+    )
+    manifest = ws.cut_manifest(ws.DEFAULT_TYPES, ws.DEFAULT_WIDGET, slug=SLUG, version=0)
+    snap = ws.shape_snapshot(
+        ws.DEFAULT_WIDGET, ws.DEFAULT_TYPES, read, manifest, bot=BOT, layout_version=0, now=NOW
+    )
+    block = _block(snap, "Waiting")
+    assert len(block["items"]) == 3
+    assert len(block["items"]) + block["omitted"] == 10

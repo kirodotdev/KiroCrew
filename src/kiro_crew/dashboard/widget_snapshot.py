@@ -24,10 +24,12 @@ FRESHNESS IS NEVER INVENTED. Each block's ``freshness`` names its ``source``:
   ``stale_after`` is ``dashboard_agentic.stale_after_map`` over it.
 * ``record``: a ``custom.latest.<type>`` field. ``at``, ``stale_after`` and
   ``failed_at`` are fields of that record, which the gateway stamped.
-* ``fold``: any other fold field. The feed keeps a fold's value, ``seq`` and revision
-  but no clock, so ``at`` is ``null``, and the block is ``current`` as of the moment the
-  gateway read it (the snapshot's ``generated_at``). It never goes stale on a time it
-  does not have.
+* ``fold``: any other fold field. The ``goal`` and ``waiting`` folds render the time
+  of the newest entry they applied (:data:`_STAMPED_FOLDS`), and a field of one of them
+  takes that as ``at``. The feed keeps no clock for any other fold, so ``at`` is
+  ``null`` there and the block is ``current`` as of the moment the gateway read it (the
+  snapshot's ``generated_at``). A fold field never goes stale on a time it does not
+  have.
 * ``none``: a title block with literal text.
 
 A field the read reports missing is ``missing`` with every time ``null``, whatever its
@@ -68,11 +70,21 @@ _CUSTOM_FOLD: Final = "custom"
 #: A companion field name the cut manifest reads a ``custom`` row's own stamps through.
 #: A leading ``_`` is outside the declared-field grammar, so it never names a real field.
 _ROW_PREFIX: Final = "_row_"
+#: A companion field name for a stamped fold's own write time (:data:`_STAMPED_FOLDS`).
+_STAMP_PREFIX: Final = "_at_"
+
+#: Folds whose rendered value carries, at this path, the time of the newest crew-log
+#: entry the fold applied (``projection_crewmate``: ``state["updated_at"] =
+#: _panel_iso(entry.time)``). A field of one of these folds takes that as its ``at``.
+#: Listed rather than probed, because a root ``updated_at`` in another fold could mean
+#: something else; a fold not listed here has no clock in its value.
+_STAMPED_FOLDS: Final[Mapping[str, str]] = {"goal": "updated_at", "waiting": "updated_at"}
 
 #: The gateway's own model for the default "Status" widget (design 3.2.4).
 DEFAULT_TYPES: Final[Mapping[str, Mapping[str, Any]]] = {
     "waiting_count": {"type": "number", "source": {"fold": "waiting", "path": "count"}},
     "waiting_items": {"type": "array", "source": {"fold": "waiting", "path": "items"}},
+    "waiting_omitted": {"type": "number", "source": {"fold": "waiting", "path": "omitted"}},
     "workers_total": {"type": "number", "source": {"fold": "workers", "path": "total"}},
     "milestones_total": {
         "type": "number",
@@ -111,6 +123,9 @@ DEFAULT_WIDGET: Final[Mapping[str, Any]] = {
             "field": "waiting_items",
             "item_text": "text",
             "max_items": 3,
+            # The waiting fold keeps a capped list and counts the rows it cut; added to
+            # this block's own cut so shown plus omitted is every waiting item.
+            "omitted_field": "waiting_omitted",
         },
     ],
     "tap": {"open": "bot"},
@@ -222,7 +237,7 @@ def bound_fields(widget: Mapping[str, Any]) -> list[str]:
     """Every field name *widget*'s blocks bind, in first-use order."""
     names: list[str] = []
     for block in widget.get("blocks") or ():
-        for key in ("field", "total_field"):
+        for key in ("field", "total_field", "omitted_field"):
             name = block.get(key) if isinstance(block, Mapping) else None
             if isinstance(name, str) and name not in names:
                 names.append(name)
@@ -259,7 +274,21 @@ def cut_types(types: Mapping[str, Any], widget: Mapping[str, Any]) -> dict[str, 
                 "type": "object",
                 "source": {"fold": _CUSTOM_FOLD, "path": row},
             }
+            continue
+        fold = _stamped_fold(spec)
+        if fold:
+            cut[_STAMP_PREFIX + fold] = {
+                "type": "text",
+                "source": {"fold": fold, "path": _STAMPED_FOLDS[fold]},
+            }
     return cut
+
+
+def _stamped_fold(spec: Mapping[str, Any] | None) -> str:
+    """The fold of a fold field whose rendered value carries its own write stamp."""
+    source = spec.get("source") if isinstance(spec, Mapping) else None
+    fold = source.get("fold") if isinstance(source, Mapping) else None
+    return fold if isinstance(fold, str) and fold in _STAMPED_FOLDS else ""
 
 
 def cut_manifest(
@@ -363,7 +392,40 @@ def _field_freshness(
             failed_at=row.get("failed_at"),
             now=now,
         )
-    return freshness(source=source, now=now)
+    fold = _stamped_fold(spec)
+    stamp = fields.get(_STAMP_PREFIX + fold) if fold else None
+    return freshness(source=source, at=stamp, now=now)
+
+
+#: Worst last: a block reading two fields takes the worse of their two states.
+_STATE_ORDER: Final = (STATE_CURRENT, STATE_STALE, STATE_FAILED, STATE_MISSING)
+
+
+def merge_freshness(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    """One freshness for a block that reads two fields (``progress`` with ``total_field``).
+
+    The worse state, with that input's ``source``; for each time, the earlier one, so a
+    fresh numerator can never hide a stale or failed denominator. Ties keep *first*.
+    """
+    worse = (
+        second
+        if _STATE_ORDER.index(second["state"]) > _STATE_ORDER.index(first["state"])
+        else first
+    )
+
+    def earlier(key: str) -> Any:
+        times = [t for t in (first.get(key), second.get(key)) if t]
+        return min(times) if times else None
+
+    if worse["state"] == STATE_MISSING:
+        return dict(worse)
+    return {
+        "state": worse["state"],
+        "at": earlier("at"),
+        "stale_after": earlier("stale_after"),
+        "failed_at": earlier("failed_at"),
+        "source": worse["source"],
+    }
 
 
 # --------------------------------------------------------------------------
@@ -491,6 +553,10 @@ def shape_block(
         )
     elif kind == "list":
         out["items"], out["omitted"] = _list_items(block, value, clean)
+        omitted_field = block.get("omitted_field")
+        already_cut = _number(values.get(omitted_field)) if isinstance(omitted_field, str) else None
+        if already_cut is not None and already_cut > 0:
+            out["omitted"] += int(already_cut)
     elif kind == "sparkline":
         out["points"] = _sparkline_points(block, value)
     elif kind == "status":
@@ -499,9 +565,12 @@ def shape_block(
         tones: Mapping[str, Any] = raw_tones if isinstance(raw_tones, Mapping) else {}
         out["text"] = text
         out["tone"] = tones.get(text, "idle") if text is not None else "idle"
-    out["freshness"] = (
-        fresh(field) if isinstance(field, str) else freshness(source=SOURCE_NONE, now=now)
-    )
+    if not isinstance(field, str):
+        out["freshness"] = freshness(source=SOURCE_NONE, now=now)
+    elif kind == "progress" and isinstance(block.get("total_field"), str):
+        out["freshness"] = merge_freshness(fresh(field), fresh(block["total_field"]))
+    else:
+        out["freshness"] = fresh(field)
     return out
 
 
@@ -569,11 +638,9 @@ async def resolve_snapshot(
     now: datetime | None = None,
     redact: Callable[[Any], Any] = _identity,
     clean: Callable[[str], str] = _identity,
-    reader: Callable[..., Any] | None = None,
 ) -> dict[str, Any] | None:
     """The snapshot of the Bot's widget *widget_id*, or ``None`` when it has no such widget.
 
-    *reader* defaults to :func:`member_dashboard.read_fields`; tests pass their own.
     The read is blocking IO and runs off the loop.
     """
     from kiro_crew.dashboard.handlers import member_dashboard as md
@@ -584,8 +651,7 @@ async def resolve_snapshot(
         return None
     types = types_of(package, widget)
     manifest = cut_manifest(types, widget, slug=slug, version=layout_version)
-    read_fn = reader or md.read_fields
-    read = await asyncio.to_thread(read_fn, slug, member, manifest)
+    read = await asyncio.to_thread(md.read_fields, slug, member, manifest)
     return shape_snapshot(
         widget,
         types,
