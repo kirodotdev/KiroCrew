@@ -8851,8 +8851,11 @@ the dashboard window's credential chain, the same answer shape Crew Companion's 
 reads: only an app the gateway did not skip at boot is served, and an app switched off
 on this computer's gateway only from a crew (below). It opens each `openOnEnable`
 window, registers each shortcut, and closes and releases everything for an app that is
-disabled, gone, or whose declaration changed. A probe that is refused is
-re-resolved once; one that cannot be answered leaves every window and shortcut as it is.
+disabled, gone, or whose declaration changed. A cached link token is re-resolved
+once it is 240 s old, before the gateway's 300 s link window refuses it
+(`website/electron/link-token-age.js`); a borrowed session cookie is never aged out.
+A probe that is refused is still re-resolved once; one that cannot be answered leaves
+every window and shortcut as it is.
 An update install suspends the host with Crew Companion and resumes it if the install
 does not proceed. A shortcut is never given to an app when the shell's own owners
 (the summon hotkey, Mochi) are configured for it, held right now or not: each records
