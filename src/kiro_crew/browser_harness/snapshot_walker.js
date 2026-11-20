@@ -414,6 +414,7 @@
     if (ae === "true") st.expanded = true;
     else if (ae === "false") st.expanded = false;
     if (inputType(el) === "password") st.password = true;
+    if (inputType(el) === "file") st.file = true;
     return st;
   }
 
@@ -1121,6 +1122,19 @@
       return { ok: true, selected: selected };
     },
 
+    // The `upload` op's target: a visible, enabled <input type=file>. With `node`
+    // the element itself, or null, for the helper to hand to DOM.setFileInputFiles;
+    // without it the verdict, so the gateway can say why it refused.
+    fileInput: function (ref, node) {
+      var el = lookup(ref);
+      var code = !el ? "ref_stale"
+        : inputType(el) !== "file" ? "not_file_input"
+        : disabledEl(el) ? "disabled"
+        : !visible(el) ? "not_visible" : "";
+      if (node) return code ? null : el;
+      return code ? { ok: false, code: code } : { ok: true, multiple: !!el.multiple };
+    },
+
     textPresent: function (text) {
       var b = document.body;
       return !!(b && (b.innerText || "").indexOf(text) !== -1);
@@ -1254,6 +1268,12 @@
       }
       walkRoot(document, 0);
       return n;
+    },
+
+    // Whether an agent selector is refused because it could probe a filled secret
+    // (`probeSelectorBlocked`): the gateway asks before a Harness helper runs one.
+    selectorBlocked: function (selector) {
+      return probeSelectorBlocked(selector);
     },
 
     // Visible elements matching a CSS selector, as {t, x, y} (short text and the

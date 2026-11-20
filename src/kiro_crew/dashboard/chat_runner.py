@@ -280,6 +280,7 @@ from kiro_crew.dashboard.chat_turn.stream_chunks import (
 from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _auto_approve_reason,
     _on_permission_request,
+    _operator_confirms_call,
     _slot_is_trusted,
 )
 from kiro_crew.dashboard.chat_turn.tool_results import _on_tool_result

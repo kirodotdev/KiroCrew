@@ -1202,6 +1202,14 @@ def _reset_session_switch_locks(_floor_monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _reset_browser_host_approvals(_floor_monkeypatch):
+    """The op route's pending site-grant approvals are module state; each test starts empty."""
+    from kiro_crew import browser_host_trust
+
+    _floor_monkeypatch.setattr(browser_host_trust, "_pending", {})
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _shut_down_shared_pools_in_session():
     """Reap the lazily created shared executors before the session ends.

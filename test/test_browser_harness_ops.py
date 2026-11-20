@@ -36,6 +36,7 @@ class FakeBrowser:
     def __init__(self, tmp_path: Path) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.page: dict[str, Any] = {
+            "selectorBlocked": False,
             "askedValues": 0,
             "passwordBoxes": 0,
             "secretValues": 0,
@@ -460,7 +461,7 @@ def test_click_validation(fake: FakeBrowser) -> None:
         == "bad_button"
     )
     assert (
-        run(ops.run_op("click", {"x": 1, "y": 1, "clicks": 3}, fake.ctx()))["code"] == "bad_clicks"
+        run(ops.run_op("click", {"x": 1, "y": 1, "clicks": 4}, fake.ctx()))["code"] == "bad_clicks"
     )
     fake.page["resolve"] = {"ok": False, "code": "ref_stale"}
     out = run(ops.run_op("click", {"ref": "e9"}, fake.ctx()))
@@ -884,7 +885,7 @@ def test_tabs_new_opens_a_web_url_or_blank(fake: FakeBrowser) -> None:
         run(ops.run_op("tabs", {"action": "new", "url": "file:///x"}, fake.ctx()))["code"]
         == "bad_url"
     )
-    assert run(ops.run_op("tabs", {"action": "close"}, fake.ctx()))["code"] == "bad_action"
+    assert run(ops.run_op("tabs", {"action": "move"}, fake.ctx()))["code"] == "bad_action"
 
 
 # --- availability -------------------------------------------------------------

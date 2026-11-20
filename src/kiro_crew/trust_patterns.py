@@ -32,6 +32,10 @@ ENV_ASSIGNMENT_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*=")
 # honest request; a longer one is refused rather than clamped.
 MAX_TIMED_GRANT_SECONDS = 24 * 60 * 60
 
+#: Every browser host trust key starts with this (:mod:`kiro_crew.browser_host_trust`).
+#: Host keys and every other key are two namespaces: neither matches a pattern of the other.
+HOST_TRUST_KEY_PREFIX = "browser-trust:v1:"
+
 _REDIRECT_PLACEHOLDER = "\x00REDIR\x00"
 _REDIRECT_RE = re.compile(r"[0-9]*>&[0-9]*|&>>?")
 # The blanks around a separator are bash's own: space and tab. `\s` would also
@@ -179,6 +183,7 @@ def approval_command(
     mcp_server_name: str = "",
     raw_tool_params: dict | None = None,
     path_scope_trusted: bool = False,
+    browser_page_url: str | None = None,
 ) -> str:
     """Return the server-authoritative INTERNAL key a trust click may bind.
 
@@ -194,9 +199,26 @@ def approval_command(
     persist across a same-call re-prompt even if a provider omits rendered input.
     Display text is intentionally absent from this API so it cannot become
     authority later.
+
+    ``browser_page_url`` is set only by a caller that proved the call is the
+    chat's own ``browser`` call (:func:`kiro_crew.browser_host_trust.page_url_for`),
+    and names the chat's current page: the key is then the host trust key of the
+    call's host and op class, or ``""`` when it has none.
     """
+    if browser_page_url is not None:
+        # Imported here: kiro_crew.security imports this module at package load.
+        from kiro_crew import browser_host_trust
+
+        host, cls = browser_host_trust.call_scope(raw_tool_params, browser_page_url)
+        return browser_host_trust.trust_key(host, cls) if host else ""
     if is_shell:
-        return extract_bash_command(tool_input) if tool_input else ""
+        command = extract_bash_command(tool_input) if tool_input else ""
+        # A command that IS a host key, whole or as one segment, would reach that
+        # site's grant, so it gets none. One that only mentions the prefix in an
+        # argument (a search for it) keeps its key.
+        split = split_command_segments(command)
+        parts = [command, *(split[1] if split else ())]
+        return "" if any(_in_host_namespace(part.strip()) for part in parts) else command
     if not tool_input and not isinstance(raw_tool_params, dict):
         return canonical_non_shell_trust_key(mcp_server_name, tool_name)
     path = (
@@ -215,13 +237,14 @@ def approval_display_command(
     mcp_server_name: str = "",
     raw_tool_params: dict | None = None,
     path_scope_trusted: bool = False,
+    browser_page_url: str | None = None,
 ) -> str:
     """Return the user-visible consent label for :func:`approval_command`.
 
     Grantability is deliberately identical, but non-shell display retains the
     ACP-compatible ``mcp__server__tool`` spelling.  The pending-card handler
     stores the separately derived internal key, so UI compatibility never
-    becomes authorization authority.
+    becomes authorization authority. A host trust key displays as its host.
     """
     trust_key = approval_command(
         tool_input,
@@ -230,9 +253,14 @@ def approval_display_command(
         mcp_server_name=mcp_server_name,
         raw_tool_params=raw_tool_params,
         path_scope_trusted=path_scope_trusted,
+        browser_page_url=browser_page_url,
     )
     if not trust_key:
         return ""
+    if browser_page_url is not None:
+        from kiro_crew import browser_host_trust
+
+        return browser_host_trust.call_scope(raw_tool_params, browser_page_url)[0]
     if is_shell:
         return trust_key
     path = (
@@ -244,13 +272,22 @@ def approval_display_command(
     return canonical_non_shell_tool(mcp_server_name, tool_name)
 
 
+def _in_host_namespace(text: str) -> bool:
+    """Whether *text* is in the browser host-key namespace, as the matcher folds case."""
+    return text.lower().startswith(HOST_TRUST_KEY_PREFIX)
+
+
 def _tool_matches(pattern: str, tool_name: str) -> bool:
     """Match the existing case-insensitive fnmatch trust language.
 
     ``fnmatchcase`` on lowered strings, not ``fnmatch``: on Windows ``fnmatch``
     runs ``ntpath.normcase``, which also folds ``/`` into ``\\``, so a grant for
-    ``del /q foo`` would approve ``del \\q foo``.
+    ``del /q foo`` would approve ``del \\q foo``. A host key matches only a host
+    pattern and anything else only a pattern that is not one, so neither ``*`` nor a
+    command grant covers a browser site.
     """
+    if _in_host_namespace(pattern) != _in_host_namespace(tool_name):
+        return False
     if pattern == "*":
         return True
     return fnmatch.fnmatchcase(tool_name.lower(), pattern.lower())

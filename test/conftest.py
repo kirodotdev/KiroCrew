@@ -326,6 +326,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _published_redaction_verdict_on,
     _release_source_corpus_after_module,
     _release_stt_engine,
+    _reset_browser_host_approvals,
     _reset_channel_turn_ceiling,
     _reset_cjk_segmenter,
     _reset_create_rate_limit_buckets,

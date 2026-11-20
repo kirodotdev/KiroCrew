@@ -5,6 +5,12 @@ import TrustDropdown, { TrustUnavailable } from '../TrustDropdown'
 import { i18nT } from '../../i18n/t'
 import { approvalBtnClass, type useToolApproval } from './approval'
 
+/** The site-grant row's label, per class. A site grant lasts this session only. */
+const BROWSER_SITE_KEYS = {
+  read: 'components.trustDropdown.trust_site_read_session',
+  act: 'components.trustDropdown.trust_site_act_session',
+} as const
+
 /** The pending card's actions share one row and one keyboard target. */
 export function ApprovalActions({ approval, slotId }: { approval: ReturnType<typeof useToolApproval>; slotId: string | null }) {
   const {
@@ -12,8 +18,10 @@ export function ApprovalActions({ approval, slotId }: { approval: ReturnType<typ
     approvalTrustGrantable, approvalTrustCommandGrantable, approvalTrustAllGrantable,
     approvalIsReadOnly, approvalAlwaysAllowRef, approvalAlwaysAllowRefusal,
     approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTrustBaseGrantable,
-    approvalTakesReason, handleApprovalAction, approvalActionsRef,
+    approvalTakesReason, handleApprovalAction, approvalActionsRef, approvalBrowserTrustClass,
   } = approval
+  // A browser site grant: the command rows name the site and what is trusted on it.
+  const siteKey = approvalBrowserTrustClass ? BROWSER_SITE_KEYS[approvalBrowserTrustClass] : undefined
   return (
     // A keyboard chord targets this row's first enabled control; Reject arrives on the row.
     <div ref={approvalActionsRef} data-approval-actions className="flex gap-1.5 flex-wrap items-center">
@@ -26,11 +34,13 @@ export function ApprovalActions({ approval, slotId }: { approval: ReturnType<typ
             baseCommand={approvalBaseCommand}
             isShell={approvalIsShell && approvalTrustBaseGrantable}
             hasCommand={approvalTrustCommandGrantable}
+            trustCommandLabelKey={siteKey}
+            scopeIsHost={!!siteKey}
             trustReadsLabelKey={approvalIsReadOnly ? 'components.chatInput.trust_reads' : undefined}
             showTrustAll={approvalTrustAllGrantable || approvalTrustCommandGrantable}
             disabled={approvalSubmitting}
             className={approvalBtnClass}
-            timedGrants
+            timedGrants={!siteKey}
             alwaysAllowTool={approvalAlwaysAllowRef}
             alwaysAllowRefusal={approvalAlwaysAllowRefusal}
             onAction={(action, pattern, ttlSeconds) => { handleApprovalAction(action, pattern, ttlSeconds) }}

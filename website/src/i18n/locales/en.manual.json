@@ -4111,6 +4111,8 @@
       "trust_all_base_session": "Trust any <mono/> command for this session",
       "trust_all_base_today": "Trust any <mono/> command until midnight ({{time}})",
       "trust_all_tools_channel": "Trust all tools in this channel — persists across restarts",
+      "trust_site_act_session": "Trust reading, clicking and typing on <mono/> for this session",
+      "trust_site_read_session": "Trust reading pages on <mono/> for this session",
       "trust_this_command": "Trust <mono/>",
       "trust_this_command_channel": "Trust <mono/> for @{{role}} — until {{productName}} restarts",
       "trust_this_command_hour": "Trust <mono/> for an hour (until {{time}})",

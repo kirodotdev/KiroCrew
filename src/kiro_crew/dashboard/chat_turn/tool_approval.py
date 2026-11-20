@@ -1268,6 +1268,8 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         else slot._trusted_patterns
     )
     if _tp_live and _child_grant_eligible and not event.tool_input_redacted and not _card_turn:
+        from kiro_crew import browser_host_trust as _browser_host_trust
+
         _tp_command = approval_command(
             event.tool_input or "",
             is_shell=event.is_shell,
@@ -1275,6 +1277,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             mcp_server_name=event.mcp_server_name,
             raw_tool_params=event.raw_tool_params,
             path_scope_trusted=event.path_scope_trusted,
+            browser_page_url=_browser_host_trust.page_url_for(event, session_key, client, state),
         )
         matched = _matches_trusted_pattern(_tp_command, _tp_live) if _tp_command else None
         _tp_path = (
@@ -1370,6 +1373,12 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             if matched and _tp_deadlines
             else None
         )
+        # A host grant: the op route checks the tab is still on that host. A note that
+        # cannot be kept leaves the call to the card instead.
+        if matched and not _browser_host_trust.note_host_approval(
+            session_key, _tp_command, event.raw_tool_params
+        ):
+            matched = None
         if matched:
             try:
                 validated_tool = _validate_tool_name(
