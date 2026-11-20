@@ -24,8 +24,8 @@ Reclamation is keyed on PROCESS liveness, never on file age:
 * The gateway sweeps hourly (first pass an hour after start -- never on the
   boot path). A directory is reclaimed only when its recorded owner's process
   GROUP is dead AND the whole tree has been idle past the grace window AND,
-  on Linux, no live process outside those groups still uses it
-  (:mod:`kiro_crew.agent_scratch_users`); a directory with a live owner is
+  on Linux and for a Windows script cron's run, no live process outside those
+  groups still uses it (:mod:`kiro_crew.agent_scratch_users`); a directory with a live owner is
   never touched (agent processes can outlive a gateway restart), an ownerless
   directory is never deleted in place, and a garbled owner file is left for a
   human. A reclaimed directory that holds a git repository, and an ownerless
@@ -1461,7 +1461,8 @@ def sweep_dead_scratch(now: float | None = None) -> int:
     * A dead owner over a LIVE USER the marker does not name is kept, however
       idle: a process outside every named group whose exec-time scratch
       exports, working directory or an open descriptor name a path inside the
-      tree (:func:`agent_scratch_users.scratch_users`, Linux only). A tool
+      tree (:func:`agent_scratch_users.scratch_users`: ``/proc`` on Linux, a
+      script cron run's Job object on Windows). A tool
       that daemonized out of a runtime and outlived it is such a user, and a
       runtime swap leaves one holding the dead runtime's own directory as its
       ``TMPDIR``. Each such tree logs a WARNING naming it and the pid, on every
