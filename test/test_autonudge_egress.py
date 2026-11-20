@@ -427,13 +427,26 @@ class TestAnUnscrubbableHostStillRecordsThePatrolTransition:
         tree = _wiring_tree()
         guard = _enclosing_try(tree, "_scrub_serialized_field")
         assert guard is not None
-        appends = [
+        # The observer hands the append to ``_submit_patrol_event`` (whose inner
+        # ``_emit_patrol`` is defined above the observer), so what must follow the
+        # guard is the observer's own hand-off of the append.
+        observer = next(
             node
             for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name == "_emit_patrol"
+            if isinstance(node, ast.FunctionDef) and node.name == "_observer"
+        )
+        appends = [
+            node
+            for node in ast.walk(observer)
+            if (isinstance(node, ast.FunctionDef) and node.name == "_emit_patrol")
+            or (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_submit_patrol_event"
+            )
         ]
         assert appends, "`_emit_patrol` is gone; the append is no longer offloaded"
-        assert guard.lineno < appends[0].lineno, (
+        assert guard.lineno < min(node.lineno for node in appends), (
             "the scrub's guard sits after the append, where it protects nothing: "
             "the raise it catches has already skipped that append"
         )
