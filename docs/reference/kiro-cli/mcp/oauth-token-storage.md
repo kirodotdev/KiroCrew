@@ -211,19 +211,24 @@ reauthorizes later; removing only one artifact leaves an incomplete pair. The
 supported operation handles configuration and the pair together, while provider
 revocation remains a separate provider-side action.
 
-## Long-term direction
+## Where this layout does not apply
 
-The design doc at `docs/architecture/design-notes/mcp-oauth-ownership.md` argues that
-Kiro Crew should eventually own the OAuth chain end-to-end (token store,
-refresh, sign-out, per-agent identity) once a Kiro SDK exists or we move
-to the Claude Agent SDK. At that point this whole file becomes legacy —
-the question of "where does kiro-cli put its tokens" stops mattering
-because we'd inject pre-authenticated `Authorization` headers into the
-agent config at session-spawn time, and kiro-cli's OAuth path would be
-dead code in the Kiro Crew use case.
+This cache is kiro-cli's own, so it holds a grant only when kiro-cli ran the
+sign-in. Two shipped paths store grants elsewhere:
 
-Until then, keep all cache-key derivation, presence checks, and exact-pair deletion
-in `mcp_grant.py`; callers should use the supported CLI or Connections surfaces
-rather than reproducing the undocumented cache layout. That keeps the compatibility
-code small and gives it one removal point when kiro-cli no longer owns the OAuth
-chain.
+- **KAS backend** (`agent.acp_backend = kas`, the default). kiro-cli's cache is
+  not written. With `agent.kas_persist_mcp_sign_in` on (the default) the engine
+  hands its tokens and client registration to Kiro Crew, which keeps them in an
+  encrypted vault under `<data home>/kas/mcp-grants/`
+  (`acp/kas_secret_storage.py`); with it off the sign-in lives in the engine's
+  memory only.
+- **MCP sign-in by Kiro Crew** (the `dashboard.feature_previews.crew_oauth`
+  feature preview, off by default). The gateway runs the Connections OAuth chain
+  itself (`connections/crew_oauth.py`) and stores the token pair in the user
+  vault, never in this directory.
+
+The design note `docs/architecture/design-notes/mcp-oauth-ownership.md` covers
+why Kiro Crew moves the OAuth chain out of kiro-cli. For the kiro-cli cache, keep
+all cache-key derivation, presence checks and exact-pair deletion in
+`mcp_grant.py`; callers use the supported CLI or Connections surfaces rather than
+reproducing the undocumented cache layout.
