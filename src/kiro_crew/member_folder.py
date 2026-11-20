@@ -21,7 +21,7 @@ from pathlib import Path
 
 from kiro_crew import members
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
-from kiro_crew.pinned_fs import dir_flags, open_pinned_descendant_dir
+from kiro_crew.pinned_fs import dir_flags, open_pinned_descendant_dir, supports_pinned_walk
 
 
 @dataclass(frozen=True)
@@ -109,40 +109,11 @@ def _open_folder(slug: str, stack: ExitStack) -> MemberFolder:
         root = base / named.name
         members_is_link = False
     except refusal as exc:
-        # ``is_symlink`` is False for a Windows junction, which the walk refuses as well.
-        if not (named.is_symlink() or named.is_junction()):
-            raise refusal(
-                "refusing to use the member folder: members is a link or not a directory"
-            ) from exc
-        try:
-            root = named.resolve()
-            # A name that is not text (an invalid byte) cannot be handed on or logged.
-            str(root).encode("utf-8")
-        except (OSError, RuntimeError, UnicodeError) as exc_resolve:
-            # A link that names itself, a loop of links, one that leads nowhere, or one
-            # whose target is not text has no folder to lead to. ``resolve`` reports a
-            # loop as ``RuntimeError`` or as ``OSError``, depending on the Python version.
-            raise refusal(
-                "refusing to use the member folder: the link at members cannot be resolved"
-            ) from exc_resolve
-        if root == base or root in base.parents:
-            # The slug folders are made inside the folder ``members`` names: the data
-            # home, or a folder above it, would put them beside the stores kept there.
-            raise refusal(
-                "refusing to use the member folder: the link at members leads to the "
-                "data home or to a folder above it"
-            ) from None
-        try:
-            parent_fd = stack.enter_context(
-                open_pinned_descendant_dir(
-                    root.parent, (root.name,), what="member folder", refusal=refusal
-                )
-            )
-        except refusal as exc_open:
-            raise refusal(
-                "refusing to use the member folder: the link at members does not lead "
-                "to a folder that can be opened"
-            ) from exc_open
+        if supports_pinned_walk():
+            parent_fd = _open_link_at_members(base, named.name, stack)
+            root = named
+        else:
+            parent_fd, root = _open_link_at_members_by_name(named, base, exc, stack)
         members_is_link = True
     path = root / slug
     if parent_fd is None:
@@ -174,3 +145,100 @@ def _open_folder(slug: str, stack: ExitStack) -> MemberFolder:
         ) from exc_slug
     stack.callback(os.close, fd)
     return MemberFolder(fd, path, parent_fd, members_is_link)
+
+
+def _open_link_at_members(base: Path, name: str, stack: ExitStack) -> int:
+    """Open what the link at *name* in the data home *base* names, by descriptor, and vet it.
+
+    The link is opened once, relative to the held data home, so no name is used after the
+    screen. What was opened is vetted by identity (``fstat``) against the data home and every
+    folder above it. A link whose text is not text is refused: the text is read once, relative
+    to the same descriptor, and a race can only change that check, not what is opened.
+    """
+    refusal = members.MemberSlugError
+    base_fd = os.open(base, dir_flags())
+    try:
+        if not stat.S_ISLNK(os.stat(name, dir_fd=base_fd, follow_symlinks=False).st_mode):
+            raise refusal("refusing to use the member folder: members is a link or not a directory")
+        try:
+            os.readlink(name, dir_fd=base_fd).encode("utf-8")
+            fd = os.open(name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0), dir_fd=base_fd)
+        except (OSError, UnicodeError) as exc:
+            # A link that names itself, a loop, more than 40 links in a row, one that leads
+            # nowhere, a file, a folder that may not be opened, or a target that is not text.
+            raise refusal(
+                "refusing to use the member folder: the link at members cannot be resolved"
+            ) from exc
+        stack.callback(os.close, fd)
+        if _is_data_home_or_above(fd, base_fd):
+            # The slug folders are made inside the folder ``members`` names: the data
+            # home, or a folder above it, would put them beside the stores kept there.
+            raise refusal(
+                "refusing to use the member folder: the link at members leads to the "
+                "data home or to a folder above it"
+            )
+        return fd
+    finally:
+        os.close(base_fd)
+
+
+def _is_data_home_or_above(fd: int, base_fd: int) -> bool:
+    """Whether *fd* is the folder *base_fd* or one of the folders above it, by identity."""
+    wanted = os.fstat(fd)
+    cur = os.dup(base_fd)
+    seen = None
+    try:
+        while True:
+            here = os.fstat(cur)
+            key = (here.st_dev, here.st_ino)
+            if key == (wanted.st_dev, wanted.st_ino):
+                return True
+            if key == seen:
+                return False
+            seen = key
+            up = os.open("..", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0), dir_fd=cur)
+            os.close(cur)
+            cur = up
+    finally:
+        os.close(cur)
+
+
+def _open_link_at_members_by_name(
+    named: Path, base: Path, walk_refusal: Exception, stack: ExitStack
+) -> tuple[int | None, Path]:
+    """Where the platform cannot open relative to a descriptor: resolve the link by name.
+
+    shortcut: this arm still screens the name and then uses it (a declared site), because
+    there is no descriptor to hold; upgrade when such a platform gains ``dir_fd``.
+    """
+    refusal = members.MemberSlugError
+    # ``is_symlink`` is False for a Windows junction, which the walk refuses as well.
+    if not (named.is_symlink() or named.is_junction()):
+        raise refusal(
+            "refusing to use the member folder: members is a link or not a directory"
+        ) from walk_refusal
+    try:
+        root = named.resolve()
+        # A name that is not text (an invalid byte) cannot be handed on or logged.
+        str(root).encode("utf-8")
+    except (OSError, RuntimeError, UnicodeError) as exc_resolve:
+        raise refusal(
+            "refusing to use the member folder: the link at members cannot be resolved"
+        ) from exc_resolve
+    if root == base or root in base.parents:
+        raise refusal(
+            "refusing to use the member folder: the link at members leads to the "
+            "data home or to a folder above it"
+        ) from None
+    try:
+        parent_fd = stack.enter_context(
+            open_pinned_descendant_dir(
+                root.parent, (root.name,), what="member folder", refusal=refusal
+            )
+        )
+    except refusal as exc_open:
+        raise refusal(
+            "refusing to use the member folder: the link at members does not lead "
+            "to a folder that can be opened"
+        ) from exc_open
+    return parent_fd, root

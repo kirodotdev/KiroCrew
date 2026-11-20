@@ -451,10 +451,10 @@ def test_members_swapped_for_a_link_between_the_two_levels_is_not_followed(
 
 
 @requires_symlinks
-@needs_pinned_walk
 def test_the_folder_a_link_at_members_names_swapped_for_a_link_after_it_is_resolved_is_refused(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the by-name arm resolves the link
     from kiro_crew import member_folder
 
     outside = _empty_folder(tmp_path)
@@ -481,10 +481,10 @@ def test_the_folder_a_link_at_members_names_swapped_for_a_link_after_it_is_resol
 
 
 @requires_symlinks
-@needs_pinned_walk
 def test_a_link_at_members_pointed_elsewhere_after_it_is_resolved_still_writes_to_the_resolved_folder(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the by-name arm resolves the link
     resolved = _empty_folder(tmp_path)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -929,13 +929,11 @@ def test_the_callers_report_a_members_that_leads_nowhere_and_go_on(
 
 
 @requires_symlinks
-@pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "no_pin"])
 def test_a_loop_reported_as_an_oserror_is_refused_like_one_reported_as_a_runtimeerror(
-    pinned: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """``Path.resolve`` reports a loop as ``OSError`` on some Pythons and ``RuntimeError`` on others."""
-    if not pinned:
-        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the by-name arm resolves the link
     target = tmp_path / "elsewhere"
     target.mkdir()
     _link_at_members(target)
@@ -957,6 +955,7 @@ def test_a_loop_reported_as_an_oserror_is_refused_like_one_reported_as_a_runtime
 def test_a_link_removed_after_it_was_seen_and_before_it_is_resolved_is_refused_or_a_plain_folder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the by-name arm resolves the link
     target = _members().parent / "other-folder"
     target.mkdir(parents=True)
     _link_at_members("other-folder")
@@ -979,6 +978,7 @@ def test_a_link_removed_after_it_was_seen_and_before_it_is_resolved_is_refused_o
 def test_a_link_replaced_by_a_folder_after_it_was_seen_is_written_as_a_plain_folder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the by-name arm resolves the link
     target = _members().parent / "other-folder"
     target.mkdir(parents=True)
     _link_at_members("other-folder")
@@ -1001,6 +1001,7 @@ def test_a_link_replaced_by_a_folder_after_it_was_seen_is_written_as_a_plain_fol
 def test_a_link_swapped_for_a_loop_after_it_is_resolved_still_writes_to_the_resolved_folder(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)  # the by-name arm resolves the link
     target = tmp_path / "elsewhere"
     target.mkdir()
     _link_at_members(target)
@@ -1156,7 +1157,6 @@ def test_the_slug_folder_swapped_for_a_loop_before_it_is_opened_is_refused(
         "relative",
         "trailing_slash",
         "inside_the_data_home",
-        "forty_five_links",
         "sticky_and_world_writable",
     ],
 )
@@ -1171,9 +1171,6 @@ def test_a_link_to_a_folder_that_exists_is_followed_once(
     if how == "inside_the_data_home":
         target = data_home / "other-folder"
         spelling = "other-folder"
-    elif how == "forty_five_links":
-        target = data_home / "real"
-        spelling = _a_chain_of_links(tmp_path)
     else:
         target = tmp_path / "elsewhere"
         spelling = os.path.relpath(target, data_home) + ("/" if how == "trailing_slash" else "")
@@ -1190,6 +1187,26 @@ def test_a_link_to_a_folder_that_exists_is_followed_once(
         assert stat.S_IMODE(target.stat().st_mode) == mode
         assert stat.S_IMODE(folder.stat().st_mode) == 0o700
         assert stat.S_IMODE((folder / SITES[1].leaf).stat().st_mode) == 0o600
+
+
+@requires_symlinks
+@pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "no_pin"])
+def test_a_chain_of_more_than_forty_links_is_refused_where_the_folder_is_held_by_descriptor(
+    pinned: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Was ``forty_five_links`` in the followed-once test: the kernel stops a descriptor open at
+    40 links, so the pinned arm refuses; the by-name arm (``Path.resolve``) still follows."""
+    if not pinned:
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    target = _members().parent / "real"
+    _link_at_members(_a_chain_of_links(tmp_path))
+    for site in SITES:
+        outcome = _run(site)
+        if pinned:
+            assert isinstance(outcome, members.MemberSlugError), outcome
+        else:
+            assert not isinstance(outcome, Exception), outcome
+    assert (target / members.member_slug(SLUG)).exists() is (not pinned)
 
 
 @requires_symlinks
