@@ -31,7 +31,7 @@ from kiro_crew.auth.service import (
 )
 from kiro_crew.auth.shape import Transport
 from kiro_crew.auth.store import TokenStore
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 class _FakeResp:
@@ -303,11 +303,11 @@ async def test_loopback_tab_says_login_complete_only_after_the_exchange(tmp_path
             {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])},
         )
     )
-    await asyncio.wait_for(gated.entered.wait(), timeout=5)
+    await await_until(gated.entered, what="the token request")
     # The exchange is in flight: the tab has no answer yet.
     assert not page.done()
     gated.release.set()
-    assert "Login complete" in await asyncio.wait_for(page, timeout=5)
+    assert "Login complete" in await await_until(page, what="the tab's page")
     result = await _poll_until_terminal(service, begin["login_id"])
     assert result == {"status": "authorized", "provider": "Google"}
 
@@ -323,9 +323,9 @@ async def test_loopback_cancelled_mid_exchange_tells_the_tab(tmp_path, loopback_
             {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])},
         )
     )
-    await asyncio.wait_for(gated.entered.wait(), timeout=5)
+    await await_until(gated.entered, what="the token request")
     await service.cancel(begin["login_id"])
-    text = await asyncio.wait_for(page, timeout=5)
+    text = await await_until(page, what="the tab's page")
     assert "Login complete" not in text
     assert "Sign-in could not finish" in text
     assert TokenStore(tmp_path).resolve() is None
