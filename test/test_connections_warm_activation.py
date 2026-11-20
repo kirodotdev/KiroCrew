@@ -297,7 +297,7 @@ async def test_the_screen_is_the_shared_security_gate_not_a_local_copy(
     product enforces, so the module must call through to security's."""
     assert warm.oauth_url_contains_credential is security.oauth_url_contains_credential
 
-    monkeypatch.setattr(warm, "oauth_url_contains_credential", lambda url: True)
+    monkeypatch.setattr(warm, "oauth_url_contains_credential", lambda url, server_name=None: True)
     claims = await _claim("linear")
     plain = _result(
         [_provider("linear")], [{"serverName": "linear", "oauthUrl": "https://l/consent"}]

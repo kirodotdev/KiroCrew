@@ -1461,7 +1461,7 @@ class TestBannerGateIsCanonicalSecurityPredicate:
         # verdict would not flip and this URL would render as a live banner.
         seen: list[str] = []
 
-        def flagging_gate(url: str) -> bool:
+        def flagging_gate(url: str, server_name: str | None = None) -> bool:
             seen.append(url)
             return True
 
