@@ -1279,7 +1279,7 @@ good, whether a later ref matches as an id or as a slug, so a
 `/workflow <slug>` saved in a cron job or prompt answers not found from then on
 and never runs a different workflow. The reservation covers the id and the slug
 a record holds when it is removed. A rename still frees the old slug at once, so
-a written-down `/workflow <old slug>` can reach a newer workflow (#23680), and
+a written-down `/workflow <old slug>` can reach a newer workflow, and
 the reservation lives in the tombstone: deleting or damaging a removed record's
 file releases its refs, and the library logs a warning once per unreadable file
 until it changes. A revision is written to the file its record was read from,
@@ -1614,7 +1614,7 @@ never spawns `kiro-cli` in tests. Two production adapters:
   turn and no session applier reads its stream, so a `USER_ORIGIN_DIRECTIVES`
   call (`set_project`, `reset_conversation`, `chat_tag`, `suggest_followup`)
   would otherwise leave only the tool's own "requested" text and no audit row
-  (#32461). Every executor path streams with `person_only_directive_refuser`
+ . Every executor path streams with `person_only_directive_refuser`
   (`dashboard/session_directive_apply.py`, the one the cron turn uses) as
   `on_event`: each completed call is refused with
   `refuse_user_origin_directive` (its wording, and a SEL `denied` row on the

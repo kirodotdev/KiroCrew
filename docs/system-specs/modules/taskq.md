@@ -932,7 +932,7 @@ Callers:
 | Caller | `only_from` | Refusal means |
 |---|---|---|
 | `RunnerAdmission.cancel_wait` (operator, `/api/tasks/{id}`) | `PARKED` | the row went live or moved on: 409, and the live lever is `/cancel` |
-| `admission.taskq_cancel_queued` (a single `cancel`, `_unqueue`, and Stop all's `taskq_cancel_queued_each`) | `CLAIMABLE + admitted` | the drain started it: the caller falls through to the live reap. The cancel passes `only_from` but no `generation`: a claim, requeue or wake can bump only the generation while the row stays unstarted, and a generation fence dropped that stop as `stale_result` -- a `retry_wait` row is outside the boot reconciler's `ACTIVE` set and stays in the parent's queued count, so it was never recovered (#17158). `only_from` alone keeps a started row out of reach |
+| `admission.taskq_cancel_queued` (a single `cancel`, `_unqueue`, and Stop all's `taskq_cancel_queued_each`) | `CLAIMABLE + admitted` | the drain started it: the caller falls through to the live reap. The cancel passes `only_from` but no `generation`: a claim, requeue or wake can bump only the generation while the row stays unstarted, and a generation fence dropped that stop as `stale_result` -- a `retry_wait` row is outside the boot reconciler's `ACTIVE` set and stays in the parent's queued count, so it was never recovered. `only_from` alone keeps a started row out of reach |
 | `RunnerAdmission._end_row_on_cancel` (unwinding `admit`) | `queued` | another admission owns the row; its own path settles it |
 | `adopt_orphaned_rows`' never-started sweep | `queued` | an `accept`/`admit` re-attached it while the sweep ran |
 
@@ -1593,10 +1593,10 @@ cancels orphans.
 ## Dependency waits (`dependency.py`, `adapters/`)
 
 An external dependency — the GitHub API, an HTTP host, a model provider —
-refuses work for a while. Every entry point used to notice that on its own and
-run its own retry loop, so five sessions hitting one GitHub rate limit produced
-five backoff timers and five simultaneous retries when it lifted. Two things
-replace that (RFC §14.4, SPEC-ADDENDUM §4):
+refuses work for a while. If every entry point noticed that on its own and ran
+its own retry loop, five sessions hitting one GitHub rate limit would produce five
+backoff timers and five simultaneous retries when it lifted. Two things prevent
+that (RFC §14.4, SPEC-ADDENDUM §4):
 
 ### `DependencySignal`
 
@@ -2064,9 +2064,8 @@ get pre-queue behaviour, because these are new bounds and new results that no
 flag reverts:
 
 - The gatewayd spawn gate still bounds concurrent backend spawns at
-  `mcp_gateway.spawn_concurrency_initial` (4 by default). Before this change a
-  private/exclusive backend was bounded by nothing, so this is a NEW ceiling that
-  the fixed mode pins rather than removes. `mcp_gateway.spawn_concurrency_max`
+  `mcp_gateway.spawn_concurrency_initial` (4 by default), private/exclusive backends included; the fixed mode pins that
+  ceiling rather than removes it. `mcp_gateway.spawn_concurrency_max`
   (raised to the subagent ceiling when that is higher) bounds how far the
   controller raises it; nothing returns it to unbounded.
 - `agent.session_start_concurrency` bounds concurrent `session/new` calls, and

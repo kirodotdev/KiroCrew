@@ -466,7 +466,7 @@ class Project:
 When a step's stream runs to its end, `Task.result` holds its answer without kiro-cli's
 complete `[STEERING steer-…]` acks (`messaging.driver.strip_steering_markers`): the line
 acknowledges a steer the host sent, such as a deny's reason, and is protocol, not the
-answer (#32476). The snapshot taken while the turn runs stays raw, so a step whose stream
+answer. The snapshot taken while the turn runs stays raw, so a step whose stream
 raises (a dead process, a context overflow) keeps that snapshot as it is.
 
 ## Concurrent Tasks
@@ -1254,7 +1254,7 @@ A mid-step agent switch (`EVENT_AGENT_SWITCHED`) rebuilds the ladder for the new
 The SEL row is written before any wire I/O for a refusal, and a refusal row that cannot be written is raised before the wire rather than delivered unaudited, as is an exception from the interactive handler; an approval is audited after the wire answered (`approved`, or `rejected_transport_floor` when the transport floor turned it into a rejection). A HOST refusal steers the in-band deny notice before the reject; the interactive handler's no and the compaction reject stay bare. The ladder's stages, the shared adapters and this surface's SEL rows (`TaskrunnerRows`) live in `tool_permission.py`; what reads or moves the run's own state (its trust grant `_RunTrust`, its log lines, the watchdog's activity stamp) stays in `task_executor.py`.
 
 **Person-only directives are refused out loud.** A task runner turn is not a
-person's, and no session applier reads its stream (#34756), so each turn observes
+person's, and no session applier reads its stream, so each turn observes
 it with `person_only_directive_refuser` (`dashboard/session_directive_apply.py`,
 the observer the cron turn, workflow steps, app turns and completion turns use) on
 that turn's own key: each completed call to a directive in
@@ -1388,7 +1388,7 @@ and an error that names the stop reason, with the partial text still sent beside
 cannot pass for a finished spec. However the turn ends, the final `refine` event and the GET
 status carry the text without kiro-cli's complete `[STEERING steer-…]` acks
 (`messaging.driver.strip_steering_markers`): the line acknowledges the deny's steer and is
-not the spec (#32476).
+not the spec.
 
 ## Dashboard UI (Projects Page)
 
