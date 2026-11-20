@@ -3,8 +3,8 @@ title: Closing a conductor closes its workers
 status: implemented
 author: iamwhatever, with kirocrew
 created: 2026-11-06
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: [30877]
 tracking-issues: [30800]
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Closing a conductor closes its workers
 
-- Status: accepted on the decision of the maintainer iamwhatever, 2026-11-06, who picked option A below. Implemented on main by [#30877](https://github.com/kirodotdev/KiroCrew/pull/30877) (`40e8300aff`): `api_chat_slot_delete` calls `_close_managed` (`dashboard/chat_api/conductor_close.py`) after the conductor's close commits. This document landed first because the change moves what the person's close does by default, and the First Principles lane reads that decision off the base branch.
+- Status: accepted on the decision of the maintainer iamwhatever, 2026-11-06, who picked option A below. Implemented on main by [#30877](https://github.com/kirodotdev/KiroCrew/pull/30877) (`40e8300aff`; checked at `fc89562d69`): `api_chat_slot_delete` (`dashboard/chat_api/slot_lifecycle.py`) calls `_close_managed` (`dashboard/chat_api/conductor_close.py`) after the conductor's close commits. This document landed first because the change moves what the person's close does by default, and the First Principles lane reads that decision off the base branch.
 - Tracking issue: [#30800](https://github.com/kirodotdev/KiroCrew/issues/30800)
 - Implementation: [#30877](https://github.com/kirodotdev/KiroCrew/pull/30877)
 
