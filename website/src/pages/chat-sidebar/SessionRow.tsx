@@ -1314,7 +1314,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <IconButton aria-label={i18nT('pages.chatSidebar.more_options')} {...uiLocation('sessions.row-menu')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-            <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
+            <SessionActionsMenu variant="dropdown" {...rowMenuProps} onDuplicate={() => onDuplicate(rowKey)} />
           </DropdownMenuContent>
         </DropdownMenu>
         <IconButton variant="accent" aria-label={i18nT('pages.chatSidebar.duplicate')} {...uiLocation('sessions.row-duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><Split size={12} /></IconButton>
@@ -1333,9 +1333,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     ), [renamingHere, foreignRow, isMobile, isActive, guideOnRowControl, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, closeReachLabel, releaseLocally, rowKey, langGen])
     const rowContextMenuContent = useMemo(() => (void langGen, !foreignRow ? (
       <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-        <SessionActionsMenu variant="context" {...rowMenuProps} />
+        <SessionActionsMenu variant="context" {...rowMenuProps} onDuplicate={() => onDuplicate(rowKey)} />
       </ContextMenuContent>
-    ) : null), [foreignRow, onMenuCloseAutoFocus, rowMenuProps, langGen])
+    ) : null), [foreignRow, onMenuCloseAutoFocus, rowMenuProps, onDuplicate, rowKey, langGen])
     return (
       // A drop target in its own order: a pinned row takes pinned drags (the
       // pinned order), an unpinned row unpinned ones (the manual order, in any
