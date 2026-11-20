@@ -466,13 +466,13 @@ describe('ChatInput approval flow', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
     const shown = screen.getByTestId('approval-command')
     expect(shown.textContent).toBe(cmd)
-    expect(shown.className).toContain('whitespace-break-spaces')
+    expect(shown.className).toContain('whitespace-pre-wrap')
     expect(shown.className).not.toContain('truncate')
     const rows = openTrust()
     const exact = rows.find(b => rowLabel(b) === 'This exact command — for this session')!
     const inRow = exact.querySelector('[data-testid="trust-command-full"]')!
     expect(inRow.textContent).toBe(cmd)
-    expect(inRow.className).toContain('whitespace-break-spaces')
+    expect(inRow.className).toContain('whitespace-pre-wrap')
   })
 
   it('uses approvalBaseCommand for TrustDropdown base option', () => {
