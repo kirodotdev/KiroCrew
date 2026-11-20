@@ -993,6 +993,17 @@ def test_no_browser_skips_with_a_reason_the_agent_can_read(monkeypatch):
 
     assert v.status == STATUS_SKIPPED
     assert "no system-installed Chromium or Chrome" in v.reason
+    assert "install Google Chrome or the distribution's Chromium package" in v.reason
+
+
+@LINUX_ONLY
+def test_the_no_browser_reason_names_every_accepted_install_path(monkeypatch):
+    monkeypatch.setattr(dashboard_verify, "find_browser", lambda: None)
+
+    reason = dashboard_verify.verify_page("<p>x</p>", _read()).reason
+
+    for path in dashboard_verify._SYSTEM_BROWSERS:
+        assert path in reason, path
 
 
 @LINUX_ONLY

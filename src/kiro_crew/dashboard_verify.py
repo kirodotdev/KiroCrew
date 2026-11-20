@@ -1547,7 +1547,9 @@ def verify_page(
         if browser is None:
             return _skipped(
                 "no system-installed Chromium or Chrome was found on this machine (the gateway "
-                "runs only a browser that this account cannot modify)",
+                "runs only a browser that this account cannot modify, at one of: "
+                f"{', '.join(_SYSTEM_BROWSERS)}). To fix it, install Google Chrome or the "
+                "distribution's Chromium package system-wide, not as a snap",
                 started,
             )
         python = find_launcher_python()
