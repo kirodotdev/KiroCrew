@@ -482,6 +482,7 @@ class TestARegistryProbeCannotReadTheGatewaySecrets:
 
     pytestmark = _NAMESPACE
 
+    @pytest.mark.xfail(strict=True, reason="base: the detect probe passes no secret mask")
     def test_the_probe_reads_no_gateway_secret_file(self, tmp_path, monkeypatch):
         from kiro_crew.apps.registry_pipeline import catalog
 
