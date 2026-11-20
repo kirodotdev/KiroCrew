@@ -780,10 +780,16 @@ def delete_semantic(
     source: str,
     *,
     expect_value_json: str | None = None,
+    refuse_source: str | None = None,
     superseded_by: str | None = None,
     supersede_reason: str | None = None,
 ) -> bool:
     """Tombstone a semantic memory entry with its full prior revision.
+
+    Pass *refuse_source* to keep a row whose stored writer is that value, or is
+    unknown (empty or NULL): the delete answers ``False`` for it. The check rides
+    in the same UPDATE as *expect_value_json*, so a same-body re-save that changes
+    only the writer cannot land between a read and the delete.
 
     Pass *expect_value_json* to make this a COMPARE-AND-DELETE: the row is
     tombstoned only while its stored body is still that value, and the answer is
@@ -849,10 +855,14 @@ def delete_semantic(
         ).fetchone()
         if row is None:
             return False
-        guard = "" if expect_value_json is None else " AND value_json = ?"
-        params: tuple[object, ...] = (
-            (now, key) if expect_value_json is None else (now, key, expect_value_json)
-        )
+        guard = ""
+        params: tuple[object, ...] = (now, key)
+        if expect_value_json is not None:
+            guard += " AND value_json = ?"
+            params += (expect_value_json,)
+        if refuse_source is not None:
+            guard += " AND source IS NOT NULL AND source != '' AND source != ?"
+            params += (refuse_source,)
         cursor = store.db.execute(
             f"UPDATE {store._sem_rel} SET is_deleted=1, updated_at=? "
             f"WHERE key=?{guard}{store._sem_guard}",

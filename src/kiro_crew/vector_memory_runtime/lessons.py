@@ -630,6 +630,9 @@ def find_contradiction_candidates(
                 "similarity": sim,
                 "applies": _lesson_applies(decoded),
                 "value_json": existing["value_json"],
+                # The row's writer, so the sweep can refuse to let a model verdict
+                # retire a lesson a person saved on purpose.
+                "source": existing.get("source"),
             }
         )
     candidates.sort(key=lambda x: x["similarity"], reverse=True)

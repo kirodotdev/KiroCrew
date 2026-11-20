@@ -15,9 +15,22 @@ from typing import Any
 
 from kiro_crew.dashboard.handlers.cron_shared import _sel
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.lesson_events import LESSON_SOURCE_USER
 from kiro_crew.llm_helpers import run_bg_oneliner
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.cron")
+
+
+def _candidate_sweepable_source(candidate: object) -> bool:
+    """Whether a contradiction candidate's writer lets a model verdict retire it.
+
+    Only a row with a known writer other than a person (``user_explicit``) may be
+    swept; a missing or non-string source is the protected side.
+    """
+    if not isinstance(candidate, dict):
+        return False
+    source = candidate.get("source")
+    return isinstance(source, str) and bool(source) and source != LESSON_SOURCE_USER
 
 
 _CONTRADICTION_PROMPT = (
@@ -98,7 +111,13 @@ async def _resolve_contradictions(
 
 
 async def _resolve_and_supersede(
-    state: DashboardState, sk: str, rule: str, candidates: list[dict], vs: Any
+    state: DashboardState,
+    sk: str,
+    rule: str,
+    candidates: list[dict],
+    vs: Any,
+    *,
+    announce: bool = False,
 ) -> None:
     """Resolve V1 contradictions and delete superseded lessons in background.
 
@@ -153,6 +172,9 @@ async def _resolve_and_supersede(
                 key,
                 "contradiction_superseded",
                 expect_value_json=expect_body,
+                # The write-time source filter is a snapshot too: a person's
+                # same-body re-save while the verdict ran makes the row theirs.
+                refuse_source=LESSON_SOURCE_USER,
             )
             if not deleted:
                 # Not an error: the row changed or went while the verdict was
@@ -162,6 +184,15 @@ async def _resolve_and_supersede(
                 logger.info("Contradicted lesson %s changed while its verdict ran; kept", key)
                 continue
             logger.info("Deleted contradicted lesson: %s", key)
+            # The open Memory tab re-reads its lessons on this frame, like the
+            # sibling lesson routes; ``lessons.changed`` alone does not refresh it.
+            state.push_refresh("lessons")
+            if announce:
+                # The delete lands after learn_add returned, so the write's own
+                # ``lessons.changed`` frame never covered it.
+                from kiro_crew.lesson_events import LESSON_REMOVED, emit_lessons_changed
+
+                emit_lessons_changed(LESSON_REMOVED, LESSON_SOURCE_USER)
         except Exception:
             # per-key so one bad/already-deleted key doesn't abort the batch (a
             # concurrent sweep may have deleted it — candidates are a write-time snapshot).

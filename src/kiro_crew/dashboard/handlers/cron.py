@@ -98,6 +98,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CONTRADICTION_MODEL,
         _CONTRADICTION_PROMPT,
         _CONTRADICTION_TIMEOUT,
+        _candidate_sweepable_source,
         _classify_contradiction,
         _resolve_and_supersede,
         _resolve_contradictions,

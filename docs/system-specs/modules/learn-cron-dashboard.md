@@ -353,7 +353,16 @@ successful lesson write. `api_lessons_create` embeds the rule under a 5 s
 `PRIORITY_NORMAL` budget (`_LESSON_EMBED_DEADLINE_SECS`) so a full embedding
 queue cannot hold the write past the MCP client timeout; when that embed returns
 no vector, the lesson is stored without one and its sweep is skipped, like any
-missed sweep, until the next write on the topic. Member Memory V2 never schedules that sweep, and the
+missed sweep, until the next write on the topic. The sweep considers only
+`on_topic` candidates whose writer is known and is not a person
+(`_candidate_sweepable_source` in `cron_lesson_supersede.py`, reading the
+`source` that `find_contradiction_candidates` carries): a `user_explicit` row,
+or one with a missing or non-string `source`, is never deleted on a model
+verdict. The delete re-checks that in its own UPDATE
+(`delete_semantic(refuse_source="user_explicit")`, beside the body compare), so a
+person's same-body re-save while the verdict runs keeps the row. Each sweep delete pushes the `lessons` refresh frame, so an
+open Memory tab re-reads, and on the default store also raises `lessons.changed`
+(`removed`). Member Memory V2 never schedules that sweep, and the
 helper refuses V2 even when called directly: inferred contradictions cannot
 delete private rules. Distinct rules remain available for explicit owner review;
 same-identity conflict proposals and evidence-backed owner correction/undo are
