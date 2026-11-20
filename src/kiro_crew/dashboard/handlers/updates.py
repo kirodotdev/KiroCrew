@@ -81,15 +81,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_check import _do_update_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _fetch_feed_bytes  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _invalidate_update_check  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_check import _is_git_fetch_failure  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _last_update_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _manual_check_task  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_check import _manual_verdict  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_check import _manual_verdict_at  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _read_feed_manifest  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _release_update_check_task  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _run_update_check  # noqa: F401
-    from kiro_crew.dashboard.handlers.updates_check import _shown_update_info  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _upcoming_for_feed  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _update_policy_file  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import api_update_check  # noqa: F401

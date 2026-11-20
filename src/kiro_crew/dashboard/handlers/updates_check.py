@@ -110,19 +110,6 @@ _check_task_generation: int | None = None
 _manual_check_task: asyncio.Task[dict[str, object]] | None = None
 _manual_check_task_generation: int | None = None
 
-#: The last successful manual verdict on a git checkout, kept until the next
-#: manual check, a channel switch, or an isolated check with any other result.
-#: DISPLAY ONLY (:func:`_shown_update_info`): while the cache holds an isolated
-#: check whose only failure is the fetch (``git_fetch_failed`` on a git
-#: checkout), the status frame and the check response show this verdict instead,
-#: because on a private remote only the manual fetch can sign in. It is never
-#: written back into ``_update_info``, so the readers that ACT on the cache (the
-#: gateway's auto-update, the arm path) still see that failure.
-_manual_verdict: dict[str, object] | None = None
-#: When the click that produced :data:`_manual_verdict` finished (epoch seconds),
-#: shown beside it in place of the failed check's own stamp.
-_manual_verdict_at: float = 0.0
-
 #: ``schema`` every CLI artifact manifest carries. A payload without it is not a
 #: manifest and must not be read as one.
 _CLI_MANIFEST_SCHEMA = "kirocrew-cli-artifact-manifest-v1"
@@ -169,30 +156,6 @@ def last_checked_at() -> float | None:
     return _last_update_check or None
 
 
-def _shown_update_info(
-    info: dict[str, object] | None = None,
-) -> tuple[dict[str, object], float | None]:
-    """The verdict to DISPLAY for *info* (default the cache), and when it was checked.
-
-    The kept manual verdict and the click's own stamp when *info* is an isolated
-    check whose only failure is the fetch on a git checkout; otherwise *info* and
-    :func:`last_checked_at`. Never used by a reader that acts on the verdict.
-    """
-    current = _update_info if info is None else info
-    if _manual_verdict is not None and _is_git_fetch_failure(current):
-        return dict(_manual_verdict), (_manual_verdict_at or None)
-    return current, last_checked_at()
-
-
-def _is_git_fetch_failure(info: dict[str, object]) -> bool:
-    """Whether *info* is a git-checkout check whose only failure is the fetch."""
-    return (
-        info.get("managed_by") == MANAGED_BY_GIT
-        and info.get("check_status") == CHECK_FAILED
-        and info.get("error_code") == ERR_GIT_FETCH_FAILED
-    )
-
-
 def status_update_fields(next_start: dict[str, object] | None = None) -> dict[str, object]:
     """The update fields ``/api/status`` and the WebSocket push both carry.
 
@@ -207,17 +170,14 @@ def status_update_fields(next_start: dict[str, object] | None = None) -> dict[st
     *next_start* is :func:`update_next_start.status_fields` read by a caller
     that took the file read off the event loop; left out, it is read here.
     """
-    # The badge's fields come from the shown verdict; the effect, floor and
-    # policy reads below keep the cache the gateway acts on.
-    info, checked_at = _shown_update_info()
-    available = info.get("update_available")
-    ahead = info.get("commits_ahead")
-    behind = info.get("commits_behind")
+    available = _update_info.get("update_available")
+    ahead = _update_info.get("commits_ahead")
+    behind = _update_info.get("commits_behind")
     return {
         "update_available": available if isinstance(available, bool) else None,
-        "update_can_apply": bool(info.get("can_apply")),
-        "update_check_status": str(info.get("check_status") or CHECK_UNCHECKED),
-        "update_command": remediation_command(info),
+        "update_can_apply": bool(_update_info.get("can_apply")),
+        "update_check_status": str(_update_info.get("check_status") or CHECK_UNCHECKED),
+        "update_command": remediation_command(_update_info),
         # The candidate release's version string, so the proactive update popup
         # can key its per-version snooze/skip without calling the check
         # endpoint (which runs a full check per request). Empty until a check
@@ -231,20 +191,20 @@ def status_update_fields(next_start: dict[str, object] | None = None) -> dict[st
         # (promotion never re-stamps the bytes). For a display-only clean
         # version, use ``update_latest_version_display`` below (or the
         # ``/api/update/check`` endpoint's ``latest_version_display``).
-        "update_latest_version": str(info.get("latest_version") or ""),
+        "update_latest_version": str(_update_info.get("latest_version") or ""),
         # DISPLAY-ONLY fold of the candidate above (clean base on the stable
         # channel), consumed by the proactive update popup's "vX is available"
         # text. The popup's per-version snooze/skip records and every arm
         # path keep keying on the RAW `update_latest_version`.
         "update_latest_version_display": _display_version(
-            str(info.get("latest_version") or ""),
-            str(info.get("channel") or ""),
+            str(_update_info.get("latest_version") or ""),
+            str(_update_info.get("channel") or ""),
         ),
-        "update_channel": str(info.get("channel") or ""),
+        "update_channel": str(_update_info.get("channel") or ""),
         # The About page's "Upcoming update" block: version, date, highlights,
         # notes link of an announced build. ``None`` when there is no
         # announcement. Display only.
-        "update_upcoming": info.get("upcoming") or None,
+        "update_upcoming": _update_info.get("upcoming") or None,
         # Is the running build ahead of everything the FOLLOWED channel
         # publishes? The panel keys its "you must re-run the installer to move
         # onto this lane" copy on this rather than on a comparison of
@@ -256,7 +216,7 @@ def status_update_fields(next_start: dict[str, object] | None = None) -> dict[st
         # The panel needs WHO manages the update to speak honestly: a
         # command-managed host must not render the self-managed installer
         # instructions its policy exists to bypass.
-        "update_managed_by": str(info.get("managed_by") or ""),
+        "update_managed_by": str(_update_info.get("managed_by") or ""),
         # The file the policy notice tells the user to edit, so it can say where
         # it is. Empty unless that file is the one owning updates.
         "update_policy_file": _update_policy_file(),
@@ -267,7 +227,7 @@ def status_update_fields(next_start: dict[str, object] | None = None) -> dict[st
         # manual check. 0/0 everywhere except a successful git-checkout check.
         "update_commits_ahead": ahead if isinstance(ahead, int) else 0,
         "update_commits_behind": behind if isinstance(behind, int) else 0,
-        "update_last_checked_at": checked_at,
+        "update_last_checked_at": last_checked_at(),
         "update_check_interval_secs": _UPDATE_CHECK_INTERVAL,
         # Mandatory-update verdict (governance pin OR feed floor) plus the floor
         # that triggered it, on the hot path because the proactive update popup
@@ -279,7 +239,7 @@ def status_update_fields(next_start: dict[str, object] | None = None) -> dict[st
         # Whether the in-app arm+approve path applies to this install. The SPA
         # gates its Update button on this, never on managed_by alone — that
         # value also covers bare source installs whose arm would 409.
-        "update_can_arm": bool(info.get("can_arm")),
+        "update_can_arm": bool(_update_info.get("can_arm")),
         # What an available update leads to here: ``install`` (with the
         # auto-update switch on), ``notify`` (the switch cannot install on this
         # install), ``mandatory`` (a policy floor installs it regardless), or
@@ -335,17 +295,17 @@ async def api_update_check(request: web.Request) -> web.Response:
 async def api_update_check_now(request: web.Request) -> web.Response:
     """POST /api/update/check — the check a person started, same body as ``GET``.
 
-    For the dashboard owner the git-checkout fetch may sign in with the
+    For the machine owner the git-checkout fetch may sign in with the
     operator's own git config (:func:`manual_check_operator_transport`), as their
-    Update already does. Any other caller gets the isolated check ``GET`` runs:
-    reading the operator's credential helper is the owner's trust, not a
-    teammate's.
+    Update already does. Any other caller, a Shared Crew teammate who passes the
+    owner gate included, gets the isolated check ``GET`` runs: reading the
+    operator's credential helper is the owner's trust, not a teammate's.
     """
     # Function-local, as in ``require_owner_dashboard_request``: the module
     # reaches back into sibling handler modules.
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-    return await _update_check_response(manual=is_owner_dashboard_request(request))
+    return await _update_check_response(manual=is_host_owner_dashboard_request(request))
 
 
 async def _update_check_response(*, manual: bool) -> web.Response:
@@ -359,9 +319,7 @@ async def _update_check_response(*, manual: bool) -> web.Response:
     verdict, _ = await asyncio.gather(check, _refresh_auto_update_effect_once())
     # This request's own run, not the shared cache: the other slot's check can
     # write that cache while the reads below are awaited.
-    info, checked_at = _shown_update_info(
-        verdict if isinstance(verdict, dict) else dict(_update_info)
-    )
+    info: dict[str, object] = verdict if isinstance(verdict, dict) else dict(_update_info)
     # Offloaded for the same reason as every other config read in the update
     # handlers: the data home can be network-backed.
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
@@ -372,7 +330,7 @@ async def _update_check_response(*, manual: bool) -> web.Response:
             **info,
             "current_version": _display_local_version(),
             # The same stamp the status frame carries as `update_last_checked_at`.
-            "last_checked_at": checked_at,
+            "last_checked_at": last_checked_at(),
             "update_auto_effect": _status_auto_update_effect(),
             # DISPLAY-ONLY sibling of the raw `latest_version` above (unpacked
             # via `**info`) — folds a promoted stable candidate's
@@ -425,11 +383,9 @@ def _invalidate_update_check(channel: str) -> None:
     left blank so the status pushed between here and the check landing still names
     the channel the user just chose.
     """
-    global _last_update_check, _check_generation, _manual_verdict, _manual_verdict_at
+    global _last_update_check, _check_generation
     _check_generation += 1
     _last_update_check = 0.0
-    _manual_verdict = None
-    _manual_verdict_at = 0.0
     _set_update_info(channel=channel)
 
 
@@ -539,14 +495,12 @@ async def _run_update_check(*, manual: bool = False) -> dict[str, object]:
 
     Every exit path writes the cache, failures included: a check that could not
     run records an ``error_code`` and leaves ``check_status`` at ``failed``, so no
-    caller can mistake a non-answer for a verdict. An isolated git-checkout check
-    whose fetch fails keeps the last successful *manual* verdict
-    (:data:`_manual_verdict`) for display, without writing it back here.
+    caller can mistake a non-answer for a verdict.
 
     *manual* is a check the dashboard owner started; only its git-checkout fetch
     may use the operator's git config (:func:`_check_git_checkout`).
     """
-    global _last_update_check, _manual_verdict, _manual_verdict_at
+    global _last_update_check
 
     # Snapshot the generation: everything written below describes the channel as it
     # is RIGHT NOW, and a switch mid-flight makes that verdict describe a lane the
@@ -641,17 +595,6 @@ async def _run_update_check(*, manual: bool = False) -> dict[str, object]:
             # dashboard's manual button calls this function directly and is never
             # rate-limited.
             _last_update_check = time.time()
-            on_git = _update_info.get("managed_by") == MANAGED_BY_GIT
-            if manual:
-                # A failed click clears it too: the click's own answer is what
-                # the person asked for, so it is what the badge shows.
-                succeeded = _update_info.get("check_status") == CHECK_SUCCEEDED
-                _manual_verdict = dict(_update_info) if succeeded and on_git else None
-                _manual_verdict_at = _last_update_check
-            elif not _is_git_fetch_failure(_update_info):
-                # Kept only while the cache is the fetch failure it stands in for
-                # on display; the cache itself keeps that failure.
-                _manual_verdict = None
     # Copied before any await can hand the cache to the other slot's run.
     return dict(_update_info)
 

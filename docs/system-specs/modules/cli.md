@@ -3367,8 +3367,9 @@ its upstream while the on-disk `__version__` outranks the one this process
 imported).
 
 **Whose git config the check's fetch reads.** The boot check, the 12-hour poll
-and the update popup (`GET /api/update/check`) all share one isolated check: every git call runs under `git_command_env()`, which reads no
-global or system config, so no credential helper runs. The owner's **Check for
+and the update popup (`GET /api/update/check`) all share one isolated check: every
+git call runs under `git_command_env()`, which reads no global or system config, so
+no credential helper runs. The owner's **Check for
 updates** click is `POST /api/update/check`, with its own single-flight slot
 (`_manual_check_task`) so neither kind answers for the other. On a standalone
 install its FETCH alone runs under `git_command_env(human_transport=True)`, paired
@@ -3383,18 +3384,14 @@ A governed install (a security policy installed, the LTS edition, or
 `agent.mcp_registry_mode` declared) always keeps the click isolated, so the
 operator's config is read only where no update source pin is in force;
 `update_governance.manual_check_operator_transport` is the one read, and an
-unreadable answer is isolated. A non-owner `POST` runs the isolated check.
+unreadable answer is isolated. Only the machine owner's `POST`
+(`is_host_owner_dashboard_request`) is a click; any other `POST`, a Shared Crew
+teammate's that passes the owner gate included, runs the isolated check.
 
-The last successful click's verdict on a git checkout stays on the badge until the
-next click or a channel switch: while the cache holds an isolated check whose only
-failure is the fetch (`git_fetch_failed` on a git checkout), the status frame and
-the check response show the kept verdict (`_manual_verdict`) with the click's own
-time as its last-checked stamp, since on such a remote only the click's fetch can
-sign in. The kept verdict is display only and is never written back into the
-cache, so the readers that act on it (the arm path, the gateway's auto-update)
-see the fetch failure and apply nothing, as on an install that never clicked; the
-poll's own stamp still drives the 12-hour schedule. Any other isolated result
-drops it. A feed or provider install keeps no manual verdict.
+Each check's own answer is what the cache, the badge and the gateway's update cycle
+read: a later isolated check whose fetch cannot sign in reports `git_fetch_failed`
+even after a click succeeded, and the owner clicks again to re-check with their git
+config.
 
 Commit distance is the primary signal because `__version__` is bumped only at a
 release: comparing version strings alone reported "you're on the latest version"

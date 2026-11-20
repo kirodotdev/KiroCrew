@@ -82,8 +82,6 @@ _REBOUND_HOMES = {
     "_check_task_generation": "updates_check",
     "_manual_check_task": "updates_check",
     "_manual_check_task_generation": "updates_check",
-    "_manual_verdict": "updates_check",
-    "_manual_verdict_at": "updates_check",
     "_changelog_cache": "updates_channel",
     "_log_ring_handler_installed": "updates_streams",
     "_log_ring_handler": "updates_streams",
