@@ -5869,6 +5869,20 @@ aggregating without it would discard the only identifying datum; both are also
 bounded by the requests this runtime issued, so neither has the after-teardown
 steady state.
 
+**An agent file KAS skipped is logged, not dropped.** KAS rescans the agents
+directories on every `session/new` and reports each file it cannot load as
+`_kiro/customAgent/config_error` `{sessionId, path, reasonCode, error}`. The
+report arrives before the `session/new` response, so the session it names is not
+registered yet (measured on kiro-cli 3.5.0). The reader hands the frame to
+`acp/kas_agent_config_error.py` ahead of session routing, which logs one `WARNING`
+per distinct (path, reasonCode, error) per gateway process. Each field passes
+through `_loggable_request_id` before it is kept, and the set of reports is bounded
+(`_MAX_REPORTED`). A report past the bound gets no row: the first one logs one
+`WARNING` naming the cap, and each one is a counted drop like any other unroutable
+frame. Below the bound the frame is never a counted drop and reaches no session
+queue. The set is process-wide because every runtime reads the same directory and a
+runtime starts for most sessions.
+
 **An oversize stdout line is a dropped frame, not a dead runtime.** A single
 JSON-RPC line over the reader's `_STDOUT_BUFFER_LIMIT` (10 MB) used to
 `_mark_dead` the runtime, which fails every pending future and poisons every

@@ -6051,7 +6051,10 @@ only knows those initializer spellings; a global bound to anything else still ne
 reviewer's eye.
 
 The reset goes in `test/conftest_resets.py` as an autouse fixture, re-bound in
-`test/conftest.py`'s `from conftest_resets import (...)` block. A reset in the new
+`test/conftest.py`'s `from conftest_resets import (...)` block. When that file is at its
+1,600-line target, the reset goes in a `test/conftest_resets_<topic>.py` sibling named for
+the package it resets (`conftest_resets_acp.py`), re-bound by its own import block there.
+A reset in the new
 cache's own test file does not count: the next file on the worker is the one that
 inherits it. `test/test_process_cache_floor_ratchet.py` refuses the common shape, but
 only in a CI run whose checkout contains it, so a PR whose last green run is older than
