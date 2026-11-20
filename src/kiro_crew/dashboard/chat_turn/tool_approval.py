@@ -1443,7 +1443,10 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 return _Flow.CONTINUE
     # Trust-reads: auto-approve read-only bash commands
     # Detect bash tools by tool_input content (title is human-readable)
-    cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
+    # Only a shell call has a command: ``extract_bash_command`` reads the ``command``
+    # key of ANY tool's JSON, so a delete, edit or MCP call carrying a decoy
+    # ``"command": "ls"`` would otherwise be classified read-only and approved.
+    cmd = _extract_bash_command(event.tool_input) if event.is_shell and event.tool_input else ""
     yolo_active = state.is_yolo_active() and state.yolo_reaches(
         slot, channel_origin=turn._directive_channel_origin
     )
