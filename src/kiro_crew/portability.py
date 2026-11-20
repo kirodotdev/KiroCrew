@@ -134,6 +134,8 @@ from kiro_crew.snapshot import (
     _core_file_not_installed,
     _do_replace,
     _install_core_file_if_absent,
+    _is_host_local,
+    _may_hold_host_local,
     _merge_crons,
     _merge_memory,
     _merge_named_stores,
