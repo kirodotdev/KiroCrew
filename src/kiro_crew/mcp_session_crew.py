@@ -180,6 +180,8 @@ def run_crew_send(args: dict[str, Any], ctx: ToolContext) -> str:
         how = "steered into its running turn"
     elif resp.get("pending_steer") is True:
         how = "held as a pending-steer (injected at its next tool boundary)"
+    elif resp.get("steer_state"):
+        how = f"already sent (the same steer is {resp['steer_state']}; nothing was sent again)"
     elif args.get("steer"):
         how = "queued (the crew could not steer its running turn)"
     else:

@@ -131,6 +131,7 @@ def test_create_renders_a_refusal():
         (False, {"steered": False}, "delivered (queued if busy)"),
         (True, {"steered": True}, "steered into its running turn"),
         (True, {"steered": False}, "could not steer"),
+        (True, {"steered": False, "steer_state": "delivered@"}, "already sent (the same steer is"),
     ],
 )
 def test_send_renders_what_the_crew_did(steer, reply, phrase):
