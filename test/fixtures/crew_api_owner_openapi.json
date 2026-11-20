@@ -59,6 +59,62 @@
         }
       }
     },
+    "/v1/crew/owner/grant-requests/{request_id}": {
+      "get": {
+        "operationId": "get_v1_crew_owner_grant_requests_request_id",
+        "summary": "Read one grant request, answered or not",
+        "x-crew-tier": "owner",
+        "parameters": [
+          {"$ref": "#/components/parameters/CrewApiVersion"},
+          {"$ref": "#/components/parameters/RequestId"},
+          {"name": "request_id", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^greq_"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "The request",
+            "headers": {
+              "X-Request-Id": {"$ref": "#/components/headers/X-Request-Id"},
+              "Crew-API-Version": {"$ref": "#/components/headers/Crew-API-Version"}
+            },
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/GrantRequest"}}
+            }
+          },
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/crew/owner/grants/{grant_id}": {
+      "delete": {
+        "operationId": "delete_v1_crew_owner_grants_grant_id",
+        "summary": "Revoke one grant and every token under it",
+        "x-crew-tier": "owner",
+        "parameters": [
+          {"$ref": "#/components/parameters/CrewApiVersion"},
+          {"$ref": "#/components/parameters/RequestId"},
+          {"name": "grant_id", "in": "path", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "The grant is revoked",
+            "headers": {
+              "X-Request-Id": {"$ref": "#/components/headers/X-Request-Id"},
+              "Crew-API-Version": {"$ref": "#/components/headers/Crew-API-Version"}
+            },
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/Deleted"}}
+            }
+          },
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
     "/v1/crew/owner/grant-requests/{request_id}/decision": {
       "post": {
         "operationId": "post_v1_crew_owner_grant_requests_request_id_decision",
@@ -149,7 +205,24 @@
           "user_code": {"type": "string", "description": "Short code the app shows, so the owner can tell requests apart"},
           "requested_scopes": {"type": "array", "items": {"type": "string"}},
           "created_at": {"type": "integer"},
-          "expires_at": {"type": "integer"}
+          "expires_at": {"type": "integer"},
+          "decided_at": {"type": ["integer", "null"]},
+          "decided_by": {
+            "type": ["object", "null"],
+            "description": "Who answered: the kind of caller, never a token",
+            "properties": {"kind": {"type": "string"}, "via": {"type": "string"}}
+          },
+          "granted_scopes": {"type": "array", "items": {"type": "string"}, "description": "Only when approved"},
+          "grant_id": {"type": ["string", "null"], "pattern": "^grt_", "description": "Set once the app redeemed its code"}
+        }
+      },
+      "Deleted": {
+        "type": "object",
+        "required": ["id", "deleted"],
+        "properties": {
+          "id": {"type": "string"},
+          "object": {"type": "string"},
+          "deleted": {"const": true}
         }
       },
       "GrantRequestList": {
