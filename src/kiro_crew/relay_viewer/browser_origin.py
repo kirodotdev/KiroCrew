@@ -42,6 +42,8 @@ Never logs a token, a cookie or a ``sid``.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import hmac
 import logging
 import secrets
@@ -212,6 +214,16 @@ def parse_relay_host(raw_host: str) -> tuple[str, str] | None | bool:
 
 
 _NO_STORE = {"Cache-Control": "no-store"}
+#: The closed-tab page's only style. This origin cannot read the dashboard's CSS,
+#: so it uses the browser's own light or dark colours, allowed by its hash alone.
+_CLOSED_STYLE = (
+    ":root{color-scheme:light dark}"
+    "body{margin:0;min-height:100vh;display:grid;place-items:center;background:Canvas;"
+    "color:CanvasText;font:16px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif}"
+    "main{max-width:28rem;padding:2rem;text-align:center}h1{font-size:1.25rem;margin:0 0 .5rem}"
+    "p{margin:0;opacity:.75}"
+)
+_CLOSED_STYLE_HASH = base64.b64encode(hashlib.sha256(_CLOSED_STYLE.encode()).digest()).decode()
 
 
 def _closed() -> web.Response:
@@ -224,13 +236,19 @@ def _closed() -> web.Response:
         status=401,
         content_type="text/html",
         text=(
-            "<!doctype html><meta charset=utf-8><title>Kiro Crew</title>"
-            "<p>This Crew tab is closed. Open the Crew again from your dashboard.</p>"
+            "<!doctype html><html lang=en><meta charset=utf-8>"
+            '<meta name=viewport content="width=device-width,initial-scale=1">'
+            f"<title>Crew tab closed - Kiro Crew</title><style>{_CLOSED_STYLE}</style>"
+            "<main><h1>This Crew tab is closed</h1>"
+            "<p>Open the Crew again from your dashboard.</p></main></html>"
         ),
         headers={
             **_NO_STORE,
             "Clear-Site-Data": '"cache", "storage"',
-            "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+            "Content-Security-Policy": (
+                f"default-src 'none'; style-src 'sha256-{_CLOSED_STYLE_HASH}'; "
+                "frame-ancestors 'none'"
+            ),
         },
     )
 

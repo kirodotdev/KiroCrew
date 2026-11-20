@@ -160,8 +160,11 @@ with its own JWT-SVID, with no person sign-in, kiro-cli login or crew API key.
 fetches the JWT-SVID for the Kiro audience from the SPIFFE Workload API, writes it
 to `KIROCREW_WORKLOAD_IDENTITY_SVID_FILE` and keeps it fresh; Crew reads that file
 for each use and speaks no Workload API itself. `..._AUDIENCE` (the Kiro runtime
-URL) and `..._PROFILE_ARN` are required (`kiro_crew/workload_identity.py`). The
-claims are checked (`sub` is `spiffe://`, `aud` names the audience, at least 3
+URL) and `..._PROFILE_ARN` are required (`kiro_crew/workload_identity.py`); a
+missing audience is named, since nothing public derives it yet. The
+file is opened non-blocking and must be a regular file (a symlink is followed, as a
+mounted secret is one), and the claims are checked (`sub` is `spiffe://`, `aud`
+names the audience, `exp` a finite time before the year 10000 with at least 3
 minutes left); the signature is the relying party's to check. While the switch is
 set, even to a bad value:
 
@@ -177,16 +180,28 @@ set, even to a bad value:
   (`kiro_readiness.kas_crew_signin_ready`) asks whether the file holds a usable
   JWT-SVID for a turn on KAS (on any route, live or cold; a turn on another
   harness keeps the kiro-cli gate), the kiro-cli readiness probe stays kiro-cli's
-  own answer, because a kiro-cli turn cannot use the JWT-SVID, the
-  model catalog is keyed by the profile ARN, and the usage poll does not read the
-  vault (`vault_identity_claims` answers empty).
+  own answer, because a kiro-cli turn cannot use the JWT-SVID, while
+  `GET /api/kiro-prerequisite` answers `ready` when a new turn would start on KAS
+  with a usable JWT-SVID (`kiro_readiness.workload_turns_ready`), so the people a
+  relay brings in to a fresh pod reach the chat instead of the owner-setup screen, the
+  model catalog is keyed by the profile ARN, the usage refresh
+  (`dashboard/handlers/sessions._refresh_from_vault`) publishes no reading and
+  no sign-in prompt before any vault read, and `fetch_local_identity` answers
+  `None` (unknown), so the Remote Crew launch form asks for a target.
 - `GET /api/models` serves the engine's recorded list
   (`models_kas_bundle.api_models_kas_workload`), never kiro-cli's
   `--list-models`, which needs kiro-cli's own sign-in.
-- The relay lease reads the same file through the file form of
-  `tunnel.relay_lease_credential`, with `tunnel.relay_lease_token_type` empty, so
-  the call carries the JWT-SVID as its bearer with no `TokenType` and no
-  `profileArn`. An empty credential is refused by name, never the sign-in lease.
+- The relay lease reads `tunnel.relay_lease_credential` as a JWT-SVID only when
+  it names the file `KIROCREW_WORKLOAD_IDENTITY_SVID_FILE` names
+  (`RelaySettings.uses_workload_identity`); any other file and a `secret://`
+  reference stay a crew key. It reads the SVID with the same checks
+  (`workload_identity.lease_bearer`), so a token the engine would refuse is never
+  sent. The call carries it as its bearer with no `TokenType`, whatever
+  `tunnel.relay_lease_token_type` says (a copied team config is logged and
+  ignored), and no `profileArn`. A refused sign-in (HTTP 401, after
+  one re-read) or a `ValidationException` waits 15 minutes and tries again
+  instead of stopping, since a stage that does not admit the JWT-SVID yet refuses
+  it that way. An empty credential is refused by name, never the sign-in lease.
 
 Known limit: where the agent runs unsandboxed (a Restricted pod has no user
 namespaces), the agent can read the JWT-SVID file, as it can any file the

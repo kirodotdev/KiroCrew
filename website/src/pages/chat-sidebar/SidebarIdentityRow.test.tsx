@@ -63,14 +63,16 @@ beforeEach(() => {
 })
 
 describe('SidebarIdentityRow', () => {
-  it('names who the viewer is recorded as and the path, with a read-only Shared count', async () => {
+  it('names who the viewer is recorded as, not the default Kiro Login path, with a read-only Shared status', async () => {
     mount()
-    expect(await screen.findByTestId('sidebar-identity', {}, { timeout: CHAIN_TIMEOUT_MS })).toHaveTextContent('Ana via Kiro Login')
-    expect(screen.getByTestId('sidebar-identity')).toHaveAttribute('title', 'What you send here is recorded as Ana.')
-    // The viewer and the teammate with a tab open; the owner has none.
+    const identity = await screen.findByTestId('sidebar-identity', {}, { timeout: CHAIN_TIMEOUT_MS })
+    expect(identity).toHaveTextContent('Ana')
+    expect(identity).not.toHaveTextContent('Kiro Login')
+    expect(identity).toHaveAttribute('title', 'What you send here is recorded as Ana.')
+    // Who is here now is left to Settings > People: the status names no count.
     const shared = screen.getByTestId('sidebar-shared-status')
-    expect(shared).toHaveTextContent('2')
-    expect(shared).toHaveAttribute('aria-label', 'Shared · 2 here now')
+    expect(shared).toHaveTextContent(/^Shared$/)
+    expect(shared).not.toHaveTextContent('here now')
     expect(screen.queryByRole('button')).toBeNull()
     expect(screen.queryByRole('switch')).toBeNull()
   })
@@ -100,9 +102,10 @@ describe('SidebarIdentityRow', () => {
 })
 
 describe('identityLabel', () => {
-  it('names each path, and the name alone at this machine or on an unnamed path', () => {
+  it('names each path, and the name alone at this machine, over Kiro Login or on an unnamed path', () => {
     expect(identityLabel('Ana', 'tailscale')).toBe('Ana via Tailscale')
     expect(identityLabel('Ana', 'ssm')).toBe('Ana via Systems Manager')
+    expect(identityLabel('Ana', 'kiro_login')).toBe('Ana')
     expect(identityLabel('Ana', 'local')).toBe('Ana')
     expect(identityLabel('Ana', 'unknown')).toBe('Ana')
     expect(identityLabel('Ana', undefined)).toBe('Ana')

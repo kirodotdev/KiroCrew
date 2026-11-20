@@ -34,6 +34,37 @@ afterEach(() => {
   delete (window as { relayCrewAPI?: unknown }).relayCrewAPI
 })
 
+describe('SharedCrewsCards account line', () => {
+  const PORTAL = 'https://example-portal.awsapps.example.test/start'
+
+  async function accountLine(account: unknown) {
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})], account } as never)
+    renderWithProviders(<SharedCrewsCards />)
+    await screen.findAllByTestId('shared-crew-row')
+    return screen.queryByTestId('shared-crews-account')?.textContent ?? null
+  }
+
+  it.each([
+    [{ accountType: 'BuilderId' }, 'Signed in with Builder ID'],
+    [{ accountType: 'IamIdentityCenter', startUrl: PORTAL }, 'Signed in with IAM Identity Center · example-portal.awsapps.example.test'],
+    [{ accountType: 'SocialGoogle' }, 'Signed in with Google'],
+    [{ accountType: 'ExternalIdP' }, 'Signed in with Company SSO'],
+  ])('names the account %j the list was read for', async (account, text) => {
+    expect(await accountLine(account)).toBe(text)
+  })
+
+  it('leaves the line out when the gateway names no account, or one with no kind', async () => {
+    expect(await accountLine(undefined)).toBeNull()
+    cleanup()
+    expect(await accountLine({ accountType: '' })).toBeNull()
+  })
+
+  it('shows no e-mail even if one were sent, and wraps instead of cutting', async () => {
+    expect(await accountLine({ accountType: 'BuilderId', email: 'someone@example.test' })).toBe('Signed in with Builder ID')
+    expect(screen.getByTestId('shared-crews-account').className).not.toMatch(/\btruncate\b/)
+  })
+})
+
 describe('SharedCrewsCards', () => {
   it('lists the Crews in a browser too, with no desktop bridge', async () => {
     const spy = vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
@@ -57,7 +88,7 @@ describe('SharedCrewsCards', () => {
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({
       crews: [
         crew({}),
-        crew({ endpointId: 'ep-2', name: 'Night shift', crewType: 'PERSONAL', presence: 'GONE', relayConnectionStatus: 'DISCONNECTED' }),
+        crew({ endpointId: 'ep-2', name: 'Quiet shift', crewType: 'PERSONAL', presence: 'GONE', relayConnectionStatus: 'DISCONNECTED' }),
       ],
     })
     renderWithProviders(<SharedCrewsCards />)
@@ -71,7 +102,7 @@ describe('SharedCrewsCards', () => {
     expect(rows[1]).toHaveAttribute('aria-disabled', 'true')
 
     const u = userEvent.setup()
-    await u.click(screen.getByRole('button', { name: 'Open Night shift' }))
+    await u.click(screen.getByRole('button', { name: 'Open Quiet shift' }))
     expect(open).not.toHaveBeenCalled()
     await u.click(screen.getByRole('button', { name: 'Open Platform team' }))
     expect(open).toHaveBeenCalledWith('ep-1')

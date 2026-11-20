@@ -2,7 +2,10 @@
  * TeamCrewsGroup: the remote Crews reachable through the Kiro relay, as the
  * "Remote Crews" group at the end of the Crew switcher's menu. Each
  * row reads "<type> · <status>", the type Shared (group icon) or Private (lock
- * icon), and its action reads Connect.
+ * icon), and its action reads Connect, or Switch to while the Crew is open in
+ * this window. Which account the list was read for is said on Settings >
+ * Remote Crew, not here: the group lists every remote Crew, not only that
+ * account's.
  *
  * Renders nothing until a list is loaded: a signed-out, refused or failed read
  * hides it quietly (`useRelayViewerCrews`), so the switcher is unchanged then.
@@ -22,13 +25,13 @@ import { useTranslation } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
 import { useSearchParams } from 'react-router-dom'
-import { ExternalLink, Lock, Users, X } from 'lucide-react'
-import type { RelayCrewEntry, RelayViewerAccount } from '../api/client'
+import { Check, ExternalLink, Lock, Users, X } from 'lucide-react'
+import type { RelayCrewEntry } from '../api/client'
 import {
   clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText,
   relayRefusalText, useRelayViewerCrews,
 } from '../hooks/useRelayViewerCrews'
-import { useAppDispatch } from '../store'
+import { useAppDispatch, useAppSelector } from '../store'
 import { relayOpenRequests, relayPaneBridge, useRelayTabs } from '../lib/relayCrewPanes'
 import InstanceTabBar from './InstanceTabBar'
 import { DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from './ui/dropdown-menu'
@@ -42,13 +45,34 @@ import { accountProviderLabel } from './kasProviderLabel'
  *  Crew is open in this window `onClose` is set and the row carries its × as a
  *  sibling item, the Close the switcher's own row of it had before that row was
  *  left out of the menu. */
-function TeamCrewItem({ crew, refusal, onOpen, onClose, onShow }: {
+/** A Remote Crews row's state, from whether its tab is open, in front, and the
+ *  relay's real connection. `ROW` below is the one place each state's look and
+ *  action are written, as in the PR's table. */
+export type RelayRowState = 'current' | 'connected' | 'openOffline' | 'connect' | 'unavailable'
+
+export function relayRowState(open: boolean, current: boolean, online: boolean): RelayRowState {
+  if (open) return current ? 'current' : online ? 'connected' : 'openOffline'
+  return online ? 'connect' : 'unavailable'
+}
+
+/** Per state: dimmed, the mark at the row's end, and what choosing it does. */
+export const ROW: Record<RelayRowState, { dimmed: boolean; end: 'check' | 'connected' | 'connect' | null; action: 'show' | 'open' | 'none' }> = {
+  current: { dimmed: false, end: 'check', action: 'show' },
+  connected: { dimmed: false, end: 'connected', action: 'show' },
+  openOffline: { dimmed: false, end: null, action: 'show' },
+  connect: { dimmed: false, end: 'connect', action: 'open' },
+  unavailable: { dimmed: true, end: null, action: 'none' },
+}
+
+function TeamCrewItem({ crew, refusal, onOpen, onClose, onShow, current = false }: {
   crew: RelayCrewEntry
   refusal: string | undefined
   onOpen: (endpointId: string) => void
   onClose?: () => void
   /** Brings this Crew's open tab forward; set while it is open. */
   onShow?: () => void
+  /** This Crew's tab is the one in front. */
+  current?: boolean
 }) {
   const { t } = useTranslation()
   const online = isRelayCrewOnline(crew)
@@ -59,6 +83,10 @@ function TeamCrewItem({ crew, refusal, onOpen, onClose, onShow }: {
   // Shared (a group) or Private (a lock); a type this build does not know gets no icon.
   const TypeIcon = kind === 'TEAM' ? Users : kind === 'PERSONAL' ? Lock : null
   const closeLabel = `${i18nT('app.close')} ${crew.name}`
+  const state = relayRowState(!!onShow, current, online)
+  const row = ROW[state]
+  const stateId = `relay-crew-state-${crew.endpointId}`
+  const statusId = `relay-crew-status-${crew.endpointId}`
   return (
     <>
       <div className="flex items-center">
@@ -67,19 +95,21 @@ function TeamCrewItem({ crew, refusal, onOpen, onClose, onShow }: {
         data-testid="relay-crew-row"
         data-online={online ? 'true' : 'false'}
         // Not Radix's `disabled`, which drops the row from the focus order and its
-        // tooltip with it: an offline row stays focusable and says why it won't open.
-        // An open Crew that went offline still has its tab, so its row still picks it.
-        offline={!online && !onShow}
-        aria-disabled={online || onShow ? undefined : true}
-        aria-label={t('components.relayCrews.connect_crew', { name: crew.name })}
-        title={online ? undefined : t('components.relayCrews.refusal_offline')}
+        // tooltip with it: an unavailable row stays focusable and says why it won't open.
+        offline={row.dimmed}
+        aria-disabled={row.action === 'none' ? true : undefined}
+        // The Crew in front is marked as the local rows are: a checked radio item.
+        {...(state === 'current' ? { role: 'menuitemradio', 'aria-checked': true } : {})}
+        aria-label={row.action === 'open' ? t('components.relayCrews.connect_crew', { name: crew.name }) : crew.name}
+        aria-describedby={state === 'connected' ? stateId : state === 'openOffline' ? statusId : undefined}
+        title={state === 'unavailable' ? t('components.relayCrews.refusal_offline') : undefined}
         onSelect={(e: Event) => {
           // The menu closes only once the Crew's window opened; a refusal stays on screen.
           // Selecting the row is the only thing that connects it: nothing here
           // connects a listed Crew on its own.
           e.preventDefault()
-          if (online) onOpen(crew.endpointId)
-          else onShow?.()
+          if (row.action === 'open') onOpen(crew.endpointId)
+          else if (row.action === 'show') onShow?.()
         }}
       >
         <span
@@ -95,12 +125,19 @@ function TeamCrewItem({ crew, refusal, onOpen, onClose, onShow }: {
               </span>
             ) : null}
           </span>
-          <span className="truncate text-[12px] text-muted">
+          <span id={statusId} className="truncate text-[12px] text-muted">
             {TypeIcon && <TypeIcon className="lucide-inline mr-1" aria-hidden data-testid="relay-crew-type-icon" data-type={kind} />}
             {type} · {relayCrewStatusText(crew)}
           </span>
         </span>
-        {online && (
+        {/* The end mark is the state's own (`ROW`). */}
+        {row.end === 'check' ? (
+          <Check className="lucide-inline shrink-0 text-accent" aria-hidden data-testid="relay-crew-current" />
+        ) : row.end === 'connected' ? (
+          <span id={stateId} className="shrink-0 text-[12px] text-muted" data-testid="relay-crew-connected">
+            {t('components.relayCrews.connected')}
+          </span>
+        ) : row.end === 'connect' && (
           <span className="shrink-0 text-[12px] font-medium text-accent" aria-hidden data-testid="relay-crew-connect">
             {t('components.relayCrews.connect')}
           </span>
@@ -140,10 +177,8 @@ function TeamCrewItem({ crew, refusal, onOpen, onClose, onShow }: {
   )
 }
 
-export function TeamCrewsGroup({ crews, account, failed = false, refreshOnOpen, close }: {
+export function TeamCrewsGroup({ crews, failed = false, refreshOnOpen, close }: {
   crews: RelayCrewEntry[]
-  /** The account the list was read for, shown as one muted line while the list is loaded. */
-  account?: RelayViewerAccount | null
   /** The latest read failed; the rows are the last list loaded. */
   failed?: boolean
   /** Reads the list again; the group mounts each time the menu opens. */
@@ -155,8 +190,6 @@ export function TeamCrewsGroup({ crews, account, failed = false, refreshOnOpen, 
   // The menu shows what it last read, so a Crew that came online since would still read offline.
   useEffect(() => { refreshOnOpen() }, [refreshOnOpen])
   const queryClient = useQueryClient()
-  // Left out for an account with no label. No e-mail: the gateway sends none.
-  const provider = account ? accountProviderLabel(account.accountType, account.startUrl) : ''
   // With rows kept, say they are the last list rather than that nothing loaded.
   const failedText = t(crews.length > 0 ? 'components.relayCrews.refresh_failed' : 'components.relayCrews.refusal_list_generic')
   const dispatch = useAppDispatch()
@@ -193,6 +226,7 @@ export function TeamCrewsGroup({ crews, account, failed = false, refreshOnOpen, 
     }
   }, [queryClient])
   const relayTabs = useRelayTabs()
+  const relayActive = useAppSelector(s => s.instances?.relayActive ?? null)
   const onOpen = useCallback((endpointId: string) => {
     setRefusals(prev => {
       const { [endpointId]: _dropped, ...rest } = prev
@@ -210,11 +244,6 @@ export function TeamCrewsGroup({ crews, account, failed = false, refreshOnOpen, 
       <DropdownMenuLabel>
         {t('components.relayCrews.group_team_crews')}
       </DropdownMenuLabel>
-      {provider && (
-        <div className="px-3 pb-1 break-words text-[12px] text-muted" data-testid="team-crews-account" title={t('app.signed_in_with', { provider })}>
-          {t('app.signed_in_with', { provider })}
-        </div>
-      )}
       {failed && (
         <>
           <div className="px-3 pb-1">
@@ -237,6 +266,7 @@ export function TeamCrewsGroup({ crews, account, failed = false, refreshOnOpen, 
               key={c.endpointId} crew={c} refusal={refusals[c.endpointId]} onOpen={onOpen}
               onClose={relayTabs.tabs.some(tab => tab.id === c.endpointId) ? () => relayTabs.close(c.endpointId) : undefined}
               onShow={relayTabs.tabs.some(tab => tab.id === c.endpointId) ? () => { relayTabs.select(c.endpointId); close() } : undefined}
+              current={relayActive === c.endpointId}
             />
           ))}
     </div>
@@ -244,11 +274,11 @@ export function TeamCrewsGroup({ crews, account, failed = false, refreshOnOpen, 
 }
 
 /** The top bar's Crew switcher with the Team Crews group, while a list is loaded and
- *  the group has a Crew or the signed-in account to show. */
+ *  the group has a Crew to show or a signed-in account to say none is shared with. */
 export default function TeamCrewsSwitcher({ variant }: { variant: 'strip' | 'inline' }) {
   const { hidden, crews, account, failed, refreshOnOpen } = useRelayViewerCrews()
   const [openRefusal, dismissOpenRefusal] = useOpenFromNote(crews)
-  // The same label the group's line shows; the hook sends an account only with a loaded list.
+  // The hook sends an account only with a loaded list.
   const accountLabel = account ? accountProviderLabel(account.accountType, account.startUrl) : ''
   const showGroup = !(hidden || (crews.length === 0 && !accountLabel && !failed))
   // The rows the group draws; while hidden it draws none, so an open Crew keeps the bar's row.
@@ -261,9 +291,9 @@ export default function TeamCrewsSwitcher({ variant }: { variant: 'strip' | 'inl
       extraNew={!hidden && crews.some(c => c.unseen)}
       // Nothing while hidden or loading, or for an empty list with no account
       // label, so the bar stays as it is without the relay. A loaded empty list with an
-      // account label still mounts the group, so it says who is signed in.
+      // account label still mounts the group, so it says there is nothing to open.
       extraGroups={!showGroup ? undefined : close => (
-        <TeamCrewsGroup crews={crews} account={account} failed={failed} refreshOnOpen={refreshOnOpen} close={close} />
+        <TeamCrewsGroup crews={crews} failed={failed} refreshOnOpen={refreshOnOpen} close={close} />
       )}
       extraNotice={openRefusal ? (
         <ErrorNotice

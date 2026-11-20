@@ -679,10 +679,10 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     expect(await screen.findByTestId('share-hero-copy-message-error')).toHaveAttribute('role', 'alert')
   })
 
-  it('labels the owner row "You · Owner" and a never-seen sharee "Sent"; others never seen carry no narration', async () => {
+  it('labels the owner row "You · Host" and a never-seen sharee "Sent"; others never seen carry no narration', async () => {
     await mountOwner()
     const me = screen.getByTestId('person-p_me')
-    expect(me).toHaveTextContent('You · Owner')
+    expect(me).toHaveTextContent('You · Host')
     expect(me).toHaveTextContent('Here now')
     expect(screen.getByTestId('person-p_s')).toHaveTextContent('Sent')
     const cleo = screen.getByTestId('person-p_c')
@@ -1251,7 +1251,7 @@ describe('People: connection sources at once, one list with source chips', () =>
     expect(cards).toEqual(['source-tailscale', 'source-ssm'])
   })
 
-  it('lists everyone in one list with the chip of the source they came in through, counting distinct people', async () => {
+  it('lists everyone in one list with the chip of the source they came in through, counting the rows it shows', async () => {
     mountAll()
     const list = await screen.findByTestId('people-list')
     const chip = (id: string) => within(screen.getByTestId(`person-${id}`)).queryByTestId('person-source')?.textContent ?? null
@@ -1262,9 +1262,12 @@ describe('People: connection sources at once, one list with source chips', () =>
     expect(chip('p_g')).toBe('Your organization')
     // The owner at this machine came in through no source.
     expect(chip('p_o')).toBeNull()
-    expect(within(screen.getByTestId('person-p_o')).getByText('You · Owner')).toBeInTheDocument()
-    // Priya is on Tailscale and on Kiro Login: two rows, one person.
-    expect(screen.getByText('People · 5')).toBeInTheDocument()
+    expect(within(screen.getByTestId('person-p_o')).getByText('You · Host')).toBeInTheDocument()
+    // Priya is on Tailscale and on Kiro Login: two rows, and the heading counts
+    // both, so its number matches the rows; the note says why she is there twice.
+    const people = within(list).getAllByTestId(/^person-p_/)
+    expect(people).toHaveLength(6)
+    expect(screen.getByText('People · 6')).toBeInTheDocument()
     expect(screen.getByTestId('people-list-note')).toHaveTextContent('The same person can appear once for each source they came in through.')
     // Invites nobody used are rows of the same list, with their chip, and not counted.
     const ssmInvite = await within(list).findByTestId('ssm-invite-s_new')

@@ -1164,9 +1164,11 @@ Wired sites:
   be read is sent as 0 and never fails the renewal. A refusal's status text and
   log line end with the service's own `message` (`lease.py::refusal_message`):
   whitespace collapsed, credentials redacted, at most 200 characters, and dropped
-  whole when it holds an ARN, a 12-digit number or a character outside ASCII
-  letters, digits, spaces and `.,;:'()?!-`, since teammates can read the tunnel
-  status. When the relay stops, it
+  whole when it holds an ARN (`arn:`, spaces allowed before the colon), twelve
+  digits with at most one space, `.` or `-` between any two, an AWS access key
+  id, or a character outside ASCII letters, digits, spaces and `.,;:'()?!-`,
+  since teammates can read the tunnel status. A workload lease's refusals are in
+  [kas-auth](kas-auth.md#workload-identity-in-place-of-a-sign-in). When the relay stops, it
   makes one best-effort `ReleaseCrewInstanceLease` call, bounded by `RELEASE_TIMEOUT_SECONDS`, so the
   Crew shows as disconnected, and a team Crew can move to another instance, as
   soon as it stops instead of when the lease lapses. With no lease service, the
