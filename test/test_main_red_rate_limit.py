@@ -282,25 +282,42 @@ def test_a_red_run_missed_while_the_issue_was_open_adds_to_its_streak(tmp_path: 
 
 
 @_needs_posix
-def test_an_unrecorded_run_red_in_two_jobs_opens_the_issue_for_a_run_red_in_one(
+def test_what_the_replay_counts_opens_no_issue_for_a_run_red_in_one_job(
     tmp_path: Path,
 ) -> None:
-    """A watcher that had finished the earlier run would have an issue open for this one."""
+    """The earlier run was red in two jobs and unrecorded; this one is red in one, elsewhere.
+
+    The replay counts the earlier run, and this run still opens nothing: an
+    issue opens by this run's own failures, never by what the replay counted.
+    """
+    past = {
+        990: _jobs(
+            (91, "Backend Tests (3.12, 3)", "failure"),
+            (94, "Backend Tests (Windows) (3)", "failure"),
+        )
+    }
+    runs = [_run_row(50, "failure", 1000), _earlier(49, 990)]
+    notes = {11: _notes(OTHER), 91: _notes(BREAK), 94: _notes(BREAK)}
     out, stub = _run_step(
-        tmp_path,
-        jobs=ONE_JOB,
-        logs={},
-        annotations={11: _notes(OTHER), 91: _notes(BREAK), 94: _notes(BREAK)},
-        runs=[_run_row(50, "failure", 1000), _earlier(49, 990)],
-        past_jobs={
-            990: _jobs(
-                (91, "Backend Tests (3.12, 3)", "failure"),
-                (94, "Backend Tests (Windows) (3)", "failure"),
-            )
-        },
+        tmp_path, jobs=ONE_JOB, logs={}, annotations=notes, runs=runs, past_jobs=past
     )
     assert out.returncode == 0, out.stderr
-    assert (stub / "created-title.txt").read_text(encoding="utf-8") == f"ci: Main is red: {OTHER}"
+    assert "not opening an issue for a failure seen in one job" in out.stdout
+    assert "are counted now" not in out.stdout
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+    # Red in one job on the earlier run's test file: the look back opens the
+    # issue, and the replayed record names the earlier run first red.
+    out, stub = _run_step(
+        tmp_path / "same-file",
+        jobs=ONE_JOB,
+        logs={},
+        annotations={**notes, 11: _notes(f"{BREAK}_again")},
+        runs=runs,
+        past_jobs=past,
+    )
+    assert out.returncode == 0, out.stderr
+    assert "was red on the same test file (test/test_break.py), so an issue is opened" in out.stdout
+    assert "are counted now" in out.stdout
     state = _state(stub, "edit-77.md")
     assert (state["first_run_id"], state["streak"]) == (990, 2)
 
@@ -501,9 +518,8 @@ def test_only_the_runs_after_a_closed_issues_record_are_replayed(tmp_path: Path)
 
 
 @_needs_posix
-@pytest.mark.parametrize("why", ["closed-list-unreadable", "no-label"])
 def test_without_the_closed_issues_nothing_is_replayed_and_the_run_is_recorded(
-    tmp_path: Path, why: str
+    tmp_path: Path,
 ) -> None:
     """What a closed issue recorded cannot be told apart, so no earlier run is counted."""
     out, stub = _run_step(
@@ -513,8 +529,7 @@ def test_without_the_closed_issues_nothing_is_replayed_and_the_run_is_recorded(
         annotations={**TWO_NOTES, 91: _notes(BREAK), 94: _notes(BREAK)},
         runs=[_run_row(50, "failure", 1000), _earlier(49, 990)],
         past_jobs={990: TWO_LEGS_BEFORE},
-        closed_refused=why == "closed-list-unreadable",
-        label_refused=why == "no-label",
+        closed_refused=True,
     )
     assert out.returncode == 0, out.stderr
     said = "the red runs before this one are not replayed."
@@ -522,6 +537,31 @@ def test_without_the_closed_issues_nothing_is_replayed_and_the_run_is_recorded(
     assert _read_runs(stub) == []
     state = _state(stub, "edit-77.md")
     assert (state["first_run_id"], state["streak"]) == (1000, 1)
+
+
+@_needs_posix
+@pytest.mark.parametrize("label_refused", [False, True], ids=["label", "no-label"])
+def test_a_closed_issue_filed_without_the_label_bounds_the_walk_back_too(
+    tmp_path: Path, label_refused: bool
+) -> None:
+    """The labelled list misses an issue filed bare; the list of any label holds it."""
+    out, stub = _run_step(
+        tmp_path,
+        jobs=TWO_JOBS,
+        logs={},
+        annotations={**TWO_NOTES, 91: _notes(BREAK), 94: _notes(BREAK)},
+        runs=[_run_row(50, "failure", 1000), _earlier(49, 990), _earlier(48, 980)],
+        past_jobs={980: TWO_LEGS_BEFORE, 990: TWO_LEGS_BEFORE},
+        closed_issues=[],
+        closed_unlabelled=[_closed_issue(980)],
+        label_refused=label_refused,
+    )
+    assert out.returncode == 0, out.stderr
+    listed = [c for c in _calls(stub) if "--state closed" in c]
+    assert len(listed) == (1 if label_refused else 2)
+    assert _read_runs(stub) == ["990"]
+    state = _state(stub, "edit-77.md")
+    assert (state["first_run_id"], state["streak"]) == (990, 2)
 
 
 @_needs_posix

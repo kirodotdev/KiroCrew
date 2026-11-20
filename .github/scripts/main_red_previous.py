@@ -25,14 +25,14 @@ the queue, records nothing. So every red run that names a test asks which red
 runs before it no watcher recorded, and replays them under the watcher's own
 rules:
 
-    unfinished RUNS.json --run-number N --prev-body BODY [--closed ISSUES.json]
+    unfinished RUNS.json --run-number N --prev-body BODY [--closed ISSUES.json]...
                              print `<id> TAB <url>`, oldest first, of the red
                              verdict runs directly before run number N that
                              neither the record in BODY (the open issue's, or
-                             empty) nor the record of a closed issue in
+                             empty) nor the record of a closed issue in any
                              ISSUES.json holds: back to the first green run, to
                              the last run a record holds, or MAX_UNFINISHED runs
-    replay RUNS.json PASTDIR --run-number N --prev-body BODY [--closed ISSUES.json]
+    replay RUNS.json PASTDIR --run-number N --prev-body BODY [--closed ISSUES.json]...
                              --out-body OUT
                              read `PASTDIR/<id>/` (per-job files) for each of
                              those runs and write to OUT the record the watcher
@@ -41,7 +41,9 @@ rules:
 
 A replayed run counts as it would have live: with a record open, when it names
 a failing test; with none, when a test is red in two of its jobs, or its jobs
-share a test file with the verdict run before it.
+share a test file with the verdict run before it. The record a replay writes
+says since when main is red. It does not decide whether the run that asked
+opens an issue: that run's own failures do.
 
 Nothing is stored between runs: the record is the open issue's, and each run
 is read again from the API.
@@ -208,8 +210,10 @@ def _unfinished(args: argparse.Namespace) -> tuple[Any, list[dict[str, Any]], bo
     """The record in ``--prev-body`` and the runs before this one that no record holds."""
     listing = json.loads(Path(args.runs).read_text(encoding="utf-8", errors="replace"))
     state = watch.parse_state(watch._read_text(args.prev_body))
-    closed = json.loads(watch._read_text(args.closed) or "[]")
-    rows, capped = unfinished(listing, args.run_number, state, last_recorded(closed))
+    recorded = -1
+    for path in args.closed or []:
+        recorded = max(recorded, last_recorded(json.loads(watch._read_text(path) or "[]")))
+    rows, capped = unfinished(listing, args.run_number, state, recorded)
     return state, rows, capped
 
 
@@ -273,7 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
             past.add_argument("--out-body", required=True)
         past.add_argument("--run-number", type=int, required=True)
         past.add_argument("--prev-body", required=True)
-        past.add_argument("--closed")
+        past.add_argument("--closed", action="append")
         past.add_argument("--repo", required=True)
         past.set_defaults(run=run)
     same = sub.add_parser("same-files")

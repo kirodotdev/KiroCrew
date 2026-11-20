@@ -117,19 +117,23 @@ name: Main Red Watch
 # holds, or 5 runs): one job list and one annotation read per failed job
 # (first 20, annotations only, as the look back reads them) for each. The
 # record is the open issue's; with none open it is the newest among the closed
-# main-red issues (one more read), because an issue closed while main was red
-# leaves no green run in the run list and its runs were recorded. Three limits
-# keep the replay to those reads. Two can leave the streak a run short: any
-# green run ends the walk back, a reduced one included, and a replayed job is
-# read from its annotations, never its log. One can count a run twice: a closed
-# issue is found by the main-red label, so one filed without it is not seen.
-# `.github/scripts/main_red_previous.py` applies the rules
-# above to each in order, so the issue names the first red commit and counts
-# the streak as if a watcher had finished every one. This also covers a watcher
-# run the queue dropped (see `concurrency` below). A replay that cannot read a
-# run counts none of them and says so; the run then writes what it would have
-# without the replay. A green run needs no replay: what it would add, the same
-# run closes.
+# watcher issues (two more reads: the 20 newest under the label and the 200
+# newest closed issues of any label), because an issue closed while main was
+# red leaves no green run in the run list and its runs were recorded.
+# `.github/scripts/main_red_previous.py` applies the rules above to each in
+# order, so the record names the first red commit and counts the streak as if a
+# watcher had finished every one. This also covers a watcher run the queue
+# dropped (see `concurrency` below). The replay opens no issue: with none open,
+# this run opens one only by the two rules under WHEN IT OPENS, and the
+# replayed record then says since when. A replay that cannot read a run, or the
+# closed issues, counts none of them and says so; the run then writes what it
+# would have without the replay. A green run needs no replay: what it would
+# add, the same run closes. Limits, each of which keeps the replay to those
+# reads: any green run ends the walk back, a reduced one included; a replayed
+# job is read from its annotations, never its log; the first replayed run has
+# no run before it to share a test file with; and a closed issue older than
+# both lists is not seen. The first three can leave the streak a run short, the
+# last can count a recorded run again.
 #
 # PERMISSIONS: `actions: read` for the run's jobs and their logs; `checks: read`
 # for the annotations of each failed job's check run; `issues: write`
@@ -445,7 +449,9 @@ jobs:
           # replayed into $work/prev-body.md, the record this run adds itself to,
           # so the issue names the first red commit and the whole streak. Sets
           # `caught` to what was counted, empty for nothing. A read that fails
-          # counts nothing and says so: the replay only ever adds earlier runs.
+          # counts nothing and says so: the replay only ever adds earlier runs to
+          # the record. It opens no issue: with none open, this run opens one by
+          # its own two rules below, and the record then says since when.
           catch_up() {
             caught=""
             case "$RUN_NUMBER" in ''|*[!0-9]*) return 0 ;; esac
@@ -454,11 +460,11 @@ jobs:
               say notice "$looked; the red runs before this one are not replayed."
               return 0
             fi
-            echo '[]' > "$work/closed.json"
+            closed_lists=()
             list_unfinished() {
               python3 "$previous" unfinished "$work/runs.json" --run-number "$RUN_NUMBER" \
-                --prev-body "$work/prev-body.md" --closed "$work/closed.json" --repo "$REPO" \
-                > "$work/unfinished.txt" && [ -s "$work/unfinished.txt" ]
+                --prev-body "$work/prev-body.md" ${closed_lists[@]+"${closed_lists[@]}"} \
+                --repo "$REPO" > "$work/unfinished.txt" && [ -s "$work/unfinished.txt" ]
             }
             if ! list_unfinished; then
               return 0
@@ -466,19 +472,25 @@ jobs:
             # With no issue open, the runs a closed issue's record holds were
             # finished too: an issue closed while main was red (by hand, or by a
             # merged pull request that names it) leaves no green run to end the
-            # walk back. Closed issues are found by the label only, so without
-            # the label, or without this read, nothing is replayed.
+            # walk back. The closed issues are read as the open one is found: the
+            # labelled list, and the unlabelled one for an issue filed while the
+            # label could not be added. Without either read nothing is replayed.
             if [ -z "$existing" ]; then
-              if [ "$have_label" != 1 ]; then
-                say notice "Without the main-red label the closed issues cannot be listed; the red runs before this one are not replayed."
-                return 0
-              fi
-              if ! gh issue list --repo "$REPO" --state closed --label main-red --limit 20 \
-                --json number,title,body,author > "$work/closed.json" 2> "$work/read-error.txt"; then
-                unread "the closed main-red issues"
-                say notice "$looked; the red runs before this one are not replayed."
-                return 0
-              fi
+              closed_label=(--label main-red --limit 20)
+              for closed_list in labelled unlabelled; do
+                if [ "$closed_list" = unlabelled ]; then
+                  closed_label=(--limit 200)
+                elif [ "$have_label" != 1 ]; then
+                  continue
+                fi
+                if ! gh issue list --repo "$REPO" --state closed "${closed_label[@]}" \
+                  --json number,title,body,author > "$work/closed-$closed_list.json" 2> "$work/read-error.txt"; then
+                  unread "the closed main-red issues"
+                  say notice "$looked; the red runs before this one are not replayed."
+                  return 0
+                fi
+                closed_lists+=(--closed "$work/closed-$closed_list.json")
+              done
               if ! list_unfinished; then
                 return 0
               fi
@@ -489,12 +501,16 @@ jobs:
                 return 0
               fi
             done < "$work/unfinished.txt"
-            if caught="$(python3 "$previous" replay "$work/runs.json" "$work/past" --run-number "$RUN_NUMBER" \
-              --prev-body "$work/prev-body.md" --closed "$work/closed.json" --repo "$REPO" \
+            if ! caught="$(python3 "$previous" replay "$work/runs.json" "$work/past" --run-number "$RUN_NUMBER" \
+              --prev-body "$work/prev-body.md" ${closed_lists[@]+"${closed_lists[@]}"} --repo "$REPO" \
               --out-body "$work/prev-body.md")"; then
-              say notice "$caught"
-            else
               caught=""
+            fi
+          }
+          # Says what the replay counted, once this run is going to write it.
+          say_caught() {
+            if [ -n "$caught" ]; then
+              say notice "$caught"
             fi
           }
 
@@ -515,6 +531,7 @@ jobs:
           }
 
           if [ -n "$existing" ]; then
+            say_caught
             # Pull requests that cross-reference the issue, with their bodies. The
             # script keeps those whose body declares the issue: a comment that only
             # cites it cross-references it too and is not a fix.
@@ -543,9 +560,10 @@ jobs:
             # previous run only when it was red). A read that fails, rate limit
             # included, opens nothing: the look back only ever adds an issue.
             #
-            # A replay that counted an earlier run holds the record of an issue a
-            # watcher would have opened by then, so this run adds itself to it as
-            # it would to an open issue, whatever it is red on.
+            # What the replay counted does not open the issue. Which runs a
+            # watcher already recorded is not always knowable (a closed issue past
+            # the lists read above), and a wrong count must cost a streak that is
+            # too long, never an issue for a failure seen in one job.
             look_back() {
               again=""
               case "$RUN_NUMBER" in ''|*[!0-9]*) looked="This run has no run number to look back from"; return 0 ;; esac
@@ -572,7 +590,7 @@ jobs:
                 looked="The previous run of main that reached a verdict ($prev_url) was not red on the same test file"
               fi
             }
-            if [ -z "$caught" ] && ! once="$(python3 "$script" confirmed "$work/logs")"; then
+            if ! once="$(python3 "$script" confirmed "$work/logs")"; then
               look_back
               if [ -z "$again" ]; then
                 say warning "$RUN_URL: $once and no main-red issue is open; not opening an issue for a failure seen in one job. $looked."
@@ -580,6 +598,7 @@ jobs:
               fi
               say notice "$RUN_URL: $once. $looked, so an issue is opened."
             fi
+            say_caught
             render ""
             # The form's labels exist where the form does. A repository without one
             # (a fork's own main) gets it created here, with no `--force`, so a

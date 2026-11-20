@@ -245,14 +245,16 @@ Three structural facts explain most of the rest:
   written nothing or files what it had read. Nothing marks such a run. Every
   red run that names a test reads the run list and replays the red verdict runs
   directly before it that no issue's record holds (the open issue's, or with
-  none open the newest among the closed `main-red` issues, since an issue
+  none open the newest among the closed watcher issues, read from the labelled
+  list and from the 200 newest closed issues of any label, since an issue
   closed while main was red leaves no green run), back to the first green run,
   the last run a record holds, or 5 runs
   (`.github/scripts/main_red_previous.py`, one job list and one annotation read
   per failed job for each), under the same rules as a live run, so the issue
   names the first red commit and the whole streak even when a watcher run was
-  lost to the rate limit or dropped from the queue. A replay that cannot read a
-  run counts none. The annotations name at most 10
+  lost to the rate limit or dropped from the queue. The replay opens no issue:
+  with none open, the run opens one only by the two rules below. A replay that
+  cannot read a run or the closed issues counts none. The annotations name at most 10
   failing tests per job. With no issue open it files one only when a test is red
   in two failed jobs of the run (the Linux and the Windows shard that both carry
   it), so a test that fails once on one leg, which is as often a flake as a

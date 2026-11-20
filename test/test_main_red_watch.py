@@ -626,7 +626,10 @@ case "$1 $2" in
     case " $* " in
       *" --state closed "*)
         [ -f "$d/closed-refused" ] && { echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; }
-        cat "$d/closed-issues.json" ;;
+        case " $* " in
+          *" --label "*) cat "$d/closed-issues.json" ;;
+          *) cat "$d/closed-unlabelled.json" ;;
+        esac ;;
       *" --label "*) cat "$d/labelled-issues.json" ;;
       *) cat "$d/issues.json" ;;
     esac
@@ -764,17 +767,21 @@ def _run_step(
     past_jobs: dict[int, str] | None = None,
     closed_issues: list[dict] | None = None,
     closed_refused: bool = False,
+    closed_unlabelled: list[dict] | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     """Run the step as the job does, behind the rate-limit wrapper when the job installs it.
 
     ``spent`` names the calls (by how they start) that the rate limit refuses
     until the reset, ``reset_in`` seconds after the stubbed clock; ``past_jobs``
     are the jobs of earlier runs by run id; ``closed_issues`` is the closed
-    main-red list, which ``closed_refused`` makes unreadable.
+    list under the label and ``closed_unlabelled`` the one of any label (the
+    same issues unless given), both unreadable with ``closed_refused``.
     """
     stub = tmp_path / "stub"
     stub.mkdir(parents=True)
     (stub / "closed-issues.json").write_text(json.dumps(closed_issues or []), encoding="utf-8")
+    any_label = closed_issues if closed_unlabelled is None else closed_unlabelled
+    (stub / "closed-unlabelled.json").write_text(json.dumps(any_label or []), encoding="utf-8")
     if closed_refused:
         (stub / "closed-refused").write_text("", encoding="utf-8")
     if spent:
