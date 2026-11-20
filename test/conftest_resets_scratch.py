@@ -35,7 +35,7 @@ def _reset_scratch_job_handles():
 
 
 @pytest.fixture(autouse=True)
-def _a_mocked_cron_child_has_no_thread_to_resume(monkeypatch):
+def _a_mocked_cron_child_has_no_thread_to_resume(_floor_monkeypatch):
     """On Windows the cron runner creates a script child suspended and resumes its main
     thread. A test that mocks ``Popen`` hands back an object with no thread, so the real
     resume reports a failure and the runner kills the run. Only a real ``Popen`` child is
@@ -45,7 +45,7 @@ def _a_mocked_cron_child_has_no_thread_to_resume(monkeypatch):
     from kiro_crew import cron_script
 
     real, popen = cron_script._resume_cron_child, subprocess.Popen  # a test may patch the name
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         cron_script,
         "_resume_cron_child",
         lambda proc: not isinstance(proc, popen) or real(proc),
