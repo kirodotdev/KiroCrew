@@ -2,7 +2,7 @@ import { useCallback, useId, useLayoutEffect, useMemo, useState, type ReactNode 
 import { motion, useIsPresent } from 'framer-motion'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
-import { CuedScrollBox, edgeAttrs, edgeMask } from './CuedScrollBox'
+import { COMMAND_WRAP, CommandText, CuedScrollBox, edgeAttrs, edgeMask } from './CuedScrollBox'
 import { useRequestRegionCap } from './requestRegionCap'
 import { Plug, Target, Terminal } from 'lucide-react'
 import DenyOverrideDropdown, { DenyOverrideWarning } from '../DenyOverrideDropdown'
@@ -134,7 +134,7 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalAlwaysAllowRef, approvalAlwaysAllowRefusal, approvalBrowserTrustClass,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
-    approvalToolCallId, approvalTs, approvalTitle, approvalMcpServer, approvalToolName, approvalRaisedBy, showGhost, showInChat, handleApprovalAction, approvalActionsRef,
+    approvalToolCallId, approvalTs, approvalTitle, approvalPurposeLine, approvalMcpServer, approvalToolName, approvalRaisedBy, showGhost, showInChat, handleApprovalAction, approvalActionsRef,
   } = approval
   const siteKey = approvalBrowserTrustClass ? BROWSER_SITE_KEYS[approvalBrowserTrustClass] : undefined
   // The exact command Allow once runs is read here, so the box fades at the
@@ -206,7 +206,11 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
         <ApprovalStatusPill state="waiting" layoutId={approvalPillLayoutId(activeSlot, approvalKey)} />
         {/* Prose, so the body face: the command itself is below, in the one
             place it is set in mono. */}
-        <span data-testid="approval-title" className="flex-1 min-w-0 pt-px text-[13px] leading-5 font-body font-medium text-text break-words line-clamp-2">{approvalTitle}</span>
+        <span className="flex-1 min-w-0 pt-px flex flex-col">
+          <span data-testid="approval-title" className="text-[13px] leading-5 font-body font-medium text-text break-words line-clamp-2">{approvalTitle}</span>
+          {/* Simplified names off: the agent's description of the call, under the label. */}
+          {approvalPurposeLine && <span data-testid="approval-purpose" className="text-[12px] leading-5 font-body text-muted break-words line-clamp-2">{approvalPurposeLine}</span>}
+        </span>
         <RaisedBy name={approvalRaisedBy} />
       </div>
       <div
@@ -227,7 +231,7 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
                   <KindIcon size={11} className="shrink-0 text-muted" />{kindLabel}
                 </span>
               )}
-              {toolName && <span data-testid="approval-tool" className={`${CHIP_CLASS} min-w-0 font-mono text-text break-all`}>{toolName}</span>}
+              {toolName && <span data-testid="approval-tool" className={`${CHIP_CLASS} min-w-0 font-mono text-text ${COMMAND_WRAP}`}>{toolName}</span>}
               {approvalIsReadOnly && (
                 <span data-testid="approval-read-only" className="inline-flex items-center px-2 py-0.5 rounded-md border border-[color-mix(in_srgb,var(--ok)_30%,transparent)] bg-ok-subtle text-ok-text text-[11px] leading-4 font-body font-medium">
                   {i18nT('components.chatInput.approval_read_only')}
@@ -257,21 +261,23 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
                   runs is read (the Trust menu's exact-command row prints it
                   too). Hence
                   no shortening and no highlighter between the string and the
-                  reader; `whitespace-break-spaces` because collapsing a run of
-                  spaces, or hanging one at a soft wrap, shows a different
-                  command than the one granted, and
-                  `break-all` so an unspaced run (a sha, a base64 argument)
-                  wraps rather than widening the card. Bounded and scrollable,
+                  reader; `whitespace-pre-wrap` because collapsing a run of
+                  spaces shows a different command than the one granted (a
+                  space at a soft wrap hangs past the line's end rather than
+                  starting the next line indented), and `COMMAND_WRAP` with
+                  `CommandText` so it wraps at spaces and splits only a token
+                  too long for the line (a sha, a base64 argument) rather than
+                  widening the card. Bounded and scrollable,
                   as the override card's command is: a pathological command must
                   not push the buttons out of the pane. */}
               {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard users scroll the exact command. */}
-              <pre key={approvalKey} ref={attachCommandEdges} tabIndex={0} role="region" aria-label={commandKey} data-testid="approval-command" {...edgeAttrs(commandEdges)} className={`m-0 flex-1 min-w-0 max-h-[30vh] overflow-y-auto whitespace-break-spaces break-all font-mono text-text ${edgeMask(commandEdges)}`}>{command}</pre>
+              <pre key={approvalKey} ref={attachCommandEdges} tabIndex={0} role="region" aria-label={commandKey} data-testid="approval-command" {...edgeAttrs(commandEdges)} className={`m-0 flex-1 min-w-0 max-h-[30vh] overflow-y-auto whitespace-pre-wrap ${COMMAND_WRAP} font-mono text-text ${edgeMask(commandEdges)}`}><CommandText text={command} /></pre>
             </div>
           )}
           {payload && (
             <CuedScrollBox key={approvalKey} className="max-h-[160px] [&>div]:my-0" testId="approval-input">
               <FormattedPayloadCard text={payload}>
-                <pre className="m-0 px-2 py-2 rounded-md border border-border bg-bg-elevated text-[12px] leading-5 font-mono whitespace-break-spaces break-all">{payload}</pre>
+                <pre className={`m-0 px-2 py-2 rounded-md border border-border bg-bg-elevated text-[12px] leading-5 font-mono whitespace-pre-wrap ${COMMAND_WRAP}`}><CommandText text={payload} /></pre>
               </FormattedPayloadCard>
             </CuedScrollBox>
           )}
