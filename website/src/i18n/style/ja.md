@@ -95,8 +95,9 @@ reads as "light" or "right" access far sooner than "write".
 | write access | 書き込みアクセス | ライトアクセス |
 | present (attending) | 在席 | プレゼント |
 | open (a free slot) | 空き | 開く |
+| local (on this computer) | ローカル | 地元 |
 
-`jaStyle.test.ts` checks the `write access` and `present` rows only when the
+`jaStyle.test.ts` checks the `write access`, `present` and `local` rows only when the
 **English** carries the cue, so a legitimate `ライト` ("light theme") is never caught.
 The `open` / free-slot row is review-only.
 
@@ -173,7 +174,7 @@ copy must not add fragments: one key per sentence.
 | a space between `Kiro CLI` / `{{productName}}` and Japanese | `jaStyle.test.ts` |
 | no space inside a katakana compound | `jaStyle.test.ts` |
 | trailing long-vowel mark kept | `jaStyle.test.ts` |
-| `write access` and `present` use their context-specific terms | `jaStyle.test.ts` |
+| `write access`, `present` and `local` use their context-specific terms | `jaStyle.test.ts` |
 | no だ・である ending, no kanji auxiliaries | `jaStyle.test.ts` |
 | balanced brackets and quotes, incl. mixed width | `qa.test.ts` |
 | no full-width Latin or digits | `qa.test.ts` |
