@@ -4,8 +4,8 @@ status: accepted
 author: zejiangg (drafted with an agent session)
 created: 2026-11-19
 last-audited: 2026-11-19
-audited-at: dcc312174e
-doc-pr: null
+audited-at: fc89562d69
+doc-pr: 39344
 implementation-prs: []
 tracking-issues: [22681]
 supersedes: []

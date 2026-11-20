@@ -1,10 +1,12 @@
 ---
 title: Remote Instance on Lambda MicroVM
-status: draft
+status: implemented
 kind: framework
 author: Raymond Chen (chenmingwei23)
 created: 2026-10-06
-doc-pr:
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 17540
 implementation-prs: [17540]
 tracking-issues: [17517]
 supersedes: []
@@ -13,7 +15,7 @@ superseded-by: []
 
 # RFC: Remote Instance on Lambda MicroVM
 
-> **Nothing built.** Measured claims about Kiro Crew are read at `fcee47347`.
+> **Implemented in [#17540](https://github.com/kirodotdev/KiroCrew/pull/17540).** The lane ships as `src/kiro_crew/cloud/microvm/` and the `remote-crew-microvm` skill; section 7 lists the follow-ups it leaves out. Measured claims about Kiro Crew were read at `fcee47347`.
 > AWS behaviour is cited to public documentation. The design restates decisions
 > established by an earlier prototype that ran Kiro Crew's published container
 > image on Lambda MicroVMs; no code is carried over.
