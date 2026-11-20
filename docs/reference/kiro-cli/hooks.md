@@ -74,8 +74,7 @@ An MCP tool arrives under its namespaced name, such as `@postgres/query`.
   - **All other events**: warn-only — STDERR is shown as a warning and
     execution continues.
 
-There is currently no per-hook advisory/fail-open opt-out for PreToolUse; that
-is tracked in [#7547](https://github.com/kirodotdev/KiroCrew/issues/7547).
+There is no per-hook advisory/fail-open opt-out for PreToolUse.
 
 ## Tool matching
 

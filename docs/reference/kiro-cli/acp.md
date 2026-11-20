@@ -7,7 +7,7 @@ Source: https://kiro.dev/docs/cli/acp/ (fetched 2026-09-06)
 > `_kiro.dev/mcp/server_init_failure` and `_kiro.dev/agent/switched` rows have no
 > counterpart in upstream's method table; they are measured here and describe Kiro
 > Crew's claude-agent-acp path. A re-fetch must preserve them. Upstream's own
-> table now carries `_session/terminate`, so that row is no longer local-only.
+> table carries `_session/terminate`, so that row is mirrored, not local.
 > Two wire names are corrected locally against what Kiro Crew sends and reads:
 > session updates arrive as the `session/update` notification, and
 > `session/prompt` carries its content blocks in `params.prompt`.
