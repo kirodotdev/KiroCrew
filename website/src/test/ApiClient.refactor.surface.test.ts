@@ -59,7 +59,7 @@ const NO_SESSION_KEY = [
   'sttConfig', 'sttStatus', 'sttVocabularies', 'sttTranscribe', 'chatSlots',
   'chatSlotsUnrestored', 'autonudgeList', 'autonudgeForSlot', 'monitorsList', 'monitorForSlot',
   'monitorContract',
-  'chatSlotSourceLinks', 'chatSlotDetail', 'channelTargets', 'slackChannels',
+  'chatSlotSourceLinks', 'chatSlotDetail', 'channelTargets', 'channelTopics', 'slackChannels',
   'sessionsHealth', 'tasksSummary', 'spawnAdaptive', 'tasksList', 'taskDetail',
   'notifications', 'notificationChannels', 'sessions', 'sessionsSearch', 'sessionsSearchMessages', 'sessionsNamed',
   'sessionArchiveList', 'sessionArchiveRead',

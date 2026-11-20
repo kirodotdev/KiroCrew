@@ -10,6 +10,8 @@ export interface CronJob {
   cron_expr?: string | null; every?: number | null; every_secs?: number | null
   at?: number | null; created_ts?: number | null
   agent?: string; model?: string; channel?: string; approval_mode?: string; silent?: boolean
+  /** A pinned destination on another channel (`send_message`'s pair), or null. */
+  channel_type?: string | null; target_id?: string | null
   /** Crews a sequence job runs, in order. Takes PRECEDENCE over `agent` at run
    *  time, so any consumer attributing a job to a crew must read this first. */
   agent_sequence?: string[]

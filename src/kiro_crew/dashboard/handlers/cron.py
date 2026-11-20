@@ -72,6 +72,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MAX_BATCH_DELETE,
         _MAX_CRON_BODY_BYTES,
         _T,
+        _channel_target_kwargs,
         _ChatFolderGone,
         _coerce_bool_flag,
         _invalid_new_chat_per_run,
@@ -246,6 +247,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         DashboardState,
         SlotOrigin,
         note_crew_log_class,
+    )
+    from kiro_crew.dashboard.token_auth_callers import (  # noqa: F401
+        effective_request_app,
     )
     from kiro_crew.executors import (  # noqa: F401
         discovery_executor,
