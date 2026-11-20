@@ -1163,6 +1163,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cli_commands_cron.py",
         "cli_commands_eval.py",
         "cli_commands_learn.py",
+        # Operator's own terminal during `kirocrew cron history`: redacts a run's
+        # job name, summary, error and trace exactly as the dashboard history
+        # routes do, before printing the local run store to the operator who owns
+        # it. Same classification as `cli_commands_cron.py` above.
+        "cli_cron_history.py",
         # Slack sub-surfaces whose posted output is covered by the two Slack rows.
         "slack/events.py",
         "slack/events_home_tab.py",
