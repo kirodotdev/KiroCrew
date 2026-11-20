@@ -43,6 +43,7 @@ _BASE_BOT_SCOPES = [
     "im:write",
     "reactions:write",
     "users:read",
+    "users:read.email",
 ]
 #: Granted only with ``slack.code_channels``: agents.conversations.* plus the
 #: session identity override and the channel canvas.
@@ -101,6 +102,11 @@ class TestManifestGrantsWhatTheCodeUses:
         # users.info is called from get_user_info and get_user_profile in
         # slack/client.py.
         assert "users:read" in _bot_scopes(_manifest())
+
+    def test_users_read_email_scope_granted(self) -> None:
+        # users.lookupByEmail is called from slack/shared_access.py find_by_email,
+        # when the owner adds a person to Share Slack access by their email.
+        assert "users:read.email" in _bot_scopes(_manifest())
 
     def test_private_channel_message_event_subscribed(self) -> None:
         # The handler routes `message` events from any channel type; without

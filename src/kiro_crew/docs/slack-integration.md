@@ -266,7 +266,14 @@ or fix what their row says, first.
 - **Who counts.** Each Slack member ID on the list is checked with Slack
   (`users.info`) before it is used: same workspace as the bot (`auth.test`), a
   person rather than a bot or app, not deactivated, and not the owner. The page
-  refuses an ID that fails, and shows each person's name next to their ID. An ID
+  refuses an ID that fails, and shows each person's name next to their ID. You
+  can add a person by their email instead of their ID: the page looks it up with
+  `users.lookupByEmail` (bot scope `users:read.email`, in the shipped manifest;
+  an older install needs a reinstall) and keeps the member ID, and the audit log
+  records the ID, never the email. Pasting a Slack profile link
+  (`https://<workspace>.slack.com/team/U…`) works too. Nobody can be added until
+  the Owner Slack member ID is saved, and an ID that becomes the owner's is shown
+  as the owner's own row and left out of the switch's confirm. An ID
   added with `kirocrew config` gets the same check from the gateway before its
   first message counts. A confirmation is re-checked every 10 minutes, and a
   refusal after a minute: an ID that stays on the list gets access as soon as
@@ -341,7 +348,8 @@ your own workspace.
 2. **Add a bot user** with these Bot Token Scopes:
    `app_mentions:read`, `channels:history`, `channels:read`, `chat:write`,
    `commands`, `files:read`, `files:write`, `groups:history`, `groups:read`,
-   `im:history`, `im:read`, `im:write`, `reactions:write`, and `users:read`.
+   `im:history`, `im:read`, `im:write`, `reactions:write`, `users:read`, and
+   `users:read.email`.
 3. **Add User Token Scopes** if the same app supplies a user token to a
    separately configured Slack MCP/search integration: `channels:history`,
    `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`,
