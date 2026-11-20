@@ -246,10 +246,15 @@ def approval_display_command(
 
 
 def _tool_matches(pattern: str, tool_name: str) -> bool:
-    """Match the existing case-insensitive fnmatch trust language."""
+    """Match the existing case-insensitive fnmatch trust language.
+
+    ``fnmatchcase`` on lowered strings, not ``fnmatch``: on Windows ``fnmatch``
+    runs ``ntpath.normcase``, which also folds ``/`` into ``\\``, so a grant for
+    ``del /q foo`` would approve ``del \\q foo``.
+    """
     if pattern == "*":
         return True
-    return fnmatch.fnmatch(tool_name.lower(), pattern.lower())
+    return fnmatch.fnmatchcase(tool_name.lower(), pattern.lower())
 
 
 def _mask_quoted_separators(

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ntpath
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -171,6 +173,23 @@ class TestMatchesTrustedPattern:
         assert pattern == "rm [*].tmp"
         assert _matches_trusted_pattern("rm *.tmp", {pattern}) == pattern
         assert _matches_trusted_pattern("rm secret.tmp", {pattern}) is None
+
+    @pytest.mark.parametrize(
+        ("granted", "other"),
+        [
+            ("del /q foo", "del \\q foo"),
+            ("rm -rf build/out", "rm -rf build\\out"),
+            ("cat docs\\a.md", "cat docs/a.md"),
+        ],
+    )
+    def test_exact_grant_does_not_fold_separators_under_windows_normcase(self, granted, other):
+        # Windows fnmatch runs ntpath.normcase, which folds / into \.
+        with patch.object(os.path, "normcase", ntpath.normcase):
+            pattern = exact_trust_pattern(granted)
+            assert _canonical_matches_trusted_pattern(granted, {pattern}) == pattern
+            assert _canonical_matches_trusted_pattern(other, {pattern}) is None
+            assert _canonical_matches_trusted_pattern(granted.upper(), {pattern}) == pattern
+            assert _canonical_matches_trusted_pattern(other, {"del *", "rm *", "cat *"})
 
 
 # ── Extraction helpers tests ──
