@@ -25,8 +25,9 @@ import os
 import re
 import shutil
 
+from kiro_crew.cloud import ssm as cloud_ssm
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
-from kiro_crew.deploy.engine import _refresh_aws_bin_dir_trust, tool_spawn_env
+from kiro_crew.deploy.engine import refresh_aws_tool_trust, tool_spawn_env
 from kiro_crew.instances.constants import (
     DEFAULT_MINT_TIMEOUT_SECS,
     DEFAULT_SSM_MINT_TIMEOUT_SECS,
@@ -534,11 +535,14 @@ def ssh_spawn_argv_env(argv: list[str]) -> tuple[list[str], dict[str, str]]:
     ``aws`` child gets: one widening rule for both transports.
 
     Every ssh spawn site (tunnel, token mint, remote restart, diagnostics probes)
-    goes through this, so none of them can be the one that still fails. Runs a
-    PATH scan; call it via ``asyncio.to_thread`` from async code.
+    goes through this, so none of them can be the one that still fails. Each call
+    re-checks ``session-manager-plugin`` and ``aws``, which a ProxyCommand runs by
+    name, so the PATH leaves out a dir whose copy is refused and takes it back once
+    that copy passes. Scans the filesystem; call it via ``asyncio.to_thread`` from
+    async code.
     """
     head = resolve_ssh_bin() if argv[0] == "ssh" else argv[0]
-    _refresh_aws_bin_dir_trust()
+    refresh_aws_tool_trust()
     return [head, *argv[1:]], tool_spawn_env(head)
 
 
@@ -573,6 +577,33 @@ def proxy_tool_missing_message(child_path: str) -> str:
         f"the gateway gave ssh ({shown}); install it or make it reachable from that "
         "PATH (e.g. start the gateway from a terminal), then reconnect"
     )
+
+
+# How a ProxyCommand's stderr names the plugin: its own "is not installed", the AWS
+# CLI's "SessionManagerPlugin is not found", or a shell's "not found" for it.
+_PLUGIN_NAMES = ("session-manager-plugin", "sessionmanagerplugin")
+
+
+def refused_plugin_message() -> str:
+    """The refused ``session-manager-plugin``'s file, reason and fix, or "" if none is refused.
+
+    Walks the install dirs: call it off the event loop.
+    """
+    if cloud_ssm.session_manager_plugin_refusal() is None:
+        return ""
+    return cloud_ssm.session_manager_plugin_unavailable_message("connect again")
+
+
+def proxy_tool_missing_cause(stderr: str, child_path: str, refused_plugin: str) -> str:
+    """The cause to report when a ProxyCommand could not find a program it runs.
+
+    That is *refused_plugin* (:func:`refused_plugin_message`) when it is set and *stderr*
+    names the plugin, else the PATH the child searched (:func:`proxy_tool_missing_message`).
+    """
+    low = stderr.lower()
+    if refused_plugin and any(name in low for name in _PLUGIN_NAMES):
+        return refused_plugin
+    return proxy_tool_missing_message(child_path)
 
 
 def _redacted_output_tail(stdout: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
@@ -716,7 +747,8 @@ async def mint_remote_token(
         # shell, which is not a ProxyCommand problem and must not be named one.
         low = stderr.lower()
         if proc.returncode == 255 and any(sig in low for sig in PROXY_TOOL_MISSING_SIGNALS):
-            detail = f"{proxy_tool_missing_message(env.get('PATH', ''))}: {detail}"
+            refused = await asyncio.to_thread(refused_plugin_message)
+            detail = f"{proxy_tool_missing_cause(low, env.get('PATH', ''), refused)}: {detail}"
         raise TokenMintError(f"remote token mint on {ssh_host} exited {proc.returncode}: {detail}")
 
     token = parse_token_from_stdout(stdout)

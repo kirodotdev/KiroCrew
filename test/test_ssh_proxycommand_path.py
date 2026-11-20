@@ -24,14 +24,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sys
 from pathlib import Path
 
 import pytest
 
+from kiro_crew.cloud import ssm as cloud_ssm
 from kiro_crew.deploy import engine
 from kiro_crew.instances import diagnostics, token_mint
 from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 _TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln"
 _NOT_INSTALLED = (
@@ -111,6 +114,18 @@ def _is_resolved_ssh(head: str, sysbin: Path) -> bool:
     return os.path.isabs(head) and os.path.dirname(head) == str(sysbin)
 
 
+# These spawn tests need the install dir on the child's PATH, which requires the
+# planted tool to clear validate_provider_executable. On Windows that is an ACL
+# walk over a tmp dir the CI runner's inheritance does not satisfy, so the dir is
+# refused and the plugin is unreachable -- a fixture artifact, not the behaviour
+# under test, which the POSIX runs already cover.
+_NEEDS_POSIX_INSTALL_DIR = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fixture's planted install dir is refused by the Windows ACL provenance walk",
+)
+
+
+@_NEEDS_POSIX_INSTALL_DIR
 @pytest.mark.asyncio
 async def test_token_mint_through_a_proxycommand_finds_the_plugin(gui_gateway):
     sysbin, _install, heads = gui_gateway
@@ -127,6 +142,7 @@ async def test_remote_restart_through_a_proxycommand_finds_the_plugin(gui_gatewa
     assert _is_resolved_ssh(heads[-1], sysbin)
 
 
+@_NEEDS_POSIX_INSTALL_DIR
 @pytest.mark.asyncio
 async def test_diagnostics_ssh_probe_through_a_proxycommand_finds_the_plugin(gui_gateway):
     sysbin, _install, heads = gui_gateway
@@ -134,6 +150,7 @@ async def test_diagnostics_ssh_probe_through_a_proxycommand_finds_the_plugin(gui
     assert _is_resolved_ssh(heads[-1], sysbin)
 
 
+@_NEEDS_POSIX_INSTALL_DIR
 @pytest.mark.asyncio
 async def test_diagnostics_dashboard_probe_through_a_proxycommand_finds_the_plugin(
     gui_gateway, monkeypatch
@@ -145,6 +162,7 @@ async def test_diagnostics_dashboard_probe_through_a_proxycommand_finds_the_plug
     assert _is_resolved_ssh(heads[-1], sysbin)
 
 
+@_NEEDS_POSIX_INSTALL_DIR
 def test_every_ssh_spawn_gets_the_same_env_as_the_ssm_aws_child(gui_gateway):
     """One widening rule: the ssh env is the aws env for the same resolved head."""
     sysbin, install, _heads = gui_gateway
@@ -290,3 +308,207 @@ async def test_tunnel_start_reports_the_missing_plugin_with_the_child_path(
     assert "ProxyCommand runs was not found" in t.status.error
     assert f"({sysbin})" in t.status.error
     assert _is_resolved_ssh(heads[-1], sysbin)
+
+
+_REFUSAL = "executable is owned by another user (uid 1501)"
+
+
+def _refuse_the_plugin(monkeypatch) -> dict[str, bool]:
+    """Have the provenance check refuse ``session-manager-plugin`` until ``["repaired"]``.
+
+    No refusal is recorded yet, as on a gateway where no plugin check has run.
+    """
+    from kiro_crew import github_runner
+
+    state = {"repaired": False}
+
+    def _validate(candidate):
+        if os.path.basename(candidate) == "session-manager-plugin" and not state["repaired"]:
+            raise ValueError(_REFUSAL)
+        return candidate
+
+    monkeypatch.setattr(github_runner, "validate_provider_executable", _validate)
+    monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+    return state
+
+
+def _refused_in_the_aws_package_tree(monkeypatch, tmp_path, install):
+    """A stock AWS ``.pkg`` plugin the check refuses, read once as the cloud preflight does.
+
+    ``install`` links into the package tree, as ``/usr/local/bin`` does. The test user
+    owns the tree, so a gateway with another uid sees a third account and is offered
+    the root-owner fix. Returns the refusal the preflight reports.
+    """
+    prefix = tmp_path / "sessionmanagerplugin"
+    (prefix / "bin").mkdir(parents=True)
+    binary = prefix / "bin" / "session-manager-plugin"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    link = install / "session-manager-plugin"
+    link.unlink()
+    link.symlink_to(binary)
+    owner = binary.stat().st_uid
+    monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+    monkeypatch.setattr(cloud_ssm, "_AWS_PKG_PLUGIN_PREFIX", str(prefix))
+    monkeypatch.setattr(cloud_ssm.platform, "system", lambda: "Darwin")
+    _refuse_the_plugin(monkeypatch)
+    assert cloud_ssm.session_manager_plugin_installed() is False
+    refusal = cloud_ssm.session_manager_plugin_refusal()
+    assert refusal is not None
+    assert refusal.remedy_command == f"sudo chown -R root:wheel {prefix}"
+    return refusal
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
+def test_a_refused_plugin_is_off_the_ssh_path_with_no_prior_plugin_check(gui_gateway, monkeypatch):
+    """The ssh child's PATH does not wait for an SSM check to learn of a refusal.
+
+    A ProxyCommand looks the plugin up by name, so a refused one on that PATH would run.
+    """
+    sysbin, install, _heads = gui_gateway
+    _refuse_the_plugin(monkeypatch)
+
+    argv, env = token_mint.ssh_spawn_argv_env(["ssh", "ds-abc", "true"])
+
+    assert _is_resolved_ssh(argv[0], sysbin)
+    assert str(install) not in env["PATH"].split(os.pathsep)
+    assert shutil.which("session-manager-plugin", path=env["PATH"]) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
+def test_a_repaired_plugin_is_back_on_the_next_ssh_path(gui_gateway, monkeypatch):
+    """A refusal the cloud preflight recorded clears at the next ssh spawn after a repair."""
+    sysbin, install, _heads = gui_gateway
+    plugin = _refuse_the_plugin(monkeypatch)
+    assert cloud_ssm.session_manager_plugin_installed() is False
+    _argv, env = token_mint.ssh_spawn_argv_env(["ssh", "ds-abc", "true"])
+    assert str(install) not in env["PATH"].split(os.pathsep)
+
+    plugin["repaired"] = True
+    _argv, env = token_mint.ssh_spawn_argv_env(["ssh", "ds-abc", "true"])
+
+    assert env["PATH"].split(os.pathsep) == [str(sysbin), str(install)]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+@pytest.mark.asyncio
+async def test_mint_names_the_refused_plugin_and_its_fix(gui_gateway, monkeypatch, tmp_path):
+    _sysbin, install, _heads = gui_gateway
+    refusal = _refused_in_the_aws_package_tree(monkeypatch, tmp_path, install)
+
+    with pytest.raises(token_mint.TokenMintError) as ei:
+        await token_mint.mint_remote_token("ds-abc", timeout_secs=FALLBACK_TIMEOUT_SECS)
+
+    msg = str(ei.value)
+    assert refusal.path in msg
+    assert refusal.reason in msg
+    assert refusal.remedy_command in msg
+    assert "make it reachable from that PATH" not in msg
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+@pytest.mark.asyncio
+async def test_tunnel_exit_names_the_refused_plugin_and_its_fix(gui_gateway, monkeypatch, tmp_path):
+    _sysbin, install, _heads = gui_gateway
+    refusal = _refused_in_the_aws_package_tree(monkeypatch, tmp_path, install)
+    t = _SshTunnel("ds-1", "ds-abc", 1, 2, connect_timeout_secs=FALLBACK_TIMEOUT_SECS)
+
+    async def _never_reachable() -> bool:
+        return False
+
+    # Only the child's exit ends the wait, whatever this host has listening.
+    t._port_reachable = _never_reachable
+
+    assert await t.start() is False
+    assert refusal.path in t.status.error
+    assert refusal.reason in t.status.error
+    assert refusal.remedy_command in t.status.error
+    assert "make it reachable from that PATH" not in t.status.error
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
+def test_a_refused_plugin_in_a_later_dir_is_off_the_ssh_path(monkeypatch, tmp_path):
+    """Each tool is validated in every appendable dir, not only up to its first pass.
+
+    Two install dirs each hold one accepted tool next to one refused one:
+    ``homebrew`` has an accepted ``session-manager-plugin`` but a refused ``aws``,
+    ``usrlocal`` has an accepted ``aws`` but an other-owner ``session-manager-plugin``.
+    Stopping each tool's walk at its first pass would validate only the homebrew
+    plugin and the usrlocal aws, leaving the usrlocal plugin unchecked on the ssh
+    child's PATH where a ProxyCommand would run it. The whole dir must be dropped.
+    """
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    _plant(sysbin, "ssh")
+    homebrew = tmp_path / "homebrew-bin"
+    homebrew.mkdir()
+    _plant(homebrew, "session-manager-plugin")
+    hb_aws = _plant(homebrew, "aws")
+    usrlocal = tmp_path / "usr-local-bin"
+    usrlocal.mkdir()
+    _plant(usrlocal, "aws")
+    ul_plugin = _plant(usrlocal, "session-manager-plugin")
+    if os.name == "nt":
+        monkeypatch.setenv("PATHEXT", ".CMD")
+    monkeypatch.setenv("PATH", str(sysbin))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(homebrew), str(usrlocal)))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+    monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+    from kiro_crew import github_runner
+
+    monkeypatch.setattr(github_runner, "validate_provider_directory", lambda candidate: candidate)
+
+    refused = {str(hb_aws), str(ul_plugin)}
+
+    def _validate(candidate):
+        if os.path.realpath(candidate) in {os.path.realpath(p) for p in refused}:
+            raise ValueError(_REFUSAL)
+        return candidate
+
+    monkeypatch.setattr(github_runner, "validate_provider_executable", _validate)
+
+    _argv, env = token_mint.ssh_spawn_argv_env(["ssh", "ds-abc", "true"])
+
+    # The unchecked usrlocal plugin must not be reachable by the ssh child: both
+    # fallback dirs hold a refused tool, so neither may be appended.
+    assert shutil.which("session-manager-plugin", path=env["PATH"]) is None
+    parts = env["PATH"].split(os.pathsep)
+    assert str(homebrew) not in parts
+    assert str(usrlocal) not in parts
+
+
+@pytest.mark.parametrize(
+    ("stderr", "names_the_refusal"),
+    [
+        ("Error: session-manager-plugin is not installed", True),
+        ("SessionManagerPlugin is not found", True),
+        ("sh: 1: exec: connect-helper: not found", False),
+    ],
+)
+def test_the_refusal_is_the_cause_only_when_stderr_names_the_plugin(stderr, names_the_refusal):
+    """Another program the ProxyCommand could not find is reported with the PATH."""
+    refused = "session-manager-plugin is installed at /p but was refused: r."
+
+    cause = token_mint.proxy_tool_missing_cause(stderr, "/usr/bin:/bin", refused)
+
+    path_cause = token_mint.proxy_tool_missing_message("/usr/bin:/bin")
+    assert cause == (refused if names_the_refusal else path_cause)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+@pytest.mark.asyncio
+async def test_diagnosis_names_the_refused_plugin_and_its_fix(gui_gateway, monkeypatch, tmp_path):
+    """The ssh step keeps its code and names the plugin for a host whose ProxyCommand runs it."""
+    _sysbin, install, _heads = gui_gateway
+    refusal = _refused_in_the_aws_package_tree(monkeypatch, tmp_path, install)
+
+    result = await diagnostics.diagnose_instance(
+        "ds-abc", 7777, 0, connect_timeout_secs=FALLBACK_TIMEOUT_SECS
+    )
+
+    assert result.code == diagnostics.SSH_UNREACHABLE
+    assert result.probes == [{"name": "ssh", "ok": False}]
+    assert refusal.path in result.reason
+    assert refusal.reason in result.reason
+    assert refusal.remedy_command in result.reason
+    assert "ProxyCommand" in result.reason
