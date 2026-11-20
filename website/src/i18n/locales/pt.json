@@ -8462,6 +8462,8 @@
       "agent_unverified_detail": "O {{productName}} não conseguiu confirmar que o {{name}} está instalado. Pressione Verificar novamente para confirmar a instalação antes de usar este agente. A configuração continua aberta até que o agente escolhido esteja pronto. Você pode trocar de agente aqui ou, mais tarde, em Configurações > Harness do agente.",
       "agent_ready_to_use": "O {{name}} está instalado e pronto para uso.",
       "sandbox_blocked_agent_detail": "O {{productName}} executa o {{name}} dentro de um sandbox que mantém suas credenciais fora do alcance dele. Este host não consegue fornecer esse sandbox agora, então o {{name}} continua indisponível até que consiga.",
+      "workload_pod_no_sandbox": "Este host não consegue criar um sandbox, como num pod Restricted do Kubernetes. Para que o contêiner seja o único limite, defina isto e reinicie o {{productName}}.",
+      "container_boundary_guide": "Um pod de Crew de equipe: o contêiner é o limite",
       "sandbox_off_agent_detail": "O {{productName}} executa o {{name}} dentro de um sandbox que mantém suas credenciais fora do alcance dele, mas o sandbox está desligado nas configurações do {{productName}} (agent.sandbox). Ligue-o novamente para usar o {{name}}.",
       "use_agent": "Usar {{name}}",
       "switching_agent": "Alternando…",

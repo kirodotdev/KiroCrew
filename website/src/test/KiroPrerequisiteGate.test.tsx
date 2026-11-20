@@ -258,6 +258,37 @@ describe('KiroPrerequisiteGate', () => {
     expect(footer.className).toContain('env(safe-area-inset-bottom)')
   })
 
+  it.each([
+    { label: 'a workload pod', workload: true, kind: 'no_backend', backend: 'kiro', shown: true },
+    { label: 'a host that is not a workload pod', workload: false, kind: 'no_backend', backend: 'kiro', shown: false },
+    { label: 'a workload pod with a transient failure', workload: true, kind: 'transient', backend: 'kiro', shown: false },
+    // An enforced harness stays blocked with no backend whatever the opt-in.
+    { label: 'a workload pod whose configured agent the opt-in cannot unblock', workload: true, kind: 'no_backend', backend: 'codex', shown: false },
+  ])('the sandbox screen names the unsandboxed setting only for $label with no backend', async ({ workload, kind, backend, shown }) => {
+    // A container image with kiro-cli reaches this screen before any agent picker.
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: backend } })
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: kind,
+      sandbox_backend_available: false,
+      unsandboxed_exec_permitted: false,
+      container_boundary_hint: workload,
+      sandbox_blocked_backends: ['codex'],
+    }))
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+    await screen.findByRole('heading', { name: 'The agent sandbox could not be started' })
+    await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
+    if (!shown) {
+      await waitFor(() => expect(screen.queryByTestId('workload-pod-no-sandbox')).toBeNull())
+      return
+    }
+    expect(await screen.findByTestId('workload-pod-no-sandbox')).toHaveTextContent('Kubernetes Restricted pod')
+    expect(screen.getByText('kirocrew config set agent.sandbox_allow_unsandboxed_exec true', { selector: 'code' })).toBeInTheDocument()
+  })
+
   it('tells an installed-but-signed-out CLI to sign in via Kiro CLI', async () => {
     // Any Kiro CLI that runs is usable regardless of install source, so this
     // state must show the sign-in instruction and the exact command — and no

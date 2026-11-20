@@ -38,6 +38,7 @@ import {
   AgentPickerRow,
   AgentStatusBadge,
   CopyCommand,
+  WorkloadPodSandboxHint,
   type AgentNotReadyReason,
 } from './agentHarness'
 
@@ -352,6 +353,7 @@ function SandboxUnavailable({
   retrying,
   onRetry,
   allowRemoteSetup,
+  workloadPod = false,
 }: {
   failureKind: string
   detail: string
@@ -359,6 +361,8 @@ function SandboxUnavailable({
   retrying: boolean
   onRetry: () => void
   allowRemoteSetup: boolean
+  /** `workloadPodNoSandbox`: a team Crew pod with no sandbox and no opt-in. */
+  workloadPod?: boolean
 }) {
   // One honest title for every kind and every engine route — the agent
   // sandbox could not be started — with the body carrying the mechanism,
@@ -418,6 +422,11 @@ function SandboxUnavailable({
             between a fixable host and a dead end. */}
         {(failureKind === 'no_backend' || (transient && remedy)) && (
           <SandboxRemedy remedy={remedy} transient={transient} />
+        )}
+        {failureKind === 'no_backend' && workloadPod && (
+          <div className="mt-5 w-full max-w-lg text-left text-[13px] leading-relaxed text-text">
+            <WorkloadPodSandboxHint />
+          </div>
         )}
         {detail ? (
           <div className="mt-5 w-full max-w-lg text-left">
@@ -646,6 +655,16 @@ function sandboxOffFor(
     && !status.sandbox_unavailable
     && status.sandbox_backend_available === true
     && (status.sandbox_blocked_backends?.includes(probe.id) ?? false)
+}
+
+/** A workload pod (a team Crew deployment) whose host can build no sandbox and
+ *  whose operator has not opted into unsandboxed exec: the screen names the setting.
+ *  With *backendId*, only for a harness that opt-in unblocks: an enforced one stays in
+ *  `sandbox_blocked_backends` with no backend, opt-in or not. */
+export function workloadPodNoSandbox(status: KiroPrerequisiteStatus | undefined, backendId?: string): boolean {
+  return !!status && status.container_boundary_hint === true
+    && status.sandbox_backend_available !== true && status.unsandboxed_exec_permitted !== true
+    && !(backendId && status.sandbox_blocked_backends?.includes(backendId))
 }
 
 /**
@@ -882,8 +901,19 @@ function OtherCodingAgents({
   const shownReason = shown
     ? notReadyReason(status, shown) ?? (configuredBackendCanStart(status, shown) ? null : 'sandbox_blocked')
     : null
+  // A team Crew pod's operator rarely opens the panel below, so the one setting
+  // that unblocks the configured agent there is shown above it, open or not.
+  const podHint = configuredNotReady && !!configuredProbe
+    && notReadyReason(status, configuredProbe) === 'sandbox_blocked'
+    && workloadPodNoSandbox(status, configuredProbe.id)
 
   return (
+    <>
+    {podHint && (
+      <div className="mb-5 rounded-xl border border-warn/40 bg-warn-subtle px-4 py-3 text-[13px] leading-relaxed text-text" role="status">
+        <WorkloadPodSandboxHint />
+      </div>
+    )}
     <div className="mb-5 rounded-xl border border-border bg-bg-elevated/40" data-testid="other-coding-agents">
       <button
         type="button"
@@ -1025,7 +1055,7 @@ function OtherCodingAgents({
                       {selected && shown && (
                         <>
                           {shownReason ? (
-                            <AgentNotReadyDetail reason={shownReason} name={name} probe={shown} />
+                            <AgentNotReadyDetail reason={shownReason} name={name} probe={shown} workloadPodNoSandbox={!podHint && workloadPodNoSandbox(status, shown.id)} />
                           ) : (
                             <p className="text-[13px] leading-relaxed text-text">
                               {i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name })}
@@ -1088,6 +1118,7 @@ function OtherCodingAgents({
         </div>
       )}
     </div>
+    </>
   )
 }
 
@@ -1581,6 +1612,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
         retrying={retrying}
         onRetry={retryStatus}
         allowRemoteSetup={!ltsLocked}
+        workloadPod={workloadPodNoSandbox(status, configuredBackend)}
       />
     )
   }

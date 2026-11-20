@@ -8042,6 +8042,8 @@
       "agent_unverified_detail": "{{productName}} 无法确认 {{name}} 是否已安装。使用此代理前，点击“重新检查”验证安装。在你选择的代理准备就绪之前，安装设置会保持打开。你可以在这里切换代理，也可以稍后在“设置 > 代理运行框架”中切换。",
       "agent_ready_to_use": "{{name}} 已安装，可以使用。",
       "sandbox_blocked_agent_detail": "{{productName}} 只会在沙箱中运行 {{name}}，让它触及不到你的凭据。此主机目前无法提供该沙箱，因此在它能够提供之前 {{name}} 将一直不可用。",
+      "workload_pod_no_sandbox": "这台主机无法创建沙箱，例如 Kubernetes Restricted Pod。要让容器成为唯一的边界，请设置这一项并重启 {{productName}}。",
+      "container_boundary_guide": "团队 Crew Pod：容器即边界",
       "sandbox_off_agent_detail": "{{productName}} 只会在沙箱中运行 {{name}}，让它触及不到你的凭据，但沙箱已在 {{productName}} 的设置（agent.sandbox）中关闭。重新开启沙箱即可使用 {{name}}。",
       "use_agent": "使用 {{name}}",
       "switching_agent": "正在切换…",

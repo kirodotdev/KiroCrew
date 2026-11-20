@@ -5598,7 +5598,10 @@ still refresh while the dashboard body is blocked. On a new gateway it:
    a returned probe. The warning also says why, in the picker rows' own words
    (`agentHarness/AgentNotReadyDetail.tsx`): one explicit branch per cause that
    can reach it (not offered, not installed, restart needed, unverified, sandbox
-   off by setting, sandbox blocked with `kirocrew doctor`, and for KAS missing
+   off by setting, sandbox blocked with `kirocrew doctor` (and, on a workload
+   pod (`container_boundary_hint`: a workload identity and no governance floor that
+   requires a sandbox) with no backend and no opt-in, the
+   `agent.sandbox_allow_unsandboxed_exec` command and the Docker guide's pod section), and for KAS missing
    specs with `kirocrew setup --agent-only` or rejected specs with `--clean`), no
    catch-all, and nothing while the configured agent's own open row already says
    it. The recheckable reasons (not installed, restart needed, unverified) carry
