@@ -267,7 +267,9 @@ async def test_b05_every_child_goes_through_the_plan_on_the_granted_root(monkeyp
     assert call["root"] == "/work/proj"
     if kind == "workspace":
         assert call["argv"][-2:] == ["--root", "/work/proj"]
-        assert call["argv"][-3].endswith("workspace_tools.py")
+        assert call["argv"][3].endswith("workspace_tools.py")
+        # Windows adds ``--shell cmd`` between the script and the root.
+        assert ("--shell" in call["argv"]) == (sys.platform == "win32")
         assert call["env"] == {}
     else:
         assert call["argv"] == ["/opt/notes-mcp", "--db", "n.db"]

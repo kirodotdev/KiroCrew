@@ -17,11 +17,20 @@ Plans:
   ``/proc`` and ``/dev`` of the sandbox; and the :mod:`.seccomp` filter, which
   refuses AF_UNIX sockets, io_uring and the kernel keyring calls. Needs unprivileged user namespaces and a
   processor :mod:`.seccomp` has a table for.
-* **anything else** (macOS and Windows included) -- unsupported for now: there
-  is no plan, and the connector refuses to start rather than run unconfined
-  (B06).
+* **macOS** -- ``sandbox-exec`` with a ``(deny default)`` profile
+  (:mod:`.confinement_macos`): reads of the system runtime, Homebrew and the
+  developer tools, the Python install and the tool-server files; reads and
+  writes under the root and the scratch; a short list of Mach services; and
+  unix sockets only under the root and the scratch (plus the name resolver).
+* **Windows** -- no OS sandbox, by the owner's decision: :class:`WindowsUnconfinedPlan`
+  runs the child as the user with an environment built from nothing and the
+  root as its folder, and the workspace tool server still refuses paths
+  outside the root. A command it runs can read and change any file the user
+  can; the consent dialog says so, and the self-test claims no fence for it.
+* **anything else** -- unsupported: there is no plan, and the connector
+  refuses to start rather than run unconfined (B06).
 
-There is no fallback. A missing ``bwrap``, a kernel without
+There is no fallback. A missing ``bwrap`` or ``sandbox-exec``, a kernel without
 user namespaces, or a failed :func:`self_test` makes the computer unavailable
 with that reason; the operator's "run unsandboxed" consent for the agent
 sandbox (``sandbox_unavailable``) is deliberately not consulted here.
@@ -38,6 +47,9 @@ Two policies, kept apart:
   seccomp filter: without a network namespace the child shares the user's
   ABSTRACT unix sockets (X11, a session bus), which no mount hides, so creating
   any AF_UNIX socket is refused -- a unix socket inside the root is refused too.
+  On macOS it is the Mach allow-list (LaunchServices, Apple Events,
+  preferences, the keychain and the pasteboard are not on it) and the unix
+  socket paths.
 
 Toolchains installed under the home folder (``~/.nvm``, ``~/.cargo``, ...) are
 outside the allow-list and so not visible; the child's ``HOME`` is its scratch.
@@ -48,6 +60,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import platform as platform_mod
 import secrets
@@ -62,14 +75,32 @@ from typing import Any, Callable, Final, Mapping, Optional, Sequence, TypeVar
 
 from kiro_crew.connected_computers import seccomp
 
+logger = logging.getLogger(__name__)
+
+if sys.platform == "win32":
+    # Never used there: Windows has no fence, so self_test prepares no witnesses.
+    _O_NOFOLLOW = 0
+    _AF_UNIX = -1
+else:
+    _O_NOFOLLOW = os.O_NOFOLLOW
+    _AF_UNIX = socket.AF_UNIX
+
 _NO_ENV: Final[Mapping[str, str]] = MappingProxyType({})
 
 PLAN_LINUX: Final[str] = "linux-bwrap"
-#: Why a computer that is not Linux cannot share: there is no confinement plan.
+PLAN_MACOS: Final[str] = "macos-seatbelt"
+#: Windows runs shared work with no OS sandbox (the owner's decision).
+PLAN_WINDOWS: Final[str] = "windows-none"
+#: ``sys.platform`` values that have a plan; every other system refuses (B06).
+SHARING_PLATFORMS: Final[tuple[str, ...]] = ("linux", "darwin", "win32")
+#: Why a computer on any other system cannot share: there is no plan for it.
 UNSUPPORTED_OS_REASON: Final[str] = (
-    "connected computers is available only on Linux for now: this computer cannot "
-    "confine commands to the shared folder"
+    "connected computers is available on Linux, macOS and Windows only: this "
+    "computer's system has no way to run shared work"
 )
+#: An excluded Mach service the macOS self-test must fail to reach. It runs in
+#: every session, so the unconfined control run can always reach it.
+MACOS_MACH_WITNESS: Final[str] = "com.apple.cfprefsd.daemon"
 
 #: The ``/etc`` entries a confined child may read on Linux (each only if present).
 LINUX_ETC_READS: Final[tuple[str, ...]] = (
@@ -95,6 +126,33 @@ LINUX_SYSTEM_READS: Final[tuple[str, ...]] = ("/usr", "/bin", "/sbin", "/lib", "
 #: Environment names copied into a confined child, when set locally.
 _ENV_KEPT: Final[tuple[str, ...]] = ("LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ")
 _DEFAULT_PATH: Final[str] = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+#: Windows names a child needs to start and find programs, copied when set
+#: locally. ``PATH`` is the user's own: with no fence, hiding toolchains would
+#: protect nothing a command could not read anyway.
+_WINDOWS_KEPT: Final[tuple[str, ...]] = (
+    "SYSTEMROOT",
+    "WINDIR",
+    "SYSTEMDRIVE",
+    "COMSPEC",
+    "PATHEXT",
+    "PATH",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "PROGRAMDATA",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
+)
+#: Windows names that point a program at its home and temp folders: the scratch.
+_WINDOWS_HOMES: Final[tuple[str, ...]] = (
+    "HOME",
+    "USERPROFILE",
+    "TEMP",
+    "TMP",
+    "APPDATA",
+    "LOCALAPPDATA",
+)
 
 
 class ConfinementUnavailable(RuntimeError):
@@ -165,6 +223,41 @@ def runtime_reads() -> list[str]:
     return out
 
 
+def sharing_supported(platform: Optional[str] = None) -> bool:
+    """Whether this system has a plan at all (it may still lack the tool it needs)."""
+    name = sys.platform if platform is None else platform
+    return name.startswith("linux") or name in SHARING_PLATFORMS
+
+
+def describe_confinement(platform: Optional[str] = None) -> dict[str, Any]:
+    """What the consent dialog says about the fence: the plan's name and whether it fences.
+
+    Read from the system alone (no tool lookup), so a describe never probes.
+    """
+    name = sys.platform if platform is None else platform
+    if name.startswith("linux"):
+        return {"plan": PLAN_LINUX, "fenced": True}
+    if name == "darwin":
+        return {"plan": PLAN_MACOS, "fenced": True}
+    if name == "win32":
+        return {"plan": PLAN_WINDOWS, "fenced": False}
+    return {"plan": "", "fenced": False}
+
+
+def check_env(env: Mapping[str, str]) -> None:
+    """Refuse a child setting that cannot be handed over as one name and one value.
+
+    Every plan hands the environment through a NUL-separated list or an OS
+    environment block: an embedded NUL would add entries (or wrapper options)
+    of its own, and ``=`` or an empty string cannot be a name.
+    """
+    for name, value in env.items():
+        if not name or "\0" in name or "=" in name or "\0" in value:
+            raise ConfinementUnavailable(
+                "a setting for this tool holds a character it cannot be started with"
+            )
+
+
 def child_env(
     scratch: str, *, path: str = _DEFAULT_PATH, extra: Mapping[str, str] = _NO_ENV
 ) -> dict:
@@ -174,6 +267,23 @@ def child_env(
         value = os.environ.get(name)
         if value:
             env[name] = value
+    return _with_extra(env, extra)
+
+
+def windows_child_env(scratch: str, *, extra: Mapping[str, str] = _NO_ENV) -> dict:
+    """The Windows form of :func:`child_env`: what a program needs to start, homes in the scratch."""
+    env: dict[str, str] = {}
+    for name in _WINDOWS_KEPT:
+        value = os.environ.get(name)
+        if value:
+            env[name] = value
+    for name in _WINDOWS_HOMES:
+        env[name] = scratch
+    env["USERNAME"] = _user()
+    return _with_extra(env, extra)
+
+
+def _with_extra(env: dict, extra: Mapping[str, str]) -> dict:
     for name, value in dict(extra).items():
         env[str(name)] = str(value)
     # Never a credential of the local gateway, whatever ``extra`` held.
@@ -222,13 +332,9 @@ def _setenv_args_fd(env: Mapping[str, str]) -> int:
     ``/proc/<pid>/cmdline``. A file, not a pipe: the arguments can outgrow a
     pipe buffer, which would block the write before bubblewrap reads.
     """
-    for name, value in env.items():
-        # The file is NUL-separated: an embedded NUL would add bubblewrap
-        # options of its own (``--bind / /``), and ``=`` cannot be in a name.
-        if not name or "\0" in name or "=" in name or "\0" in value:
-            raise ConfinementUnavailable(
-                "a setting for this tool holds a character it cannot be started with"
-            )
+    # The file is NUL-separated: an embedded NUL would add bubblewrap
+    # options of its own (``--bind / /``).
+    check_env(env)
     data = b"".join(
         b"--setenv\0" + name.encode("utf-8") + b"\0" + value.encode("utf-8") + b"\0"
         for name, value in env.items()
@@ -252,6 +358,7 @@ def _setenv_args_fd(env: Mapping[str, str]) -> int:
 
 class LinuxPlan:
     name = PLAN_LINUX
+    fenced = True
 
     def __init__(self, bwrap: str, *, machine: Optional[str] = None) -> None:
         self.bwrap = bwrap
@@ -302,9 +409,43 @@ class LinuxPlan:
         return Confined(out, child_env(scratch), root, pass_fds=(fd, env_fd))
 
 
-def plan_for_this_machine(
-    platform: str = sys.platform, *, machine: Optional[str] = None
-) -> LinuxPlan:
+class WindowsUnconfinedPlan:
+    """Windows: the child runs as the user, unconfined (the owner's decision).
+
+    What still holds: the environment is built from nothing, with the local
+    gateway's credentials withheld; the root is the child's folder; and the
+    workspace tool server refuses every path outside the root. What does not:
+    a command it runs, and an exposed local MCP server, can read and change any
+    file the user can, and reach the user's session. :func:`self_test` claims
+    no fence for it, and the consent dialog says so before anything is shared.
+    """
+
+    name = PLAN_WINDOWS
+    fenced = False
+
+    def wrap(
+        self,
+        argv: Sequence[str],
+        *,
+        root: str,
+        scratch: str,
+        reads: Sequence[str] = (),
+        env: Mapping[str, str] = _NO_ENV,
+    ) -> Confined:
+        del reads  # nothing is mounted: every path the user can read is readable
+        built = windows_child_env(scratch, extra=env)
+        check_env(built)
+        out = list(argv)
+        if out and not os.path.isabs(out[0]):
+            # CreateProcess searches neither the child's PATH nor PATHEXT
+            # (``npx`` is ``npx.cmd``): look the program up as the child would.
+            found = shutil.which(out[0], path=built.get("PATH", ""))
+            if found:
+                out[0] = found
+        return Confined(out, built, root)
+
+
+def plan_for_this_machine(platform: str = sys.platform, *, machine: Optional[str] = None) -> Any:
     """This machine's plan, or raise :class:`ConfinementUnavailable` with the reason."""
     if platform.startswith("linux"):
         bwrap = _bin("bwrap")
@@ -319,6 +460,18 @@ def plan_for_this_machine(
                 f"connected computers cannot confine commands on this processor ({arch}) yet"
             )
         return LinuxPlan(bwrap, machine=arch)
+    if platform == "darwin":
+        sandbox_exec = _bin("sandbox-exec")
+        if sandbox_exec is None:
+            raise ConfinementUnavailable(
+                "this Mac has no sandbox-exec, so commands cannot be confined to the "
+                "shared folder"
+            )
+        from kiro_crew.connected_computers.confinement_macos import MacPlan
+
+        return MacPlan(sandbox_exec)
+    if platform == "win32":
+        return WindowsUnconfinedPlan()
     raise ConfinementUnavailable(UNSUPPORTED_OS_REASON)
 
 
@@ -336,6 +489,8 @@ _PROBES: Final[tuple[str, ...]] = (
     "scratch_write",
     "keyring",
 )
+#: The macOS-only witness: an excluded Mach service (:data:`MACOS_MACH_WITNESS`).
+_MACH_PROBE: Final[str] = "mach"
 
 
 def keyctl_number(platform: str, machine: str) -> int:
@@ -354,13 +509,14 @@ def judge_self_test(
     *,
     tokens: Mapping[str, str],
     keyring: bool = False,
+    mach: bool = False,
 ) -> None:
     """Raise :class:`ConfinementUnavailable` unless both runs answered as a fence does.
 
     The control must reach every witness, or a "denied" from the confined run
     proves nothing. The confined run must read and write the root, write its
     own scratch through ``TMPDIR``, reach the network, and reach no witness
-    outside the root.
+    outside the root. ``mach`` (macOS) adds the excluded Mach service witness.
 
     The kernel keyring (Linux) is the one witness the control may fail to
     reach: a host whose own seccomp refuses ``keyctl`` (a container's, often)
@@ -388,6 +544,11 @@ def judge_self_test(
         fenced[name] = "denied"
     if keyring:
         fenced["keyring"] = "denied"
+    names = _PROBES
+    if mach:
+        names = (*_PROBES, _MACH_PROBE)
+        reach[_MACH_PROBE] = "allowed"
+        fenced[_MACH_PROBE] = "denied"
     for answers, want, message in (
         (control, reach, "the confinement check could not prepare its test ({})"),
         (
@@ -397,10 +558,10 @@ def judge_self_test(
             "folder ({}), so the folder is not shared",
         ),
     ):
-        if set(answers) != set(_PROBES):
-            missing = sorted(set(_PROBES) ^ set(answers))
+        if set(answers) != set(names):
+            missing = sorted(set(names) ^ set(answers))
             raise ConfinementUnavailable(message.format(", ".join(missing) or "no answer"))
-        for name in _PROBES:
+        for name in names:
             if answers[name] != want[name]:
                 raise ConfinementUnavailable(message.format(name))
 
@@ -467,7 +628,7 @@ def _prepare(root: str, platform: str) -> _Witnesses:
         ):
             fd = pin_directory(parent)
             try:
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW
                 with os.fdopen(
                     os.open(os.path.basename(target), flags, 0o600, dir_fd=fd), "w"
                 ) as f:
@@ -483,11 +644,17 @@ def _prepare(root: str, platform: str) -> _Witnesses:
         w.sockets.append(tcp)
         tcp.bind(("127.0.0.1", 0))
         tcp.listen(4)
-        unix = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        unix = socket.socket(_AF_UNIX, socket.SOCK_STREAM)
         w.sockets.append(unix)
-        # An abstract socket: the session endpoints (X11, a bus) no mount hides.
-        abstract = f"kirocrew-cc-witness-{tag}"
-        unix.bind("\0" + abstract)
+        abstract = ipc_path = ""
+        if platform.startswith("linux"):
+            # An abstract socket: the session endpoints (X11, a bus) no mount hides.
+            abstract = f"kirocrew-cc-witness-{tag}"
+            unix.bind("\0" + abstract)
+        else:
+            # macOS has no abstract sockets: a socket file outside the root.
+            ipc_path = os.path.join(w.out_dir, "s")
+            unix.bind(ipc_path)
         unix.listen(4)
         w.spec = {
             "root_file": root_file,
@@ -500,6 +667,8 @@ def _prepare(root: str, platform: str) -> _Witnesses:
             "scratch_name": f".kirocrew-cc-scratch-{tag}",
             "tcp_port": tcp.getsockname()[1],
             "ipc_abstract": abstract,
+            "ipc_path": ipc_path,
+            "mach": MACOS_MACH_WITNESS if platform == "darwin" else "",
             "keyctl": keyctl_number(platform, platform_mod.machine()),
         }
         return w
@@ -554,16 +723,29 @@ async def _run_probe(plan: Any, w: _Witnesses, root: str, timeout: float) -> dic
 
 
 async def self_test(
-    plan: LinuxPlan, root: str, *, timeout: float = 20.0, platform: str = sys.platform
+    plan: Any, root: str, *, timeout: float = 20.0, platform: str = sys.platform
 ) -> None:
     """Prove ``plan`` holds on this machine for ``root``, or raise the reason.
 
     Run once per connector start, before the connector tells the gateway it is
     ready. The probe runs unconfined first, against witnesses created for this
-    check (a file, a folder and an abstract unix socket outside the root, a
-    symlink in the root pointing out, a loopback TCP listener and the session
-    keyring), so every "denied" in the confined run is the fence's doing.
+    check (a file, a folder and a unix socket outside the root -- an abstract
+    one on Linux -- a symlink in the root pointing out, a loopback TCP listener,
+    the session keyring on Linux and an excluded Mach service on macOS), so
+    every "denied" in the confined run is the fence's doing.
+
+    A plan that says it has no fence (``fenced = False``: Windows, by the
+    owner's decision) is not probed, so nothing is claimed for it; this logs
+    that the computer runs shared work unconfined. Any other plan, including
+    one that does not say, is probed and must fence.
     """
+    if getattr(plan, "fenced", True) is False:
+        logger.warning(
+            "connected computers: %s has no OS sandbox; shared commands are not "
+            "confined to the shared folder",
+            getattr(plan, "name", "this plan"),
+        )
+        return
     # Owned: a cancellation while the worker still prepares releases them too.
     w = await run_owned(_Witnesses.cleanup, _prepare, root, platform)
     try:
@@ -576,4 +758,5 @@ async def self_test(
         confined,
         tokens=w.tokens,
         keyring=bool(w.spec["keyctl"]),
+        mach=bool(w.spec.get("mach")),
     )

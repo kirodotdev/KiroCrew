@@ -92,7 +92,7 @@ function createConnectedComputersHost({
   resolveBin,
   getEnv = () => ({}),
   getInstances = () => [],
-  // Sharing is Linux-only for now; macOS and Windows run no host.
+  // False on a system with no sharing plan (Linux, macOS and Windows have one).
   supported = true,
   enabled = () => false,
   // True when the app last saw the switch off: the hello then asks the host to

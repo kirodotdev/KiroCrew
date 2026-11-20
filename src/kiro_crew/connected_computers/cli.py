@@ -388,9 +388,10 @@ def run(args: argparse.Namespace) -> int:
     if command == "reset-protection":
         return _local_reset_protection()
     if command == "preview":
+        from kiro_crew.connected_computers.confinement import sharing_supported
         from kiro_crew.connected_computers.flag import local_enabled
 
-        _print({"enabled": sys.platform == "linux" and local_enabled()})
+        _print({"enabled": sharing_supported() and local_enabled()})
         return 0
     if command == "desktop-host":
         from kiro_crew.connected_computers.desktop_host import run_desktop_host

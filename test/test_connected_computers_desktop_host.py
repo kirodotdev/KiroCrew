@@ -752,9 +752,11 @@ def test_flag_local_switch_reports_unknown_when_config_cannot_load(monkeypatch):
     assert flag_mod.local_enabled() is False
 
 
-@pytest.mark.parametrize("platform", ["darwin", "win32"])
-def test_b06_the_host_refuses_off_linux_before_reading_anything(platform, monkeypatch, capsys):
-    """macOS refuses exactly as Windows does: no pipe, store or controller."""
+@pytest.mark.parametrize("platform", ["freebsd14", "sunos5"])
+def test_b06_the_host_refuses_a_system_with_no_plan_before_reading_anything(
+    platform, monkeypatch, capsys
+):
+    """A system with no plan (Linux, macOS and Windows have one): no pipe, store or controller."""
 
     def never(*_a, **_k):
         raise AssertionError("an unsupported OS starts no host loop")
@@ -762,7 +764,7 @@ def test_b06_the_host_refuses_off_linux_before_reading_anything(platform, monkey
     monkeypatch.setattr(host_mod.sys, "platform", platform)
     monkeypatch.setattr(host_mod.asyncio, "run", never)
     assert host_mod.run_desktop_host() == host_mod.EXIT_DISABLED
-    assert "only on Linux" in capsys.readouterr().err
+    assert "Linux, macOS and Windows" in capsys.readouterr().err
 
 
 async def test_native_describe_binds_the_connection_until_share(host, enrolled, tmp_path):
@@ -770,6 +772,9 @@ async def test_native_describe_binds_the_connection_until_share(host, enrolled, 
         await _hello(host)
         described = await _describe(host)
         assert described["ok"] is True
+        from kiro_crew.connected_computers.confinement import describe_confinement
+
+        assert described["confinement"] == describe_confinement()
         host.instances[INSTANCE["id"]].ssh_host = "replacement-host"
         reply = await _share(host, consent=described["consent"], root=tmp_path)
         assert reply["ok"] is False

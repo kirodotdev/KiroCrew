@@ -193,6 +193,7 @@ def peek_consent(consent: str) -> Optional[str]:
 
 async def api_local_consent_describe(request: web.Request) -> web.Response:
     """What the native dialog shows, read from the gateway rather than the page (B13)."""
+    from kiro_crew.connected_computers.confinement import describe_confinement
     from kiro_crew.connected_computers.local_mcp import configured_servers, exposable
 
     op = "connected_computers.consent.describe"
@@ -224,6 +225,8 @@ async def api_local_consent_describe(request: web.Request) -> web.Response:
         {
             "instance": {"id": instance_id, "name": getattr(instance, "name", "") or instance_id},
             "mcp": exposable(servers),
+            # The dialog says plainly when commands are not fenced to the folder.
+            "confinement": describe_confinement(),
         }
     )
 

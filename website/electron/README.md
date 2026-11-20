@@ -505,7 +505,8 @@ left as the user set it.
 
 ### Sharing this computer
 
-Connected computers is a default-off, Linux-only preview. A local dashboard
+Connected computers is a default-off preview on Linux, macOS and Windows. Windows
+has no sandbox for shared work, and the first consent dialog says so. A local dashboard
 requests native consent through `connected-computers:confirm`; the desktop shell
 checks the sender through the existing local-dashboard gate, reads the consent
 from its gateway, and asks for a folder and each local tool in native dialogs.
@@ -516,8 +517,8 @@ Remote Crew connection, never a renderer-supplied host or folder.
 `runtime/gateway/connected-computers-host.js` supervises the Python desktop host
 on a private stdin/stdout pipe. The same local controller, OS keyring, grant
 store and controller lock are used by both launch paths. Quitting ends the pipe
-and stops connectors; turning sharing off revokes grants. macOS and Windows
-start no host. Shared Crews do not permit this preview.
+and stops connectors; turning sharing off revokes grants. Any other system starts
+no host. Shared Crews do not permit this preview.
 
 The launch-time preview query is `kirocrew connected-computer preview`. It reads
 through `connected_computers.flag.local_enabled`, including edition and Shared
