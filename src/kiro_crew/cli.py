@@ -606,6 +606,7 @@ def main() -> None:
     cli_parser_gateway.register_update_parser(sub)
     cli_parser_gateway.register_stop_parser(sub)
     cli_parser_gateway.register_restart_parser(sub)
+    cli_parser_gateway.register_resume_parser(sub)
     cli_parser_gateway.register_gateway_pid_parser(sub)
     cli_parser_gateway.register_mcp_parser(sub)
     cli_parser_gateway.register_service_parser(sub)
@@ -1267,6 +1268,10 @@ def main() -> None:
             from kiro_crew.cli_server import _restart
 
             _restart(args.port)
+    elif args.command == "resume":
+        from kiro_crew.cli_resume import resume_cmd
+
+        resume_cmd(args)
     elif args.command == "gateway-pid":
         from kiro_crew.cli_server import _gateway_pid
 

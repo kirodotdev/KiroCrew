@@ -70,7 +70,8 @@ Signs in and runs without kiro-cli: `kas` installs Kiro Crew's own engine bundle
 | `kirocrew gateway --test-mode` | Alias for `--port auto --no-open --json-ready --no-tunnel --approval reads` |
 | `kirocrew stop` | Stop a running gateway |
 | `kirocrew stop --port 9999` | Stop gateway on specific port |
-| `kirocrew restart` | Restart gateway (service-aware) |
+| `kirocrew restart` | Restart gateway (service-aware); names `kirocrew resume` when its stop cut chats, resumes none |
+| `kirocrew resume` | Resume the chats the last stop cut (a stop never resumes them itself); `SESSION...` presses each named session's own tab Resume, `--all` resumes every interrupted one |
 | `kirocrew status` | Show runtime stats (uptime, sessions, crons, lessons) |
 | `kirocrew usage` | Recent credit spend per day; `--by model\|agent\|channel\|session`, `--days N` / `--since YYYY-MM-DD`, `--json` |
 | `kirocrew trace show KEY` | Print one traced turn as a waterfall of its model calls, tool calls and sub-agents, read from the local span files (written while `telemetry.traces_enabled` is on); `KEY` is a turn id, session key or id, ACP session id or trace id |

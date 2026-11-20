@@ -92,6 +92,13 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
         from kiro_crew.dashboard.chat_runner import stop_eager_spawns
 
         eager_spawns = stop_eager_spawns(self.dashboard_state)
+    # The chats this stop cuts go to the last-stop record, which no boot reads:
+    # only `kirocrew resume` resumes them, so a stop never re-runs a turn on its
+    # own. Recorded before the memory stop below can fail a turn in flight, and
+    # rewritten by every stop (removed when no chat runs).
+    from kiro_crew.dashboard import restart_resume
+
+    await restart_resume.record_running_slots(self.dashboard_state, stop=True)
     self._memory_repair_stop.set()
     if self._memory_repair_task is not None:
         self._memory_repair_task.cancel()
