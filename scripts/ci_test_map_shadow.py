@@ -47,15 +47,20 @@ TIMEOUT = 120
 _NO_TIER = "\0no-guard-tier"
 
 
-def _nodeid_parser() -> Callable[[str], dict[str, str]]:
-    """`main_red_nodeids.parse_failures`, the parser main-red-watch.yml already uses."""
+def watch_module() -> Any:
+    """`main_red_nodeids`, the module main-red-watch.yml already uses."""
     path = REPO_ROOT / ".github" / "scripts" / "main_red_nodeids.py"
     spec = importlib.util.spec_from_file_location("main_red_nodeids", path)
     if spec is None or spec.loader is None:
         raise ImportError(path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.parse_failures
+    return module
+
+
+def _nodeid_parser() -> Callable[[str], dict[str, str]]:
+    parse: Callable[[str], dict[str, str]] = watch_module().parse_failures
+    return parse
 
 
 def _run(argv: list[str], root: Path) -> str:
@@ -183,45 +188,65 @@ def red_samples(
     return rows[:limit]
 
 
+def backend_jobs(run_id: int, attempt: int, root: Path) -> list[dict[str, Any]] | None:
+    """The Linux `Backend Tests` jobs of one run attempt, None when they cannot all be read."""
+    jobs: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        try:
+            doc = _gh_json(
+                [
+                    "api",
+                    f"repos/{REPO}/actions/runs/{run_id}/attempts/{attempt}"
+                    f"/jobs?per_page=100&page={page}",
+                ],
+                root,
+            )
+        except subprocess.CalledProcessError:
+            return None  # transient API error
+        jobs += doc["jobs"]
+        if not doc["jobs"] or len(jobs) >= doc["total_count"]:
+            break
+        page += 1
+    return [job for job in jobs if LINUX_BACKEND_JOB.fullmatch(job["name"])]
+
+
+def job_failures(
+    job: dict[str, Any], root: Path, parse: Callable[[str], dict[str, str]]
+) -> dict[str, str] | None:
+    """The failing node ids one job's log names, None when the log cannot be read."""
+    try:
+        log = _run(
+            [
+                "gh",
+                "api",
+                "--allow-escape-sequences",
+                f"repos/{REPO}/actions/jobs/{job['id']}/logs",
+            ],
+            root,
+        )
+    except subprocess.CalledProcessError:
+        return None
+    return parse(log)
+
+
 def _red_row(
     run: dict[str, Any], root: Path, parse: Callable[[str], dict[str, str]]
 ) -> dict[str, Any] | None:
     """One run's sample, `{}` when no Linux backend job named a failing test, None if unreadable."""
     prs = run.get("pull_requests") or []
-    try:
-        jobs = _gh_json(
-            [
-                "api",
-                f"repos/{REPO}/actions/runs/{run['id']}/attempts/{run.get('run_attempt', 1)}"
-                "/jobs?per_page=100",
-                "--jq",
-                ".jobs",
-            ],
-            root,
-        )
-    except subprocess.CalledProcessError:
-        return None  # transient API error
+    jobs = backend_jobs(run["id"], run.get("run_attempt", 1), root)
+    if jobs is None:
+        return None
     failures: dict[str, str] = {}
     for job in jobs:
-        if LINUX_BACKEND_JOB.fullmatch(job["name"]) and job["conclusion"] == "failure":
-            try:
-                failures.update(
-                    parse(
-                        _run(
-                            [
-                                "gh",
-                                "api",
-                                "--allow-escape-sequences",
-                                f"repos/{REPO}/actions/jobs/{job['id']}/logs",
-                            ],
-                            root,
-                        )
-                    )
-                )
-            except subprocess.CalledProcessError:
+        if job["conclusion"] == "failure":
+            named = job_failures(job, root, parse)
+            if named is None:
                 # One unreadable shard log makes the sample incomplete: a failure
                 # in that shard would be uncounted. Not cached, so a later pass retries.
                 return None
+            failures.update(named)
     if not failures:
         return {}
     print(f"red run {run['id']}: {len(failures)} failing node ids", file=sys.stderr)
