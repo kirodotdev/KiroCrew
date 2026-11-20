@@ -24,9 +24,11 @@ from aiohttp import web
 from kiro_crew.apps.kiro_calls import (
     MAX_REQUEST_BYTES,
     KiroCallError,
+    audit_kiro_call,
     call_kiro_operation,
     parse_json_body,
 )
+from kiro_crew.apps.kiro_operations import MAX_KIRO_OPERATIONS
 
 _KIRO_READ_CHUNK = 64 * 1024
 
@@ -60,6 +62,9 @@ def kiro_consent_refusal(
         return None
     if _is_host_owner(request):
         return None
+    app = request.match_info.get("name", "")
+    for operation in grants_consent["kiroOperations"][:MAX_KIRO_OPERATIONS]:
+        audit_kiro_call(app, operation, "approval", "denied", "not the host owner")
     return web.json_response(
         {
             "error": "Only the owner can approve Kiro operations: they run with the owner's Kiro sign-in.",
@@ -93,6 +98,7 @@ async def handle_kiro_call(request: web.Request) -> web.Response:
     operation = request.match_info["operation"]
     caller = kiro_caller(request, name)
     if caller is None:
+        audit_kiro_call(name, operation, "refused", "denied", "forbidden")
         return _kiro_error(
             KiroCallError(
                 403,

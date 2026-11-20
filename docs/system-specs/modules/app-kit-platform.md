@@ -10375,7 +10375,9 @@ or process environment. Every token this call sent is replaced in the upstream's
 message, the credential redactor runs over the whole text, and only then is it cut to 300
 characters (`redact_and_truncate`), so a secret the cut would split is still recognized. One log
 line per call names the app, operation, status, duration and input size; one SEL row
-(`kiro_call`) names the caller kind, the app, the operation and the grant entry.
+(`kiro_call`, `kiro_calls.audit_kiro_call`) names the caller kind, the app, the operation and
+the grant entry. A refused caller and a refused approval each write a `denied` row too, and
+an operation that is not a valid name is recorded as `<invalid>`.
 
 Writers: `apps/kiro_operations.py`, `apps/kiro_calls.py`, `apps/routes_kiro.py`,
 `apps/rpc_cbor.py`, `apps/market_client.py`, `apps/context.py`, `apps/manifest_sections.py`

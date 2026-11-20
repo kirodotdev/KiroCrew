@@ -53,6 +53,7 @@ import aiohttp
 from kiro_crew.apps.kiro_operations import (
     app_kiro_operations,
     declared_kiro_operations,
+    is_operation_name,
     kiro_app_enabled,
 )
 from kiro_crew.apps.rpc_cbor import cbor_decode, cbor_encode
@@ -380,7 +381,14 @@ def _output(reply: _Reply, sent: tuple[str, ...]) -> dict[str, Any]:
     )
 
 
-def _audit(app: str, operation: str, caller: str, outcome: str, error: str = "") -> None:
+def audit_kiro_call(app: str, operation: str, caller: str, outcome: str, error: str = "") -> None:
+    """One SEL row for a Kiro call decision: who asked, the app, the operation, the outcome.
+
+    The operation can come from a caller's path or body, so a value that is not an
+    operation name is recorded as ``<invalid>`` rather than written into the trail.
+    """
+    if not is_operation_name(operation):
+        operation = "<invalid>"
     try:
         from kiro_crew.sel import sel  # noqa: PLC0415
 
@@ -412,7 +420,7 @@ async def call_kiro_operation(
     """
     approved = await asyncio.to_thread(app_kiro_operations, app)
     if operation not in approved:
-        _audit(app, operation, caller, "denied", "not approved")
+        audit_kiro_call(app, operation, caller, "denied", "not approved")
         if not await asyncio.to_thread(kiro_app_enabled, app):
             raise KiroCallError(403, "app_disabled", "This app is not enabled.")
         declared = await asyncio.to_thread(declared_kiro_operations, app)
@@ -431,7 +439,7 @@ async def call_kiro_operation(
             400, "invalid_json", "The input holds a value Kiro cannot take."
         ) from None
     if _in_flight.get(app, 0) >= MAX_IN_FLIGHT:
-        _audit(app, operation, caller, "denied", "too many calls")
+        audit_kiro_call(app, operation, caller, "denied", "too many calls")
         raise KiroCallError(429, "too_many_calls", "Too many Kiro calls are running for this app.")
     _in_flight[app] = _in_flight.get(app, 0) + 1
     started = time.monotonic()
@@ -449,7 +457,7 @@ async def call_kiro_operation(
         status = reply.status
         output = jsonable(_output(reply, sent))
     except KiroCallError as exc:
-        _audit(app, operation, caller, "error", exc.code)
+        audit_kiro_call(app, operation, caller, "error", exc.code)
         raise
     finally:
         left = _in_flight.get(app, 1) - 1
@@ -465,7 +473,7 @@ async def call_kiro_operation(
             int((time.monotonic() - started) * 1000),
             len(body),
         )
-    _audit(app, operation, caller, "success")
+    audit_kiro_call(app, operation, caller, "success")
     return output
 
 
@@ -484,6 +492,7 @@ __all__ = [
     "KiroSignIn",
     "SignedCall",
     "Upstream",
+    "audit_kiro_call",
     "call_kiro_operation",
     "check_input",
     "jsonable",

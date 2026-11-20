@@ -363,8 +363,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.kiro_calls import (  # noqa: F401
         MAX_REQUEST_BYTES,
         KiroCallError,
+        audit_kiro_call,
         call_kiro_operation,
         parse_json_body,
+    )
+    from kiro_crew.apps.kiro_operations import (  # noqa: F401
+        MAX_KIRO_OPERATIONS,
     )
     from kiro_crew.apps.market_registries import (  # noqa: F401
         MAX_ADDED,

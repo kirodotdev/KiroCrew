@@ -778,3 +778,36 @@ async def test_the_enable_route_refuses_a_teammates_kiro_approval(
     resp = await routes_facade.handle_enable_app(req)
     assert resp.status == 403 and _json.loads(resp.body)["code"] == "owner_only"
     assert called == []
+
+
+@pytest.mark.asyncio
+async def test_a_refused_caller_is_audited(
+    gateway: tuple[TestClient, FakeBff], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, fake = gateway
+    rows: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "kiro_crew.sel.sel", lambda: SimpleNamespace(log_api_access=lambda **kw: rows.append(kw))
+    )
+    resp = await client.post(
+        f"/api/apps/{APP}/kiro/GetWidget", json={}, headers={"X-Test-Caller": "teammate"}
+    )
+    assert resp.status == 403 and fake.seen == []
+    assert [(r["outcome"], r["error"]) for r in rows] == [("denied", "forbidden")]
+    assert "caller=refused operation=GetWidget" in rows[0]["resources"]
+
+
+def test_a_refused_approval_is_audited_and_names_only_valid_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.apps.routes_kiro import kiro_consent_refusal
+
+    rows: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "kiro_crew.sel.sel", lambda: SimpleNamespace(log_api_access=lambda **kw: rows.append(kw))
+    )
+    req, _body = _enable_request("U_TEAMMATE", {})
+    assert kiro_consent_refusal(req, {"kiroOperations": ["DeleteWidget", "x\ny"]}) is not None
+    assert [r["outcome"] for r in rows] == ["denied", "denied"]
+    assert "operation=DeleteWidget" in rows[0]["resources"]
+    assert "operation=<invalid>" in rows[1]["resources"]
