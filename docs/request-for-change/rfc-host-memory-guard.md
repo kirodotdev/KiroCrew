@@ -286,6 +286,8 @@ kill, because a stop without them is the silent failure the owner ruled out.
    "Host memory was critically low (1.4 GB free), so Crew stopped `pytest`
    (3.1 GB, 9 processes) that this chat started. The session keeps running.
    Retry with fewer parallel workers, or wait until memory frees."
+   A chat that lives on a channel with no dashboard tab gets the same text in
+   its channel conversation, through the governed legs the auto-compact notice uses.
 3. **Work-ledger event** when the owning session is a bound worker
    (`read_binding`, `work_ledger_writes.py`): one `report` event on its
    item, written by the gateway through a new `apply_guard_report` beside
