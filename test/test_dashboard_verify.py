@@ -1015,6 +1015,18 @@ def test_no_launcher_python_skips_with_a_reason(monkeypatch):
 
     assert v.status == STATUS_SKIPPED
     assert "no system-installed Python" in v.reason
+    assert "install the distribution's python3 package system-wide" in v.reason
+
+
+@LINUX_ONLY
+def test_the_no_launcher_python_reason_names_every_accepted_path(monkeypatch):
+    monkeypatch.setattr(dashboard_verify, "find_browser", lambda: "/opt/chrome")
+    monkeypatch.setattr(dashboard_verify, "find_launcher_python", lambda: None)
+
+    reason = dashboard_verify.verify_page("<p>x</p>", _read()).reason
+
+    for path in dashboard_verify._SYSTEM_PYTHONS:
+        assert path in reason, path
 
 
 def test_a_host_that_is_not_linux_skips_before_looking_for_a_browser(monkeypatch):

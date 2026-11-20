@@ -1556,7 +1556,9 @@ def verify_page(
         if python is None:
             return _skipped(
                 "no system-installed Python was found to start the browser (the gateway runs "
-                "only a Python that this account cannot modify)",
+                "only a Python that this account cannot modify, at one of: "
+                f"{', '.join(_SYSTEM_PYTHONS)}). To fix it, install the distribution's python3 "
+                "package system-wide",
                 started,
             )
         if not _SLOT.acquire(blocking=False):
