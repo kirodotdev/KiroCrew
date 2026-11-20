@@ -59,8 +59,24 @@ interface MediaAnswer {
   media?: BrowserMediaState
 }
 
+/** The fastest the hook re-reads the state: every read takes the browser lock every
+ *  agent op waits on, so a faster `pollMs` is raised to this. */
+const MIN_POLL_MS = 500
+/** A larger timer delay overflows to ~1 ms in browsers. */
+const MAX_TIMER_MS = 2 ** 31 - 1
+
+/** The poll interval for a `pollMs` option: 0 (read once) for anything that is not a
+ *  finite number above 0, else the value held between `MIN_POLL_MS` and the timer
+ *  maximum. `Number()` keeps a plain-JS page's `"1000"` working as `setInterval` did. */
+function pollInterval(raw: unknown): number {
+  const ms = Number(raw ?? 0)
+  if (!Number.isFinite(ms) || ms <= 0) return 0
+  return Math.min(Math.max(ms, MIN_POLL_MS), MAX_TIMER_MS)
+}
+
 /** The media controls of *sessionKey*'s tab. With `pollMs` > 0 the state is re-read
- *  on that interval while the page is mounted (a progress bar); 0 reads it once.
+ *  on that interval while the page is mounted (a progress bar), at most every 500 ms;
+ *  0 reads it once.
  *  `onEnded` is called once each time the element turns `ended` in an answer (a
  *  poll's or a button's): the page's cue to pick the next song, for example by
  *  sending the app's own agent a message or posting to the app's own backend. It is
@@ -130,7 +146,7 @@ export function useBrowserMedia(
     }
   }, [api, sessionKey])
 
-  const pollMs = options.pollMs ?? 0
+  const pollMs = pollInterval(options.pollMs)
   useEffect(() => {
     setMedia(null)
     setError(null)
