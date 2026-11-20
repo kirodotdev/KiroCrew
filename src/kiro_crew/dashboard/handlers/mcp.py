@@ -961,7 +961,8 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
     """PUT/DELETE /api/mcp/servers/{name} — register or remove an MCP server.
 
     PUT registers (or updates) an MCP server definition in the global
-    ``~/.kiro/settings/mcp.json`` config.  Requires localhost + X-Internal-Secret.
+    ``~/.kiro/settings/mcp.json`` config.  Requires the dashboard owner, or localhost +
+    X-Internal-Secret + an attested session key.
 
     Body (PUT)::
 
@@ -970,18 +971,17 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
     DELETE removes the server from the config.
 
     Two caller classes, two authorizations. ``/api/mcp/servers`` is listed in
-    ``server._STRICT_INTERNAL_API_PATHS``, so its designed caller is an internal
-    loopback process presenting ``X-Internal-Secret`` -- the App Kit SDK's
-    ``register_mcp_server`` / ``remove_mcp_server``
-    (``packages/kirocrew-client-py``) is exactly that. ``token_auth`` grants such a
-    request and marks it ``internal_auth``, and it deliberately leaves
-    ``request["app"]`` ABSENT for the person-behind-the-secret case, which
-    ``is_owner_dashboard_request`` reads as not-the-owner. So the owner predicate
-    applies to the COOKIE caller only: a ``local_only=False`` deployment
-    reclassifies strict paths as mixed and a browser session can then arrive here,
-    and that session must be the owner, because a PUT writes a command later agent
-    sessions execute. Gating the internal caller too would answer 403 to the one
-    caller the route exists for.
+    ``server._STRICT_INTERNAL_API_PATHS``. ``token_auth`` grants a request that
+    presents ``X-Internal-Secret`` and marks it ``internal_auth``, and it deliberately
+    leaves ``request["app"]`` ABSENT for the person-behind-the-secret case, which
+    ``is_owner_dashboard_request`` reads as not-the-owner. A PUT writes a command later
+    agent sessions execute, so each class has its own gate:
+
+    * the internal caller must carry an ATTESTED session key
+      (``member_memory_auth.session_key_is_attested``). The secret alone, which any
+      process that can read the secret file holds, is refused;
+    * any other caller (a ``local_only=False`` deployment reclassifies strict paths
+      as mixed, so a browser session can arrive here) must be the owner.
     """
     # Only authentication middleware publishes ``internal_auth``, and only on a
     # constant-time ``X-Internal-Secret`` match -- a request header claiming to
@@ -996,6 +996,32 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
         denied = await require_owner_dashboard_request(request, "mcp_server_detail")
         if denied is not None:
             return denied
+    else:
+        # Body-scope import for the same reason as the gate above.
+        from kiro_crew.member_memory_auth import session_key_is_attested
+
+        session_key = request.headers.get("X-Session-Key", "")
+        if not session_key or not await asyncio.to_thread(
+            session_key_is_attested, request, session_key
+        ):
+            # Audited like the owner gate's refusal, whose enqueue this mirrors; a failed
+            # audit never changes the answer.
+            try:
+                from kiro_crew.sel import sel as _sel
+
+                _sel().log_api_access(
+                    caller=str(request.get("user") or "unknown"),
+                    operation="mcp_server_detail",
+                    outcome="denied",
+                    source="dashboard",
+                    resources="attested_session_required",
+                )
+            except Exception:  # pragma: no cover - audit must never change the outcome
+                logger.debug("SEL audit for an unattested mcp_server_detail failed", exc_info=True)
+            return web.json_response(
+                {"error": "an attested session is required", "code": "attested_session_required"},
+                status=403,
+            )
     name = request.match_info["name"]
     if not name or not name.strip():
         return web.json_response(
