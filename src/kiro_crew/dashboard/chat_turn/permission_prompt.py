@@ -428,6 +428,9 @@ async def _on_permission_prompt(
             # from the same helper); every other linked thread
             # keeps threading under ``_slack_thread_ts``.
             _approval_thread = code_channel_post_thread(slot._slack_channel, slot._slack_thread_ts)
+            # Imported here: this body runs on the chat runner module's globals.
+            from kiro_crew.slack.turn_requester import turn_requester as _slack_turn_requester
+
             _slack_approval_ts = await post_linked_approval(
                 state.slack_client,
                 slot._slack_channel,
@@ -444,6 +447,17 @@ async def _on_permission_prompt(
                 slot_key=slot.key,
                 future=fut,
                 channel_trust=_approval_thread is None,
+                # The shared user whose message alone opened this turn may answer
+                # its own call too. A code channel's own session stays the owner's,
+                # and so does a child's call: a background child can outlive the
+                # turn that started it and ask under a later one.
+                requester=(
+                    _slack_turn_requester(slot)
+                    if _approval_thread is not None
+                    and not getattr(event, "sub_session_id", "")
+                    and not getattr(event, "native_child_call", False)
+                    else ""
+                ),
             )
             if _slack_approval_ts is None and not fut.done():
                 # Delivery failed — do not park for the whole

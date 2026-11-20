@@ -1112,6 +1112,13 @@ async def route_linked_thread(
             )
         )
         _linked_slot.task = _chat_task
+        if is_shared_listed(user_id):
+            # This shared user's message opened the turn: they may answer its own
+            # tool prompts from Slack (``post_linked_approval``). Queued messages
+            # run as their own task and are not stamped, so they fail closed.
+            from kiro_crew.slack.turn_requester import note_turn_requester
+
+            note_turn_requester(_chat_task, user_id)
         _dashboard_state._background_tasks.add(_chat_task)  # type: ignore[attr-defined]
         _chat_task.add_done_callback(_dashboard_state._background_tasks.discard)  # type: ignore[attr-defined]
         if turn_context and _seated is not None:
