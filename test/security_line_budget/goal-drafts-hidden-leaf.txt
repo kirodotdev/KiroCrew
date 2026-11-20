@@ -1,0 +1,4 @@
++7
+The canonical cross-device goal drafts: seven lines of hidden-leaf declarations in
+paths_lists keep the executable draft text outside agent sandboxes. No rule, matcher
+or floor moved.

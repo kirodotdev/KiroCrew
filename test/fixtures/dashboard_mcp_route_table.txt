@@ -245,6 +245,9 @@ HEAD /api/autonudge api_autonudge_list
 GET /api/autonudge api_autonudge_list
 HEAD /api/autonudge/session-monitor api_session_monitor_get
 GET /api/autonudge/session-monitor api_session_monitor_get
+HEAD /api/autonudge/draft/slot/{slot_key} api_goal_draft_get
+GET /api/autonudge/draft/slot/{slot_key} api_goal_draft_get
+PUT /api/autonudge/draft/slot/{slot_key} api_goal_draft_put
 POST /api/autonudge api_autonudge_start
 HEAD /api/autonudge/slot/{slot_key} api_autonudge_get
 GET /api/autonudge/slot/{slot_key} api_autonudge_get
