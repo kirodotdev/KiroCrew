@@ -5,7 +5,7 @@ author: buluoray, with kirocrew-worker
 created: 2026-11-19
 last-audited: 2026-11-19
 audited-at: 62a48d2381
-doc-pr: null
+doc-pr: 39709
 implementation-prs: []
 tracking-issues: []
 supersedes: []
