@@ -200,7 +200,7 @@ one head:
 ```
 
 Use `false-positive` or `not-applicable` for what follows; the other classes need an
-issue or a link ([Risk release records](docs/ci/ci-and-reviews.md#risk-release-records)).
+issue or a link ([Risk release records](https://github.com/kirodotdev/KiroCrew/blob/main/docs/ci/ci-and-reviews.md#risk-release-records)).
 
 `fable` is the Opus lane; `scope` is Security Scope Review. Decide it yourself —
 do not ask — when all four hold:

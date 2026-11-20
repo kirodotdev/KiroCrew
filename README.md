@@ -308,11 +308,10 @@ entries. Apps from user-configured registries, local-directory installs, and
 self-registered apps emit nothing, so private app names never leave the machine.
 If the receipt-only secret cannot be persisted, the receipt is skipped.
 
-This list used to be nine fields. Release channel, OS, CPU architecture and
-governance posture were **removed** — each was coarse on its own, but the
-instance id is stable, so those attributes all describe the *same* copy and
-together they narrowed the group any one install blends into far more than any
-single field suggests.
+Release channel, OS, CPU architecture and governance posture are **not sent**.
+Each is coarse on its own, but the instance id is stable, so those attributes
+would all describe the *same* copy and together narrow the group any one install
+blends into far more than any single field suggests.
 
 We report this as **Daily Active Crews** rather than "users": Kiro Crew has
 no account system of its own, and the Kiro sign-in that `kiro-cli` uses for
@@ -342,16 +341,15 @@ See [docs/system-specs/modules/governance.md](docs/system-specs/modules/governan
 
 This is separate from `telemetry.enabled`, which controls performance metrics.
 They are on by default, are recorded on your machine, are capped at 30 days and
-100 MB, and turn off with the same Turn off button, `kirocrew telemetry disable`,
-`KIROCREW_TELEMETRY=0` or `DO_NOT_TRACK=1`. A terminal-only install prints a
-one-line notice about them on its first start.
+100 MB, and turn off with the Settings > Privacy switch, `kirocrew telemetry disable`,
+`KIROCREW_TELEMETRY=0` or `DO_NOT_TRACK=1`. The first `kirocrew gateway`,
+`kirocrew run` or `kirocrew chat` start prints a one-line notice about them to
+stderr, once per install and notice version; it waits for no answer.
 
 While they are on, the public build also sends the reviewed product usage metrics
 (which features are used and how long things take; no prompts, files, paths or
-credentials) to Kiro telemetry, labelled with a hashed install ID. Nothing is sent
-until the Privacy screen, or the one-line terminal notice, has named it. It is
-not sent from an enterprise (LTS) build or a CI runner, and every off switch
-above stops it. See
+credentials) to Kiro telemetry, labelled with a hashed install ID. It is not sent
+from an enterprise (LTS) build or a CI runner, and every off switch above stops it. See
 [docs/guides/telemetry-otlp-export.md](docs/guides/telemetry-otlp-export.md#the-kiro-telemetry-destination)
 and [docs/system-specs/modules/metrics.md](docs/system-specs/modules/metrics.md).
 
