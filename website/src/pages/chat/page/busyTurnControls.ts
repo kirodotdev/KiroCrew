@@ -371,6 +371,7 @@ export function useBusyTurnControls({
   )
   const {
     onCancel: handleCancelQueued,
+    onCancelAll: handleCancelAllQueued,
     onInterrupt: handleInterruptQueued,
     onEdit: handleEditQueued,
     onEditOpen: handleEditOpenQueued,
@@ -501,7 +502,7 @@ export function useBusyTurnControls({
   }
   return {
     queuedMessages, systemDeliveryCount, steer, stopTurn, keepQuestionAnswer, answerQuestionCard,
-    handleCancelQueued, handleInterruptQueued, handleEditQueued, handleEditOpenQueued, handleReorderQueued, queuePendingIds,
+    handleCancelQueued, handleCancelAllQueued, handleInterruptQueued, handleEditQueued, handleEditOpenQueued, handleReorderQueued, queuePendingIds,
     handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
   }
 }

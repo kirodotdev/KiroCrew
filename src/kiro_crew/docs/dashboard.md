@@ -41,7 +41,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **Tool purpose pills**: tool call labels show purpose text, persisted across reloads.
 - **MCP servers still connecting**: while any of a chat's MCP servers is still connecting, a small pill above the message box reads "N of M MCP servers ready", and it goes away by itself once none is connecting. N is the connected servers and M the connected plus the connecting ones. Click the pill to list them; a server that is not loading (failed, waiting for a sign-in, switched off, left out by policy) is listed under **Not counted**, and its error stays in the MCP view of the chat's session options. A server's tools appear in the chat as it connects. The pill is not shown in a Bot's chat, and it shows nothing on an agent harness that does not report which servers are connecting.
 - **Batch tool rejection**: reject multiple pending tool approvals at once.
-- **Cancel queued messages**: cancel button for messages waiting in the queue.
+- **Cancel queued messages**: cancel button for messages waiting in the queue. With two or more queued, the collapsed stack also has a Discard all button that cancels every queued message that can still be cancelled after a confirm, without putting any of their text back in the composer. A message already in the conversation is left out and still runs.
 - **Edit queued messages**: edit a message waiting in the queue in place before it runs (order preserved); automatic recovery entries stay immutable so their delivery receipts remain bound to the original message.
 - **iOS-style queue stack**: queued messages displayed as a visual stack.
 - **Streaming transcription**: live speech-to-text partials via WebSocket.

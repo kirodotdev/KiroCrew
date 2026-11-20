@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, memo } from 'react'
 import { AnimatePresence, motion, useMotionValue, useSpring } from 'framer-motion'
-import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2, ArrowUp, ArrowDown, AppWindow, BookOpen } from 'lucide-react'
+import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2, ArrowUp, ArrowDown, AppWindow, BookOpen, ListX } from 'lucide-react'
 import type { ChatMessage } from '../types'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { Glass } from './Glass'
+import { useConfirm } from './ConfirmDialog'
 
 import { i18nT } from '../i18n/t'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
@@ -474,9 +475,13 @@ function EditInput({ initial, onCommit, onCancel, onDraftChange, pastes = [] }: 
   )
 }
 
-function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, onEditDraft, onReorder, fuseBelow = true, pendingIds }: {
+function QueueStackInner({ messages, onCancel, onCancelAll, onInterrupt, onEdit, onEditOpen, onEditDraft, onReorder, fuseBelow = true, pendingIds }: {
   messages: ChatMessage[]
   onCancel?: (queueId: string) => void
+  /** Cancel every listed card at once. When set, the collapsed stack of two or
+   *  more cards offers Discard all, which asks first and then hands over the
+   *  ids of the cards that were shown and not already in flight. */
+  onCancelAll?: (queueIds: readonly string[]) => void
   onInterrupt?: (queueId: string) => void
   /** `pastes` is set when the entry carried paste blocks: the ones whose
    *  tokens the edit kept, in token order (empty when it kept none), for the
@@ -512,7 +517,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
   // which has nothing to expand either -- drops the pointer cursor, so a reader
   // does not hesitate over a click that would do nothing (#19920). The
   // dashboard always passes callbacks, so its stack is unchanged.
-  const readOnly = !onCancel && !onInterrupt && !onEdit && !onReorder
+  const readOnly = !onCancel && !onCancelAll && !onInterrupt && !onEdit && !onReorder
   const clickable = messages.length > 1 || !readOnly
   const readOnlyHint = readOnly ? i18nT('components.queueStack.read_only_waiting_to_send') : undefined
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -575,6 +580,27 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
     openEditRef.current = null
     setEditingId(null)
     if (open) onEditOpen?.(open, false)
+  }
+
+  // Discard all: the ids are read on the press, so a card queued while the
+  // dialog is open is not discarded with the ones the dialog counted. A card
+  // whose user row is already written (`meta.written`) is left out, as its own
+  // cancel is: the server refuses to cancel it, and it will still run.
+  const { confirm, confirmDialog } = useConfirm()
+  const discardableIds = () => messages
+    .filter(m => m.meta?.written !== true)
+    .map(m => m.meta?.queueId as string | undefined)
+    .filter((id): id is string => !!id && !pendingIds?.has(id))
+  const discardAll = async () => {
+    if (!onCancelAll) return
+    const ids = discardableIds()
+    if (!ids.length) return
+    const confirmed = await confirm({
+      title: i18nT('components.queueStack.discard_all_title', { count: ids.length }),
+      body: i18nT('components.queueStack.discard_all_body'),
+      confirmLabel: i18nT('components.queueStack.discard_all_confirm'),
+    })
+    if (confirmed) onCancelAll(ids)
   }
 
   // A held card (the server's `meta.held`: it waits for the person) says so on
@@ -915,6 +941,25 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
                           <X size={13} />
                         </button>
                       )}
+                      {isFrontCollapsed && messages.length > 1 && onCancelAll && (
+                        <button
+                          data-testid="queue-discard-all"
+                          className="shrink-0 mr-1 inline-flex items-center gap-1 whitespace-nowrap px-1 py-0.5 text-[11px] rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          // No aria-label: the visible "Discard all" is the
+                          // button's name, so someone using voice control can
+                          // say the words they see. The title adds the longer
+                          // tooltip, read out as the description.
+                          title={i18nT('components.queueStack.discard_all_queued_messages')}
+                          disabled={!discardableIds().length}
+                          // The stack's own Enter/Space toggles it open; this key
+                          // press belongs to the button.
+                          onKeyDown={(e) => e.stopPropagation()}
+                          onClick={(e) => { e.stopPropagation(); void discardAll() }}
+                        >
+                          <ListX size={13} aria-hidden="true" />
+                          {i18nT('components.queueStack.discard_all_confirm')}
+                        </button>
+                      )}
                       {isFrontCollapsed && messages.length > 1 && (
                         <span className="shrink-0 flex items-center gap-1 text-[11px] opacity-70">
                           {i18nT('components.queueStack.queued_count', { count: messages.length })}
@@ -939,6 +984,9 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
           })}
         </AnimatePresence>
       </motion.div>
+      {/* Outside the stack's own box: the dialog portals out of the DOM, but
+          its clicks still bubble through React to the stack's toggle. */}
+      {confirmDialog}
     </div>
   )
 }
@@ -949,6 +997,7 @@ export default memo(QueueStackInner, (prev, next) =>
   prev.pendingIds === next.pendingIds &&
   prev.messages.every((m, i) => m === next.messages[i]) &&
   prev.onCancel === next.onCancel &&
+  prev.onCancelAll === next.onCancelAll &&
   prev.onInterrupt === next.onInterrupt &&
   prev.onEdit === next.onEdit &&
   prev.onEditOpen === next.onEditOpen &&

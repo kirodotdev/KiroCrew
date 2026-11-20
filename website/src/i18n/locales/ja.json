@@ -8911,7 +8911,11 @@
       "wont_survive_a_restart": "再起動すると失われます",
       "restored_held": "再起動後に復元されました。自動では送信されません。",
       "sub_agent_results_ready_other": "{{count}} 個のサブエージェント結果が準備完了 — 現在のターンの後で処理します",
-      "queued_count_other": "{{count}} 件がキュー内"
+      "queued_count_other": "{{count}} 件がキュー内",
+      "discard_all_queued_messages": "キュー内のメッセージをすべて破棄",
+      "discard_all_title_other": "キュー内の {{count}} 件のメッセージを破棄しますか？",
+      "discard_all_body": "これらは送信されず、テキストも入力欄に戻りません。",
+      "discard_all_confirm": "すべて破棄"
     },
     "readingWidthToggle": {
       "title_full": "全幅",

@@ -9369,7 +9369,13 @@
       "sub_agent_results_ready_other": "{{count}} resultados de subagente prontos — serão processados após o turno atual",
       "queued_count_one": "{{count}} na fila",
       "queued_count_many": "{{count}} na fila",
-      "queued_count_other": "{{count}} na fila"
+      "queued_count_other": "{{count}} na fila",
+      "discard_all_queued_messages": "Descartar todas as mensagens na fila",
+      "discard_all_title_one": "Descartar {{count}} mensagem na fila?",
+      "discard_all_title_many": "Descartar {{count}} mensagens na fila?",
+      "discard_all_title_other": "Descartar {{count}} mensagens na fila?",
+      "discard_all_body": "Elas não serão enviadas e o texto delas não voltará para o campo de entrada.",
+      "discard_all_confirm": "Descartar todas"
     },
     "readingWidthToggle": {
       "title_full": "Largura total",
