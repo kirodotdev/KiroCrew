@@ -1,7 +1,7 @@
 # AgentCore Identity and Gateway Implementation Plan
 
-> **Partial implementation on main.** 4 of 30 checklist steps are done: the
-> Task 1 documentation steps. At `e281ecaf33`, `platform/agentcore_schema.py`
+> **Partial implementation on main.** 4 of 29 checklist steps are done: the
+> Task 1 documentation steps. On main, `platform/agentcore_schema.py`
 > and the AWS-free `AgentIdentityProvider` core seam ship; the AWS adapter,
 > IAM helpers, Gateway attachment, consent flow, and Settings surfaces do not.
 > Its spec is

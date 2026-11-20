@@ -3,8 +3,8 @@ title: Git branch switcher -- switch the project's checked-out branch from the d
 status: draft
 author: inariku, with Kiro Crew
 created: 2026-10-24
-last-audited: 2026-10-25
-audited-at: 1a7190c711
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 23725
 implementation-prs: [23102]
 tracking-issues: [22670]
