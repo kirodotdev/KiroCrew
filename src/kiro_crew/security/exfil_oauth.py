@@ -580,8 +580,6 @@ _OAUTH_DISCOVERED_TTL_SECONDS = 24 * 60 * 60
 _OAUTH_DISCOVERED_CAP = 64
 # Bound on the server URL copied into the SEL event; nothing else retains it.
 _OAUTH_DISCOVERED_MCP_URL_MAX_LEN = 512
-# Bound on the server name that keys an approval (it is part of the dict key).
-_OAUTH_DISCOVERED_SERVER_NAME_MAX_LEN = 256
 # (host, path, server name) -> monotonic expiry. Host and path are bounded by the validators.
 _OAUTH_DISCOVERED_ENDPOINTS: dict[tuple[str, str, str], float] = {}
 
@@ -607,13 +605,13 @@ def record_discovered_oauth_endpoint(
     configured url found the endpoint. The approval is for *server_name* alone.
     Returns False (and records nothing) for a host or path the operator file's
     validators would refuse, or for a server name that is empty or longer than
-    ``_OAUTH_DISCOVERED_SERVER_NAME_MAX_LEN``. A newly recorded endpoint is
+    256 characters. A newly recorded endpoint is
     SEL-audited with the server URL it was verified from.
     """
     host_norm = host.lower()
     if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host_norm) or not _valid_oauth_extension_path(path):
         return False
-    if not server_name or len(server_name) > _OAUTH_DISCOVERED_SERVER_NAME_MAX_LEN:
+    if not server_name or len(server_name) > 256:  # the name is part of the dict key
         return False
     key = (host_norm, path, server_name)
     fresh = not _discovered_oauth_endpoint_approved(key)

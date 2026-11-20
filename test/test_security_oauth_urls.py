@@ -1785,12 +1785,15 @@ class TestOperatorOAuthEndpointExtension:
         self, monkeypatch: pytest.MonkeyPatch, query: str, rejected: bool
     ) -> None:
         endpoint = (self.HOST, self.PATH)
-        monkeypatch.setattr(exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {endpoint: float("inf")})
+        monkeypatch.setattr(
+            exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {(*endpoint, "mcp"): float("inf")}
+        )
         loader = Mock(return_value=frozenset({endpoint}))
         monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", loader)
         # Discovery supplies approval, isolating the client_id lookup.
-        assert security._approved_oauth_authorization_endpoint(*endpoint)
-        assert oauth_url_contains_credential(f"https://{self.HOST}{self.PATH}?{query}") is rejected
+        assert security._approved_oauth_authorization_endpoint(*endpoint, "mcp")
+        url = f"https://{self.HOST}{self.PATH}?{query}"
+        assert oauth_url_contains_credential(url, "mcp") is rejected
         loader.assert_not_called()
 
     def test_discovered_operator_endpoint_audits_salesforce_client_id_once(
@@ -1800,7 +1803,7 @@ class TestOperatorOAuthEndpointExtension:
         url = f"https://{self.HOST}{self.PATH}?client_id={consumer_key}&response_type=code"
         self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
         monkeypatch.setattr(
-            exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {(self.HOST, self.PATH): float("inf")}
+            exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {(self.HOST, self.PATH, "mcp"): float("inf")}
         )
         logged: list = []
 
@@ -1810,7 +1813,7 @@ class TestOperatorOAuthEndpointExtension:
 
         monkeypatch.setattr(exfil, "SecurityEventLog", lambda: _RecorderLog())
         assert security._text_contains_bare_secret(consumer_key)
-        assert security._approved_oauth_authorization_endpoint(self.HOST, self.PATH)
+        assert security._approved_oauth_authorization_endpoint(self.HOST, self.PATH, "mcp")
         assert logged == []
         loader = Mock(wraps=security._load_operator_oauth_endpoints)
         monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", loader)
