@@ -61,7 +61,7 @@ six shared primitives:
 Every change in this RFC is one primitive applied at one stage. Default and
 private stores run the same functions.
 
-**Rollout.** Seven flagged stages (R0a, R1 to R6), each default off and shadow
+**Rollout.** Eight flagged stages (R0a, R0b, R1 to R6), each default off and shadow
 first, after a flagless receipt stage (R0). Only R1 is signed so far. R0a
 records which session wrote each default-store lesson and keeps lessons from
 spans no person spoke in out of the rule tier; on the measured stores 63%
@@ -547,6 +547,33 @@ shadow answers the C2 agent-text question with live counts. Its rules:
   that keeps a person's ask. An agent that scrubs the environment markers on a
   host without the agents cgroup reads as a terminal. The JSONL fallback store has no `source` field, so
   there the gate changes the tier only.
+
+R0b extends R0a's gate to the facts that describe the person. It is a
+proposal, behind its own flag, default `off`. Its rules:
+
+| # | Stage | Flag (default `off`) | Shadow signal | Pass metric | Rollback |
+|---|---|---|---|---|---|
+| R0b | Admit: fact origin gate | `memory.fact_origin_gate` | per day and kind (`pref`, `user`, `preferences_file`): passes, passes with no person-sent turn, facts read, facts held back; shadow also keeps the held-back keys and a control sample of kept keys | miss rate of held-back keys (a later recall names one) <= control; zero held back in a span with a person-sent turn | flag off; nothing stored is changed, so nothing to restore |
+
+- **Why.** `pref.*` and `user.*` claim to describe the person. On the measured
+  stores 67% (default) and 78% (private) of `pref.*` rows came from spans no
+  person spoke in, and in a hand check of 30 `pref.*` / `user.*` rows 6 stated
+  the person's own preference.
+- **Scope.** Every semantic item whose key starts `pref.` or `user.`, a write
+  or a delete (the writers drop unseen deletes before taking their window, so
+  the gate reads the whole list), and the V1 `preferences_update`. The turn classes and the span are R0a's, read once on
+  the shared result before it branches; there is no second detector.
+- **Enforce.** In a span with no human turn those items, and
+  `preferences_update`, are dropped from the answer. They are not rewritten as
+  `project.*`: a same-named project key may exist. Every other item is written
+  as today.
+- **Not gated.** `project.*` facts and episodes (80% or more came from agent
+  spans; they carry worker findings and make no claim about the person; one-off
+  status is kind routing's job), and `projects_update`.
+- **Modes and gaps.** As R0a: `off` reads nothing, `shadow` writes as `off` and
+  logs, no mode changes the prompt; a mixed span keeps every item; a
+  messaging-channel session is not gated. An agent's own memory-tool write of a
+  `pref.*` key and the external provider path are not covered.
 
 R3 ships behind its flag, default `off`, before its sign-off: its job is to
 produce the counts that sign-off waits for. Its rules:
