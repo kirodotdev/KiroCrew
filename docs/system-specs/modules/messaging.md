@@ -3844,7 +3844,7 @@ The extraction is gated by a **golden-transcript** harness (`test/test_slack_gol
 
 ## Slack settings API
 
-Four dashboard-only endpoints back the `/settings/channels/slack` panel (legacy `?tab=channels&channel=slack` and `?tab=slack` links redirect there). They are
+The dashboard-only endpoints below back the `/settings/channels/slack` panel (legacy `?tab=channels&channel=slack` and `?tab=slack` links redirect there). They are
 registered in the dashboard route block (NOT `_register_mcp_routes`, which is
 also mounted on the token-less API-only server) so they always sit behind
 dashboard token auth.
@@ -3865,8 +3865,8 @@ dashboard token auth.
   actual token changes, and for a first owner ID on a gateway that has none
   (`DashboardState.owner_id` empty), which `POST /api/slack/reconnect` applies;
   `restart_required` is true for a change to the owner the gateway already
-  authorizes (Reconnect never replaces that owner in place) and for `command`, the one Slack config field a running
-  gateway cannot apply (the slash command is registered with the app manifest). Every other field applies live, including
+  authorizes (Reconnect never replaces that owner in place). Every `slack.*` field applies live, including
+  `command` (the gateway answers every manifest-registered `/kirocrew` name, so it only renames what help shows) and
   `allowed_enterprise_ids`, which is re-read through the validated
   `enterprise.reload_allowed_team_ids`.
   An empty `command` resets the slash command to the default.
@@ -3991,6 +3991,15 @@ dashboard token auth.
   restart) so a later no-alias render keeps it. Settings →
   Messaging Channels → Slack passes no alias, so its one-click app registers
   `/kirocrew`.
+- `GET /api/slack/manifest/status` — whether the installed app is current:
+  compares the bot scopes `auth.test` reports for the stored bot token with the
+  manifest the saved Slack Code switches render, and names the app so Settings
+  can link its App Manifest page (`?refresh=1` skips the short cache). Reads
+  only, never echoes the token, and is readable from a remote session.
+- `GET /api/slack/code-channel-agents?folder=` — the agents a Slack Code
+  defaults save accepts with that default folder (empty = the auto folder), so
+  the picker can follow a folder picked but not yet saved; `{"agents": null}`
+  when they cannot be listed. Reads only.
 
 `allowed_users` / `open_channels` are intentionally not exposed while the
 runtime enforces owner-only access. Sharing the Slack bot is a separate,
@@ -4257,7 +4266,13 @@ what makes it safe to call on every start rather than diffing, using the
 skipped rather than sent, because Discord rejects the ENTIRE array on one bad
 row. `gateway.py` fires it as a background task rather than awaiting it: the
 product is discoverability alone, the gateway boot path must not grow an awaited
-network step, and the `!` text commands are the floor if it fails.
+network step, and the `!` text commands are the floor if it fails. For the same
+reason, when `discord.allowed_user_ids` holds exactly one user, `gateway.py`
+re-opens that owner's DM in the background once READY (`_reopen_owner_dm`, the
+same `create_dm_channel` call the dashboard's connect row makes): the DM-channel
+to user pairing lives only in the client's memory, and without it a session
+mirrored to the owner's DM before a restart is refused by the owner-DM check
+until the owner writes into the DM.
 `contexts: [GUILD, BOT_DM]` replaces the deprecated `dm_permission`. `queue` and
 `steer` are deliberately absent from the menu: they are message PREFIXES, and a
 menu tap sends the bare token with no message body to act on.
@@ -5285,8 +5300,8 @@ is for.
 **Everything that awaits AFTER ingest sits inside the cleanup block.** The dispatcher
 deletes the decrypted attachments in a `finally`, so an await outside it is a path on
 which a gateway shutdown strands plaintext. The origin bind is one such await (it
-offloads to a thread), and it now runs inside the `try` — before the turn, so a
-mirrored reply still has its binding, but no longer outside the guard.
+offloads to a thread), and it runs inside the `try` — before the turn, so a
+mirrored reply still has its binding, but not outside the guard.
 
 **The tail is HELD until the head is resolved.** An over-cap answer seals its head
 into the live bubble and pushes the remainder, and the head's verdict arrives after
@@ -5625,7 +5640,7 @@ keeps its own `_render_options_as_text` rather than the shared
 `render_options_as_text` for one reason, and the contract test names it: WeCom
 STREAMS, so an unterminated `[OPTIONS…` tail there really may be a marker
 mid-flight and is hidden, where the buffer-and-send-once channels keep it as prose.
-That difference is now expressed as `split_options_trailer(..., hide_partial=True)`
+That difference is expressed as `split_options_trailer(..., hide_partial=True)`
 rather than as a second copy of the parse — only the folding into `format_overflow`
 stays local.
 
@@ -5691,9 +5706,9 @@ only by `/unlink`, matching Telegram and Discord.
 
 **Every out-of-band ack is a PUSH, and its one-shot fallback reports a verdict.**
 `client.say` carries every command ack, notice and refusal. As a bare stream frame
-its refusal was recorded against the stream and nothing acted on it — the user
-pressed a command and got nothing back, which reads as the command not existing
-rather than as a delivery failure. It now prefers `aibot_send_msg` (own `req_id`, so
+its refusal would be recorded against the stream and nothing would act on it — the
+user presses a command and gets nothing back, which reads as the command not existing
+rather than as a delivery failure. So it prefers `aibot_send_msg` (own `req_id`, so
 acceptance is confirmed; the conversation is warm by construction because this only
 runs on a turn the user just sent), falls back to a sealed stream frame for a
 deployment where the push is unavailable, then to `response_url`.
@@ -5797,7 +5812,7 @@ on purpose — it budgets bytes READ into gateway memory, of which only
 over as its redacted `.txt` copy, not read again), so it is not a transport
 ceiling and must not be raised to one. A `mixed` message's caption lives in its item
 list rather than in `text`, and is read from there — and a media-only message is a
-message, so the empty-text early return now also requires no attachments.
+message, so the empty-text early return also requires no attachments.
 
 **Deliberately not implemented here**, and each a platform capability we do not
 use yet rather than a limit: interactive `template_card` buttons and their
@@ -6015,7 +6030,7 @@ so an over-budget activity delivers its head instead of dying as a Connector 413
 check (`_validate_teams_app_credentials` in `dashboard/messaging_api/teams_settings.py`)
 each pass `proxy=kiro_crew.http_proxy.resolve_proxy(url)`, so all three take one
 route: the HTTPS (else HTTP) proxy that `urllib.request.getproxies()` reports, unless
-the host is bypassed, and direct when none is set (#20185). The sessions keep
+the host is bypassed, and direct when none is set. The sessions keep
 aiohttp's default `trust_env=False`, so `~/.netrc` is never read. Attachment downloads are excluded on purpose. They dial the address
 `_VettedResolver` pinned after the SSRF vet, and a proxy would resolve the host
 itself, so that pin would never be consulted.
@@ -6766,7 +6781,7 @@ routing it through `render_options_as_text` like the other four zero-widget
 channels, so a question whose choices live only in the trailer reaches the user
 without them. A tool approval is unaffected (`on_prompt_choice` builds its own
 numbered prompt). That half is a gap rather than a position, and
-`test_options_cap_contract.py` now sees WhatsApp: it is in the
+`test_options_cap_contract.py` sees WhatsApp: it is in the
 `_all_channel_capabilities()` map and pinned as the sole `STRIPS_NOT_NUMBERS`
 entry, so the exhaustiveness ratchet counts all ten channels. The ratchet
 records the strip as the current behaviour rather than asserting the lost
@@ -7270,11 +7285,18 @@ async event loop via `run_coroutine_threadsafe`); outbound is a REST reply
 anchored to the inbound `message_id`, or a new message (`im.v1.message.create`,
 `LarkClient.send_new`) for a proactive send (both via `run_in_executor` so they
 never block the event loop). The SDK caches its WebSocket event loop in a module
-global when imported, while Kiro Crew imports it on the gateway loop and runs
-`ws.Client.start()` in the receiver thread. The receiver therefore owns a
-separate event loop, rebinds the SDK global, and constructs the client there
-before `start()`; otherwise constructor-time helpers remain bound to the gateway
-loop and the SDK calls `run_until_complete()` on that already-running loop. Shutdown
+global bound to whichever loop was current when it was imported, which is not the
+receiver's, while Kiro Crew runs `ws.Client.start()` in the receiver thread. The
+receiver therefore owns a separate event loop, rebinds the SDK global, and
+constructs the client there before `start()`; otherwise constructor-time helpers
+remain bound to the wrong loop and the SDK calls `run_until_complete()` on an
+already-running one. `maybe_start_feishu` imports the SDK's modules
+(`_LARK_MODULES`) on a worker thread through `asyncio.to_thread` before it builds
+the client: the import loads about 11,000 modules and, on the loop, could stall
+the gateway long enough for the loop-stall watchdog to restart it. Because a
+config edit can land during that preload, the transport's allow-lists are seeded
+from the live config snapshot (`config.live.snapshot()`) when the watcher runs,
+with nobody authorized when the loader discarded the `feishu` section. Shutdown
 uses a public synchronous `stop()` when a future SDK provides one, and falls
 back on current lark-oapi 1.x's async `_disconnect()` on the receiver loop with
 auto-reconnect disabled. In both cases the receiver cancels pending SDK tasks
