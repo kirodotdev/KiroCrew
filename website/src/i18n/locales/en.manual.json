@@ -4394,6 +4394,7 @@
       "flow_needs_you": "Needs you",
       "eyebrow": "Conductor mode",
       "composer_chip_label": "Conductor mode is on for this chat",
+      "composer_chip_label_worker": "Conductor mode · Worker",
       "back_to_main_chat": "Back to main chat",
       "parent_row_hint": "Showing one of its crew members",
       "steer_too_long": "A message to {{name}} can be at most {{max}} characters. Shorten it to send.",

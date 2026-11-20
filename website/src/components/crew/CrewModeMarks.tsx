@@ -83,8 +83,10 @@ export function CrewWorkerStack({ groups, max = 6 }: { groups: CrewWorkerGroup[]
 /** The composer's Crew Mode mark on a conductor chat: the lightning bolt and the
  *  name. With `onTurnOff` (no message sent yet) it is a pressed toggle: pressing
  *  it turns Crew Mode off. It renders in place, with no layout move.
- *  Without it, a read-only status: no pill, no hover or pressed state, not focusable. */
-export function CrewModeComposerChip({ onTurnOff }: { onTurnOff?: () => void } = {}) {
+ *  Without it, a read-only status: no pill, no hover or pressed state, not focusable.
+ *  On a worker (a crew member that is not itself a conductor) the status names its
+ *  role, `Conductor mode · Worker`, so it does not read as a conductor of its own. */
+export function CrewModeComposerChip({ onTurnOff, worker = false }: { onTurnOff?: () => void; worker?: boolean } = {}) {
   const reduceMotion = useReducedMotion()
   if (onTurnOff) {
     return (
@@ -109,14 +111,14 @@ export function CrewModeComposerChip({ onTurnOff }: { onTurnOff?: () => void } =
     <motion.span
       data-testid="crew-mode-composer-chip"
       role="img"
-      aria-label={i18nT('components.crewMode.composer_chip_label')}
+      aria-label={i18nT(worker ? 'components.crewMode.composer_chip_label_worker' : 'components.crewMode.composer_chip_label')}
       initial={reduceMotion ? { opacity: 0 } : false}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.2 }}
       className="inline-flex items-center gap-1.5 h-7 text-[12px] font-semibold shrink-0 cursor-default select-none"
     >
       <Zap size={13} aria-hidden="true" className="inline-block shrink-0 conductor-mode-accent" />
-      <span className="crew-grad-text">{i18nT('components.crewMode.chip_off')}</span>
+      <span className="crew-grad-text">{i18nT(worker ? 'components.crewMode.composer_chip_label_worker' : 'components.crewMode.chip_off')}</span>
     </motion.span>
   )
 }

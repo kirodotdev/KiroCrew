@@ -10670,6 +10670,7 @@
       "flow_needs_you": "तुम्हारी ज़रूरत",
       "eyebrow": "Conductor mode",
       "composer_chip_label": "इस चैट के लिए Conductor mode चालू है",
+      "composer_chip_label_worker": "Conductor mode · वर्कर",
       "back_to_main_chat": "मुख्य चैट पर लौटो",
       "parent_row_hint": "इसके एक क्रू सदस्य को दिखाया जा रहा है",
       "steer_too_long": "{{name}} को संदेश अधिकतम {{max}} अक्षरों का हो सकता है। भेजने के लिए इसे छोटा करो।",

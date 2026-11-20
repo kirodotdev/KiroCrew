@@ -10911,6 +10911,7 @@
       "flow_needs_you": "Te necesita",
       "eyebrow": "Conductor mode",
       "composer_chip_label": "Conductor mode está activado en este chat",
+      "composer_chip_label_worker": "Conductor mode · Worker",
       "back_to_main_chat": "Volver al chat principal",
       "parent_row_hint": "Mostrando uno de sus miembros del equipo",
       "steer_too_long": "Un mensaje para {{name}} puede tener como máximo {{max}} caracteres. Acórtalo para enviarlo.",
