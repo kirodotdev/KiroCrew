@@ -192,6 +192,8 @@ Examples:
   kirocrew cron add "standup" "post the standup" --cron "0 9 * * MON-FRI" --timezone Europe/Paris
   kirocrew cron add "version-check" "" --every 3600 --script ~/.kiro/crew/crons/check.py:run \\
       --no-persistent-session --minimal-context
+  kirocrew cron add "board" "" --every 1800 --script ~/.kiro/crew/crons/board.py:run \\
+      --agent <bot-name> --no-persistent-session --minimal-context
   kirocrew cron add "disk" "" --every 600 --command "df -h /" --timeout 30 --timeout-secs 60
   kirocrew cron add "reminder" "call the vet" --at "tomorrow 9am"
 """,
@@ -225,18 +227,21 @@ Examples:
         "timezone, else 'local'; refused with --every (an interval has no wall clock).",
     )
     cron_add.add_argument("--channel", help="Slack channel ID to post results to")
-    # One job KIND per job. A script or command job never launches an agent,
-    # so --agent alongside either would be dead configuration; argparse refuses
-    # the pair up front instead of persisting a field nothing reads.
+    # One job KIND per job: --script and --command are exclusive here. --agent
+    # sits outside the group because a --script job may name a Bot, which binds
+    # the job to that Bot (its ctx.crew_log_append feeds the Bot's Dashboard
+    # page); _cron_add refuses --agent with --command, and with --script unless
+    # the name resolves to a Bot.
     cron_add_kind = cron_add.add_mutually_exclusive_group()
-    cron_add_kind.add_argument(
+    cron_add.add_argument(
         "--agent",
         dest="agent",
         default="",
         help="Agent name for this job (e.g. 'customer360-code-agent'). "
         "Empty or omitted uses agent.default_agent, or the kirocrew agent "
         "when that is unset or not eligible (e.g. a default that restricts "
-        "subagents).",
+        "subagents). With --script it must name a Bot: the job is bound to "
+        "that Bot, so ctx.crew_log_append() records land on its Dashboard page.",
     )
     cron_add_kind.add_argument(
         "--script",
