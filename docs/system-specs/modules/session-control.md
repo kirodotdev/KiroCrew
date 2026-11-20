@@ -19,7 +19,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | Tool | Route | What it does |
 |------|-------|--------------|
 | `session_create` | `POST /api/session-control/create` | Open a new session in the caller's workspace, empty unless `message` seeds its first turn through `send_to_target` (the `session_send` path), optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort` and a `backend` (harness, see below); model or effort omitted is filled from the dispatching Bot's worker pair, else its own pair (a copy made at creation), else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
-| `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, and cut at a fork point. The title meets `session_create`'s title rules before any gate (`invalid_title`, 400; scrubbed, cut to 200 characters, a cut result that shows nothing refused, a blank title is no title) |
+| `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, cut at a fork point, and made more private (`memory_mode`). The title meets `session_create`'s title rules before any gate (`invalid_title`, 400; scrubbed, cut to 200 characters, a cut result that shows nothing refused, a blank title is no title) |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_end_wait` | `POST /api/session-control/end-wait` | Wake a session the caller CREATED from the `wait` tool early, keeping its turn; any other target is refused `not_creator`, for every caller class |
 | `session_retry` | `POST /api/session-control/retry` | Re-run a failed last turn through `continue_slot_turn`, the Resume button's path, with `require_interrupted=True` (`turn_not_failed` otherwise) and `authorize_target` re-run synchronously under the slot lock before the continuation is queued |
@@ -1079,6 +1079,15 @@ unreadable value never refuses.
 **Deliberately not offered.** No `agent`, `model` or `mode` override: a
 transcript belongs to the memory boundary it was written in, and `chat_fork`
 binds the child's execution identity from the parent's for exactly that reason.
+`memory_mode` IS offered, because it only narrows that boundary: the child may
+take the parent's mode or a stricter one in `execution_context.MEMORY_MODES`
+order (persistent, incognito, temporary). `chat_fork_memory_mode.fork_child_memory_mode`
+decides it inside `fork_slot` for both routes, before the transcript snapshot:
+a looser mode answers 409 `fork_memory_mode_looser` (SEL `denied`) and a value
+outside the three answers 400 `invalid_memory_mode`, with no child. On this route
+the caller and any source it may read are persistent (`ephemeral_caller`,
+`ephemeral_target`), so every mode is a keep or a tighten. The answer and the
+`session_fork` audit row carry the child's `memory_mode`.
 No tail fork (`direction` is fixed to `head`); the human route keeps it behind
 `dashboard.tail_fork_enabled`. No `prompt`: the child starts idle, and seeding
 it is `session_send`'s job — the same split that keeps `session_create` from

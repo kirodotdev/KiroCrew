@@ -1596,6 +1596,13 @@ no longer destroy older turns.
   meanwhile it stays an ordinary fork. Until a pick the child runs on the parent's
   model and effort, and a pick on a child with copied history appends the usual
   model-switch notice row. The agent `session_fork` path is unchanged.
+- **Fork as incognito / Fork as temporary**: the same message menu lists, after
+  "Fork with another model", one entry per mode stricter than the open chat's
+  (`stricterForkMemoryModes` in `website/src/utils/forkMemoryModes.ts`): a
+  persistent chat offers both, an incognito chat only "Fork as temporary", and
+  a temporary chat neither. Each sends the `direction="head"` request with
+  `memory_mode`, and the new chat shows the usual incognito or temporary badge
+  from the response's `memory_mode`.
 - **Fork inherits `memory_mode`, and never loosens it on its own**: an
   incognito or temporary session forks like a persistent one, and the child is
   born with the parent's mode -- passed to `get_or_create_slot` at creation so
@@ -1604,14 +1611,23 @@ no longer destroy older turns.
   would buy no privacy, for the reason the titling section below gives -- the
   parent's full transcript is already in its session JSONL, and a fork copies
   transcript while engaging neither guarantee the modes make (`is_restricted`,
-  `blocks_reads`). What an ORDINARY fork must not do is produce a *persistent*
-  child from a restricted parent -- that would hand no-write content to
-  consolidation -- so the request body carries no `memory_mode` and the
-  parent's value is the only source; promotion (below) is the one deliberate,
-  consent-gated exception. A temporary child still receives its copied turns:
+  `blocks_reads`). What an ORDINARY fork must not do is produce a child LESS
+  private than its parent -- a persistent child of a restricted parent would
+  hand no-write content to consolidation. The body's optional `memory_mode`
+  may therefore name the parent's mode or a stricter one in
+  `execution_context.MEMORY_MODES` order (persistent, incognito, temporary).
+  `chat_fork_memory_mode.fork_child_memory_mode` decides it in `fork_slot`
+  before the transcript snapshot: a looser mode answers 409
+  `fork_memory_mode_looser` (SEL `denied`) and a value outside the three 400
+  `invalid_memory_mode`, with no child. A stricter mode is passed to
+  `get_or_create_slot` at birth and bound through `ExecutionContext.with_mode`,
+  which only tightens. Without the field the parent's value is the only
+  source. Promotion (below) is the one deliberate, consent-gated exception,
+  and it ignores the field. A temporary child still receives its copied turns:
   `build_session_context` assembles the thread-history block before any
   `blocks_reads` gate. The response and the `chat.slot_fork` audit event both
-  report the inherited (or, for a promotion, forced) mode. The inherited value
+  report the child's mode: the inherited or stricter requested one, or for a
+  promotion the forced one. The inherited value
   is validated against `VALID_MEMORY_MODES` before the child is allocated:
   rehydration copies the transcript header's `memory_mode` onto the slot as
   written, so a hand-edited or partially written header can leave a value

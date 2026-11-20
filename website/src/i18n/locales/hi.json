@@ -13135,6 +13135,8 @@
         "fork_in_progress": "फ़ोर्क हो रहा है…",
         "fork_other_in_progress": "एक और फ़ोर्क शुरू हो रहा है।",
         "fork_with_another_model": "दूसरे मॉडल के साथ फ़ोर्क करो",
+        "fork_as_incognito": "गुप्त चैट के रूप में फ़ोर्क करो",
+        "fork_as_temporary": "अस्थायी चैट के रूप में फ़ोर्क करो",
         "copy_failed": "कॉपी विफल",
         "quote_message": "संदेश उद्धृत करो",
         "turn_credits": "{{credits}} क्रेडिट",

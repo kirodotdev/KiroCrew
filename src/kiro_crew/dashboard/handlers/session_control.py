@@ -632,6 +632,9 @@ async def api_session_control_fork(request: web.Request) -> web.Response:
             folder_id=str(body.get("folder_id") or ""),
             at_message_index=at_index,
             caller_fenced=_carried_fence(request),
+            # Checked by the fork core (``chat_fork_memory_mode``), the rule the
+            # human route applies, so the two routes refuse it alike.
+            memory_mode=body.get("memory_mode"),
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)

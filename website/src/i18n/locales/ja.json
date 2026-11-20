@@ -12845,6 +12845,8 @@
         "fork_in_progress": "フォーク中…",
         "fork_other_in_progress": "別のフォークを開始しています。",
         "fork_with_another_model": "別のモデルでフォーク",
+        "fork_as_incognito": "プライベートチャットとしてフォーク",
+        "fork_as_temporary": "一時的なチャットとしてフォーク",
         "copy_failed": "コピーに失敗しました",
         "quote_message": "メッセージを引用",
         "turn_credits": "{{credits}} クレジット",

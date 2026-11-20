@@ -110,6 +110,7 @@ use `session_fork` instead.
 | `title` | no | Short sidebar name, kept as given within `session_create`'s title rules. Omit to start from `Fork of <source title>`, which is renamed automatically after the first message a person sends the fork |
 | `folder` | no | Sidebar folder id or `/`-separated path, created if missing (`mkdir -p`), as for `session_create`. Omit to leave the child in the source's folder |
 | `at_message_index` | no | Fork point: the position of the LAST message to carry, counting the source's user and assistant messages from 0. Omit to carry the whole transcript |
+| `memory_mode` | no | `persistent`, `incognito` or `temporary`: the new session's memory mode, which may be the source's own or a more private one, in that order. Omit to keep the source's |
 
 The same thing as the dashboard's Fork button, for an agent. The new session
 **carries a copy of the source's transcript** up to and including the fork
@@ -129,7 +130,10 @@ Two things it deliberately does not take:
 - **No `agent`, `model` or `mode` override.** The child inherits the source's
   agent, model, memory store and mode, project and folder — exactly what a human
   fork inherits, and for the same reason: a transcript belongs to the memory
-  boundary it was written in, and a fork must stay inside it. A session bound to
+  boundary it was written in, and a fork must stay inside it. `memory_mode` can
+  only narrow that boundary: a fork of a persistent session can be incognito or
+  temporary, so a side thread's work never reaches memory or lessons, but a fork
+  is never less private than its source. A session bound to
   a different agent is `session_create`'s job. Like a human fork, it also keeps
   the source's sidebar color, so it sits in the same color group. One difference:
   a person's fork of a pinned session is pinned, but a fork you make is never
@@ -146,8 +150,9 @@ too, because a fork manufactures a session you then own. Naming your own key as
 Refusals minted by the fork itself come back under the fork's own codes, the
 same ones the dashboard's Fork button reports: `value_out_of_range` for a fork
 point past the source's last visible message, `no_messages_to_fork` for a
-source with no user or assistant messages yet, and `fork_snapshot_unstable`
-(retry) for a source that is being written to.
+source with no user or assistant messages yet, `fork_snapshot_unstable`
+(retry) for a source that is being written to, and `fork_memory_mode_looser` for
+a `memory_mode` less private than the source's.
 
 The child is attributed to you (`created_by`), so `session_send`,
 `session_read_message` and `session_close` reach it afterwards, and it counts

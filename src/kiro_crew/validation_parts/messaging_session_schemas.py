@@ -21,6 +21,7 @@ from kiro_crew.constants import (
     SLACK_NAMESPACE,
     WAIT_TOOL_MAX_SECS,
 )
+from kiro_crew.execution_context import MEMORY_MODES
 from kiro_crew.instances.crew_ref import MAX_CREW_REF_LEN
 from kiro_crew.validation_parts.artifact_schemas import _ARTIFACT_FOLDER_REF_MAX
 from kiro_crew.validation_parts.field_engine import FieldSpec, ToolSchema, ValidationError
@@ -461,6 +462,10 @@ SESSION_FORK_SCHEMA = ToolSchema(
         # visible (user/assistant) rows, inclusive. Bounded above only by the
         # transcript, which the fork core checks against the corpus it reads.
         FieldSpec("at_message_index", int, required=False, min_val=0),
+        # The child's memory mode. Only the vocabulary is checked here; whether it
+        # is the source's or a stricter one depends on the source, so the fork core
+        # decides that (``chat_fork_memory_mode``).
+        FieldSpec("memory_mode", str, required=False, allowed=frozenset(MEMORY_MODES)),
     ],
 )
 

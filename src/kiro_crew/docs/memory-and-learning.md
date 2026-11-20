@@ -186,6 +186,12 @@ Each session can operate in one of three memory modes:
 | **Incognito** | ✅ | ❌ | ❌ | Sensitive tasks — reads context but blocks learn_add and consolidation |
 | **Temporary** | ❌ | ❌ | ❌ | Isolated experiments — no memory interaction at all |
 
+A fork can be more private than the chat it comes from: a reply's **More** menu
+offers **Fork as incognito** and **Fork as temporary**, listing only the modes
+stricter than the chat's own. The new chat keeps the conversation up to that
+reply, and nothing done in it reaches memory or lessons. A fork is never less
+private than its chat.
+
 For new dashboard chats, choose the default under **Settings → Chat → Sessions →
 Default Memory Mode**. The choice is stored as
 `dashboard.default_memory_mode`. An explicit Incognito or Temporary choice still

@@ -13425,6 +13425,8 @@
         "fork_in_progress": "Bifurcando…",
         "fork_other_in_progress": "Se está iniciando otra bifurcación.",
         "fork_with_another_model": "Bifurcar con otro modelo",
+        "fork_as_incognito": "Bifurcar como chat de incógnito",
+        "fork_as_temporary": "Bifurcar como chat temporal",
         "copy_failed": "Error al copiar",
         "quote_message": "Citar mensaje",
         "turn_credits": "{{credits}} créditos",

@@ -13,6 +13,7 @@ and board rows, and binds ``_session_tools`` so it reads and patches as
 from __future__ import annotations
 
 from kiro_crew.config.sections import AUTOCOMPACT_PCT_MAX, AUTOCOMPACT_PCT_MIN
+from kiro_crew.execution_context import MEMORY_MODES
 from kiro_crew.mcp_crew_list import crew_list_tool
 from kiro_crew.mcp_dashboard_session_runs import (
     _run_session_adopt,
@@ -205,13 +206,14 @@ def _session_tools() -> tuple[Tool, ...]:
                 "sessions that each know what was found so far. By default the source is "
                 "YOUR OWN session. The child inherits the source's agent, model, memory "
                 "store and mode, project and folder exactly as a human fork does — there "
-                "is deliberately no agent, model or mode override here (a fork must stay "
-                "inside the memory boundary its transcript came from); to open a session "
-                "bound to a different agent use session_create. It starts IDLE: the copied "
-                "messages are history, and no turn runs until you session_send into it or "
-                "the person types. It appears in the user's sidebar like any other session, "
-                "for them to read, take over and close. Returns its key; pass that as "
-                "`target` to the other session tools."
+                "is deliberately no agent or model override here (a fork must stay "
+                "inside the memory boundary its transcript came from), and `memory_mode` "
+                "can only make the child more private than the source, never less; to "
+                "open a session bound to a different agent use session_create. It starts "
+                "IDLE: the copied messages are history, and no turn runs until you "
+                "session_send into it or the person types. It appears in the user's "
+                "sidebar like any other session, for them to read, take over and close. "
+                "Returns its key; pass that as `target` to the other session tools."
             ),
             schema={
                 "type": "object",
@@ -250,6 +252,19 @@ def _session_tools() -> tuple[Tool, ...]:
                             "the source's user and assistant messages from 0 (system and "
                             "tool rows are not counted). Messages after it are left behind. "
                             "Omit to carry the whole transcript."
+                        ),
+                    },
+                    "memory_mode": {
+                        "type": "string",
+                        "enum": list(MEMORY_MODES),
+                        "description": (
+                            "The new session's memory mode. Omit to keep the source's. It "
+                            "may be the source's own mode or a more private one, in the "
+                            "order persistent, incognito, temporary: a fork of a persistent "
+                            "session can be `incognito` or `temporary`, a fork of an "
+                            "incognito one only `temporary`. A less private mode is refused "
+                            "(`fork_memory_mode_looser`). Use it for a side thread whose "
+                            "work should not reach memory or lessons."
                         ),
                     },
                 },

@@ -12845,6 +12845,8 @@
         "fork_in_progress": "正在分叉…",
         "fork_other_in_progress": "另一个分叉正在启动。",
         "fork_with_another_model": "用另一个模型分叉",
+        "fork_as_incognito": "以隐身模式分叉",
+        "fork_as_temporary": "以临时模式分叉",
         "copy_failed": "复制失败",
         "quote_message": "引用消息",
         "turn_credits": "{{credits}} 额度",
