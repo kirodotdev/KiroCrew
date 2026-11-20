@@ -161,6 +161,12 @@ def _lines(text):
     return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
 
 
+def _nul_paths(text):
+    """Paths from ``git diff --name-only -z``. Line output C-quotes a non-ASCII
+    name, and the quoted spelling never matches the PR's own file list."""
+    return [path for path in (text or "").split("\0") if path.strip()]
+
+
 def dotted_module_paths(paths):
     """Dotted import paths for the ``.py`` files in ``paths``.
 
@@ -546,18 +552,20 @@ def summarize(base="main", pr="", head="HEAD", runner=None):
             raise EnvError("cannot count commits between the tested base and " + base_ref)
         commits = int(out or "0")
 
-        rc, out, _ = _run(["git", "diff", "--name-only", tested_base, base_head])
+        rc, out, _ = _run(["git", "diff", "--name-only", "-z", tested_base, base_head])
         if rc != 0:
             raise EnvError("cannot list the files {} gained since the tested base".format(base_ref))
-        moved = _lines(out)
+        moved = _nul_paths(out)
 
         if pr:
             mine = _pr_files(pr, _run)
         else:
-            rc, out, _ = _run(["git", "diff", "--name-only", "{}...{}".format(base_ref, head_sha)])
+            rc, out, _ = _run(
+                ["git", "diff", "--name-only", "-z", "{}...{}".format(base_ref, head_sha)]
+            )
             if rc != 0:
                 raise EnvError("cannot list this branch's own changed files")
-            mine = _lines(out)
+            mine = _nul_paths(out)
 
         def read_moved(path):
             rc, text, _ = _run(["git", "show", "{}:{}".format(base_head, path)])

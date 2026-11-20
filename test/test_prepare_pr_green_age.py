@@ -171,6 +171,21 @@ def test_same_file_edited_on_both_sides_is_stale(mod, monkeypatch, pair, capsys)
     ]
 
 
+def test_a_non_ascii_sibling_is_stale_and_named_by_its_real_name(
+    mod, monkeypatch, pair, capsys
+) -> None:
+    """Line output C-quotes ``kïnds.py`` with a leading double quote, so its
+    directory never matched the PR's and a real collision read as fresh."""
+    pair.branch_changes({"src/kiro_crew/ledger/store.py": "VALUE = 2\n"})
+    pair.base_gains({"src/kiro_crew/ledger/kïnds.py": "KINDS = ('a',)\n"})
+
+    code = _run_main(mod, monkeypatch, pair)
+    payload = _summary(mod)
+
+    assert code == mod.EXIT_STALE
+    assert [o["moved"] for o in payload["overlap"]] == ["src/kiro_crew/ledger/kïnds.py"]
+
+
 def test_a_sibling_in_the_same_directory_is_stale(mod, monkeypatch, pair, capsys) -> None:
     """Two files in one module directory are one module's internals."""
     pair.branch_changes({"src/kiro_crew/ledger/store.py": "VALUE = 2\n"})
