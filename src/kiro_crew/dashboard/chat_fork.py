@@ -13,6 +13,7 @@ from aiohttp import web
 from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_identity
 from kiro_crew.dashboard import transcript_snapshot
 from kiro_crew.dashboard.chat_folders import _unhide_folder
+from kiro_crew.dashboard.chat_fork_conductor import conductor_root_fork_template
 from kiro_crew.dashboard.chat_persistence import (
     DeleteWitness,
     _coerce_requested_mode,
@@ -143,12 +144,16 @@ def _fork_execution_context(
     return execution.with_mode(memory_mode)
 
 
-def _bind_fork_execution(source, child_key: str, execution, promote: bool = False) -> None:
+def _bind_fork_execution(
+    source, child_key: str, execution, promote: bool = False, to_template: str = ""
+) -> None:
     from kiro_crew.execution_context import bind_session_execution, source_vouch_agrees
     from kiro_crew.memory_stores import UnknownMemoryStore
 
     if _fork_execution_context(*source) != execution:
         raise UnknownMemoryStore("The fork source's execution changed")
+    if to_template:  # A conductor mode root's fork: chat_fork_conductor.
+        execution = execution.with_template(to_template, to_template)
     # The child's identity is copied from the source's own record, which the
     # source can write, so the fork never vouches on that record's word. It
     # carries own-store authority only when the gateway already vouches the source
@@ -593,6 +598,7 @@ async def api_chat_slot_fork(
         # never get it: pinned marks a session as human-owned.
         stamp=_inherit_pin(source.slot),
         audit_operation=_operation,
+        to_template=await conductor_root_fork_template(source.slot, source.execution),
         _promote_from_ephemeral=_promote_from_ephemeral,
     )
     if isinstance(result, web.Response):
@@ -728,6 +734,7 @@ async def fork_slot(
     stamp: "Callable[[_ChatSlot], None] | None" = None,
     recheck: "Callable[[], None] | None" = None,
     reveal_folder: bool = True,
+    to_template: str = "",
     _promote_from_ephemeral: bool = False,
 ) -> "ForkResult | web.Response":
     """Copy *source*'s transcript up to (or after) the fork point into a new slot.
@@ -766,6 +773,8 @@ async def fork_slot(
     eligibility, the source's addressability, the folder's existence -- true at
     the act rather than at the moment they were first read, across the
     suspensions this function takes for the transcript read and the memory bind.
+
+    ``to_template``, when given, replaces the parent's agent (``chat_fork_conductor``).
 
     ``reveal_folder`` says whether a hidden folder the child is filed into is
     un-hidden once the fork is acknowledged. The human route leaves it True: a
@@ -1300,7 +1309,7 @@ async def fork_slot(
     with state.suspend_slots_push():
         new_slot = state.get_or_create_slot(
             name=None,
-            agent=slot.agent,
+            agent=to_template or slot.agent,
             workspace=slot.workspace,
             model=slot.model,
             mode=fork_mode,
@@ -1328,6 +1337,8 @@ async def fork_slot(
                 bind = _bind_fork_execution
                 if _promote_from_ephemeral:
                     bind = partial(_bind_fork_execution, promote=True)
+                elif to_template:
+                    bind = partial(_bind_fork_execution, to_template=to_template)
                 await drained_to_thread(
                     bind,
                     (*source_memory_identity[:4], source_memory_identity[6]),
@@ -1363,6 +1374,8 @@ async def fork_slot(
                 folder_principal=folder_principal,
                 promote=_promote_from_ephemeral,
             )
+            if to_template:  # The parent's namespace and app binding go with its agent.
+                new_slot.agent_kind, new_slot.app_agent_owner = "template", ""
             if stamp is not None:
                 stamp(new_slot)
         except Exception:
