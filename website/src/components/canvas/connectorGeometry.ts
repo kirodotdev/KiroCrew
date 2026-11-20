@@ -75,18 +75,15 @@ const horizontal = (side: Side) => side === 'left' || side === 'right'
 /** A box's extent on one axis, as [low, high]. */
 const span = (s: Box, x: boolean): [number, number] => (x ? [s.x, s.x + s.w] : [s.y, s.y + s.h])
 
-/**
- * Where an elbow crosses over to get round two boxes on one axis: halfway
- * across the gap between their extents, or, when the extents overlap, a stub
- * past both on whichever side is the shorter way round from *c1* and *c2*.
- */
-function roundBoth([lo1, hi1]: [number, number], [lo2, hi2]: [number, number], c1: number, c2: number): number {
-  if (hi1 <= lo2) return (hi1 + lo2) / 2
-  if (hi2 <= lo1) return (hi2 + lo1) / 2
-  const before = Math.min(lo1, lo2) - STUB
-  const after = Math.max(hi1, hi2) + STUB
-  return Math.abs(c1 - before) + Math.abs(c2 - before) <= Math.abs(c1 - after) + Math.abs(c2 - after) ? before : after
+/** Whether the axis-aligned leg from *p* to *q* passes through the inside of *s*. */
+function crosses(p: Pt, q: Pt, s: Box): boolean {
+  const e = 0.01
+  return Math.max(p.x, q.x) > s.x + e && Math.min(p.x, q.x) < s.x + s.w - e
+    && Math.max(p.y, q.y) > s.y + e && Math.min(p.y, q.y) < s.y + s.h - e
 }
+
+/** Whether no leg of *pts* passes through either box. */
+const clears = (pts: Pt[], boxes: Box[]) => pts.every((p, i) => i === 0 || boxes.every(s => !crosses(pts[i - 1], p, s)))
 
 /** The elbow's corners from *a* on *from* (leaving along *na*) to *b* on *to* (entered against *nb*). */
 function elbowPoints(from: Box, a: Pt, sa: Side, to: Box, b: Pt, sb: Side): Pt[] {
@@ -94,6 +91,7 @@ function elbowPoints(from: Box, a: Pt, sa: Side, to: Box, b: Pt, sb: Side): Pt[]
   const nb = NORMAL[sb]
   const p1 = add(a, na, STUB)
   const p2 = add(b, nb, STUB)
+  const route = (middle: Pt[]) => simplify([a, p1, ...middle, p2, b])
   let middle: Pt[]
   if (horizontal(sa) === horizontal(sb)) {
     const h = horizontal(sa)
@@ -101,45 +99,43 @@ function elbowPoints(from: Box, a: Pt, sa: Side, to: Box, b: Pt, sb: Side): Pt[]
     const across = (p: Pt) => (h ? p.y : p.x)
     const pt = (u: number, v: number): Pt => (h ? { x: u, y: v } : { x: v, y: u })
     const n = h ? na.x : na.y
-    const [fromAcross, toAcross] = [span(from, !h), span(to, !h)]
-    const [fromAlong, toAlong] = [span(from, h), span(to, h)]
-    const acrossOverlap = fromAcross[0] < toAcross[1] && toAcross[0] < fromAcross[1]
-    const alongApart = fromAlong[1] <= toAlong[0] || toAlong[1] <= fromAlong[0]
-    // Round both boxes, crossing over outside them, rather than through either.
-    const round = () => {
-      const v = roundBoth(fromAcross, toAcross, across(p1), across(p2))
-      return [pt(along(p1), v), pt(along(p2), v)]
-    }
     if (sa === sb) {
-      // Both ends on the same side: out past the further one and back, unless
-      // the boxes sit level, one beside the other, when that run crosses the nearer.
+      // Both ends on the same side: out past the further one and back.
       const u = n > 0 ? Math.max(along(p1), along(p2)) : Math.min(along(p1), along(p2))
-      middle = acrossOverlap && alongApart ? round() : [pt(u, across(p1)), pt(u, across(p2))]
+      middle = [pt(u, across(p1)), pt(u, across(p2))]
     } else if ((along(p2) - along(p1)) * n >= 0) {
       // Facing each other with room between: turn halfway.
       const u = (along(p1) + along(p2)) / 2
       middle = [pt(u, across(p1)), pt(u, across(p2))]
     } else {
-      // Back to back: go round.
-      middle = round()
+      // Back to back: go round, halfway across.
+      const v = (across(p1) + across(p2)) / 2
+      middle = [pt(along(p1), v), pt(along(p2), v)]
     }
-  } else {
-    // One horizontal end, one vertical: a single corner where they meet, if the
-    // last leg then enters the target the right way; otherwise one more turn.
-    const corner = horizontal(sa) ? { x: p2.x, y: p1.y } : { x: p1.x, y: p2.y }
-    const enters = horizontal(sa) ? (p2.y - corner.y) * nb.y <= 0 : (p2.x - corner.x) * nb.x <= 0
-    const leaves = horizontal(sa) ? (corner.x - p1.x) * na.x >= 0 : (corner.y - p1.y) * na.y >= 0
-    middle = enters && leaves ? [corner] : horizontal(sa) ? [{ x: p1.x, y: p2.y }] : [{ x: p2.x, y: p1.y }]
+    const plain = route(middle)
+    if (clears(plain, [from, to])) return plain
+    // That route runs through a box (level shapes, one beside the other): cross
+    // over in the gap between them, or past both, the shorter way round first.
+    const [lo1, hi1] = span(from, !h)
+    const [lo2, hi2] = span(to, !h)
+    const cost = (v: number) => Math.abs(across(p1) - v) + Math.abs(across(p2) - v)
+    const ways = [hi1 <= lo2 ? (hi1 + lo2) / 2 : NaN, hi2 <= lo1 ? (hi2 + lo1) / 2 : NaN, Math.min(lo1, lo2) - STUB, Math.max(hi1, hi2) + STUB]
+    for (const v of ways.filter(v => !Number.isNaN(v)).sort((x, y) => cost(x) - cost(y))) {
+      const round = route([pt(along(p1), v), pt(along(p2), v)])
+      if (clears(round, [from, to])) return round
+    }
+    return plain
   }
-  return simplify([a, p1, ...middle, p2, b])
+  // One horizontal end, one vertical: a single corner where they meet, if the
+  // last leg then enters the target the right way; otherwise one more turn.
+  const corner = horizontal(sa) ? { x: p2.x, y: p1.y } : { x: p1.x, y: p2.y }
+  const enters = horizontal(sa) ? (p2.y - corner.y) * nb.y <= 0 : (p2.x - corner.x) * nb.x <= 0
+  const leaves = horizontal(sa) ? (corner.x - p1.x) * na.x >= 0 : (corner.y - p1.y) * na.y >= 0
+  middle = enters && leaves ? [corner] : horizontal(sa) ? [{ x: p1.x, y: p2.y }] : [{ x: p2.x, y: p1.y }]
+  return route(middle)
 }
 
-/**
- * Drops repeated points, and collinear ones the line runs straight on through,
- * so each corner is a real turn. A point where the line doubles back is kept:
- * dropping it would cut the run short through a shape and turn the last leg,
- * and so the arrowhead, the wrong way.
- */
+/** Drops repeated and collinear points, so each corner is a real turn. */
 function simplify(pts: Pt[]): Pt[] {
   const out: Pt[] = []
   for (const p of pts) {
@@ -148,8 +144,7 @@ function simplify(pts: Pt[]): Pt[] {
     if (out.length >= 2) {
       const q = out[out.length - 2]
       const cross = (last.x - q.x) * (p.y - q.y) - (last.y - q.y) * (p.x - q.x)
-      const onward = (last.x - q.x) * (p.x - last.x) + (last.y - q.y) * (p.y - last.y) > 0
-      if (Math.abs(cross) < 0.01 && onward) { out[out.length - 1] = p; continue }
+      if (Math.abs(cross) < 0.01) { out[out.length - 1] = p; continue }
     }
     out.push(p)
   }

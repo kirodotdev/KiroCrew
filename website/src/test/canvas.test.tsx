@@ -132,6 +132,16 @@ describe('canvas model', () => {
     for (const r of [back, same]) expect(clear(r.points, b)).toBe(true)
     for (const r of [stacked, sameTop]) expect(clear(r.points, c)).toBe(true)
     expect(stacked.points[stacked.points.length - 2].y).toBeGreaterThan(stacked.points[stacked.points.length - 1].y)
+    // A route that already clears both shapes is kept as it was: facing shapes
+    // closer than two stubs stay one straight run, and an offset same-side pair
+    // keeps its outer route rather than detouring through the target.
+    const near: Shape = { ...b, x: 130 }
+    expect(connectorRoute(a, near, {}).points).toEqual([{ x: 100, y: 50 }, { x: 130, y: 50 }])
+    const small: Shape = { ...a, w: 96, h: 96 }
+    const offset: Shape = { ...small, id: 'o', x: 108, y: -72 }
+    expect(connectorRoute(small, offset, { fromSide: 'right', toSide: 'right' }).points).toEqual([
+      { x: 96, y: 48 }, { x: 228, y: 48 }, { x: 228, y: -24 }, { x: 204, y: -24 },
+    ])
   })
 
   it('dragging an elbow segment reshapes it; an end segment keeps a stub on its shape and adds a jog', () => {
