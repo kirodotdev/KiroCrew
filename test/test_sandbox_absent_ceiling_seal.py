@@ -111,7 +111,7 @@ def _namespace_plan(tier: str, **kwargs: object) -> ConfinementPlan:
 
 
 @_POSIX_ONLY
-@pytest.mark.parametrize("leaf", ("subagents", "member-memory-bindings"))
+@pytest.mark.parametrize("leaf", ("subagents", "member-memory-bindings", "session-tokens"))
 def test_run_authority_root_is_sealed_before_its_first_record(
     crew_home, tmp_path, monkeypatch, leaf
 ):
@@ -797,7 +797,9 @@ class TestADanglingSymlinkRefusesTheSpawn:
 
 @_POSIX_ONLY
 class TestGatewayLauncherDirectoryNeedsARealLeaf:
-    @pytest.mark.parametrize("leaf", ("browser-harness", "subagents", "member-memory-bindings"))
+    @pytest.mark.parametrize(
+        "leaf", ("browser-harness", "subagents", "member-memory-bindings", "session-tokens")
+    )
     def test_a_resolving_symlink_refuses_the_spawn(self, crew_home, tmp_path, leaf):
         real = tmp_path / "attacker-controlled"
         real.mkdir()
@@ -808,6 +810,15 @@ class TestGatewayLauncherDirectoryNeedsARealLeaf:
             sandbox._materialize_sealable_ceilings()
 
         assert target.is_symlink(), "the operator must remove the refused link"
+
+    def test_a_regular_file_at_the_session_records_name_refuses_the_spawn(self, crew_home):
+        target = crew_home / "session-tokens"
+        target.write_text("planted", encoding="utf-8")
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+
+        assert target.read_text(encoding="utf-8") == "planted", "the refused file is left alone"
 
     def test_a_symlink_winning_the_create_race_refuses(self, crew_home, tmp_path, monkeypatch):
         target = crew_home / "browser-harness"

@@ -28,7 +28,8 @@ _PROMPT_ONLY_HOME_SECRETS = (".config/gh",)
 #: Data-home leaves the prompt read refuses, also outside ``is_sensitive_path``.
 #: The receipt-only HMAC key is ``apps.install_receipt._SECRET_FILE``; the
 #: per-token identity mappings are ``session_token_<sha256>.sig``
-#: (``session_token_sig._sig_path``). Both sit directly in the data home.
+#: (``session_token_sig._sig_path``). The receipt key sits directly in the data home;
+#: every file in the ``session-tokens`` directory under it is refused too.
 _PROMPT_ONLY_DATA_HOME_FILES = ("app_receipt_secret",)
 _SESSION_TOKEN_SIG_PREFIX = "session_token_"
 _SESSION_TOKEN_SIG_SUFFIX = ".sig"
@@ -64,8 +65,14 @@ def _data_homes() -> set[str]:
 
 
 def _is_data_home_secret(folded: str) -> bool:
+    from kiro_crew.session_token_sig import SESSION_TOKEN_DIR
+
     parent, _, name = folded.rpartition("/")
-    if parent not in _data_homes():
+    homes = _data_homes()
+    records_home, _, records_leaf = parent.rpartition("/")
+    if records_leaf == SESSION_TOKEN_DIR and records_home in homes:
+        return True
+    if parent not in homes:
         return False
     if name in _PROMPT_ONLY_DATA_HOME_FILES:
         return True
