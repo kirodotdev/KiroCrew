@@ -3,8 +3,8 @@ title: Jev task executor — closed browser and desktop subtasks without an LLM 
 status: partial
 author: Ray Xu
 created: 2026-09-28
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 14839
 implementation-prs: [16014]
 tracking-issues: []

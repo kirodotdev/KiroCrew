@@ -3,8 +3,8 @@ title: Update Architecture (install-shape capability contract)
 status: partial
 author: zezhexu
 created: 2026-07-31
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 1003
 implementation-prs: [1734, 15838, 16202, 16245]
 tracking-issues: []

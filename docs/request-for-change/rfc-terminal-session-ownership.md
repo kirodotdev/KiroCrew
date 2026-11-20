@@ -3,8 +3,8 @@ title: Terminal session ownership - one browser owner per PTY
 status: draft
 author: Pearce Kieser, with Codex
 created: 2026-09-01
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 7649
 implementation-prs: [8863]
 tracking-issues: [7638, 5656]

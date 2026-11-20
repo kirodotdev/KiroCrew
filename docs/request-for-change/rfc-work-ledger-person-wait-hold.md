@@ -3,8 +3,8 @@ title: Work-ledger person-wait hold -- a conductor patrol rests while every open
 status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-08
-last-audited: 2026-11-19
-audited-at: 1e4907e9f6
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: null
 implementation-prs: [18109, 38307]
 tracking-issues: [18054]

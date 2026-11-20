@@ -3,8 +3,8 @@ title: Session Tag-Change Event as a server-side signal on lane transitions
 status: draft
 author: (issue #7663 author)
 created: 2026-09-02
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 10930
 implementation-prs: [7669, 32962, 36132]
 implementation-scope: partial — 7669 closed unmerged; 32962 and 36132 ship phases 1 and 3 as `SessionLaneChanged`; phase 2 (`origin`, `hook_reentry_depth`) is not built

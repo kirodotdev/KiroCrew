@@ -4,8 +4,8 @@ status: accepted
 revision: 4
 author: zezhexu
 created: 2026-08-09
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 2328
 implementation-prs: [11582]
 tracking-issues: []

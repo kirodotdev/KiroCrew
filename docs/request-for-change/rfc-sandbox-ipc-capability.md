@@ -3,8 +3,8 @@ title: Sandboxed callers reach the gateway through a connection-bound capability
 status: draft
 author: bolichen97
 created: 2026-11-05
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 30788
 implementation-prs: [31016]
 tracking-issues: [9175, 11988, 13862]
