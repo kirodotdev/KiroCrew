@@ -15,6 +15,8 @@ tier's target paths, refusal wording and exemptions in ``test_hooks_path_tier.py
 
 from __future__ import annotations
 
+import ntpath
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -167,6 +169,24 @@ class TestToolHooks:
         cfg = HooksConfig(auto_approve_tools=["ls *"])
         mgr = HookManager(cfg)
         assert mgr.on_tool_call("Running: ls *").action == TOOL_AUTO_APPROVE
+
+    def test_approve_grant_does_not_fold_separators_under_windows_normcase(self, monkeypatch):
+        """On Windows ``fnmatch`` folds ``/`` into ``\\``; an approve grant must not.
+
+        Deny and confirm lists keep the folding: there it only denies or asks more.
+        """
+        monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
+        mgr = HookManager(
+            HooksConfig(
+                auto_approve_tools=["Running: deploy /q prod", "Running: cat docs\\a.md"],
+                auto_deny_tools=["Running: wipe /q *"],
+            )
+        )
+        assert mgr.on_tool_call("Running: deploy /q prod").action == TOOL_AUTO_APPROVE
+        assert mgr.on_tool_call("Running: DEPLOY /Q PROD").action == TOOL_AUTO_APPROVE
+        assert mgr.on_tool_call("Running: deploy \\q prod").action == TOOL_ALLOW
+        assert mgr.on_tool_call("Running: cat docs/a.md").action == TOOL_ALLOW
+        assert mgr.on_tool_call("Running: wipe \\q x").action == TOOL_DENY
 
     def test_running_prefix_stripped_for_deny(self):
         cfg = HooksConfig(auto_deny_tools=["rm *"])

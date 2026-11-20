@@ -1100,6 +1100,21 @@ def _tool_matches(pattern: str, tool_name: str) -> bool:
     return fnmatch.fnmatch(tool_name.lower(), pattern.lower())
 
 
+def _grant_matches(pattern: str, tool_name: str) -> bool:
+    """Match an ``auto_approve_tools`` grant the way :func:`_tool_matches` does,
+    except that ``/`` and ``\\`` stay different characters.
+
+    ``fnmatchcase`` on lowered strings, not ``fnmatch``: on Windows ``fnmatch``
+    runs ``ntpath.normcase``, which also folds ``/`` into ``\\``, so a grant for
+    ``Running: del /q foo`` would approve ``Running: del \\q foo``. Deny and
+    confirm lists keep :func:`_tool_matches`; folding there only denies or asks
+    more.
+    """
+    if pattern == "*":
+        return True
+    return fnmatch.fnmatchcase(tool_name.lower(), pattern.lower())
+
+
 def _hook_matcher_alternatives(matcher: str) -> list[str]:
     """The patterns a PreToolUse/PostToolUse hook's tool *matcher* stands for.
 

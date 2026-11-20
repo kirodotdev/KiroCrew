@@ -228,6 +228,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _context_matches,
     _cu_read_only_auto_approve,
     _glob_pattern_leaves_root,
+    _grant_matches,
     _granted_names,
     _granted_patterns,
     _has_global_inline_flags,
