@@ -26,7 +26,10 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.memory_sections import memory_writes_off_key
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard.handlers.cron_caller_session import _recognize_session
-from kiro_crew.dashboard.handlers.cron_lesson_supersede import _resolve_and_supersede
+from kiro_crew.dashboard.handlers.cron_lesson_supersede import (
+    _candidate_sweepable_source,
+    _resolve_and_supersede,
+)
 from kiro_crew.dashboard.handlers.cron_shared import _sel
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import is_incognito_transcript
@@ -613,10 +616,16 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             # than write_lesson's deterministic dedup scan, which may let a standing
             # submission retire a finding, because that scan decides on text while
             # this one decides on a guess.
+            #
+            # A finding a person saved on purpose (``user_explicit``, or a row whose
+            # writer is unknown) is protected too: the V2 store already gives such
+            # rows owner review rather than a model's delete, and a deletion here
+            # runs after learn_add returned, so its caller never hears of it.
             candidates = [
                 candidate
                 for candidate in candidates
                 if _candidate_applies(candidate) == LESSON_APPLIES_ON_TOPIC
+                and _candidate_sweepable_source(candidate)
             ]
             if candidates:
                 # Fire-and-forget via this module's _background_tasks
@@ -624,7 +633,11 @@ async def api_lessons_create(request: web.Request) -> web.Response:
                 # the one just written (self-match scores ~1.0, above the 0.85
                 # candidate ceiling), so deferring it is safe. No retry/queue: a
                 # missed sweep self-heals on the next learn_add touching the topic.
-                task = asyncio.create_task(_resolve_and_supersede(state, sk, rule, candidates, vs))
+                task = asyncio.create_task(
+                    _resolve_and_supersede(
+                        state, sk, rule, candidates, vs, announce=not _lesson_silo
+                    )
+                )
                 state._background_tasks.add(task)
                 task.add_done_callback(state._background_tasks.discard)
     else:
