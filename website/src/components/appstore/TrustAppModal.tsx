@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Code2, EyeOff, GitBranch, Globe, Loader2, MessagesSquare, Monitor, Plug, RotateCcw, Server, ShieldAlert, Terminal, Webhook } from 'lucide-react'
+import { Code2, EyeOff, GitBranch, Globe, KeyRound, Loader2, MessagesSquare, Monitor, Plug, RotateCcw, Server, ShieldAlert, Terminal, Webhook } from 'lucide-react'
 
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
@@ -86,6 +86,8 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   desktopCapabilities?: string[]
   /** The `permissions.browser` verbs: what it may do on its own slots' browser tabs. Install approves none. */
   browser?: string[]
+  /** The `permissions.kiroOperations` names: the Kiro operations the gateway calls for it as you. */
+  kiroOperations?: string[]
   /** The app declares `permissions.webhookSource`: it takes inbound webhooks under its own name. */
   webhookSource?: boolean
   /**
@@ -683,6 +685,7 @@ export default function TrustAppModal({
     .filter(verb => verb === 'read' || verb === 'send')
   const desktopCaps = knownDesktopCapabilities(app?.desktopCapabilities)
   const browserVerbs = knownBrowserVerbs(app?.browser)
+  const kiroOperations = Array.isArray(app?.kiroOperations) ? app.kiroOperations.filter(op => typeof op === 'string') : []
   const browserPreview = usePreviewFlag(PREVIEW_APP_BROWSER_SDK)
   // The badge's own rule (`sourceLabel`): a listing tag outranks the origin.
   const localInstall = !app?._registry && app?.origin === 'local'
@@ -935,6 +938,21 @@ export default function TrustAppModal({
               {!browserPreview && (
                 <p className="text-muted leading-relaxed" data-testid="trust-browser-preview-off">{i18nT('components.appstore.trustAppModal.browser_preview_off')}</p>
               )}
+            </div>
+          )}
+          {/* `permissions.kiroOperations`: approving the install approves the names listed here. */}
+          {kiroOperations.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3" data-testid="trust-kiro-operations">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <KeyRound size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.kiro_operations_heading')}</span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {kiroOperations.map(op => (
+                  <code key={op} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{op}</code>
+                ))}
+              </div>
+              <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.kiro_operations_note')}</p>
             </div>
           )}
           {/* The Kiro Crew endpoints the manifest declares beyond the app's own

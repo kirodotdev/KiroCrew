@@ -231,3 +231,18 @@ export function BrowserVerbsStaged({ staged }: { staged: BrowserVerb[] }) {
     </>
   )
 }
+
+/** Held-back entries shown as code chips under a catalog line (browser sites, Kiro operations). */
+export function StagedCodeList({ label, entries, testId }: { label: string; entries: string[]; testId: string }) {
+  if (entries.length === 0) return null
+  return (
+    <div>
+      <div className="text-[13px]">{label}</div>
+      <div className="flex flex-wrap gap-1 mt-1" data-testid={testId}>
+        {entries.map(o => (
+          <code key={o} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{o}</code>
+        ))}
+      </div>
+    </div>
+  )
+}

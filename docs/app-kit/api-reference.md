@@ -245,6 +245,65 @@ async def wake_first_bot(ref: str) -> None:
                 print(r.status, await r.json())  # 202 {"status": "started"} or "queued"
 ```
 
+### Kiro calls
+
+Level 12. Your app can call Kiro BFF operations as the signed-in person without ever
+holding their Kiro token. Name each operation in the manifest:
+
+```json
+"permissions": { "kiroOperations": ["GetWidget", "ListWidgets"] }
+```
+
+The install consent approves the names it lists. An update that adds a name holds it
+until the owner approves it on the app's detail page; the names already approved keep
+working. The gateway forwards only a name that is declared and approved, by exact match.
+
+From your backend, with your app token (no `permissions.api` entry is needed):
+
+```
+POST /api/apps/<name>/kiro/<operation>
+Content-Type: application/json
+
+{ ...the operation's input... }
+```
+
+The answer is the operation's output map as JSON: a byte string is base64 text and a
+timestamp is ISO-8601 text. The owner's own dashboard session may call the route too; any
+other caller gets 403 `kiro_caller_refused`. From an in-gateway hook:
+
+```python
+output = await ctx.kiro_call("GetWidget", {"widgetId": "w-1"})
+```
+
+It raises `KiroCallError` with the same `code`, `message` and `status` as the route.
+An `agentTools` handler calls the seam the same way.
+
+The gateway sends the call with the person's Kiro sign-in to the BFF of their profile's
+region. Your app chooses no host, path or header. The input is at most 1 MiB and 32
+levels deep, the reply at most 8 MiB, a call at most 30 seconds, and at most 8 calls of
+one app run at once. An error body is `{"error": {"code", "message"}}`, plus `kiro:
+{status, type, message}` when the BFF answered an error:
+
+| Case | Status | `code` |
+|---|---|---|
+| Not your app's token, nor the owner | 403 | `kiro_caller_refused` |
+| Name not declared | 404 | `unknown_operation` |
+| Declared, not approved | 403 | `operation_not_approved` |
+| Input too large or too deep | 413 | `body_too_large` |
+| Input not a JSON object | 400 | `invalid_json` |
+| More than 8 calls running | 429 | `too_many_calls` |
+| Not signed in to Kiro | 409 | `kiro_sign_in_required` |
+| Sign-in could not be read or renewed | 503 | `kiro_sign_in_unavailable` |
+| The BFF refused the renewed sign-in | 409 | `kiro_sign_in_refused` |
+| Profile region not served | 503 | `kiro_region_unsupported` |
+| The BFF answered an error | 502 | `kiro_operation_failed` |
+| Timeout / network error | 504 / 502 | `kiro_unreachable` |
+| Reply too large or not RPC v2 CBOR | 502 | `kiro_bad_reply` |
+
+Show the sign-in codes to the person as they are: the message already says to sign in
+to Kiro in Settings. None of them is a 401, so your client's app-token renewal does not
+fire on them.
+
 ## Embedded Chat
 
 `ChatEmbed` mounts Kiro Crew's native transcript and compact composer for an
@@ -2229,7 +2288,8 @@ installed app's `credentialMasks` to the agent's file tools too and adds the man
 shared embedder's batch members (`ctx.embed.embed_batch`, see
 [Shared embedder](#shared-embedder-ctxembed)), and level 11
 adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browser-view) and the
-dashboard's `appWebOriginStatus(name)`; each level
+dashboard's `appWebOriginStatus(name)`, and level 12 adds
+`permissions.kiroOperations` with its route and `ctx.kiro_call` ([Kiro calls](#kiro-calls)); each level
 includes every level below it. Several seams share level 7, three share level 8, and
 level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it

@@ -173,6 +173,7 @@ from kiro_crew.apps.routes_install import (
     handle_register_external,
     handle_update_app,
 )
+from kiro_crew.apps.routes_kiro import register_kiro_call_routes
 from kiro_crew.apps.routes_listing import (
     handle_app_config,
     handle_get_app,
@@ -289,6 +290,8 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_post("/api/apps/{name}/dev", handle_app_dev_mode)
     app.router.add_get("/api/apps/{name}/bot-grants", handle_bot_grants)
     app.router.add_put("/api/apps/{name}/bot-grants", handle_bot_grants)
+    # An app's calls to its approved Kiro operations (`permissions.kiroOperations`).
+    register_kiro_call_routes(app)
     app.router.add_delete("/api/apps/{name}/migrate-cleanup", handle_migrate_cleanup)
     app.router.add_get("/apps/{name}/ui/{path:.*}", handle_app_ui_file)
     app.router.add_get("/apps/{name}/art/{path:.*}", handle_app_art_file)
@@ -313,6 +316,7 @@ def register_app_routes(app: web.Application) -> None:
 #   ``routes_art`` -- The installed-art route, and the git blob proxy with its validators.
 #   ``routes_listing`` -- The app list, one app, its manifest and config, the publish providers.
 #   ``routes_bot_grants`` -- The Bots the owner ticked for an app (``permissions.bots``).
+#   ``routes_kiro`` -- An app's calls to its approved Kiro operations (``permissions.kiroOperations``).
 #   ``routes_install`` -- Installing from a local path, updating, and registering an external app.
 #   ``routes_market_install`` -- Installing an app from Kiro Space: prepare, then confirm.
 #   ``routes_market_registry`` -- Kiro Space stores as sources: add, sign in, list, one listing.
@@ -327,6 +331,7 @@ _OWNERS = (
     "kiro_crew.apps.routes_art",
     "kiro_crew.apps.routes_listing",
     "kiro_crew.apps.routes_bot_grants",
+    "kiro_crew.apps.routes_kiro",
     "kiro_crew.apps.routes_install",
     "kiro_crew.apps.routes_market_install",
     "kiro_crew.apps.routes_market_registry",
@@ -354,6 +359,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.bridges import (  # noqa: F401
         _prune_stale_app_resources,
         _registration_source,
+    )
+    from kiro_crew.apps.kiro_calls import (  # noqa: F401
+        MAX_REQUEST_BYTES,
+        KiroCallError,
+        call_kiro_operation,
+        parse_json_body,
     )
     from kiro_crew.apps.market_registries import (  # noqa: F401
         MAX_ADDED,
@@ -412,6 +423,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.routes_install import (  # noqa: F401
         _resync_app_crons_after_update,
+    )
+    from kiro_crew.apps.routes_kiro import (  # noqa: F401
+        _kiro_error,
+        handle_kiro_call,
+        kiro_caller,
     )
     from kiro_crew.apps.routes_lifecycle import (  # noqa: F401
         _announce_app_ui_changed,
