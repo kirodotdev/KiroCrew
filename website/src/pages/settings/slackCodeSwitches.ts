@@ -1,6 +1,6 @@
 /**
  * The Slack Code switch registry for the settings page: every switch the server
- * registers (`slack_manifest.FEATURE_SCOPES`), in display order, with the
+ * registers (`slack_manifest.FEATURES`), in display order, with the
  * catalog key of its name.
  *
  * The Slack Code draft, its PUT payload, the capability lines and the "Update
@@ -15,6 +15,7 @@ import type { SlackCodeSwitchKey } from '../../api/client'
 export const SLACK_CODE_SWITCH_LABEL: Record<SlackCodeSwitchKey, string> = {
   agent_sessions: 'pages.settings.slackPanel.slackCode.agent_sessions',
   code_channels: 'pages.settings.slackPanel.slackCode.code_channels',
+  slack_mcp: 'pages.settings.slackPanel.slackCode.slack_mcp',
 }
 
 /** Every registered switch, in display order. */

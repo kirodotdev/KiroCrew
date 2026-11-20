@@ -89,7 +89,9 @@ class TunnelProvider(Protocol):
 
         Edition-neutral primitives only (no import of ``kiro_crew.tunnel``): keys
         ``state`` (a ``TunnelState`` value string), ``url``, ``error``,
-        ``started_at``, ``connected_at``, ``reconnect_attempt``.  The Default
+        ``started_at``, ``connected_at``, ``reconnect_attempt``, and optionally
+        ``cannot_host_yet`` (the error is a wait on the Crew's own eligibility,
+        not a fault on the way to the tunnel).  The Default
         returns ``None`` so the stub ``TunnelManager`` keeps reporting its own
         local status (byte-identical standalone); a companion returns its live
         snapshot so ``/api/tunnel/status`` reflects the real tunnel.

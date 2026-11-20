@@ -28,6 +28,7 @@ export const CORE_APP_ROUTE_SEGMENTS = new Set([
   'disable',
   'enable',
   'frames',
+  'kiro',
   'manifest',
   'migrate-cleanup',
   'open',

@@ -169,6 +169,22 @@ def truncate_summary(text: str, cap: int) -> str:
     return "\n".join(parts)
 
 
+def keep_ends(text: str, cap: int) -> str:
+    """Cut ``text`` to one line of at most ``cap`` characters by removing its middle.
+
+    For a one-line record whose end matters as much as its start, such as a
+    refusal that names its rule after a long command. Newlines become spaces.
+    """
+    flat = text.replace("\n", " ")
+    if len(flat) <= cap:
+        return flat
+    room = cap - len(_CUT_MARKER) - 2
+    if room <= 0:
+        return flat[: max(cap, 0)]
+    tail = room // 2
+    return f"{flat[: room - tail]} {_CUT_MARKER} {flat[len(flat) - tail :]}"
+
+
 def _fit_links(candidates: list[str], budget: int) -> tuple[list[str], int]:
     """As many whole URLs as ``budget`` holds, in the order given, plus the spend.
 

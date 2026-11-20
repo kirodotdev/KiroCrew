@@ -34,6 +34,8 @@ EXTRACTION_INSTRUCTIONS_MAX_CHARS = 2000
 
 #: ``memory.lesson_origin_gate`` values; :mod:`kiro_crew.memory_origin_gate` says what each does.
 LESSON_ORIGIN_GATE_MODES = ("off", "shadow", "enforce")
+#: ``memory.fact_origin_gate`` values; :mod:`kiro_crew.memory_fact_origin_gate` says what each does.
+FACT_ORIGIN_GATE_MODES = ("off", "shadow", "enforce")
 
 #: ``memory.lesson_tier_policy`` values; :mod:`kiro_crew.memory_tier_policy` says what each does.
 LESSON_TIER_POLICY_MODES = ("off", "shadow", "enforce")
@@ -552,6 +554,21 @@ class MemoryConfig:
             enum=list(LESSON_ORIGIN_GATE_MODES),
         ),
     )
+    fact_origin_gate: str = field(
+        default="off",
+        metadata=_meta(
+            "Fact Origin Gate",
+            "Whether facts about you (pref.* and user.* keys, and the preferences "
+            "file) may be learned from turns no person sent (another session's "
+            "message, an auto-nudge, a cron or heartbeat run). 'off' (default) keeps "
+            "today's prompt and writes. 'shadow' writes every fact as before and only "
+            "counts, within fixed size caps, what the gate would hold back. 'enforce' "
+            "does not write or delete those facts, or change the preferences file, "
+            "from such turns. Project facts, episodes and stored facts are never "
+            "changed.",
+            enum=list(FACT_ORIGIN_GATE_MODES),
+        ),
+    )
     lesson_tier_policy: str = field(
         default="off",
         metadata=_meta(
@@ -757,6 +774,13 @@ def lesson_origin_gate_mode_from(raw: object) -> str:
     if isinstance(raw, str) and raw in LESSON_ORIGIN_GATE_MODES:
         return raw
     return str(field_default(MemoryConfig, "lesson_origin_gate"))
+
+
+def fact_origin_gate_mode_from(raw: object) -> str:
+    """A stored ``memory.fact_origin_gate``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in FACT_ORIGIN_GATE_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "fact_origin_gate"))
 
 
 def lesson_tier_policy_mode_from(raw: object) -> str:

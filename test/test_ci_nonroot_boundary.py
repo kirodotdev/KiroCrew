@@ -349,3 +349,16 @@ def test_boundary_ratchet_rejects_world_writable_chmod(action, line):
     changed[0]["run"] += "\n" + line
     with pytest.raises(AssertionError):
         test_privilege_transition_only_goes_down_and_temp_stays_root_owned(changed)
+
+
+def test_docs_contract_tests_hands_over_the_workspace_last(jobs):
+    # run-as-runner chowns the checkout to the unprivileged user, so a later
+    # root-shell step that runs git there (resolve-i18n-base.sh in the
+    # frontend step) dies on "detected dubious ownership". Every step after
+    # the hand-over runs through ci-shell.
+    steps = jobs["docs-contract-tests"]["steps"]
+    provision = next(i for i, step in enumerate(steps) if step.get("uses") == _ACTION_REF)
+    after = [step for step in steps[provision + 1 :] if "run" in step]
+    assert after
+    for step in after:
+        assert step.get("shell") == _CI_SHELL, step.get("name")

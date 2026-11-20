@@ -445,6 +445,9 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         "scripts/ci_main_red_skip.py",
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
         "scripts/ci-surface-tests.py",
+        # Decides whether a pull request is docs-only, and so which lanes run
+        # and which tests read the changed docs; not itself a gate.
+        "scripts/docs_only.py",
         # Linux-only E2E orchestration, not a static scan: boots isolated
         # gateways and browsers after CI provisions its namespace capability.
         # Keep real E2E proof in CI, not in the repeated local scan floor.

@@ -209,6 +209,9 @@ set, even to a bad value:
   one re-read) or a `ValidationException` waits 15 minutes and tries again
   instead of stopping, since a stage that does not admit the JWT-SVID yet refuses
   it that way. An empty credential is refused by name, never the sign-in lease.
+  With no `tunnel.relay_lease_url`, a JWT-SVID lease goes to the built-in lease
+  service of `tunnel.relay_lease_region`, else us-east-1, as a crew key does; the
+  profile ARN does not pick the Region.
 
 Known limit: where the agent runs unsandboxed (a Restricted pod has no user
 namespaces), the agent can read the JWT-SVID file, as it can any file the
@@ -293,7 +296,12 @@ Endpoints (host: `https://prod.us-east-1.auth.desktop.kiro.dev`, portal:
   `/oauth/callback?login_option=<google|github>&code=…&state=…`; then
   `POST {host}/oauth/token` with `{code, code_verifier, redirect_uri}` where
   `redirect_uri` MUST equal `http://localhost:<port>/oauth/callback?login_option=<p>`
-  (path + login_option query, exactly as rebuilt in portal.rs). A callback carrying
+  (path + login_option query, exactly as rebuilt in portal.rs). The tab's reply to a
+  valid callback waits for that exchange (`wait_for_callback` runs it as its own task,
+  so a tab closed early does not stop it): it says "Login complete" only once the
+  exchange has succeeded, and a failed or timed-out exchange, or a sign-in cancelled
+  mid-exchange, gets a fixed failure page sending the user back to the dashboard's
+  code. A callback carrying
   `error` fails the sign-in at once, and the tab names the reason in fixed words for
   each RFC 6749 §4.1.2.1 code (`_PORTAL_ERROR_REASONS`); nothing the request carries,
   `error_description` included, reaches the page.

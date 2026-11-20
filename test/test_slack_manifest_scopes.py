@@ -124,6 +124,8 @@ class TestManifestGrantsWhatTheCodeUses:
             assert _bot_scopes(stripped) == _bot_scopes(full), combo
             assert _bot_events(stripped) == _bot_events(full), combo
             assert stripped.get("features") == full.get("features"), combo
+            assert stripped["oauth_config"] == full["oauth_config"], combo
+            assert stripped["settings"] == full["settings"], combo
 
     def test_raw_template_parses_with_every_switch_on(self) -> None:
         # The gates are YAML comments, so the raw file is a valid manifest that
@@ -182,21 +184,45 @@ class TestManifestGrantsNothingMore:
         # user token. The user block exists for a separately configured Slack
         # MCP/search integration (documented in docs/guides/slack-setup.md
         # Step 4); it still widens the OAuth consent screen, so it is pinned
-        # exactly — widening it must be a deliberate, visible edit here.
-        assert sorted(
-            _manifest(frozenset(slack_manifest.FEATURES))["oauth_config"]["scopes"]["user"]
-        ) == [
-            "channels:history",
-            "channels:read",
-            "groups:history",
-            "groups:read",
-            "im:history",
-            "im:read",
-            "mpim:history",
-            "mpim:read",
-            "search:read",
-            "users:read",
-        ]
+        # exactly — widening it must be a deliberate, visible edit here. The
+        # Slack MCP switch (``slack.slack_mcp``) replaces that list with the
+        # read-only set Slack's MCP server needs, pinned the same way.
+        for combo in _COMBOS:
+            scopes = _manifest(combo)["oauth_config"]["scopes"]
+            if slack_manifest.SLACK_MCP not in combo:
+                assert sorted(scopes["user"]) == [
+                    "channels:history",
+                    "channels:read",
+                    "groups:history",
+                    "groups:read",
+                    "im:history",
+                    "im:read",
+                    "mpim:history",
+                    "mpim:read",
+                    "search:read",
+                    "users:read",
+                ], combo
+                continue
+            assert sorted(scopes["user"]) == [
+                "canvases:read",
+                "channels:history",
+                "channels:read",
+                "files:read",
+                "groups:history",
+                "groups:read",
+                "im:history",
+                "im:read",
+                "lists:read",
+                "mpim:history",
+                "mpim:read",
+                "search:read.files",
+                "search:read.im",
+                "search:read.mpim",
+                "search:read.private",
+                "search:read.public",
+                "search:read.users",
+                "users:read",
+            ], combo
 
 
 class TestCodeChannelMessageDelivery:

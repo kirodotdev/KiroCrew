@@ -34,6 +34,7 @@ agent turn ──MCP browser(op, args)──▶ ops ──▶ supervisor.call(<h
 | Screencast, adaptive ladder, takeover input, the live hub, the card's routes and the `browser_live` event | `screencast.py`, `takeover.py`, `live_hub.py` in that package; `dashboard/handlers/browser_live.py` |
 | The `browser` MCP tool's ops, the snapshot walker and the op route that also drives the card | `mcp_tools/browser.py`, `ops.py`, `snapshot_walker.js` in that package; `dashboard/handlers/browser_ops.py` |
 | An app page's media buttons on its own agent's tab | `media.py` in that package; `dashboard/handlers/browser_media.py` |
+| Quick asks, the Secrets-vault sign-in, turn replay, decision-model help and the fast loop | `quick_ask.py`, `vault_fill.py`, `recording.py`, `decide.py`, `reflex.py`, `reflex_space.py`, `reflex_realtime.py` in that package; `dashboard/handlers/browser_ask.py`, `dashboard/handlers/browser_recordings.py` |
 | The live card in the transcript | `BrowserLiveCard*.tsx` under the chat page, the `useBrowserLive*` hooks, and the binary-frame branch of `useWebSocket.ts` |
 | Settings → Browser and the Preview tab | `website/src/pages/settings/Browser*.tsx`, `config/sections_browser.py`, `website/src/components/WebPreviewPanel*.tsx` |
 | What goes into Kiro's Chromium before the first op: the edition credential seam | `credentials.py` and `credential_files.py` in that package; the `browser_credentials` platform slot |
@@ -168,12 +169,13 @@ by one test:
 |---|---|---|
 | `BH_TELEMETRY`, `BROWSER_HARNESS_TELEMETRY`, `ANONYMIZED_TELEMETRY` | `false` | the three switches the package reads |
 | `BH_POSTHOG_HOST` | `http://127.0.0.1:9` | a second fence if a switch is missed |
+| `BH_TELEMETRY_TIMEOUT` | `1` | a POST that never happens could not stall a helper either |
 | `BH_TAB_MARKER` | `0` | no badge painted on the page |
 | `BH_UPDATE_CHECK` | `0` | the CLI's PyPI probe never runs |
 | `BU_CDP_URL` | the relay's URL, `http://127.0.0.1:<port>/<secret>` | connects to the relay, not the browser; the per-start secret is the only credential that opens it |
 | `BU_NAME` | the gateway's daemon name | a named daemon creates its OWN tab instead of attaching the first page it finds (the person's) |
 | `BH_HOME`, `BH_CONFIG_DIR`, `BH_RUNTIME_DIR`, `BH_TMP_DIR`, `BH_AGENT_WORKSPACE` | under `<data-home>/browser-harness-ipc` | the socket, pid file, log and scratch never leave the hidden leaf |
-| `BROWSER_USE_API_KEY`, `BU_BROWSER_ID`, `BU_CDP_WS`, `BU_AUTOSPAWN`, the cloud API/OAuth variables, inherited `BH_*` roots | removed | the only ways in to the cloud, or to a path outside the leaf |
+| `BROWSER_USE_API_KEY`, `BU_BROWSER_ID`, `BU_CDP_WS`, `BU_AUTOSPAWN`, the cloud API/OAuth variables, `BH_AUTH_PATH`, inherited `BH_*` and `BROWSER_HARNESS_HOME` roots | removed | the only ways in to the cloud, or to a path outside the leaf |
 
 The removed keys stay removed even when the gateway's own environment carries
 them. The gateway never runs Harness's CLI, its `run.py`, its MCP server or its
@@ -187,7 +189,8 @@ daemon resolves symlinks before binding, so an alias cannot help (the guard
 measures the RESOLVED home for the same reason). The daemon runs with
 `python -I`, like the helper worker, so the gateway's working directory can never
 shadow the pinned package; the INSTALLER's two spawns (`python -I -m venv`, then
-`<venv>/python -I -m pip`, or the copied venv's `-I -c` check) run the same way,
+`python -I -m pip --python <venv>/python` when the gateway's interpreter has pip,
+else `<venv>/python -I -m pip`, or the copied venv's `-I -c` check) run the same way,
 with the `PYTHON*` and `PIP_*` families scrubbed from their environment and the
 prefix as their working directory, because a pod gateway's cwd is the agent's
 workspace and a `pip/` package written there would otherwise run as the owner the
@@ -235,6 +238,9 @@ equal by a test):
 | `wait_for_load` | `timeout=15.0` | `wait_for_load` |
 | `new_tab`, `switch_tab`, `list_tabs`, `close_tab`, `current_tab` | `url` / `target, activate` / `include_chrome` / `target` / -- | the tab helpers |
 | `js` | `expression, target_id=None` | `js`, ONLY for `snapshot_walker.js` |
+| `js_isolated` | `expression` | the worker's own `Runtime.evaluate` in an isolated world of the tab's top frame (`Page.createIsolatedWorld`), ONLY for `snapshot_walker.js` |
+| `frame_owner_count`, `closed_secret_count` | -- | the worker's own count over `DOM.getDocument` with `pierce`: every `iframe`/`frame`/`object`/`embed`, and the secret-looking fields inside closed shadow roots |
+| `page_clock` | `state` (`hold`, `run`, `release`) | the worker's own event breakpoints on the page's timer and animation-frame callbacks (`reflex` `virtual_time`) |
 
 `run.py`, `browser_js`, `browser_cdp`, `http_get`, `upload_file`, `fill_input` and
 the agent-helper loader are not reachable through it. A helper's failure comes back
@@ -643,8 +649,10 @@ tested on a fake clock.
 
 **Wire.** Owner websockets only. State changes are the JSON event
 `browser_live` (`session_key`, `turn_id`, `state`, `url`, `title`, `browser`,
-`headless`, `step`, `steps`, `rung`, `fps`, and `started_at_ms`/`ended_at_ms`,
-the turn's wall-clock start and end in epoch ms, 0 while not yet). A newly
+`headless`, `step`, `steps`, `rung`, `fps`, `turn_over`, `tab`, `loop`,
+`handback_options`, `ask`, `aim` once something aimed, and
+`started_at_ms`/`ended_at_ms`, the turn's wall-clock start and end in epoch ms, 0
+while not yet). A newly
 connected owner socket is sent each open chat's last published event
 (`LiveHub.snapshot_events`, from `dashboard/ws.py`), so a reloaded tab shows the
 card, a waiting quick ask included, without waiting for a change. The card takes
@@ -664,7 +672,7 @@ too, and the hub ignores an ack for a stream that is no longer the session's. `m
 focused or visible password fields, asked of the page before the frame is sent,
 clipped to the frame (a full-width field must not produce a box the card's
 decoder would refuse) and painted over by the card.
-`detail` rides on a `state: error` event and is rendered verbatim. At the hub's
+The gateway's event carries no `detail` (`live_hub.live_event` never sets it); the card renders one verbatim when an event has it. At the hub's
 JSON publish boundary every textual value, including nested quick-ask labels,
 summary and reason, passes the platform-aware credential and exfiltration-URL
 redactor. A redactor failure drops the event rather than sending raw text. This
@@ -1006,6 +1014,17 @@ carries over to it, and that turn's end folds it as usual; an agent op while the
 person holds the reopened tab is held for the hand-back like any other. The done
 line keeps two actions: Open live and Replay when the tab is open (Open in Chrome
 moves into the live view's menu), else Replay and Open in Chrome.
+An app's `BrowserView` with `stayLive` sends this same reopen by itself when its
+slot's current turn folds with `tab: open` and the view is on screen in a visible
+dashboard document, once per `turn_id` while it stays mounted. A hidden document
+defers that attempt without consuming it until visible, if the current turn is
+still folded with its tab open: a refusal shows as the button's refusal does and
+is not retried, Close live view on the reopened turn leaves it folded, and the next
+turn that folds gets its own reopen. While that reopen is due or unanswered the
+view keeps its live face on the last frame, with no Take over, instead of the
+done face; a refusal or a closed tab ends the hold. The `turn_id` is the one the
+view already holds for its Show the live page button; the route and its checks
+are unchanged.
 
 **Sign-in from the Secrets vault** (`browser_harness/vault_fill.py`). The agent's
 side does not change:
@@ -1194,7 +1213,7 @@ answers `url_blocked` before the browser starts, so a refused address is never
 requested even by a caller inside the gateway that skips the shim; an app slot's
 approved `browserSites`; the takeover hold; the gateway-wide lock (an app's op queues
 behind the Bot's); the second browse check; the per-session
-fence; the tab binding; and the per-caller checks of every helper and frame send.
+fence; the tab binding; the chat's `browser.run` step limits (`run_budget.check`, refusal code `run_budget`); and the per-caller checks of every helper and frame send.
 
 An in-gateway caller is audited as a `GatewayCaller` (`app:<name>`, path
 `app.browser`). When the person holds the page it is answered `user_in_control`
@@ -1290,6 +1309,8 @@ the last navigate or snapshot.
 | `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named |
 | `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path |
 | `tabs` | lists and switches `relay.agent_targets()` only, the popups the caller's tabs opened included |
+| `dialog` | reports the page's open JavaScript dialog (kind, text, default answer) and, with `action` `accept` or `dismiss`, answers it (`text` goes to a prompt on accept only) |
+| `ask` | a quick ask the person answers on the live card; served by the route (`dashboard/handlers/browser_ask.run_ask`), and `run_op` refuses it |
 | `reflex` | a loop of the ops above over a closed move set, judged by the decision seam, in `step`, `realtime` or `virtual_time` mode; `not_available` when it is off ("The fast loop" below) |
 
 Every op calls `live_hub.step`; `run_op`'s own `in_control` check is the backstop
@@ -1303,7 +1324,7 @@ for the slow ops, each plus the decision hooks' 12 s headroom); `browser_busy` i
 gateway-wide lock (75 s plus the hooks' 12 s headroom); `not_installed` comes from `browsing_available(home)`.
 The budgets live in one module (`browser_harness/budgets.py`) that both the route
 and the tool shim import: the shim's HTTP timeout is DERIVED as the route's worst
-case (browser start + the 10-minute hold + lock wait + bind + op) plus a margin, so the tool never
+case (browser start + lock wait + credential re-pull + bind + op + the hooks' headroom) plus a margin, so the tool never
 reports an op failed while the gateway is still landing it -- a retry of a click
 that landed is a double click. The focus checks (`type` and `paste` without a ref,
 printable `press_key`) and the frame mask resolve the deepest active element
@@ -1655,8 +1676,12 @@ all owner-only and refusing the internal secret; writes go through
 anchors by label, so a `key:browser.choice` link lands on the Which browser
 picker only. Every string is in the i18n catalog (`pages.settings.browserPanel.*`).
 
-The config section is `browser`: `choice`, `isolation`, `live.enabled`,
-`live.quality`, `live.max_fps`, `live.mask_passwords`.
+The config section is `browser`: `choice`, `isolation`, `report_changes`,
+`live.enabled`, `live.quality`, `live.max_fps`, `live.mask_passwords`,
+`credentials.enabled`, `credentials.domains`, `recording.enabled`,
+`recording.max_session_mb`, `recording.max_total_mb`, and `run.max_ops` /
+`run.max_repeats` (0, the default, sets no limit; past a limit the chat's next op
+is refused `run_budget`, and a takeover or a new chat counts again from zero).
 `dashboard.browser_local_origins` stays where it is.
 
 #### Retired keys
@@ -1691,8 +1716,8 @@ watcher, whose `browser.settings` applier pushes a `refresh` frame; the frame
 invalidates the dashboard's config query, so an open Preview tab and Settings ->
 Browser re-read without a reload. The agent does not drive it: the Electron main process
 exposes `open`, `navigate`, `setBounds`, `setOverlayActive`, `setInactive`,
-`close`, `getState` and `annotate` on the `browserAPI` preload bridge and
-nothing else (`website/electron/preload.js`, `website/electron/ipc-registrar.js`,
+`close`, `getState` and `annotate` on the `browserAPI` preload bridge, plus the
+`onDidNavigate` and `onTitleUpdated` listeners, and nothing else (`website/electron/preload.js`, `website/electron/ipc-registrar.js`,
 `website/electron/runtime/window/browser-panels.js`).
 
 The view renders arbitrary untrusted web content, so it is the most locked-down

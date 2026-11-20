@@ -161,6 +161,24 @@ class TestLinkedThreadPictures:
         assert not _store(log, slot).exists()
 
     @pytest.mark.asyncio
+    async def test_an_svg_is_not_stored_as_a_picture(self, log):
+        """The ingest does not sniff SVG as a picture, so the store does not either."""
+        slot = _ChatSlot("slot1")
+        picture = _temp(_png(), ".png")
+        drawing = _temp(b"<svg xmlns='http://www.w3.org/2000/svg'/>", ".svg")
+        linked_thread_images.set_inbound_files([picture, drawing])
+        try:
+            text = f"{_slack_text('two files', picture)}\n{drawing}"
+            run_chat = await _route(_state(slot, log), text)
+        finally:
+            os.unlink(picture)
+            os.unlink(drawing)
+        turn_text = run_chat.call_args[0][2]
+        assert picture not in turn_text and len(_image_blocks(turn_text)) == 1
+        assert turn_text.endswith(f"\n{drawing}")
+        assert [p.suffix for p in _store(log, slot).iterdir()] == [".png"]
+
+    @pytest.mark.asyncio
     async def test_the_recorded_files_are_taken_once(self, log):
         slot = _ChatSlot("slot1")
         picture = _temp(_png(), ".png")

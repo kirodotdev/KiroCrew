@@ -435,6 +435,79 @@ class TestDeadIdentifier:
         )
         assert not _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
 
+    def test_silent_in_a_doc_whose_head_says_status_planned(self, tree: Path) -> None:
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        _write(
+            tree,
+            "docs/ok.md",
+            "# Ok\n\nStatus: planned. No validator yet.\n\nA row carries `receipt_field_ref`.\n",
+        )
+        assert not _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
+
+    def test_a_planned_doc_still_has_its_paths_checked(self, tree: Path) -> None:
+        # The marker answers only "are these names built yet"; a path the doc
+        # cites into today's tree is still a claim about it.
+        _write(
+            tree,
+            "docs/ok.md",
+            "# Ok\n\nStatus: planned\n\nBuilt on `src/kiro_crew/ghost.py`.\n",
+        )
+        assert "src/kiro_crew/ghost.py" in _tokens(tree, gate.CHECK_PATH_EXISTS)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # A Status line past the head is prose, not the doc's own status.
+            "# Ok\n\n" + "Line.\n" * 20 + "Status: planned\n\nUses `vanished_handler`.\n",
+            # Only `planned` exempts; the existing `implemented` convention does not.
+            "# Ok\n\nStatus: implemented\n\nUses `vanished_handler`.\n",
+            # The word inside a sentence is not the marker.
+            "# Ok\n\nThe Status: planned value is gone.\n\nUses `vanished_handler`.\n",
+        ],
+    )
+    def test_reports_when_the_planned_marker_is_not_the_docs_own_head(
+        self, tree: Path, body: str
+    ) -> None:
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        _write(tree, "docs/ok.md", body)
+        assert "vanished_handler" in _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
+
+    def test_silent_for_a_curated_external_name_and_only_that_name(self, tree: Path) -> None:
+        _write(tree, "src/kiro_crew/real.py", "a = 1\n")
+        _write(
+            tree,
+            gate.EXTERNAL_IDENTIFIERS_FILE,
+            "# Vendor API\nvendor_only_call  # trailing comment\n\n# vanished_handler\n",
+        )
+        _write(tree, "docs/ok.md", "# Ok\n\nCalls `vendor_only_call` and `vanished_handler`.\n")
+        assert _tokens(tree, gate.CHECK_DEAD_IDENTIFIER) == {"vanished_handler"}
+
+    def test_a_listed_name_the_code_defines_fails_the_run(self, tree: Path) -> None:
+        # Left listed, it would hide that name's next rename.
+        _write(tree, "src/kiro_crew/real.py", "def vendor_only_call():\n    return 1\n")
+        _write(tree, gate.EXTERNAL_IDENTIFIERS_FILE, "vendor_only_call\nother_vendor_call\n")
+        findings = gate.run(tree)
+        assert [(f.path, f.token) for f in findings.facts_for(gate.CHECK_DEAD_IDENTIFIER)] == [
+            (gate.EXTERNAL_IDENTIFIERS_FILE, "vendor_only_call")
+        ]
+        assert findings.total() == 1
+
+    def test_the_external_list_file_is_not_itself_a_code_tree(self, tree: Path) -> None:
+        # The list lives under .github/, which is scanned for code; a .txt there
+        # must not turn a commented-out entry into a live name.
+        assert Path(gate.EXTERNAL_IDENTIFIERS_FILE).suffix not in gate._IDENT_CODE_SUFFIXES
+
+    @pytest.mark.parametrize(
+        "rel",
+        ["website/public/sw.js", "website/playwright/flow.spec.ts", "conftest.py"],
+    )
+    def test_silent_for_a_name_defined_in_a_first_party_file_outside_src(
+        self, tree: Path, rel: str
+    ) -> None:
+        _write(tree, rel, "function fetchAssetWithRetryLater() {}\n")
+        _write(tree, "docs/ok.md", "# Ok\n\nRoutes through `fetchAssetWithRetryLater`.\n")
+        assert not _tokens(tree, gate.CHECK_DEAD_IDENTIFIER)
+
 
 class TestAnchorExists:
     """A section link lands on a section, or it reads as working while landing at the top."""

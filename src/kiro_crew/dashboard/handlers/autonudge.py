@@ -414,10 +414,13 @@ def _autonudge_loop_reading(loop: Any) -> dict[str, Any]:
     describes only the structured monitor, so an armed auto-nudge loop and no loop
     at all both read as ``monitor: None`` there.
 
-    Only presence, cadence and progress fields are surfaced. The loop's
-    ``message`` is agent-controlled free text and is NOT included — it is not
-    needed to verify arming, and leaving it out keeps this read narrow.
+    It also carries the loop's current ``message`` and, for a gated loop, the
+    subject it watches, so a session can confirm a ``monitor_update`` landed. The
+    reader is the session that owns the loop, which already receives the same
+    text as every wake prompt; both pass through the scrub every other loop
+    reader applies.
     """
+    watched = loop.monitor
     return {
         "id": loop.id,
         "active": bool(loop.active),
@@ -437,6 +440,12 @@ def _autonudge_loop_reading(loop: Any) -> dict[str, Any]:
         # fires nothing until the ledger moves.
         "waiting_on_person": bool(getattr(loop, "waiting_on_person", False)),
         "has_banner": bool(loop.banner),
+        "message": _project_field("message", loop.message),
+        "watch": (
+            None
+            if watched is None
+            else _project_field("watch", {"kind": watched.kind, "target": watched.target})
+        ),
     }
 
 
@@ -749,8 +758,7 @@ async def api_session_monitor_get(request: web.Request) -> web.Response:
         # structured monitor genuinely does not exist, but ``autonudge_loop``
         # now carries a truthful presence/cadence/progress reading so the caller
         # can verify arming instead of being told "do not assume" with no
-        # instrument. The loop's free-text ``message`` is deliberately omitted:
-        # this reading answers "is it armed and firing", not "what does it say".
+        # instrument.
         return _reading(
             {"enabled": True, "monitor": None, "autonudge_loop": _autonudge_loop_reading(loop)}
         )

@@ -25,6 +25,7 @@ import { i18nT } from '../i18n/t'
 import { browserLiveStore, useBrowserLiveCurrent } from '../hooks/useBrowserLive'
 import type { FrameSize } from '../hooks/useBrowserLive.input'
 import type { BrowserHandbackSaid } from '../api/client/browserLive'
+import { useDocumentVisible } from '../lib/pollRule'
 import BrowserLiveCardCanvas, { type BrowserLiveCanvasHandle } from '../pages/chat/BrowserLiveCardCanvas'
 import { hostOf } from '../pages/chat/BrowserLiveCardViews'
 import { PictureBox } from '../pages/chat/BrowserLiveReplayStage'
@@ -54,6 +55,12 @@ export interface BrowserViewProps {
   onHandBack?: (note?: string) => void
   onNavigate?: (e: { url: string; title: string }) => void
   marks?: readonly BrowserViewMark[]
+  /**
+   * Keep the picture when the Bot's turn ends while its tab is still open (music
+   * still playing): the view streams that tab again by itself, once per turn,
+   * while it is on screen. Default false: the view folds to "Show the live page".
+   */
+  stayLive?: boolean
   'aria-label': string
   className?: string
 }
@@ -74,7 +81,7 @@ function Placeholder({ state, text, className }: { state: string; text: string; 
 }
 
 export default function BrowserView({
-  slot, interactive = true, onTakeover, onHandBack, onNavigate, marks, 'aria-label': ariaLabel, className,
+  slot, interactive = true, onTakeover, onHandBack, onNavigate, marks, stayLive = false, 'aria-label': ariaLabel, className,
 }: BrowserViewProps) {
   const view = useBrowserView(slot)
   const { access } = view
@@ -164,12 +171,37 @@ export default function BrowserView({
     })
   }, [releaseView])
   const [reopenError, setReopenError] = useState<{ turnId: string; message: string } | null>(null)
-  const reopen = useCallback(async (id: string) => {
+  const reopen = useCallback(async (id: string): Promise<boolean> => {
     setReopenError(null)
-    if (await browserLiveStore.reopen(slot, id)) return
+    if (await browserLiveStore.reopen(slot, id)) return true
     const rec = browserLiveStore.turn(slot, id)
     setReopenError({ turnId: id, message: rec?.controlError || i18nT('appSdk.browserView.tab_gone') })
+    return false
   }, [slot])
+
+  // stayLive: the same reopen the "Show the live page" button sends, for the turn
+  // this view already holds. Once per turn id, so a refusal, or the person folding
+  // the reopened view, never starts a loop; a later turn that folds gets its own.
+  const documentVisible = useDocumentVisible()
+  const foldedOpen = turn?.state === 'done' && turn.tab === 'open'
+  const autoReopened = useRef<string | null>(null)
+  // The turn whose auto reopen is in flight: the live face holds its last frame
+  // until the stream is back, so the fold does not blink through the done card.
+  const [autoWait, setAutoWait] = useState<string | null>(null)
+  useEffect(() => {
+    if (!stayLive || !shown || !documentVisible || !foldedOpen || !turnId || autoReopened.current === turnId) return
+    autoReopened.current = turnId
+    setAutoWait(turnId)
+    void reopen(turnId).then((done) => { if (!done) setAutoWait(w => w === turnId ? null : w) })
+  }, [stayLive, shown, documentVisible, foldedOpen, turnId, reopen])
+  // Live again: clear the hold so a later Close live view shows the done card.
+  useEffect(() => {
+    if (live) setAutoWait(null)
+  }, [live])
+  // Due as well as in flight, so the done card does not paint for the one frame
+  // before the effect above runs.
+  const autoDue = stayLive && shown && documentVisible && foldedOpen && !!turnId && autoReopened.current !== turnId
+  const holdLive = stayLive && foldedOpen && !!turnId && (autoDue || autoWait === turnId)
 
   if (access === 'off') return <Placeholder state="off" text={i18nT('appSdk.browserView.not_enabled')} className={className} />
   if (access === 'app_off') return <Placeholder state="app_off" text={i18nT('appSdk.browserView.app_off')} className={className} />
@@ -180,7 +212,7 @@ export default function BrowserView({
   const controlNotice = turn?.controlError
     ? <ErrorNotice variant="inline" message={turn.controlError} askAgent testId="app-browser-view-control-error" />
     : null
-  if (!turn || !live) {
+  if (!turn || !(live || holdLive)) {
     // A Show the live page the gateway refused, kept here because a closed tab
     // also clears the record's own error (`tab_gone`).
     if (turn && reopenError?.turnId === turn.turnId) {
@@ -204,7 +236,7 @@ export default function BrowserView({
     // (the chat card's "Open live", the same owner route).
     if (turn && turn.tab === 'open' && browserLiveStore.isCurrentTurn(slot, turn.turnId)) {
       return (
-        <div className={`grid place-items-center gap-3 rounded-md border border-border bg-card p-6 text-center text-[13px] text-muted ${className ?? ''}`} data-testid="app-browser-view" data-state="done">
+        <div ref={setRootEl} className={`grid place-items-center gap-3 rounded-md border border-border bg-card p-6 text-center text-[13px] text-muted ${className ?? ''}`} data-testid="app-browser-view" data-state="done">
           {controlNotice}
           <span>{i18nT('appSdk.browserView.turn_over')}</span>
           <Btn primary onClick={() => { void reopen(turn.turnId) }} data-testid="app-browser-view-show-live">
@@ -243,7 +275,8 @@ export default function BrowserView({
           <span className="font-medium text-text-strong">{host}</span>
           {title && <span className="text-muted"> · {sanitizeLlmOutput(title).slice(0, 120)}</span>}
         </span>
-        {interactive && (inControl ? (
+        {/* While held over a fold the turn is over: a claim would be refused. */}
+        {interactive && live && (inControl ? (
           <Btn primary onClick={() => release()} data-testid="app-browser-view-hand-back">
             {i18nT('appSdk.browserView.hand_back')}
           </Btn>
@@ -271,7 +304,7 @@ export default function BrowserView({
                 visible={shown}
                 interactive={canInteract}
                 onHandBack={() => release()}
-                onClaim={interactive && !inControl ? claim : undefined}
+                onClaim={interactive && live && !inControl ? claim : undefined}
                 onFrameSize={setFrame}
                 aria-label={ariaLabel}
               />

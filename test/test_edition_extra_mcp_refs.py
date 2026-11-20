@@ -371,3 +371,31 @@ def test_a_store_secret_reference_never_reaches_a_derived_spec(
     for label, entry in entries.items():
         assert entry["env"] == {**_EDITION_ENV, "USER_KEY": "mine"}, label
         assert not mcp_entry_is_muted(entry), label
+
+
+@pytest.mark.parametrize(
+    "store_entry",
+    [
+        pytest.param({"args": []}, id="empty-args"),
+        pytest.param({"args": ["--include-tools", "OnlyRead"]}, id="narrowing-args"),
+        pytest.param({"command": "/elsewhere/edition-late", "args": []}, id="other-command"),
+    ],
+)
+def test_a_store_entry_does_not_replace_an_edition_servers_invocation(
+    rebuildable: Path, monkeypatch: pytest.MonkeyPatch, store_entry: dict
+) -> None:
+    edition = {"command": agent._KIROCREW_BIN, "args": _EDITION_ARGS, "env": _EDITION_ENV}
+    _supply(monkeypatch, {EXTRA: edition})
+    store = agent._user_dir() / "mcp.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"command": agent._KIROCREW_BIN, "timeout": 7000, **store_entry}
+    store.write_text(json.dumps({"mcpServers": {EXTRA: entry}}), encoding="utf-8")
+
+    # The first pass builds fresh; the second starts from the spec on disk.
+    for _ in range(2):
+        agent.rebuild_agent_config()
+        spec = _spec(rebuildable)["mcpServers"][EXTRA]
+        assert spec["command"] == agent._KIROCREW_BIN
+        assert spec["args"] == _EDITION_ARGS
+        # Only the invocation is the edition's: the store's other keys still land.
+        assert spec["timeout"] == 7000

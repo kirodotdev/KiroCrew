@@ -1,0 +1,2 @@
++31
+Binding a discovery approval to the MCP server it was verified for: the approval key gains the server name (the approved-endpoint lookup, the recorder and its audit event take it), and the OAuth banner gate, its diagnosis and its per-URL verdict pass it through. No gate rule, threshold or exemption moved; a caller that names no server gets no discovery approval.

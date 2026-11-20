@@ -912,6 +912,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.slack-tools-for-your-agents-slack",
+    "label": "Slack tools for your agents (Slack)",
+    "labelKey": "pages.settings.slackPanel.slackCode.slack_mcp",
+    "labelSuffix": "Slack",
+    "description": "Lets your agents search and read Slack, read-only, for each person who connects their own Slack account. Each person can disconnect on the Slack card at any time, which stops their agents reading Slack.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.slack_mcp"
+  },
+  {
     "id": "channels.slash-command-slack",
     "label": "Slash command (Slack)",
     "labelKey": "pages.settings.slackPanel.slash_command",

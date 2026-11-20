@@ -153,6 +153,18 @@ class TestSwitches:
         _, body = _call(env, "GET")
         assert body["agent_sessions"] is on
 
+    @pytest.mark.parametrize("on", [True, False])
+    def test_the_slack_mcp_switch_saves_and_reads_back(self, env: dict, on: bool) -> None:
+        status, res = _call(env, "PUT", {"slack_mcp": on})
+        assert status == 200
+        assert res["restart_required"] is False
+        if on:  # off is the default, so an off save writes nothing
+            assert _stored(env)["slack_mcp"] is True
+        _, body = _call(env, "GET")
+        assert body["slack_mcp"] is on
+        # Nothing runs for it, so there is no capability to report.
+        assert "slack_mcp_capability" not in body
+
     def test_unchanged_switch_is_not_staged(self, env: dict) -> None:
         _call(env, "PUT", {"code_channels": True})
         status, _ = _call(env, "PUT", {"code_channels": True})
@@ -1458,3 +1470,25 @@ def test_the_switch_description_counts_the_scopes_it_adds(catalog: Path) -> None
     assert re.findall(r"\d+", desc) == [
         str(count)
     ], f"{catalog.name}: {desc!r} should say {count} and no other number"
+
+
+@pytest.mark.parametrize("catalog", _HAND_WRITTEN, ids=lambda p: p.name)
+def test_the_slack_mcp_details_count_the_user_scopes_it_asks_for(catalog: Path) -> None:
+    # Same rule as Code channels: the number in the copy follows the manifest.
+    # It is the user scopes the manifest lists with the switch on (they replace
+    # the older list), and it lives in the row's "What this adds" disclosure;
+    # the description itself stays in plain words and states no number. The
+    # second number is how many of them are new to an app without the switch,
+    # the same count the update panel's Slack tools box titles itself with.
+    on = slack_manifest.requirements(frozenset({slack_manifest.SLACK_MCP})).user_scopes
+    off = slack_manifest.requirements(frozenset()).user_scopes
+    count, new = len(on), len(on - off)
+    copy = json.loads(catalog.read_text(encoding="utf-8"))["pages"]["settings"]["slackPanel"][
+        "slackCode"
+    ]
+    details = copy["slack_mcp_details"]
+    assert re.findall(r"\d+", details) == [
+        str(count),
+        str(new),
+    ], f"{catalog.name}: {details!r} should say {count} ({new} new) and no other number"
+    assert re.findall(r"\d+", copy["slack_mcp_desc"]) == [], catalog.name

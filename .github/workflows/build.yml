@@ -32,8 +32,11 @@ jobs:
     # Skipped only on a queue-landed push (see `concurrency`): the merge group
     # built this wheel and the Windows installer that consumes it on this
     # exact tree, so that push path is the macOS desktop build only. Any other
-    # push to main builds everything.
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'
+    # push to main builds everything. A docs-only pull request (see
+    # desktop-matrix) builds nothing; `!cancelled()` keeps a failed resolver
+    # from skipping the build.
+    needs: [desktop-matrix]
+    if: ${{ !cancelled() && needs.desktop-matrix.outputs.docs_only != 'true' && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]') }}
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
@@ -356,6 +359,10 @@ jobs:
       # Runner for the ubuntu-22.04 (x64) desktop leg: the large CodeBuild label
       # or the hosted ubuntu-22.04. See the `runner` step.
       linux_x64_runner: ${{ steps.runner.outputs.linux_x64_runner }}
+      # 'true' only on a pull request that changes nothing but prose docs
+      # (.github/scripts/docs_only.py): no build can differ, so Build Wheel and
+      # Build Desktop skip. Absent (a failed step) reads as "build".
+      docs_only: ${{ steps.docs-only.outputs.docs_only }}
     steps:
       # Same admission as ci.yml's `changes` resolver: this repository, a push,
       # a merge group or an opened/synchronize same-repository PR, and an actor
@@ -442,6 +449,19 @@ jobs:
               - 'src/kiro_crew/cli_server.py'
               - 'src/kiro_crew/cli_server_*.py'
               - 'src/kiro_crew/testing/**'
+      # The same docs-only rule ci.yml's `changes` job applies. Two-dot against
+      # the base commit is the change this merge makes, which is all a build
+      # sees; any git or script failure classifies as "not docs-only".
+      - name: Decide docs-only scope
+        id: docs-only
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          paths="$(git diff --no-renames --name-only "$BASE_SHA" HEAD 2>/dev/null || true)"
+          printf '%s\n' "$paths" | python3 .github/scripts/docs_only.py classify >> "$GITHUB_OUTPUT" \
+            || echo "docs_only=false" >> "$GITHUB_OUTPUT"
       - id: compute
         env:
           EVENT: ${{ github.event_name }}
@@ -473,6 +493,7 @@ jobs:
 
   build-desktop:
     needs: [desktop-matrix]
+    if: needs.desktop-matrix.outputs.docs_only != 'true'
     name: Build Desktop (${{ matrix.os }})
     # Only the x64 leg maps to the resolved runner; `matrix.os`, and so the job
     # name the ruleset requires, stays `ubuntu-22.04`. The arm64 and macOS legs

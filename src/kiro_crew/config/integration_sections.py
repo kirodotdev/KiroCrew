@@ -1280,10 +1280,12 @@ class TunnelConfig:
         metadata=_meta(
             "Kiro Relay",
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
-            "the caller named by the relay. Unset (the default) turns it on only for a "
-            "team Crew (Relay Lease Token Type API_KEY) or a host with a workload "
-            "identity whose Relay Lease Credential names its credential; a Crew on a "
-            "personal sign-in stays off until you run kirocrew remote-control on. True "
+            "the caller named by the relay. Unset (the default) turns it on for a Crew "
+            "on a personal sign-in (Relay Lease Credential empty or kiro-sign-in, no "
+            "Relay Lease Token Type, no workload identity), and for a team Crew (Relay "
+            "Lease Token Type API_KEY) or a host with a workload identity whose Relay "
+            "Lease Credential names its credential; kirocrew remote-control off turns "
+            "it off. True "
             "is on and false is off, whatever the Crew's credential. It holds a lease (from Relay "
             "Lease Service URL, or the built-in one when that is empty) on Relay Lease "
             "Credential, or on a personal Crew's own Kiro sign-in when that is empty. A "
@@ -1306,10 +1308,23 @@ class TunnelConfig:
             "Relay Lease Service URL",
             "The base URL of the lease service this Crew calls RenewCrewLease on, to "
             "hold its lease and get host tokens. Empty (the default) uses the built-in "
-            "Kiro control plane URL: the one for the sign-in profile's region on the Kiro "
-            "sign-in, and us-east-1 otherwise. Must be https:// "
-            "(http:// only for a loopback port-forward).",
+            "Kiro control plane URL for the Crew's Region: the sign-in profile's on the "
+            "Kiro sign-in, and Relay Lease Region otherwise, us-east-1 when that is "
+            "empty. Must be https:// (http:// only for a loopback port-forward).",
             restart=True,
+        ),
+    )
+    relay_lease_region: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Lease Region",
+            "The built-in lease service's Region for a Crew on a stored credential, such "
+            "as a team Crew's crew API key, which names no Region. Empty (the default) "
+            "uses us-east-1; a Crew registered in another Region must name it, with "
+            "kirocrew config set tunnel.relay_lease_region <Region>. Ignored "
+            "on the Kiro sign-in. A workload identity's JWT-SVID lease uses it too.",
+            restart=True,
+            enum=["", "eu-central-1", "eu-west-1", "us-east-1"],
         ),
     )
     relay_lease_credential: str = field(

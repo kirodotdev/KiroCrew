@@ -160,6 +160,12 @@ def test_lesson_fold_pairs_count_as_a_change(home: Path, capsys) -> None:
         ),
         ("lesson_tier_policy", {"shadow": {"consolidation": {"lessons": 10, "demoted": 7}}}, 10, 7),
         (
+            "fact_origin_gate",
+            {"shadow": {"pref": {"facts": 3, "gated": 2}, "user": {"facts": 1, "gated": 1}}},
+            4,
+            3,
+        ),
+        (
             "member_lesson_dedup",
             {"shadow": {"lessons": 6, "text_folds": 1, "checked": 4, "vector_folds": 2}},
             10,
@@ -313,6 +319,7 @@ _DAYS = (DAY, "2026-11-02", "2026-11-03")
     [
         ("lesson_origin_gate", {"shadow": {"learn_add": {"lessons": 2, "demoted": 1}}}),
         ("lesson_tier_policy", {"shadow": {"consolidation": {"lessons": 2, "demoted": 1}}}),
+        ("fact_origin_gate", {"shadow": {"pref": {"facts": 2, "gated": 1}}}),
         ("member_lesson_dedup", {"shadow": {"lessons": 2, "text_folds": 1}}),
     ],
 )
@@ -391,6 +398,7 @@ def test_meta_prefixes_match_the_owning_modules() -> None:
         "kind_routing": "memory_kind_routing",
         "lesson_origin_gate": "memory_origin_gate",
         "lesson_tier_policy": "memory_tier_policy",
+        "fact_origin_gate": "memory_fact_origin_gate",
         "member_lesson_dedup": "memory_lesson_dedup",
         "dream": "memory_dream",
     }

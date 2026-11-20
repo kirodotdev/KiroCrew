@@ -1615,7 +1615,10 @@ or the entry's `dcr_client_name`) once per card in the vault entry
 secret has expired, or after `invalid_client` (the card then asks to reconnect).
 Every authorize, token and refresh call sends `resource`; `offline_access` is
 asked for when listed; the callback's `iss` is checked (one that does not parse
-is a mismatch). All DCR card sign-ins share
+is a mismatch). A pre-registered provider's callback `iss` is checked the same way when its
+`crew_oauth._ENDPOINTS` entry carries the vendor's published `issuer` (Google only: its metadata states that the response carries `iss`); a
+callback without `iss` is refused, and an entry with no `issuer` (GitHub, Asana, Slack) is not checked.
+All DCR card sign-ins share
 the loopback port `registry.DCR_CALLBACK_PORT` (48100, which no pre-registered
 entry may use) and `state` picks the pending sign-in. A gateway with a public
 HTTPS `dashboard.url` (never the request's `Host`) registers

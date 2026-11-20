@@ -208,6 +208,15 @@ async def api_member_fresh_start(request: web.Request) -> web.Response:
         or getattr(slot, "executor", "") == "remote"
     ):
         return ch.slot_not_found()
+    # The held-entry check and the /clear reply below read the window's rows; a
+    # restored row loads it here with its reads off the loop. A slot that holds
+    # its window returns without suspending, so the checks below still run in
+    # one tick.
+    from kiro_crew.dashboard.state import load_window_off_loop
+
+    await load_window_off_loop(slot)
+    if state._slots.get(binding.get("slot_key", "")) is not slot:
+        return ch.slot_not_found()
     name = slot.key
     key = effective_session_key(slot)
     from kiro_crew.dashboard.warm_task_brief import cancel_warm_task_brief

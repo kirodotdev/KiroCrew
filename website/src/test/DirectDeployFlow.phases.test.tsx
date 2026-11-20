@@ -15,6 +15,13 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import DirectDeployFlow from '../components/DirectDeployFlow'
 import type { useDirectDeploy } from '../hooks/useDirectDeploy'
 
+/** The stock transparent Btn has no edge on these refusals' warn tint until hovered. */
+function expectEdgedOnTint(button: HTMLElement) {
+  expect(button).toHaveClass('bg-bg-elevated', 'border-border-strong')
+  expect(button).not.toHaveClass('bg-transparent')
+  expect(button).not.toHaveClass('border-border')
+}
+
 type Flow = ReturnType<typeof useDirectDeploy>
 type Phase = Flow['phase']
 
@@ -59,6 +66,7 @@ describe('DirectDeployFlow — one affordance per phase', () => {
       preview: PREVIEW,
     } as Phase)
     expect(screen.getByText(/no auto-cleanup installed/)).toBeTruthy()
+    expectEdgedOnTint(screen.getByRole('button', { name: /Cancel/i }))
     // Re-acknowledges at ttl 0 rather than confirming: the exposure window is
     // part of what the human agreed to.
     fireEvent.click(screen.getByRole('button', { name: /Deploy as permanent/i }))
@@ -104,6 +112,7 @@ describe('DirectDeployFlow — one affordance per phase', () => {
     } as Phase)
     expect(screen.getByText(/aws-access-key-id/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Deploy anyway/i })).toBeNull()
+    expectEdgedOnTint(screen.getByRole('button', { name: /Cancel/i }))
     fireEvent.click(screen.getByRole('button', { name: /Cancel/i }))
     expect(flow.reset).toHaveBeenCalled()
   })
@@ -114,6 +123,10 @@ describe('DirectDeployFlow — one affordance per phase', () => {
       block: { findings: 'internal-hostname in build/app.js:3', count: 1, credential: false },
       preview: PREVIEW,
     } as Phase)
+    expectEdgedOnTint(screen.getByRole('button', { name: /Deploy anyway/i }))
+    expectEdgedOnTint(screen.getByRole('button', { name: /Cancel/i }))
+    // The danger text survives the fill: twMerge drops only the stock fill and edge.
+    expect(screen.getByRole('button', { name: /Deploy anyway/i })).toHaveClass('text-danger')
     fireEvent.click(screen.getByRole('button', { name: /Deploy anyway/i }))
     // Overriding a scan finding still publishes a world-readable URL, so it must
     // not skip the public-by-link consent. The scan block and the acknowledgment
