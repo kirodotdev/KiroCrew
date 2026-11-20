@@ -12749,7 +12749,8 @@
         "fork_other_in_progress": "[Àñøţĥèŕ ƒøŕķ ìş şţàŕţìñğ. ··················]",
         "fork_with_another_model": "[Ƒøŕķ ẁìţĥ àñøţĥèŕ ɱøðèĺ ················]",
         "copy_failed": "[Çøþý ƒàìĺèð ··········]",
-        "quote_message": "[Ǫùøţè ɱèşşàğè ············]"
+        "quote_message": "[Ǫùøţè ɱèşşàğè ············]",
+        "speaker_heading": "[{{productName}}]"
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "[Ýøùŕ ƀŕøẁşèŕ ìş àşķìñğ “Àĺĺøẁ ŕèɱøţè ðèƀùğğìñğ?”. Çĺìçķ Àĺĺøẁ àñð {{productName}} çàñ ẁøŕķ ìñ ţĥè ţàƀ. Àşķèð øñçè; {{productName}} øñĺý ţøùçĥèş ţàƀş ìţ øþèñş ìţşèĺƒ. ·········································]",
@@ -13464,7 +13465,8 @@
         "more_actions": "[Ṁøŕè àçţìøñş ···········]",
         "seed_from_conductor": "[Ƒŕøɱ ţĥè ɱàìñ çĥàţ ················]",
         "seed_from_worker": "[Ƒŕøɱ à çŕèẁ ɱèɱƀèŕ ················]",
-        "seed_from_session": "[Ƒŕøɱ àñøţĥèŕ çĥàţ ···············]"
+        "seed_from_session": "[Ƒŕøɱ àñøţĥèŕ çĥàţ ···············]",
+        "speaker_heading": "[Ýøù ·····]"
       },
       "workflowCompletionCard": {
         "open_in_the_workflows_panel": "[Øþèñ ìñ ţĥè Ẁøŕķƒĺøẁş þàñèĺ ···················]",
@@ -14286,6 +14288,10 @@
         "replay_action_hand_back": "[ýøù ĥàñðèð ƀàçķ ··············]",
         "replay_action_page_moved": "[þàğè ɱøṽèð øñ ············]",
         "replay_action_auto": "[þàşşèð øñ ìţş øẁñ ···············]"
+      },
+      "transcriptAnnouncement": {
+        "spoken": "[{{speaker}}: {{text}} ···]",
+        "approval": "[{{speaker}} ìş ẁàìţìñğ ƒøŕ ýøùŕ àþþŕøṽàĺ: {{operation}} ················]"
       }
     },
     "chatPage": {

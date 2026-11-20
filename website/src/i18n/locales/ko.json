@@ -12851,7 +12851,8 @@
         "turn_cache_likely": "캐시를 다시 만들었을 가능성이 높음",
         "turn_cache_likely_hint": "이 답변은 모델이 대화를 캐시에 유지하는 시간보다 오래 쉰 뒤에 도착했으므로, 대화 전체를 다시 저장해 평소보다 비용이 더 들었을 가능성이 높습니다. 추정치입니다.",
         "turn_cache_rewritten": "캐시 다시 만듦",
-        "turn_cache_rewritten_hint": "이 답변에서는 대화 전체를 다시 저장해야 해서 평소보다 비용이 더 들었습니다."
+        "turn_cache_rewritten_hint": "이 답변에서는 대화 전체를 다시 저장해야 해서 평소보다 비용이 더 들었습니다.",
+        "speaker_heading": "{{productName}}"
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "브라우저에 “원격 디버깅을 허용할까요?”가 표시됩니다. 허용을 누르면 {{productName}}이(가) 탭에서 작업할 수 있습니다. 한 번만 묻습니다. {{productName}}은(는) 직접 연 탭만 다룹니다.",
@@ -13643,7 +13644,8 @@
         "edit_replaces_below": "보내면 아래 답변이 바뀝니다",
         "seed_from_conductor": "메인 채팅에서",
         "seed_from_worker": "크루원에게서",
-        "seed_from_session": "다른 채팅이 보냄"
+        "seed_from_session": "다른 채팅이 보냄",
+        "speaker_heading": "나"
       },
       "workflowCompletionCard": {
         "hide_result": "결과 숨기기",
@@ -14321,6 +14323,10 @@
         "no_prompt_yet": "이 세션에서는 아직 보낸 프롬프트가 없습니다.",
         "retry": "다시 시도",
         "starting": "새 초안 세션을 여는 중…"
+      },
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}: {{text}}",
+        "approval": "{{speaker}}이(가) 승인을 기다리고 있습니다: {{operation}}"
       }
     },
     "chatPage": {

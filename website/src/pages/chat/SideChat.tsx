@@ -30,6 +30,7 @@ import type { ChatMessage } from '../../types'
 import { searchableText } from '../../utils/searchableText'
 
 import { i18nT } from '../../i18n/t'
+import { announcementTail, pendingApprovalsOf, useTranscriptAnnouncement } from '../../hooks/useTranscriptAnnouncement'
 import { fmtNumber } from '../../i18n/format'
 const MAX_QUESTION_BYTES = 32_768
 // Max auto-grow height (px) for the side-question input before it scrolls.
@@ -222,6 +223,14 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
   // Stage exactly what the transcript renders: hidden widget bodies and protocol
   // markers stay out of the composer, trailing whitespace is removed, and leading
   // indentation remains intact for whitespace-sensitive Markdown.
+  // The transcript's one live region, the same decision the main chat makes:
+  // a side answer is spoken once when it lands, and the side question when it
+  // is sent. The shared scroller is not a live region, so without this a side
+  // answer would arrive in silence.
+  const sideApprovals = useMemo(() => pendingApprovalsOf(transcript), [transcript])
+  const { announcement, announcementTailSpeaker, announceSent } = useTranscriptAnnouncement(
+    announcementTail(transcript), isBusy, undefined, `side:${slot}`, sideApprovals, transcript.length,
+  )
   const renderedLastAnswer = transcript[lastIdx]?.role === 'assistant'
     ? searchableText(transcript[lastIdx])
     : ''
@@ -934,7 +943,8 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
     // queued one is a card, so the server frame places both.
     const steer = isBusy && steerRequested
     sendMutation.mutate({ q, steer, optimistic: !isBusy, slot, override: override != null, ...(blocks.length || files.length ? { display: typed, pastes: blocks, files } : {}) })
-  }, [draft, pasteBlocks, stagedFiles, slot, sendMutation, isBusy, exceedsByteLimit])
+    announceSent(typed)
+  }, [draft, pasteBlocks, stagedFiles, slot, sendMutation, isBusy, exceedsByteLimit, announceSent])
 
   const displayError = sendStatus?.error ?? localError
 
@@ -1013,6 +1023,8 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
         onArtifactOpen={onArtifactOpen}
         transcript={{
           sessionId: `side:${slot}`,
+          announcement,
+          announcementTailSpeaker,
           scrollerStyle: { paddingLeft: 12, paddingRight: 12, paddingTop: 8, paddingBottom: 8 },
           aboveRows: messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-muted gap-2 py-8">

@@ -13431,7 +13431,8 @@
         "turn_cache_likely": "Caché probablemente reconstruida",
         "turn_cache_likely_hint": "Esta respuesta llegó tras una pausa más larga que el tiempo que el modelo conserva la conversación en caché, así que probablemente se guardó de nuevo toda la conversación y costó más de lo habitual. Es una estimación.",
         "turn_cache_rewritten": "Caché reconstruida",
-        "turn_cache_rewritten_hint": "Esta respuesta tuvo que volver a guardar toda la conversación, por eso costó más de lo habitual."
+        "turn_cache_rewritten_hint": "Esta respuesta tuvo que volver a guardar toda la conversación, por eso costó más de lo habitual.",
+        "speaker_heading": "{{productName}}"
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "Tu navegador pregunta «¿Permitir la depuración remota?». Pulsa Permitir y {{productName}} podrá trabajar en la pestaña. Solo se pregunta una vez; {{productName}} solo toca las pestañas que abre él mismo.",
@@ -14315,7 +14316,8 @@
         "edit_replaces_below": "Al enviar se reemplazan las respuestas de abajo",
         "seed_from_conductor": "Del chat principal",
         "seed_from_worker": "De un miembro del equipo",
-        "seed_from_session": "De otro chat"
+        "seed_from_session": "De otro chat",
+        "speaker_heading": "Tú"
       },
       "workflowCompletionCard": {
         "hide_result": "Ocultar el resultado",
@@ -15013,6 +15015,10 @@
         "no_prompt_yet": "Todavía no se ha enviado ningún prompt en esta sesión.",
         "retry": "Reintentar",
         "starting": "Abriendo una nueva sesión de borrador…"
+      },
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}: {{text}}",
+        "approval": "{{speaker}} espera tu aprobación: {{operation}}"
       }
     },
     "chatPage": {

@@ -13141,7 +13141,8 @@
         "turn_cache_likely": "कैश संभवतः दोबारा बनाया गया",
         "turn_cache_likely_hint": "यह जवाब मॉडल के बातचीत को कैश में रखने की अवधि से लंबे विराम के बाद आया, इसलिए संभवतः पूरी बातचीत फिर से सहेजनी पड़ी और लागत सामान्य से ज़्यादा रही। यह एक अनुमान है।",
         "turn_cache_rewritten": "कैश दोबारा बनाया गया",
-        "turn_cache_rewritten_hint": "इस जवाब के लिए पूरी बातचीत को फिर से सहेजना पड़ा, इसलिए इसकी लागत सामान्य से ज़्यादा रही।"
+        "turn_cache_rewritten_hint": "इस जवाब के लिए पूरी बातचीत को फिर से सहेजना पड़ा, इसलिए इसकी लागत सामान्य से ज़्यादा रही।",
+        "speaker_heading": "{{productName}}"
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "तुम्हारा ब्राउज़र पूछ रहा है “रिमोट डीबगिंग की अनुमति देनी है?”। Allow पर क्लिक करो, फिर {{productName}} टैब में काम कर सकेगा। एक बार ही पूछा जाता है; {{productName}} केवल अपने खोले टैब छूता है।",
@@ -13979,7 +13980,8 @@
         "edit_replaces_below": "भेजने पर नीचे के जवाब बदल जाएंगे",
         "seed_from_conductor": "मुख्य चैट से",
         "seed_from_worker": "एक टीम सदस्य से",
-        "seed_from_session": "दूसरी चैट से"
+        "seed_from_session": "दूसरी चैट से",
+        "speaker_heading": "तुम"
       },
       "workflowCompletionCard": {
         "hide_result": "परिणाम छिपाएँ",
@@ -14667,6 +14669,10 @@
         "no_prompt_yet": "इस सत्र में अभी तक कोई प्रॉम्प्ट नहीं भेजा गया है।",
         "retry": "फिर से कोशिश करो",
         "starting": "नया ड्राफ़्ट सत्र खुल रहा है…"
+      },
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}: {{text}}",
+        "approval": "{{speaker}} तुम्हारी स्वीकृति की प्रतीक्षा कर रहा है: {{operation}}"
       }
     },
     "chatPage": {

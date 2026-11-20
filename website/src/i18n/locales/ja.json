@@ -12851,7 +12851,8 @@
         "turn_cache_likely": "キャッシュを再構築した可能性が高い",
         "turn_cache_likely_hint": "この返信は、モデルが会話をキャッシュに保持する時間より長い間隔の後に届いたため、会話全体がもう一度保存され、いつもより費用がかかった可能性が高いです。これは推定です。",
         "turn_cache_rewritten": "キャッシュを再構築",
-        "turn_cache_rewritten_hint": "この返信では会話全体をもう一度保存する必要があったため、いつもより費用がかかりました。"
+        "turn_cache_rewritten_hint": "この返信では会話全体をもう一度保存する必要があったため、いつもより費用がかかりました。",
+        "speaker_heading": "{{productName}}"
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "ブラウザーに「リモートデバッグを許可しますか？」と表示されます。「許可」を押すと {{productName}} がタブで作業できます。確認は一度だけ。{{productName}} は自分で開いたタブだけを扱います。",
@@ -13643,7 +13644,8 @@
         "edit_replaces_below": "送信すると下の返信が置き換わります",
         "seed_from_conductor": "メインチャットから",
         "seed_from_worker": "クルーメンバーから",
-        "seed_from_session": "別のチャットから"
+        "seed_from_session": "別のチャットから",
+        "speaker_heading": "あなた"
       },
       "workflowCompletionCard": {
         "hide_result": "結果を非表示",
@@ -14321,6 +14323,10 @@
         "no_prompt_yet": "このセッションではまだプロンプトが送信されていません。",
         "retry": "再試行",
         "starting": "新しい下書きセッションを開いています…"
+      },
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}：{{text}}",
+        "approval": "{{speaker}}が承認を待っています：{{operation}}"
       }
     },
     "chatPage": {

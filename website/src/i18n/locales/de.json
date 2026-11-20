@@ -13141,7 +13141,8 @@
         "turn_cache_likely": "Cache vermutlich neu aufgebaut",
         "turn_cache_likely_hint": "Diese Antwort kam nach einer längeren Pause, als das Modell die Unterhaltung im Cache hält. Deshalb wurde wahrscheinlich die ganze Unterhaltung erneut gespeichert, und sie hat mehr als üblich gekostet. Das ist eine Schätzung.",
         "turn_cache_rewritten": "Cache neu aufgebaut",
-        "turn_cache_rewritten_hint": "Für diese Antwort musste die ganze Unterhaltung erneut gespeichert werden, deshalb hat sie mehr als üblich gekostet."
+        "turn_cache_rewritten_hint": "Für diese Antwort musste die ganze Unterhaltung erneut gespeichert werden, deshalb hat sie mehr als üblich gekostet.",
+        "speaker_heading": "{{productName}}"
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "Dein Browser fragt „Remote-Debugging zulassen?“. Klick auf Zulassen, dann kann {{productName}} im Tab arbeiten. Wird nur einmal gefragt; {{productName}} berührt nur Tabs, die es selbst öffnet.",
@@ -13979,7 +13980,8 @@
         "edit_replaces_below": "Senden ersetzt die Antworten darunter",
         "seed_from_conductor": "Aus dem Haupt-Chat",
         "seed_from_worker": "Von einem Crew-Mitglied",
-        "seed_from_session": "Aus einem anderen Chat"
+        "seed_from_session": "Aus einem anderen Chat",
+        "speaker_heading": "Du"
       },
       "workflowCompletionCard": {
         "hide_result": "Ergebnis ausblenden",
@@ -14667,6 +14669,10 @@
         "no_prompt_yet": "In dieser Sitzung wurde noch kein Prompt gesendet.",
         "retry": "Erneut versuchen",
         "starting": "Neue Entwurfssitzung wird geöffnet…"
+      },
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}: {{text}}",
+        "approval": "{{speaker}} wartet auf deine Freigabe: {{operation}}"
       }
     },
     "chatPage": {
