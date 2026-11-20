@@ -245,3 +245,43 @@ def test_discovery_leaves_out_the_skipped_zones(monkeypatch):
     assert picked[1] == "subnet-0a"
     with pytest.raises(aws.AWSError):
         ec2.discover_network("dev", "us-east-1", skip_zones=frozenset({"us-east-1c", "us-east-1a"}))
+
+
+def test_a_cancel_stops_the_retry_and_launches_nothing_new(monkeypatch):
+    tier = sizes.TIERS_BY_KEY["power"]
+    fake = _FakeAws(
+        monkeypatch,
+        tier,
+        zones=["us-east-1c"],
+        subnets={"us-east-1c": "subnet-0c", "us-east-1a": "subnet-0a"},
+    )
+
+    with pytest.raises(aws.AWSError):
+        _deploy(fake, cancelled=lambda: True)
+
+    assert fake.deployed == ["subnet-0c"]  # no second stack after the cancel
+    assert fake.deleted == 0  # the launch job's cancel path removes the refused stack
+    assert fake.notes == []
+
+
+def test_a_cancel_during_the_delete_launches_nothing_new(monkeypatch):
+    tier = sizes.TIERS_BY_KEY["power"]
+    fake = _FakeAws(
+        monkeypatch,
+        tier,
+        zones=["us-east-1c"],
+        subnets={"us-east-1c": "subnet-0c", "us-east-1a": "subnet-0a"},
+    )
+    asked: list[bool] = []
+
+    def cancelled() -> bool:
+        # Not yet cancelled when the refusal is read; cancelled once the delete ran.
+        asked.append(fake.deleted > 0)
+        return fake.deleted > 0
+
+    with pytest.raises(aws.AWSError):
+        _deploy(fake, cancelled=cancelled)
+
+    assert asked == [False, True]
+    assert fake.deployed == ["subnet-0c"]
+    assert fake.deleted == 1

@@ -915,6 +915,7 @@ def deploy(
     extra_packages: str = "",
     ssm_kms_key_arn: str = "",
     on_network_fallback: Optional[Callable[[str], None]] = None,
+    cancelled: Optional[Callable[[], bool]] = None,
 ) -> DeployResult:
     """Provision (or update) the KiroCrew stack. Idempotent by stack name.
 
@@ -934,6 +935,9 @@ def deploy(
     boundary and no KMS grant, byte-identical to a launch before the flag existed.
     ``on_network_fallback`` is handed to :func:`discover_network`, so a caller can
     show which network a launch with no default VPC picked before the stack exists.
+    ``cancelled`` is asked before a capacity refusal is retried in another zone,
+    and again after the refused stack is deleted: once it answers True, no new
+    stack is created and the refusal is raised.
     """
     if not dry_run:
         aws.assert_human_action("cloudformation:CreateStack")
@@ -1110,10 +1114,14 @@ def deploy(
         picked = None
         # A new stack on a subnet the launcher picked moves to an untried zone; each
         # pass skips one more zone. --keep-on-failure keeps the stack, so no retry.
-        if zone and not repeat and not (reused or explicit_subnet or disable_rollback):
+        stop = cancelled if cancelled is not None else (lambda: False)
+        if zone and not repeat and not (reused or explicit_subnet or disable_rollback or stop()):
             picked = _network_in_another_zone(
                 tag, tier, profile, region, refused_zones, on_network_fallback
             )
+            # The delete takes minutes; a cancel in that time launches nothing new.
+            if picked is not None and stop():
+                picked = None
         if picked is None:
             _cleanup_uploaded_source()
             raise ec2_failure.deploy_error(

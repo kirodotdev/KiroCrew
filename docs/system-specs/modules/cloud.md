@@ -273,7 +273,12 @@ next step: the same-size tier on the other architecture (for example
 `balanced-x86`) or another Region. A `--subnet` / Subnet ID pin, a reused stack
 and `--keep-on-failure` never move; the pinned case also says to clear the
 Subnet ID so the launch can try the other zones. The uploaded source is removed
-only when the launch finally fails.
+only when the launch finally fails. A cancel stops the retries: `deploy` asks its
+`cancelled` callback (the dashboard's launch job passes its cancel event) before
+it deletes a refused stack and again after the delete, and once it answers True
+it creates no new stack and raises the refusal. The launch job reads a provision
+failure that follows a cancel as the cancel, so the job ends `cancelled` and its
+rollback removes whatever stack is left.
 
 Teardown removes the uploaded source object as part of the contract: after a **confirmed** `delete-stack`, `source.delete_source` returns `{removed, uri, error}`. If the stack delete itself did not confirm, the source object and `last_tag` pointer are preserved and the CLI exits non-zero.
 
