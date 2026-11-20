@@ -130,16 +130,13 @@ def _older_page(slug: str) -> tuple[str, int, str]:
     try:
         version, content = package_page.applied_package_page(package_slug)
     except package_page.PackagePageRefused as refused:
-        raise _NoPage(_REFUSED_PAGE[refused.reason]) from None
+        told = {
+            "not_a_package": "the page in force is not a dashboard package that can be drawn",
+            "not_applied": NOT_COMPOSED,
+            "replaced": "the page in force was replaced while it was read; ask again",
+        }
+        raise _NoPage(told[refused.reason]) from None
     return package_slug, version, content
-
-
-#: What the caller is told for each :class:`~kiro_crew.dashboard.package_page.PackagePageRefused` reason.
-_REFUSED_PAGE: dict[str, str] = {
-    "not_a_package": "the page in force is not a dashboard package that can be drawn",
-    "not_applied": NOT_COMPOSED,
-    "replaced": "the page in force was replaced while it was read; ask again",
-}
 
 
 def _shot_root() -> Path:
