@@ -21815,6 +21815,8 @@
         "slack_settings_are_managed_on_the_machine_runnin": "Les paramètres Slack sont gérés sur la machine qui exécute {{productName}} et sont en lecture seule depuis les sessions distantes.",
         "slash_command": "Commande slash",
         "talk_to_your_agents_from_slack_over_socket_mode": "Discutez avec vos agents depuis Slack via Socket Mode. Ajoutez les ID de membres autorisés pour que les bots connectés puissent répondre.",
+        "slack_tools_hint": "Tes agents peuvent aussi rechercher et lire Slack en ton nom, via le serveur MCP de Slack.",
+        "slack_tools_link": "Configure-le sur la carte Slack dans Connexions",
         "the_one_member_who_can_always_interact_with_the": "Ton ID de membre Slack (KIROCREW_OWNER_ID) : dans Slack, ouvre ton profil, sélectionne ⋮, puis Copy member ID. Commence par U ou W.",
         "trigger_word_for_the_slack_slash_command_without": "Mot déclencheur de la commande slash Slack (sans le / initial).",
         "u0123abc456": "U0123ABC456",

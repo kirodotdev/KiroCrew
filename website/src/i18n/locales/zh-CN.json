@@ -20721,6 +20721,8 @@
         "slack_settings_are_managed_on_the_machine_runnin": "Slack 设置在运行 {{productName}} 的机器上管理，远程会话中为只读。",
         "slash_command": "斜杠命令",
         "talk_to_your_agents_from_slack_over_socket_mode": "通过 Socket Mode 从 Slack 与你的代理对话。添加允许的成员 ID，已连接的机器人才能回复。",
+        "slack_tools_hint": "智能体还能通过 Slack 的 MCP 服务器，以你的身份搜索和阅读 Slack。",
+        "slack_tools_link": "在“连接”中的 Slack 卡片上设置",
         "the_one_member_who_can_always_interact_with_the": "Slack 成员 ID（KIROCREW_OWNER_ID）：在 Slack 中打开个人资料，选择 ⋮，然后选择“复制成员 ID”。以 U 或 W 开头。",
         "trigger_word_for_the_slack_slash_command_without": "Slack 斜杠命令的触发词（不含开头的 /）。",
         "u0123abc456": "U0123ABC456",

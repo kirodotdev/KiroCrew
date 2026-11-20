@@ -21268,6 +21268,8 @@
         "slack_settings_are_managed_on_the_machine_runnin": "Slack-Einstellungen werden auf dem Rechner verwaltet, auf dem {{productName}} läuft, und sind aus Remote-Sitzungen nur lesbar.",
         "slash_command": "Slash-Befehl",
         "talk_to_your_agents_from_slack_over_socket_mode": "Sprechen Sie mit Ihren Agenten aus Slack über Socket Mode. Fügen Sie erlaubte Mitglieds-IDs hinzu, damit verbundene Bots antworten können.",
+        "slack_tools_hint": "Deine Agenten können Slack über den MCP-Server von Slack auch in deinem Namen durchsuchen und lesen.",
+        "slack_tools_link": "Auf der Slack-Karte unter Verbindungen einrichten",
         "the_one_member_who_can_always_interact_with_the": "Deine Slack-Mitglieds-ID (KIROCREW_OWNER_ID): Öffne in Slack dein Profil, wähle ⋮ und dann Mitglieds-ID kopieren. Beginnt mit U oder W.",
         "trigger_word_for_the_slack_slash_command_without": "Auslösewort für den Slack-Slash-Befehl (ohne das führende /).",
         "u0123abc456": "U0123ABC456",

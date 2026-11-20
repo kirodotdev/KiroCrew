@@ -20721,6 +20721,8 @@
         "slack_settings_are_managed_on_the_machine_runnin": "Slack 設定は {{productName}} を実行しているマシン上で管理され、リモートセッションから読み取り専用です。",
         "slash_command": "スラッシュコマンド",
         "talk_to_your_agents_from_slack_over_socket_mode": "Socket Mode 経由で Slack からエージェントと対話します。接続されたボットが応答できるように、許可されたメンバー ID を追加してください。",
+        "slack_tools_hint": "エージェントは Slack の MCP サーバーを通じて、あなたとして Slack を検索・閲覧することもできます。",
+        "slack_tools_link": "「接続」の Slack カードで設定する",
         "the_one_member_who_can_always_interact_with_the": "Slack のメンバー ID（KIROCREW_OWNER_ID）。Slack でプロフィールを開き、⋮ を選択してから「メンバー ID をコピー」を選択します。U または W で始まります。",
         "trigger_word_for_the_slack_slash_command_without": "Slack スラッシュコマンドのトリガーワード（先頭の / なし）。",
         "u0123abc456": "U0123ABC456",

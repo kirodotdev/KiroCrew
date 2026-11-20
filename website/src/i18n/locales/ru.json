@@ -22362,6 +22362,8 @@
         "slack_settings_are_managed_on_the_machine_runnin": "Настройки Slack управляются на машине, где запущен {{productName}}, и доступны только для чтения из удалённых сессий.",
         "slash_command": "Slash-команда",
         "talk_to_your_agents_from_slack_over_socket_mode": "Общайтесь со своими агентами из Slack через Socket Mode. Добавьте разрешённые ID участников, чтобы подключённые боты могли отвечать.",
+        "slack_tools_hint": "Твои агенты также могут искать и читать Slack от твоего имени через MCP-сервер Slack.",
+        "slack_tools_link": "Настрой это на карточке Slack в разделе «Подключения»",
         "the_one_member_who_can_always_interact_with_the": "Твой ID участника Slack (KIROCREW_OWNER_ID): в Slack открой свой профиль, выбери ⋮, затем Copy member ID. Начинается с U или W.",
         "trigger_word_for_the_slack_slash_command_without": "Слово-триггер для slash-команды Slack (без ведущего /).",
         "u0123abc456": "U0123ABC456",
