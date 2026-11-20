@@ -1087,7 +1087,7 @@ def test_a_candidate_waits_for_memory_preparation_startup_has_not_published(
     preparing = [True]
     monkeypatch.setattr(memory_startup, "memory_startup_preparing", lambda: preparing[0])
     # A zero poll only yields, so the waits below are a count of loop turns.
-    monkeypatch.setattr(mod, "_MEMORY_TASK_POLL_SECONDS", 0)
+    monkeypatch.setattr(memory_startup, "_TASK_PUBLICATION_POLL_SECONDS", 0)
     state = _make_state(tmp_path)
     _interrupted(state.get_or_create_slot("a"))
 
@@ -1145,17 +1145,15 @@ def test_no_resumed_turn_starts_while_memory_preparation_runs(tmp_path, dispatch
 
 def test_a_run_ends_once_the_backstop_fails_a_wedged_preparation(tmp_path, dispatched, monkeypatch):
     """The backstop fails the fence but cannot cancel the worker thread, so the
-    published task stays pending. Every candidate must still go on once the fence
-    reads failed (its turn then refuses on the memory barrier), the run must send
-    its one frame, and a later press must start a new run instead of getting 409.
+    published task stays pending. Each candidate is then reported failed, the run
+    sends its one frame, and a later press starts a new run instead of getting
+    409. No recovery entry is queued: the drain would park it behind that task.
     """
     from kiro_crew import memory_startup
 
     monkeypatch.setattr(memory_startup, "_active", None)
     # A zero recheck only yields, so the waits below are a count of loop turns.
-    # raising=False: on the pre-fix code the knob does not exist and the test must
-    # fail on the missing behaviour, not on this patch.
-    monkeypatch.setattr(mod, "_MEMORY_FENCE_RECHECK_SECONDS", 0, raising=False)
+    monkeypatch.setattr(memory_startup, "_FENCE_RECHECK_SECONDS", 0)
     state = _make_state(tmp_path)
     for i in range(6):
         _interrupted(state.get_or_create_slot(f"s{i}"))
@@ -1169,7 +1167,7 @@ def test_a_run_ends_once_the_backstop_fails_a_wedged_preparation(tmp_path, dispa
             assert status == 202
             for _ in range(20):
                 await asyncio.sleep(0)
-            assert dispatched.started.await_count == 0, "a live pass still holds them"
+            assert frames.call_count == 0, "a live pass still holds them"
             startup.fail(TimeoutError("memory preparation did not finish"))
             await _drain(state)
             ((_event, outcome),) = [c.args for c in frames.call_args_list]
@@ -1182,7 +1180,11 @@ def test_a_run_ends_once_the_backstop_fails_a_wedged_preparation(tmp_path, dispa
 
     outcome, second = asyncio.run(drive())
 
-    assert sorted(outcome["resumed"]) == [f"s{i}" for i in range(6)]
+    assert outcome["resumed"] == [] and outcome["skipped"] == []
+    assert sorted(f["slot"] for f in outcome["failed"]) == [f"s{i}" for i in range(6)]
+    assert {f["error"] for f in outcome["failed"]} == {"MemoryStartupUnavailable"}
+    assert dispatched.started.await_count == 0
+    assert all(not slot._queue for slot in state._slots.values())
     assert second == 202, "the first run ended, so a later press is not a 409"
 
 
