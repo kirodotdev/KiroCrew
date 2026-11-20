@@ -9,6 +9,7 @@ row an install or an update acts on.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import platform as _platform
 import re
@@ -30,7 +31,10 @@ from kiro_crew.apps.registry_pipeline.caches import (
     _installed_manifest_cache_path,
     _manifest_cache_path,
     _manifest_negative_cache_path,
+    _manifest_source_coordinates,
     _read_external_registry_cache,
+    _read_installed_manifest_cache,
+    _read_manifest_cache,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _communicate_with_timeout
 from kiro_crew.apps.registry_pipeline.gh_credential import _github_https_repo
@@ -51,7 +55,11 @@ from kiro_crew.apps.registry_pipeline.indexes import (
     _load_external_registries,
     _registry_fetch_failure,
 )
-from kiro_crew.apps.registry_pipeline.manifests import _SSH_SIGN_IN_REFUSED, _resolve_manifest
+from kiro_crew.apps.registry_pipeline.manifests import (
+    _SSH_SIGN_IN_REFUSED,
+    _merge_manifest,
+    _resolve_manifest,
+)
 from kiro_crew.apps.registry_pipeline.sources import (
     _edition_registry_rows,
     _effective_registries,
@@ -83,6 +91,146 @@ async def _gather_bounded(entries: list[Any], resolve: Any) -> list[Any]:
             return await resolve(entry)
 
     return await asyncio.gather(*[_one(e) for e in entries], return_exceptions=True)
+
+
+#: How long one store listing waits for its per-app ``app.json`` fetches. A cache
+#: miss costs a ``git clone``, and a source that fails can cost up to the clone
+#: timeout, so a listing that waited for every row of a large registry took
+#: minutes -- and the app page waits for the listing. A fetch still running at
+#: the budget keeps running and fills the cache for the next listing.
+_LISTING_MANIFEST_BUDGET = 5.0
+
+#: Listing fetches keyed by a SHA-256 of source coordinates and entry, while they
+#: run. A listing that arrives while an earlier one's fetches still run joins them
+#: instead of cloning the same source again. The digest keeps each key a fixed size
+#: whatever an external index puts in its rows; done fetches leave, and the cap
+#: bounds the count against a registry with more rows than any real one.
+_MANIFEST_FETCHES: dict[str, asyncio.Task[Any]] = {}
+_MANIFEST_FETCHES_MAX = 2048
+
+#: Listing batches still running past their budget. Held so the loop keeps a
+#: reference to them; each leaves when its fetches finish.
+_MANIFEST_BATCHES: set[asyncio.Future[Any]] = set()
+
+#: One gate per event loop for the shared fetches, so listings that overlap
+#: still run at most ``_MANIFEST_RESOLVE_CONCURRENCY`` clones in all.
+_MANIFEST_FETCH_GATE: dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
+
+
+def _forget_manifest_fetch(key: str, task: asyncio.Task[Any]) -> None:
+    if _MANIFEST_FETCHES.get(key) is task:
+        del _MANIFEST_FETCHES[key]
+
+
+async def _resolve_manifest_once(entry: dict[str, Any]) -> dict[str, Any]:
+    """``_resolve_manifest``, shared by every listing that asks while it runs."""
+    # Local imports: every module-level name here is re-exported by the registry
+    # facade, and stdlib modules are not part of its surface.
+    import copy
+    import hashlib
+
+    loop = asyncio.get_running_loop()
+    # The whole entry is in the key, not only its coordinates: the merged row keeps
+    # the entry's ``_registry`` and ``_index_author``, so a seed row and an external
+    # row naming the same source must not answer with each other's row.
+    key = hashlib.sha256(
+        json.dumps(
+            [_manifest_source_coordinates(entry), entry], sort_keys=True, default=repr
+        ).encode()
+    ).hexdigest()
+    task = _MANIFEST_FETCHES.get(key)
+    if task is None or task.get_loop() is not loop:
+        gate = _MANIFEST_FETCH_GATE.get(loop)
+        if gate is None:
+            # Gates of closed loops are dropped here, so the map holds one entry.
+            _MANIFEST_FETCH_GATE.clear()
+            gate = _MANIFEST_FETCH_GATE[loop] = asyncio.Semaphore(_MANIFEST_RESOLVE_CONCURRENCY)
+
+        # The shared fetch works on its own copy: the caller stamps trust fields on
+        # its entry (``_apply_trust_fields`` pops ``_index_author``) while a fetch
+        # past the budget still runs for listings that join it later.
+        fetch_entry = copy.deepcopy(entry)
+
+        async def _gated() -> dict[str, Any]:
+            async with gate:
+                return await _resolve_manifest(fetch_entry)
+
+        task = loop.create_task(_gated())
+        if len(_MANIFEST_FETCHES) < _MANIFEST_FETCHES_MAX:
+            _MANIFEST_FETCHES[key] = task
+            task.add_done_callback(lambda done: _forget_manifest_fetch(key, done))
+    # Shielded: a listing that stops waiting must not cancel a fetch it shares.
+    # Each waiter gets its own deep copy, because the listing stamps install status
+    # and trust fields on the row and ``_apply_trust_fields`` pops ``_index_author``;
+    # no row object crosses between the shared fetch and a listing.
+    return copy.deepcopy(await asyncio.shield(task))
+
+
+def _stale_manifest_row(entry: dict[str, Any]) -> dict[str, Any]:
+    """A deep copy of *entry* dressed from its last cached manifest however old, else bare.
+
+    Reads exactly the caches ``_resolve_manifest`` reads, in its order: the source's
+    cache, then the installed checkout's, each whatever its age. Bare is the row a
+    failed fetch gives. A copy on every path, because the shared fetch for *entry*
+    may still be running. Blocking: reads the cache files.
+    """
+    import copy  # local: see ``_resolve_manifest_once``
+
+    if not _entry_git_url(entry):
+        return copy.deepcopy(entry)
+    cached = _read_manifest_cache(entry, ignore_ttl=True) or _read_installed_manifest_cache(
+        entry, ignore_ttl=True
+    )
+    return copy.deepcopy(_merge_manifest(entry, cached) if cached else entry)
+
+
+async def _gather_listing_manifests(
+    entries: list[dict[str, Any]], resolve: Any, deadline: float | None = None
+) -> list[Any]:
+    """``_gather_bounded`` for a store listing: answers by the listing's *deadline*.
+
+    *deadline* is on the running loop's clock. A listing computes it once, at
+    ``_LISTING_MANIFEST_BUDGET`` from its start, and hands it to each batch, so all
+    its batches together wait at most the budget. ``None`` gives this batch the
+    whole budget. A row still resolving at the deadline answers through
+    ``_stale_manifest_row``. Its fetch keeps running in the background and fills
+    the cache.
+    """
+    loop = asyncio.get_running_loop()
+    if deadline is None:
+        deadline = loop.time() + _LISTING_MANIFEST_BUDGET
+    settled: dict[int, Any] = {}
+
+    async def _settle(item: tuple[int, dict[str, Any]]) -> Any:
+        index, entry = item
+        settled[index] = await resolve(entry)
+        return settled[index]
+
+    batch = asyncio.ensure_future(_gather_bounded(list(enumerate(entries)), _settle))
+    _MANIFEST_BATCHES.add(batch)
+    batch.add_done_callback(_MANIFEST_BATCHES.discard)
+    try:
+        return await asyncio.wait_for(asyncio.shield(batch), max(0.0, deadline - loop.time()))
+    except TimeoutError:
+        pass
+    pending = [i for i in range(len(entries)) if i not in settled]
+    logger.info(
+        "store listing answered with %d of %d app manifests still fetching",
+        len(pending),
+        len(entries),
+    )
+    stale = await asyncio.gather(
+        *(asyncio.to_thread(_stale_manifest_row, entries[i]) for i in pending),
+        return_exceptions=True,
+    )
+    import copy  # local: see ``_resolve_manifest_once``
+
+    # The batch keeps running and still holds the settled rows, so the listing takes
+    # copies of them as well.
+    results: list[Any] = [copy.deepcopy(settled.get(i)) for i in range(len(entries))]
+    for i, row in zip(pending, stale, strict=True):
+        results[i] = row
+    return results
 
 
 # Source type prefix for registry-installed apps.
@@ -728,8 +876,11 @@ async def _append_external_registry_apps(
     rows: list[dict[str, Any]],
     reserved_names: set[Any],
     installed_map: dict[str, dict[str, Any]],
+    deadline: float | None = None,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Append user-configured external-registry apps to *rows*; return ``(rows, detected)``.
+
+    *deadline* is the listing's manifest deadline (``_gather_listing_manifests``).
 
     The SINGLE site where external registries merge into a store listing, called
     by both ``list_registry`` (offline fallback) and ``list_catalog_apps`` (online
@@ -768,7 +919,7 @@ async def _append_external_registry_apps(
     # installed version until that checkout moves. The index is then the only
     # listing input that has seen the registry's newer release.
     index_versions = [e.get("version") for e in kept]
-    resolved = await _gather_bounded(kept, _resolve_manifest)
+    resolved = await _gather_listing_manifests(kept, _resolve_manifest_once, deadline=deadline)
     kept = [r if isinstance(r, dict) else kept[i] for i, r in enumerate(resolved)]
     for row, index_version in zip(kept, index_versions, strict=True):
         # The index may only RAISE the version: a manifest fetched from the remote
@@ -877,10 +1028,21 @@ async def list_registry() -> list[dict[str, Any]]:
     # what the catalog already told us is the per-app network cost this document
     # exists to remove -- and it is O(N) in the number of third-party apps, which
     # is exactly the number the store is meant to grow.
-    resolved = await _gather_bounded(
-        entries, lambda e: _identity(e) if _is_catalog_row(e) else _resolve_manifest(e)
+    #
+    # Catalog rows never enter the listing's fetch queue either: one queued behind
+    # slow clones would hit the deadline and be dressed from the agent-writable
+    # manifest cache, over the catalog's own identity, version and permissions.
+    #
+    # One deadline for the whole listing, shared with the external batch below, so
+    # a cold listing waits ``_LISTING_MANIFEST_BUDGET`` in all, not once per batch.
+    deadline = asyncio.get_running_loop().time() + _LISTING_MANIFEST_BUDGET
+    fetch_at = [i for i, e in enumerate(entries) if not _is_catalog_row(e)]
+    resolved = await _gather_listing_manifests(
+        [entries[i] for i in fetch_at], _resolve_manifest_once, deadline=deadline
     )
-    entries = [r if isinstance(r, dict) else entries[i] for i, r in enumerate(resolved)]
+    for i, row in zip(fetch_at, resolved, strict=True):
+        if isinstance(row, dict):
+            entries[i] = row
 
     # Probe the seed/catalog rows, then append external registries at the single
     # shared merge site. Reserving every seed/catalog name means an external row
@@ -888,7 +1050,7 @@ async def list_registry() -> list[dict[str, Any]]:
     # site enforces.
     detected = await _detect_installed_probe(entries, installed_map)
     entries, external_detected = await _append_external_registry_apps(
-        entries, {e.get("name") for e in entries}, installed_map
+        entries, {e.get("name") for e in entries}, installed_map, deadline=deadline
     )
     detected |= external_detected
 
@@ -1017,6 +1179,9 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
     rows = await asyncio.to_thread(official_catalog.list_catalog_rows)
     if not rows:
         return []
+    # One manifest deadline for the whole listing, shared by the edition batch and
+    # the external batch, so a cold listing waits ``_LISTING_MANIFEST_BUDGET`` in all.
+    deadline = asyncio.get_running_loop().time() + _LISTING_MANIFEST_BUDGET
     installable = await asyncio.to_thread(_load_registry_file)
     seed_by_name = {
         e["name"]: e for e in installable if isinstance(e, dict) and isinstance(e.get("name"), str)
@@ -1046,7 +1211,9 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
         # ``version`` come from the app's own app.json.
         for row in edition_rows:
             row["_index_author"] = row.get("author")
-        resolved_edition = await _gather_bounded(edition_rows, _resolve_manifest)
+        resolved_edition = await _gather_listing_manifests(
+            edition_rows, _resolve_manifest_once, deadline=deadline
+        )
         edition_rows = [
             r if isinstance(r, dict) else edition_rows[i] for i, r in enumerate(resolved_edition)
         ]
@@ -1086,7 +1253,7 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
     installed_map = {a["name"]: a for a in installed}
     fresh_installable, (external_rows, external_detected) = await asyncio.gather(
         _fresh_installable_rows(),
-        _append_external_registry_apps([], reserved_names, installed_map),
+        _append_external_registry_apps([], reserved_names, installed_map, deadline=deadline),
     )
     installable_names |= set(fresh_installable)
     rows = [
