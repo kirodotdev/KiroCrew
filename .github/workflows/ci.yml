@@ -1103,6 +1103,7 @@ jobs:
             trap 'kill "$child" 2>/dev/null' TERM
             wait "$child" || status=$?
             echo "$SECONDS" > "$logs/$tool.seconds"
+            times > "$logs/$tool.times"
             exit "$status"
           }
 
@@ -1119,6 +1120,17 @@ jobs:
             done
           }
 
+          diag() {
+            echo "nproc=$(nproc) loadavg=$(cat /proc/loadavg)"
+            python3 -c "import os, multiprocessing; print('cpu_count', multiprocessing.cpu_count(), 'affinity', len(os.sched_getaffinity(0)))"
+            for f in /sys/fs/cgroup/cpu.max /sys/fs/cgroup/cpu.stat /sys/fs/cgroup/cpu/cpu.cfs_quota_us /sys/fs/cgroup/cpu/cpu.cfs_period_us /sys/fs/cgroup/cpu/cpu.shares /sys/fs/cgroup/cpu/cpu.stat /sys/fs/cgroup/cpuset/cpuset.cpus /sys/fs/cgroup/cpuset.cpus.effective; do
+              if [ -r "$f" ]; then echo "$f: $(tr "\n" " " < "$f")"; fi
+            done
+            grep "model name" /proc/cpuinfo | sort | uniq -c
+            grep -E "^(MemAvailable|MemTotal)" /proc/meminfo
+            head -1 /proc/stat
+          }
+          echo "::group::throwaway diagnostics (before)"; diag; echo "::endgroup::"
           timed flake8 src/kiro_crew test conftest.py xdist_budget.py &
           flake8_pid=$!
           timed mypy src/kiro_crew/ &
@@ -1136,6 +1148,7 @@ jobs:
           trap - INT TERM
 
           report
+          echo "::group::throwaway diagnostics (after)"; diag; for tool in flake8 mypy; do echo "$tool times (shell user sys / children user sys):"; cat "$logs/$tool.times"; done; echo "::endgroup::"
 
           failed=0
           if [ "$flake8_status" -ne 0 ]; then
