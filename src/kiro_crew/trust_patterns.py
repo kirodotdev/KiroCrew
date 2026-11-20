@@ -9,7 +9,6 @@ reaching into a UI runner or synthesizing display titles.
 from __future__ import annotations
 
 import fnmatch
-import glob
 import json
 import os
 import re
@@ -246,10 +245,15 @@ def approval_display_command(
 
 
 def _tool_matches(pattern: str, tool_name: str) -> bool:
-    """Match the existing case-insensitive fnmatch trust language."""
+    """Match the existing case-insensitive fnmatch trust language.
+
+    ``fnmatchcase`` on lowered strings, not ``fnmatch``: on Windows ``fnmatch``
+    runs ``ntpath.normcase``, which also folds ``/`` into ``\\``, so a grant for
+    ``del /q foo`` would approve ``del \\q foo``.
+    """
     if pattern == "*":
         return True
-    return fnmatch.fnmatch(tool_name.lower(), pattern.lower())
+    return fnmatch.fnmatchcase(tool_name.lower(), pattern.lower())
 
 
 def _mask_quoted_separators(
@@ -524,9 +528,22 @@ def base_consent_pattern(base_command: str) -> str:
     return ",".join(f"{base.strip()} *" for base in base_command.split(",") if base.strip())
 
 
+_GLOB_MAGIC_RE = re.compile(r"([*?[])")
+
+
+def _escape_glob(text: str) -> str:
+    """Escape every fnmatch metacharacter in ``text``.
+
+    Not ``glob.escape``: on Windows it leaves the ``ntpath.splitdrive`` part
+    unescaped, so the ``?`` of ``\\\\?\\C:`` or the ``*`` of ``\\\\srv*\\share``
+    would keep wildcard power.
+    """
+    return _GLOB_MAGIC_RE.sub(r"[\1]", text)
+
+
 def exact_trust_pattern(command: str) -> str:
     """Encode an exact command as an fnmatch pattern with no wildcard power."""
-    return glob.escape(command)
+    return _escape_glob(command)
 
 
 def base_trust_patterns(base_command: str) -> set[str]:
@@ -535,7 +552,7 @@ def base_trust_patterns(base_command: str) -> set[str]:
     for base in (part.strip() for part in base_command.split(",")):
         if not base or ENV_ASSIGNMENT_RE.match(base):
             continue
-        literal = glob.escape(base)
+        literal = _escape_glob(base)
         patterns.update((literal, f"{literal} *"))
     return patterns
 
