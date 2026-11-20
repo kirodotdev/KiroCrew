@@ -157,7 +157,8 @@ _UNREADABLE_STORE = "<the whole cron store was unreadable>"
 
 
 #: Job-record fields that widen what a job may do when it fires: an approval mode,
-#: a working folder, environment, an agent order, a channel and a model. A job from
+#: a working folder, environment, an agent order, a channel (with its delivery pin:
+#: channel type, target id, thread) and a model. A job from
 #: another install loses them on restore; the loader's empty defaults take over.
 _FOREIGN_JOB_FIELDS = (
     "approval_mode",
@@ -167,6 +168,9 @@ _FOREIGN_JOB_FIELDS = (
     "execution_context",
     "agent_sequence",
     "channel",
+    "channel_type",
+    "target_id",
+    "thread_ts",
     "model",
 )
 

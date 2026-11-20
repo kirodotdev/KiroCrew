@@ -79,6 +79,19 @@ def test_helper_pauses_a_message_only_job_and_resets_its_fields(tmp_path):
     assert job["message"] == "check the build"
 
 
+def test_helper_resets_the_channel_delivery_pin(tmp_path):
+    path = _store(
+        tmp_path,
+        [_risky_job(channel_type="discord", target_id="123456", thread_ts="1700000000.000100")],
+    )
+
+    _sanitize_imported_crons(path, hold_all=True, known_agents=frozenset())
+
+    job = _read(path)["nightly"]
+    for field in ("channel_type", "target_id", "thread_ts"):
+        assert field not in job, field
+
+
 def test_helper_keeps_an_agent_that_exists_here_and_drops_one_that_does_not(tmp_path):
     path = _store(
         tmp_path,
