@@ -79,6 +79,22 @@ class TestOnWindows:
     def test_other_namespaces_and_named_streams_stay_as_written(self, item):
         assert not matching._match_path(item, SECRET)
 
+    @pytest.mark.parametrize(
+        "item",
+        [
+            r"\\localhost\C$\data\secret\k",
+            r"\\127.0.0.1\c$\data\secret\k",
+            r"\\?\UNC\localhost\C$\data\secret\k",
+            r"\??\UNC\localhost\C$\data\secret\k",
+        ],
+    )
+    def test_a_loopback_admin_share_meets_the_deny_its_plain_spelling_meets(self, item):
+        assert matching._match_path(item, r"C:\data\secret\*")
+        assert matching._match_path(item, SECRET)
+
+    def test_a_drive_share_on_another_host_stays_as_written(self):
+        assert not matching._match_path(r"\\fileserver\C$\data\secret\k", SECRET)
+
     def test_a_policy_deny_refuses_every_alias(self):
         ceiling = parse_policy(
             _policy_body(filesystem={"read": {"mode": "deny", "deny": [r"C:\data\secret\**"]}})
