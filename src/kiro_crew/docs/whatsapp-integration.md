@@ -242,10 +242,11 @@ and exact, so `/stop the presses` reaches the agent as a sentence.
   `3` (trust this session). No reply within five minutes denies. Only the linked
   account can answer, so an allow-listed peer or a group member cannot approve
   anything.
-- **Photos, voice notes and documents work in both directions**: send one and the
-  agent reads it (a voice note is transcribed); when the agent produces an image
-  it arrives as a picture rather than a file path. Anything that cannot be read
-  (a location, a poll, a contact card) is acknowledged rather than ignored.
+- **Photos, voice notes and documents you send are read** (a voice note is
+  transcribed), and when a reply references a local image it arrives as a picture
+  rather than a file path. The `file_send` tool has no WhatsApp leg: a file it
+  sends reaches you as a dashboard card, not in the chat. Anything that cannot be
+  read (a location, a poll, a contact card) is acknowledged rather than ignored.
 - **A voice note can be answered with a voice note**: set
   `whatsapp.auto_reply_to_voice` to `true` and the agent speaks its answer as a
   voice note after the text, using your `voice_reply` settings. It needs
