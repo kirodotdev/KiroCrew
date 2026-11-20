@@ -190,14 +190,16 @@ def test_a_custom_sign_in_runs_end_to_end_on_the_owners_port_and_refreshes(vendo
         assert asked == [(port, "/callback")] and "runner" not in crew_oauth_dcr._listener
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
         assert query["redirect_uri"] == [f"http://localhost:{port}/callback"]
-        async with aiohttp.ClientSession() as s:
-            params = {"state": query["state"][0], "code": "c"}
-            target = f"http://127.0.0.1:{sign_in.bound_port}/callback"
-            async with s.get(target, params=params) as r:
-                assert r.status == 200
+        finish = asyncio.ensure_future(sign_in.finish())
         try:
-            await sign_in.finish()
+            async with aiohttp.ClientSession() as s:
+                params = {"state": query["state"][0], "code": "c"}
+                target = f"http://127.0.0.1:{sign_in.bound_port}/callback"
+                async with s.get(target, params=params) as r:
+                    assert r.status == 200
+            await asyncio.wait_for(finish, 30)
         finally:
+            finish.cancel()
             await sign_in.shutdown()
         return await crew_oauth.access_token(key, force=True)
 
@@ -464,15 +466,17 @@ def _signed_in_with(vendor, client_id, token_answer):
         sign_in = crew_oauth.SignIn(crew_oauth.custom_key("acme", MCP), (), custom)
         url = await sign_in.start()
         state = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["state"][0]
-        async with aiohttp.ClientSession() as s:
-            target = f"http://127.0.0.1:{sign_in.bound_port}/callback"
-            async with s.get(target, params={"state": state, "code": "c"}) as r:
-                assert r.status == 200
+        finish = asyncio.ensure_future(sign_in.finish())
         try:
-            await sign_in.finish()
+            async with aiohttp.ClientSession() as s:
+                target = f"http://127.0.0.1:{sign_in.bound_port}/callback"
+                async with s.get(target, params={"state": state, "code": "c"}) as r:
+                    assert r.status == 200
+            await asyncio.wait_for(finish, 30)
         except CrewOAuthError as exc:
             return exc.code
         finally:
+            finish.cancel()
             await sign_in.shutdown()
         return None
 
