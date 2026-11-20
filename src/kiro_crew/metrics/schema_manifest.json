@@ -20,6 +20,7 @@
             "app"
           ]
         },
+        "entity_version": {},
         "via": {
           "values": [
             "default",
@@ -43,6 +44,63 @@
             "error",
             "ok",
             "other"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.app.uninstalled",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "uninstalled"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "entity_version": {},
+        "keep_data": {
+          "values": [
+            "false",
+            "true"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.app.updated",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "updated"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "entity_version": {},
+        "via": {
+          "values": [
+            "default",
+            "other",
+            "store"
           ]
         }
       }

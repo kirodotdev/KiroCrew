@@ -96,8 +96,11 @@ _FEATURES = frozenset(
         "kirocrew.memory.recalled",
         "kirocrew.lesson.injected",
         "kirocrew.skill.lazy_load.count",
-        # Entity is app_public_id: a built-in or store name, else `private`.
+        # Entity is app_public_id: a built-in or store name, else `private`;
+        # entity_version is app_public_version.
         "kirocrew.app.installed",
+        "kirocrew.app.updated",
+        "kirocrew.app.uninstalled",
         "kirocrew.channel.message.received",
         "kirocrew.ui.control.clicked",
     }

@@ -104,6 +104,28 @@ from kiro_crew.metrics.recorder import MetricsRecorder
             {"app": "weather-app", "via": "store"},
             {"Feature": "app", "Activity": "installed", "Entity": "weather-app", "via": "store"},
         ),
+        (
+            "kirocrew.app.updated",
+            {"app": "weather-app", "via": "store", "entity_version": "1.1.0"},
+            {
+                "Feature": "app",
+                "Activity": "updated",
+                "Entity": "weather-app",
+                "via": "store",
+                "entity_version": "1.1.0",
+            },
+        ),
+        (
+            "kirocrew.app.uninstalled",
+            {"app": "private", "entity_version": "private", "keep_data": "true"},
+            {
+                "Feature": "app",
+                "Activity": "uninstalled",
+                "Entity": "private",
+                "entity_version": "private",
+                "keep_data": "true",
+            },
+        ),
     ],
 )
 def test_each_metric_gets_its_shape(name, attrs, expected):
