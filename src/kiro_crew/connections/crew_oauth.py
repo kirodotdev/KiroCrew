@@ -74,9 +74,8 @@ DCR_SLUGS = frozenset({"atlassian", "notion", "linear", "stripe", "vercel", "git
 #: published ``issuer`` (RFC 9207), set only where the vendor's public metadata also says its
 #: authorization response carries ``iss`` (Google: its metadata's
 #: ``authorization_response_iss_parameter_supported``): a callback whose ``iss`` names any
-#: other server is refused. An entry without one (GitHub,
+#: other server, or is missing, is refused. An entry without one (GitHub,
 #: Asana, Slack: no documented ``iss`` in the response) is not checked.
-#: shortcut: an ``iss`` the vendor leaves out is accepted; require it per entry once confirmed.
 _ENDPOINTS: dict[str, dict[str, Any]] = {
     "github": {
         "authorize": "https://github.com/login/oauth/authorize",
@@ -847,8 +846,11 @@ class SignIn:
 
             return iss_ok(self._dcr.client, iss)
         issuer = _ENDPOINTS.get(self.slug, {}).get("issuer")
-        if not issuer or not iss:
+        if not issuer:
             return True
+        if not iss:
+            # The vendor says its response carries iss, so an answer without it is refused.
+            return False
         from kiro_crew.connections.l0_probe import same_issuer
 
         try:
