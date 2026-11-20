@@ -37,6 +37,9 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew import work_holders
+from kiro_crew.work_holders import Holder
+
 logger = logging.getLogger(__name__)
 
 #: How long after the last typed message in any chat the gateway still counts
@@ -104,6 +107,10 @@ class Quiescence:
     quiet_window_secs: float = QUIET_WINDOW_SECS
     #: Seconds of hysteresis left after the census last read busy.
     settle_remaining_secs: float = 0.0
+    #: What the counts above are made of, one per named thing, longest running
+    #: first (``work_holders.summarize``). Empty when nothing is counted. Read
+    #: through :meth:`named_holders` only.
+    holders: tuple[Holder, ...] = ()
 
     @property
     def busy(self) -> int:
@@ -121,8 +128,18 @@ class Quiescence:
     def quiescent(self) -> bool:
         return self.busy == 0 and self.quiet_remaining_secs <= 0 and self.settle_remaining_secs <= 0
 
+    def named_holders(self) -> tuple[list[dict[str, object]], int]:
+        """The first holders as JSON entries, and how many more there are.
+
+        HOST ONLY. A name identifies another session's or job's work, so it goes
+        to a caller entitled to see all of them (the restart idle check, which
+        takes the local secret on loopback) and never into :meth:`payload`, a
+        broadcast or a log line, which reach every dashboard client and app.
+        """
+        return work_holders.payload(self.holders)
+
     def payload(self) -> dict[str, object]:
-        """The counts a client shows, whole numbers only."""
+        """The counts a client shows, whole numbers only. Never a holder's name."""
         return {
             "turns": self.turns,
             "background": self.background,
@@ -134,59 +151,96 @@ class Quiescence:
         }
 
 
-def _slot_values(state: Any) -> list[Any]:
+def _slot_items(state: Any) -> list[tuple[Any, Any]]:
     slots = getattr(state, "_slots", None)
-    return list(slots.values()) if isinstance(slots, dict) else []
+    return list(slots.items()) if isinstance(slots, dict) else []
 
 
-def queued_message_count(orchestrator: Any) -> int:
-    """Messages waiting behind a turn: channel session queues and dashboard slot queues.
+def queued_message_holders(orchestrator: Any) -> list[Holder]:
+    """Messages waiting behind a turn, by the session or slot they wait in.
 
-    A source that cannot answer counts as one waiting message, so the answer
+    A source that cannot answer is one ``unreadable`` holder, so the answer
     fails toward "not quiescent".
     """
-    total = 0
+    held: list[Holder] = []
     sessions = getattr(orchestrator, "sessions", None)
+    state = getattr(orchestrator, "dashboard_state", None)
+    slot_names = work_holders.slot_names(state)
     # The channel queues live on the allocation service's session table.
     boundary = getattr(sessions, "_allocation_boundary", None)
     if callable(boundary):
         try:
-            total += sum(len(s.queue) for s in list(boundary()._sessions.values()))
+            held.extend(
+                Holder(
+                    work_holders.QUEUED,
+                    work_holders.session_name(key, slot_names),
+                    count=len(s.queue),
+                )
+                for key, s in list(boundary()._sessions.items())
+                if len(s.queue) > 0
+            )
         except Exception:
             logger.warning("quiescence: channel queue count failed", exc_info=True)
-            total += 1
-    for slot in _slot_values(getattr(orchestrator, "dashboard_state", None)):
+            held = [Holder(work_holders.UNREADABLE, "channel queue")]
+    for key, slot in _slot_items(state):
         try:
-            total += len(getattr(slot, "_queue", None) or ())
+            waiting = len(getattr(slot, "_queue", None) or ())
+            if waiting:
+                held.append(Holder(work_holders.QUEUED, str(key), count=waiting))
         except Exception:
             logger.warning("quiescence: slot queue count failed", exc_info=True)
-            total += 1
-    return total
+            held.append(Holder(work_holders.UNREADABLE, "slot queue"))
+    return held
 
 
-def pending_approval_count(orchestrator: Any) -> int:
-    """Approval cards waiting for a person: dashboard slots and typed-reply prompts."""
-    total = 0
+def queued_message_count(orchestrator: Any) -> int:
+    """Messages waiting behind a turn: channel session queues and dashboard slot queues."""
+    return work_holders.total(queued_message_holders(orchestrator))
+
+
+def pending_approval_holders(orchestrator: Any) -> list[Holder]:
+    """Approval cards waiting for a person, by slot; typed-reply prompts as a count."""
+    held: list[Holder] = []
     state = getattr(orchestrator, "dashboard_state", None)
     if state is not None:
         # circular import: the dashboard package imports the gateway at load.
         from kiro_crew.dashboard.slot_retention import has_pending_approval
 
-        for slot in _slot_values(state):
+        for key, slot in _slot_items(state):
             try:
                 if has_pending_approval(state, slot):
-                    total += 1
+                    held.append(Holder(work_holders.APPROVAL, str(key)))
             except Exception:
                 logger.warning("quiescence: slot approval probe failed", exc_info=True)
-                total += 1
+                held.append(Holder(work_holders.UNREADABLE, "slot approval"))
     from kiro_crew.messaging import approval
 
     try:
-        total += approval.pending_count()
+        typed = max(0, int(approval.pending_count()))
+        if typed:
+            held.append(Holder(work_holders.APPROVAL, count=typed))
     except Exception:
         logger.warning("quiescence: typed approval probe failed", exc_info=True)
-        total += 1
-    return total
+        held.append(Holder(work_holders.UNREADABLE, "typed approval"))
+    return held
+
+
+def pending_approval_count(orchestrator: Any) -> int:
+    """Approval cards waiting for a person: dashboard slots and typed-reply prompts."""
+    return work_holders.total(pending_approval_holders(orchestrator))
+
+
+def _work_holders(orchestrator: Any) -> list[Holder]:
+    """The in-flight census by name, or ``[]`` where the orchestrator has none to give."""
+    census = getattr(orchestrator, "_in_flight_work_census", None)
+    if not callable(census):
+        return []
+    try:
+        held = census()
+    except Exception:
+        logger.warning("quiescence: holder census failed", exc_info=True)
+        return []
+    return [h for h in held if isinstance(h, Holder)] if isinstance(held, list) else []
 
 
 def assess(
@@ -202,8 +256,16 @@ def assess(
     """
     moment = time.monotonic() if now is None else now
     turns, background = orchestrator._in_flight_work_counts()
-    queued = queued_message_count(orchestrator)
-    approvals = pending_approval_count(orchestrator)
+    waiting = queued_message_holders(orchestrator)
+    cards = pending_approval_holders(orchestrator)
+    queued = work_holders.total(waiting)
+    approvals = work_holders.total(cards)
+    # Named only when something is counted: the counts above decide, the
+    # names describe them.
+    busy = turns + background + queued + approvals > 0
+    holders = (
+        work_holders.summarize([*_work_holders(orchestrator), *waiting, *cards]) if busy else ()
+    )
     ledger = _ledger(getattr(orchestrator, "sessions", None), create=True)
     since_input: float | None = None
     settle_left = 0.0
@@ -222,6 +284,7 @@ def assess(
         since_input_secs=since_input,
         quiet_window_secs=max(0.0, quiet_window_secs),
         settle_remaining_secs=settle_left,
+        holders=holders,
     )
 
 

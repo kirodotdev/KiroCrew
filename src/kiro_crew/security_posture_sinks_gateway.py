@@ -1073,4 +1073,13 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "call sent is replaced first (a bare token matches no secret pattern) and the "
         "credential scanner then runs over the text, cut to 300 characters.",
     ),
+    (
+        "The work a restart is waiting on",
+        "work_holders.py",
+        "The names a busy restart idle check lists to the CLI on the gateway "
+        "host: dashboard slot keys and cron job names. Terminal control "
+        "sequences and format characters are dropped, then credentials, inside "
+        "URLs too, are redacted before the name is cut to 64 characters; the "
+        "CLI repeats it on what it prints.",
+    ),
 )

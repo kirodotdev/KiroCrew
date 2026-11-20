@@ -764,6 +764,69 @@ take the hold in `cli.main` after argument parsing.
   user-clicked restart below. No unattended path reads it. A source that cannot answer (a queue
   or an approval probe that raises, the typed-reply prompts included) counts as
   one waiting item, so the answer fails toward busy.
+- **The census names what it counts, for the host only.** `_in_flight_work_census`
+  is the one walk: it returns a `work_holders.Holder` (`kind`, `name`,
+  `since_secs`, `count`) for every item, and `_in_flight_work_counts` is the sum
+  over those holders, so a number and the names behind it cannot disagree.
+  `quiescence.assess` adds the queue and approval holders
+  (`queued_message_holders`, `pending_approval_holders`) and, only when
+  something is counted, puts the merged list on `Quiescence.holders`: one entry
+  per `(kind, name)`, longest running first, entries with no recorded start
+  last. The counts decide; the holders describe them and change no admission
+  outcome. `kind` is one of `turn`, `script`, `workflow`, `subagent`,
+  `channel_handler`, `queued`, `approval`, `callback`, `refusal_write`,
+  `update_build`, `task_runner`, or `unreadable` for a source that raised (its
+  `name` says which source and nothing else). Only two kinds of work are
+  named, each by an identifier a list route already shows the one reader of
+  names: a dashboard slot's turn, queue or approval by its slot key (`key`,
+  `running`, `queue_depth` and `pending_approval` in `GET /api/chat/slots`),
+  and a script or command cron by its job name and age (`name`, `is_running`
+  and `running_since` in `GET /api/crons`). Everything else is counted
+  unnamed: a session with no slot, a workflow, a channel handler, a job the
+  schedule list leaves out (a goal check-in, the stale-wake job). A name is
+  never message text, a session title or a path.
+  - **Who may read a name.** A name identifies another session's or job's work,
+    which the slot-visibility filter withholds from an app token, so names have
+    ONE reader: `Quiescence.named_holders()`, called only by the host-only
+    `POST /api/restart/when-idle` (the local secret's `internal_auth` mark and a
+    loopback peer), whose busy answer carries the first five as `holders` and
+    the rest as the number `holders_more`. The secret proves the call came from
+    inside, not who made it, so the handler adds them only for a caller that
+    declares no session and carries no app claim
+    (`restart_gate._may_read_names`): the CLI on the host. A caller acting for a
+    session (an app's or the person's script cron, an agent's or sub-agent's
+    tool call, with `X-Session-Key`) gets the counts alone. This is the caller
+    `GET /api/crons` and `GET /api/chat/slots` already answer in full; a
+    process that holds the raw secret and omits its session key is that caller
+    on every internal route, and this one tells it nothing those two do not. Everything a dashboard client or an
+    app can receive carries the counts alone: `Quiescence.payload()`,
+    `RestartAdmission.detail()` (the `update_progress` error step, a tier-0
+    event delivered to every app token, and the "Restart refused" log line) and
+    `POST /api/restart`'s `409 work_in_flight`.
+    `kirocrew restart --when-idle` prints the names after the counts only when
+    its stdout is a terminal; a captured run (Remote Crew over SSH or SSM, whose
+    output tail the calling dashboard relays) prints the counts alone.
+  - **What a name may contain.** A name can be text an agent or a remote party
+    chose (a cron job name, a session key). `Holder.__post_init__` cleans every
+    one where it is made (`work_holders.clean_name`:
+    `terminal_safe.safe_terminal_line`, format characters such as the bidi
+    overrides dropped, whitespace runs folded, `security.redact` for credentials
+    and credentials inside URLs, then at most 64 characters), and
+    `work_holders.describe` cleans the kind and name of each entry it is handed
+    again, since the CLI reads them from another process.
+  - **One piece of work, one entry.** Work a session runs is named by its
+    dashboard slot: the provider and the channel queue are filed under the
+    session key (`effective_session_key`, `dashboard:<slot>` or a channel-born
+    slot's channel key) and the slot task under the slot key, and
+    `work_holders.slot_names` maps the first onto the second. Unnamed work is an
+    entry with an empty name and a `count`.
+  - **Ages.** Only a script or command cron has a `since_secs`, from the cron
+    service: `cron_svc.running_since` for the start and `cron_svc.get_job`
+    (cache-only) for the name. A run in `_running_script_ids` that the service cannot
+    describe (no service, a job removed mid-run, a claim already taken) is still
+    counted and listed by kind only.
+  - An orchestrator that has no `_in_flight_work_census` (a stub, an edition's
+    own) answers with its counts and an empty list.
 - **The dashboard restart takes the same fence.** `updates_apply._restart_gateway`
   calls `DashboardState._restart_admission` (`restart_admission.admit_restart`,
   wired by `restart_admission.wire` at dashboard boot) after it resolves its
