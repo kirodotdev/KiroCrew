@@ -1,11 +1,11 @@
 ---
 title: "A first-party app's own agent calls the app's own declared tools without a prompt"
-status: accepted
+status: implemented
 author: rayrayxu, with kirocrew
 created: 2026-11-19
-last-audited: 2026-11-19
+last-audited: 2026-11-20
 audited-at: c0d672b7805
-doc-pr: null
+doc-pr: 39570
 implementation-prs: [39500]
 tracking-issues: [26967]
 supersedes: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: App Own-Agent Tools Grant
 
-- Status: accepted. Accepted 2026-11-20 by Bolin Chen (maintainer, bolichen97) in [the design sign-off on #39570](https://github.com/kirodotdev/KiroCrew/pull/39570#pullrequestreview-5987012246). Nothing is on main. This document lands first because the change alters when a tool call asks for approval, and the First Principles lane reads that decision off the base branch.
+- Status: implemented by [#39500](https://github.com/kirodotdev/KiroCrew/pull/39500). Accepted 2026-11-20 by Bolin Chen (maintainer, bolichen97) in [the design sign-off on #39570](https://github.com/kirodotdev/KiroCrew/pull/39570#pullrequestreview-5987012246). This document landed first because the change alters when a tool call asks for approval, and the First Principles lane reads that decision off the base branch.
 - Tracking issue: [#26967](https://github.com/kirodotdev/KiroCrew/issues/26967)
 - Implementation: [#39500](https://github.com/kirodotdev/KiroCrew/pull/39500)
 

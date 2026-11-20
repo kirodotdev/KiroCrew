@@ -249,6 +249,11 @@ class ToolCall:
     #: for a slot that carries none. Not on the event, so ``from_event`` leaves it
     #: empty unless the site overrides it; empty yields no identity (fail-closed).
     resolved_agent: str = ""
+    #: ``(app, agent)`` of an unattended run that has no slot: the app the gateway
+    #: stamped on the run (a cron job's ``created_by``) and the agent that actually
+    #: ran it. Read by the ``app-own-tools`` grant alone, and only when the surface
+    #: names no app. Not on the event; empty yields no grant (fail-closed).
+    app_run: tuple[str, str] = ("", "")
 
     @classmethod
     def from_event(cls, event: object, **overrides: Any) -> "ToolCall":
@@ -323,9 +328,9 @@ class ToolCall:
     def kwargs(self) -> dict[str, Any]:
         """The event-derived keywords of ``HookManager.on_tool_call`` for this call.
 
-        ``title`` and ``resolved_agent`` are left out: a site passes the title
-        positionally and the resolved agent beside the surface keywords, so a
-        splat of this dict can never collide with either.
+        ``title``, ``resolved_agent`` and ``app_run`` are left out: a site passes
+        the title positionally and the other two beside the surface keywords, so a
+        splat of this dict can never collide with any of them.
         """
         return {
             "tool_kind": self.kind,

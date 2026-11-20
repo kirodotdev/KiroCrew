@@ -254,6 +254,10 @@ app's tools do not get that approval, so an installed or registry app's block
 validates and installs but lists nothing yet. Until it does, ship an MCP server of your
 own (`mcpServers`); the user approves each of its calls.
 
+A listed tool is also called without an approval card by the app's own agents (the
+ones its `agents` declare), in the app's chats and in its cron jobs. An agent of
+another app, and any other tool your agent calls, asks as usual.
+
 ```json
 "agentTools": {
   "route": "agent-tools",

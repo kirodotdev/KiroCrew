@@ -594,6 +594,7 @@ class TestHookGateKwargs:
             "agent",
             "app",
             "resolved_agent",
+            "app_run",
             "classifier_only",
             "trust_reads",
             "deny_waivers",
@@ -811,8 +812,8 @@ class TestHookGateKwargs:
 
     def test_the_toolcall_from_an_event_is_the_whole_gate_input(self, monkeypatch):
         """COMPLETENESS, observed: ``ToolCall.from_event`` fills every field of the
-        gate's input from the event (``resolved_agent`` excepted -- no event carries
-        it, so the site supplies it), the helper's output is exactly that call in
+        gate's input from the event (``resolved_agent`` and ``app_run`` excepted -- no
+        event carries them, so the site supplies them), the helper's output is exactly that call in
         keyword form, and the keyword gate hands ``judge`` that same call plus the
         surface. A field added to the gate's input is therefore extracted once, for
         both forms, or this fails -- the failure mode the issue names is a new field
@@ -845,11 +846,11 @@ class TestHookGateKwargs:
         unfilled = [
             field.name
             for field in dataclasses.fields(ToolCall)
-            if field.name not in ("title", "resolved_agent")
+            if field.name not in ("title", "resolved_agent", "app_run")
             and getattr(call, field.name) == getattr(blank, field.name)
         ]
         assert unfilled == [], f"ToolCall fields no event attribute fills: {unfilled}"
-        assert (call.title, call.resolved_agent) == ("<title>", "")
+        assert (call.title, call.resolved_agent, call.app_run) == ("<title>", "", ("", ""))
         assert ToolCall.from_event(probe, resolved_agent="kirocrew").resolved_agent == "kirocrew"
         with pytest.raises(TypeError, match="resolved_agnet"):
             ToolCall.from_event(probe, resolved_agnet="typo")
@@ -900,7 +901,8 @@ class TestHookGateKwargs:
         shim = inspect.signature(HookManager.on_tool_call).parameters
         assert [n for n, p in shim.items() if p.kind is not p.KEYWORD_ONLY] == ["self", "tool_name"]
         assert keyword_only(HookManager.on_tool_call) == set(call.kwargs()) | self.SURFACE_KWARGS
-        assert keyword_only(HookManager.judge) | {"resolved_agent"} == self.SURFACE_KWARGS
+        site_supplied = {"resolved_agent", "app_run"}
+        assert keyword_only(HookManager.judge) | site_supplied == self.SURFACE_KWARGS
 
         # And the keyword gate judges exactly that call, with the surface beside it.
         seen = []
@@ -920,9 +922,16 @@ class TestHookGateKwargs:
             "pre_tool_hooks_fire": True,
         }
         HookManager().on_tool_call(
-            probe.title, resolved_agent="kirocrew", **surface, **hook_gate_kwargs(probe)
+            probe.title,
+            resolved_agent="kirocrew",
+            app_run=("clock", "clock-keeper"),
+            **surface,
+            **hook_gate_kwargs(probe),
         )
-        assert seen == [(dataclasses.replace(call, resolved_agent="kirocrew"), surface)]
+        judged = dataclasses.replace(
+            call, resolved_agent="kirocrew", app_run=("clock", "clock-keeper")
+        )
+        assert seen == [(judged, surface)]
 
     # Sites the structural scan treats specially. Each entry is a reviewed
     # decision, not drift: a new entry needs a reason in the site's comment.
