@@ -39,6 +39,13 @@ and any failure is only logged: the lease still lapses on its own.
 A personal Crew, built with a ``profile_arn`` reader, also sends ``profileArn`` on
 both calls; with no reader (the default, and every team Crew) the calls are as above.
 
+A workload lease (``workload=True``, a host on its own JWT-SVID,
+:mod:`kiro_crew.workload_identity`) reads its file with the same claim checks as
+the engine's sign-in, never sends ``TokenType``, and waits 15 minutes after a
+refused sign-in or an invalid-request refusal instead of stopping: a stage that
+does not admit the JWT-SVID yet refuses it that way, and admits it later with no
+change on this machine.
+
 The credential is the Crew's own sign-in to the lease service. It is read from a
 file or from the Crew's secrets vault for each call, never held in the config,
 and never logged or put in a ``repr``. It goes only to the configured lease
@@ -70,7 +77,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
-from kiro_crew.bounded_read import bounded_read
+from kiro_crew.bounded_read import bounded_read_regular_file
+from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.relay_client.backoff import Backoff
 from kiro_crew.relay_client.connection import env_proxy_for
@@ -181,7 +189,13 @@ _REASON_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_]{0,63}\Z", re.ASCII)
 #: words only. A message with any other character, an ARN or a run of 12 digits
 #: (an account id) is not shown at all.
 _MESSAGE_RE = re.compile(r"\A[A-Za-z0-9 .,;:'()?!-]+\Z", re.ASCII)
-_MESSAGE_HIDDEN_RE = re.compile(r"arn:|\d{12}", re.ASCII | re.IGNORECASE)
+#: An ARN (``arn:``, spaces allowed before the colon), twelve digits in a row with
+#: at most one space, ``.`` or ``-`` between any two (an account id written in
+#: groups), or an AWS access key id.
+_MESSAGE_HIDDEN_RE = re.compile(
+    r"arn\s*:|\d(?:[ .-]?\d){11}|(?<!\d)\d{4}[,:]\d{4}[,:]\d{4}(?!\d)|" + AWS_KEY_ID,
+    re.ASCII | re.IGNORECASE,
+)
 REFUSAL_MESSAGE_MAX_CHARS = 200
 
 
@@ -301,8 +315,7 @@ def read_lease_credential(ref: str, *, home: Optional[Path] = None) -> str:
         value = secret.reveal()
     else:
         try:
-            with open(os.path.expanduser(ref), "rb") as handle:
-                raw = bounded_read(handle, CREDENTIAL_MAX_BYTES + 1)
+            raw = bounded_read_regular_file(os.path.expanduser(ref), CREDENTIAL_MAX_BYTES + 1)
         except OSError as exc:
             raise LeaseCredentialError(
                 f"the credential file could not be read ({type(exc).__name__})"
@@ -664,7 +677,14 @@ class LeaseHostTokenSource:
         token_type: Optional[str] = None,
         profile_arn: Optional[Callable[[], Optional[str]]] = None,
         sign_in: Optional[Callable[[Optional[str]], Awaitable[Any]]] = None,
+        workload: bool = False,
     ) -> None:
+        if workload:
+            # The service recognizes a JWT-SVID only with no TokenType, and a
+            # workload host carries no profile ARN on host operations.
+            token_type = None
+            if profile_arn is not None or sign_in is not None:
+                raise ValueError("a workload lease has no sign-in and no profile ARN")
         if token_type is not None and token_type not in TOKEN_TYPES:
             raise ValueError("the lease credential's token type is not one this client sends")
         if profile_arn is not None and token_type == TOKEN_TYPE_API_KEY:
@@ -689,7 +709,11 @@ class LeaseHostTokenSource:
         self._crew_version = crew_version[:CREW_VERSION_MAX_CHARS]
         self._home = home
         self._display_name = display_name
-        self._read_credential = read_credential or self._read_from_reference
+        #: A workload lease: its file is a JWT-SVID, and some refusals wait, not stop.
+        self._workload = workload
+        self._read_credential = read_credential or (
+            self._read_workload_svid if workload else self._read_from_reference
+        )
         self._rng = rng or random.Random()
         self._sleep = sleep
         self._monotonic = monotonic
@@ -909,6 +933,8 @@ class LeaseHostTokenSource:
                     rejected=credential,
                 )
                 return
+            if self._workload:
+                self._hold_workload_refusal(arrived, "HTTP 401")
             self._stop(
                 "the lease service refused the Crew's credential (HTTP 401): check that "
                 "tunnel.relay_lease_credential's credential is current and that "
@@ -974,6 +1000,8 @@ class LeaseHostTokenSource:
                     host_token_requested, endpoint_retry=False, sign_in_retry=sign_in_retry
                 )
                 return
+            if self._workload:
+                self._hold_workload_refusal(arrived, named, f": {_VALIDATION_WHY}{said}")
             self._stop(f"the lease service refused the renewal ({named}): {_VALIDATION_WHY}{said}")
         if kind == _IDENTITY_IN_USE:
             wait = takeover_wait(
@@ -1199,6 +1227,25 @@ class LeaseHostTokenSource:
             logger.warning("Remote Control held: %s", problem)
         raise _Later(problem)
 
+    def _hold_workload_refusal(self, arrived: float, named: str, said: str = "") -> NoReturn:
+        """Wait 15 minutes after the service refused the workload identity, and end this call.
+
+        A stage that does not admit JWT-SVIDs on host operations yet refuses one
+        as a bad sign-in or an invalid request. That changes with no change on
+        this machine, so the pod comes back on its own, like an access refusal.
+        """
+        self._hold(
+            arrived + RETRY_AFTER_MAX_SECONDS,
+            f"the lease service refused the workload identity ({named}){said}",
+        )
+        logger.warning(
+            "the lease service refused the workload identity (%s)%s; trying again in %.0fs",
+            named,
+            said,
+            RETRY_AFTER_MAX_SECONDS,
+        )
+        raise _Later(self._hold_reason)
+
     def _stop(self, reason: str) -> NoReturn:
         """Stop renewals until Remote Control restarts, and end this call."""
         self._stopped = reason
@@ -1207,6 +1254,18 @@ class LeaseHostTokenSource:
 
     def _read_from_reference(self, ref: str) -> str:
         return read_lease_credential(ref, home=self._home)
+
+    @staticmethod
+    def _read_workload_svid(ref: str) -> str:
+        from kiro_crew import workload_identity
+
+        problem = credential_reference_problem(ref)
+        if problem is not None:
+            raise LeaseCredentialReferenceError(problem)
+        try:
+            return workload_identity.lease_bearer(ref)
+        except workload_identity.WorkloadIdentityError as exc:
+            raise LeaseCredentialError(str(exc)) from None
 
     # ── the schedule ──
 

@@ -379,6 +379,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
         "<crew>/denied_commands.json": "standard",
         "<crew>/diag": "standard",
         "<crew>/engines": "standard",
+        "<crew>/extras": "standard",
         "<crew>/gateway_id": "standard",
         "<crew>/host-exec-grants": "standard",
         "<crew>/import-staging": "standard",

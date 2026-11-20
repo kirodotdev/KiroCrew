@@ -49,6 +49,7 @@ from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.sandbox import (
+    app_backend_secret_mask_targets,
     cgroup_scope_argv,
     create_subprocess_limited,
     wrap_argv,
@@ -304,7 +305,13 @@ async def _run_app_build(
 
     for cmd in build_cmds:
         log_lines.append(f"Running {' '.join(cmd)} in {build_dir}...")
-        sandboxed_cmd, _cleanup = await wrap_argv_async(cmd, mode="standard", _prepare=wrap_argv)
+        # The build runs third-party hooks (npm lifecycle scripts, a pip source build).
+        sandboxed_cmd, _cleanup = await wrap_argv_async(
+            cmd,
+            mode="standard",
+            _prepare=wrap_argv,
+            extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
+        )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await create_subprocess_limited(
             *sandboxed_cmd,
@@ -869,7 +876,12 @@ if _typing.TYPE_CHECKING:
     )
     from kiro_crew.apps.registry_pipeline.manifests import (  # noqa: F401
         _REGISTRY_ROW_KEYS,
+        _SSH_DESTINATION_MAX_CHARS,
+        _SSH_SIGN_IN_REFUSED,
+        _SSH_SIGN_IN_REFUSED_MAX,
+        _anonymous_ssh_destination,
         _fetch_app_manifest,
+        _is_ssh_sign_in_refusal,
         _merge_manifest,
         _resolve_manifest,
         official_catalog,

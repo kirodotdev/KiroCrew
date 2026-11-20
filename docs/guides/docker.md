@@ -295,6 +295,23 @@ posture. It prints the standing reminder instead, whenever
 ways to let agent commands through. See
 [Check the startup log](docker-troubleshooting.md#check-the-startup-log).
 
+### A team Crew pod: the container is the boundary
+
+A team Crew deployed as a workload (`KIROCREW_WORKLOAD_IDENTITY=spiffe`) in a pod
+under the Kubernetes Restricted Pod Security Standard has no inner sandbox: the
+`RuntimeDefault` seccomp profile refuses user namespaces. To run its agent
+commands, set `agent.sandbox_allow_unsandboxed_exec=true` (or
+`KIROCREW_ALLOW_UNSANDBOXED=1` on the first run). The container is then the only
+boundary. Each agent process logs a `SECURITY` warning that it runs without
+OS-level isolation; once that choice is made, `agent.sandbox_allow_no_isolation=true`
+turns the warning into an info line.
+
+Use it only when the pod is the isolation unit: one Crew per pod, a read-only root
+filesystem, a narrow service account and no secrets mounted that the agent must not
+read. Agent commands can read every file the gateway can, the JWT-SVID file
+included. If the cluster allows a Localhost seccomp profile, Option A below brings
+the inner sandbox back and is the safer choice.
+
 ### Option A — Kiro Crew seccomp profile (recommended)
 
 The repo ships `docker/seccomp/kirocrew-seccomp.json`: the Docker default

@@ -421,6 +421,7 @@ def test_a_claude_run_that_pushes_the_fix_passes_and_leaves_one_result(tmp_path,
     record, root, out = _run_claude(tmp_path, monkeypatch, "fix_slow")
     assert (record["verdict"], record["reason"], record["asks"]) == ("PASSED", "", 0)
     assert (record["cost"], record["cost_unit"]) == (0.25, "usd")
+    assert record["credentials"] == "eval-only"
     assert record["check"]["pass"] is True
     # Sampled while the arm still ran, so the idle time covers part of its sleep after the push.
     assert 0 < record["idle_after_done_s"] <= record["wall_s"]
@@ -531,7 +532,11 @@ def test_a_crew_run_is_judged_before_its_gateway_stops(tmp_path, monkeypatch):
     assert record["agent"] == {"name": "c", "source": "default", "configured": ""}
     assert (record["cost"], record["cost_unit"]) == (2.0, "credits")
     assert seen["config"] == {
-        "agent": {"sandbox": "strict", "sandbox_allow_unsandboxed_exec": False}
+        "agent": {
+            "sandbox": "strict",
+            "sandbox_allow_unsandboxed_exec": False,
+            "kiro_hooks_autoimport": False,  # no ~/.kiro/hooks/*.sh script is imported
+        }
     }
     env = json.loads((tmp_path / "env.json").read_text())
     assert env["KIROCREW_PORT"] == "4321" and env["KIRO_API_KEY"] == "k"
@@ -884,3 +889,103 @@ def test_a_transcript_link_the_agent_plants_writes_no_other_file(tmp_path):
     assert victim.read_text() == "keep me"
     copied = dirs.out / "transcript.jsonl"
     assert not copied.is_symlink() and copied.read_text() == '{"role": "user"}\n'
+
+
+# ---------- --use-operator-credentials ----------
+def _as_operator(*names):
+    import copy
+
+    out = []
+    for name in names:
+        arm = copy.copy(ARMS[name])
+        arm.operator_credentials = True
+        out.append(arm)
+    return out
+
+
+def test_operator_credentials_skip_the_eval_user_checks_and_ask_each_sign_in(monkeypatch, tmp_path):
+    from kiro_crew import sandbox
+
+    mine = tmp_path / "me"
+    (mine / ".ssh").mkdir(parents=True)  # the operator's own credentials are the point
+    theirs = tmp_path / "alice"
+    theirs.mkdir()
+    _fake_users(monkeypatch, _pw("me", 4000, mine), [_pw("alice", 4242, theirs)])
+    monkeypatch.setattr(sandbox, "detect_backend", lambda mode="auto": "bwrap")
+    chat, conductor, cc = _as_operator("crew-chat", "crew-conductor", "claude-code")
+    asked = []
+    for arm, answer in ((chat, ""), (conductor, ""), (cc, "")):
+        monkeypatch.setattr(
+            arm, "operator_check", lambda env, a=arm, r=answer: asked.append(a.name) or r
+        )
+    monkeypatch.setattr(cc, "unavailable", lambda: "")
+    not_built = _as_operator("kiro-cli-v3", "codex")  # `--harness all` includes them
+    assert tasks.preflight([chat, conductor, cc, *not_built], {}) == []
+    assert asked == ["crew-chat", "claude-code"]  # one `kiro-cli whoami` for both Crew arms
+    monkeypatch.setattr(cc, "operator_check", lambda env: '`claude -p "say ok"` failed')
+    assert tasks.preflight([cc], {}) == ['claude-code: `claude -p "say ok"` failed']
+    # Without the flag, the eval-user checks are exactly as before.
+    assert tasks.preflight([ARMS["codex"]], {}) == [
+        f"{mine}/.ssh exists: run the eval as a dedicated user with no credentials",
+        f"alice's home {theirs} is readable by the eval user",
+    ]
+
+
+def test_operator_credentials_keep_the_runners_env_and_home_but_a_run_data_home(
+    monkeypatch, tmp_path
+):
+    from kiro_crew import kiro_cli
+
+    # The binary preflight checked is pinned for the run, even when only the
+    # operator's own KIROCREW_KIRO_BIN (dropped with the other KIROCREW_* keys) names it.
+    monkeypatch.setattr(
+        kiro_cli, "resolve_kiro_cli", lambda environ=None: environ.get("KIROCREW_KIRO_BIN")
+    )
+    (cc,) = _as_operator("claude-code")
+    dirs = tasks.RunDirs(tmp_path / "r")
+    source = {
+        "PATH": "/bin",
+        "HOME": "/me",
+        "AWS_PROFILE": "p",
+        "KIROCREW_PORT": "9",
+        "KIROCREW_KIRO_BIN": "/opt/kiro/kiro-cli",
+        "PYTHONPATH": "src",
+    }
+    assert tasks.run_env(dirs, cc, source) == {
+        "PATH": "/bin",
+        "HOME": "/me",
+        "AWS_PROFILE": "p",
+        "PYTHONPATH": os.path.abspath("src"),  # children start in other directories
+        "KIROCREW_KIRO_BIN": os.path.abspath("/opt/kiro/kiro-cli"),
+        "KIROCREW_HOME": str(dirs.crew),
+        "KIRO_HOME": str(dirs.kiro),
+        "TMPDIR": str(dirs.tmp),
+    }
+    # A relative override is pinned absolute: the gateway starts in the run's home.
+    relative = {**source, "KIROCREW_KIRO_BIN": "bin/kiro-cli"}
+    pinned = tasks.run_env(tasks.RunDirs(tmp_path / "r2"), cc, relative)["KIROCREW_KIRO_BIN"]
+    assert pinned == os.path.abspath("bin/kiro-cli")
+
+
+def test_operator_credentials_from_the_command_line_print_the_risk_and_swap_copies(
+    tmp_path, monkeypatch, capsys
+):
+    seen = {}
+    monkeypatch.setattr(tasks, "preflight", lambda arms, env: seen.update(arms=arms) or ["no"])
+    args = _parse(
+        [
+            "run",
+            "--suite",
+            str(SUITE),
+            "--harness",
+            "crew-chat,claude-code",
+            "--use-operator-credentials",
+            "--eval-home",
+            str(tmp_path / "h"),
+        ]
+    )
+    assert cli_commands_eval._run_eval_tasks(args) == 3
+    chat, cc = seen["arms"]
+    assert chat.operator_credentials and cc.operator_credentials
+    assert not ARMS["claude-code"].operator_credentials  # the shared instances are untouched
+    assert tasks.OPERATOR_RISK_LINE in capsys.readouterr().err

@@ -1,0 +1,4 @@
++2
+The extras leaf joins _CREW_SECRET_LEAVES in paths_lists.py: the optional channel SDKs
+the desktop app installs on first use hold code the gateway imports, so the agent's file
+tools must not write them, like browser-harness. One leaf and its one-line reason.

@@ -10,6 +10,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.kiro_readiness import workload_turns_ready
 from kiro_crew.dashboard.lts_gate_middleware import login_screen_required
 from kiro_crew.kiro_prerequisite import (
     KIRO_CLI_LOGIN_COMMAND,
@@ -58,6 +59,50 @@ def _not_ready_snapshot(
     # See _LEGACY_IDLE_OPERATION: a pre-upgrade tab crashes without this key.
     result["operation"] = legacy_idle_operation()
     return result
+
+
+def _setup_left_only_kiro_cli(snapshot: dict[str, Any]) -> bool:
+    """Whether *snapshot* is not ready and nothing but kiro-cli's own sign-in is missing.
+
+    A missing or rejected agent spec, a CLI too old for ``acp`` or a sandbox that
+    refuses the spawn also stops a KAS turn, so those keep the setup screen. The
+    sandbox half is the setup finish's own check
+    (``KiroPrerequisiteService.record_independent_backend_setup``): a backend, or
+    the operator's unsandboxed opt-in, and KAS not among the blocked backends.
+    """
+    return not (
+        snapshot.get("ready")
+        or snapshot.get("repair_required")
+        or snapshot.get("missing_agent_specs")
+        or snapshot.get("rejected_agent_specs")
+        or snapshot.get("acp_supported") is False
+        or snapshot.get("sandbox_unavailable")
+        or not (
+            snapshot.get("sandbox_backend_available") or snapshot.get("unsandboxed_exec_permitted")
+        )
+        or "kas" in (snapshot.get("sandbox_blocked_backends") or ())
+    )
+
+
+def _container_boundary_hint() -> bool:
+    """Whether the setup page may name ``agent.sandbox_allow_unsandboxed_exec``.
+
+    Only on a workload pod (``KIROCREW_WORKLOAD_IDENTITY``), and only when setting
+    it would grant unsandboxed exec: the edition's floor
+    (``edition_locks.unsandboxed_exec_floor``, which an LTS build uses to read a
+    declared ``true`` as the platform default) and a governance
+    ``sandbox.min_level`` floor both win over it, as in ``sandbox_facts``. Blocking
+    (the config and governance reads); call off the loop.
+    """
+    from kiro_crew import sandbox, workload_identity
+    from kiro_crew.config.loader import unsandboxed_exec_platform_default
+    from kiro_crew.edition_locks import unsandboxed_exec_floor
+
+    if not workload_identity.active():
+        return False
+    if not unsandboxed_exec_floor(True, unsandboxed_exec_platform_default()):
+        return False
+    return not sandbox._floor_mandates_sandbox(sandbox._governance_sandbox_floor())
 
 
 def _service(request: web.Request) -> KiroPrerequisiteService:
@@ -190,9 +235,14 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             probe_error=f"{type(exc).__name__}: {exc}"[:400],
             cli_too_old=service.cli_too_old,
         )
+    if _setup_left_only_kiro_cli(snapshot) and await workload_turns_ready():
+        # A workload host's chat runs on KAS with its JWT-SVID, which kiro-cli's
+        # probe cannot see; ``authenticated`` stays kiro-cli's own answer.
+        snapshot = {**snapshot, "ready": True}
     snapshot = await _with_gate_state(request, snapshot)
     if _is_dashboard_owner(request):
-        return web.json_response({**snapshot, "setup_allowed": True})
+        hint = {"container_boundary_hint": await asyncio.to_thread(_container_boundary_hint)}
+        return web.json_response({**snapshot, **hint, "setup_allowed": True})
 
     # Authorized non-owner dashboard users need the readiness bit so the
     # application gate does not lock them out after the owner completes setup.
@@ -243,6 +293,8 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             # Same redaction, same shape-stability reason: whether the gateway host
             # has ``unzip`` is host state, and only the owner installs it.
             "unzip_missing": False,
+            # Same redaction and shape reason: how the host is deployed is host state.
+            "container_boundary_hint": False,
             # Redacted for the same reason as the block above, and kept present
             # for the same shape-stability reason: only the owner can act on a
             # missing spec (the repair is an owner-gated POST). A non-owner on an

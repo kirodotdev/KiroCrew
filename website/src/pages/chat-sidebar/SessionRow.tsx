@@ -49,7 +49,7 @@ import { sameRowView, type SessionRowView } from './rows'
 import { memberThreadTitle } from '../../lib/memberThreadTitle'
 import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
-import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
+import { DisclosureChevron, isOpenInTabModifierClick, reclickDoubleClick, reclickPanelTitle, reclickTogglesPanel } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
 import { useSessionCardLines, cardLineClass } from './cardLines'
 import { RowTrailingMeta, SearchHitTail } from './searchHits'
@@ -313,7 +313,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
 
 export const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) {
   const {
-    slot: s, showDivider, scope, navScope, holdContainer, isActive, isSidebarActiveSlot, isCrewParent, crewWindowCovers, isOut, isPinned, isUnread, isRunning,
+    slot: s, showDivider, scope, navScope, holdContainer, isActive, isSidebarActiveSlot, reclickPanel, isCrewParent, crewWindowCovers, isOut, isPinned, isUnread, isRunning,
     recent, subagentCount, subagentApprovalCount, digitBadge,
     isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, drawnOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
     rowMotionHeld, opensElsewhere, peerId, peerName,
@@ -1407,7 +1407,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
               ? i18nT('pages.chatSidebar.opens_here_runs_on_instance', { name: peerName })
               : onOpenElsewhere
                 ? i18nT('pages.chatSidebar.opens_on_members_page')
-                : undefined
+                : reclickPanel && !isMobile ? reclickPanelTitle() : undefined
           }
           {...offlineProps(connected, i18nT('utils.offline.switch_sessions'))}
           role="button"
@@ -1493,6 +1493,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             onOpenSlotInNewTab(s.key, { background: true })
           }) : undefined}
           onClick={e => {
+            if (reclickTogglesPanel(e, reclickPanel && !isMobile && connected && !foreignRow && !isRenaming)) { onSelectSlot?.(s.key); return } // the open chat: side panel (see chrome)
             // A browser emits two click events before dblclick. Let the first
             // select an inactive session, but do not fetch it a second time
             // before the title's double-click handler opens rename.
@@ -1533,7 +1534,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             onSelectSlot?.(s.key)
           }}
           onDoubleClick={e => {
-            if (foreignRow) return
+            if ((e.target as HTMLElement).closest?.('[data-session-title]')) reclickDoubleClick(); if (foreignRow) return
             if (!(e.target as HTMLElement).closest?.('[data-session-title]')) return
             if (renamingHere) return
             e.preventDefault()

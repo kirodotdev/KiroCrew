@@ -5713,7 +5713,11 @@
         "prewarm_count": 0,
         "keep_alive_servers": [],
         "read_buffer_limit_bytes": 67108864,
-        "response_spill_threshold_bytes": 262144
+        "response_spill_threshold_bytes": 262144,
+        "resource_subscriptions": {
+          "enabled": false,
+          "max_pinned_backends": 16
+        }
       }
     },
     {
@@ -6200,6 +6204,52 @@
       "enumValues": null,
       "defaultValue": 262144,
       "requiresRestart": true
+    },
+    {
+      "path": "mcp_gateway.resource_subscriptions",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Resource Subscriptions",
+      "help": "MCP resource subscriptions a session keeps after its kiro-cli exits.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "max_pinned_backends": 16
+      }
+    },
+    {
+      "path": "mcp_gateway.resource_subscriptions.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Resource Subscriptions",
+      "help": "Let a session keep an MCP resource subscription after its kiro-cli exits. Kiro Crew then holds one gateway connection per session and server for it. Off, every subscribe is refused and stored subscriptions are not resumed. Takes effect after a restart; a subscribe made after turning it off is refused at once. Default False -- opt-in.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "mcp_gateway.resource_subscriptions.max_pinned_backends",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Pinned Backends Cap",
+      "help": "How many shared MCP backends resource subscriptions may keep resident at once. A held backend is never evicted, so without a cap holders could fill max_backends and refuse backends to sessions that hold no subscription. Counts backends, not sessions: sessions with one server configuration share one backend. A subscribe that would pin one more is refused with a reason. Default 16.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 16
     },
     {
       "path": "mcp",
@@ -7706,7 +7756,7 @@
         "sessions_limit": 10,
         "use_tunnel_url": false,
         "session_folder": "",
-        "show_in_session_list": true,
+        "show_in_session_list": false,
         "auto_link_sessions": false,
         "agent_sessions": false,
         "code_channel_dispatch": false,
@@ -8055,7 +8105,7 @@
         "slack"
       ],
       "label": "Session Folder",
-      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) files them in a 'Slack' folder, created on first use, while Show Slack Conversations In The Session List is on, and leaves them unfiled while it is off; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -8071,10 +8121,10 @@
         "slack"
       ],
       "label": "Show Slack Conversations In The Session List",
-      "help": "List conversations that start in Slack (threads, DMs, channel mentions) in the dashboard's session list. Off removes them from the list only: they keep working in Slack, stay in History and search, still raise approvals and notifications, and come back when this is turned on again; nothing is closed or deleted. The conversation open in the dashboard, and one waiting on an approval or an answer, keep their rows. Sessions started in the dashboard and linked to Slack, and Slack code channel sessions with their helper agents, are always listed. On by default; no restart.",
+      "help": "List conversations that start in Slack (threads, DMs, channel mentions) in the dashboard's session list. Off (the default) keeps them out of the list only: they keep working in Slack, stay in History and search, and still raise approvals and notifications; nothing is closed or deleted. The conversation open in the dashboard, and one waiting on an approval or an answer, keep their rows. On, and with no Session Folder set, new ones are filed in a 'Slack' folder, created on first use. Sessions started in the dashboard and linked to Slack, and Slack code channel sessions with their helper agents, are always listed and stay in their own folders. No restart.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": true
+      "defaultValue": false
     },
     {
       "path": "slack.auto_link_sessions",
@@ -11822,7 +11872,8 @@
       "hasChildren": false,
       "enumValues": [
         "",
-        "vscode"
+        "vscode",
+        "kiro"
       ],
       "defaultValue": ""
     },
@@ -12919,7 +12970,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Relay Viewer Relay Domain",
-      "help": "For testing only, read only while tunnel.relay_viewer_enabled is on and tunnel.relay_viewer_cps_url is set: a dev relay's domain, for example us-east-1.relay.example.invalid. The viewer then lists a remote Crew, and sends its access token, only when the Crew's address is exactly https://<endpoint ID>.<this domain> with no port. Otherwise a Crew is listed only at https://<endpoint ID>.<region>.relay.kiro.dev with no port, and opened at exactly that address.",
+      "help": "For testing only, read only while tunnel.relay_viewer_enabled is on and tunnel.relay_viewer_cps_url is set: a dev relay's domain, for example us-east-1.relay.example.invalid. The viewer then lists a remote Crew, and sends its access token, only when the Crew's address is exactly https://<endpoint ID>.<this domain> with no port. Otherwise a Crew is listed at the address the control plane gives, when it is https://<endpoint ID>.<host> with no port, and opened at exactly that address.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

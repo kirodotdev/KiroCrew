@@ -69,6 +69,13 @@ export interface KiroPrerequisiteStatus {
    * absence (undefined ⇒ not permitted), never treat it as true.
    */
   unsandboxed_exec_permitted?: boolean
+  /**
+   * The setup page may name `agent.sandbox_allow_unsandboxed_exec`: the deployment
+   * names its workload identity (`KIROCREW_WORKLOAD_IDENTITY`), as a team Crew pod
+   * does, and no governance floor requires a sandbox. Owner only; false for anyone
+   * else and absent on older gateways.
+   */
+  container_boundary_hint?: boolean
   /** Runtime-enforced harness ids whose credential mask cannot apply at the effective tier. */
   sandbox_blocked_backends?: string[]
   /** Machine-readable: 'transient' | 'foreign_sandbox' | 'no_backend' | ''. */

@@ -3,8 +3,8 @@
  *
  * The registry's own defaults are store-free and therefore draw a REDUCED
  * transcript — a static pill for a tool call, and nothing at all for a thinking
- * trace, a sent file, an auto-nudge turn, a workflow or sub-agent launch, a
- * recovery inject or a workflow completion. This module supplies the
+ * trace, a sent file, an auto-nudge turn, a workflow or sub-agent launch or a
+ * workflow completion. This module supplies the
  * store-connected set, so what is pinned here is that every one of those rows
  * resolves to an entry that actually DRAWS something, and that the narrow
  * entries win over the broad ones they refine.
@@ -125,10 +125,6 @@ describe('narrow rows win over the broad row they refine', () => {
   })
 
   it('routes a gateway-stamped inject to the card and leaves speech-bearing ones alone', () => {
-    // This registry serves ChatPane / SideChat / ChatEmbed. It previously gated on
-    // a recognised recovery marker alone, so every other injected shape fell
-    // through to the SDK default and painted machine prose as a bubble. The shared
-    // resolver closes that on every surface at once.
     const synthesis = msg('inject', {
       content: '[SYSTEM] Sub-agent synthesis: produce the consolidated write-up.',
       meta: { injectKind: 'synthesis' },

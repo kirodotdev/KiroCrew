@@ -1,6 +1,7 @@
 import type { AcpBackendProbe } from '../../api/client'
 import { AgentInstallDetail } from './AgentDetail'
 import { CopyCommand } from './CopyCommand'
+import { ExternalLink } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -24,14 +25,43 @@ export type AgentNotReadyReason =
  * fixes it where there is one. Commands are `<code>` children, never catalog
  * values: a translated command cannot be typed.
  */
+// The Docker guide's section on a team Crew pod with no inner sandbox.
+const CONTAINER_BOUNDARY_DOCS_URL =
+  'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/docker.md' +
+  '#a-team-crew-pod-the-container-is-the-boundary'
+
+/** On a team Crew pod with no sandbox: the setting that makes the container the
+ *  only boundary, its command, a restart, and the guide's pod section. */
+export function WorkloadPodSandboxHint() {
+  return (
+    <div className="space-y-2" data-testid="workload-pod-no-sandbox">
+      <p>{i18nT('components.kiroPrerequisiteGate.workload_pod_no_sandbox')}</p>
+      <CopyCommand><code>kirocrew config set agent.sandbox_allow_unsandboxed_exec true</code></CopyCommand>
+      <a
+        className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline focus-ring"
+        href={CONTAINER_BOUNDARY_DOCS_URL}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        {i18nT('components.kiroPrerequisiteGate.container_boundary_guide')}
+        <ExternalLink className="lucide-inline" />
+      </a>
+    </div>
+  )
+}
+
 export function AgentNotReadyDetail({
   reason,
   name,
   probe,
+  workloadPodNoSandbox = false,
 }: {
   reason: AgentNotReadyReason
   name: string
   probe: AcpBackendProbe
+  /** A workload pod with no sandbox backend and no unsandboxed opt-in, for a harness
+   *  that opt-in unblocks: name the setting. */
+  workloadPodNoSandbox?: boolean
 }) {
   switch (reason) {
     case 'not_offered':
@@ -68,6 +98,7 @@ export function AgentNotReadyDetail({
           <p>
             {i18nT('components.kiroPrerequisiteGate.sandbox_blocked_agent_detail', { name })}
           </p>
+          {workloadPodNoSandbox && <WorkloadPodSandboxHint />}
           <p className="text-muted">
             {i18nT('components.kiroPrerequisiteGate.run_kirocrew_doctor_on_the_gateway_host_for_a_ful')}
           </p>

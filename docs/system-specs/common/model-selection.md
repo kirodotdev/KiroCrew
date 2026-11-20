@@ -417,7 +417,7 @@ probe is single-flight per handle and shielded under
 `EntitlementRevalidating`; `GET /api/models` answers it with
 `503 model_list_revalidating`, the client keeps its last-good list and re-polls,
 and the shielded probe lands so the next read serves its result. A probe that
-fails, rather than times out, fails open: the current snapshot narrows as before.
+fails, rather than times out, fails open: the current snapshot keeps narrowing the list.
 Underneath, `probe_advertised_models` keeps two clocks -- a result TTL that
 replays a recent non-empty answer and an attempt TTL that replays a recent empty
 or failed attempt as no evidence -- and `force=True` (an explicit `set_model`
@@ -872,7 +872,7 @@ its own once the cache refreshes with a list that carries it.
   (`chat_handlers._try_live_model_switch`) reads `provider_model_pin_refused` after
   the call and raises `AcpModelUnavailable` itself, so the handler answers 400 and
   the slot keeps its old model instead of reporting a switch the session never
-  made. `AcpClient.set_model` (dedicated runtime) raises inside the call as before.
+  made. `AcpClient.set_model` (dedicated runtime) raises inside the call itself.
   The same raise reaches `session_control.apply_deferred_model_switch` when a pick
   taken mid-turn lands at the turn boundary; with no request left to answer it arms
   the deferred reset instead, and the cold start's withheld-pin handling is what
@@ -882,7 +882,7 @@ its own once the cache refreshes with a list that carries it.
   recording the model. An explicit error reply is recorded in `model_pin_refused`
   and the session keeps its model, the same contract as the config-option branch,
   so the dashboard pick answers 4xx instead of resetting. No reply within the wait
-  is read as accepted and the model is recorded, as it was before the wait existed.
+  is read as accepted and the model is recorded.
   A startup pin that a kiro session withholds because the account does not serve
   it (`AcpClient._apply_startup_model` on the dedicated runtime, the kiro start in
   `providers/acp_runtime_start.py` on the shared one) is recorded in `model_pin_refused` the same
@@ -923,6 +923,9 @@ the default path.
 
 ## The gate
 
-`code-review.yml` fails on a newly added hardcoded model literal outside
-`model_registry*`, the config schema, and tests. It reports on the lines a change adds,
-so an existing literal elsewhere in a file does not exempt a new one.
+`code-review.yml` fails on a newly added hardcoded model literal assigned as a value
+(`= "claude-…"`, `": "gpt-…"`) in a `.py` file under `src/kiro_crew/`, except in
+`model_registry.py` (the id source of truth) and on a line that names
+`_BACKGROUND_CC_MODEL` or a `_FALLBACK_` map. Tests live outside `src/kiro_crew/`,
+so they are out of its reach. It reads only the lines a change adds, so an existing
+literal elsewhere in a file does not exempt a new one.

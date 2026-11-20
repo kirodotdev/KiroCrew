@@ -10,7 +10,10 @@ every open and cuts every relayed WebSocket.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import hashlib
+import re
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 
@@ -448,14 +451,17 @@ async def test_browser_open_answers_only_the_tabs_url(viewer) -> None:  # noqa: 
     ("host", "opened"),
     [
         (f"{EP}.us-east-1.relay.kiro.dev", True),
-        (f"{EP}.evil.example.test", False),
-        (f"{EP}.us-east-1.relay.kiro.dev.evil.example.test", False),
+        (f"{EP}.kiro-relay.eu-central-1.on.aws", True),
+        # The address CPS lists is trusted, so any host under the Crew's own name opens.
+        (f"{EP}.us-east-1.relay.kiro.dev.evil.example.test", True),
+        (f"x.{EP}.evil.example.test", False),
+        (f"{EP}.kiro-relay.eu-central-1.on.aws:8443", False),
     ],
 )
-async def test_with_no_setting_the_browser_opens_only_a_crew_in_kiros_relay_zone(
+async def test_with_no_setting_the_browser_opens_only_a_crew_at_its_own_name(
     viewer, monkeypatch, host, opened  # noqa: F811
 ) -> None:
-    """The list's host rule holds for the browser open too: no mint off the zone."""
+    """The list's host rule holds for the browser open too: no mint off the Crew's own name."""
     viewer.enabled = False
     raw = {"endpointId": EP, "crewUrl": f"https://{host}", "name": "Box", "crewType": "TEAM"}
 
@@ -857,3 +863,14 @@ async def test_every_browser_open_decision_is_recorded(
         ("relay_viewer.browser_open", "denied", "BROWSER_PORT_NOT_SERVED"),
     ]
     assert all(bo.relay_host("")[:4] not in r[2] for r in rows), "no sid is recorded"
+
+
+def test_the_closed_tab_page_is_styled_by_its_hash_alone() -> None:
+    """The page a closed Crew tab shows carries its own style, and the CSP allows only that."""
+    resp = bo._closed()
+    style = re.search(r"<style>(.*?)</style>", resp.text, re.S)
+    assert resp.status == 401 and style is not None and "<h1>" in resp.text
+    digest = base64.b64encode(hashlib.sha256(style.group(1).encode()).digest()).decode()
+    csp = resp.headers["Content-Security-Policy"]
+    assert f"style-src 'sha256-{digest}'" in csp
+    assert "default-src 'none'" in csp and "unsafe-inline" not in csp

@@ -3,8 +3,8 @@ title: Dashboard chat document attachments — a text sidecar the agent can read
 status: draft
 author: kamleshnanda
 created: 2026-10-09
-last-audited: 2026-10-12
-audited-at: 2e8831ea52
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null              # filled when the doc PR opens
 implementation-prs: []
 tracking-issues: [14570]

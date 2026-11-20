@@ -25,6 +25,13 @@ k, 5 / 3 / 2). `--case ID` picks cases. `--json` prints the summary as JSON.
 | `claude-code` | `claude -p --permission-mode dontAsk --allowedTools <case tools> --strict-mcp-config` | `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_USE_BEDROCK` with `AWS_BEARER_TOKEN_BEDROCK` |
 | `kiro-cli-v3`, `codex` | not built yet: every run is VOID | |
 
+`--use-operator-credentials` skips the eval user: every arm runs as you, with your
+own environment, `HOME`, kiro-cli sign-in and the working `claude` on your `PATH`.
+It first checks `kiro-cli whoami` and `claude -p "say ok"` and stops
+if either fails. The agents can then reach your credentials; the CLI says so before
+it starts and every run record carries `credentials`. Each run still gets its own
+work directory and Crew data home.
+
 Exit codes: 0 every scored run passed, 1 a run failed or none was scored, 2
 usage, 3 preflight refused.
 

@@ -829,10 +829,10 @@ class TestTelegramRestrictedResumedSession:
         """An ambiguous or corrupt transcript is where an incognito session hides.
 
         ``_probe_persisted_session`` reports ``(True, None)`` when one stem matches
-        several transcripts, so taking the write would risk persisting a session
-        that promised to leave nothing. A legacy header with no ``memory_mode``
-        does NOT land here — it reads ``persistent`` — so denying costs no ordinary
-        history.
+        several transcripts that disagree on the mode, so taking the write would
+        risk persisting a session that promised to leave nothing. A legacy header
+        with no ``memory_mode`` does NOT land here — it reads ``persistent`` — so
+        denying costs no ordinary history.
         """
         from kiro_crew.messaging import upload_gate
 

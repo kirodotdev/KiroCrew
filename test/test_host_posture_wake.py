@@ -403,3 +403,377 @@ def test_the_tool_renders_no_workers_block_without_rows():
     from kiro_crew.mcp_tools.spawn_parts.session_memory import render_session_memory
 
     assert not any("Your workers" in line for line in render_session_memory({"runs": {}}))
+
+
+# -- a step of decline at the same level (rfc-resource-control.md §4.2) --------- #
+
+
+def _feed_free(
+    notifier,
+    memory: str,
+    free_gb: float,
+    disk_pct: float | None = None,
+    disk_level: str = POSTURE_AMPLE,
+) -> None:
+    notifier._disk = (disk_level, "")
+    notifier._disk_free_pct = disk_pct
+    notifier.observe_posture(_status(memory, free_gb))
+
+
+def test_tight_steps_wake_per_gb_and_a_repeat_or_a_smaller_fall_does_not():
+    """RFC §10 test 6."""
+    pulls: list[int] = []
+    notifier = _notifier(pulls, [(POSTURE_AMPLE, "")])
+    _feed_free(notifier, POSTURE_TIGHT, 4.0)
+    assert pulls == [1] and rp.worsened() is None
+    _feed_free(notifier, POSTURE_TIGHT, 3.5)
+    assert pulls == [1] and rp.worsened() is None
+    _feed_free(notifier, POSTURE_TIGHT, 3.0)
+    assert pulls == [1, 1]
+    token, text = rp.worsened()
+    assert token.startswith("tight:") and token.endswith(":1:mem3.0:disk-")
+    assert text == (
+        "host posture still tight and worse (memory 3.0 GB free, was 4.0 GB at the last wake)"
+    )
+    _feed_free(notifier, POSTURE_TIGHT, 3.0)
+    assert pulls == [1, 1]
+
+
+def test_a_recovery_inside_the_level_wakes_nobody_and_raises_the_reference():
+    """RFC §10 test 7."""
+    pulls: list[int] = []
+    notifier = _notifier(pulls, [(POSTURE_AMPLE, "")])
+    _feed_free(notifier, POSTURE_TIGHT, 4.0)
+    _feed_free(notifier, POSTURE_TIGHT, 3.0)
+    _feed_free(notifier, POSTURE_TIGHT, 3.8)
+    assert len(pulls) == 2
+    _feed_free(notifier, POSTURE_TIGHT, 2.8)
+    assert len(pulls) == 3 and "was 3.8 GB" in rp.worsened()[1]
+
+
+def test_the_critical_step_is_half_a_gb():
+    """RFC §10 test 8."""
+    pulls: list[int] = []
+    notifier = _notifier(pulls, [(POSTURE_AMPLE, "")])
+    _feed_free(notifier, POSTURE_CRITICAL, 1.9)
+    _feed_free(notifier, POSTURE_CRITICAL, 1.5)
+    assert pulls == [1]
+    _feed_free(notifier, POSTURE_CRITICAL, 1.4)
+    token = rp.worsened()[0]
+    assert pulls == [1, 1] and token.startswith("critical:") and token.endswith(":mem1.4:disk-")
+
+
+def test_the_worst_disk_steps_two_points_while_tight():
+    """RFC §10 test 9."""
+    pulls: list[int] = []
+    notifier = _notifier(pulls, [(POSTURE_AMPLE, "")])
+    for pct in (9.0, 7.5):
+        _feed_free(notifier, POSTURE_AMPLE, 30.0, disk_pct=pct, disk_level=POSTURE_TIGHT)
+    assert pulls == [1]
+    _feed_free(notifier, POSTURE_AMPLE, 30.0, disk_pct=7.0, disk_level=POSTURE_TIGHT)
+    assert pulls == [1, 1]
+    assert rp.worsened()[1] == (
+        "host posture still tight and worse " "(worst temp root 7% free, was 9% at the last wake)"
+    )
+
+
+def test_only_the_axis_at_the_level_can_step():
+    """Opus 0f80ad76b09c: on a host tight on disk alone, ample memory swinging
+    30 -> 29 -> 30 -> 29 GB is no step; likewise a disk swing on a memory-tight host."""
+    pulls: list[int] = []
+    notifier = _notifier(pulls, [(POSTURE_AMPLE, "")])
+    for free in (30.0, 29.0, 30.0, 29.0, 28.0):
+        _feed_free(notifier, POSTURE_AMPLE, free, disk_pct=8.0, disk_level=POSTURE_TIGHT)
+    assert pulls == [1] and rp.worsened() is None
+    pulls.clear()
+    other = _notifier(pulls, [(POSTURE_AMPLE, "")])
+    for pct in (60.0, 55.0, 60.0, 50.0):
+        _feed_free(other, POSTURE_TIGHT, 3.5, disk_pct=pct)
+    assert pulls == [1] and rp.worsened() is None
+    # A real fall on the binding axis still steps.
+    _feed_free(other, POSTURE_TIGHT, 2.5, disk_pct=50.0)
+    assert len(pulls) == 2 and "was 3.5 GB" in rp.worsened()[1]
+
+
+def test_a_level_change_clears_the_step_and_ample_never_steps():
+    pulls: list[int] = []
+    notifier = _notifier(pulls, [(POSTURE_AMPLE, "")])
+    _feed_free(notifier, POSTURE_TIGHT, 3.8)
+    _feed_free(notifier, POSTURE_TIGHT, 2.5)
+    assert rp.worsened() is not None
+    _feed_free(notifier, POSTURE_CRITICAL, 1.9)
+    assert rp.worsened() is None and len(pulls) == 3
+    _feed_free(notifier, POSTURE_AMPLE, 9.0)
+    _feed_free(notifier, POSTURE_AMPLE, 5.0)  # ample falling is not news
+    assert rp.worsened() is None and len(pulls) == 4
+
+
+def test_the_disk_read_reports_the_worst_free_space(monkeypatch):
+    monkeypatch.setattr(rp, "temp_roots", lambda: ["/a", "/b"])
+    monkeypatch.setattr(
+        rp, "temp_headroom", lambda root: _headroom(root, 40.0 if root == "/a" else 7.5)
+    )
+    reading = rp._read_disk_posture()
+    assert reading[0] == POSTURE_TIGHT and reading[2] == 7.5
+
+
+def test_the_probe_wakes_once_per_step_and_not_without_one(monkeypatch):
+    _bound_item(CONDUCTOR, "chat-w1")
+    monkeypatch.setattr(rp, "_current_posture", (POSTURE_TIGHT, "memory 3.1 GB free"))
+    assert len(_posture_briefs(CONDUCTOR)) == 1  # the level wake
+    monkeypatch.setattr(rp, "_current_posture", (POSTURE_TIGHT, "memory 2.0 GB free"))
+    assert _posture_briefs(CONDUCTOR) == []  # no step published: no re-wake
+    step = ("tight:mem2.0:disk-", "host posture still tight and worse (memory 2.0 GB free)")
+    monkeypatch.setattr(rp, "_worsened", step)
+    assert _posture_briefs(CONDUCTOR) == [f"[work-ledger wake] {step[1]}"]
+    assert _posture_briefs(CONDUCTOR) == []
+    monkeypatch.setattr(rp, "_worsened", ("tight:mem1.0:disk-", "host posture still tight"))
+    assert len(_posture_briefs(CONDUCTOR)) == 1
+
+
+def test_steps_charge_the_posture_budget_and_stop_at_its_cap(monkeypatch):
+    """RFC §10 test 12, step half."""
+    from kiro_crew import ledger_wake
+
+    _bound_item(CONDUCTOR, "chat-w1")
+    monkeypatch.setattr(rp, "_current_posture", (POSTURE_TIGHT, "memory 3.9 GB free"))
+    woke = len(_posture_briefs(CONDUCTOR))
+    for step in range(1, 3 * ledger_wake.MAX_WAKES_PER_ITEM_PER_HOUR):
+        monkeypatch.setattr(rp, "_worsened", (f"tight:mem{step}", "host posture still tight"))
+        woke += len(_posture_briefs(CONDUCTOR))
+    assert woke == ledger_wake.MAX_WAKES_PER_ITEM_PER_HOUR
+
+
+# -- a worker that grows (rfc-resource-control.md §4.3) --------------------------- #
+
+_GB = 1024.0
+_HOST = 64 * _GB
+
+
+def test_the_share_wakes_once_and_re_arms_only_below_twenty_percent():
+    """RFC §10 test 10, on an ample host."""
+
+    def step(share: float) -> list[str]:
+        return rp.growth_steps({"chat-w1": share * _HOST}, _HOST, POSTURE_AMPLE, 1.0)
+
+    assert step(0.10) == []
+    assert step(0.25) == ["chat-w1"]
+    assert step(0.26) == []
+    assert step(0.22) == [] and step(0.25) == []  # not re-armed above 20%
+    assert step(0.19) == [] and step(0.25) == ["chat-w1"]
+    _stamp, size, share, grown = rp.worker_growth()["chat-w1"]
+    assert size == 0.25 * _HOST and round(share) == 25 and grown == 0.0
+
+
+def test_growth_wakes_on_a_tight_host_and_not_on_an_ample_one():
+    """RFC §10 test 11."""
+    assert rp.growth_steps({"chat-w1": 1 * _GB}, _HOST, POSTURE_AMPLE, 1.0) == []
+    assert rp.growth_steps({"chat-w1": 4 * _GB}, _HOST, POSTURE_AMPLE, 2.0) == []
+    # Measured from the last wake about it (here its first sight), so tight wakes now.
+    assert rp.growth_steps({"chat-w1": 4 * _GB}, _HOST, POSTURE_TIGHT, 3.0) == ["chat-w1"]
+    assert rp.worker_growth()["chat-w1"][3] == 3 * _GB
+    assert rp.growth_steps({"chat-w1": 5.9 * _GB}, _HOST, POSTURE_TIGHT, 4.0) == []
+    assert rp.growth_steps({"chat-w1": 6 * _GB}, _HOST, POSTURE_TIGHT, 5.0) == ["chat-w1"]
+    assert rp.growth_steps({}, _HOST, POSTURE_TIGHT, 6.0) == []
+    assert rp.worker_growth() == {}  # a session that ended drops out
+
+
+def _growth_briefs(job: str = "loop-1") -> list[str]:
+    from kiro_crew.probes.work_ledger import WorkLedgerProbe
+
+    ctx = SimpleNamespace(message=json.dumps({"conductor": CONDUCTOR}), job=SimpleNamespace(id=job))
+    probe = WorkLedgerProbe(worker_running=lambda _k: True)
+    probe.identity(ctx)
+    return [o.brief for o in probe.observe(ctx).observations if "worker it_" in o.brief]
+
+
+def test_the_growth_wake_names_the_item_and_charges_its_budget(monkeypatch):
+    """RFC §10 test 12, growth half: the item's budget, not the posture entry's."""
+    from kiro_crew import ledger_wake
+    from kiro_crew.conductor_wake import POSTURE_ITEM
+
+    item_id = _bound_item(CONDUCTOR, "chat-w1")
+    monkeypatch.setattr(rp, "_current_posture", (POSTURE_TIGHT, "memory 3.0 GB free"))
+    monkeypatch.setattr(
+        rp,
+        "_worker_growth",
+        {
+            "chat-w1": ("1.000", 16.2 * _GB, 27.0, 3.1 * _GB),
+            "chat-not-a-worker": ("1.000", 20 * _GB, 60.0, 4 * _GB),
+        },
+    )
+    assert _growth_briefs() == [
+        f"[work-ledger wake] worker {item_id} grew to 16.2 GB "
+        "(27% of RAM; +3.1 GB since the last wake)"
+    ]
+    assert _growth_briefs() == []  # the same step wakes nobody again
+    assert ledger_wake.already_woke(CONDUCTOR, item_id, "growth:1.000", watcher="loop-1")
+    assert not ledger_wake.already_woke(CONDUCTOR, POSTURE_ITEM, "growth:1.000", watcher="loop-1")
+    monkeypatch.setattr(rp, "_worker_growth", {"chat-w1": ("2.000", 9 * _GB, 28.0, 0.0)})
+    assert _growth_briefs() == [f"[work-ledger wake] worker {item_id} holds 9.0 GB (28% of RAM)"]
+
+
+def test_growth_wakes_stop_at_the_items_hourly_cap(monkeypatch):
+    from kiro_crew import ledger_wake
+
+    _bound_item(CONDUCTOR, "chat-w1")
+    monkeypatch.setattr(rp, "_current_posture", (POSTURE_TIGHT, "memory 3.0 GB free"))
+    woke = 0
+    for step in range(3 * ledger_wake.MAX_WAKES_PER_ITEM_PER_HOUR):
+        monkeypatch.setattr(
+            rp, "_worker_growth", {"chat-w1": (f"{step}.000", 9 * _GB, 28.0, 2 * _GB)}
+        )
+        woke += len(_growth_briefs())
+    assert woke <= ledger_wake.MAX_WAKES_PER_ITEM_PER_HOUR
+
+
+def test_a_step_or_growth_releases_a_person_wait_hold(monkeypatch):
+    from kiro_crew.probes.work_ledger import person_wait_fingerprint
+
+    item_id = _bound_item(CONDUCTOR, "chat-w1")
+    work_ledger.apply_worker_report(
+        CONDUCTOR, item_id, status="blocked", summary="waits on approval", reason="approval"
+    )
+    monkeypatch.setattr(rp, "_current_posture", (POSTURE_TIGHT, "memory 3.1 GB free"))
+    held = person_wait_fingerprint(CONDUCTOR)
+    monkeypatch.setattr(rp, "_worsened", ("tight:mem2.0:disk-", "worse"))
+    worse = person_wait_fingerprint(CONDUCTOR)
+    assert worse not in (None, held)
+    monkeypatch.setattr(rp, "_worker_growth", {"chat-w1": ("1.000", 9 * _GB, 28.0, 0.0)})
+    assert person_wait_fingerprint(CONDUCTOR) not in (None, held, worse)
+    monkeypatch.setattr(rp, "_worker_growth", {"chat-other": ("1.000", 9 * _GB, 28.0, 0.0)})
+    assert person_wait_fingerprint(CONDUCTOR) == worse  # not this board's worker
+
+
+def test_a_watchdog_reading_pulls_once_and_folds_dashboard_keys(monkeypatch):
+    pulled: list[int] = []
+    monkeypatch.setattr(rp, "_pull_watching_conductors", lambda: pulled.append(1))
+    monkeypatch.setattr("kiro_crew.platform_compat.host_total_mib", lambda: int(_HOST))
+    rp.note_session_rss({"dashboard_chat-w1": 0.3 * _HOST, "chat-loose": 0.3 * _HOST})
+    assert pulled == [1]
+    assert set(rp.worker_growth()) == {"chat-w1", "chat-loose"}
+    rp.note_session_rss({"chat-w1": 0.3 * _HOST, "chat-loose": 0.3 * _HOST})
+    assert pulled == [1]  # no new step, no pull
+
+
+def test_the_watchdog_hands_over_only_own_runtime_sizes(monkeypatch):
+    from kiro_crew.runtime_ownership import RUNTIME_OWNERSHIP
+
+    seen: list[dict] = []
+    monkeypatch.setattr(rp, "note_session_rss", lambda sizes: seen.append(dict(sizes)))
+    monkeypatch.setattr(RUNTIME_OWNERSHIP, "leases_on_pid", lambda pid: 3 if pid == 12 else 1)
+    sessions = [("chat-a", 11, None), ("chat-b", 12, None), ("chat-c", 13, None)]
+    rp.note_watchdog_sizes(sessions, {11: 900, 12: 5000})
+    assert seen == [{"chat-a": 900.0}]
+
+
+def test_a_renewed_fall_to_an_earlier_reading_is_a_new_step():
+    """GPT a8b37eb49a9a / Opus 74fc18755a62: 4 -> 3 -> 4 -> 3 in one tight period,
+    and the same reading in a later tight period, each publish a token not seen yet."""
+    pulls: list[int] = []
+    notifier = _notifier(pulls, [(POSTURE_AMPLE, "")])
+    tokens: list[str] = []
+    for level, free in [
+        (POSTURE_TIGHT, 4.0),
+        (POSTURE_TIGHT, 3.0),
+        (POSTURE_TIGHT, 4.0),
+        (POSTURE_TIGHT, 3.0),
+        (POSTURE_AMPLE, 9.0),
+        (POSTURE_TIGHT, 4.0),
+        (POSTURE_TIGHT, 3.0),
+    ]:
+        _feed_free(notifier, level, free)
+        if rp.worsened() is not None and rp.worsened()[0] not in tokens:
+            tokens.append(rp.worsened()[0])
+    assert len(tokens) == 3 and all(t.endswith(":mem3.0:disk-") for t in tokens)
+
+
+def test_the_probe_wakes_again_for_the_same_reading_in_a_later_tight_period(monkeypatch):
+    """Opus 74fc18755a62, end to end through the notifier and the probe."""
+    _bound_item(CONDUCTOR, "chat-w1")
+    notifier = _notifier([], [(POSTURE_AMPLE, "")])
+    worse: list[str] = []
+    for level, free in [
+        (POSTURE_TIGHT, 4.0),
+        (POSTURE_TIGHT, 3.0),
+        (POSTURE_AMPLE, 9.0),
+        (POSTURE_TIGHT, 4.0),
+        (POSTURE_TIGHT, 3.0),
+    ]:
+        _feed_free(notifier, level, free)
+        worse += [b for b in _posture_briefs(CONDUCTOR) if "still tight" in b]
+    assert len(worse) == 2
+
+
+def test_two_workers_growing_in_one_tick_both_wake(monkeypatch):
+    """GPT bd25b95e6287: one shared stamp must not collapse two items' wakes."""
+    from kiro_crew.probes.work_ledger import WorkLedgerProbe
+
+    first = _bound_item(CONDUCTOR, "chat-w1")
+    second = _bound_item(CONDUCTOR, "chat-w2")
+    monkeypatch.setattr(rp, "_current_posture", (POSTURE_TIGHT, "memory 3.0 GB free"))
+    step = ("1.000", 9 * _GB, 28.0, 2 * _GB)
+    monkeypatch.setattr(rp, "_worker_growth", {"chat-w1": step, "chat-w2": step})
+    from kiro_crew.probes import work_ledger as probe_module
+    from kiro_crew.testing.clock import ManualClock
+
+    # A frozen clock on the probe's own binding: both wakes are built at one instant.
+    ManualClock().install(monkeypatch, probe_module)
+    ctx = SimpleNamespace(
+        message=json.dumps({"conductor": CONDUCTOR}), job=SimpleNamespace(id="loop-1")
+    )
+    probe = WorkLedgerProbe(worker_running=lambda _k: True)
+    probe.identity(ctx)
+    keys = [o.key for o in probe.observe(ctx).observations if "worker it_" in o.brief]
+    assert len(set(keys)) == 2
+    assert any(first in k for k in keys) and any(second in k for k in keys)
+
+
+def test_the_conductor_is_told_when_growth_wakes_are_off(monkeypatch):
+    """RFC §10 test 13: ``watchdog_rss_max_mb = 0`` silences the wake, and says so."""
+    from kiro_crew.config import live
+    from kiro_crew.dashboard.handlers import session_memory_scope as sms
+    from kiro_crew.mcp_tools.spawn_parts.session_memory import render_session_memory
+
+    off = SimpleNamespace(session=SimpleNamespace(watchdog_rss_max_mb=0))
+    on = SimpleNamespace(session=SimpleNamespace(watchdog_rss_max_mb=4096))
+    monkeypatch.setattr(live, "snapshot", lambda: off)
+    assert sms._growth_wake_on() is False
+    monkeypatch.setattr(live, "snapshot", lambda: on)
+    assert sms._growth_wake_on() is True
+    lines = render_session_memory(
+        {"runs": {}, "workers": [{"item_id": "it_a", "turn": "idle"}], "growth_wake": "off"}
+    )
+    assert any(line.startswith("  Worker growth wakes: off") for line in lines)
+
+
+def test_a_remote_workers_key_never_takes_a_local_trees_growth(monkeypatch):
+    """GPT review: a remote item's key names a peer's session, so a local tree with
+    the same key must not wake it or spend its budget."""
+    import dataclasses
+
+    _bound_item(CONDUCTOR, "chat-w1")
+    listed = work_ledger.list_work_items
+    monkeypatch.setattr(
+        work_ledger,
+        "list_work_items",
+        lambda key: [dataclasses.replace(i, worker_instance_id="peer-1") for i in listed(key)],
+    )
+    monkeypatch.setattr(rp, "_current_posture", (POSTURE_TIGHT, "memory 3.0 GB free"))
+    monkeypatch.setattr(rp, "_worker_growth", {"chat-w1": ("1.000", 9 * _GB, 28.0, 2 * _GB)})
+    assert _growth_briefs() == []
+
+
+def test_a_step_on_one_axis_resets_both_references():
+    """GPT a8b37eb49a9a (head 2084c7be55): with both axes tight, (4 GB, 9%) ->
+    (3 GB, 8%) steps on memory; (2.9 GB, 7%) is then only 0.1 GB / 1 point below
+    that wake, so it is no step."""
+    pulls: list[int] = []
+    notifier = _notifier(pulls, [(POSTURE_AMPLE, "")])
+    _feed_free(notifier, POSTURE_TIGHT, 4.0, disk_pct=9.0, disk_level=POSTURE_TIGHT)
+    _feed_free(notifier, POSTURE_TIGHT, 3.0, disk_pct=8.0, disk_level=POSTURE_TIGHT)
+    assert len(pulls) == 2
+    _feed_free(notifier, POSTURE_TIGHT, 2.9, disk_pct=7.0, disk_level=POSTURE_TIGHT)
+    assert len(pulls) == 2
+    _feed_free(notifier, POSTURE_TIGHT, 2.9, disk_pct=6.0, disk_level=POSTURE_TIGHT)
+    assert len(pulls) == 3 and "was 8% at the last wake" in rp.worsened()[1]

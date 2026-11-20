@@ -106,6 +106,7 @@ __all__ = [
     "KAS_VERSION_OVERRIDE_ENV",
     "bundle_spawn_argv",
     "engine_install_snapshot",
+    "ensure_engine_at_startup",
     "engine_spec_permissions_supported",
     "host_unsupported_reason",
     "install_pinned_engine",
@@ -116,6 +117,7 @@ __all__ = [
     "last_kas_route",
     "last_relay_takes_crew_sign_in",
     "pinned_version",
+    "relay_takes_crew_sign_in",
     "require_loadable_host",
     "sha256_bytes",
     "sha256_file",
@@ -329,7 +331,6 @@ def relay_runs_on_kiro_cli_sign_in() -> bool:
     ``acp.kas_route.relay_runs_on_kiro_cli_sign_in`` on this process's environment,
     for the dashboard. Blocking (config and kiro-cli reads); never raises.
     """
-    import os
     from pathlib import Path
 
     from kiro_crew.acp.kas_route import relay_runs_on_kiro_cli_sign_in as runs
@@ -344,9 +345,16 @@ def last_relay_takes_crew_sign_in() -> bool | None:
     pinned to kiro-cli's launcher runs on kiro-cli's sign-in alone unless Crew's
     vault answers it too (``crew_auth``); any other relay takes either sign-in.
     """
-    from kiro_crew.acp.kas_route import REASON_KIRO_CLI_LAUNCHER, last_spawn_route
+    from kiro_crew.acp.kas_route import last_spawn_route
 
-    route = last_spawn_route()
+    return relay_takes_crew_sign_in(last_spawn_route())
+
+
+def relay_takes_crew_sign_in(route: Any) -> bool | None:
+    """:func:`last_relay_takes_crew_sign_in` for one *route*, such as the one a
+    failing runtime's own sign-in sentence names (``host_auth.kas_sentence_route``)."""
+    from kiro_crew.acp.kas_route import REASON_KIRO_CLI_LAUNCHER
+
     if route is None or route.bundle:
         return None
     return route.reason != REASON_KIRO_CLI_LAUNCHER or route.crew_auth
@@ -374,6 +382,13 @@ def install_pinned_engine(
     from kiro_crew.acp.kas_engine_install import install_pinned_engine as _install
 
     return _install(base_url, caller=caller, on_progress=on_progress)
+
+
+def ensure_engine_at_startup() -> None:
+    """Install this release's pinned engine at gateway start when no root has it."""
+    from kiro_crew.acp.kas_engine_startup import ensure_engine_at_startup as _ensure
+
+    _ensure()
 
 
 def installed_engine_label() -> str | None:

@@ -195,6 +195,7 @@ from kiro_crew.dashboard.handlers.autonudge import (
     compose_nudge_body,
     render_nudge_message,
 )
+from kiro_crew.dashboard.handlers.messaging import _send_to_channel_target
 from kiro_crew.dashboard.handlers.updates import _update_info, record_auto_update_effect
 from kiro_crew.dashboard.handlers.updates import remediation_command as _remediation_command
 from kiro_crew.dashboard.handlers.usage import (
@@ -231,6 +232,7 @@ from kiro_crew.dashboard.state import (
     load_window_off_loop,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
+from kiro_crew.dashboard.token_auth_callers import derive_caller_app
 from kiro_crew.dashboard.turn_dispatch import (
     bounded_chat_turn,
     mark_turn_unstarted,
@@ -831,6 +833,7 @@ class GatewayOrchestrator:
     _mcp_gateway_pending: GatewayManager | None = None
     _mcp_gateway_start_retry: asyncio.Task[None] | None = None
     _mcp_resolve_prefetch: asyncio.Task[None] | None
+    _mcp_resource_subscription_task: asyncio.Task[None] | None
     _mcp_target_env: dict[str, str]
     _mcp_overlay_refresh_lock: asyncio.Lock | None = None
     _mcp_rewrite_inputs: dict[str, Any] | None = None
@@ -941,6 +944,7 @@ class GatewayOrchestrator:
     _channel_reply_link = _delivery._channel_reply_link
     # gateway_runtime/delivery.py
     _cron_origin_key = _delivery._cron_origin_key
+    _cron_channel_pin = _delivery._cron_channel_pin
     _deliver_cron_to_channel = _delivery._deliver_cron_to_channel
 
     # ── One spelling of the cron failure-alert mechanism ───────────────────

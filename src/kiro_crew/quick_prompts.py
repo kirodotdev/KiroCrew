@@ -230,7 +230,7 @@ _USER_TOKEN_RE = re.compile(r"/[a-z][a-z0-9-]*")
 # surfaces only, so it is not a quick prompt at all. ``test_quick_prompts.py``
 # pins this set against every source.
 _RESERVED_TOKENS = frozenset(QUICK_PROMPTS) | frozenset("""
-    /agent /agents /bg /btw /cancel /changelog /chat /clear /code /commands
+    /agent /agents /bg /bot /bots /btw /cancel /changelog /chat /clear /code /commands
     /compact /context /cron /crons /dashboard /editor /exit /experiment /fork /goal
     /help /hooks /incognito /init /issue /kb /kirocrew /link /logdump /mcp
     /model /models /new /onboarding /paste /ping /prompts /q /queue /quit

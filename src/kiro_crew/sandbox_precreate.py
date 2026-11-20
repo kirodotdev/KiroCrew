@@ -102,6 +102,9 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # gateway records without letting a sandbox create the missing root.
     "subagents",
     "member-memory-bindings",
+    # Absent, a sandbox could create the directory and write the identity records the
+    # gateway's session check reads.
+    "session-tokens",
     "memory_stores",
     # Memory move jobs and ledgers: absent, a sandbox could create the directory and
     # seed a ledger that a rollback would then delete from.
@@ -124,6 +127,10 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # directory reads as "not installed" to ``browser_harness.install.install_state``
     # exactly as an absent one does.
     "browser-harness",
+    # The optional channel SDK root, for the ``browser-harness`` reason: absent until
+    # the owner presses Install, and an absent target is a name the agent may create
+    # and fill with code the gateway later imports. Empty reads as "not installed".
+    "extras",
     # The KAS engine bundle root, for the ``browser-harness`` reason: on an install
     # that has never run ``kirocrew kas install`` the directory is absent, and an
     # absent target is a seal skipped and a name the agent may create.
@@ -215,9 +222,11 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
 _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "app-agent-launch",
     "browser-harness",
+    "extras",
     "engines",
     "subagents",
     "member-memory-bindings",
+    "session-tokens",
     "decisions",
     "models",
     "kirocrew-bin",
@@ -263,6 +272,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "the agent could replace the Browser Harness interpreter or the Chromium the "
         "gateway runs against the user's own browser",
     ),
+    "extras": (
+        "sealed channel SDKs",
+        "the agent could replace the channel SDK code the gateway imports",
+    ),
     "engines": (
         "sealed agent engine",
         "the agent could replace the KAS engine code and Node runtime every later session runs",
@@ -280,6 +293,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed run records",
         "the agent could rewrite the app owner a retained V1 run restores its "
         "authorization from",
+    ),
+    "session-tokens": (
+        "sealed session identity records",
+        "the agent could write a record that makes a session key attested",
     ),
     # Sealing the seam that turns the feature on without sealing the record it writes
     # would be half a control: appending one feedback row is enough to put a verdict
@@ -650,6 +667,10 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # the spool's own ``restrict_to_owner=True`` writes already require of it; its
     # readers open the leaf inside, so an empty root reads exactly as an absent one.
     "inbound-spool",
+    # The resource-subscription store has the same lazy first-write shape. Its
+    # empty directory is absent-equivalent because readers key on subscriptions.json;
+    # precreation gives the hidden mask a target before an agent can plant records.
+    "mcp-resource-subscriptions",
     # The secret vault: the vault key and every stored secret. ``SecretVault`` creates
     # this directory on the owner's FIRST stored secret, so on a home with none yet the
     # ``isdir``-guarded ``sensitive_dirs`` loop skips the name, and the key and ciphertext

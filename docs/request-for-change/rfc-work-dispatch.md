@@ -3,8 +3,8 @@ title: One work_dispatch call creates, opens, binds and seeds a work item
 status: implemented
 author: kirocrew agent session, directed by zejiangg
 created: 2026-10-26
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: [25101]
 tracking-issues: [24226]

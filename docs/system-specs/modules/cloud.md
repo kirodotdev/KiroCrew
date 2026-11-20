@@ -72,6 +72,7 @@ claim that a hostile in-process agent is fully contained.
 | `aws.py` | The `run_aws` chokepoint for captured AWS CLI calls — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key), and a child environment without the gateway's Python interpreter settings (`sandbox.without_python_env`), because aws-cli v1 is a Python program. `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`; `configured_region(profile)`, the profile's own Region from the AWS config file (`aws configure get region`, "" when unset or in an agent session), which `cloud doctor` compares with the default Region it checks; `warn_if_started_from_agent_session()`, the gateway's log-only post-READY WARNING when its own process reads as an agent session (`_in_agent_session`, the check `assert_human_action` refuses on), e.g. restarted from an agent's shell. |
 | `ec2.py` | `deploy`/`status`/`stop`/`start`/`destroy` via `aws cloudformation` + `ec2`; AZ- **and egress-**aware `discover_network` + `resolve_explicit_subnet` (`--subnet` pin, same guarantees); tag-based stateless discovery (`list_instances` drops an instance EC2 reports terminated, shutting down, or no longer has, so a crew whose stack was deleted leaves `list` as `status`/`destroy` already report it absent); `_validate_cidr`. `find_stack` verifies BOTH `kirocrew:managed=true` AND `kirocrew:instance==<tag>` before status/stop/start/destroy touch a stack — so a same-prefix managed stack with a different instance tag can't be acted on by the wrong `--tag`. |
 | `ec2_failure.py` | The plain-words cause `ec2.deploy` puts ahead of a failed `cloudformation deploy`: a denied action, an EC2 account refusal (vCPU quota, account validation) or no capacity in a zone, and the zone a capacity refusal names, which `deploy` uses to retry in another zone. |
+| `instance_types.py` | The launch form's custom instance type: `list_offered` reads `describe-instance-type-offerings` (per Availability Zone) and `describe-instance-types` (current generation, not bare metal), keeps the m, t, c and r families with an arm64 or x86_64 CPU and lists those with at least 16 GiB (Kiro Crew's memory floor, the one every size tier keeps; `find_offered` refuses a smaller offered type saying Kiro Crew needs at least 16 GB memory), and caches the list per (profile, Region) for five minutes; `custom_tier` turns an offered type into a `SizeTier` whose architecture picks the AMI and whose type drives `discover_network`'s zone filter. Offered is not in stock: capacity is known only at launch. |
 | `github_tag_probe.py` | `public_tag_exists`: confirms a release tag on the default public repository with one HTTPS GET of GitHub's exact-ref API, for `ec2.release_tag_exists` when this machine has no trusted `git`. Spawns nothing; any non-200 or error is a WARNING and a miss. |
 | `iam.py` | Least-privilege launcher policy generator (applied by the user, never by KiroCrew) + read-only reachability check + the **content-fixed instance permissions-boundary document** (`boundary_policy_document`/`boundary_arn`) and its constants (`BOUNDARY_NAME`). |
 | `host_policy.py` | Reads and validates the edition's `cloud_instance_policy` seam (managed policies for the EC2 instance role, plus the boundary statements they need). The one reader for the boundary document, the second launcher policy (`iam.host_policy_document`) and the template's `ExtraManagedPolicyArns`; also checks before the deploy that the launch account holds each of those policies (`require_managed_policies`); see Security model. |
@@ -293,7 +294,12 @@ next step: the same-size tier on the other architecture (for example
 `balanced-x86`) or another Region. A `--subnet` / Subnet ID pin, a reused stack
 and `--keep-on-failure` never move; the pinned case also says to clear the
 Subnet ID so the launch can try the other zones. The uploaded source is removed
-only when the launch finally fails.
+only when the launch finally fails. A cancel stops the retries: `deploy` asks its
+`cancelled` callback (the dashboard's launch job passes its cancel event) before
+it deletes a refused stack and again after the delete, and once it answers True
+it creates no new stack and raises the refusal. The launch job reads a provision
+failure that follows a cancel as the cancel, so the job ends `cancelled` and its
+rollback removes whatever stack is left.
 
 Teardown removes the uploaded source object as part of the contract: after a **confirmed** `delete-stack`, `source.delete_source` returns `{removed, uri, error}`. If the stack delete itself did not confirm, the source object and `last_tag` pointer are preserved and the CLI exits non-zero.
 
@@ -383,8 +389,8 @@ reddens instead of silently falsifying this paragraph.
 This closes only the **configuration** half of the lazily-enforced bound. `reap` is
 still called only from `provision`, so a cluster whose last launch has already happened
 is never swept by the launcher; the in-task `SMC_TASK_TTL_SECONDS` deadline above is
-what bounds such a task (in an image that carries it), and a periodic sweep caller
-remains open (issue #12283).
+what bounds such a task (in an image that carries it), and no periodic sweep caller
+exists.
 
 **Incomplete means absent.** A block missing any required field, naming a movable
 image tag, carrying a secret entry that is not a two-string pair, or carrying an
@@ -654,7 +660,7 @@ all matter more to the operator than a pointer -- and those flags reach the stac
   lives where a launch consumes the file instead
   (`require_unaliased_cloud_config`, called from the provisioner seam), so the alias
   costs one lane's launch rather than the box. The sealed directory leaves keep
-  main's own strict DIRECTORY rule, which this change does not touch.
+  the strict DIRECTORY rule.
 - **An aliased `cloud.json` is refused where a launch CONSUMES it**, in
   `DefaultRemoteProvisionerProvider.engine_for`, and only warned about on the
   universal spawn path (`sandbox._warn_aliased_strict_leaves`). Refusing on the spawn

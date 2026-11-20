@@ -28,6 +28,10 @@ Contract
   tests that textually reference a changed file, and -- when the OTHER surface
   changed -- the cross-surface set ``ci-surface-tests.py`` computes for CI.
   A surface with nothing related is skipped and says so.
+- The frontend runner never fetches a package (``npx --no-install``). With
+  ``website/node_modules`` missing, a diff that touched no frontend file skips
+  the frontend set with a note (CI still runs it); a frontend diff fails
+  closed: exit 2, run nothing, and say to run ``npm ci``.
 - There is NO automatic path to a full suite. Not for a meta change, not for a
   diff touching both surfaces, not for a large related set (its size is printed
   and it runs). ``--full`` exists for a human who asks for one.
@@ -106,6 +110,7 @@ _META_PREFIXES = (".github/", "scripts/")
 # is never packaged or imported. A path here sets NO flag.
 _IGNORED_PREFIXES = ("temp-screenshots/",)
 _NODE_LAUNCHERS = frozenset({"npm", "npx"})
+_NO_NODE_MODULES = "website/node_modules is missing; run `npm ci` in website/"
 # How long a passing proof stays reusable. Files .gitignore hides that no package list or
 # lockfile names (a built dist, a hand edit under node_modules) are outside the identity,
 # so the bound caps how stale one of those can be behind a reused pass.
@@ -229,7 +234,7 @@ def _resolve_command(cmd: list[str]) -> list[str]:
     return [launcher, *cmd[1:]]
 
 
-def _add_related(plan: Plan, surface: str, paths: list[str]) -> None:
+def _add_related(plan: Plan, surface: str, paths: list[str], surface_changed: bool) -> None:
     """Append ``surface``'s related set to the plan, or a note that it is empty.
 
     Raises ``SelectionUntrustworthy`` (via ``related_targets`` /
@@ -256,8 +261,25 @@ def _add_related(plan: Plan, surface: str, paths: list[str]) -> None:
         plan.notes.append(f"{surface}: {verdict} -- NOT RUN HERE: {exc}; CI runs them")
         plan.skipped.append(surface)
         return
+    if not frontend_dependencies_installed():
+        # Node is here but the website's packages are not (a fresh worktree).
+        # A diff that never touched the frontend still has CI's cross-surface
+        # specs selected; skipping them here loses nothing CI does not run.
+        # A frontend diff left untested locally would be a silent pass.
+        if surface_changed:
+            raise GateCannotSee(
+                f"cannot run the {surface} related set (exit 2): {_NO_NODE_MODULES}"
+            )
+        plan.notes.append(f"{surface}: {verdict} -- NOT RUN HERE: {_NO_NODE_MODULES}; CI runs them")
+        plan.skipped.append(surface)
+        return
     plan.notes.append(f"{surface}: {verdict}")
     _add_batches(plan, "frontend (related)", batches, _REPO_ROOT / "website")
+
+
+def frontend_dependencies_installed() -> bool:
+    """True when ``npm ci`` has populated ``website/node_modules``."""
+    return (_REPO_ROOT / "website" / "node_modules").is_dir()
 
 
 def _add_batches(plan: Plan, label: str, batches: list[list[str]], cwd: Path) -> None:
@@ -482,8 +504,8 @@ def build_plan(args: argparse.Namespace) -> Plan:
         f" (frontend={frontend} meta={meta} backend={backend})"
     )
     try:
-        _add_related(plan, "backend", paths)
-        _add_related(plan, "frontend", paths)
+        _add_related(plan, "backend", paths, backend)
+        _add_related(plan, "frontend", paths, frontend)
     except SelectionUntrustworthy as exc:
         raise GateCannotSee(f"cannot select related tests -- running nothing (exit 2): {exc}") from exc
     return plan

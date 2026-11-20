@@ -233,7 +233,7 @@ Kiro Crew accepts no new built-in app. Never add an app under
 `src/kiro_crew/apps/builtins/`, an `app.json` outside `docs/app-kit/examples/` and
 test fixtures, a per-app page under `website/src/apps/<app>/`, a per-app row in a
 core built-in table (`BUILTIN_NAMES`, `apps/manager_builtins.py`, the
-`website/src/apps/` registries), or an app-specific MCP tool (`mcp_tools/apps.py`)
+`website/src/apps/` registries), or an app-specific MCP tool (`mcp_tools/app_tools.py`)
 or internal-secret path row (`dashboard/server_internal_paths.py`) in core. A new
 app, first-party included, ships from a dedicated GitHub repository listed in the
 official registry ([kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps)).

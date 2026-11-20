@@ -1,12 +1,12 @@
 ---
 title: A built-in eval tool -- tiered tasks across harnesses, a Crew headless CLI, a weekly run, and harvesting merged PRs into standing cases
-status: accepted
+status: partial
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-15
-last-audited: 2026-11-16
-audited-at: cb2f78b946
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 37669
-implementation-prs: []
+implementation-prs: [37768, 38187, 39317]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,8 @@ superseded-by: []
 
 # RFC: A built-in eval tool for Kiro Crew
 
-Status: accepted. The repository owner, a maintainer, asked for the
+Status: partial (accepted 2026-11-16; §12's `kirocrew chat --headless` and
+§14.1's `kirocrew eval run` v1 are on main). The repository owner, a maintainer, asked for the
 direction on 2026-11-15, widened it the same day from long tasks only to a
 weekly eval tool with three tiers, a Crew headless CLI and a case-harvest
 step, and accepted it on 2026-11-16 with the PR that ships §12's first part
@@ -230,6 +231,7 @@ the runner refuses to start when neither holds.
 |---|---|---|
 | Crew, kiro-cli | a dedicated `KIRO_API_KEY` in the eval home only. "An API key IS a kiro-cli sign-in -- kiro-cli keeps no stored record of it, the variable is the whole login" (`apply_spawn_env` in `acp/harness/kas.py`) | revocable on its own; nothing of the operator's on disk |
 | Claude Code | a dedicated API key or a role scoped to model invocation only | no copy of the operator's `~/.claude*` |
+| every arm, `--use-operator-credentials` | opt-in: every arm runs as the operator, with the operator's own env, real `HOME`, existing kiro-cli sign-in and the `claude` on its `PATH`. Preflight then skips the eval-user checks of §4.1 and instead requires `kiro-cli whoami` (Crew arms, the binary a gateway session would run, with a fresh `KIRO_HOME` as each run gets) and `claude -p "say ok"` (Claude Code) to exit 0; not-built arms stay VOID per run, refusing with exit 3 otherwise; a Crew arm still needs the strict sandbox tier. Each run keeps its own work directory, Crew data home, `KIRO_HOME` and `TMPDIR`; the operator's `KIROCREW_*` values are dropped. The CLI prints a risk line first, the batch JSON carries it, and every run record carries `credentials` (`eval-only` by default) | owner decision 2026-11-19 (`docs/decisions/2026-11-19-eval-runs-may-use-the-operators-own-sign-ins.md`): with the flag, §4.4 items 1, 4 and 6 and the §14.1 eval-user fence do not hold. Claude Code also merges the operator's user settings (`~/.claude`, which may hold their sign-in, allow rules and hooks) with `--allowedTools`, so §3.2's same-tools rule does not fully hold for that arm. A Crew arm likewise loads the operator's user-level kiro-cli MCP servers (`~/.kiro/settings/mcp.json`, which follows the real `HOME`, not `KIRO_HOME`); the run's config turns off only the `~/.kiro/hooks/*.sh` script auto-import, so the operator's standalone `~/.kiro/hooks/*.json` hook files still run on its KAS turns. The agents (Crew shells inside the strict tier, which masks the operator's credential paths; Claude Code and the hidden check unsandboxed) run as the operator with the operator's logins reachable. Without the flag, preflight is unchanged |
 | Codex | a dedicated `CODEX_API_KEY` for the invocation only (per the Codex non-interactive docs) | some installs wrap Codex with their own model credentials; that path is untested (§11) |
 
 ### 4.4 Why this is safe
@@ -248,6 +250,10 @@ the runner refuses to start when neither holds.
    paths, the live gateway port and real GitHub hosts, and voids the run on a hit.
 6. The real home's defaults do not change. This RFC grants nothing outside an
    eval home.
+
+Under `--use-operator-credentials` (§4.3), items 1, 4 and 6 do not hold: the
+arms run as the operator in the real home with the operator's own sign-ins
+(`docs/decisions/2026-11-19-eval-runs-may-use-the-operators-own-sign-ins.md`).
 
 ## 5. When a run fails
 
@@ -722,13 +728,14 @@ less than, or differs from, the sections above:
 | point | v1 |
 |---|---|
 | flags (§3.4) | `--suite tasks\|DIR --tier --harness --case --repeat --eval-home --out --model --json --check`. `--suite` also takes a suite directory. No `scenarios` / `skills` suites, `--baseline`, `--junit`, `--detach`, `--budget-week`; no `report`, `harvest`, `admit` |
-| eval user (§4.1, §4.4) | refused unless the running user's home holds none of the sandbox's credential paths (`security.paths.sensitive_home_dirs` plus `~/.config/gh` and `~/.kube`; only an empty directory under Crew's own data home, which running the CLI may create, is let through) and the user cannot list any other login user's home. With `HOME` set to the run home, the strict tier masks the empty run home, not the eval user's real home, so for the unsandboxed paths (the hidden check, the Claude Code arm) this credential-free user is the whole fence, which is less than §4.4 item 1 says. No mount-namespace fallback. Linux and macOS only |
-| network, MCP, memory (§4.1) | no allowlisting proxy. A fresh data home and `HOME` per run, so no user MCP server or memory is present; Claude Code gets `--strict-mcp-config` and no config |
+| eval user (§4.1, §4.4) | refused unless the running user's home holds none of the sandbox's credential paths (`security.paths.sensitive_home_dirs` plus `~/.config/gh` and `~/.kube`; only an empty directory under Crew's own data home, which running the CLI may create, is let through) and the user cannot list any other login user's home. With `HOME` set to the run home, the strict tier masks the empty run home, not the eval user's real home, so for the unsandboxed paths (the hidden check, the Claude Code arm) this credential-free user is the whole fence, which is less than §4.4 item 1 says. Under `--use-operator-credentials` there is no eval user and this fence does not hold: the arms and the hidden check run as the operator (§4.3). No mount-namespace fallback. Linux and macOS only |
+| network, MCP, memory (§4.1) | no allowlisting proxy. A fresh data home and `HOME` per run, so no user MCP server or memory is present; Claude Code gets `--strict-mcp-config` and no config. Under `--use-operator-credentials` (§4.3) the real `HOME` is kept, so a Crew arm also loads the operator's user-level kiro-cli MCP servers (`~/.kiro/settings/mcp.json`); the `~/.kiro/hooks/*.sh` script auto-import is off (`kiro_hooks_autoimport: false` in the run's config), but the operator's standalone `~/.kiro/hooks/*.json` hook files still run |
 | task branch (§7.1) | `trunk`, not `main`: Kiro Crew refuses a push to a protected branch name even to a local origin, so a Crew arm could not finish a case on `main` |
 | cases (§7.1, §13.2) | a case's `base/` is the touched module cut down to the code the fix needs, not the whole repository at the PR's base, so it builds offline in a second; `CASE.md` names what was cut. No stand-in, `gates/`, `mutants/`, `probes/`, scrub report |
 | ask detector (§5) | Crew arms: the headless CLI's own `asks`. Claude Code: `permission_denials` and `AskUserQuestion` / `ExitPlanMode` calls. No final-question rule yet |
 | audit (§4.4) | VOID when a run's output names the case suite's path. The suite (cases, checks, `lib/`) is fingerprinted at batch start and after every run; a run that changed it is VOID and the batch stops, so no run can rewrite the grader later runs are judged by. No wire log, so no credential-path, gateway-port or `github.com` scan. The hidden check imports the submitted code in its own child process, as the eval user and outside the Crew sandbox, so code written to print a fake verdict, or to edit its own run's files while it is checked, could game its own score (and only that, given the fingerprint); v1 relies on the dedicated eval user, not on the check, to contain the agent, and a sandboxed check is a follow-up |
 | Claude Code fence (§4.2, §11) | as designed: the eval home and the dedicated OS user are its fence; the runner does not wrap it in Crew's sandbox |
+| `--use-operator-credentials` (§4.3) | built: every arm as the operator with their own sign-ins, checked first with `kiro-cli whoami` and `claude -p "say ok"`; no eval-user fence; `credentials` in each run record |
 | continue budget (§3.2) | none: one harness message (the seed) per run |
 | model pin (§3.2) | `--model` is passed to every arm and recorded; a run is not voided for an unpinned model |
 | idle after done (§10) | the hidden check is sampled every 60 s while the arm runs |

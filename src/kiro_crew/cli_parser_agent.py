@@ -167,6 +167,7 @@ Examples:
   kirocrew cron update <job-id> --approval-mode auto
   kirocrew cron update <job-id> --agent oncall-agent
   kirocrew cron remove <job-id>
+  kirocrew cron history <job-id> --status error
 """,
         formatter_class=_fmt,
     )
@@ -470,6 +471,35 @@ Examples:
     cron_resume.add_argument("job_id", help="Job ID to resume")
     cron_trigger = cron_sub.add_parser("trigger", help="Trigger a cron job immediately")
     cron_trigger.add_argument("job_id", help="Job ID to trigger")
+    cron_history = cron_sub.add_parser("history", help="Show a job's past runs (read-only)")
+    history_target = cron_history.add_mutually_exclusive_group(required=True)
+    history_target.add_argument("job_id", nargs="?", default=None, help="Job ID whose runs to show")
+    history_target.add_argument(
+        "--all",
+        action="store_true",
+        help="Read every job's runs from the cross-job index, newest first",
+    )
+    cron_history.add_argument(
+        "-n",
+        "--limit",
+        type=positive_int,
+        default=20,
+        help="How many runs to show (default: 20)",
+    )
+    cron_history.add_argument(
+        "--status",
+        choices=("success", "failure", "timeout", "cancelled", "error"),
+        default=None,
+        help="Keep only runs with this status; 'error' keeps every run that did not succeed",
+    )
+    cron_history.add_argument(
+        "--run",
+        dest="run_id",
+        default=None,
+        metavar="RUN_ID",
+        help="Print that one run's full record, trace included (needs a job id)",
+    )
+    cron_history.add_argument("--json", action="store_true", help="Machine-readable output")
 
     cron_adopt = cron_sub.add_parser(
         "adopt",
@@ -500,6 +530,24 @@ Examples:
     cron_preview.add_argument(
         "--env", "-e", action="append", metavar="K=V", help="Extra env vars (repeatable)"
     )
+
+
+def register_resource_subs_parser(sub: _Commands) -> None:
+    """``kirocrew resource-subs``: dispatched by ``cli_resource_subs.resource_subs``."""
+    parser = cli_help.add_command(
+        sub,
+        "resource-subs",
+        epilog="""
+Examples:
+  kirocrew resource-subs list
+  kirocrew resource-subs remove rsub_0123456789abcdef
+""",
+        formatter_class=_fmt,
+    )
+    actions = parser.add_subparsers(dest="resource_subs_action")
+    actions.add_parser("list", help="List every session's MCP resource subscriptions")
+    remove = actions.add_parser("remove", help="Remove one subscription by its id")
+    remove.add_argument("subscription_id", help="The id `list` shows (rsub_...)")
 
 
 def register_spawn_parser(sub: _Commands) -> None:

@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
 from kiro_crew.relay_client.client import STATE_CONNECTED, STATE_ERROR, RelayClient
 from kiro_crew.relay_client.ingress import CrewIngress, LoopbackIngress
 from kiro_crew.relay_client.lease import (
+    SECRET_URI_PREFIX,
     SIGN_IN_CREDENTIAL,
     TOKEN_TYPE_API_KEY,
     TOKEN_TYPES,
@@ -158,7 +159,14 @@ class RelaySettings:
                 problem = credential_reference_problem(self.lease_credential)
                 if problem is not None:
                     raise RelaySettingsError(problem)
-            if self.lease_token_type and self.lease_token_type not in TOKEN_TYPES:
+            if self.lease_token_type and self.uses_workload_identity:
+                # A team Crew's config copied into a pod: the JWT-SVID goes with no
+                # TokenType whatever this says, so the pod still leases.
+                logger.warning(
+                    "tunnel.relay_lease_token_type is ignored: this Crew leases on its "
+                    "workload identity, which sends no TokenType"
+                )
+            elif self.lease_token_type and self.lease_token_type not in TOKEN_TYPES:
                 # Not echoed: a credential pasted in here by mistake stays out of logs.
                 raise RelaySettingsError(
                     "tunnel.relay_lease_token_type must be empty or one of "
@@ -185,6 +193,25 @@ class RelaySettings:
         if self.lease_credential == SIGN_IN_CREDENTIAL:
             return True
         return not (self.lease_credential or self.lease_token_type)
+
+    @property
+    def uses_workload_identity(self) -> bool:
+        """Whether the Crew leases on its own JWT-SVID: the SVID file on a workload host.
+
+        On a host with ``KIROCREW_WORKLOAD_IDENTITY`` set, ``tunnel.relay_lease_credential``
+        naming the file ``KIROCREW_WORKLOAD_IDENTITY_SVID_FILE`` names is the JWT-SVID
+        (:mod:`kiro_crew.workload_identity`). Any other file, and a ``secret://``
+        reference, stays a crew API key. Reads the environment only.
+        """
+        credential = self.lease_credential
+        if not credential or credential == SIGN_IN_CREDENTIAL:
+            return False
+        if credential.startswith(SECRET_URI_PREFIX) or not _workload_identity_named():
+            return False
+        from kiro_crew import workload_identity
+
+        svid_file = (os.environ.get(workload_identity.ENV_SVID_FILE) or "").strip()
+        return bool(svid_file) and _same_path(credential, svid_file)
 
     @property
     def is_team_crew(self) -> bool:
@@ -217,6 +244,11 @@ def _setting_text(tunnel: Any, name: str) -> str:
     value = getattr(tunnel, name, "")
     # ``isinstance``: a stand-in config object answers any attribute with an object.
     return value.strip() if isinstance(value, str) else ""
+
+
+def _same_path(a: str, b: str) -> bool:
+    """Whether *a* and *b* name one path, as written (``~`` expanded, ``..`` folded)."""
+    return os.path.normpath(os.path.expanduser(a)) == os.path.normpath(os.path.expanduser(b))
 
 
 def _workload_identity_named() -> bool:
@@ -434,6 +466,13 @@ def lease_token_source(settings: RelaySettings) -> Optional[HostTokenSource]:
         return None
     if settings.uses_sign_in:
         return _sign_in_lease_source(settings)
+    if settings.uses_workload_identity:
+        return LeaseHostTokenSource(
+            lease_url=settings.lease_url,
+            credential=settings.lease_credential,
+            crew_version=_crew_version(),
+            workload=True,
+        )
     return LeaseHostTokenSource(
         lease_url=settings.lease_url,
         credential=settings.lease_credential,

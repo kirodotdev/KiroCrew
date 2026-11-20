@@ -327,6 +327,7 @@ from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
     _switch_target_busy,
 )
 from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
+    _RESOURCE_SUBSCRIPTION_RETIRE_SECS,
     _await_guarded_history_write,
     _close_slot,
     _drain_file_changes_flush,
@@ -337,7 +338,9 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _release_closed_execution,
     _restore_original_after_failed_close,
     _restore_slot_nudge_loop,
+    _retire_resource_subscriptions,
     _retire_slot_nudge_loop,
+    _session_still_live,
     _slot_still_ours,
     _timed_close_stage,
     api_chat_slot_delete,
@@ -1111,7 +1114,7 @@ _SESSION_START_REPEAT_REFUSAL_AT = 2
 #: one above them -- the mirror of ``INJECT_KIND_OPENS_TURN`` in
 #: ``website/src/pages/chat/RecoveryCard.tsx`` (``recovery`` and
 #: ``user_replay`` continue the same turn and are deliberately absent).
-_TURN_OPENING_INJECT_KINDS = frozenset({"cron", "synthesis", "workflow", "heartbeat"})
+_TURN_OPENING_INJECT_KINDS = frozenset({"cron", "synthesis", "workflow", "heartbeat", "resource"})
 
 
 def _has_conversation(slot: _ChatSlot) -> bool:

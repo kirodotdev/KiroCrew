@@ -16,6 +16,8 @@ from kiro_crew.dashboard import (
     handlers,
     handlers_channel,
     handlers_cloud,
+    handlers_cloud_instance_types,
+    handlers_cloud_signin_skip,
     handlers_crew_turn,
     handlers_instances,
     handlers_project,
@@ -191,6 +193,10 @@ def register(app: web.Application) -> None:
     # built-in EC2 lane plus whatever the edition composes in.
     app.router.add_get("/api/cloud/provisioners", handlers_cloud.api_cloud_provisioners)
     app.router.add_get("/api/cloud/identity", handlers_cloud.api_cloud_identity)
+    # The EC2 instance types a Region offers, for the launch form's custom type.
+    app.router.add_get(
+        "/api/cloud/instance-types", handlers_cloud_instance_types.api_cloud_instance_types
+    )
     app.router.add_get("/api/cloud/launch", handlers_cloud.api_cloud_launch_list)
     app.router.add_post("/api/cloud/launch", handlers_cloud.api_cloud_launch_create)
     app.router.add_get("/api/cloud/launch/{id}", handlers_cloud.api_cloud_launch_get)
@@ -204,6 +210,10 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/cloud/launch/{id}/signin/restart",
         handlers_cloud.api_cloud_launch_signin_restart,
+    )
+    app.router.add_post(
+        "/api/cloud/launch/{id}/signin/skip",
+        handlers_cloud_signin_skip.api_cloud_launch_signin_skip,
     )
     app.router.add_post("/api/cloud/{tag}/stop", handlers_cloud.api_cloud_stop)
     app.router.add_post("/api/cloud/{tag}/start", handlers_cloud.api_cloud_start)

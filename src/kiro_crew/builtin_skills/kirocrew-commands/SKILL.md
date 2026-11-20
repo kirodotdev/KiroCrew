@@ -148,8 +148,9 @@ Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
 | Command | Description |
 |---------|-------------|
 | `kirocrew chat` | Interactive chat (REPL mode) |
-| `kirocrew chat -m "message"` | Single message (non-interactive) |
-| `kirocrew chat --model MODEL_ID` | Use a specific model (default `auto`; any id the model picker lists) |
+| `kirocrew chat -m "message"` | Single message (non-interactive); `-m -` reads it from a piped stdin (up to 1 MiB) |
+| `kirocrew chat --model MODEL_ID` | Use a specific model (default from config; `kirocrew models` lists the names) |
+| `kirocrew chat --headless -m "task"` | Run one unattended task on this data home's running gateway and exit with a result code; never reads the terminal. `--message-file PATH` reads the seed from a file, `--mode conductor`, `--approval-mode trust`, `--until-done` (with `--idle-grace SECS`, default 900), `--cwd DIR`, `--timeout SECS` (exit 4), `--budget CREDITS` (exit 5), `--json`. A request for a person ends the run (exit 3) |
 
 When `kirocrew chat` asks to run a tool, answer `y` to allow that call once or
 `n` to deny it, the same keys `kiro-cli chat` uses. `o` denies it and lets you
@@ -170,7 +171,8 @@ public `http(s)` URLs only, plus loopback origins the user listed under
 | `navigate {url}` | Open a page (returns URL and title) |
 | `snapshot` | The page as an outline with element refs (`e5`); re-run after every page change |
 | `read {ref?, offset?}` | Read the page's text, not only the screen; `ref` scopes it to one element and a long page names the next `offset`. An unselected tab or a closed section (`details`) is left out, so click the tab or open the section first. |
-| `click {ref \| x,y}` / `type {ref, text, submit?}` | Act on an element from a snapshot; `type` refuses a password field |
+| `click {ref \| x,y}` / `type {ref?, text, submit?}` | Act on an element from a snapshot; `type` refuses a password field. `type {ref?, steps: [{text} \| {key, modifiers?}]}` runs ordered text and key steps in one call |
+| `paste {ref?, text, html?}` | Put rich content (a table, headings, lists) into the field as a clipboard paste would, without touching the user's clipboard; refused where `type` is |
 | `screenshot` | Write a PNG, return its absolute path; show it with `![..](path)` |
 | `tabs {action: list\|switch\|new}` | The tabs the agent opened, and only those |
 
@@ -234,8 +236,19 @@ leftover prefix without touching it.
 | `kirocrew cron adopt JOB_ID --session-of SESSION` | Give the job an owning chat session, so that session manages it and receives its results |
 | `kirocrew cron adopt JOB_ID --release` | Clear the owning session, returning the job to CLI/dashboard-only management |
 | `kirocrew cron trigger JOB_ID` | Trigger a job immediately |
+| `kirocrew cron history JOB_ID` | Show a job's past runs, newest first (read-only); `-n N` (default 20), `--status error` keeps every run that did not succeed, `--run RUN_ID` prints one full record with its trace, `--json` |
+| `kirocrew cron history --all` | Read every job's runs, newest first |
 | `kirocrew cron preview SCRIPT` | Run a script cron locally with real MCP tools; notifications and session and crew-log calls are printed, not made |
 | `kirocrew cron preview SCRIPT -m "msg" -e K=V` | Preview with an input message / extra env vars |
+
+## MCP Resource Subscriptions
+
+A session subscribes with the `resource_subscribe` MCP tool once `mcp_gateway.resource_subscriptions.enabled` is on (off by default; needs a restart). These commands are the operator's view.
+
+| Command | Description |
+|---------|-------------|
+| `kirocrew resource-subs list` | List every session's MCP resource subscriptions |
+| `kirocrew resource-subs remove ID` | Remove one subscription by its id (the `rsub_...` id `list` shows) |
 
 ## Learning & Memory
 

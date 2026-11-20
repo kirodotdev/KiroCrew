@@ -491,10 +491,14 @@ every attribute value on it comes from a closed set. Histograms,
 | Sessions and turns | `session.started`, `session.idle_expired`, `subagent.spawned`, `subagent.completed`, `context.compactions`, `turn.completed`, `turn.timeout.cause` |
 | Crew sessions | `crew.session.started`, `crew.turn.started`, `crew.session.tree.depth`, `crew.session.tree.child`, `crew.session_control.calls` |
 | Work ledger and conductor mode | `work.created`, `work.item_closed`, `work.dispatches`, `work.reports`, `crew_mode.turned_on`, `crew_mode.new_chats`, `crew_mode.runs_finished`, `crew_mode.steers_per_run`, `crew_mode.worker_waits` |
-| Features | `cron.fires`, `artifact.created`, `workflow.runs`, `approval.decisions`, `autonudge.loops.started`, `autonudge.loops.stopped`, `autonudge.ticks`, `monitor.decisions`, `webhook.requests`, `memory.recalled`, `lesson.injected`, `skill.lazy_load.count`, `app.task.completed`, `app.installed`, `channel.message.received`, `ui.control.clicked` |
+| Features | `cron.fires`, `artifact.created`, `workflow.runs`, `approval.decisions`, `autonudge.loops.started`, `autonudge.loops.stopped`, `autonudge.ticks`, `monitor.decisions`, `webhook.requests`, `memory.recalled`, `lesson.injected`, `skill.lazy_load.count`, `app.installed`, `app.updated`, `app.uninstalled`, `app.session_started`, `app.run_time`, `app.present`, `channel.message.received`, `ui.control.clicked` |
 | Inventory (gauges) | `inventory.crons.active`, `inventory.monitor_loops.active`, `inventory.skills.installed`, `inventory.memory.migrated`, `inventory.knowledge.documents`, `inventory.lessons`, `inventory.mcp.servers`, `inventory.config.toggle`, `inventory.probe.failures`, `inventory.members`, `inventory.voice.provider` |
 | Voice | `voice.stt.started`, `voice.stt.ended`, `voice.stt.errors`, `voice.unavailable`, `voice.tts.replies` |
 | Recommendations | `tips.feedback`, `feature_video.status`, `milestone.panel_opened`, `milestone.starter_clicked`, `milestone.reached`, `milestone.skipped`, `milestone.mark_all_done`, `milestone.notice_shown`, `milestone.features_completed` |
+
+Retired: `app.task.completed` (Papyrus compiles) is no longer sent. Its manifest
+row stays, marked `deprecated`, and the name is not reused. Older builds may
+still send it until they upgrade.
 
 `PRODUCT_METRICS` groups its names by the question they answer. One group covers
 in-product recommendations (feature tips, the Explore panel, feature videos):
@@ -508,10 +512,22 @@ in-product recommendations (feature tips, the Explore panel, feature videos):
 | `kirocrew.milestone.panel_opened`, `.mark_all_done`, `.notice_shown`, `.features_completed` | `Feature` = `milestone`, `Activity` = the last name segment, plus `group` on `notice_shown` and `via` on `features_completed` |
 
 These nine are the behavioral metrics (`BEHAVIORAL_METRICS` in
-`src/kiro_crew/metrics/behavioral_metrics.py`), with one more from the features
-group, `kirocrew.app.installed`: `Feature` = `app`, `Activity` = `installed`,
-`Entity` (a shipped built-in's or a store app's name, else `private`), `via`
-(`store` / `default` / `other`). Each records one thing a person did. They are exported under the instrumentation scope `kiro.crew`, so a
+`src/kiro_crew/metrics/behavioral_metrics.py`), with six more from the features
+group, `kirocrew.app.installed`, `kirocrew.app.updated`,
+`kirocrew.app.uninstalled`, `kirocrew.app.session_started`, `kirocrew.app.run_time` and `kirocrew.app.present`: `Feature` = `app`, `Activity` = the last name segment,
+`Entity` (a shipped built-in's or a store app's name, else `private`),
+`entity_version` (that app's version when it is `N.N.N`, `other` for a pre-release
+or build suffix, `private` for a private app), and `via` (`store` / `default` /
+`other`) on `installed` and `updated`, `keep_data` (`true` / `false`) on
+`uninstalled`, `kind` (the session's `session_kind`) on `session_started`, counted
+beside `kirocrew.session.started` when the session's provider is owned by an app.
+`run_time` (unit `s`) adds each finished turn's wall seconds,
+rounded up, in a session an app owns, with `duration`, that turn's bucket
+(`le_10s` / `le_1m` / `le_5m` / `le_15m` / `le_1h` / `le_4h` / `gt_4h` /
+`other`); a turn with no duration adds nothing. `present` counts each installed
+app once per UTC day, with `status` (`enabled` / `disabled` / `other`) and
+`backend` (`none` / `running` / `stopped` / `other`). Each records one thing a person
+or an app did. They are exported under the instrumentation scope `kiro.crew`, so a
 collector can admit user behavior by scope without taking the inventory gauges.
 Every other metric uses the scope `kiro_crew`. `Feature` and `Activity` are
 constants or values the emit site already closed; `Entity` carries the closed
@@ -552,7 +568,7 @@ process. Releases before this split reported every count from 4 up as `4+`.
 | `kirocrew.chat_runtime_share.turn_started` | `tenants`, `delay` (`le_1s` … `gt_60s`, prompt written to first event), `shared` (`true` / `false`: whether the process was placed by sharing; every unshared turn, preview off included, reads `false`), `harness` |
 | `kirocrew.chat_runtime_share.turn_ended` | `tenants`, `outcome` (the `kirocrew.turn.completed` outcome set), `harness` |
 | `kirocrew.chat_runtime_share.kas_queued` | `tenants` |
-| `kirocrew.kas.engine_install` | `outcome` (`installed` / `failed` / `host_unsupported`), `caller` (`spawn` / `dashboard` / `other`) |
+| `kirocrew.kas.engine_install` | `outcome` (`installed` / `failed` / `host_unsupported`), `caller` (`spawn` / `dashboard` / `startup` / `other`) |
 
 None carries a tip id, a video id, a timestamp or tip text. `recommended_by` is
 computed on the machine from a 14-day local record and only the label is sent;

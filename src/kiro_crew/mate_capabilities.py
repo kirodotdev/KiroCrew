@@ -438,6 +438,17 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
         """Whether a ``resources`` entry is listed as a skill: a catalog URI or ``skill://``."""
         return uri in names or uri.startswith("skill://")
 
+    def _resource_rows(value: Any) -> dict[str, Any]:
+        """The non-skill ``resources`` entries by row key: a knowledge-base object
+        is its own row, keyed ``<type>:<name>`` as its stored row is."""
+        from kiro_crew.mate_worker import resource_entries
+
+        return {
+            key: entry
+            for key, entry in resource_entries(value).items()
+            if not (isinstance(entry, str) and _is_skill(entry))
+        }
+
     # A row is ``local`` (the removable "Added to mate" band) only when the
     # crewmate's own file carries it BEYOND the worker SOURCE BASE
     # (``kirocrew-mate-worker``, derived from the default template in source and
@@ -542,7 +553,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
                 "mcpServers": set(adds.get("mcpServers") or {}),
                 "skills": _granted_skills(_strs(adds.get("resources")))
                 | set(_strs(adds.get("skills"))),
-                "resources": {uri for uri in _strs(adds.get("resources")) if not _is_skill(uri)},
+                "resources": set(_resource_rows(adds.get("resources"))),
             }
             for section in ("tools", "allowedTools"):
                 # In list order, and a ref reached here reaches later refs too.
@@ -619,9 +630,8 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
     # row of its own: the worker reads it, so the list shows it, and one the file
     # adds carries a Remove of its stored ``resources`` row.
     rows += [
-        _row("resources", uri, uri)
-        for uri in dict.fromkeys(_strs(spec.get("resources")))
-        if not _is_skill(uri)
+        _row("resources", key, entry)
+        for key, entry in _resource_rows(spec.get("resources")).items()
     ]
     directions = ""
     if stored.get("prompt"):

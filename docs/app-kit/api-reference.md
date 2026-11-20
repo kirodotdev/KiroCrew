@@ -1022,6 +1022,10 @@ sdk.useBrowserMedia(sessionKey, {
 })
 ```
 
+`pollMs` is the read interval in milliseconds: anything below 500 is raised to 500,
+because every read takes the browser lock your agent's ops wait on. A value that is not
+a finite number above 0 (`0`, `-1`, `NaN`, `Infinity`) reads once.
+
 The signal is derived from the state your page reads, so it only exists while your page is
 mounted and polling. Your backend learns of it when your page posts to one of your own
 routes; with the page closed nothing reads the tab, so nothing fires.
@@ -1268,9 +1272,11 @@ Three rules the registry relies on:
   or any other row change, except one change: a streaming row's text growing, which redraws that row
   alone. Every built-in rule that looks ahead (the reply footer, the steer chip, a retry notice's
   tense) reads a streaming row by its role.
-- **Shape beats role.** Resolution is first-match, and your entries sit between the two built-ins
-  recognised by message *shape* — a stop event and a sub-agent completion, which claim `'*'` and gate
-  on a `match` predicate — and the role-keyed ones. This matters because a stop event reaches the
+- **Shape beats role.** Resolution is first-match, and your entries sit between the built-ins
+  recognised by message *shape* — a stop event, a sub-agent completion, and a gateway-authored
+  `inject` row (`recovery_inject`, `automation_notice_inject`), which claim `'*'` and gate on a
+  `match` predicate — and the role-keyed ones. So an entry of yours that claims `inject` draws only
+  the rows those two leave, such as a cron delivery. This matters because a stop event reaches the
   transcript as role `system`, which is also a role you are invited to claim: were a role claim
   allowed to outrank a `kind` check, claiming `system` would swallow the stop card and pressing Stop
   would draw your row instead. A role claim cannot know about `kind`, so it does not outrank one.

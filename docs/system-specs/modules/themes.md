@@ -278,6 +278,16 @@ dashboard load into header-only round trips.
   `pointer-events: none` on it. Routes without the shell (`/popout/`, `/embed/`)
   have no behind slot and skip `behind` overlays, since nothing there would
   cover them.
+- **The composer stays uncovered** — the decor slot carries a `clip-path`
+  with a hole for each box marked `data-guide-keep-clear` (the chat
+  composer and the notice rows each composer host draws beside it), so an `above` overlay, a pack's or a registered theme's, is cut
+  where it meets the composer at every width and looks tucked behind it
+  (`website/src/lib/themeDecorKeepClear.ts`). The clip is on the slot, so an
+  overlay cannot opt out of it. It is measured only while the slot holds a
+  decoration, and only on a window resize, a marked box or one of its
+  containers resizing (how a box that moves at the same size is seen), or a
+  marked box coming or going; a reply streaming into the transcript does not
+  re-measure.
 - **Locked CSP** — overlay/topbar responses carry a fixed
   `Content-Security-Policy` including a `sandbox` directive; asset responses
   carry `X-Content-Type-Options: nosniff` and a content-type allowlist.
@@ -351,7 +361,12 @@ dashboard load into header-only round trips.
   which is never in the picker beside it. Like an overlays-only pack it shows
   them without asking, and the Experience section lists Overlays alone for it;
   turned off, the shell unmounts those overlays (`App.tsx`). Its top-bar
-  elements and its own CSS are not part of it.
+  elements and its own CSS are not part of it. The overlays portal into the
+  shell's decor slot, as a pack's do (the slot is click-through, so a part
+  that must take clicks, such as a close button, sets `pointer-events: auto`
+  on itself), and they also unmount while a remote
+  Crew is shown: they follow this dashboard's theme, and the remote pane
+  draws its own theme's overlays.
 
   **Consent gate (what it actually guarantees — and what it does not).** The
   persona grant is a separate key, `mc-theme-consent-<slug>`, holding

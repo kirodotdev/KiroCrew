@@ -1520,6 +1520,22 @@ def _tier_app_browser_sites(facts: GateFacts, tier: GateTier) -> ToolHookResult 
     return ToolHookResult.auto_approve(identity_grant=True)
 
 
+def _tier_app_own_tools(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A first-party app's OWN agent calling a tool that same app's manifest declares.
+
+    The conditions live in :func:`kiro_crew.apps.own_agent_tools.gate_grants`, imported
+    when a call reaches this row. A grant vouches for the caller, so ``classifier_only``
+    skips it like the other grant rows.
+    """
+    if facts.classifier_only:
+        return None
+    from kiro_crew.apps import own_agent_tools  # noqa: PLC0415 - off the listing path
+
+    if not own_agent_tools.gate_grants(facts):
+        return None
+    return ToolHookResult.auto_approve(identity_grant=True)
+
+
 # The tool gate, row by row, in the order ``HookManager.judge`` runs it. Built after
 # ``compose`` so each row holds the rebound tier function, which reads this module's
 # globals -- built before it, a row would keep the owner's original, and a patch of
@@ -1549,6 +1565,7 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("spec-denies", "deny_policy", _tier_spec_denies),
     GateTier("spec-unjudged-denies", "deny_policy", _tier_spec_unjudged_denies),
     GateTier("app-own-server", "grant", _tier_app_own_server),
+    GateTier("app-own-tools", "grant", _tier_app_own_tools),
     GateTier("app-browser-sites", "grant", _tier_app_browser_sites),
     GateTier("operator-grants", "grant", _tier_operator_grants),
     GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),

@@ -258,6 +258,12 @@ Examples:
     run.add_argument("--out", metavar="DIR", help="Results directory (default: ./eval_results)")
     run.add_argument("--json", action="store_true", help="Print the summary as one JSON object")
     run.add_argument(
+        "--use-operator-credentials",
+        dest="use_operator_credentials",
+        action="store_true",
+        help="Run every arm as you, with your own kiro-cli and Claude Code sign-ins (risky)",
+    )
+    run.add_argument(
         "--check",
         action="store_true",
         help="No model: check each case fails on its base and passes on its reference",
@@ -851,6 +857,12 @@ Examples:
         action="store_true",
         help="Do not inherit this machine's Kiro sign-in (kiro-cli whoami) as the "
         "crew's identity; sign the crew in with Builder ID unless --identity-provider is given",
+    )
+    _c_launch.add_argument(
+        "--no-login",
+        action="store_true",
+        help="Skip the Kiro sign-in on the new crew (a crew on another agent harness "
+        "needs none); sign in later from the crew's Settings or with `kirocrew cloud login`",
     )
 
     _c_list = cloud_sub.add_parser("list", help="List your Kiro Crew cloud instances")

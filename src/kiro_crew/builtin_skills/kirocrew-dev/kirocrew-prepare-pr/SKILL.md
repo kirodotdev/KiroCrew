@@ -161,7 +161,7 @@ Answering is prose work. It never needs a push and never widens the diff.
 |---|---|---|
 | `fixed` | you changed the code | the change and the SHA |
 | `rebutted` | the code stays correct as-is | the evidence it does not hold, **or** the reasoning it is disproportional |
-| `accepted-and-deferred` | the work is already decided, just out of scope here — unlike `needs-a-decision`, nothing is being asked | why, plus an issue whose body names a task someone can pick up. The issue MUST carry the `deferred-finding` label, an assignee (the owner) and a `Due: YYYY-MM-DD` line in its body — the Disposition Deferral Check replies to a disposition whose issue lacks any of the three. The Captain tiers it like any other issue. Note the server-side asymmetry: the GPT lane's convergence rules do not accept a deferral as a ruling on a security / data-loss / corruption finding, so a deferred one of those is re-raised every round until fixed, rebutted as not-a-defect, or overridden |
+| `accepted-and-deferred` | the work is decided, just out of scope here — unlike `needs-a-decision`, nothing is asked | why, plus an issue whose body names a task someone can pick up. The issue MUST carry the `deferred-finding` label, an assignee (the owner) and a `Due: YYYY-MM-DD` line in its body — the Disposition Deferral Check replies to a disposition whose issue lacks any of the three. The Captain tiers it like any other issue. Server-side, the GPT lane's convergence rules do not accept a deferral as a ruling on a security / data-loss / corruption finding, so a deferred one of those is re-raised every round until fixed, rebutted as not-a-defect, or overridden |
 | `needs-a-decision` | the outcome depends on a maintainer ruling | the question, put to the maintainer directly — do **not** file an issue for it |
 
 **What must be answered:**
@@ -200,7 +200,7 @@ one head:
 ```
 
 Use `false-positive` or `not-applicable` for what follows; the other classes need an
-issue or a link ([Risk release records](docs/ci/ci-and-reviews.md#risk-release-records)).
+issue or a link ([Risk release records](https://github.com/kirodotdev/KiroCrew/blob/main/docs/ci/ci-and-reviews.md#risk-release-records)).
 
 `fable` is the Opus lane; `scope` is Security Scope Review. Decide it yourself —
 do not ask — when all four hold:
@@ -218,12 +218,12 @@ do not ask — when all four hold:
 
 Start the reason with `agent:` so a reader can tell it from a person's ruling,
 and post it with `gh pr comment <n> --body "<the command>"`, naming one lane
-(`all` only when one ruling truly covers every lane). It binds that SHA alone: a
+(`all` only when one ruling covers every lane). It binds that SHA alone: a
 new push needs a fresh judgment. Fork lanes honour it like same-repo ones (the
 handler re-runs the bound fork lane run), and PR Readiness counts this lane's
 same-head BLOCKs posted before the record as adjudicated: the only same-head exit,
 better than a new head. **Report
-every override afterwards** — lane, span, SHA and reason — in the Phase 4 report.
+every override** (lane, span, SHA, reason) in the Phase 4 report.
 
 ## Scripts — decisions come from exit codes
 

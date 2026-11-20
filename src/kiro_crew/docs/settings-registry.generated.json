@@ -279,6 +279,13 @@
       "description": "The App Secret shown next to the App ID on the same Credentials page."
     },
     {
+      "id": "channels.file-sessions-in-a-different-folder-slack",
+      "label": "File sessions in a different folder (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.file-sessions-in-a-different-folder-slack",
+      "hint": "While Slack conversations are listed, new ones go into a “Slack” folder. Turn this on to file them in a folder you name instead."
+    },
+    {
       "id": "channels.file-sessions-in-a-folder-discord",
       "label": "File sessions in a folder (Discord)",
       "tab": "channels",
@@ -295,12 +302,6 @@
       "label": "File sessions in a folder (iMessage)",
       "tab": "channels",
       "route": "/settings/channels/imessage?highlight=channels.file-sessions-in-a-folder-imessage"
-    },
-    {
-      "id": "channels.file-sessions-in-a-folder-slack",
-      "label": "File sessions in a folder (Slack)",
-      "tab": "channels",
-      "route": "/settings/channels/slack?highlight=channels.file-sessions-in-a-folder-slack"
     },
     {
       "id": "channels.file-sessions-in-a-folder-teams",
@@ -492,7 +493,7 @@
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=key%3Aslack.show_in_session_list",
       "description": "Lists conversations that start in Slack with your other sessions.",
-      "hint": "Turn this off to leave conversations that start in Slack out of the session list. They keep working in Slack, stay in History and search, and come back when you turn this on again. The conversation you have open, and one waiting on your approval or answer, stay listed. Sessions you start in the dashboard and connect to Slack, and Slack code channel sessions with their helper agents, are always listed.",
+      "hint": "Off by default, so conversations that start in Slack stay out of the session list; they keep working in Slack and stay in History and search. Turn this on to list them: new ones go into a “Slack” folder unless you pick a different folder below. Slack code channels and sessions you start in the dashboard are always listed.",
       "configKey": "slack.show_in_session_list"
     },
     {
@@ -1650,7 +1651,7 @@
       "label": "Editor",
       "tab": "display",
       "route": "/settings/display/remote-editor?highlight=key%3Adashboard.remote_editor.editor",
-      "description": "Adds “Open in VS Code” to the ⋯ menu of a file open in the side panel. Needs VS Code with Remote-SSH on the computer you’re using. The file opens there, connected to the SSH host below.",
+      "description": "Adds a row to the ⋯ menu of a file open in the side panel that opens the file in this editor. Needs this editor with Remote-SSH on the computer you’re using. The file opens there, connected to the SSH host below.",
       "configKey": "dashboard.remote_editor.editor"
     },
     {

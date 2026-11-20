@@ -1379,6 +1379,7 @@ class TestTheProbeRunsTheSpawnBinary:
         monkeypatch.delenv(kiro_cli.BUNDLED_KIRO_DIR_ENV, raising=False)
         # The fixed macOS install directories would find a real install.
         monkeypatch.setattr(kiro_cli, "_MACOS_SYSTEM_DIRS", ())
+        monkeypatch.setattr(kiro_cli, "_LINUX_SYSTEM_DIRS", ())
 
         # A pass-through sandbox: the stand-in still runs for real, but the test
         # does not depend on whether this host can build user namespaces.

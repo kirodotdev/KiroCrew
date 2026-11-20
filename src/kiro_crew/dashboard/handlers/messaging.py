@@ -23,7 +23,7 @@ from typing import Any, Callable, cast  # noqa: F401
 
 from aiohttp import web
 
-from kiro_crew import platform_compat, redaction_seams  # noqa: F401
+from kiro_crew import platform_compat, redaction_seams, sdk_extras  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.agent_sdk.drivers.acp_vocab import NATIVE_CHILD_NOT_RESUMABLE  # noqa: F401
 from kiro_crew.config import live  # noqa: F401
@@ -129,6 +129,7 @@ from kiro_crew.dashboard.messaging_api.channel_config_writes import (  # noqa: F
 )
 from kiro_crew.dashboard.messaging_api.channel_delivery import (  # noqa: F401
     _channel_delivery_key,
+    _channel_target_transport,
     _ChannelSendFailed,
     _cron_job_for,
     _deliver_channel_dm,
@@ -139,6 +140,7 @@ from kiro_crew.dashboard.messaging_api.channel_delivery import (  # noqa: F401
     _send_to_channel_target,
     _vet_app_messaging,
     _vet_channel_send,
+    _vet_channel_target,
 )
 from kiro_crew.dashboard.messaging_api.channel_folder_backfill import (  # noqa: F401
     api_channel_folder_backfill,
@@ -155,6 +157,7 @@ from kiro_crew.dashboard.messaging_api.feishu_settings import (  # noqa: F401
     _is_valid_feishu_id,
     api_feishu_config_get,
     api_feishu_config_save,
+    api_feishu_sdk_install,
 )
 from kiro_crew.dashboard.messaging_api.imessage_settings import (  # noqa: F401
     _clean_imessage_path,
@@ -339,6 +342,7 @@ from kiro_crew.dashboard.ws_event_scope import (  # noqa: F401
     slot_owner_snapshot,
 )
 from kiro_crew.hidden_leaf_staging import EnvStagingRefused, publish_env  # noqa: F401
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.members import attributable_session_key, member_identity_for_session  # noqa: F401
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink, canonical_key  # noqa: F401
@@ -1107,6 +1111,10 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
 # SDK is importable by this gateway process and the exact command that installs
 # it into this interpreter. Every panel that reports these renders the shared
 # optional-SDK card instead of a bare ``pip install`` line.
+#: One optional-SDK install at a time (``api_feishu_sdk_install``); a second press
+#: while one runs gets 409.
+_SDK_INSTALL_LOCK = LoopBoundLock()
+
 _CHANNEL_SDK_EXTRA: dict[str, tuple[str, str]] = {
     "feishu": ("lark_oapi", "feishu"),
     # PyJWT installs as the ``jwt`` package (teams/client.py imports ``jwt``).

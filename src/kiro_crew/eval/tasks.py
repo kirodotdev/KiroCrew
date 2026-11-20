@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew import platform_compat
-from kiro_crew.eval.arms import ARMS, Arm, ArmOutcome, Caps
+from kiro_crew.eval.arms import ARMS, Arm, ArmOutcome, Caps, NotBuiltArm, operator_kiro_cli
 
 #: Per-tier limits and weekly runs per case (§3.1): timeout, credit and USD caps, k.
 TIERS: dict[str, dict[str, float]] = {
@@ -92,6 +92,14 @@ def _holds_credentials(home: str, name: str) -> bool:
     return True
 
 
+#: What a run record says under ``--use-operator-credentials`` (§4.3), and the line
+#: the CLI prints before such a batch starts.
+OPERATOR_CREDENTIALS = "operator's own (--use-operator-credentials)"
+OPERATOR_RISK_LINE = (
+    "--use-operator-credentials: every arm runs as you, with your own environment, "
+    "HOME, kiro-cli and Claude Code sign-ins; the agents can reach your credentials "
+    "(the eval-user fence, RFC §4.1, is off). Each run record says so."
+)
 #: Env variables every run process keeps; everything else is dropped.
 _BASE_ENV_KEYS = ("PATH", "LANG", "LC_ALL", "TZ", "PYTHONPATH")
 _DEFAULT_TOOLS = ["Read", "Edit", "Write", "Bash", "Glob", "Grep"]
@@ -319,6 +327,8 @@ def preflight(arms: list[Arm], env: dict[str, str]) -> list[str]:
     """Every reason the batch must not start (§4.1, §10); empty when it may."""
     if os.name != "posix":
         return ["kirocrew eval run --suite tasks runs on Linux and macOS only"]
+    if any(arm.operator_credentials for arm in arms):
+        return _operator_refusals(arms, env)
     reasons = list(_home_refusals())
     if any(arm.needs_gateway for arm in arms):
         from kiro_crew import sandbox
@@ -330,6 +340,34 @@ def preflight(arms: list[Arm], env: dict[str, str]) -> list[str]:
             missing = arm.missing_credential(env)
             if missing:
                 reasons.append(f"{arm.name}: {missing}")
+    return reasons
+
+
+def _operator_refusals(arms: list[Arm], env: dict[str, str]) -> list[str]:
+    """Preflight for ``--use-operator-credentials`` (§4.3): the operator's own sign-ins.
+
+    The eval-user checks do not apply (the operator's credentials are the point);
+    each arm's own sign-in must answer instead (``kiro-cli whoami``,
+    ``claude -p "say ok"``), and a Crew arm still needs the strict sandbox tier.
+    """
+    reasons: list[str] = []
+    if any(arm.needs_gateway for arm in arms):
+        from kiro_crew import sandbox
+
+        if sandbox.detect_backend("strict") == "none":
+            reasons.append("no sandbox backend: a Crew arm needs the strict sandbox tier")
+    checked: dict[str, str] = {}
+    for arm in arms:
+        if isinstance(arm, NotBuiltArm):
+            continue  # not built yet: each of its runs is VOID, as without the flag
+        why = arm.unavailable()
+        if not why:
+            key = type(arm).operator_check.__qualname__
+            if key not in checked:  # both Crew arms share one `kiro-cli whoami`
+                checked[key] = arm.operator_check(env)
+            why = checked[key]
+        if why:
+            reasons.append(f"{arm.name}: {why}")
     return reasons
 
 
@@ -392,26 +430,48 @@ class RunDirs:
 
 
 def run_env(dirs: RunDirs, arm: Arm, source: dict[str, str]) -> dict[str, str]:
-    """The whole env of a run's processes: base keys, the run's homes, the arm's sign-in."""
-    env = {k: source[k] for k in _BASE_ENV_KEYS if source.get(k)}
+    """The whole env of a run's processes: base keys, the run's homes, the arm's sign-in.
+
+    With ``--use-operator-credentials`` it is the operator's own env and real ``HOME``
+    (so their kiro-cli and Claude Code sign-ins work), minus any ``KIROCREW_*`` value
+    of theirs; the run still gets its own Crew data home, ``KIRO_HOME`` and ``TMPDIR``.
+    """
+    if arm.operator_credentials:
+        env = {k: v for k, v in source.items() if not k.startswith("KIROCREW_")}
+        # The kiro-cli preflight's `whoami` checked (resolved from the same source env,
+        # KIROCREW_KIRO_BIN and the bundled directory included), pinned for the run's
+        # gateway, so preflight and the runs use one binary.
+        kiro_bin = operator_kiro_cli(source)
+        if kiro_bin:
+            env["KIROCREW_KIRO_BIN"] = kiro_bin
+    else:
+        env = {k: source[k] for k in _BASE_ENV_KEYS if source.get(k)}
+        env["HOME"] = str(dirs.home)
     if env.get("PYTHONPATH"):
         # Children start in other directories, so a relative entry (a source checkout's
         # `src`) is resolved against the runner's own working directory first.
         parts = env["PYTHONPATH"].split(os.pathsep)
         env["PYTHONPATH"] = os.pathsep.join(os.path.abspath(p) for p in parts if p)
-    env.update(
-        HOME=str(dirs.home),
-        KIROCREW_HOME=str(dirs.crew),
-        KIRO_HOME=str(dirs.kiro),
-        TMPDIR=str(dirs.tmp),
-    )
-    env.update({k: source[k] for k in arm.env_keys if source.get(k)})
+    env.update(KIROCREW_HOME=str(dirs.crew), KIRO_HOME=str(dirs.kiro), TMPDIR=str(dirs.tmp))
+    if not arm.operator_credentials:
+        env.update({k: source[k] for k in arm.env_keys if source.get(k)})
     return env
 
 
 def write_crew_config(dirs: RunDirs) -> None:
-    """The eval home's Crew config: the strict sandbox tier, no unsandboxed fallback."""
-    config = {"agent": {"sandbox": "strict", "sandbox_allow_unsandboxed_exec": False}}
+    """The eval home's Crew config: the strict sandbox tier, no unsandboxed fallback.
+
+    Auto-import of ``~/.kiro/hooks/*.sh`` scripts is off. Under
+    ``--use-operator-credentials`` (the real ``HOME``) the operator's standalone
+    ``~/.kiro/hooks/*.json`` hook files still run on a KAS turn (RFC §4.3).
+    """
+    config = {
+        "agent": {
+            "sandbox": "strict",
+            "sandbox_allow_unsandboxed_exec": False,
+            "kiro_hooks_autoimport": False,
+        }
+    }
     (dirs.crew / "config.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
@@ -643,6 +703,7 @@ def run_one(
         "repeat": index,
         "run_id": run_id,
         "model": model,
+        "credentials": OPERATOR_CREDENTIALS if arm.operator_credentials else "eval-only",
         "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     reason = arm.unavailable()

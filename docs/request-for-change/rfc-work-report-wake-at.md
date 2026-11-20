@@ -3,8 +3,8 @@ title: Work-report wake_at -- a worker that waits on a time says when, and the c
 status: partial
 author: iamwhatever, with kirocrew-worker
 created: 2026-11-03
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: [33477]
 tracking-issues: []

@@ -3,8 +3,8 @@ title: Projects — portable, syncable context bundles
 status: draft
 author: kseam
 created: 2026-08-21
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 4941
 implementation-prs: [7181, 11678]
 tracking-issues: [3551]

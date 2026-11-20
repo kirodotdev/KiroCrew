@@ -199,9 +199,9 @@ class PlanHost:
     #: spelling: renaming one carries the seal away. Seatbelt gets every one; the namespace
     #: backend only those this uid could rename, since it pins each with a mount.
     readonly_ancestor_guards: tuple[str, ...] = ()
-    #: Seatbelt only: the EXISTING ancestors of each ``extra_hidden_dirs`` entry. A missing
-    #: folder holds nothing a rename could carry away, and a deny on its name would stop
-    #: the child creating it, so the host lists only what exists now.
+    #: The EXISTING ancestors of each ``extra_hidden_dirs`` entry (namespace: those this uid
+    #: could rename). A missing folder holds nothing a rename could carry away, and a deny
+    #: on its name would stop the child creating it, so the host lists only what exists now.
     caller_ancestor_guards: tuple[str, ...] = ()
     #: Namespace only: the ``apps/<app>`` folder of each app that declares a credential
     #: mask, taken out of :attr:`readonly_ancestor_guards` and pinned AFTER the masks,
@@ -1243,6 +1243,16 @@ def _namespace_plan(
             dict.fromkeys(
                 (
                     *host.readonly_ancestor_guards,
+                    *(
+                        fold(guard)
+                        for guard in host.caller_ancestor_guards
+                        if any(
+                            m.origin == "caller"
+                            and not m.cancelled
+                            and m.path.startswith(fold(guard).rstrip("/") + "/")
+                            for m in masks
+                        )
+                    ),
                     *(
                         pin
                         for entry, pins in host.operator_parent_pins

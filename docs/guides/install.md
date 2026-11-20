@@ -169,17 +169,20 @@ npm, no local build:
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
 ```
 
-Once the wheel is in, the installer runs the new `kirocrew kas install` to
-download the [built-in KAS engine](#first-run) this release pins (about 55-70 MB
-for your platform). If that download fails, for example on a host with no
-access to the CDN, the install still succeeds and the installer prints the
-command to retry. On a host that cannot run the engine at all (no build for its
+On Linux (glibc 2.28+) and macOS 11+ the installer takes the platform wheel,
+which already carries the [built-in KAS engine](#first-run) this release pins,
+so there is nothing more to download. Anywhere else it takes the plain wheel and
+then runs the new `kirocrew kas install` to download the engine (about 55-70 MB
+for your platform). If that download fails, for example on a host with no access
+to the CDN, a first install exits 1 with the command to retry, and the gateway
+tries again when it starts; a re-run over an existing install, and an LTS install
+that is not signed in yet, keep exit 0. On a host that cannot run the engine at all (no build for its
 platform, or a glibc older than the engine needs), Kiro Crew stays installed and
 the installer says why a chat on the default agent cannot start there in place
 of its next steps. A first install then exits 3; a re-run over an existing
 install, which is what `kirocrew update` does, exits 0. Pass `--no-kas` (or set
-`KIROCREW_INSTALL_KAS=0`) to skip the engine, for example on a host whose agent
-does not use it:
+`KIROCREW_INSTALL_KAS=0`) to skip the download during the install; the gateway
+then installs the engine when it starts:
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --no-kas
@@ -702,9 +705,10 @@ The built-in KAS engine is an alternative that needs no Kiro CLI. It is in
 shadow testing: the switch is off by default on every platform and nothing turns
 it on for you. The one-line install (`cli.sh`) and `bash install.sh` download
 the engine version this release pins by default, by running `kirocrew kas
-install` once Kiro Crew is installed; `--no-kas` skips that, and a failed
-download only warns. After any other install, or to retry, run `kirocrew kas
-install` yourself. The desktop app ships that engine inside the app
+install` once Kiro Crew is installed, unless the platform wheel already carries
+it. `--no-kas` skips that download, and the gateway then installs the engine when
+it starts; a failed install is reported as an error by `kirocrew kas status` and
+`kirocrew doctor`. To retry, run `kirocrew kas install` yourself. The desktop app ships that engine inside the app
 (`BUNDLE_KAS=1` at build time), so there is nothing to download. To try the
 route, turn on **Run KAS on Kiro Crew's own engine** under Settings → Developer →
 Feature Previews (or `kirocrew config set agent.kas_bundle true`) and restart; you
@@ -876,11 +880,11 @@ kirocrew service uninstall
 ```
 
 On Linux this writes `/etc/systemd/system/kirocrew.service` (sudo is prompted
-for the unit file and the `systemctl` calls; the gateway itself runs as your own
-user, never under sudo). When you are already root — a minimal container or
-`root` login — no `sudo` binary is required. On macOS it writes a launchd plist
-and needs no sudo. That plist is a per-user LaunchAgent, so on a Mac the gateway
-starts when you log in, not at boot; see
+for the unit file, the `systemctl` calls and `loginctl enable-linger`; the
+gateway itself runs as your own user, never under sudo). When you are already
+root — a minimal container or `root` login — no `sudo` binary is required. On
+macOS it writes a launchd plist and needs no sudo. That plist is a per-user
+LaunchAgent, so on a Mac the gateway starts when you log in, not at boot; see
 [The gateway does not start after a reboot until someone logs in](macos-troubleshooting.md#the-gateway-does-not-start-after-a-reboot-until-someone-logs-in).
 
 On a Linux host that systemd did not boot (no `/run/systemd/system`, as in a
@@ -899,16 +903,23 @@ install as it, e.g. `sudo -u <user> KIROCREW_KIRO_BIN=... kirocrew service
 install` (the official Docker image already runs as the `kirocrew` user).
 
 On Linux the agent runtimes run under the service account's own user manager,
-so enable linger for that account:
+which needs linger on for that account. Without linger, systemd stops that
+manager at the account's last logout: running agent runtimes die, and later
+spawns start without their memory and fork-count ceilings.
+
+`kirocrew service install` turns linger on itself, unless it is already on or
+the host has no per-user systemd manager, and prints a line saying so. It does
+this on every install, a re-install too. Linger also keeps that account's other
+user services and timers running from boot without a login. To turn it off
+again (`id -u <user>` prints the uid):
 
 ```bash
-sudo loginctl enable-linger <user>
+sudo loginctl disable-linger <uid>
 ```
 
-Without linger, systemd stops that manager at the account's last logout: running
-agent runtimes die, and later spawns start without their memory and fork-count
-ceilings. `kirocrew service install` prints a non-fatal warning naming this
-command when linger is off.
+If that step fails, the install still succeeds and prints the command to run by
+hand, `sudo loginctl enable-linger <uid>`. `kirocrew service uninstall` leaves
+linger as it is.
 
 When another gateway already serves the same data home, the unit exits 78 and
 goes `failed` once instead of restarting, because the unit's
@@ -1600,6 +1611,7 @@ For reference, the data home structure and what each uninstall path touches:
 - `kirocrew service uninstall` removes only the systemd unit — the system unit
   and, when your own user manager has one loaded, the per-user unit, naming each
   scope it touched — (plus the AppArmor profile it installed) or the launchd plist.
+  It leaves linger as it is; `sudo loginctl disable-linger <uid>` turns it off.
 - Python and npm package removal has no `preuninstall` or `postuninstall`
   cleanup hook.
 - No uninstall path removes `~/.kiro/crew-python` (the runtime `cli.sh` may

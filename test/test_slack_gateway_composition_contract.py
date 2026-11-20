@@ -243,9 +243,16 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_cron_origin_key", "method", "(self, parent_key: 'str') -> 'str'"),
         (
+            "_cron_channel_pin",
+            "method",
+            "(self, parent_key: 'str', *, pin: 'tuple[str, str] | None' = None)"
+            " -> 'tuple[str, str, str] | None'",
+        ),
+        (
             "_deliver_cron_to_channel",
             "async method",
-            "(self, origin_key: 'str', text: 'str', *, actor_key: 'str') -> 'bool'",
+            "(self, origin_key: 'str', text: 'str', *, actor_key: 'str',"
+            " pin: 'tuple[str, str] | None' = None) -> 'bool'",
         ),
         ("_cron_job_is_silent", "method", "(self, parent_key: 'str') -> 'bool'"),
         ("_cron_dm_user", "method", "(self, job: 'CronJob') -> 'str'"),
@@ -611,7 +618,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_deliver_script_result",
             "async method",
-            "(self, job: 'CronJob', message: 'str', *, remove: 'bool' = False) -> 'None'",
+            "(self, job: 'CronJob', message: 'str', *, remove: 'bool' = False,"
+            " pin: 'tuple[str, str] | None' = None) -> 'None'",
         ),
         ("_cron_run_script", "async method", "(self, job: 'CronJob') -> 'str | None'"),
         ("_live_internal_secret", "method", "(self) -> 'str'"),
@@ -653,7 +661,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_deliver_failure_alert",
             "async method",
-            "(self, job: 'CronJob', *, mrkdwn: 'str', plain: 'str', actor_key: 'str', silent: 'bool' = False) -> 'tuple[bool, bool, bool]'",
+            "(self, job: 'CronJob', *, mrkdwn: 'str', plain: 'str', actor_key: 'str', silent: 'bool' = False, pin: 'tuple[str, str] | None' = None) -> 'tuple[bool, bool, bool]'",
         ),
         (
             "_advance_failure_dedup",
@@ -669,7 +677,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "_alert_cron_failure",
             "async method",
             "(self, job: 'CronJob', detail: 'str', *, denied: 'bool' = False, "
-            "exit_code: 'int | None' = None) -> 'None'",
+            "exit_code: 'int | None' = None, pin: 'tuple[str, str] | None' = None) -> 'None'",
         ),
         (
             "_alert_cron_interrupted",

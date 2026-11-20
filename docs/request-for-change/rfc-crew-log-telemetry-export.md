@@ -3,10 +3,10 @@ title: Crew log based telemetry export -- one counting fold per module, behind t
 status: draft
 author: chenmingwei23
 created: 2026-10-16
-last-audited: 2026-10-16
-audited-at: 1a2eb5435c
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [21342, 21308]
 tracking-issues: [21270, 21271]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,10 @@ superseded-by: []
 
 # RFC: crew log based telemetry export
 
-- Status: draft. Nothing is built. Code facts are measured at `1a2eb5435c`.
+- Status: draft. No maintainer answer to section 11 is recorded, but S1 ([#21342](https://github.com/kirodotdev/KiroCrew/pull/21342),
+  the export subscriber `metrics/crew_log_export.py`, installed from
+  `dashboard/server_runtime/maintenance.py`) and S2 ([#21308](https://github.com/kirodotdev/KiroCrew/pull/21308), the session-tree
+  fold) are on main; S3 to S6 are not (checked at `0c5d8bd5f3`). Code facts are measured at `1a2eb5435c`.
 - Author: chenmingwei23
 - Tracking issues: [#21270](https://github.com/kirodotdev/KiroCrew/issues/21270)
   (the epic), [#21271](https://github.com/kirodotdev/KiroCrew/issues/21271) (this

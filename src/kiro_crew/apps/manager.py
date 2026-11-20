@@ -257,6 +257,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         preserved_data_awaits,
     )
     from kiro_crew.apps.manager_uninstall import (  # noqa: F401
+        _count_uninstall,
         _drop_trust_grant,
         _has_trust_grant,
         _holds_base_grant,
@@ -264,6 +265,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _rmtree_app_dir,
         _trust_grant_local,
         _trust_grant_repository,
+        _uninstall_labels,
         trust_grant_removal_blocked,
         uninstall_app,
     )

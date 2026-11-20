@@ -289,6 +289,7 @@ if TYPE_CHECKING:
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
+from kiro_crew import workload_identity as _workload_identity
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.agent_sdk import kas_bundle as _kas_bundle
 from kiro_crew.dashboard.handlers import kiro_usage_api, plan_credit_alerts
@@ -817,6 +818,11 @@ async def _refresh_from_vault() -> None:
     so it describes the credential the fingerprints bracket. The enterprise
     profile name rides in from the usage API as it does for the kiro-cli path.
     """
+    if _workload_identity.active():
+        # vault_holds_identity says yes here for the workload identity alone, so the
+        # person vault is neither read nor refreshed: no reading, no sign-in prompt.
+        _publish_usage({"available": False})
+        return
     # Deferred: see _vault_owns_usage_sync.
     from kiro_crew.auth.bridge import default_token_store
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
@@ -997,7 +1003,9 @@ async def fetch_local_identity() -> dict[str, object] | None:
       proves itself empty: this machine has no sign-in to inherit. ``None``
       for a vault that did not read or holds an entry that did not decrypt --
       the same unknown as a whoami that could not answer, so the launch form
-      asks for an explicit choice instead of proposing the default.
+      asks for an explicit choice instead of proposing the default. A
+      workload-identity host owns its spawn without any person sign-in, so its
+      vault is not read and the answer is ``None``.
     * Otherwise ``kiro-cli whoami``: it resolves the same binary chat spawns and
       runs :func:`_fetch_whoami_or_none` at the configured sandbox tier. ``{}``
       when kiro-cli is absent (non-Kiro provider) or whoami answered with no
@@ -1005,7 +1013,8 @@ async def fetch_local_identity() -> dict[str, object] | None:
       unknown, and a caller must not present the default as if it had been read.
     """
     if await _vault_owns_usage():
-        return await vault_identity()
+        # A workload host's vault is not read, so its sign-in is unknown (None).
+        return None if _workload_identity.active() else await vault_identity()
     kiro_bin = await _resolve_kiro_bin_for_spawn()
     if not kiro_bin:
         return {}

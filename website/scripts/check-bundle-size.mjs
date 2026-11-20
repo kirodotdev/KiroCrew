@@ -155,8 +155,12 @@ export const CHUNK_BUDGETS = {
   // ceiling and `first-load-0` had 203 B left, after ~66 KB of first-load
   // growth spread across many features since c275f70106.
   'first-load-0': 1053 * KB, // measured 1,026,869 B
+  //
+  // `first-load-2` re-measured on an analyze build of main @ c71731b56d, same
+  // 5% rule (#39726): it was 1,940 B over its 1179 KB ceiling after first-load
+  // growth spread across many features; the other parts were still under.
   'first-load-1': 1164 * KB, // measured 1,134,732 B
-  'first-load-2': 1179 * KB, // measured 1,149,207 B
+  'first-load-2': 1240 * KB, // measured 1,209,236 B
   main: 1410 * KB, // measured 1,374,200 B
 
   // `heic-to/csp`: libheif and its HEVC decoder compiled to plain JavaScript,

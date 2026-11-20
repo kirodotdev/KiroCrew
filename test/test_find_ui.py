@@ -552,7 +552,12 @@ def test_a_label_covering_only_part_of_the_question_is_dropped(tmp_path: Path) -
         # chat" is one of its terms), never Voice > Model.
         ("chat model", "en", "settings.sub.chat.models", "setting:voice.model"),
         ("display language", "en", "setting:display.language", "setting:voice.language"),
-        ("slack session folder", "en", "setting:channels.file-sessions-in-a-folder-slack", None),
+        (
+            "slack session folder",
+            "en",
+            "setting:channels.file-sessions-in-a-different-folder-slack",
+            None,
+        ),
         ("语音模型", "zh-CN", "setting:voice.model", "settings.sub.chat.models"),
         ("聊天模型", "zh-CN", "settings.sub.chat.models", "setting:voice.model"),
         # Task phrases ("make a schedule", "新建提醒") now answer with the two

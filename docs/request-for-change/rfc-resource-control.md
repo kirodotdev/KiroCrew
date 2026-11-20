@@ -1,12 +1,12 @@
 ---
 title: Resource control — CPU in the host posture, re-wakes while the host stays tight, and a conductor-authored wake filter
-status: draft
+status: partial
 author: zejiangg (drafted with an agent session)
 created: 2026-11-19
-last-audited: 2026-11-19
-audited-at: dcc312174e
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
+doc-pr: 39344
+implementation-prs: [39604]
 tracking-issues: [22681]
 supersedes: []
 superseded-by: []
@@ -14,9 +14,11 @@ superseded-by: []
 
 # RFC: Resource control
 
-Status: draft. Nothing in this document is built, and it changes no code.
-Acceptance is requested from a maintainer, who records it on this Status line.
-The repository owner will circulate it to their team for review before that.
+Status: partial. #39344 was approved and merged 2026-11-19 16:37Z after the
+repository owner's review in the conductor chat. Section 4 (re-wakes while the
+host stays tight, and per-worker growth) shipped in [#39604](https://github.com/kirodotdev/KiroCrew/pull/39604); section 3
+(CPU in the posture) and section 5 (the conductor-authored wake filter) are not
+built (checked at `0c5d8bd5f3`).
 
 Every code reference was read at `dcc312174e` (origin/main,
 2026-11-19T01:14Z). Code paths without a leading directory are under

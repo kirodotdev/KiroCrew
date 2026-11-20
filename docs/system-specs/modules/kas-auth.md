@@ -47,11 +47,18 @@
 > 2026-10-30 prompt clause): on kiro-cli's relay they show kiro-cli's commands and,
 > after "or", Kiro Crew's sign-in; on the bundle, the Sign in button. The route stays
 > in Settings, `kirocrew doctor` and the log. The message text itself: the declaration's
-> `sign_in_remedy` and `signed_out_message` name that card alone, led by the route
-> of the last spawn once one ran (`host_auth._with_kas_route`). The chat row for
-> that sentence carries the `meta.notice` token `kas_signed_out`, and the route it
+> `sign_in_remedy` and `signed_out_message` name that card alone, led by a route
+> once a spawn ran (`host_auth._with_kas_route`). A caller holding the failing
+> runtime passes that runtime's own route (`AcpRuntime.kas_spawn_route`, which
+> `KasHarness.spawn_route` records at each spawn), so a second chat spawning on
+> another route cannot change what this one's prompt says; only a
+> caller with no runtime in hand falls back to the last spawn in the process.
+> The row reads the route back from that sentence (`host_auth.kas_sentence_route`),
+> never from the last spawn: its kind (the kiro-cli sign-in row, with or without
+> Crew's Sign in) and its `meta.notice` token `kas_signed_out` with the route it
 > names in `notice_args.route` (both set when `host_auth.kas_signed_out_route`
-> recognises it), so the dashboard draws it in the user's language, led by the
+> recognises it). Only a row whose text is no KAS signed-out sentence takes its
+> kind from the last spawn. The dashboard draws the sentence in the user's language, led by the
 > route in plain words; beside the card's sign-in button the copy points at that button.
 > The sentence counts when it leads the row, alone or followed by more text after a
 > space: the ACP error formatter appends its model-switch note and a request id. The
@@ -143,7 +150,7 @@ segment is the region source). Social device-flow uses a shared default profile 
 returned by the poll. The engine accepting a reply without one does NOT make it
 optional: the Kiro runtime refuses every request that names no profile with HTTP 400
 `ValidationException` "profileArn is required for this request" (model list, chat,
-remote tools; #26109). Builder ID has no profile of its own (`ListAvailableProfiles`
+remote tools). Builder ID has no profile of its own (`ListAvailableProfiles`
 answers it `AccessDeniedException`), so the vault stores none for it, and
 `auth/provider.kas_profile_arn` gives the engine kiro-cli's fixed Builder ID ARN
 (`BUILDER_ID_PROFILE_ARN`, the value kiro-cli's `builder_id_callback_token` sends) on
@@ -160,8 +167,11 @@ with its own JWT-SVID, with no person sign-in, kiro-cli login or crew API key.
 fetches the JWT-SVID for the Kiro audience from the SPIFFE Workload API, writes it
 to `KIROCREW_WORKLOAD_IDENTITY_SVID_FILE` and keeps it fresh; Crew reads that file
 for each use and speaks no Workload API itself. `..._AUDIENCE` (the Kiro runtime
-URL) and `..._PROFILE_ARN` are required (`kiro_crew/workload_identity.py`). The
-claims are checked (`sub` is `spiffe://`, `aud` names the audience, at least 3
+URL) and `..._PROFILE_ARN` are required (`kiro_crew/workload_identity.py`); a
+missing audience is named, since nothing public derives it yet. The
+file is opened non-blocking and must be a regular file (a symlink is followed, as a
+mounted secret is one), and the claims are checked (`sub` is `spiffe://`, `aud`
+names the audience, `exp` a finite time before the year 10000 with at least 3
 minutes left); the signature is the relying party's to check. While the switch is
 set, even to a bad value:
 
@@ -177,16 +187,28 @@ set, even to a bad value:
   (`kiro_readiness.kas_crew_signin_ready`) asks whether the file holds a usable
   JWT-SVID for a turn on KAS (on any route, live or cold; a turn on another
   harness keeps the kiro-cli gate), the kiro-cli readiness probe stays kiro-cli's
-  own answer, because a kiro-cli turn cannot use the JWT-SVID, the
-  model catalog is keyed by the profile ARN, and the usage poll does not read the
-  vault (`vault_identity_claims` answers empty).
+  own answer, because a kiro-cli turn cannot use the JWT-SVID, while
+  `GET /api/kiro-prerequisite` answers `ready` when a new turn would start on KAS
+  with a usable JWT-SVID (`kiro_readiness.workload_turns_ready`), so the people a
+  relay brings in to a fresh pod reach the chat instead of the owner-setup screen, the
+  model catalog is keyed by the profile ARN, the usage refresh
+  (`dashboard/handlers/sessions._refresh_from_vault`) publishes no reading and
+  no sign-in prompt before any vault read, and `fetch_local_identity` answers
+  `None` (unknown), so the Remote Crew launch form asks for a target.
 - `GET /api/models` serves the engine's recorded list
   (`models_kas_bundle.api_models_kas_workload`), never kiro-cli's
   `--list-models`, which needs kiro-cli's own sign-in.
-- The relay lease reads the same file through the file form of
-  `tunnel.relay_lease_credential`, with `tunnel.relay_lease_token_type` empty, so
-  the call carries the JWT-SVID as its bearer with no `TokenType` and no
-  `profileArn`. An empty credential is refused by name, never the sign-in lease.
+- The relay lease reads `tunnel.relay_lease_credential` as a JWT-SVID only when
+  it names the file `KIROCREW_WORKLOAD_IDENTITY_SVID_FILE` names
+  (`RelaySettings.uses_workload_identity`); any other file and a `secret://`
+  reference stay a crew key. It reads the SVID with the same checks
+  (`workload_identity.lease_bearer`), so a token the engine would refuse is never
+  sent. The call carries it as its bearer with no `TokenType`, whatever
+  `tunnel.relay_lease_token_type` says (a copied team config is logged and
+  ignored), and no `profileArn`. A refused sign-in (HTTP 401, after
+  one re-read) or a `ValidationException` waits 15 minutes and tries again
+  instead of stopping, since a stage that does not admit the JWT-SVID yet refuses
+  it that way. An empty credential is refused by name, never the sign-in lease.
 
 Known limit: where the agent runs unsandboxed (a Restricted pod has no user
 namespaces), the agent can read the JWT-SVID file, as it can any file the
@@ -271,7 +293,10 @@ Endpoints (host: `https://prod.us-east-1.auth.desktop.kiro.dev`, portal:
   `/oauth/callback?login_option=<google|github>&code=…&state=…`; then
   `POST {host}/oauth/token` with `{code, code_verifier, redirect_uri}` where
   `redirect_uri` MUST equal `http://localhost:<port>/oauth/callback?login_option=<p>`
-  (path + login_option query, exactly as rebuilt in portal.rs).
+  (path + login_option query, exactly as rebuilt in portal.rs). A callback carrying
+  `error` fails the sign-in at once, and the tab names the reason in fixed words for
+  each RFC 6749 §4.1.2.1 code (`_PORTAL_ERROR_REASONS`); nothing the request carries,
+  `error_description` included, reaches the page.
 - **Device code:** `POST {host}/oauth/device/authorization`
   `{clientId:"Kiro-CLI", loginProvider:"Google"|"Github"}` →
   `{deviceCode, userCode, verificationUri, verificationUriComplete,
@@ -349,7 +374,7 @@ browser last submitted still comes first (`website/src/utils/companySignIn.ts`).
 An approved IdC token carries no profile ARN, so `_poll_oidc` resolves it with the
 control plane's `ListAvailableProfiles` (`auth/login/control_plane.py`). The Identity
 Center region does not name the control plane that serves the profile (a `us-east-1`
-instance can hold an `eu-central-1` profile, #28904), so the call asks every host in
+instance can hold an `eu-central-1` profile), so the call asks every host in
 `_CPS_ENDPOINTS`, the login region's own first, and keeps the first answer that lists
 a profile. A host that refuses or sends an unreadable answer is logged and skipped.
 The poll ends as `error`, with nothing stored, when every host refused or none lists
@@ -743,9 +768,9 @@ engine instead ([aws-control.md](aws-control.md)).
   card, and the agent's "not signed in" error row with its sign-in deep link),
   never silently handed back to whatever `kiro-cli login` holds. Automatic
   demotion to cli-owned after a persistent refresh failure is therefore not a
-  gap to close but a behaviour deliberately not built (see #9772). The spawn
+  gap to close but a behaviour deliberately not built. The spawn
   owner is the shared sign-in resolver's pick (RFC crew-lts-edition D4,
-  `oss` order, amended 2026-10-30; delivered by #26841): any stored vault entry, including one whose access token has
+  `oss` order): any stored vault entry, including one whose access token has
   expired with no refresh token, and a vault that cannot be read, keeps the spawn
   Crew-owned and reports "not signed in"; only an empty vault hands it to
   kiro-cli. Removing the Crew sign-in (`kirocrew kas logout`) is how a user goes

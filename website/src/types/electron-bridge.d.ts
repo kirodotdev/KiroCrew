@@ -10,6 +10,10 @@ declare global {
     platform?: string
     isElectron?: boolean
     linuxFrameless?: boolean
+    /** This shell answers frameless-Linux application-menu IPC. Optional:
+     *  absent on a shell older than the feature, whose `menuItems` guard is
+     *  still Windows-only and returns `[]` for a Linux window. */
+    linuxAppMenu?: boolean
     getPathForFile?: (file: File) => string
     windowControl?: (action: string) => void
   }

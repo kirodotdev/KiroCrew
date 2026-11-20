@@ -1350,6 +1350,58 @@ class TestSsmMintOutputRedaction:
         assert ("instances.mint_timeout_secs" in msg) is names_setting
         assert ("already at its maximum" in msg) is not names_setting
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stderr, exit_code, lead",
+        [
+            (
+                "sudo: unknown user ubuntu\nsudo: error initializing audit plugin",
+                1,
+                "User ubuntu doesn't exist on this instance.",
+            ),
+            (
+                "kirocrew binary not found in any of: ...",
+                127,
+                "Kiro Crew isn't installed for user ubuntu on this instance.",
+            ),
+            ("Traceback (most recent call last): ...", 1, "remote token mint on"),
+            (
+                "/home/ubuntu/.local/bin/kirocrew: line 2: python3: command not found",
+                127,
+                "remote token mint on",
+            ),
+        ],
+    )
+    async def test_failed_ssm_mint_leads_with_the_cause_and_its_setting(
+        self, monkeypatch, stderr, exit_code, lead
+    ):
+        """A mint whose output names its cause says so first, as Diagnose would.
+
+        The raw status and tail still follow, and an unrecognised failure keeps
+        today's message unchanged.
+        """
+        from kiro_crew.cloud import ssm as cloud_ssm
+        from kiro_crew.instances import ssm_token_mint as sm
+
+        def fake_run_command(target, command, profile, region, **kwargs):
+            return cloud_ssm.CommandResult(
+                status="Failed", stdout="", stderr=stderr, exit_code=exit_code
+            )
+
+        monkeypatch.setattr(cloud_ssm, "run_command", fake_run_command)
+        with pytest.raises(sm.TokenMintError) as excinfo:
+            await sm.mint_remote_token_ssm("i-0123456789abcdef0", ssm_run_as="ubuntu")
+        msg = str(excinfo.value)
+        assert msg.startswith(lead)
+        assert f"exited status=Failed code={exit_code}" in msg
+
+    def test_connect_and_diagnose_word_the_mint_causes_alike(self):
+        import kiro_crew.instances.diagnostics as diag
+        from kiro_crew.instances import ssm_token_mint as sm
+
+        assert diag._SSM_REASONS[diag.SSM_USER_UNKNOWN] == sm.USER_UNKNOWN_REASON
+        assert diag._SSM_REASONS[diag.REMOTE_NOT_INSTALLED] == sm.NOT_INSTALLED_REASON
+
 
 class TestSsmDiagnostics:
     """The SSM diagnosis ladder reports the first broken link, SSM-worded."""

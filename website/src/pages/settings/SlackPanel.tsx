@@ -19,6 +19,8 @@ import { SlackCodeSection, slackCodeDraftFrom, slackCodePayload, type SlackCodeD
 import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
 import { forgetSlackInstallReading } from './SlackManifestUpdate'
 import { lazyRetry } from '../../components/lazyRetry'
+import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
+import { connectionCardHref } from '../connections/connectionsLinks'
 import type { SlackOwnerClaimProps } from './SlackOwnerClaim'
 // Its own chunk, for the same budget reason as SlackSharedAccess below. A failed
 // load shows an inline notice with Try again; the manual member-ID field beside
@@ -62,7 +64,7 @@ type Draft = {
   session_folder: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions: boolean
-  /** List conversations that start in Slack in the session list (on by default). */
+  /** List conversations that start in Slack in the session list (off by default). */
   show_in_session_list: boolean
   /** Slack Code: the registered switches and the code-channel defaults. */
   code: SlackCodeDraft
@@ -80,8 +82,8 @@ function draftFrom(c: SlackConfigData): Draft {
     session_folder_on: !!c.session_folder,
     session_folder: c.session_folder ?? '',
     auto_link_sessions: !!c.auto_link_sessions,
-    // Absent (an older gateway) reads as on, the gateway's own default.
-    show_in_session_list: c.show_in_session_list !== false,
+    // Only a real `true` reads as on: absent is off, the gateway's own default.
+    show_in_session_list: c.show_in_session_list === true,
     code: slackCodeDraftFrom(c),
   }
 }
@@ -171,7 +173,7 @@ function reconnectRefusal(e: unknown): string {
 type ReconnectOutcome = { connected: true } | { connected: false; message: string }
 
 /** Editor for a list of plain string IDs (channels, enterprise orgs, user IDs, emails). */
-export function TagListEditor({ label, description, hint, values, placeholder, onChange, validate, readOnly }: {
+export function TagListEditor({ label, description, hint, values, placeholder, onChange, validate, readOnly, onPendingChange }: {
   label: string
   description?: string
   /** An info tip beside the label, for prose that explains what the list IS;
@@ -182,9 +184,25 @@ export function TagListEditor({ label, description, hint, values, placeholder, o
   onChange: (next: string[]) => void
   validate?: (v: string) => boolean
   readOnly?: boolean
+  /** Told when the add box gains typed-but-not-added text (true) and when it
+   *  loses it again (false), by clearing, by Add, or by this editor unmounting.
+   *  That text lives only here, so a parent that guards unsaved edits needs it. */
+  onPendingChange?: (hasPending: boolean) => void
 }) {
   const [draft, setDraft] = useState('')
   const [err, setErr] = useState('')
+  const hasPending = !!draft.trim()
+  const pendingCb = useRef(onPendingChange)
+  useEffect(() => { pendingCb.current = onPendingChange }, [onPendingChange])
+  const reportedPending = useRef(false)
+  useEffect(() => {
+    if (reportedPending.current === hasPending) return
+    reportedPending.current = hasPending
+    pendingCb.current?.(hasPending)
+  }, [hasPending])
+  useEffect(() => () => {
+    if (reportedPending.current) pendingCb.current?.(false)
+  }, [])
   const ime = useImeGuard()
   const add = () => {
     const v = draft.trim()
@@ -251,6 +269,8 @@ export function SlackPanel() {
     // object and clobber unsaved edits via the sync effect below.
     refetchOnWindowFocus: false,
   })
+  // The Slack card under Settings → Connections exists only while that gallery is on.
+  const connectionsUi = useConnectionsUiEnabled()
 
   const [draft, setDraft] = useState<Draft | null>(null)
   const [botToken, setBotToken] = useState('')
@@ -490,6 +510,22 @@ export function SlackPanel() {
           <p className="text-[12px] text-muted mt-1">
             {i18nT('pages.settings.slackPanel.talk_to_your_agents_from_slack_over_socket_mode')}
           </p>
+          {/* Slack's MCP tools are a separate sign-in from this bot, made on the
+              Slack card under Settings → Connections. A new tab, so this form and
+              its unsaved fields stay put; the tab shares this session's cookie. */}
+          {connectionsUi && (
+            <p className="text-[12px] text-muted mt-1">
+              {i18nT('pages.settings.slackPanel.slack_tools_hint')}{' '}
+              <a
+                data-testid="slack-connections-link"
+                href={connectionCardHref('slack')}
+                target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 font-medium text-accent hover:underline"
+              >
+                {i18nT('pages.settings.slackPanel.slack_tools_link')} <ExternalLink size={12} />
+              </a>
+            </p>
+          )}
           {/* No hand-off: `botToken` / `appToken` (SecretField drafts, never
               persisted) and the unsaved `draft` (owner id, enterprise allow-list,
               command, session folder) live in this panel's local state —
@@ -679,7 +715,8 @@ export function SlackPanel() {
             />
           </div>
           {/* Whether conversations that start in Slack are listed in the session
-              list. On by default; off leaves them out of the list only. */}
+              list. Off by default, which leaves them out of the list only; on,
+              with no folder set below, files new ones in a "Slack" folder. */}
           <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.slackPanel.show_in_session_list')}
@@ -691,12 +728,13 @@ export function SlackPanel() {
               configKey="slack.show_in_session_list"
             />
           </div>
-          {/* Optional per-channel session filing. Off by default: Slack
-              conversations stay unfiled in the sidebar, as before. */}
+          {/* A folder of the person's choosing. Off, listed Slack conversations
+              go into the zero-config "Slack" folder (`slack_session_list.py`),
+              so the switch reads as "a different folder", not "file at all". */}
           <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
-              label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
-              hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+              label={i18nT('pages.settings.slackPanel.session_folder_custom')}
+              hint={i18nT('pages.settings.slackPanel.session_folder_custom_desc')}
               checked={draft.session_folder_on}
               onChange={v => upd({ session_folder_on: v })}
               disabled={ro}

@@ -553,3 +553,104 @@ def test_an_unchecked_bot_with_an_every_call_hold_still_gets_its_first_repair(la
     after = _ledger(mates)
     assert after[CHECKED_KEY] == ["zxc"]
     assert "zxc" not in (after.get(RESPLIT_KEY) or [])
+
+
+def test_a_recheck_drops_the_asks_an_every_call_hold_wrote_into_the_file(layout, persisted):
+    """Those asks outrank the user's own allow rules, so reads asked even off Trust."""
+    from kiro_crew.mate_held_rules import _ASKABLE, ANY
+
+    user, mates = layout
+    asks = [{"capability": c, "effect": "ask"} for c in sorted(_ASKABLE)]
+    own_ask = {"capability": "web_fetch", "effect": "ask"}
+    block = {"policies": ["read-only-shell"], "rules": [*_BUNDLE_BLOCK["rules"], own_ask]}
+    moved = {**_MOVED_FILE, "permissions": {"rules": asks}}
+    cfg = _moved_before(user, mates, _old(permissions=block), moved)
+    persisted(cfg)
+    ledger = _ledger(mates)
+    ledger[CHECKED_KEY] = ["zxc"]
+    ledger[HELD_KEY] = {
+        "zxc": {"member_id": "zxc", "rules": [{"text": "its permissions", "capability": ANY}]}
+    }
+    (mates.parent / "migrated.json").write_text(json.dumps(ledger), encoding="utf-8")
+
+    restore_dropped_policy(cfg)
+
+    rules = _file(mates, "zxc")["permissions"]["rules"]
+    assert {"capability": "fs_read", "effect": "ask"} not in rules
+    assert {"capability": "shell", "effect": "ask"} not in rules
+    assert own_ask in rules
+    assert _BUNDLE_BLOCK["rules"][0] in rules
+    assert "zxc" not in (_ledger(mates).get(HELD_KEY) or {})
+
+
+def _held_on_every_call(mates: Path, *, checked: list[str], rechecked: list[str] = ()) -> None:
+    from kiro_crew.mate_held_rules import ANY
+    from kiro_crew.mate_policy_repair import RESPLIT_KEY
+
+    ledger = _ledger(mates)
+    ledger[CHECKED_KEY] = checked
+    if rechecked:
+        ledger[RESPLIT_KEY] = list(rechecked)
+    else:
+        ledger[HELD_KEY] = {
+            "zxc": {"member_id": "zxc", "rules": [{"text": "its permissions", "capability": ANY}]}
+        }
+    (mates.parent / "migrated.json").write_text(json.dumps(ledger), encoding="utf-8")
+
+
+def test_a_recheck_keeps_the_asks_an_owner_pruned_the_hold_down_to(layout, persisted):
+    """Only the whole set the hold wrote is removed; a pruned set is the owner's choice."""
+    user, mates = layout
+    kept = [
+        {"capability": "shell", "effect": "ask"},
+        {"capability": "fs_write", "effect": "ask", "match": ["/etc/**"]},
+    ]
+    moved = {**_MOVED_FILE, "permissions": {"rules": kept}}
+    cfg = _moved_before(user, mates, _old(permissions=_BUNDLE_BLOCK), moved)
+    persisted(cfg)
+    _held_on_every_call(mates, checked=["zxc"])
+
+    restore_dropped_policy(cfg)
+
+    rules = _file(mates, "zxc")["permissions"]["rules"]
+    assert all(r in rules for r in kept)
+
+
+def test_a_bot_an_earlier_recheck_left_with_the_asks_is_cleaned_once(layout, persisted):
+    """A recheck that dropped the hold but kept the asks is followed by one that removes them."""
+    from kiro_crew.mate_held_rules import _ASKABLE
+    from kiro_crew.mate_policy_repair import ASKS_KEY
+
+    user, mates = layout
+    asks = [{"capability": c, "effect": "ask"} for c in sorted(_ASKABLE)]
+    moved = {**_MOVED_FILE, "permissions": {"rules": [*asks, *_BUNDLE_BLOCK["rules"]]}}
+    cfg = _moved_before(user, mates, _old(permissions=_BUNDLE_BLOCK), moved)
+    persisted(cfg)
+    _held_on_every_call(mates, checked=["zxc"], rechecked=["zxc"])
+
+    restore_dropped_policy(cfg)
+
+    rules = _file(mates, "zxc")["permissions"]["rules"]
+    assert not any(r in rules for r in asks)
+    assert _BUNDLE_BLOCK["rules"][0] in rules
+    assert _ledger(mates)[ASKS_KEY] == ["zxc"]
+    before = (mates / "zxc.json").read_bytes()
+    restore_dropped_policy(cfg)
+    assert (mates / "zxc.json").read_bytes() == before
+
+
+def test_a_bot_never_held_on_every_call_keeps_a_full_set_of_asks(layout, persisted):
+    """A whole set of bare asks on a Bot no every-call hold touched is its owner's."""
+    from kiro_crew.mate_held_rules import _ASKABLE
+
+    user, mates = layout
+    asks = [{"capability": c, "effect": "ask"} for c in sorted(_ASKABLE)]
+    moved = {**_MOVED_FILE, "permissions": {"rules": [*asks, *_BUNDLE_BLOCK["rules"]]}}
+    cfg = _moved_before(user, mates, _old(permissions=_BUNDLE_BLOCK), moved)
+    persisted(cfg)
+    _held_on_every_call(mates, checked=["zxc"], rechecked=["other"])
+    before = (mates / "zxc.json").read_bytes()
+
+    assert restore_dropped_policy(cfg) == []
+
+    assert (mates / "zxc.json").read_bytes() == before

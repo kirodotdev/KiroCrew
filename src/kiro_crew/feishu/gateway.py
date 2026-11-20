@@ -19,7 +19,7 @@ import importlib
 import logging
 from typing import TYPE_CHECKING
 
-from kiro_crew import extras
+from kiro_crew import extras, sdk_extras
 from kiro_crew.config import live
 from kiro_crew.feishu.client import LarkClient
 from kiro_crew.feishu.transport import FeishuTransport
@@ -67,6 +67,9 @@ async def maybe_start_feishu(orch: "GatewayOrchestrator") -> "LarkClient | None"
         # on a worker thread first: on the loop it would stall the gateway long
         # enough for the loop-stall watchdog to restart it. Every later import
         # is then a sys.modules hit. A missing extra still raises ImportError.
+        # On the desktop app the SDK lives in the data home, installed from
+        # Settings (``sdk_extras``); put it on sys.path first.
+        await asyncio.to_thread(sdk_extras.activate)
         for module in _LARK_MODULES:
             await asyncio.to_thread(importlib.import_module, module)
 
@@ -169,6 +172,7 @@ async def maybe_start_feishu(orch: "GatewayOrchestrator") -> "LarkClient | None"
             extras.install_hint("feishu"),
             exc,
         )
+        _schedule_sdk_install(orch)
         return None
     except Exception as exc:
         if orch.dashboard_state is not None:
@@ -176,3 +180,47 @@ async def maybe_start_feishu(orch: "GatewayOrchestrator") -> "LarkClient | None"
             orch.dashboard_state.feishu_connect_error = f"{type(exc).__name__}: {exc}"[:120]
         logger.exception("Failed to start Feishu channel; continuing without it.")
         return None
+
+
+def _schedule_sdk_install(orch: "GatewayOrchestrator") -> None:
+    """On the desktop app, install the missing SDK in the background, then start Feishu.
+
+    Reached only for an enabled, credentialed channel (``maybe_start_feishu``
+    returns earlier otherwise), so this is a user who already uses Feishu, and
+    their channel must not stay off just because the bundle lacks the SDK. The install runs off the event loop and never holds up
+    the other channels or the dashboard; once it lands, the channel is started
+    through ``restart_channel``, as a config edit would. One attempt per start:
+    a failure leaves the Settings Install button and the badge as they are.
+    """
+    if getattr(orch, "_feishu_sdk_install_task", None) is not None:
+        return
+    restart = getattr(orch, "restart_channel", None)
+    if restart is None:
+        return
+
+    async def _run() -> None:
+        try:
+            if not await asyncio.to_thread(sdk_extras.install_supported, "feishu"):
+                return
+            logger.info("Feishu: installing the Feishu SDK for the enabled channel")
+            await asyncio.to_thread(sdk_extras.install_extra, "feishu")
+        except sdk_extras.InstallError as exc:
+            logger.warning(
+                "Feishu: automatic SDK install failed; press Install under"
+                " Settings → Messaging Channels → Feishu: %s",
+                exc,
+            )
+            return
+        except Exception:
+            logger.exception("Feishu: automatic SDK install failed")
+            return
+        logger.info("Feishu: SDK installed; starting the channel")
+        try:
+            await restart("feishu")
+        except Exception:
+            logger.exception("Feishu: starting the channel after the SDK install failed")
+
+    # Held on the orchestrator so the task is not collected mid-install.
+    setattr(
+        orch, "_feishu_sdk_install_task", asyncio.create_task(_run(), name="feishu-sdk-install")
+    )

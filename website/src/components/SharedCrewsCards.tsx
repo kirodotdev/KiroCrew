@@ -31,6 +31,7 @@ import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { KIRO_SIGN_IN_TARGET } from '../pages/developer/kiroSignInLink'
 import { SettingsLink } from './SettingsLink'
+import { accountProviderLabel } from './kasProviderLabel'
 
 /** The AWS Management Console home. A reviewer call: no Kiro or Amazon Q
  *  Developer console link exists in the codebase to reuse. */
@@ -118,7 +119,11 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
 
 export default function SharedCrewsCards() {
   const { t } = useTranslation()
-  const { hidden, crews, failed } = useRelayViewerCrews()
+  const { hidden, crews, account, failed } = useRelayViewerCrews()
+  // Which account the list was read for: said here, not in the Crew switcher,
+  // whose Remote Crews group lists every remote Crew. Left out for an account
+  // with no label; no e-mail, the gateway sends none.
+  const provider = account ? accountProviderLabel(account.accountType, account.startUrl) : ''
   const [refusals, setRefusals] = useState<Record<string, RowRefusal>>({})
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
@@ -147,6 +152,7 @@ export default function SharedCrewsCards() {
         <PanelSectionHeader label={t('components.sharedCrews.section_title')} count={crews.length} />
         <Card data-testid="shared-crews-card">
           <p className="text-[12px] text-muted mb-2">{t('components.sharedCrews.managed_by_admin')}</p>
+          {provider && <p className="text-[12px] text-muted mb-2 break-words" data-testid="shared-crews-account">{t('app.signed_in_with', { provider })}</p>}
           {/* askAgent on: this tab's drafts live in the store. The rows below are the last list loaded. */}
           {failed && <ErrorNotice variant="inline" impact={crews.length > 0 ? 'partial' : 'blocking'} message={t(crews.length > 0 ? 'components.relayCrews.refresh_failed' : 'components.relayCrews.refusal_list_generic')} className="pb-2" testId="shared-crews-refresh-failed" askAgent />}
           {crews.length === 0 ? (

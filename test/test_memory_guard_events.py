@@ -3,7 +3,8 @@
 The notifier's trigger reaches ``session_memory_guard.request``; a stop posts one
 notice in the chat that started the tree and, with a ledger summary, files the
 guard report under the worker's ledger key; a key with no dashboard tab posts
-nothing and still files the report.
+nothing and still files the report, except a chat that lives on a channel, which gets
+the notice in its channel conversation.
 """
 
 from __future__ import annotations
@@ -40,6 +41,33 @@ def _state(slots: dict[str, Slot]) -> SimpleNamespace:
         get_slot=slots.get,
         broadcast_ws=lambda kind, data: frames.append((kind, data)),
         frames=frames,
+    )
+
+
+async def _drain() -> None:
+    """Wait for every task the callback spawned: the deterministic barrier, not a sleep."""
+    await asyncio.gather(*(t for t in asyncio.all_tasks() if t is not asyncio.current_task()))
+
+
+def _channel_state(slots: dict[str, Slot], posted: list[tuple[str, str, str]]) -> SimpleNamespace:
+    """A state whose Slack session ``slack:111.1`` lives in thread ``111.1`` of ``C1``."""
+
+    async def post_message(channel: str, text: str, thread_ts: str | None = None) -> str:
+        posted.append((channel, text, thread_ts or ""))
+        return "ts-posted"
+
+    state = _state(slots)
+    state.slack_client = SimpleNamespace(post_message=post_message)
+    state.sessions.get_slack_link = lambda key: ("111.1", "C1")
+    return state
+
+
+@pytest.fixture
+def permit_channels(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew.dashboard import chat_compaction_notice
+
+    monkeypatch.setattr(
+        chat_compaction_notice, "vet_and_audit", lambda *a, **k: SimpleNamespace(permitted=True)
     )
 
 
@@ -125,3 +153,58 @@ def test_a_failing_append_is_logged_and_the_report_still_files(
     asyncio.run(scenario())
     assert "Failed to append memory-guard notice" in caplog.text
     assert filed == [("chat-2-worker", "summary")]
+
+
+def test_a_channel_only_chat_gets_the_notice_in_its_channel(
+    filed: list[tuple[str, str]], permit_channels: None
+) -> None:
+    posted: list[tuple[str, str, str]] = []
+    state = _channel_state({}, posted)
+    wire_memory_guard(state)
+
+    async def scenario() -> None:
+        state.sessions.on_memory_guard_stop("slack:111.1", "stopped it", "summary")
+        await _drain()
+
+    asyncio.run(scenario())
+    assert posted == [("C1", "stopped it", "111.1")]
+    assert len(filed) == 1
+
+
+def test_a_channel_chat_with_a_tab_gets_the_notice_in_the_tab_only(
+    filed: list[tuple[str, str]], permit_channels: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.dashboard import chat_utils
+
+    posted: list[tuple[str, str, str]] = []
+    slot = Slot("tab-1")
+    state = _channel_state({"tab-1": slot}, posted)
+    monkeypatch.setattr(chat_utils, "dashboard_slot_key", lambda key: "tab-1")
+    wire_memory_guard(state)
+
+    async def scenario() -> None:
+        state.sessions.on_memory_guard_stop("slack:111.1", "stopped it", None)
+        await _drain()
+
+    asyncio.run(scenario())
+    assert [text for _, text, _ in slot.rows] == ["stopped it"]
+    assert posted == []
+
+
+def test_a_failing_channel_post_is_logged_and_the_report_still_files(
+    filed: list[tuple[str, str]], permit_channels: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    state = _channel_state({}, [])
+
+    async def broken(*args: Any, **kwargs: Any) -> str:
+        raise RuntimeError("slack down")
+
+    state.slack_client = SimpleNamespace(post_message=broken)
+    wire_memory_guard(state)
+
+    async def scenario() -> None:
+        state.sessions.on_memory_guard_stop("slack:111.1", "stopped it", "summary")
+        await _drain()
+
+    asyncio.run(scenario())
+    assert len(filed) == 1

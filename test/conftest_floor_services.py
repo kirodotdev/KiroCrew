@@ -422,6 +422,25 @@ def _no_real_cgroup_reclaim_write():
         sandbox_slice._write_memory_reclaim = real_writer
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _no_engine_install_at_gateway_start():
+    """Make the gateway's start-time KAS engine install a no-op for the whole run.
+
+    ``start_dashboard`` schedules ``agent_sdk.kas_bundle.ensure_engine_at_startup``,
+    which downloads the pinned engine (about 55 MB from the public engine host) into a
+    data home that has none, and every test data home has none. The download runs on a
+    worker thread no asyncio cancellation can stop, so a test that boots the dashboard
+    would reach off the host and then fail its own stray-thread check. The facade's
+    attribute is what the boot path calls, so patching it there leaves
+    ``acp.kas_engine_startup`` itself whole for the tests that drive it.
+    """
+    from kiro_crew.agent_sdk import kas_bundle
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(kas_bundle, "ensure_engine_at_startup", lambda: None)
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _fail_on_refused_real_reclaim_write(_no_real_cgroup_reclaim_write):
     """Disarm the slice reclaim for the test, and fail it if a real write was refused.

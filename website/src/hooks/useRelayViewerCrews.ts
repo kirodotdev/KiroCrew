@@ -14,6 +14,7 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 import { api, ApiError, type RelayCrewEntry, type RelayViewerAccount } from '../api/client'
 import { parseErrorCode } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
+import { compareText } from '../i18n/format'
 import { timeAgo } from '../utils/timeAgo'
 import type { AppDispatch, RootState } from '../store'
 import { relayOpenStarted } from '../store/instancesSlice'
@@ -156,6 +157,14 @@ export function relayCrewStatusText(entry: RelayCrewEntry, now: number = Date.no
 
 export const RELAY_VIEWER_CREWS_KEY = ['relay-viewer', 'crews'] as const
 
+/** The Crews in one order whatever order the service answers in, which changes
+ *  from one call to the next: by name, then by endpoint ID, so a Crew stays
+ *  where the person last saw it and a click lands on the row they aimed at. */
+export function sortRelayCrews(crews: readonly RelayCrewEntry[]): RelayCrewEntry[] {
+  return [...crews].sort((a, b) => compareText(a.name, b.name)
+    || (a.endpointId < b.endpointId ? -1 : a.endpointId > b.endpointId ? 1 : 0))
+}
+
 /** The most IDs one seen request carries; the route's own cap (`_MAX_SEEN_IDS`). */
 const SEEN_BATCH = 200
 
@@ -242,7 +251,7 @@ export function useRelayViewerCrews(): {
     // stand-in gateway) is read as an empty one rather than breaking the shell.
     queryFn: async () => {
       const answer = await api.relayViewerCrews()
-      return { ...answer, crews: Array.isArray(answer?.crews) ? answer.crews : [] }
+      return { ...answer, crews: Array.isArray(answer?.crews) ? sortRelayCrews(answer.crews) : [] }
     },
     // The poll below is the retry, at its own pace.
     retry: false,

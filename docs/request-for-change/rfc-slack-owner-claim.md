@@ -1,10 +1,10 @@
 ---
 title: Slack owner claim — the owner sends the bot a DM and confirms it on the local Settings page
-status: accepted
+status: implemented
 author: zejiangg (drafted with an agent session)
 created: 2026-11-18
-last-audited: 2026-11-19
-audited-at: 1b0ef7692
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 38903
 implementation-prs: [39086]
 tracking-issues: [38899]
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Slack owner claim
 
-Status: accepted. [Accepted 2026-11-18](https://github.com/kirodotdev/KiroCrew/pull/38903#pullrequestreview-5952717861) by the repository owner (maintainer approval on #38903). Phase 1 is built in [#39086](https://github.com/kirodotdev/KiroCrew/pull/39086) and takes effect when it merges. It answers [#38899](https://github.com/kirodotdev/KiroCrew/issues/38899). The code references below were first read at `539737a2a` and re-checked at `1b0ef7692`, where §3's hook and §11's `events.py` row are built as the claim window's own Socket Mode listener instead, so `events.py` is unchanged (see #39086).
+Status: implemented. [Accepted 2026-11-18](https://github.com/kirodotdev/KiroCrew/pull/38903#pullrequestreview-5952717861) by the repository owner (maintainer approval on #38903). Phase 1, the only phase, shipped in [#39086](https://github.com/kirodotdev/KiroCrew/pull/39086). It answers [#38899](https://github.com/kirodotdev/KiroCrew/issues/38899). The code references below were first read at `539737a2a` and re-checked at `1b0ef7692`, where §3's hook and §11's `events.py` row are built as the claim window's own Socket Mode listener instead, so `events.py` is unchanged (see #39086).
 
 ## Summary
 

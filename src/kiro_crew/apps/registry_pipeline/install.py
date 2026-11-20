@@ -97,6 +97,7 @@ from kiro_crew.apps.registry_pipeline.sources import (
 from kiro_crew.apps.registry_pipeline.subprocess_env import _detect_probe_env, minimal_env
 from kiro_crew.platform import redact_log_via_context as _redact_log_via_context
 from kiro_crew.sandbox import (
+    app_backend_secret_mask_targets,
     cgroup_scope_argv,
     create_subprocess_limited,
     sandboxed_spawn_argv,
@@ -315,8 +316,8 @@ async def install_from_registry(
             once every gate, the build and ``onInstall`` have passed. An update takes
             the app down here; a self-managed app replaces no installed file.
         via: How the install was asked for, the ``via`` of
-            ``kirocrew.app.installed``: ``store`` (the store routes, the default) or
-            ``default`` (the default-apps pass).
+            ``kirocrew.app.installed`` and ``kirocrew.app.updated``: ``store`` (the
+            store routes, the default) or ``default`` (the default-apps pass).
 
     Steps:
     1. Validate the app exists in the trusted registry JSON
@@ -756,6 +757,9 @@ async def install_from_registry(
                 base_cmd,
                 mode="strict",
                 env=_detect_probe_env(),
+                # ``strict`` leaves run/ and .local_secret readable, and this shell string
+                # comes from a registry manifest.
+                extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
                 _prepare=sandboxed_spawn_argv,
             )
             proc = await create_subprocess_limited(
@@ -1059,7 +1063,10 @@ async def install_from_registry(
 
             base_cmd = ["/bin/bash", "-c", safe_script]
             sandboxed_cmd, _cleanup = await wrap_argv_async(
-                base_cmd, mode="standard", _prepare=wrap_argv
+                base_cmd,
+                mode="standard",
+                _prepare=wrap_argv,
+                extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
@@ -1531,10 +1538,9 @@ async def install_from_registry(
                         install_receipt.KIND_UPDATE if was_installed else install_receipt.KIND_FRESH
                     ),
                 )
-            if not was_installed:
-                from kiro_crew.apps.store_origin import count_first_install
+            from kiro_crew.apps.store_origin import count_install
 
-                await count_first_install(name, via)
+            await count_install(name, via, was_installed=was_installed)
             outcome = {
                 "ok": True,
                 "name": name,
@@ -1611,10 +1617,9 @@ async def install_from_registry(
                         install_receipt.KIND_UPDATE if was_installed else install_receipt.KIND_FRESH
                     ),
                 )
-            if not was_installed:
-                from kiro_crew.apps.store_origin import count_first_install
+            from kiro_crew.apps.store_origin import count_install
 
-                await count_first_install(result.name, via)
+            await count_install(result.name, via, was_installed=was_installed)
         # Install/update failed AFTER a successful clone+build: the checkout was
         # rolled back above, durable_success stays False, and the `finally`'s
         # reporter filters the restored stale out — no per-exit report is needed.

@@ -24,6 +24,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat, port_resolution, shutdown_event  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
+from kiro_crew.agent_sdk import kas_bundle as _kas_bundle
 from kiro_crew.apps.backend import (  # noqa: F401
     _RESTART_STEADY_INTERVAL,
     revive_lost_app_backends,
@@ -1490,6 +1491,11 @@ async def start_dashboard(
     probe_task = asyncio.create_task(handlers._bg_mcp_probe(state.sessions))
     state._background_tasks.add(probe_task)
     probe_task.add_done_callback(state._background_tasks.discard)
+
+    # Engine guarantee: a start with no engine for this pin installs it.
+    _engine_task = asyncio.create_task(asyncio.to_thread(_kas_bundle.ensure_engine_at_startup))
+    state._background_tasks.add(_engine_task)
+    _engine_task.add_done_callback(state._background_tasks.discard)
 
     # Refresh config.json's meta stamp when an upgrade left it naming the
     # previous build. Post-bind and fire-and-forget (never awaited on

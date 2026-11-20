@@ -3,10 +3,10 @@ title: Slack Code — agent sessions and code channels for Kiro Crew
 status: partial
 author: kseam
 created: 2026-10-16
-last-audited: 2026-11-16
-audited-at: 09e5482863
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr:
-implementation-prs: [21425, 21410, 22001, 21993]
+implementation-prs: [21425, 21410, 22001, 21993, 22370, 38112, 38181, 38240, 38243, 38998]
 tracking-issues: [15175]
 supersedes: []
 superseded-by: []
@@ -26,6 +26,13 @@ superseded-by: []
   defaults off, so no default changes; the 2026-11-16 amendment changes the
   agent a code channel with no settings runs, and turns helper agents on with a
   first enable of Code channels (Backward compatibility).
+- Built since (checked at `0c5d8bd5f3`): the 2026-11-12 Stop amendment ([#38243](https://github.com/kirodotdev/KiroCrew/pull/38243),
+  `slack/code_channels/stop_helpers.py`) and every item of the 2026-11-16 amendment:
+  helper agents on a first enable ([#38112](https://github.com/kirodotdev/KiroCrew/pull/38112)), the default agent and **Always use
+  conductor mode** ([#38240](https://github.com/kirodotdev/KiroCrew/pull/38240)), the bar actions and canvas comments ([#22370](https://github.com/kirodotdev/KiroCrew/pull/22370)), the
+  tabs ([#38998](https://github.com/kirodotdev/KiroCrew/pull/38998)) and the board's per-row PR and CI and wrap-up outcomes
+  ([#38181](https://github.com/kirodotdev/KiroCrew/pull/38181)). Not built: the §3 "Stop", "What happens next" brake, open in
+  [#38882](https://github.com/kirodotdev/KiroCrew/pull/38882). The notes below record each amendment as it was written.
 - Amended 2026-11-12: Stop in a code channel also stops the channel's helper
   agents (§3, "Stop"). The owner left this call to the Slack Code team lead, who
   decided it; it takes effect when the owner merges this amendment. Nothing is

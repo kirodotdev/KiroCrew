@@ -208,7 +208,12 @@ async def _promote_pending_grant(
             # snapshot: the client's copy of the flag is not trusted.
             _shown, reviewable = _display_source(body_snapshot or b"")
             delivery = delivery_fingerprint(
-                job.session_key, job.silent, job.channel or "", job.thread_ts or ""
+                job.session_key,
+                job.silent,
+                job.channel or "",
+                job.thread_ts or "",
+                job.channel_type,
+                job.target_id,
             )
             pending_now = compute_secret_env_pin(
                 job.script,

@@ -3,8 +3,8 @@ title: Remote Computer Use -- a gateway drives the desktop of the Mac connected 
 status: draft
 author: unstablebrainiac
 created: 2026-10-18
-last-audited: 2026-10-18
-audited-at: 310ad48b5f
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 21981
 implementation-prs: []
 tracking-issues: []

@@ -498,10 +498,13 @@ def _emit_turn_metric(
     provider: str = "",
     harness: str = HARNESS_UNKNOWN,
     trigger: str = TRIGGER_OTHER,
+    owning_app: str = "",
 ) -> None:
     """Emit this turn's OTEL samples (best-effort).
 
     ``trigger`` is who started the turn (:func:`_dashboard_turn_trigger`).
+    ``owning_app`` is the turn's live client's ``owning_app``, for
+    ``kirocrew.app.run_time``.
 
     ``harness`` labels the duration and usage samples (see
     :func:`kiro_crew.metrics.turns.emit_turn_duration`); the caller resolves it
@@ -539,6 +542,7 @@ def _emit_turn_metric(
         provider=provider,
         harness=harness,
         trigger=trigger,
+        owning_app=owning_app,
     )
     emit_turn_usage(
         input_tokens=getattr(usage, "input_tokens", 0),
@@ -1044,6 +1048,8 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
         # turn (a per-session acp_backend override included).
         harness=harness_of(client),
         trigger=_dashboard_turn_trigger(turn),
+        # Trusted: Crew sets it from the slot's app at allocation.
+        owning_app=getattr(client, "owning_app", ""),
     )
     if usage_has_billing(_u):
         # Claim the turn's single usage row BEFORE the persist await

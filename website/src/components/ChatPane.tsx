@@ -29,6 +29,7 @@ import PreparingReplyBubble from './chat/PreparingReplyBubble'
 import { useUnreadLanding } from './chat/useUnreadLanding'
 import { useRedactionHostsReload } from './chat/useRedactionHostsReload'
 import ErrorNotice from './ErrorNotice'
+import { GUIDE_KEEP_CLEAR } from '../guide/trustRoot'
 import VoicePlaybackNotice from './VoicePlaybackNotice'
 import StatusNotice from './StatusNotice'
 import { Btn } from './ui'
@@ -1176,6 +1177,8 @@ export default function ChatPane({
           </div>
         </div>
 
+        {/* The composer's notices are kept clear like the composer itself. */}
+        <div data-testid="chat-pane-composer-notices" {...GUIDE_KEEP_CLEAR}>
         <StatusNotice
           className="mx-4 mt-2 mb-0 animate-rise"
           testId="chat-pane-upload-hint"
@@ -1266,6 +1269,7 @@ export default function ChatPane({
           message={titleError?.message}
           onDismiss={() => setTitleError(null)}
         />
+        </div>
 
         </div>
         {/* Quote transit: the selection flies from where it was taken into this

@@ -18,6 +18,7 @@ import {
 } from './remoteCrewPluginRefusal'
 import { PRICE_REGION, PRICING_CALCULATOR_URL, SIZE_TIERS, X86_TIERS, type SizeTier } from './remoteCrewPanelModel'
 import { PrereqRow, SizeCard } from './RemoteCrewPanelLaunch'
+import { CustomInstanceTypePicker } from './RemoteCrewPanelCustomType'
 
 /** The AWS prerequisites card: profile and Region inputs, then the checklist they produce. */
 export function PrereqCard({
@@ -239,16 +240,23 @@ export function PrereqCard({
 
 const SUBNET_ERROR_ID = 'remote-crew-subnet-error'
 
-/** The launch form: size, subnet, the Kiro identity the crew signs in as, billing note and Launch. */
+/** The launch form: size (a tier or a custom instance type), subnet, the Kiro identity the
+ *  crew signs in as, billing note and Launch. */
 export function LaunchFormCard({
-  region, sizeKey, setSizeKey, showMoreSizes, setShowMoreSizes, subnetId, setSubnetId, subnetErr,
+  profile, region, customType, customTypeOffered, setCustomType, sizeKey, setSizeKey, showMoreSizes, setShowMoreSizes, subnetId, setSubnetId, subnetErr,
   identityQuery, identityChosen, identityUnknownCause, identityRadioShown, identityMode,
   identityStartUrl, identityStartUrlOk, identityRegion, identityRegionOk, onIdentity,
   launchBuiltin, launchReady, alreadyLaunched, launching, setupRunning, launchFailed,
   launchFailedBeforeProvision, launchFailedCrewListed, identityResolving, identityUnknown,
-  identityOk, regionOk, blockingOk, blockingCheck,
+  identityOk, regionOk, blockingOk, blockingCheck, signinOnLaunch, setSigninOnLaunch,
 }: {
+  profile: string
   region: string
+  /** A custom EC2 instance type that replaces the tier; '' = the tier. */
+  customType: string
+  /** False on a lane the gateway refuses `instance_type` for: no picker. */
+  customTypeOffered: boolean
+  setCustomType: (v: string) => void
   sizeKey: SizeTier['key']
   setSizeKey: (k: SizeTier['key']) => void
   showMoreSizes: boolean
@@ -282,9 +290,14 @@ export function LaunchFormCard({
   regionOk: boolean
   blockingOk: boolean
   blockingCheck: string | undefined
+  /** Sign in to Kiro on the new crew (default on). Off sends `skip_signin`. */
+  signinOnLaunch: boolean
+  setSigninOnLaunch: (on: boolean) => void
 }) {
   // Launch form — profile/region are set in the prerequisites card above,
   // which is the same account this launches into.
+  // A tier and a custom type are one choice: picking either clears the other.
+  const pickTier = (k: SizeTier['key']) => { setCustomType(''); setSizeKey(k) }
   return (
     <Card>
       <div className="text-text font-medium mb-3">{i18nT('pages.settings.remoteCrewPanel.new_cloud_crew')}</div>
@@ -296,7 +309,7 @@ export function LaunchFormCard({
         )}
         <div className="space-y-2.5">
           {SIZE_TIERS.map(tier => (
-            <SizeCard key={tier.key} tier={tier} on={sizeKey === tier.key} onPick={setSizeKey} />
+            <SizeCard key={tier.key} tier={tier} on={customType === '' && sizeKey === tier.key} onPick={pickTier} />
           ))}
         </div>
 
@@ -313,10 +326,13 @@ export function LaunchFormCard({
             <p className="mt-2 text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.more_sizes_hint')}</p>
             <div className="mt-2 space-y-2.5">
               {X86_TIERS.map(tier => (
-                <SizeCard key={tier.key} tier={tier} on={sizeKey === tier.key} onPick={setSizeKey} />
+                <SizeCard key={tier.key} tier={tier} on={customType === '' && sizeKey === tier.key} onPick={pickTier} />
               ))}
             </div>
           </>
+        )}
+        {customTypeOffered && (
+          <CustomInstanceTypePicker profile={profile} region={region} value={customType} onPick={setCustomType} />
         )}
       </div>
 
@@ -341,124 +357,144 @@ export function LaunchFormCard({
 
       <div className="mt-4">
         <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.identity')}</div>
-        {identityQuery.isError ? (
-          <>
-            {/* askAgent ON: the launch form keeps every entry the reader has
-                not launched with (crewForms.launch), so the hand-off
-                loses nothing, and a sign-in the gateway could not read is one
-                the agent can look into. The failure is non-blocking: the user
-                can still pick and type the target below. Once they have
-                picked, the notice says the selected option is theirs rather
-                than asking them to choose. */}
-            <ErrorNotice
-              variant="inline"
-              className="mb-2"
-              message={i18nT(identityChosen
-                ? 'pages.settings.remoteCrewPanel.identity_unknown_chosen'
-                : 'pages.settings.remoteCrewPanel.identity_lookup_failed')}
-              askAgent
-            />
-          </>
-        ) : identityUnknownCause !== null ? (
-          <>
-            {/* askAgent ON, as above. The server suggests nothing, so no radio
-                is checked until the user picks, and Launch waits for that pick.
-                The notice names the cause the server reported: whoami did not
-                answer, or an Identity Center sign-in was read without its
-                portal address; after a pick it says the choice is theirs.
-                `partial`, not red: the form still works, only the preselect
-                is missing. A signed-out kiro-cli no longer lands here. */}
-            <ErrorNotice
-              variant="inline"
-              impact="partial"
-              className="mb-2"
-              message={i18nT(
-                identityChosen
+        {/* Default on: a Kiro crew needs it. Off for a crew on another agent
+            harness, which works without a Kiro sign-in. */}
+        <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer mb-2">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={signinOnLaunch}
+            aria-label={i18nT('pages.settings.remoteCrewPanel.sign_in_on_launch')}
+            onChange={e => setSigninOnLaunch(e.target.checked)}
+            data-testid="launch-signin-toggle"
+          />
+          <span>
+            {i18nT('pages.settings.remoteCrewPanel.sign_in_on_launch')}
+            <span className="block text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.sign_in_on_launch_hint')}</span>
+          </span>
+        </label>
+        {signinOnLaunch && (
+        <>
+          {identityQuery.isError ? (
+            <>
+              {/* askAgent ON: the launch form keeps every entry the reader has
+                  not launched with (crewForms.launch), so the hand-off
+                  loses nothing, and a sign-in the gateway could not read is one
+                  the agent can look into. The failure is non-blocking: the user
+                  can still pick and type the target below. Once they have
+                  picked, the notice says the selected option is theirs rather
+                  than asking them to choose. */}
+              <ErrorNotice
+                variant="inline"
+                className="mb-2"
+                message={i18nT(identityChosen
                   ? 'pages.settings.remoteCrewPanel.identity_unknown_chosen'
-                  : identityUnknownCause === 'no_portal'
-                    ? 'pages.settings.remoteCrewPanel.identity_unknown_no_portal'
-                    : 'pages.settings.remoteCrewPanel.identity_unknown_no_answer',
-              )}
-              askAgent
-            />
-          </>
-        ) : null}
-        <div className="space-y-2">
-          <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer">
-            <input
-              type="radio"
-              name="kiro-identity"
-              className="mt-0.5"
-              checked={identityRadioShown && identityMode === 'builder_id'}
-              aria-label={i18nT('pages.settings.remoteCrewPanel.identity_builder_id')}
-              onChange={() => { onIdentity({ mode: 'builder_id' }) }}
-              // Re-selecting the already-checked default fires no change
-              // event, but it IS the user's explicit choice, and that
-              // choice ends the wait for the inherited identity.
-              onClick={() => { onIdentity({ mode: 'builder_id' }) }}
-            />
-            <span>
-              {i18nT('pages.settings.remoteCrewPanel.identity_builder_id')}
-              <span className="block text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.identity_builder_id_hint')}</span>
-            </span>
-          </label>
-          <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer">
-            <input
-              type="radio"
-              name="kiro-identity"
-              className="mt-0.5"
-              checked={identityRadioShown && identityMode === 'identity_center'}
-              aria-label={i18nT('pages.settings.remoteCrewPanel.identity_center')}
-              onChange={() => { onIdentity({ mode: 'identity_center' }) }}
-            />
-            <span>
-              {i18nT('pages.settings.remoteCrewPanel.identity_center')}
-              <span className="block text-[12px] text-muted">
-                {identityQuery.data?.discovery !== 'unknown' && identityQuery.data?.identity?.account_type === 'IamIdentityCenter'
-                  ? i18nT('pages.settings.remoteCrewPanel.identity_center_inherited')
-                  : i18nT('pages.settings.remoteCrewPanel.identity_center_hint')}
-              </span>
-            </span>
-          </label>
-          {identityMode === 'identity_center' && (
-            <div className="ml-6 space-y-2">
-              <label className="block text-[12px] text-muted">
-                {i18nT('pages.settings.remoteCrewPanel.identity_start_url')}
-                <input
-                  type="url"
-                  value={identityStartUrl}
-                  aria-label={i18nT('pages.settings.remoteCrewPanel.identity_start_url')}
-                  onChange={e => { onIdentity({ startUrl: e.target.value }) }}
-                  placeholder="https://example.awsapps.com/start"
-                  spellCheck={false}
-                  aria-invalid={identityStartUrl !== '' && !identityStartUrlOk}
-                  className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
-                />
-              </label>
-              <label className="block text-[12px] text-muted">
-                {i18nT('pages.settings.remoteCrewPanel.identity_region')}
-                <input
-                  type="text"
-                  value={identityRegion}
-                  aria-label={i18nT('pages.settings.remoteCrewPanel.identity_region')}
-                  onChange={e => { onIdentity({ region: e.target.value }) }}
-                  placeholder={i18nT('pages.settings.remoteCrewPanel.region_placeholder')}
-                  spellCheck={false}
-                  required
-                  aria-invalid={!identityRegionOk}
-                  aria-describedby={identityRegionOk ? undefined : 'identity-region-error'}
-                  className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent aria-invalid:border-danger"
-                />
-                {!identityRegionOk && (
-                  <span id="identity-region-error" className="block mt-1 text-danger">
-                    {i18nT('pages.settings.remoteCrewPanel.region_required')}
-                  </span>
+                  : 'pages.settings.remoteCrewPanel.identity_lookup_failed')}
+                askAgent
+              />
+            </>
+          ) : identityUnknownCause !== null ? (
+            <>
+              {/* askAgent ON, as above. The server suggests nothing, so no radio
+                  is checked until the user picks, and Launch waits for that pick.
+                  The notice names the cause the server reported: whoami did not
+                  answer, or an Identity Center sign-in was read without its
+                  portal address; after a pick it says the choice is theirs.
+                  `partial`, not red: the form still works, only the preselect
+                  is missing. A signed-out kiro-cli no longer lands here. */}
+              <ErrorNotice
+                variant="inline"
+                impact="partial"
+                className="mb-2"
+                message={i18nT(
+                  identityChosen
+                    ? 'pages.settings.remoteCrewPanel.identity_unknown_chosen'
+                    : identityUnknownCause === 'no_portal'
+                      ? 'pages.settings.remoteCrewPanel.identity_unknown_no_portal'
+                      : 'pages.settings.remoteCrewPanel.identity_unknown_no_answer',
                 )}
-                <span className="block mt-1">{i18nT('pages.settings.remoteCrewPanel.identity_region_hint')}</span>
-              </label>
-            </div>
-          )}
-        </div>
+                askAgent
+              />
+            </>
+          ) : null}
+          <div className="space-y-2">
+            <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer">
+              <input
+                type="radio"
+                name="kiro-identity"
+                className="mt-0.5"
+                checked={identityRadioShown && identityMode === 'builder_id'}
+                aria-label={i18nT('pages.settings.remoteCrewPanel.identity_builder_id')}
+                onChange={() => { onIdentity({ mode: 'builder_id' }) }}
+                // Re-selecting the already-checked default fires no change
+                // event, but it IS the user's explicit choice, and that
+                // choice ends the wait for the inherited identity.
+                onClick={() => { onIdentity({ mode: 'builder_id' }) }}
+              />
+              <span>
+                {i18nT('pages.settings.remoteCrewPanel.identity_builder_id')}
+                <span className="block text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.identity_builder_id_hint')}</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer">
+              <input
+                type="radio"
+                name="kiro-identity"
+                className="mt-0.5"
+                checked={identityRadioShown && identityMode === 'identity_center'}
+                aria-label={i18nT('pages.settings.remoteCrewPanel.identity_center')}
+                onChange={() => { onIdentity({ mode: 'identity_center' }) }}
+              />
+              <span>
+                {i18nT('pages.settings.remoteCrewPanel.identity_center')}
+                <span className="block text-[12px] text-muted">
+                  {identityQuery.data?.discovery !== 'unknown' && identityQuery.data?.identity?.account_type === 'IamIdentityCenter'
+                    ? i18nT('pages.settings.remoteCrewPanel.identity_center_inherited')
+                    : i18nT('pages.settings.remoteCrewPanel.identity_center_hint')}
+                </span>
+              </span>
+            </label>
+            {identityMode === 'identity_center' && (
+              <div className="ml-6 space-y-2">
+                <label className="block text-[12px] text-muted">
+                  {i18nT('pages.settings.remoteCrewPanel.identity_start_url')}
+                  <input
+                    type="url"
+                    value={identityStartUrl}
+                    aria-label={i18nT('pages.settings.remoteCrewPanel.identity_start_url')}
+                    onChange={e => { onIdentity({ startUrl: e.target.value }) }}
+                    placeholder="https://example.awsapps.com/start"
+                    spellCheck={false}
+                    aria-invalid={identityStartUrl !== '' && !identityStartUrlOk}
+                    className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
+                  />
+                </label>
+                <label className="block text-[12px] text-muted">
+                  {i18nT('pages.settings.remoteCrewPanel.identity_region')}
+                  <input
+                    type="text"
+                    value={identityRegion}
+                    aria-label={i18nT('pages.settings.remoteCrewPanel.identity_region')}
+                    onChange={e => { onIdentity({ region: e.target.value }) }}
+                    placeholder={i18nT('pages.settings.remoteCrewPanel.region_placeholder')}
+                    spellCheck={false}
+                    required
+                    aria-invalid={!identityRegionOk}
+                    aria-describedby={identityRegionOk ? undefined : 'identity-region-error'}
+                    className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent aria-invalid:border-danger"
+                  />
+                  {!identityRegionOk && (
+                    <span id="identity-region-error" className="block mt-1 text-danger">
+                      {i18nT('pages.settings.remoteCrewPanel.region_required')}
+                    </span>
+                  )}
+                  <span className="block mt-1">{i18nT('pages.settings.remoteCrewPanel.identity_region_hint')}</span>
+                </label>
+              </div>
+            )}
+          </div>
+        </>
+        )}
       </div>
 
       <div className="mt-4 flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5">
@@ -500,11 +536,11 @@ export function LaunchFormCard({
             ? i18nT('pages.settings.remoteCrewPanel.launch_wait_for_setup')
             : alreadyLaunched && !launching
             ? i18nT('pages.settings.remoteCrewPanel.launched_same_settings')
-            : identityResolving
+            : signinOnLaunch && identityResolving
             ? identityUnknown
               ? i18nT('pages.settings.remoteCrewPanel.identity_choose')
               : i18nT('pages.settings.remoteCrewPanel.identity_resolving')
-            : !identityOk
+            : signinOnLaunch && !identityOk
               ? i18nT('pages.settings.remoteCrewPanel.identity_incomplete')
               : !regionOk
                 ? i18nT('pages.settings.remoteCrewPanel.region_required')

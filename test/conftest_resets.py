@@ -42,6 +42,9 @@ def _no_host_posture_published(_floor_monkeypatch):
     from kiro_crew.notifications import resource_pressure
 
     _floor_monkeypatch.setattr(resource_pressure, "_current_posture", None)
+    _floor_monkeypatch.setattr(resource_pressure, "_worsened", None)
+    _floor_monkeypatch.setattr(resource_pressure, "_worker_growth", {})
+    _floor_monkeypatch.setattr(resource_pressure, "_session_marks", {})
 
 
 @pytest.fixture(autouse=True)
@@ -241,6 +244,26 @@ def _forget_observed_people():
     if people is not None:
         people.reset_for_tests()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _forget_offered_instance_types():
+    """Give every test an empty EC2 instance-type offering cache.
+
+    ``instance_types.clear_cache()`` empties ``_cache``, where ``cloud.instance_types`` keeps each (profile, Region) listing for five
+    minutes. The key does not include the fake AWS reader a test installs, so a
+    listing one test read through its fake would answer a later test on the same
+    worker that uses the same (profile, Region), and that test's own fake would
+    never be called. Cleared before and after, so a test that never imported the
+    module pays one dict lookup.
+    """
+    offered = sys.modules.get("kiro_crew.cloud.instance_types")
+    if offered is not None:
+        offered.clear_cache()
+    yield
+    offered = sys.modules.get("kiro_crew.cloud.instance_types")
+    if offered is not None:
+        offered.clear_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -499,6 +522,28 @@ def _forget_mount_source_sweep_pacing(_floor_monkeypatch):
 
     _floor_monkeypatch.setattr(sandbox_mount_sweep, "_SWEEP_STATE", {}, raising=False)
     _floor_monkeypatch.setattr(sandbox_mount_sweep, "_SWEEP_CURSORS", {}, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _forget_registry_ssh_sign_in_refusals():
+    """Forget the store listing's remembered ssh sign-in refusals around each test.
+
+    ``registry_pipeline.manifests._SSH_SIGN_IN_REFUSED`` lives for the process, so a
+    refusal one test records would make a later test's ssh row at that destination
+    skip its fetch. Read from ``sys.modules`` so a test that never imports the
+    registry pays nothing. A module without the name is left alone: this autouse
+    reset must not error every test's setup on a tree without it (``prove.py``
+    reverts the production hunks and needs the tests' own assertions to run).
+    """
+    module = sys.modules.get("kiro_crew.apps.registry_pipeline.manifests")
+    refused = getattr(module, "_SSH_SIGN_IN_REFUSED", None)
+    if refused is not None:
+        refused.clear()
+    yield
+    module = sys.modules.get("kiro_crew.apps.registry_pipeline.manifests")
+    refused = getattr(module, "_SSH_SIGN_IN_REFUSED", None)
+    if refused is not None:
+        refused.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -1036,6 +1081,38 @@ def _reset_subagent_not_due_memo():
         module = sys.modules.get("kiro_crew.subagent_persistence")
         if module is not None:
             module._NOT_DUE_MEMO.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_resource_subscription_state():
+    """Start each test with no MCP resource-subscription state another test left.
+
+    A session whose store removal failed stays in ``_UNRETIRED``, and the next
+    service's start removes that key's records from its own store; a service left
+    in ``_ACTIVE`` answers ``retire_session`` for a later test. The late-close
+    sets and the daemon's live-connection table are process-wide the same way.
+    """
+    base = "kiro_crew.mcp_gateway."
+
+    def clear():
+        for module_name, name in (
+            ("resource_subscriptions", "_UNRETIRED"),
+            ("resource_subscriptions_retire", "_LATE_RETIRES"),
+            ("resource_subscriptions_budgets", "_LATE_HOLDER_CLOSES"),
+            ("daemon.session_describe", "_LIVE_CONNS"),
+        ):
+            module = sys.modules.get(base + module_name)
+            if module is not None:
+                getattr(module, name).clear()
+        retire = sys.modules.get(base + "resource_subscriptions_retire")
+        if retire is not None:
+            retire.set_active_service(None)
 
     clear()
     try:

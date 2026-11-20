@@ -3,8 +3,8 @@ title: Rewind a dashboard chat in place — cut back to an earlier turn and stop
 status: draft
 author: RohanK6
 created: 2026-11-09
-last-audited: 2026-11-09
-audited-at: d0e911b617
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 33998
 implementation-prs: []
 tracking-issues: [8067, 9509, 33962]

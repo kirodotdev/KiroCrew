@@ -345,6 +345,10 @@ as a worker report. To hand work to another session at a set time, have the
 scheduled turn report back, and send the message from the bot's thread when
 that report arrives.
 
+From a Discord DM, `!bot` connects the conversation to the bot's own thread
+instead of opening a new chat, so the bot keeps its worker there
+([discord-integration.md](discord-integration.md)).
+
 Slack is the exception worth knowing. Its per-thread `!ta <name>` (`!ta off`
 clears it) resolves the name against the agent spec files in `~/.kiro/agents/`,
 not against your roster, so it picks a **template**. A Bot whose name has no

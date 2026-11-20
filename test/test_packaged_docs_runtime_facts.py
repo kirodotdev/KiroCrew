@@ -64,7 +64,7 @@ def test_deepseek_mirror_table_tracks_its_projection():
     assert deepseek[Concern.DENIED_TOOLS].disposition is Disposition.TRANSLATED
     assert deepseek[Concern.MODEL].disposition is Disposition.DELIVERED
     assert "| `deepseek` | `deepseek.py` | `mcpServers`" in doc
-    assert "`MIRRORS` contains\n  the eight harnesses" in doc
+    assert "`MIRRORS` contains\n  the nine harnesses" in doc
     assert "| `deepseek` | none |" not in doc
 
 

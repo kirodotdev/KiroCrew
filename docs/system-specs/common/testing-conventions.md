@@ -803,19 +803,19 @@ two files. Change them in the SAME pull request:
   for: `git grep -n "<function the fake answered>" -- src test`, then read each
   production caller and the tests that reach it.
 
-MEASURED: one pull request removed the shared `home` fixture's
-`is_default_home() -> True` fake, because `destinations()` no longer read the home.
-A second pull request, written in parallel, made `off_offer_due()` return `False`
-off the default home. Each was green on its own base; once both merged, three
-`TestOffOffer` tests were red on every run of `main` (`assert False is True`) and
-blocked every open pull request until the fake came back, scoped to that class.
+MEASURED: one pull request removed a shared `home` fixture's
+`is_default_home() -> True` fake, because the function it was written for stopped
+reading the home. A second pull request, written in parallel, made another check
+return `False` off the default home. Each was green on its own base; once both
+merged, that check's tests were red on every run of `main` (`assert False is True`)
+and blocked every open pull request until the fake came back, scoped to their class.
 Repeat runs cannot catch this shape, because it fails every time: the guard is the
 search, done by whichever change lands second, plus a rebase onto current `main`
 before the merge.
 
 Scope the fake to the tests that need it (a class-level autouse fixture), not the
 shared fixture, and keep one test that drops it and proves the "no" branch
-(`TestOffOffer`'s `home` case). A fake in a shared fixture outlives the check it
+(a `home` case in the same class). A fake in a shared fixture outlives the check it
 was written for, and nothing reports that it now hides a branch.
 
 ### Transport readiness before event assertions
@@ -1606,10 +1606,10 @@ Nothing about shutdown is re-implemented in the harness, so a step added to
 that makes the interception sufficient: `os._exit` is the last statement of
 `_shutdown_and_exit` and the only hard exit `run()` reaches. A `run()` that
 does not reach its exit within `SHUTDOWN_PATH_SECS` of the event is cancelled
-and `_shutdown()` awaited directly, and the teardown reports it. The serve/stop
-seam on `GatewayOrchestrator` (issue #13627) would let an in-process caller
-skip the interception altogether; until it lands, a change to the exit path
-that trips the pin is a change that needs the harness updated in the same PR.
+and `_shutdown()` awaited directly, and the teardown reports it.
+`GatewayOrchestrator` has no serve/stop seam an in-process caller could use
+instead, so a change to the exit path that trips the pin needs the harness
+updated in the same PR.
 Do not set `shutdown_event` from a test, do not call `run()` yourself, and do
 not `await` the helper's task.
 
@@ -2300,6 +2300,17 @@ measures, never above.
   Windows, median of 5: `test_slack_code_channel_workspace.py` 114.6 s -> 42.1 s,
   `test_slack_code_channel_board_diff.py` 104.6 s -> 40.4 s. The scan and both callers'
   use of it are tested in `test_git_config_hooks.py`.
+
+- **Count the git spawns of a parametrized case, and spend each one on a new answer.**
+  A case multiplied by its parameters multiplies its process starts, and on a loaded
+  Windows runner a git spawn is the cost. Run each case only from the directories that
+  can answer differently, and do not re-ask an answer that is a pure function of one the
+  case already asserted. MEASURED (#39930): the 51 cases of
+  `test_prepare_pr_pre_push_gate.py::test_one_hostile_config_key_changes_nothing_from_a_subdirectory`
+  took a median 525 worker-seconds of `Backend Tests (Windows) (4)` over 10 main runs.
+  From two directories instead of three, without re-asking the gate selection, they
+  start 19 gits instead of 34; four xdist workers, AWS c6i.2xlarge Windows, 5 rounds
+  each: 86.2 -> 57.5 worker-seconds.
 
 - **If you stub the only thing that releases a resource, the fixture owes the release.**
   A permit, an in-flight claim, a lock: when the green-path test replaces the runner
@@ -6040,7 +6051,10 @@ only knows those initializer spellings; a global bound to anything else still ne
 reviewer's eye.
 
 The reset goes in `test/conftest_resets.py` as an autouse fixture, re-bound in
-`test/conftest.py`'s `from conftest_resets import (...)` block. A reset in the new
+`test/conftest.py`'s `from conftest_resets import (...)` block. When that file is at its
+1,600-line target, the reset goes in a `test/conftest_resets_<topic>.py` sibling named for
+the package it resets (`conftest_resets_acp.py`), re-bound by its own import block there.
+A reset in the new
 cache's own test file does not count: the next file on the worker is the one that
 inherits it. `test/test_process_cache_floor_ratchet.py` refuses the common shape, but
 only in a CI run whose checkout contains it, so a PR whose last green run is older than
@@ -7105,8 +7119,12 @@ runs, the Windows pins by 20%. The Windows file stays at the 800 heaviest
 (1.06x held out, against 1.02x with every file) because the Windows leaf scope
 in `ci.yml` reads that file as its list of heavy files (`WINDOWS_LEAF_MAX_PINNED`);
 listing every file there would send any leaf diff of five or more files to the
-full suite. macOS, release and the reduced and leaf scopes keep pure hash
-ownership.
+full suite. Regenerate the Windows file when its shards drift apart: on 10 green
+`main` runs of 2026-11-19 and 2026-11-20, the file generated on 2026-11-19 left the
+heaviest Windows shard at a median 1.18x the mean test seconds, and a file planned
+from 9 of those runs and replayed on the one held out at 1.06x (#39955); no file
+outside the 800 took more than 30 s in any of them. macOS, release and the
+reduced and leaf scopes keep pure hash ownership.
 
 Before the Linux and Windows full-suite test step, `scripts/ci_rewrite_prewarm.py`
 writes pytest's assertion-rewrite pyc for the shard's test files (same hash and

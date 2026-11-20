@@ -1386,7 +1386,7 @@ migration that rewrites or drops the stranded tags first.
 ### Dashboard packages (`kind="dashboard"`)
 
 A `dashboard` artifact holds one Bot's layout package — `bound_to`,
-`model`, `view` and `theme` — canonicalised by
+`model`, `view`, `theme` and, optionally, `widgets` (see *Widgets* below) — canonicalised by
 `kiro_crew.artifact_store.dashboard_package` on every write. A missing `theme`,
 or a `theme` with no `tokens`, is stored as `{"tokens": {}}`, because an MCP
 client can drop an empty object before it arrives; so `dashboard_save` (its MCP
@@ -1722,7 +1722,7 @@ whatever it is doing. The page stays saved, and not live, whatever the run finds
 
 **Save stores the page; apply puts it live, with no preview step** (rfc-crewmate-dynamic-dashboard, amendment 2026-10-15, decision 1). A person cannot judge a page's script by looking at it, so a preview step would add a click and no safety. `dashboard_save` runs the store's own write gate (`canonical_package_content`), then creates the caller's package or updates the one already bound to it (a fenced `update` naming the `content_token` it read); the page in force does not move. `dashboard_apply` with no `template_id` re-gates that package's current bytes and commits an instance version through `instance.apply_package`, which pins a gateway-owned snapshot of them. A root session's save or package apply is refused `session_package_unsupported`, because the hosted-page reader resolves a Bot's binding only.
 
-**The page in force is a gateway-owned snapshot, named by the instance record.** `apply_package` writes the saved bytes to `crew-panels/<slug>.dashboard-page.<digest>.json` — outside the `members/<slug>/` tree the Bot's shell can write — and the instance version pins `{slug, version, digest}`. A template version writes `package: null`. `instance.pinned_package(record)` reads the snapshot and checks its digest; `instance.keeps_older_package_rule(record)` is true only for a record written before the `package` key existed. `member_dashboard._serve` and `dashboard_package.read_package_model` both ask those two questions, so the page and the write check name one Model: a pinned snapshot is drawn and checked as-is; otherwise a released record uses its template copy; only an older record looks a package up by binding and draws the newest version a person cut (`applied_package_version`), with writes falling to the template when there is none. Because the page is the snapshot, no later `artifact_update`, delete-and-save under the same slug, or artifact version pruning moves or drops it. `dashboard_write` is checked against the snapshot's `model.types` (translated by `member_dashboard_fields.package_manifest`), and `dashboard_fields` lists those fields with the instance version beside them.
+**The page in force is a gateway-owned snapshot, named by the instance record.** `apply_package` writes the saved bytes to `crew-panels/<slug>.dashboard-page.<digest>.json` — outside the `members/<slug>/` tree the Bot's shell can write — and the instance version pins `{slug, version, digest}`. A template version writes `package: null`. `instance.pinned_package(record)` reads the snapshot and checks its digest; `instance.keeps_older_package_rule(record)` is true only for a record written before the `package` key existed. `member_dashboard.package_for_reader` (the one package selection, which `_serve` calls) and `dashboard_package.read_package_model` both ask those two questions, so the page and the write check name one Model: a pinned snapshot is drawn and checked as-is; otherwise a released record uses its template copy; only an older record looks a package up by binding and draws the newest version a person cut (`applied_package_version`), with writes falling to the template when there is none. Because the page is the snapshot, no later `artifact_update`, delete-and-save under the same slug, or artifact version pruning moves or drops it. `dashboard_write` is checked against the snapshot's `model.types` (translated by `member_dashboard_fields.package_manifest`), and `dashboard_fields` lists those fields with the instance version beside them.
 
 **Every apply is a version, and one rollback goes back.** A package apply, a template `dashboard_apply` (with a `template_id`; `dashboard_preview` is only a look) and a rollback each write an instance version. A template apply releases the package, which is how a Bot goes from its package back to a template page. `dashboard_rollback(to_version)` restores the version's own page in force: a package version re-pins its snapshot, and a template version releases it. A package apply prunes the snapshots that no kept version or current record still pins.
 
@@ -1732,6 +1732,31 @@ The kind is in `ALLOWED_KINDS` and deliberately NOT in
 `USER_SELECTABLE_KINDS`, and [Kind inference](#kind-inference) never returns it:
 a caller passes it explicitly or does not get it. Hand-flipping a prose document
 to this kind would store content no reader can parse.
+
+**Widgets: an optional sixth key.** A package may carry `widgets`, a list of
+phone home-screen widgets validated by `kiro_crew.artifact_store.dashboard_widgets`
+after `model`, so every binding is checked against the canonical `model.types`.
+An absent key or an empty list stores no `widgets` key, so such a package keeps
+the bytes and the layout fingerprint it had before the key existed. Limits: at
+most 4 widgets of 1 to 6 blocks (`title`, `metric`, `list`, `progress`,
+`sparkline`, `status`); an `id` matching `[a-z][a-z0-9-]{0,31}`, unique, and
+never `status`, which is reserved for the gateway's default widget; titles and
+labels of 1 to 40 characters, a unit of 0 to 8; `sizes` a non-empty subset of
+`small`, `medium`, `large`; `tap.open` only `bot`; at most 8 tones, list
+`max_items` 1 to 5, sparkline `max_points` 2 to 48; numbers finite, integers
+within 2**53; and at most 16 KiB of stored widgets JSON. A block binds only a
+declared field of a type its block accepts, the refusal naming the field, and
+never a field read from a tree-keyed fold (`TREE_PROJECTION_NAMES`, today
+`worktree`), refused `widget_tree_fold`, because the widget read path reads slot
+folds and the agentic projection only. Every widget refusal is passed through
+`redact_via_context` before it is raised, since it quotes what the author wrote.
+`widgets` is layout: `_layout_fingerprint` hashes it when present, so a
+widgets-only edit is a new version, and `revert_package` brings the target
+version's widgets back with the rest of its layout. `dashboard_save` takes an
+optional `widgets` argument: sent, it replaces the stored widgets (`[]` removes
+them); left out, the save carries the stored widgets forward and refuses a new
+model that would break them. The dashboard skill's "Phone widgets" section is
+what an agent reads to write one, and its example is validated by a test.
 
 ### Canvases (`kind="canvas"`)
 
@@ -2682,29 +2707,17 @@ box for a retry; a post refused after the composer closed shows a banner quoting
 the passage. Kinds that cannot anchor a comment (`json`, `svg`, images) get Copy
 only on a selection.
 
-## Roadmap
+## Not built
 
-In scope for the foundation:
+- **Live refresh bindings**: no cron, script or MCP-tool source rewrites an
+  artifact's `current.html` on a schedule; `meta.json` has no binding field.
+- **Embeddings or full-text search** of artifact bodies, and **install from a
+  URL or a community widget store**.
 
-- ✅ data layer + CLI + MCP tools + HTTP + library page + standalone page
-- ✅ "Save as artifact" affordance on rendered widgets
-- ✅ widgets are artifacts **by default** — auto-registered unpinned on emission,
-  listed in the in-session Artifacts tab, retention-swept while unstarred
-- ✅ system prompt context note documenting the iterate flow
-
-Out of scope (separate tasks):
-
-- **Whiteboard layout** — saved arrangements of (artifact_id, x, y, w, h) —
-  tracked as follow-on work.
-- **Live refresh bindings** — cron / Python script / MCP-tool source types
-  that auto-rewrite `current.html` on a schedule — tracked as follow-on work.
-  The hook will be a new `meta.json.refresh_binding` field consumed by a
-  refresh service.
-- **Right-panel inline render** — clicking an `<a>` to an artifact in chat
-  opens the artifact in a side panel rather than the standalone page —
-  related follow-on work.
-- **Cross-user sharing**, **embeddings/full-text search**, **install from
-  URL/community widget store** — future expansions.
+A whiteboard is the `canvas` kind ([Canvases](#canvases-kindcanvas)), and a
+plain click on an `/artifacts/<slug>` link in chat opens the artifact in the
+chat side panel (`ArtifactPanel`, through `MarkdownRenderer`'s
+`onArtifactOpen`); a modified click keeps the link's own navigation.
 
 ## WebApp Artifacts (`kind="webapp"`)
 

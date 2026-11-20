@@ -72,6 +72,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
 )
+from kiro_crew.dashboard.slack_session_list import auto_folder_id as slack_auto_folder_id
 from kiro_crew.dashboard.slot_persistence.message_entries import remember_unknown_row_fields
 from kiro_crew.dashboard.state import (
     _normalize_slot_key,
@@ -1364,6 +1365,11 @@ async def _reconcile_channel_slots_locked(
         ns = channel_namespace_of(key)
         if ns and ns not in folder_ids:
             folder_ids[ns] = await lookup_channel_folder(state, ns)
+            if ns == "slack" and not folder_ids[ns]:
+                # Listed Slack conversations with no ``slack.session_folder``
+                # file into a "Slack" folder made on first use, in one locked
+                # store transaction (see ``slack_session_list.auto_folder_id``).
+                folder_ids[ns] = await slack_auto_folder_id(state)
 
     # Folder tags are deliberately NOT read here: the raw ids are read fresh
     # under ``tags_write_lock`` immediately before validation and the filing

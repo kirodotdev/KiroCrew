@@ -278,9 +278,9 @@ account that has no Kiro profile can't sign in today: the sign-in stops at the
 profile step and nothing is saved, so the list stays hidden.
 
 A Crew is listed, and gets its access token, only at exactly the address the
-control plane gives for it, and only when that is
-`https://<endpoint ID>.<region>.relay.kiro.dev` with no port. Any other address
-is left out.
+control plane gives for it, and only when that is `https://<endpoint ID>.<host>`
+with no port: the Crew's own ID first, then any host name, so a new relay Region
+needs no update. Any other address is left out.
 
 ### Dev settings
 
@@ -323,7 +323,12 @@ group. It lists the Crews the control plane lists for you, each with its name,
 row opens it, only while the relay reports its tunnel connected. A Crew whose host
 still renews its lease but whose tunnel is down shows **reconnecting**, any other
 shows **offline**, and either may also show when it was last seen. A row that
-isn't online is dimmed, and choosing it does nothing. The list
+isn't open and isn't online is dimmed, and choosing it does nothing. The Crew in
+front carries a check mark. Another Crew open in this window reads **Connected**
+while it is online, and nothing but its status once it goes offline; either way
+choosing it brings its tab forward and its **×** disconnects it. The rest read
+**Connect**. Rows are sorted by name, so a Crew stays in place from one read
+to the next whatever order the control plane answers in. The list
 is read again each time you open the switcher (unless it was read in the last
 few seconds), every 15 seconds while a listed Crew isn't online, and about once
 a minute otherwise, and it never carries an access token. The control plane can
@@ -332,16 +337,17 @@ connected, so a Crew can read offline for that long whatever the dashboard
 does. The group appears once your account has at least one Team Crew, or when
 the gateway names the account the list was read for.
 
-Under its heading the group shows one muted line, **Signed in with** and the
-account kind, such as Builder ID. For IAM Identity Center it adds the portal host,
-so a sign-in to the wrong portal is visible. The line wraps rather than cutting
-the host off. It shows only when the sign-in is the same before and after the list
-read, so it never names an account that changed during the read. With such an
-account and no Team Crews, the group still shows, with that line and the empty
+With such an account and no Team Crews, the group still shows, with the empty
 text.
 
 **Settings → Remote Crew** shows the same list in a **Shared Crews** card, read
-from the same request, so the two can't disagree. Unlike the switcher group, it
+from the same request, so the two can't disagree. Under its note the card shows
+one muted line, **Signed in with** and the account kind, such as Builder ID. For
+IAM Identity Center it adds the portal host, so a sign-in to the wrong portal is
+visible. The line wraps rather than cutting the host off. It shows only when the
+sign-in is the same before and after the list read, so it never names an account
+that changed during the read. The switcher does not show this line, since its
+group lists remote Crews that are not all reached through that sign-in. Unlike the switcher group, it
 shows every Crew in the list and says so when there are none. Choosing an online
 row opens the Crew as the switcher does. A **Set up a new Shared Crew** card
 under it links to the AWS Management Console, where an admin creates Shared
@@ -491,6 +497,10 @@ first time such a Crew connects, the log and the bell say once that people the r
 lets open it can now reach it. Without the key, a team Crew does not connect, and
 the tunnel status names `tunnel.relay_lease_credential`. A host with a workload
 identity never falls back to the sign-in.
+A team Crew pod under the Restricted Pod Security Standard has no inner sandbox;
+set `agent.sandbox_allow_unsandboxed_exec=true` and the container is the only
+boundary; `agent.sandbox_allow_no_isolation=true` quiets the per-process warning
+(see the Docker guide, "A team Crew pod: the container is the boundary").
 
 `kirocrew remote-control off` turns hosting off and stops the relay within a few
 seconds, with no restart. It writes `tunnel.relay_enabled: false`, which wins over

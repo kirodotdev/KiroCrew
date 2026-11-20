@@ -3,8 +3,8 @@ title: Work ledger caps a goal's open items, and its item total becomes an advis
 status: implemented
 author: kirocrew agent session, directed by iamwhatever
 created: 2026-10-12
-last-audited: 2026-11-14
-audited-at: e51c773a0c
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: [19338, 36312]
 tracking-issues: []

@@ -814,7 +814,7 @@ def crewmate_harnesses(config: Any) -> list[str]:
     The one list the harness picker offers and a save accepts: selectable on this
     gateway now (``selectable_backends()``, which the ``agent_backend`` governance
     scope already narrows), able to start here, AND crewmate-capable
-    (:data:`CREWMATE_CAPABLE_BACKENDS`: KAS, Claude Code, Codex today; never pi or
+    (:data:`CREWMATE_CAPABLE_BACKENDS`: KAS, Claude Code, Codex and Pi today; never
     deepseek), judged on the runtime the pin starts on.
     So a Kiro CLI pin counts as KAS where kiro-cli's v3 engine takes it, and as
     kiro-cli, which is not crewmate-capable, everywhere else.

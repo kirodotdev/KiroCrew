@@ -1,12 +1,12 @@
 ---
 title: Host memory guard — the gateway stops the heaviest non-gateway tree at critical memory, and the conductor keeps the host healthy
-status: accepted
+status: implemented
 author: zejiangg (drafted with an agent session)
 created: 2026-11-18
-last-audited: 2026-11-18
-audited-at: 6bd6d5b3ce
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 39188
-implementation-prs: []
+implementation-prs: [39270, 39289, 39755]
 tracking-issues: [22681]
 supersedes: []
 superseded-by: []
@@ -14,9 +14,12 @@ superseded-by: []
 
 # RFC: Host memory guard
 
-Status: accepted. #39188 was approved and merged 2026-11-18 20:57Z; the
+Status: implemented. #39188 was approved and merged 2026-11-18 20:57Z; the
 repository owner approved the design as proposed in the conductor chat on
-2026-11-18. Nothing is built and this document changes no code. Every code
+2026-11-18. PR A (fast layer, `pressure_reclaim` in `session_memory_guard.py`,
+`apply_guard_report` in `work_ledger_writes.py`) shipped in #39270 with the
+follow-up #39755; PR B (per-worker view, posture-change wake, host-health rule)
+shipped in #39289. Every code
 reference below was read at `6bd6d5b3ce` (origin/main, 2026-11-18T18:04Z).
 Code paths without a leading directory are under `src/kiro_crew/`. Code is cited
 by symbol and file, as `scripts/docs_lint.py` requires; each was checked by grep
@@ -286,6 +289,8 @@ kill, because a stop without them is the silent failure the owner ruled out.
    "Host memory was critically low (1.4 GB free), so Crew stopped `pytest`
    (3.1 GB, 9 processes) that this chat started. The session keeps running.
    Retry with fewer parallel workers, or wait until memory frees."
+   A chat that lives on a channel with no dashboard tab gets the same text in
+   its channel conversation, through the governed legs the auto-compact notice uses.
 3. **Work-ledger event** when the owning session is a bound worker
    (`read_binding`, `work_ledger_writes.py`): one `report` event on its
    item, written by the gateway through a new `apply_guard_report` beside

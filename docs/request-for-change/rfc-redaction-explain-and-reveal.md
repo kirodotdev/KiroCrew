@@ -3,8 +3,8 @@ title: Redaction that explains itself
 status: partial
 author: rayrayxu
 created: 2026-09-21
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr:
 implementation-prs: [12684, 13685]
 tracking-issues: [13741]

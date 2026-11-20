@@ -109,12 +109,18 @@ export function RestartGatewayButton({
   restarting,
   onConfirm,
   testId,
+  disabled,
+  describedBy,
 }: {
   primary?: boolean
   pending: boolean
   restarting: boolean
   onConfirm: () => void
   testId: string
+  /** Hold the restart back for a reason the caller shows beside it. */
+  disabled?: boolean
+  /** Id of the element that says why the button is disabled. */
+  describedBy?: string
 }) {
   const [armed, setArmed] = useState(false)
   useEffect(() => {
@@ -124,26 +130,32 @@ export function RestartGatewayButton({
   }, [armed])
 
   const busy = pending || restarting
+  // A hold that lands mid-confirm drops the armed step, so the button never
+  // comes back already one click from restarting (state adjusted in render,
+  // React's pattern for a prop change; it settles in one pass).
+  if (disabled && armed) setArmed(false)
+  const live = armed && !disabled
   return (
     <Btn
-      primary={primary && !armed}
-      className={armed ? '!bg-[var(--warn)] !text-[var(--warn-fg)] hover:!opacity-80' : undefined}
-      disabled={busy}
+      primary={primary && !live}
+      className={live ? '!bg-[var(--warn)] !text-[var(--warn-fg)] hover:!opacity-80' : undefined}
+      disabled={busy || disabled}
+      aria-describedby={describedBy}
       data-testid={testId}
       // No static aria-label: the visible text IS the accessible name, and it is
       // what changes to announce the armed step. Pinning the label to "Restart
       // gateway" made a screen reader say the same thing on both clicks, hiding
       // the confirm from exactly the users who cannot see the colour change.
       onClick={() => {
-        if (busy) return
-        if (!armed) { setArmed(true); return }
+        if (busy || disabled) return
+        if (!live) { setArmed(true); return }
         setArmed(false)
         onConfirm()
       }}
     >
       <RefreshCw size={13} className={`lucide-inline ${busy ? 'animate-spin' : ''}`} /> {restarting
         ? i18nT('pages.settings.aboutPanel.restarting')
-        : armed
+        : live
           ? i18nT('pages.settings.aboutPanel.restart_confirm')
           : i18nT('pages.settings.aboutPanel.restart_gateway')}
     </Btn>

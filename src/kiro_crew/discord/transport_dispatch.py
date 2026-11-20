@@ -228,7 +228,7 @@ _MAX_COLLAPSED_ATTACHMENTS = IngestLimits().max_attachments
 #: Commands that still run while this conversation owes the user a detach notice.
 #: Everything else targets a session or is a plain turn and must be refused until
 #: the user has been told — including a bare message, whose ``cmd`` is ``None``.
-_DETACH_EXEMPT_COMMANDS = frozenset({"new", "unlink", "sessions", "help", "status"})
+_DETACH_EXEMPT_COMMANDS = frozenset({"new", "unlink", "sessions", "bot", "help", "status"})
 
 #: Refusal for an option press whose provenance tag does not name the
 #: conversation's CURRENT target session (rebound, `!new`, or idle-rotated).
@@ -643,7 +643,7 @@ class DiscordDispatcher:
             self._conv.clear_awaiting(scope_id)
             await self._handle_compact(user_id, channel_id, thread_id, route.resumed_key)
             return monitor_result
-        if cmd == "sessions":
+        if cmd in ("sessions", "bot"):
             # DM-ONLY. The owner gate answers WHO may resume, not WHERE the
             # result may be shown: in an allow-listed guild thread the picker
             # would post private session TITLES and the bind would replay five
@@ -653,9 +653,18 @@ class DiscordDispatcher:
             if thread_id:
                 await self.client.send_message(
                     channel_id,
-                    "🔒 `!sessions` works only in a direct message — it lists and "
+                    f"🔒 `!{cmd}` works only in a direct message — it lists and "
                     "replays private conversations, so it will not post "
                     "them into a shared thread. DM me instead.",
+                )
+                return monitor_result
+            if cmd == "bot":
+                await self._session_resume.show_bot_picker(
+                    self.client,
+                    user_id,
+                    channel_id,
+                    query=parse_command_argument(text),
+                    native_key=self._session_key(user_id, thread_id),
                 )
                 return monitor_result
             await self._session_resume.show_picker(

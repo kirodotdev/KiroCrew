@@ -37,7 +37,8 @@
 #                                        runs and updates keep the choice)
 #                                        (env KIROCREW_MANAGED_PYTHON=0)
 #   --no-kas                             skip downloading the KAS engine this
-#                                        release pins (env KIROCREW_INSTALL_KAS=0)
+#                                        release pins now; the gateway installs
+#                                        it when it starts (env KIROCREW_INSTALL_KAS=0)
 #
 # KAS engine: after the wheel is installed, the installer runs the new
 # `kirocrew kas install`, which fetches the engine this release pins into the
@@ -142,9 +143,11 @@ Options / env:
                                        later runs and updates keep the choice)
                                        (env KIROCREW_MANAGED_PYTHON=0)
   --no-kas                             skip downloading the KAS engine this
-                                       release pins; by default the installer
-                                       runs `kirocrew kas install` once the
-                                       wheel is in (env KIROCREW_INSTALL_KAS=0)
+                                       release pins now; by default the
+                                       installer runs `kirocrew kas install`
+                                       once the wheel is in, and with this flag
+                                       the gateway installs it when it starts
+                                       (env KIROCREW_INSTALL_KAS=0)
   KIROCREW_VENV                        override the managed venv location
   KIROCREW_PYTHON_DIR                  override where uv-provisioned interpreters
                                        are stored (default: beside the data home,
@@ -815,6 +818,27 @@ PINNED_KEY_SHA="$($SHA_CMD "$TMP/cli-manifest-public.der" | awk '{print $1}')"
 [ "$CLI_MANIFEST_KEY_ID" = "sha256:$PINNED_KEY_SHA" ] \
   || err "embedded CLI manifest public key fingerprint mismatch"
 
+# Install under a umask that masks group/other WRITE, so bin/kirocrew and
+# every dir above it that this run creates are born non-group-writable --
+# whether pipx or the managed venv builds the tree. `kirocrew service install`
+# refuses to attach its AppArmor unprivileged-userns profile to a launcher
+# whose file -- or any ancestor dir -- is group- or world-writable, since
+# another local user could plant an executable at that path and inherit the
+# grant. venv/pip/pipx and uv honour the process umask, so a permissive umask
+# (002, the stock Ubuntu default for a user with a same-name primary group)
+# would otherwise yield 0775 dirs and the profile install would refuse,
+# recurring on every re-install. The tightening starts HERE, before the
+# interpreter block, because on a fresh account the managed-Python step is
+# what creates ~/.kiro (the parent of crew-python and crew-venv). Tightening
+# at BIRTH (not with a post-build chmod) leaves no window in which a
+# same-group user could modify the tree before it is hardened and blessed,
+# and never touches a directory the user already had. We OR the caller's
+# umask with 022 so we only ever ADD the write-mask bits -- a stricter umask
+# (e.g. 077) is preserved, never loosened. The install branches below restore
+# it once their tree is built.
+_KC_PREV_UMASK="$(umask)"
+umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
+
 PY=""
 # The interpreter choice is STICKY: a completed install records its mode in
 # the data home (next to `channel`), and a later run without an explicit flag
@@ -897,6 +921,35 @@ else
   MANIFEST_URL="$FEED_BASE/feed/$CHANNEL_PATH/latest-cli.json"
   echo "Resolving KiroCrew ($CHANNEL channel) ..."
 fi
+# The platform wheel this host takes: the pure wheel plus the pinned KAS engine
+# (wheel_engine_platform.host_wheel_tag; glibc 2.28 is the bundled Node's floor).
+# Empty for every other host, and for a pinned version, which installs the pure
+# wheel. Its signed manifest is latest-cli-<tag>.json; when that is absent, the
+# install falls back to latest-cli.json and downloads the engine after pip.
+WHEEL_TAG=""
+if [ -z "$PIN_VERSION" ]; then
+  WHEEL_TAG="$("$PY" -I -c '
+import platform
+s, m = platform.system(), platform.machine().lower()
+tags = {("Linux", "x86_64"): "manylinux_2_28_x86_64", ("Linux", "aarch64"): "manylinux_2_28_aarch64",
+        ("Linux", "arm64"): "manylinux_2_28_aarch64", ("Darwin", "arm64"): "macosx_11_0_arm64",
+        ("Darwin", "x86_64"): "macosx_11_0_x86_64"}
+tag = tags.get((s, m), "")
+if s == "Darwin" and tag:
+    try:
+        tag = tag if int(platform.mac_ver()[0].split(".")[0]) >= 11 else ""
+    except ValueError:
+        tag = ""
+if s == "Linux" and tag:
+    lib, ver = platform.libc_ver()
+    try:
+        ok = lib == "glibc" and tuple(int(x) for x in ver.split(".")[:2]) >= (2, 28)
+    except ValueError:
+        ok = False
+    tag = tag if ok else ""
+print(tag)
+' 2>/dev/null || true)"
+fi
 # A pinned miss is policy far more often than it is a broken CDN: releases
 # published before manifest signing was enabled carry no signed manifest and are
 # permanently unpinnable. The URL alone reads as infrastructure failure, which
@@ -925,6 +978,22 @@ manifest_miss() {
 curl -fsS --proto '=https' --max-filesize 65536 "$MANIFEST_URL" \
   -o "$TMP/cli-manifest.json" \
   || manifest_miss $?
+# The platform manifest replaces it only when it names the same version: a
+# promoted stable or a mirrored insider publishes no platform wheels, so there it
+# still names the previous release. Either file is then verified in full below;
+# comparing the versions before that check trusts nothing a replayed, still
+# validly signed manifest could not already claim.
+if [ -n "$WHEEL_TAG" ]; then
+  if curl -fsS --proto '=https' --max-filesize 65536 "$FEED_BASE/feed/$CHANNEL_PATH/latest-cli-$WHEEL_TAG.json" \
+      -o "$TMP/cli-manifest-platform.json" 2>/dev/null \
+    && "$PY" -I -c 'import json,sys; a,b=(json.load(open(p)).get("version") for p in sys.argv[1:]); sys.exit(0 if isinstance(a,str) and a==b else 1)' \
+      "$TMP/cli-manifest.json" "$TMP/cli-manifest-platform.json" 2>/dev/null; then
+    mv -f "$TMP/cli-manifest-platform.json" "$TMP/cli-manifest.json"
+  else
+    WHEEL_TAG=""
+    rm -f "$TMP/cli-manifest-platform.json"
+  fi
+fi
 
 # The signature covers canonical JSON containing every field except the
 # signature itself. Reject duplicate/extra/missing keys, decode into bounded
@@ -1001,12 +1070,12 @@ echo "Verified signed manifest."
 # channel, and signed version; a valid signer cannot redirect this installer to
 # an unrelated origin by accident.
 if ! "$PY" - "$TMP/signed-payload.json" "$CHANNEL" "$PIN_VERSION" \
-    "$ARTIFACT_BASE" <<'PY'
+    "$ARTIFACT_BASE" "${WHEEL_TAG:-any}" <<'PY'
 import json
 import re
 import sys
 
-path, expected_channel, pinned_version, artifact_base = sys.argv[1:]
+path, expected_channel, pinned_version, artifact_base, wheel_tag = sys.argv[1:]
 payload = json.load(open(path, encoding="ascii"))
 expected_fields = {
     "algorithm", "channel", "key_id", "pub_date", "python_requires",
@@ -1038,7 +1107,7 @@ try:
     ):
         raise ValueError
     stem = "kirocrew_lts" if expected_channel == "lts" else "kirocrew"
-    wheel_name = f"{stem}-{version}-py3-none-any.whl"
+    wheel_name = f"{stem}-{version}-py3-none-{wheel_tag}.whl"
     expected_url = f"{artifact_base}/cli/{expected_channel}/{version}/{wheel_name}"
     if payload["wheel_url"] != expected_url:
         raise ValueError
@@ -1057,7 +1126,7 @@ WHEEL_URL="$(read_field wheel_url)"
 SHA="$(read_field sha256)"
 VER="$(read_field version)"
 if [ "$CHANNEL" = lts ]; then _WHEEL_STEM=kirocrew_lts; else _WHEEL_STEM=kirocrew; fi
-WHEEL_NAME="${_WHEEL_STEM}-${VER}-py3-none-any.whl"
+WHEEL_NAME="${_WHEEL_STEM}-${VER}-py3-none-${WHEEL_TAG:-any}.whl"
 WHL="$TMP/$WHEEL_NAME"
 
 echo "Downloading kirocrew $VER ..."
@@ -1071,27 +1140,14 @@ GOT="$($SHA_CMD "$WHL" | awk '{print $1}')"
 [ "$GOT" = "$SHA" ] || err "SHA-256 mismatch (expected $SHA, got $GOT) — refusing to install"
 echo "Verified SHA-256."
 
-# Build under a umask that masks group/other WRITE, so bin/kirocrew and its
-# dirs are born non-group-writable -- whether pipx or the managed venv builds
-# them. `kirocrew service install` refuses to attach its AppArmor
-# unprivileged-userns profile to a launcher whose file -- or any ancestor dir
-# -- is group- or world-writable, since another local user could plant an
-# executable at that path and inherit the grant. venv/pip/pipx honour the
-# process umask, so a permissive umask (002, common on shared dev hosts) would
-# otherwise yield a 0775 tree and the profile install would refuse, recurring
-# on every re-install. Tightening at BIRTH (not with a post-build chmod) leaves
-# no window in which a same-group user could modify the tree before it is
-# hardened and blessed. We OR the caller's umask with 022 so we only ever ADD
-# the write-mask bits -- a stricter umask (e.g. 077) is preserved, never
-# loosened. Each branch restores it once its tree is built.
+# The umask was tightened before the interpreter block (see there); each
+# branch below restores it once its tree is built.
 #
 # _KC_REPLACED_INSTALL turns 1 when this run writes over an existing install
 # (both branches install into the same tree a running gateway was loaded
 # from); the closing restart hint is printed only then, and only a run without
 # it ends with exit 3 on a host that cannot run the KAS engine.
 _KC_REPLACED_INSTALL=0
-_KC_PREV_UMASK="$(umask)"
-umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
 if command -v pipx >/dev/null 2>&1; then
   echo "Installing with pipx ..."
   # `pipx install --force` over an EXISTING kirocrew venv is not transactional
@@ -1520,11 +1576,26 @@ _path_hint
 # install then ends with the same 3, so a provisioning script sees it. A re-run
 # over an existing install keeps 0: every released `kirocrew update` re-runs
 # this live script on a pipx install and reads any non-zero as a failed update.
-# --no-kas skips the engine for an agent that does not use it.
+# --no-kas skips this download; the gateway then installs the engine at start.
 _KAS_RETRY="$BIN/kirocrew kas install"
 _KC_EXIT=0
 _kas_rc=0
-if [ "$INSTALL_KAS" = "1" ]; then
+# A platform wheel carries the engine inside the package. That is read through the
+# installed interpreter's own engine reader, not `kirocrew kas install`: an LTS
+# install refuses every `kas` verb but sign-in until someone signs in.
+_kas_packaged=0
+_kc_py="$(head -n 1 "$BIN/kirocrew" 2>/dev/null | sed -n 's/^#![[:space:]]*//p')"
+if [ -n "$_kc_py" ] && [ -x "$_kc_py" ] && "$_kc_py" -I -c '
+from kiro_crew.acp import kas_bundle
+found = kas_bundle.installed_bundle()
+raise SystemExit(0 if found is not None and found.packaged else 1)
+' >/dev/null 2>&1; then
+  _kas_packaged=1
+fi
+if [ "$_kas_packaged" = 1 ]; then
+  echo ""
+  echo "The built-in KAS engine is part of this install (no download needed)."
+elif [ "$INSTALL_KAS" = "1" ]; then
   echo ""
   echo "Downloading the built-in KAS engine (kirocrew kas install; skip with --no-kas) ..."
   if [ -x "$BIN/kirocrew" ]; then
@@ -1534,8 +1605,13 @@ if [ "$INSTALL_KAS" = "1" ]; then
   fi
   _tolerate "$_kas_rc"
   if [ "$_kas_rc" -ne 0 ] && [ "$_kas_rc" -ne 3 ]; then
-    echo "WARNING: could not download the built-in KAS engine; Kiro Crew is installed without it." >&2
-    echo "Retry when online: $_KAS_RETRY" >&2
+    # Engine guarantee: never "installed" without the engine. A first install
+    # fails; a re-run keeps 0 (see above), and so does LTS, whose `kas install`
+    # waits for a sign-in; the gateway installs the engine when it starts and
+    # reports it missing until then.
+    echo "ERROR: could not install the built-in KAS engine, so Kiro Crew cannot run its default agent yet." >&2
+    echo "The gateway retries when it starts. Retry now when online: $_KAS_RETRY" >&2
+    [ "$_KC_REPLACED_INSTALL" = 1 ] || [ "$CHANNEL" = lts ] || _KC_EXIT=1
   fi
 fi
 # Ubuntu 23.10+ ships kernel.apparmor_restrict_unprivileged_userns=1, and there

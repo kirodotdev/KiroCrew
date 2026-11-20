@@ -935,6 +935,9 @@ def harness_environment(
         # from GitHub; absent means empty. Spelled literally
         # (``apps.builtin_adoption_pins.HARNESS_PINS_ENV``).
         "KIROCREW_HARNESS_ADOPTION_PINS": str(home / "harness-adoption-pins.json"),
+        # No KAS engine download (about 55 MB) at each fresh-home boot. Spelled
+        # literally (``acp.kas_engine_startup.SKIP_ENGINE_INSTALL_ENV``).
+        "KIROCREW_SKIP_KAS_ENGINE_INSTALL": "1",
     }
     if skip_model_download:
         # Embeddings are default-on; never let a harness-spawned gateway

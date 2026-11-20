@@ -1,11 +1,13 @@
 /** The sidebar's shared row and folder chrome: the open-in-tab gesture, the
- *  disclosure chevron, the pinned-section divider, the folder body geometry and
+ *  open chat row's side-panel re-click and its tooltip, the disclosure chevron, the pinned-section divider, the folder body geometry and
  *  text-control classes that the session row, the folder blocks and the lanes all
  *  draw with, the date-segment label the flat lane and the Older Sessions pane
  *  head their groups with, and the folder name's tooltip. */
 import { ChevronRight } from 'lucide-react'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import { i18nT } from '../../i18n/t'
+import { loadPanelToggleOverrides, resolvePanelToggleBinding } from '../../lib/panelToggleShortcuts'
+import { formatChordKeys } from '../../lib/quickSearchShortcut'
 import { fmtDateFields, fmtDateTime } from '../../i18n/format'
 import { folderHasCreatedStamp, type FolderSortMode } from '../../utils/folderTree'
 import type { ChatFolder } from '../../types'
@@ -18,6 +20,17 @@ import type { ChatFolder } from '../../types'
  *  excluded because both carry other meanings in the sidebar (range/reorder). */
 export function isOpenInTabModifierClick(e: React.MouseEvent): boolean {
   return (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.shiftKey && !e.altKey
+}
+
+// The open chat row's side-panel re-click: lib owns the timer, the row calls it.
+export { reclickDoubleClick, reclickTogglesPanel } from '../../lib/reclickPanelToggle'
+
+/** The open chat row's tooltip: what a click does, with the live shortcut. */
+export function reclickPanelTitle(): string {
+  const chord = resolvePanelToggleBinding('side-panel', loadPanelToggleOverrides())
+  return chord
+    ? i18nT('pages.chatSidebar.reclick_toggles_side_panel_shortcut', { shortcut: formatChordKeys(chord).join(IS_MAC ? '' : '+') })
+    : i18nT('pages.chatSidebar.reclick_toggles_side_panel')
 }
 
 /** Tab mode for a click on a CREATE control (the header New button, a folder

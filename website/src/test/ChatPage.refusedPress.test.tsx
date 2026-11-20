@@ -165,6 +165,8 @@ describe('refused presses render the notice above the composer', () => {
     const notice = await screen.findByTestId('refused-press-error', NOTICE_READY)
     expect(notice.textContent).toContain("Couldn't regenerate")
     expect(notice.textContent).toContain('A turn is already running')
+    // Theme overlays and the guide panel keep clear of it, as of the composer.
+    expect(notice).toHaveAttribute('data-guide-keep-clear')
   })
 
   it('a refused switch-variant shows the server reason, and dismiss clears it', async () => {

@@ -25,6 +25,7 @@ import { useAppSelector } from '../../../store'
 import { useSelectInstance } from '../../../hooks/useSelectInstance'
 import { Btn } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { GUIDE_KEEP_CLEAR } from '../../../guide/trustRoot'
 import RemoteBehindBadge from '../../../components/RemoteBehindBadge'
 import Glass from '../../../components/Glass'
 import ChatInput from '../../../components/ChatInput'
@@ -568,7 +569,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             bare text line there would paint straight onto the rows passing
             under it. */}
         <div className="dock-inert">
-        <div className="px-4 mx-auto w-full flex flex-col gap-2 mb-2 empty:hidden" style={{ maxWidth: 'var(--mc-input-width, 900px)' }} data-testid="crew-window-notices">
+        <div className="px-4 mx-auto w-full flex flex-col gap-2 mb-2 empty:hidden" style={{ maxWidth: 'var(--mc-input-width, 900px)' }} data-testid="crew-window-notices" {...GUIDE_KEEP_CLEAR}>
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {/* An unreachable crew did not say no: its own words, no raw error,
               and a way to the crew's own dashboard (which reconnects it). */}

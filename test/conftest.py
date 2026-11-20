@@ -294,6 +294,8 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _forget_legacy_auth_sweep_clean_roots,
     _forget_mount_source_sweep_pacing,
     _forget_observed_people,
+    _forget_offered_instance_types,
+    _forget_registry_ssh_sign_in_refusals,
     _forget_sandbox_launch_mark,
     _forget_tracing_switch,
     _fresh_aws_bin_dir_trust,
@@ -331,6 +333,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_env_boot_record_and_ownership,
     _reset_live_execution_records,
     _reset_materialized_agents_snapshot,
+    _reset_resource_subscription_state,
     _reset_runtime_ownership_tables,
     _reset_safety_override_between_tests,
     _reset_session_switch_locks,
@@ -341,6 +344,11 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _shut_down_shared_pools_in_session,
     _small_default_host,
     forget_home_bound_caches,
+)
+
+# Per-test resets of process-global kiro_crew.acp state.
+from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_kas_agent_config_error_reports,
 )
 
 # The in-memory Slack client and the Slack state resets.

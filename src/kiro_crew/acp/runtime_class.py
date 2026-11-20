@@ -1033,6 +1033,18 @@ class AcpRuntime:
         return harness
 
     @property
+    def kas_spawn_route(self) -> Any:
+        """The KAS route THIS runtime's process was spawned on, or ``None``.
+
+        ``None`` before a spawn and on every other harness. The sign-in messages
+        for a failure of this runtime name it (``host_auth.signed_out_message``'s
+        ``route``), not the process-wide last spawn, which a second chat's spawn
+        can move between this one's spawn and its error. Reads the cached harness
+        only: asking for a route never resolves one.
+        """
+        return getattr(getattr(self, "_harness_resolved", None), "spawn_route", None)
+
+    @property
     def uses_kiro_identity_store(self) -> bool:
         """True when this runtime's process signs in from kiro-cli's own store.
 

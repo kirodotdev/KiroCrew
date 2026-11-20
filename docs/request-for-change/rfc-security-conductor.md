@@ -3,8 +3,8 @@ title: Security Conductor — proactive vulnerability discovery as a conductor u
 status: partial
 author: zejiangg
 created: 2026-09-07
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 9195
 implementation-prs: [9270, 9271, 9273, 9362, 9332, 9495, 9499, 9500, 9813]
 tracking-issues: []

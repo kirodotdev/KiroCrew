@@ -207,6 +207,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # the spool write and the notice pass happen in the GATEWAY process, which
     # opens the paths directly.
     "inbound-spool",
+    # Resource-subscription records carry server-defined URIs, which may be
+    # credentials, and choose which session/server holder the unsandboxed gateway
+    # restores. Nothing in-sandbox reads them, so the directory is HIDDEN rather
+    # than merely READONLY. The whole directory covers its lock and write temps.
+    "mcp-resource-subscriptions",
     # The durable task queue (``tasks/tasks.db`` + SQLite siblings). Fenced
     # from agent file tools by ``security._CREW_SECRET_LEAVES``; masked here so
     # a spawned shell's ``sqlite3`` cannot read other sessions' task prompts or
@@ -496,6 +501,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # The second root holds the same authority for retained V1 runs only.
     "subagents",
     "member-memory-bindings",
+    # The signed per-session identity records (``session_token_sig``). The gateway is the
+    # only writer; an in-sandbox MCP server only reads one. A record a sandboxed process
+    # could create would name the session a later request is attested as.
+    "session-tokens",
     # Built-in named-store writes run in the gateway. Keep arbitrary sandboxed
     # code from rewriting that learning authority while allowing reads; this
     # ordinary sandbox rule is not a cross-member confidentiality boundary.
@@ -659,6 +668,11 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # over an installed prefix would read as "engine absent" to any in-sandbox
     # status probe, while a seal keeps the truth visible and only the write denied.
     "browser-harness",
+    # The optional channel SDKs the desktop app installs on first use
+    # (``sdk_extras.EXTRAS_LEAF``), which the unsandboxed gateway IMPORTS. Same class
+    # as ``browser-harness``: a write would choose code the gateway runs, so it is
+    # sealed; the installer runs in the gateway, outside the sandbox.
+    "extras",
     # The KAS engine bundles Kiro Crew installs itself (``acp.kas_bundle``): a
     # pinned ``@kiro/agent`` tree and the Node runtime that executes it. Same
     # class as ``browser-harness``: a sandboxed KAS process must read and execute
@@ -1063,6 +1077,9 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # a leaf no child should get. The read-only and no-follow seals still stop any
     # child replacing what the gateway execs.
     "browser-harness",
+    # The optional channel SDKs, withheld for the ``browser-harness`` reason: only the
+    # gateway imports them, so no child needs to read them.
+    "extras",
     # KAS MCP launch snapshots hold MCP servers' env values, and only a KAS child
     # (not an enforced harness's) starts the launcher that reads them.
     "kas-mcp-launch",
@@ -1105,6 +1122,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # Browser Harness prefix is NOT here: no sandboxed process runs it -- the
     # gateway does -- so a child needs no read of it; see ``_CREW_CHILD_WITHHELD_LEAVES``.)
     "engines",
+    # The signed session identity records. A foreign harness's MCP servers resolve their
+    # own session from one, so the child must keep reading the directory.
+    "session-tokens",
     # Authorization and lineage records an in-sandbox reader resolves. Read-only
     # sealed for the same reason: a forged entry decides a later grant.
     "apps/.dev-grants.json",

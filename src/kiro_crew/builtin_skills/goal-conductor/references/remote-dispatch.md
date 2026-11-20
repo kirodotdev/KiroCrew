@@ -32,9 +32,11 @@ needs a message, record the `decide`, tell the user, and send it in the next
 owner turn. Skip a remote item in the patrol drift check for the same reason.
 
 **Dispatch a remote item** (`work_dispatch` is local only). Call `crew_list`
-first (read-only, no arguments): it shows each registered crew's id, state,
-version match, headroom, `open_workers`, and agent and model names. It is a
-snapshot; the crew's own gate still decides.
+first (read-only): it shows each registered crew's id, state, version match,
+headroom, `open_workers`, tags, and agent and model names. `logins: true` also
+shows each crew's login states (`gh`, `glab`, `az`: valid, expired or unknown),
+as `requires.logins` reads them; it is slower, because each crew checks its
+logins first. It is a snapshot; the crew's own gate still decides.
 
 1. `work_ledger_record` `action=create`, as for a local item.
 2. `session_create` with `work_item=<item_id>`, `title` and

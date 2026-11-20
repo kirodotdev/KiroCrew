@@ -5,7 +5,10 @@
 1. Custom exceptions in `acp/transport_errors.py` (re-exported by `acp/client.py`)
    for ACP protocol/prompt errors, in `acp/session_handle_runtime_contract.py`
    (re-exported by `acp/session_handle.py`) for runtime/transport errors, and in `acp/runtime_session_setup.py` and `acp/runtime_session_create.py` (re-exported by
-   `acp/runtime.py`) for runtime binding and session-start errors
+   `acp/runtime.py`) for runtime binding and session-start errors. Two KAS
+   engine errors live beside the code that raises them: `AcpKasExtractBroken` in
+   `acp/kas_extract_repair.py` and `AcpKasEngineRefused` in
+   `acp/kas_engine_refusal.py`
 2. Error strings at CLI boundaries (never expose tracebacks to users)
 3. Graceful degradation — partial output returned on timeout
 
@@ -45,7 +48,8 @@ AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verd
 │                            or version-skewed install); non-retryable, and not an
 │                            AcpProcessDied, so the chat shows the reinstall
 │                            message instead of a respawn loop
-├── AcpKasExtractBroken    — kiro-cli's unpacked KAS engine (kas/<version>) is
+├── AcpKasExtractBroken    — (acp/kas_extract_repair.py) kiro-cli's unpacked KAS
+│                            engine (kas/<version>) is
 │                            incomplete and could not be moved aside, or the fresh
 │                            copy failed the same way; non-retryable, not an
 │                            AcpProcessDied, and the message names the directory
@@ -79,6 +83,7 @@ AcpRuntimeError (base, acp/session_handle_runtime_contract.py)
 │                                slice was throttled; transient=False, because
 │                                the remedy is freeing agent memory, not a retry
 └── AcpWorkspaceBindingError  — descriptor-bound runtime cannot serve another cwd
+    │                            (acp/runtime_session_setup.py)
     └── AcpToolSurfaceBindingError — a shared runtime cannot safely serve the
                                      requested tool surface (acp/runtime_session_setup.py)
 ```
@@ -176,7 +181,7 @@ keeps the draft dirty until the page unmounts, so a second ask was a second live
 confirm — one whose "keep my draft" cancelled a hand-off the first ask had
 already accepted. An ungated caller still asks through the navigator.
 
-A failed run is a hand-off source too, not only a failed request (#7403). An
+A failed run is a hand-off source too, not only a failed request. An
 expanded `failure` or `timeout` row in a scheduled job's history (`LogEntry`)
 renders `AskAgentButton` with a report built by `utils/cronRunReport.prompt.ts`:
 job name and id, run id, trigger, start time, the row's summary, and the TAIL of
@@ -240,7 +245,7 @@ Notable terminal (non-retryable) classes:
   every surface UNDERSTANDS it: `/compact` qualifies because it reaches the
   backend through the prompt transport everywhere, even on Slack, which also
   offers `!compact` as its own alias. The same rule governs the sibling
-  prompt-busy branch, which for the same reason now names no command at all.
+  prompt-busy branch, which for the same reason names no command at all.
 - **Lost backend session**: when `acp_error_is_session_not_found` matches, the
   turn resets the session binding and queues ONE `SYNTHETIC_RECOVERY_KIND` retry
   with a reconnect notice, armed as `ReplayFamily.SESSION_NOT_FOUND`. A Stop that
@@ -373,7 +378,7 @@ available models. Please try again." and `data.errorType`
 `ModelRegistryUnavailableError` when every fetch of the model list failed for a
 reason other than a rejected or denied credential. The frame keeps no HTTP status
 and none of the service's answer, and its cause may persist (a sign-in that sends
-no profile ARN got HTTP 400 `ValidationException` on every call, #26109), so it is
+no profile ARN gets HTTP 400 `ValidationException` on every call), so it is
 never worded as an HTTP 5xx: `acp/model_registry_errors.py` compares
 `data.errorType` exactly (a `data` sent as JSON text is parsed first; the name in
 `message` or other prose matches nothing) and words it as a model list that could
@@ -414,7 +419,7 @@ positive-identity per `AGENTS.md` "Harness parity": only kiro-cli reaches the
 model through Bedrock (`ACP_BACKEND_KIRO`, the empty-string id), so an inline
 `backend == ACP_BACKEND_KIRO` check names Bedrock for it alone and "The model
 provider" for every other harness — a Claude seat, Codex, goose and the rest
-never touch AWS, so naming Bedrock sent their users chasing throttling that does
+never touch AWS, so naming Bedrock would send their users chasing throttling that does
 not exist. The verb stays "throttling" in both forms so
 `llm_helpers._TRANSIENT_MARKERS` ("throttl") still classifies the formatted
 message as transient; the retry verdict is unchanged, only the subject noun moves.
@@ -510,7 +515,7 @@ from the turn's text and, when the prompt then answers `end_turn`, raises throug
 `_raise_acp_error` with
 `pi's model call failed (<provider>/<model>): <error>`. pi is not a member of
 `ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR`: only the envelope is read, never the
-provider's text. A prompt pi rejects before any model call still ends as today.
+provider's text. A prompt pi rejects before any model call is not affected by this envelope.
 
 The selected model and effort are untouched, and no recovery is added: whether
 the failed turn is retried is decided downstream from the raised error, exactly

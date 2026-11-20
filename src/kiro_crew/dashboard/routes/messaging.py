@@ -43,6 +43,7 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/wecom/config", handlers.api_wecom_config_save)
     app.router.add_get("/api/feishu/config", handlers.api_feishu_config_get)
     app.router.add_put("/api/feishu/config", handlers.api_feishu_config_save)
+    app.router.add_post("/api/feishu/sdk/install", handlers.api_feishu_sdk_install)
     # Microsoft Teams: inbound Bot Framework webhook (self-authenticating via
     # JWT; exempt from the cookie gate) + read-only status for the settings UI.
     app.router.add_post("/api/messaging/teams", handlers.api_teams_activity)

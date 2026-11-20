@@ -11,6 +11,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -33,6 +35,7 @@ from kiro_crew.relay_client.provider import (
     lease_token_source,
     public_tunnel_provider,
 )
+from kiro_crew.testing.links import make_dir_link
 
 AUDIENCE = "https://runtime.us-east-1.example.test"
 PROFILE_ARN = "arn:aws:codewhisperer:us-east-1:000000000000:profile/WORKLOADTEST"
@@ -443,3 +446,238 @@ def test_on_a_workload_host_a_live_kas_relay_session_is_served_by_crew(
     provider = SimpleNamespace(_runtime=runtime)
     state = SimpleNamespace(sessions=SimpleNamespace(get_provider=lambda key: provider))
     assert kiro_readiness.live_turn_route(state, "s1") is route
+
+
+# ── the expiry and the file kind ──
+
+
+def _svid_with_raw_exp(raw_exp: str) -> str:
+    """A JWT-SVID whose ``exp`` is written as *raw_exp* in the claims JSON."""
+    body = f'{{"sub": "{SUBJECT}", "aud": "{AUDIENCE}", "exp": {raw_exp}}}'
+    payload = base64.urlsafe_b64encode(body.encode()).decode().rstrip("=")
+    return f"{_b64({'alg': 'ES256'})}.{payload}.c2lnbmF0dXJl"
+
+
+@pytest.mark.parametrize(
+    "raw_exp, why",
+    [
+        ("NaN", "finite"),
+        ("Infinity", "finite"),
+        ("-Infinity", "finite"),
+        ("1e400", "finite"),
+        ("1" + "0" * 400, "finite"),
+        ("1e20", "9999"),
+        ("1e12", "9999"),
+        ("253402300800", "9999"),
+        ("253402300799", None),
+    ],
+)
+def test_an_expiry_that_is_not_a_usable_time_is_refused_before_the_engine_sees_it(
+    tmp_path: Path, raw_exp: str, why: Any
+) -> None:
+    path = tmp_path / "jwt"
+    path.write_text(_svid_with_raw_exp(raw_exp), encoding="ascii")
+    env = {
+        wi.ENV_MODE: "spiffe",
+        wi.ENV_SVID_FILE: str(path),
+        wi.ENV_AUDIENCE: AUDIENCE,
+        wi.ENV_PROFILE_ARN: PROFILE_ARN,
+    }
+    now = LATER - 3600
+    if why is None:
+        assert wi.read_svid(_settings(path), now=now).expires_at == float(raw_exp)
+        assert wi.kas_access_token_answer(env)["expiresAt"].startswith("9999-12-31")
+        return
+    with pytest.raises(wi.WorkloadIdentityError, match=why):
+        wi.read_svid(_settings(path), now=now)
+    # ready() and the engine's answer agree: both refuse, neither raises another error.
+    assert wi.ready(env) is False
+    with pytest.raises(wi.WorkloadIdentityError):
+        wi.kas_access_token_answer(env)
+
+
+def test_claims_nested_too_deep_are_refused_not_raised(tmp_path: Path) -> None:
+    payload = base64.urlsafe_b64encode(b"[" * 6000).decode().rstrip("=")
+    path = tmp_path / "jwt"
+    path.write_text(f"a.{payload}.b", encoding="ascii")
+    with pytest.raises(wi.WorkloadIdentityError, match="parse"):
+        wi.read_svid(_settings(path))
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are a POSIX file kind")
+def test_a_fifo_at_the_path_is_refused_without_waiting_for_a_writer(tmp_path: Path) -> None:
+    fifo = tmp_path / "jwt"
+    os.mkfifo(fifo)
+    outcome: list = []
+
+    def read() -> None:
+        try:
+            wi.read_svid(_settings(fifo))
+        except wi.WorkloadIdentityError as exc:
+            outcome.append(str(exc))
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(10)
+    if reader.is_alive():
+        # Release the blocked open so the thread ends, then fail.
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        reader.join(10)
+        pytest.fail("reading the JWT-SVID file blocked on a FIFO")
+    assert outcome and "NotRegularFileError" in outcome[0]
+
+
+def test_a_folder_at_the_path_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(wi.WorkloadIdentityError, match="could not be read"):
+        wi.read_svid(_settings(tmp_path))
+
+
+def test_a_linked_folder_is_followed_like_a_mounted_secret(tmp_path: Path, svid_file: Path) -> None:
+    # A Kubernetes secret or projected volume reaches its file through a linked
+    # ``..data`` folder; a junction on Windows, which needs no privilege.
+    mounted = tmp_path / "mounted"
+    make_dir_link(mounted, svid_file.parent)
+    assert wi.read_svid(_settings(mounted / svid_file.name)).subject == SUBJECT
+
+
+def test_a_missing_audience_says_to_set_it(tmp_path: Path) -> None:
+    env = {
+        wi.ENV_MODE: "spiffe",
+        wi.ENV_SVID_FILE: str(tmp_path / "jwt"),
+        wi.ENV_PROFILE_ARN: PROFILE_ARN,
+    }
+    with pytest.raises(wi.WorkloadIdentityError, match=f"{wi.ENV_AUDIENCE} is not set"):
+        wi.Settings.from_env(env)
+
+
+# ── the setup gate for the people a relay brings in ──
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("owner", "usable", "kas_turn", "blocker", "ready"),
+    [
+        (False, True, True, {}, True),
+        (True, True, True, {}, True),
+        (False, False, True, {}, False),
+        (False, True, False, {}, False),
+        (False, True, True, {"repair_required": True}, False),
+        (False, True, True, {"missing_agent_specs": ["kirocrew"]}, False),
+        (False, True, True, {"acp_supported": False}, False),
+        (False, True, True, {"sandbox_unavailable": True}, False),
+        (False, True, True, {"sandbox_backend_available": False}, False),
+        (
+            False,
+            True,
+            True,
+            {"sandbox_backend_available": False, "unsandboxed_exec_permitted": True},
+            True,
+        ),
+        (False, True, True, {"sandbox_blocked_backends": ["kas"]}, False),
+    ],
+    ids=[
+        "teammate",
+        "owner",
+        "svid-expired",
+        "kiro-cli-turn",
+        "repair",
+        "missing-spec",
+        "cli-too-old",
+        "sandbox-refused",
+        "no-sandbox-backend",
+        "unsandboxed-opt-in",
+        "kas-blocked",
+    ],
+)
+async def test_a_fresh_pod_lets_teammates_in_when_chat_would_work(
+    workload: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner: bool,
+    usable: bool,
+    kas_turn: bool,
+    blocker: dict,
+    ready: bool,
+) -> None:
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard import kiro_readiness
+    from kiro_crew.dashboard.handlers.kiro_prerequisite import api_kiro_prerequisite_status
+    from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+    if not usable:
+        workload.write_text(make_svid(exp=LONG_AGO), encoding="ascii")
+    monkeypatch.setattr(kiro_readiness, "_kas_turn_sync", lambda *a: kas_turn)
+    # A fresh pod: kiro-cli never signed in, first-run setup never written.
+    service = KiroPrerequisiteService(
+        platform_name="linux",
+        environ={"HOME": str(tmp_path), "PATH": ""},
+        home=tmp_path,
+        audit_writer=_no_audit,
+    )
+
+    async def signed_out(*, force: bool = False, coalesce: bool = False) -> dict:
+        base = {"installed": True, "authenticated": False, "ready": False}
+        return {**base, "sandbox_backend_available": True, **blocker}
+
+    monkeypatch.setattr(service, "snapshot", signed_out)
+
+    @web.middleware
+    async def identity(request: web.Request, handler: Any) -> web.StreamResponse:
+        request["user"] = "owner" if owner else "teammate"
+        request["app"] = ""
+        return await handler(request)
+
+    app = web.Application(middlewares=[identity])
+    app["state"] = SimpleNamespace(owner_id="owner")
+    app["kiro_prerequisite_service"] = service
+    app.router.add_get("/api/kiro-prerequisite", api_kiro_prerequisite_status)
+    async with TestClient(TestServer(app)) as client:
+        body = await (await client.get("/api/kiro-prerequisite")).json()
+    assert body["ready"] is ready
+    assert body["authenticated"] is False
+    assert body["setup_allowed"] is owner
+    # Only the owner learns how the host is deployed; the setup page reads it.
+    assert body["container_boundary_hint"] is owner
+
+
+def test_a_floor_over_the_opt_in_withholds_the_unsandboxed_hint(
+    workload: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A floor that requires a sandbox wins over the opt-in, so the page must not name it.
+    from kiro_crew import sandbox
+    from kiro_crew.dashboard.handlers import kiro_prerequisite
+    from kiro_crew.platform.governance import _ORDINAL_SCALES
+
+    scale = _ORDINAL_SCALES["sandbox"]
+    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: None)
+    assert kiro_prerequisite._container_boundary_hint() is True
+    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: scale[0])
+    assert kiro_prerequisite._container_boundary_hint() is True
+    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: scale[-1])
+    assert kiro_prerequisite._container_boundary_hint() is False
+    # An LTS build reads a declared opt-in as the platform default (false on Linux).
+    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: None)
+    monkeypatch.setattr(
+        "kiro_crew.edition_locks.unsandboxed_exec_floor", lambda allow, default: default
+    )
+    monkeypatch.setattr("kiro_crew.config.loader.unsandboxed_exec_platform_default", lambda: False)
+    assert kiro_prerequisite._container_boundary_hint() is False
+    monkeypatch.delenv(wi.ENV_MODE)
+    assert kiro_prerequisite._container_boundary_hint() is False
+
+
+@pytest.mark.asyncio
+async def test_off_a_workload_host_the_gate_keeps_kiro_clis_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.dashboard import kiro_readiness
+
+    monkeypatch.delenv(wi.ENV_MODE, raising=False)
+
+    def no(*a: Any) -> bool:
+        raise AssertionError("the turn route was read off a workload host")
+
+    monkeypatch.setattr(kiro_readiness, "_kas_turn_sync", no)
+    assert await kiro_readiness.workload_turns_ready() is False

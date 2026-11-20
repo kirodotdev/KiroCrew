@@ -536,8 +536,24 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     applies it to the stubs it places itself, and without it a stub the spec never
     references would reach pi beside a spec confirmed as consumed. A non-member
     session records none, so its stubs are unchanged.
+
+    A crewmate's WORKER session on pi (``members.is_crewmate_worker_session``) is
+    held the same way to the spec built for that session (the worker base plus its
+    crewmate's file, ``session_mcp._crewmate_worker_spec``): its servers are mounted
+    and, as a member session, its stubs pass that spec's allowlist. A worker whose
+    kit cannot be read, or whose crewmate's file sets single-tool limits or
+    ``hooks``, ``permissions`` or ``toolsSettings`` pi cannot carry, raises here
+    rather than running as plain chat, as a mirrored host's projection does.
     """
     records_zero_tools = projection_for(self.backend).kind is ProjectionKind.BROKER_ONLY
+    # A crewmate's WORKER session (see the docstring): positive identity, asked only
+    # on the BROKER_ONLY host (pi), so every other backend's path is unchanged (H13).
+    worker = False
+    if records_zero_tools:
+        # circular import: members' module graph is heavy; resolved at call time.
+        from kiro_crew.members import is_crewmate_worker_session
+
+        worker = is_crewmate_worker_session(self._session_key)
     if (
         not records_zero_tools
         and self.backend not in ACP_BACKENDS_MEMBER_DISPATCH
@@ -565,6 +581,10 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
             spec_policy_honoured=applies_spec_policy(self.backend),
         )
     except Exception:
+        if worker:
+            # A worker never runs without its kit: an unreadable kit, or single-tool
+            # limits this host cannot carry, refuse the session as on a mirrored host.
+            raise
         logger.warning(
             "member session %s: agent spec unreadable, so no member tools are "
             "mounted -- the DM thread runs as plain chat this session",
@@ -613,13 +633,15 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     # mounts. The spec servers lead, so the member mounts keep last-wins on a name
     # clash, as they do over a pooled stub. Scoped to the crewmate DM session the
     # gap is about -- the same ``is_member_session_key`` gate the member mounts
-    # above ride -- so an ordinary non-member pi session is unchanged, as it is on
-    # every other mirror-less path (the member mounts are already empty for it).
+    # above ride -- and to a crewmate's worker, whose projection above is its own
+    # per-session spec (``session_mcp._crewmate_worker_spec``), so an ordinary pi
+    # session is unchanged, as it is on every other mirror-less path (the member
+    # mounts are already empty for it).
     # circular import: members' module graph is heavy; resolved at call time.
     from kiro_crew.members import is_member_session_key
 
     out = members
-    if records_zero_tools and is_member_session_key(self._session_key):
+    if records_zero_tools and (worker or is_member_session_key(self._session_key)):
         out = self._broker_only_spec_mounts(projection) + members
     if records_zero_tools and self.backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
         out = _with_crew_connections(self, projection, out)

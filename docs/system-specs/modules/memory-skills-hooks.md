@@ -575,8 +575,8 @@ One pass runs at a time per gateway process, across every session and every
 incognito and persistence checks and before it takes the session's lease. A queued
 pass holds no lease and its key stays in `_running`, so a duplicate trigger for it
 stays a no-op. The gate is released first in the pass's `finally`. Without it each
-idle or ending session started its own multi-minute pass, and several at once in
-the process serving HTTP and the websocket starved the event loop.
+idle or ending session would start its own multi-minute pass, and several at once in
+the process serving HTTP and the websocket would starve the event loop.
 
 For V2, `VectorMemoryStore.apply_consolidation` is the publication boundary.
 The original transcript snapshot determines a stable source span; the caller
@@ -607,10 +607,10 @@ maintenance and cannot hold the write lock during provider inference. Before a
 retry calls a provider, a committed receipt recovers a lost transcript progress
 acknowledgement and leaves later appended messages pending.
 
-Display-only rows (`history_projection.DISPLAY_ONLY_ROLES`, the `notice` role)
-never reach a consolidation or skill-detection prompt: they are drawn for the
-person reading the transcript, and the Slack thread-parent notice carries
-untrusted text. They stay in the snapshot, and a span holding nothing else
+Display-only rows (`history_projection.DISPLAY_ONLY_ROLES`, the `notice` and
+`card` roles) never reach a consolidation or skill-detection prompt: they are
+drawn for the person reading the transcript, the Slack thread-parent notice
+carries untrusted text, and a `card` row's state belongs to the card store. They stay in the snapshot, and a span holding nothing else
 costs no model call: a history pass marks it consolidated, while a
 skill-detection pass leaves the offset alone.
 
@@ -959,10 +959,10 @@ existing transcript's header probed on a worker thread and the mode copied in
 where it is missing or weaker (tighten-only, never creating a transcript).
 Serialized because the snapshot goes stale under live traffic: a reservation
 released after the snapshot restores the header and clears the row, and a stamp
-from the snapshot alone re-wrote the released mode into that header over a row
-that was gone -- which nothing loosens again (the sweep only tightens, from
+from the snapshot alone would re-write the released mode into that header over a
+row that is gone -- which nothing loosens again (the sweep only tightens, from
 rows; a later release of the same mode reads the stale stamp as its own
-`header_before`), so the thread's consolidation stayed refused for good. A flag
+`header_before`), so the thread's consolidation would stay refused for good. A flag
 tightened during the probe is re-stamped by the next pass, and a header that
 already records the mode costs no write (`needs_tightening`). The rows are
 capped at the module constant `session_map.PRIVACY_ROW_CAP` (the trackers' `PRIVACY_LRU_MAX`), held
@@ -985,8 +985,8 @@ through `run_in_memory_background_pool` (the `mc-membg` pool, which admits two
 consolidation passes at a time) because
 `_consolidate` runs on the gateway event loop, and a slow or hung embed inline
 would stall heartbeats, Slack, and the dashboard. It is not `mc-embed`: turn
-context (`build_message`) runs there, and a backlog of consolidation passes once
-held seven of its eight workers. The gateway's embedding backfill and member
+context (`build_message`) runs there, and a backlog of consolidation passes could
+hold most of its eight workers. The gateway's embedding backfill and member
 repair loops run on `mc-membg` too, on two threads of their own outside that
 admission, so a backfill that runs for hours never takes a consolidation worker
 and background memory work waits only for itself. An app's batch embed
@@ -1356,7 +1356,7 @@ What each `init()` leaves on disk:
 open, so an up-to-date file's schema step takes no write lock. If anything is pending it
 takes `BEGIN IMMEDIATE`, plans again under the lock, runs only what is still missing, and
 commits once; any error rolls the whole step back. A fresh file therefore pays one durable
-commit instead of one per DDL statement (#13732). The contract for every entry in
+commit instead of one per DDL statement. The contract for every entry in
 `_MIGRATIONS` and `MIGRATIONS_CREW`: no `db.commit()` and no `executescript`, which
 commits first. SQL migrations go through `memory_schema.execute_script`, which runs each
 statement inside the caller's transaction. A step that commits anyway fails the open at
@@ -1384,7 +1384,7 @@ parent, after the child has finished. `kirocrew doctor --reconcile-memory` runs 
 pass in the doctor process. Reconcile skips rows whose content hash is unchanged, and the history
 bound selects only records over `V1_ACCEPTED_REVISION_LIMIT` before it deletes anything.
 Under implicit transactions any DML takes the write lock even when it matches no row, so
-a steady-state open issues none and does not wait on another writer (#21056).
+a steady-state open issues none and does not wait on another writer.
 
 Reconcile does not re-hash every row on every start. A completed full pass installs four
 triggers (`memory_reconcile_<relation>_ins` / `_upd`, on the relation, or on `memory_items`
@@ -2427,12 +2427,12 @@ second name. A steering document on those same paths whose bytes are not UTF-8 t
 (for example UTF-16, or an ANSI code page with non-ASCII text, as Windows PowerShell
 5.1 writes by default) is left out and named in that same note, and the same two
 readers skip it. A steering document on those same paths that is over the per-file
-read cap (`_MAX_SOURCE_BYTES`, 256,000 bytes) is left out the same way, whatever its
+read cap (`_MAX_SOURCE_BYTES`, 260,000 bytes) is left out the same way, whatever its
 `inclusion` mode, because the read comes before the frontmatter is parsed: nothing
 past the cap is read, the snapshot names the file with its size and the cap in one
 core `essential-context#oversized-skipped:<template>` note, and the KAS document
 reader and `kiro_launch_documents` skip it with a warning. It is never truncated:
-a file that size could not fit the 64,000-character envelope whole, and a prefix
+a file that size could not fit the 65,000-character envelope whole, and a prefix
 would present partial rules as complete. Steering past the 64-document cap (`_MAX_DOCUMENTS`) is left out unread instead of refusing the turn: steering is admitted in sorted order once its `inclusion` is known, so a conditional file that is not loaded takes no slot and the first steering documents that load fill the cap, a member's own source (persona, `SOUL.md`, declared resource, context settings) takes the last kept non-core steering file's slot, and one core `essential-context#over-cap-skipped:<template>` note counts and names what was left out; the KAS document reader and `kiro_launch_documents` count only the always-included steering they keep. A steering document whose `inclusion` value
 is not `always`, `fileMatch`, `manual` or `auto` reads as `always` in the snapshot,
 the KAS document reader and `kiro_launch_documents` alike (`_steering_inclusion`),
@@ -2461,7 +2461,7 @@ on a schedule or turn count, and does not assert that every native trim path
 emits a notification; which paths do is recorded per backend in
 [providers](providers.md#native-harness-notifications-relied-on).
 
-They have a separate 64,000-character envelope, including wrappers and identity.
+They have a separate 65,000-character envelope, including wrappers and identity.
 The envelope is split into a core -- identity, the template persona prompt,
 `SOUL.md`, the template context settings, a guide-not-loaded note,
 `preferences.md`, `projects.md` and the on-demand memory note -- and guides:
@@ -4002,7 +4002,7 @@ The canonical command and flag inventory is in the [CLI spec](cli.md#member-memo
 
 **Empty index is not absence.** `MemoryStore.index_row_count()` returns the FTS row count, or `None` when the index cannot be read, so a caller can separate three states that `search` collapses into one empty list: unreadable, empty, genuinely no match. An unbuilt or unreadable index is reported as such rather than as "no match".
 
-**No agent-facing tool.** The index is reachable from the CLI only. An MCP tool that reads memory on demand would have to enforce the temporary-session read boundary itself, and that boundary is not readable from an out-of-process stdio server: `memory_mode` lives on the dashboard's `SessionSlot`, while Slack and Telegram carry it in `privacy_mode.is_temporary`, and a temporary Slack thread writes no transcript metadata at all. Exposing the index to agents needs a governance capability scope, the way `learn_add` gates durable writes through `capabilities.memory_writes`, and that is left to separate work.
+**No agent-facing tool.** The index is reachable from the CLI only. An MCP tool that reads memory on demand would have to enforce the temporary-session read boundary itself, and that boundary is not readable from an out-of-process stdio server: `memory_mode` lives on the dashboard's chat slot (`_ChatSlot`), while Slack and Telegram carry it in `privacy_mode.is_temporary`, and a temporary Slack thread writes no transcript metadata at all. Exposing the index to agents needs a governance capability scope, the way `learn_add` gates durable writes through `capabilities.memory_writes`, and that is left to separate work.
 
 ### Migration (`migrate_from_markdown`)
 
@@ -4281,8 +4281,8 @@ route reports them as `superseded`, the same as a vector-store supersede.
 The distinction matters because two outcomes mean "your lesson did not land"
 (`refused`, `deduped`) while two mean "your lesson is fine, there was nothing to do"
 (`unchanged`, and the kept-clause variant) — a caller reading only a bool cannot tell
-them apart, and the `learn add` CLI guessed wrong, writing a second `lessons.jsonl`
-record on every one of them.
+them apart, and a `learn add` CLI that branched on the bool would write a second
+`lessons.jsonl` record on every one of them.
 
 `superseded` exists because every other field describes what happened to the SUBMITTED
 lesson, so without it a write that tombstoned a stored rule would report a bare
@@ -4312,12 +4312,12 @@ verbatim; with a string selector the replace path names `learn_remove` with that
 the `learn_list` wording. The `semantic_similarity` reply still never suggests
 removing the protected lesson.
 
-**The result's truth value is the old bool, deliberately.** `bool(result)` is `wrote`,
-byte-for-byte the predicate the previous `-> bool` return answered, so the three callers
-that only branch on success (`history.py` consolidation counting, the
+**The result's truth value is `wrote`, deliberately.** `bool(result)` is `wrote`,
+the predicate a bare `if` on the result asks, so the three callers
+that only branch on success (`history_consolidation_memory.py` consolidation counting, the
 `vector_memory` migration loop, the task runner discarding it) and the bare
-`assert store.write_lesson(...)` assertions in the tests are semantically unchanged. That is what
-allowed the bool to be REPLACED rather than kept beside a second reporting method:
+`assert store.write_lesson(...)` assertions in the tests keep their meaning. That is what
+lets one result type carry the detail rather than a second reporting method beside a bool:
 without `__bool__`, an ordinary return object is truthy by default, so every positive
 bare assertion would keep passing while asserting nothing — a silent hazard mypy cannot
 flag, since a bare `if` on any object is legal. `stored` is the separate property for
@@ -4337,7 +4337,7 @@ dashboard request, else the author of the latest user turn in the calling sessio
 turn whose agent called `learn_add`), else no one. A known writer is stored on the row as
 `written_by` (`{id, kind, name}`, no issuer, subject or login) by both stores; an
 exact-rule enrichment names the person who changed it last. A row with no writer, which
-every lesson written before this field carries, keeps its old shape and reads as before.
+includes every lesson written before this field existed, carries no `written_by` key.
 The field is a label; no read path gates on it. The size gate measures it at its
 serialized size, so it never shrinks the rule capacity. A write that superseded lessons
 is audited and, in a shared Crew, announced (see Shared Crew,
@@ -4428,13 +4428,13 @@ Crossing a startup budget trims only complete lesson entries, never a partial ru
 
 **`applies` is AUTHORED, never derived, and that is the whole reason it is stored.** No property of a stored row separates "a rule the user wants enforced in every session" from "something we worked out once". `source` does not: the consolidator can extract a real safety correction, and a human can type a note about last week's outage. `category` does not: its three values describe subject matter. Keyword shape does not: "always" appears in both classes and reliably in neither. A reader that guessed from any of those would re-decide the user's intent on every turn, and would fail silently in the direction that costs most. So `normalize_lesson_applies` accepts only the two literals, RAISES on a misspelling at the write path (there is no safe clamp — one choice injects a note into every session, the other demotes a standing rule, and both are silent), and treats an omitted value as the supported choice to leave the row unstated. The read path never raises: a hand-edited or future-schema value reads as unstated so one bad row cannot abort prompt assembly for every other lesson. The field is additive and absent when unset in BOTH stores -- the vector writer omits the key, and the JSONL writer drops a `None` through `_serializable` rather than emitting `"applies": null`, which would rewrite every legacy line on the next save and make the two stores disagree about what absence means -- so an unstated row is byte-identical to what the writer produced before the field existed; on the enrich path it is WRITE-ONCE like `category` and `repo_scope`, so enrichment cannot silently demote a rule. Re-tiering is its own call, `update_lesson_applies` (`PATCH /api/lessons`, the `learn_update` tool): it rewrites only that field on the one row the exact delete would select, under the row's own key, so its source, confidence, `created_at` and vector stay, and it writes nothing when the caller's `current` tier (`always` also standing for an unstated row) no longer matches or the body changed before the write. Setting `always` on an unstated row writes the authored tier, which `learn_list` renders the same and the rule tier then orders among the authored rules. On the JSONL fallback re-tiering stays a delete + re-add.
 
-**The compatibility limit is real and is not papered over.** A store whose lessons all predate `applies` gets its reduction from the budget alone, not from classification: every row is unstated, so they all compete for the rule budget and the overflow notice is what tells the user which ones did not fit. Classification only starts helping as new lessons are written with a stated value. "Retain an unbounded number of unstated rules" and "a small fixed startup budget" cannot both hold; this is the side that was chosen, and the notice is the mechanism that keeps the trade visible instead of silent. No existing row is rewritten, reclassified or deleted by this change.
+**The compatibility limit is real and is not papered over.** A store whose lessons all predate `applies` gets its reduction from the budget alone, not from classification: every row is unstated, so they all compete for the rule budget and the overflow notice is what tells the user which ones did not fit. Classification only starts helping as new lessons are written with a stated value. "Retain an unbounded number of unstated rules" and "a small fixed startup budget" cannot both hold; this is the side that was chosen, and the notice is the mechanism that keeps the trade visible instead of silent. No stored row is rewritten, reclassified or deleted to assign a tier.
 
 Vector scoring builds one scorer per query (`_stored_similarity_scorer`) so the query vector and its norm are derived once instead of once per lesson — the same hoisting `_sqlite_vector_search` does for episodic rows. There is a numpy path and a stdlib fallback, because numpy is guarded by `_HAS_NUMPY`; both produce the same ranking. Stored lesson vectors are un-normalized (unlike episodic vectors, which are L2-normalized for FAISS inner-product scoring), so both norms are divided out per row rather than assuming unit length. A row whose vector has a different dimensionality than the query — a row written under a previous embedding model — is incomparable and scores 0.0, matching `_sqlite_vector_search` and `HybridRetriever._cosine_similarity`, rather than being truncated against the query's leading elements.
 
 ### Recurring tool failures (`failure_recurrence.py`)
 
-A source of CANDIDATE lessons, not a writer of them (#35330). `scan(log, now=, window=)`
+A source of CANDIDATE lessons, not a writer of them. `scan(log, now=, window=)`
 reads `tool_invocation` rows from the security event log with one bounded `recent()`
 call covering the current window and the one before it, and `find_recurring()` groups
 the failed ones (`denied`, `rejected`, `blocked`, `failed`, `failure`, `error`,
@@ -5046,7 +5046,7 @@ revalidation (a new list object), not on the very next read. The owner roots are
 resolved once per catalog TTL (`_owner_roots`), and until a walk vets the stored rows a
 flat row's saved metadata answers its `app:` line while its stat fingerprint matches,
 as `list_skills` already caches it (`_prime_gate_frontmatter`): a restarted process
-reads and vets only the files the index holds no current row for (#29801).
+reads and vets only the files the index holds no current row for.
 
 **Trust verbs.** `GET/POST/DELETE /api/skills/-/trust`, registered before the
 `/api/skills/{name}` catch-all. All three require the configured dashboard owner: the
@@ -5138,8 +5138,8 @@ dot-link, never a skill, stays quiet. A symlink deeper inside a loaded skill is 
 skill's own structure and is not named, and a nested skill directory whose own
 `SKILL.md` is a symlink is skipped silently — only a top-level linked child is named.
 
-**One enforcement point for every enumerated read.** Enumeration is cached, and now
-also PERSISTED across processes (see *The catalog snapshot*), so a path vetted while
+**One enforcement point for every enumerated read.** Enumeration is cached and
+PERSISTED across processes (see *The catalog snapshot*), so a path vetted while
 genuine can be replaced by a link out of the granted directory before anything reads
 it — over a longer window than an in-memory TTL alone implied — and the root that made
 it acceptable is only known at enumeration
@@ -5149,8 +5149,8 @@ read: it re-checks that root on the *descriptor it opened* (`O_NOFOLLOW` + `fsta
 on the path string. Both the body read and the frontmatter/metadata read go through it,
 and a guard test fails if either stops doing so.
 
-That guard exists because the two drifted apart once: the body read was hardened while
-the metadata read of the same cached paths stayed unchecked, which is not a cosmetic gap
+That guard keeps the two together: a hardened body read beside an unchecked metadata
+read of the same cached paths is not a cosmetic gap
 — frontmatter `description` is rendered verbatim into the injected skills index, and
 `triggers` / `always` / `inject_on_trigger` decide what loads on every turn. A path with
 no recorded root (the global skills dir, `extra_paths`, edition roots) is read
@@ -5183,8 +5183,8 @@ prompt; that warning is bounded by an `lru_cache` on the path (`_warn_html_skill
 entries) rather than by a stat fingerprint. Left to propagate,
 one UTF-16
 file (PowerShell's default `Out-File` encoding, which opens with `0xFF`) would take the whole
-index with it: `GET /api/skills` answered 500 and every chat turn's context build
-failed. The warning is bounded once per (file, stat fingerprint, problem) — because the listing runs on every turn and a failed read
+index with it: `GET /api/skills` would answer 500 and every chat turn's context build
+would fail. The warning is bounded once per (file, stat fingerprint, problem) — because the listing runs on every turn and a failed read
 is never cached, so an unchanged bad file does not repeat while a re-saved one earns a
 fresh line. The fingerprint is a stat taken when the read fails, in every reader, not
 the one the catalog walk cached: between walks that one is stale, and keyed on it the
@@ -5195,11 +5195,11 @@ same failure at its own call site. Every SKILL.md byte read decodes as `utf-8-si
 UTF-8 file saved with a byte-order mark is valid UTF-8 whose leading U+FEFF is not
 content, and left in it sits before the `---` fence so the column-0 grammar finds no
 block and the mark lands in the injected body; the codec strips one leading mark and
-is otherwise plain UTF-8, so a file without one decodes exactly as before and a file
+is otherwise plain UTF-8, so a file without one decodes as plain UTF-8 and a file
 that is not UTF-8 still raises under the strict read. Stored metadata rows are derived
 from that decode, and the index reuses a row while the file's stat fingerprint is
-unchanged, so the decoder change moves the index schema version: an index written by
-the previous decoder is dropped and rebuilt once, instead of serving a byte-order-marked
+unchanged, so the decoder is part of the index schema version: an index written under
+another decoder is dropped and rebuilt once, instead of serving a byte-order-marked
 file's frontmatter-less row across restarts.
 
 Confined metadata is byte-limited by `PROJECT_SKILL_BODY_CAP` before decoding or
@@ -5332,7 +5332,7 @@ question-and-answer chain.
 `.github/ISSUE_TEMPLATE/feature_request.yml` asks for the same chain in a
 required "Why does this matter? (5 Whys)" field, whose description names first
 principles so an agent filing through the form questions the request rather than
-restating it (#33078). Bug reports skip the chain.
+restating it. Bug reports skip the chain.
 
 Both copies draft the issue body in the shape GitHub gives a form issue: one
 `###` heading per field of `feature_request.yml` or `bug_report.yml`, spelt as
@@ -5344,12 +5344,12 @@ sends its issue-first step through this skill's draft step.
 
 **`GET /api/skills` coalesces concurrent readers onto one scan, and stores nothing.**
 The catalog assembly is filesystem-heavy (`os.walk` plus per-file frontmatter reads, package
-path globs, per-skill resolve/read, agent annotation), and the defect this addresses is that
-N simultaneous skill-menu opens each paid for their own scan. `_assemble_skills_catalog` in
-`dashboard/handlers/prompts_skill_catalog.py` fixes that with single-flight coalescing: the first reader
+path globs, per-skill resolve/read, agent annotation), so N simultaneous skill-menu opens
+must not each pay for their own scan. `_assemble_skills_catalog` in
+`dashboard/handlers/prompts_skill_catalog.py` applies single-flight coalescing: the first reader
 assembles, readers queued alongside it take those rows instead of scanning again. Measured
-against a counting assembler, 8-way concurrency goes from 0% to 87.5% redundant-scan
-elimination — eight opens cost one scan.
+against a counting assembler, eight concurrent opens cost one scan (87.5% of the
+scans are eliminated).
 
 **There is no stored result and no TTL, and that is what makes the invariant cheap.** The
 leader's rows are offered only while another reader for the same key is still inside
@@ -5383,7 +5383,7 @@ A builtin skill that moves (`_RELOCATED_SKILLS`) has its old copy quarantined by
 the sync, and `agent.migrate_relocated_skill_uris` points every agent spec that
 mapped the old path at the new one, so the move needs no manual re-map
 ([agent-spec-fields](../../../src/kiro_crew/docs/agent-spec-fields.md#resources)). A `$<old-name>` reference (a saved hook's, an AGENTS.md line's) keeps resolving to the new skill through `_RELOCATED_SKILLS`, but only when no installed skill holds that name, so an ambiguous leaf stays unresolved. An old directory reached through a link or junction is never quarantined; the linked copy is left untouched with a warning.
-A builtin dropped from the package (`kirocrew-codebase-refactor`) is listed with
+A builtin dropped from the package (`kirocrew-dev/kirocrew-codebase-refactor`) is listed with
 the sync's stale builtins, so an unchanged installed copy is parked beside itself
 in its family directory; a link anywhere on a nested name's path is left alone.
 
@@ -5470,8 +5470,8 @@ against `repo_scope`. Bounded global reads use
 sensitive-path, descriptor identity and hardlink checks while allowing validated
 provider links. One hardlink is admitted, on content: a hardlinking installer (uv's
 default on Linux and Windows) gives every installed package file `st_nlink > 1`, so
-a built-in app skill symlinked into the tree by `apps.bridges._register_skills`
-listed but never loaded, and an `always: true` one raised
+without this a built-in app skill symlinked into the tree by `apps.bridges._register_skills`
+would list but never load, and an `always: true` one would raise
 `SkillContextCapacityError` on every session start. `_read_global_skill_text`
 therefore passes `admit_hardlinked=_installed_package_bytes_match`: a hardlinked
 file loads only when it is a `SKILL.md` the owning distribution's `RECORD` lists
@@ -5522,7 +5522,7 @@ for native view and inherited steering behavior.
 inheritance switch above does nothing there: KAS offers every skill under
 `~/.kiro/skills` and the workspace's `.kiro/skills` on top of the injected
 agent's `resources`. Measured on kiro-cli 2.35.1 with a spec that maps 3 skills,
-42 of them global: 45 on KAS before this rule, 3 through Crew's kiro-cli path
+42 of them global: 45 on KAS without this rule, 3 through Crew's kiro-cli path
 (`chat.disableInheritingDefaultResources` on), 45 on a bare `kiro-cli acp --agent`
 with inheritance left on. The `customAgents` wire has no inheritance field, but
 KAS removes a skill its policy denies under the `skill` capability from what its
@@ -5598,8 +5598,8 @@ spec Kiro Crew generates for itself counts as a custom template under that rule,
 each generated agent whose prompt names a skill carries a `skill://` entry for it,
 written by `agent_materialization/skill_resources.py` from `skills_dir()` at
 install time and merged into whatever `resources` already hold. Without it those
-agents searched an empty scope and could not find the operating procedure their own
-prompt told them to read. An
+agents would search an empty scope and could not find the operating procedure their own
+prompt tells them to read. An
 unsigned caller searches the global installed catalog, without borrowing a session.
 Search combines metadata and body term matches: query coverage first, then inverse
 term frequency, metadata coverage, usage and stable full key. This prevents common
@@ -5669,8 +5669,8 @@ skills are not scanned again for every explicit mapping.
 **Term index (`skill_search_index.py`, `SkillSearchIndex`):** metadata and body
 queries answer from a SQLite term index at `skill_search_index.sqlite3`
 (`SKILL_SEARCH_INDEX_FILENAME`, beside the usage ledger), not by reading files. Read
-from disk, the fallback cost one file read per skill on every call, so the query that
-needs the body most — one matching no metadata — was the one that read every
+from disk, a search would cost one file read per skill on every call, so the query that
+needs the body most — one matching no metadata — would be the one that reads every
 `SKILL.md` present, at a cost following total body bytes rather than the number of
 matches. Global metadata is persisted beside body terms with the same file identity
 fingerprint; a new loader can reuse both without reading unchanged skill files.
@@ -5705,10 +5705,10 @@ size, while keeping the warm path metadata-only. These properties are load-beari
   replaces the corpus-sized read. The exclusive upper bound is the term with its
   last code point incremented (skipping the surrogate block, `None` above the
   maximum), not a high sentinel: `\uffff` encodes as `EF BF BF` while an astral
-  character starts at `F0`, so a sentinel bound sorted BELOW the astral terms it
-  was meant to include. A query term strictly INSIDE a body word stops matching:
+  character starts at `F0`, so a sentinel bound would sort BELOW the astral terms it
+  is meant to include. A query term strictly INSIDE a body word stops matching:
   the query is tokenized the same way, so that case is a near-miss rather than a
-  hit — `rollback` no longer matches a body whose only occurrence is inside
+  hit — `rollback` does not match a body whose only occurrence is inside
   `scrollback`.
 - **One lock-guarded connection.** The connection is opened with
   `check_same_thread=False` and every public method takes an `RLock`. A skill
@@ -5721,7 +5721,7 @@ size, while keeping the warm path metadata-only. These properties are load-beari
   carrying the keys it declined and the subset its budget left pending, and
   `search_skills_report` returns the matches with that call's `incomplete` flag.
   The dashboard route and the MCP tool read the flag from the result. Kept on the
-  shared object, the flag was whatever the search that finished last wrote, so a
+  shared object, the flag would be whatever the search that finished last wrote, so a
   search with bodies still pending could report a complete answer.
 - **The tokenizer is part of the key.** Stored terms are `recall_terms` output, so a
   change in how it splits or normalizes leaves rows a new query can no longer match —
@@ -5790,8 +5790,8 @@ in the MCP process and credits nothing: that process's tally and the gateway's
 would overwrite each other in the one ledger file.
 
 **Direct reads.** The model reaches most skills by reading `SKILL.md` itself — a
-file-read tool, or `cat` in a shell — which bypasses the loader and so recorded
-nothing. Unrecorded, the ledger described one access route only, pushing
+file-read tool, or `cat` in a shell — which bypasses the loader. Left
+unrecorded, the ledger would describe one access route only, pushing
 search-discovered skills permanently down the ranking and making them harder to
 find still: a self-reinforcing bias, not a flat undercount.
 
@@ -5830,7 +5830,7 @@ partial one. A session reaches that layer by one of two transports — `AcpClien
 (one process per session) or `AcpSessionHandle` on the shared `AcpRuntime`
 process (kiro-cli, KAS, codex) — and both own one `acp/skill_reads.py`
 `SkillReadTracker` fed from their dispatch loops, so the credit a backend earns
-does not depend on the transport that serves it. Wiring only the client left
+does not depend on the transport that serves it. Wiring only the client would leave
 every shared-runtime read uncounted: the same route-dependent bias, by
 transport instead of surface. The per-surface permission gate
 (`HookManager.on_tool_call`) is NOT usable here: file reads are auto-approved and
@@ -5849,8 +5849,8 @@ whether it installed one so that path can log a miss instead of silently
 recording nothing.
 
 The read-intent allowlists (`_CONTENT_READ_TOOLS`, `_SHELL_READ_VERBS`) encode
-the provider's current tool spellings, so a rename would silently restore the
-pre-existing undercount. A call whose arguments clearly name a `SKILL.md` yet
+the provider's current tool spellings, so a rename would silently undercount
+those reads. A call whose arguments clearly name a `SKILL.md` yet
 yields no candidate is therefore logged at debug — the one signal that separates
 tool-name drift from a legitimately non-reading call.
 
@@ -5902,8 +5902,7 @@ puzzle. Paths go through ONE allowlist -- a segment matches
 writer's own `".." in rel_path` guard. The anchor is `\Z`, not `$`, because `$`
 also matches just before a trailing newline;
 `test_regex_anchor_contract.py` holds this package to that anchor. An allowlist rather than a refusal list
-because a refusal list is something review can keep extending: successive rounds
-named Windows-illegal characters, control characters, trailing dots and spaces,
+because a refusal list keeps growing: Windows-illegal characters, control characters, trailing dots and spaces,
 byte-versus-character limits, Unicode normalisation, reserved device names and
 component length, each a separate clause. Stating what is permitted ends that.
 Three rules survive beside it, for the cases the shape permits: `..` anywhere, a
@@ -5918,8 +5917,7 @@ the audit log and the error-code contract; the user reads `message`, which the d
 scrubs with `_redact_external` and caps at 300 characters. Search puts it on the provider's
 `provider_outcomes` entry as `message` (beside an optional `display_name`), install answers 502
 with `{error, code}`, and preview adds `error` to its empty shape. GitHub's rate limit names a
-relative wait from `Retry-After` or `X-RateLimit-Reset`. Branch tracking / re-sync is deliberately out of scope (#746 covers the
-adjacent design). Requests are unauthenticated (60/hour/IP), so private
+relative wait from `Retry-After` or `X-RateLimit-Reset`. Branch tracking / re-sync is deliberately out of scope. Requests are unauthenticated (60/hour/IP), so private
 repositories are not reachable. An installed skill's key comes from the provider, not from its id:
 `_slugify` lowercases and folds `/`, `@` and `:` all onto `-`, so it is not
 injective over these ids and `foo-bar` would share a key with `foo/bar`. The
@@ -6039,10 +6037,10 @@ would start its re-walk inside its own build. `_turn_admit` therefore calls
 `skill_read_ahead.read_beside_claim` for a turn that builds a session-start context
 and is not a slash command, just before the session claim, with the project the claim
 itself uses. The claim lasts seconds, and tens of seconds when the session starts many
-MCP servers, so a due re-walk ends long before the build begins. This is also why the
-build used to look slower with more MCP servers: nothing in the build reads a server
-declaration or grows with their number, but a longer claim puts more session starts
-past the list's lifetime, and each of those paid the re-walk inside its build. The
+MCP servers, so a due re-walk ends long before the build begins. Nothing in the
+build reads a server declaration or grows with their number, but a longer claim puts
+more session starts past the list's lifetime, and without this call each of those
+would pay the re-walk inside its build. The
 call shares the frame's one read in flight but not its floor, because a frame may have
 read a list seconds before it expired and the claim is the last moment before the
 build; a turn starts a session once, so it cannot repeat fast. It keeps nothing and
@@ -6488,18 +6486,17 @@ block alone. It does that by parsing the block with a real YAML parser (the `yam
 package, `parseDocument`), replacing the **source range** of each field it owns, and
 copying every other byte through unchanged.
 
-Two properties of that design are load-bearing, and both were paid for:
+Two properties of that design are load-bearing:
 
 - **The parser decides structure, not a line matcher.** What counts as a key, as a
-  continuation of a value, or as a comment comes from the YAML grammar. `#1790`
-  spent four review rounds proving the alternative cannot be finished — each
-  accepted continuation shape revealed another valid one (indented lines → block
-  scalars → indented keys → blank lines → indentless `- item` entries) — and the
-  case it still left open (`#1825`) was a top-level line that is not a recognized
-  `key:` and follows a modelled key. A line-based walk can only attach such a line
-  to the preceding key, so re-emitting that key from form state destroyed it: a
-  `# comment`, a quoted `"my.key"`, or a dotted key silently vanished during an
-  unrelated edit. Source ranges have no such gap — those lines are not
+  continuation of a value, or as a comment comes from the YAML grammar. A line
+  matcher cannot be finished: each accepted continuation shape reveals another
+  valid one (indented lines → block scalars → indented keys → blank lines →
+  indentless `- item` entries), and a top-level line that is not a recognized
+  `key:` and follows a modelled key is still left over. A line-based walk can only
+  attach such a line to the preceding key, so re-emitting that key from form state
+  would destroy it: a `# comment`, a quoted `"my.key"`, or a dotted key would vanish
+  during an unrelated edit. Source ranges have no such gap — those lines are not
   inside any modelled key's range, so they are copied where they stand.
 - **Untouched bytes are COPIED, never re-serialized.** `Document.toString()`
   normalizes: an indentless list comes back indented, a folded `>` scalar comes
@@ -6855,7 +6852,7 @@ inside URLs too; clean assets are copied byte-for-byte, including leading
 and trailing whitespace. No per-asset preview truncation is used for either the
 security decision or the copied content.
 
-**Dashboard endpoints**: GET/POST `/api/skills`, GET/PUT/DELETE `/api/skills/{name:.+}`. POST sanitizes name to lowercase + hyphens + slashes. The mutating verbs (POST, PUT, DELETE) are owner-only and SEL-audited — app tokens and non-owner subjects get a 403 before any write — and the same owner gate fronts pending approve/dismiss/dismiss-all, pin, and inject-on-trigger, so every mutating skill endpoint in `prompts.py` refuses non-owner callers (the discover-module install endpoint carries its own internal-secret refusal instead; see learn-cron-dashboard.md's Skills CRUD entry). The two open-standard territories are read-only through this endpoint (`READONLY_SKILL_KEY_PREFIXES` in `handlers/prompts_skill_edits.py`): PUT or DELETE on a `kiro-user/` or `kiro-workspace/` key answers 405 with `Allow: GET` and `code: readonly_skill_prefix`, and a POST whose *sanitized* name lands in either territory answers 400 with `code: reserved_skill_prefix`. A PUT or POST whose `content` is not a string answers 400 with `code: invalid_field_type` before any write. GET `/api/skills/{name}` returns `hash`, the sha256 of the returned SKILL.md text, and PUT takes it back as `base_hash`, using the prompts PUT's `base_hash` / `content_conflict` names, though here the base is optional and the PUT response carries no hash: a PUT without it writes unconditionally, a malformed one (not 64 lowercase hex) answers 400 `code: base_hash_required`, and when the file on disk differs from the base (an agent rewrote it, which sends the dashboard no push) the write is refused with 409 `code: content_conflict` (SEL-audited as rejected, reason `content_conflict`). A `base_hash` against a file the loader cannot read or refuses is not written and answers the ordinary 404. On all three verbs, a name nobody installed or the loader refuses (a rooted path, `.`, `..`) answers 404 `code: skill_not_found`, and so do the `/-/tree` and `/-/file` browse endpoints when no skill root resolves for the name. The compare and the write run together under one process-wide lock rather than through `verified_replace_file_nolink`: GET hashes the decoded text `load_skill` serves (BOM stripped, CRLF folded) while that primitive hashes raw bytes, and `update_skill` carries the skills root's pinned-directory, cache and hardlink handling; a successful PUT returns `{"ok": true}` with no hash, so the next edit base comes from a GET. On a conflict the Skills tab re-reads the file, shows its current text beside the kept draft and lets the user discard the draft or replace the file; the editor also re-reads SKILL.md when it opens rather than seeding from its page-lifetime cache (#13765). POST also bounds the sanitized name's length against `MAX_PROMPT_NAME_BYTES` and answers 400 with `code: name_too_long` before any write, measured on the whole name so that one bound covers a component past the filesystem cap, a joined path past `PATH_MAX`, and a nesting depth that would make `create_skill`'s `mkdir(parents=True)` recurse per level. Those keys resolve per-machine / per-session on read (`_resolve_skill_root`) while `create/update/delete_skill` join the key onto the core skills root, so a write would edit a different file than the reader was shown; GET is unaffected. GET `/api/skills` discovery (kirocrew `list_skills()` os.walk + frontmatter, `list_kiro_skills`, and the skill→agent annotation) is fully offloaded to the dedicated `discovery_executor` pool (`executors.py`) via `collect_skills_blocking`, so it never stalls the event loop past the loop-stall watchdog on large catalogs. The annotation is O(agents) — `annotate_skills_with_agents` parses the agent JSONs and pre-expands each agent's `skill://` globs once, then matches every skill against that in-memory set. Each distinct glob is canonicalised once per request: a prefix already spelled canonically skips the sensitive-path gate (POSIX), and any other prefix, every prefix on Windows, is judged by `validate_file_path(..., canonical_gate=True)`, which off the event loop answers inline with no `mc-pathres` submission, so the annotation does not cost one resolver round trip per glob (#32752). It takes the request's `project_dir` and resolves a workspace-relative glob (`skill://.kiro/skills/*`) against it — the cwd kiro-cli is launched in — so a `kiro-workspace` row is credited to a user-dir agent that declares the relative glob, as the runtime's `session_skill_globs` does (#15009). The discovery pool is deliberately separate from the reaper-critical `maintenance_executor` so browser-triggered scans can't starve the orphan sweep. When `?agent=<name>` names an agent whose `skill://` globs are non-empty (the filter is actually applied), the response is the envelope `{"skills": [...], "agent_scoped": true, "agent": <name>}` instead of the bare array; every unscoped path keeps the bare-array shape (see the fuller rationale in learn-cron-dashboard.md's Skills CRUD entry).
+**Dashboard endpoints**: GET/POST `/api/skills`, GET/PUT/DELETE `/api/skills/{name:.+}`. POST sanitizes name to lowercase + hyphens + slashes. The mutating verbs (POST, PUT, DELETE) are owner-only and SEL-audited — app tokens and non-owner subjects get a 403 before any write — and the same owner gate fronts pending approve/dismiss/dismiss-all, pin, and inject-on-trigger, so every mutating skill endpoint in `prompts.py` refuses non-owner callers (the discover-module install endpoint carries its own internal-secret refusal instead; see learn-cron-dashboard.md's Skills CRUD entry). The two open-standard territories are read-only through this endpoint (`READONLY_SKILL_KEY_PREFIXES` in `handlers/prompts_skill_edits.py`): PUT or DELETE on a `kiro-user/` or `kiro-workspace/` key answers 405 with `Allow: GET` and `code: readonly_skill_prefix`, and a POST whose *sanitized* name lands in either territory answers 400 with `code: reserved_skill_prefix`. A PUT or POST whose `content` is not a string answers 400 with `code: invalid_field_type` before any write. GET `/api/skills/{name}` returns `hash`, the sha256 of the returned SKILL.md text, and PUT takes it back as `base_hash`, using the prompts PUT's `base_hash` / `content_conflict` names, though here the base is optional and the PUT response carries no hash: a PUT without it writes unconditionally, a malformed one (not 64 lowercase hex) answers 400 `code: base_hash_required`, and when the file on disk differs from the base (an agent rewrote it, which sends the dashboard no push) the write is refused with 409 `code: content_conflict` (SEL-audited as rejected, reason `content_conflict`). A `base_hash` against a file the loader cannot read or refuses is not written and answers the ordinary 404. On all three verbs, a name nobody installed or the loader refuses (a rooted path, `.`, `..`) answers 404 `code: skill_not_found`, and so do the `/-/tree` and `/-/file` browse endpoints when no skill root resolves for the name. The compare and the write run together under one process-wide lock rather than through `verified_replace_file_nolink`: GET hashes the decoded text `load_skill` serves (BOM stripped, CRLF folded) while that primitive hashes raw bytes, and `update_skill` carries the skills root's pinned-directory, cache and hardlink handling; a successful PUT returns `{"ok": true}` with no hash, so the next edit base comes from a GET. On a conflict the Skills tab re-reads the file, shows its current text beside the kept draft and lets the user discard the draft or replace the file; the editor also re-reads SKILL.md when it opens rather than seeding from its page-lifetime cache. POST also bounds the sanitized name's length against `MAX_PROMPT_NAME_BYTES` and answers 400 with `code: name_too_long` before any write, measured on the whole name so that one bound covers a component past the filesystem cap, a joined path past `PATH_MAX`, and a nesting depth that would make `create_skill`'s `mkdir(parents=True)` recurse per level. Those keys resolve per-machine / per-session on read (`_resolve_skill_root`) while `create/update/delete_skill` join the key onto the core skills root, so a write would edit a different file than the reader was shown; GET is unaffected. GET `/api/skills` discovery (kirocrew `list_skills()` os.walk + frontmatter, `list_kiro_skills`, and the skill→agent annotation) is fully offloaded to the dedicated `discovery_executor` pool (`executors.py`) via `collect_skills_blocking`, so it never stalls the event loop past the loop-stall watchdog on large catalogs. The annotation is O(agents) — `annotate_skills_with_agents` parses the agent JSONs and pre-expands each agent's `skill://` globs once, then matches every skill against that in-memory set. Each distinct glob is canonicalised once per request: a prefix already spelled canonically skips the sensitive-path gate (POSIX), and any other prefix, every prefix on Windows, is judged by `validate_file_path(..., canonical_gate=True)`, which off the event loop answers inline with no `mc-pathres` submission, so the annotation does not cost one resolver round trip per glob. It takes the request's `project_dir` and resolves a workspace-relative glob (`skill://.kiro/skills/*`) against it — the cwd kiro-cli is launched in — so a `kiro-workspace` row is credited to a user-dir agent that declares the relative glob, as the runtime's `session_skill_globs` does. The discovery pool is deliberately separate from the reaper-critical `maintenance_executor` so browser-triggered scans can't starve the orphan sweep. When `?agent=<name>` names an agent whose `skill://` globs are non-empty (the filter is actually applied), the response is the envelope `{"skills": [...], "agent_scoped": true, "agent": <name>}` instead of the bare array; every unscoped path keeps the bare-array shape (see the fuller rationale in learn-cron-dashboard.md's Skills CRUD entry).
 
 **Skill browse containment** (`_resolve_skill_root` in `handlers/_shared_skill_roots.py`, `read_skill_file` in `handlers/_shared_skill_catalog.py`): the tree (`/api/skills/{name}/-/tree`) and file (`/api/skills/{name}/-/file`) endpoints serve any directory the resolver returns, so the resolver is the containment boundary. A candidate's *parent* must resolve at or under its own root (that is what rejects a symlinked intermediate directory), and so must the RESOLVED candidate itself — with two exceptions, both in `_leaf_is_contained`: `LEAF_SYMLINK_PREFIX` = `kiro-user/`, where an edition may install `~/.kiro/skills/<name>` as a link into its own tree; and a leaf whose resolved target is a directory an app DECLARES as a skill, because `apps.bridges._register_skills` symlinks each declared skill into the kirocrew skills root (flat AND `skills/<app>/` namespaced) with the target in the app's own tree — without that the browse side would be stricter than the loader and list skills in `GET /api/skills` that 404 when opened. The admissible set is the manifest's own `skills` entries, read through `bridges._registration_source` (the immutable package copy for a shipped builtin), NOT the app's root: an app tree also holds that app's data, tokens and rendered configs, and a link planted at `<root>/x -> <app>/data` must not serve them. The `package/` branch returns before that shared block, so it applies the same containment itself against the resolved `_edition_package_roots()` set — an edition packager can plant an escaping link in its own root like any other, and `package/` carries no allowance. Checking the parent alone for every prefix was a whole-filesystem read primitive: `<project>/.kiro/skills/x -> /etc` resolved to `/etc` and the endpoints enumerated up to `SKILL_TREE_MAX_ENTRIES` names and returned up to `SKILL_FILE_MAX_BYTES` per file from it, and `is_sensitive_path` is no backstop there (it is a `$HOME`-anchored credential denylist, not a containment check). A deliberate cross-checkout leaf link (`<project>/.kiro/skills/x -> ~/dotfiles/skills/x`) is indistinguishable from the exfiltration shape and is refused with it; the sanctioned way to browse a skill tree that lives elsewhere is `skills.extra_paths`, which makes that location a root of its own. `enumerate_skill_catalog`/`_collect_skills_under` carry the same per-prefix policy, because a key enumeration offers must be one the resolver accepts. File bytes then come from `hooks.safe_read_file_bytes_nolink(within_root=…)`, so containment holds on the opened descriptor rather than on a path resolved earlier: re-opening by name left a check-to-use window (an ancestor swapped for a symlink after the check) and no hardlink guard — `resolve()` does not follow a hardlink, so a link to a file outside the root passed the path check and was served. The root is passed as `within_root_is_canonical=True`, because it is already resolved: re-`realpath`ing it at read time would let the skill directory replaced by a link redefine the root it is being contained to. `list_skill_tree` walks by name, so a root replaced after admission is enumerated as whatever its name then denotes — filenames only, and the same exposure the rest of the by-name filesystem surface carries; holding the root across a traversal needs the walk itself to be descriptor-relative, which is a separate change. Every descriptor-level refusal answers one message (`access denied`, 403) rather than naming which guard fired. Refusals are already SEL-audited by the endpoints (`api_skill_tree` / `api_skill_file` outcomes), and the read is NOT trust-gated by design — reading a `SKILL.md` is how an operator decides whether to grant project-skill trust. A name the filesystem refuses for its length (`ENAMETOOLONG` from the resolver's `is_dir()`, or the Windows too-long codes) answers both endpoints with the same coded 400 `name_too_long` as `GET/PUT/DELETE /api/skills/{name}`, through `prompts_paths._is_path_too_long_error`, and is audited as `outcome=rejected`; every other `OSError` is unchanged.
 
@@ -7065,7 +7062,7 @@ reuse_count: 0                          # omitted when zero
 
 The client re-reads a candidate's detail every time its review opens (`staleTime: 0`), because an agent can rewrite the staged files and no push follows, and holds Approve disabled while that re-read is in flight or has failed; a failed read shows an error notice.
 
-**Two byte caps on the detail read, one per kind of file.** `get_pending_skill` reads the candidate's two DOCUMENT files, `SKILL.md` and `.meta.json`, under `_PENDING_DOCUMENT_MAX_BYTES`, and every file under `scripts/` under `MAX_SCRIPT_BYTES` (4 KiB, `skills_script_validator.py`), the per-file cap for a bundled EXECUTABLE script that the verdict walk and `validate_scripts` also apply. The document cap is derived from the generator's own limit rather than chosen: the procedure is bounded at `AUTO_SKILL_MAX_PROCEDURE_CHARS` characters and a UTF-8 character is at most four bytes, so the body alone may reach four times that limit, and the frontmatter around it (name, the one-line description and trigger list, the provenance fields, the heading) gets one more limit's worth of headroom, many times what the generator is asked for in those fields (a description of at most 150 characters, three to eight triggers); `.meta.json` repeats the description and triggers beside at most `_PENDING_SCRIPT_MAX_ENTRIES` script names and carries no procedure, so it fits under the same number. Staging bounds only the procedure (`AUTO_SKILL_MAX_PROCEDURE_CHARS`), so a candidate whose frontmatter or metadata runs past the headroom, or a `SKILL.md` or `.meta.json` written directly by the crystallize skill at any size over the cap, is refused by the document cap like any other over-cap document. Read under the script cap instead, every valid generated `SKILL.md` over 4 KiB (6,713 bytes in the report for issue #18715) answers `pending_skill_unreadable` and the panel holds Approve disabled for a candidate approve would promote; the document cap exists so that it does not. Both caps refuse the candidate WHOLE, through the same `pending_skill_unreadable` answer: the read is bounded by the pin, and a document over its cap is never served as a partial view. Approve applies both caps too: `approve_pending_as_read` reads the queued candidate through the same pinned read, so a candidate the detail read refuses is refused as `content_changed`. `list_pending_skills`'s row enumeration applies neither cap, and the list's `script_validation` verdict applies `MAX_SCRIPT_BYTES` to each script as its own section says.
+**Two byte caps on the detail read, one per kind of file.** `get_pending_skill` reads the candidate's two DOCUMENT files, `SKILL.md` and `.meta.json`, under `_PENDING_DOCUMENT_MAX_BYTES`, and every file under `scripts/` under `MAX_SCRIPT_BYTES` (4 KiB, `skills_script_validator.py`), the per-file cap for a bundled EXECUTABLE script that the verdict walk and `validate_scripts` also apply. The document cap is derived from the generator's own limit rather than chosen: the procedure is bounded at `AUTO_SKILL_MAX_PROCEDURE_CHARS` characters and a UTF-8 character is at most four bytes, so the body alone may reach four times that limit, and the frontmatter around it (name, the one-line description and trigger list, the provenance fields, the heading) gets one more limit's worth of headroom, many times what the generator is asked for in those fields (a description of at most 150 characters, three to eight triggers); `.meta.json` repeats the description and triggers beside at most `_PENDING_SCRIPT_MAX_ENTRIES` script names and carries no procedure, so it fits under the same number. Staging bounds only the procedure (`AUTO_SKILL_MAX_PROCEDURE_CHARS`), so a candidate whose frontmatter or metadata runs past the headroom, or a `SKILL.md` or `.meta.json` written directly by the crystallize skill at any size over the cap, is refused by the document cap like any other over-cap document. Read under the script cap instead, every valid generated `SKILL.md` over 4 KiB answers `pending_skill_unreadable` and the panel holds Approve disabled for a candidate approve would promote; the document cap exists so that it does not. Both caps refuse the candidate WHOLE, through the same `pending_skill_unreadable` answer: the read is bounded by the pin, and a document over its cap is never served as a partial view. Approve applies both caps too: `approve_pending_as_read` reads the queued candidate through the same pinned read, so a candidate the detail read refuses is refused as `content_changed`. `list_pending_skills`'s row enumeration applies neither cap, and the list's `script_validation` verdict applies `MAX_SCRIPT_BYTES` to each script as its own section says.
 
 The HTTP statuses and `code` values of the pending endpoints are tabulated under Skills → Dashboard endpoints above; this section fixes what the payloads MEAN.
 
@@ -7264,8 +7261,11 @@ deny blocked:
 | `spec-denies` | deny_policy | a KAS agent spec's `deniedCommands` / write `deniedPaths` that Crew reads itself: its own shell call a deny matches (whole or any leading piece; a chain `allowed_commands.chain_commands` splits, one command at a time, unless it holds `#` or `[[`), or write whose target, as written or symlink-resolved, a deny covers (`ToolCall.spec_denied_grant`) |
 | `spec-unjudged-denies` | deny_policy | a Bot worker's structured deny entries (`ToolCall.spec_unjudged_denies`, recorded for `kirocrew-mate-worker` only): non-read-only calls are refused for an unconditional entry, or a conditional entry without a definite no-match from the shared `spec_denied_gate.shell_denies_match` judge; raw rule text carries no flags. The Add-abilities pane names unconditional entries as `unenforced_denies` and conditional ones as `conditional_denies`, and the worker's session-start notice says it refuses such commands unless read-only |
 | `app-own-server` | grant | a first-party app agent (a builtin, or a former builtin adopted from its pin, `apps/builtin_adoption_gate.py`) calling its own declared MCP server |
+| `app-own-tools` | grant | a first-party app's OWN agent calling a tool that same app's manifest declares (`agentTools`, listed as `@kirocrew-core/<tool>`), by verified identity. Three facts must name one app: the gateway's stamp on the run (`facts.app` for a slot, or for a cron run the job's host-written `created_by` in `ToolCall.app_run`), the agent that actually ran (`_builtin_app_for_agent` on the resolved agent, never the slot's or job's agent name), and the app whose declaration lists the tool, read at the call (`app_agent_tools.declared_tools`, minus a core tool's name). The app must be readably enabled, and a `confirm_tools` pattern still asks. Any other tool, agent, app or an unstamped run keeps its card (`hooks._tier_app_own_tools`, `apps/own_agent_tools.gate_grants`) |
 | `app-browser-sites` | grant | an app's OWN dashboard slot (`facts.app` on a `dashboard:` session key; a subagent or channel session keeps its card) calling `@kirocrew-core/browser` by verified identity while the app is enabled, trusted and holds owner-approved `permissions.browserSites`, and, for a call that names a URL (`navigate`, `tabs` `new`), only one of those pages; a `confirm_tools` pattern still asks (`hooks._tier_app_browser_sites`, `apps/browser_sites.gate_grants`). The op route holds the session to the pages ([browser](browser.md#security)) |
 | `operator-grants` | grant | the operator's `auto_approve_tools` patterns, then the `auto_approve_tool_identities` grants against a verified identity only, unless a `confirm_tools` pattern names the call or the list is unknown |
+| `spec-builtin-grant` | grant | a built-in the KAS session's agent spec grants in `allowedTools` (or an unscoped `permissions` allow covers), which the projection kept at `ask` so it reaches this gate ([security](security.md)) |
+| `batch-guard-grant` | grant | an MCP tool the KAS agent spec auto-approves that KAS keeps at `ask` (a write the batch write guard holds, or a tool a PreToolUse hook holds) |
 | `read-only` | classify | the read-only classifier, except for an MCP call `confirm_tools` names (or any MCP call while the list is unknown) and a shell command that runs `git` at any command position (`readonly_bash.command_invokes_git`), which falls through to the surface's own approval; the only auto-approve under `classifier_only` |
 
 `classifier_only` skips every grant row (each grant body steps aside, after resolving the owner app as before). `gate_tier_problems` checks the table when
@@ -7289,7 +7289,7 @@ a new result or config type to `hook_types`.
 
 A script hook's `command` is a single shell command line stored in
 `~/.kiro/crew/hooks.json`. It runs in that platform's native shell language, and
-a hook is therefore **not portable across platforms**. A Hooks-page tool hook's matcher may list plain tool names separated by `|`, each matched on its own beside the whole matcher (`tool_identity._hook_matcher_alternatives`, read by the fire, the KAS hooks list and the KAS projection's coverage), so `fs_write|execute_bash` meets either tool and a call titled with the same text (the shell command `ls|wc`) still meets `ls|wc`. Read whole, `fs_write|execute_bash` is a literal naming no known tool, so the projection covers every gateable capability for it. A matcher holding a glob character (`*`, `?`, `[`) or a space is not split: its parts would meet calls its author never named (`*|sh*` would hold `*`). Spec hooks and `~/.kiro/hooks` files keep kiro-cli's matcher rules, which refuse `|`; the approve, deny and confirm lists keep `_tool_matches`, where a `|` meaning would widen a saved pattern. A stored PreToolUse hook's tool matcher is compared with every name the call is known by (`hook_dispatch.pre_tool_match_names`): its title, its trusted identity and the kiro-cli names the harness's own id for the call stands for, so `execute_bash` meets KAS's `run_command`, goose's `shell`, opencode's `bash` and claude's `Bash` (`acp/harness_tool_names.py`; on claude the id is the name the adapter stamps in `_meta.claudeCode.toolName`). `ScriptHookStore.fire` also runs a caller's never-persisted `extra_hooks` (an agent spec's own `hooks` on a backend that cannot run them, `agent_sdk/spec_hooks.py`) after the stored ones, through the same matcher, gate and spawn, in `extra_hooks_cwd` (the session's workspace), and their payload's `cwd` says so. An object-form spec hook's `max_output_size` rides on the in-memory `ScriptHook.max_output_size` (never saved, like `spec_origin`), and `run_script_hook` cuts that hook's stdout to that many UTF-8 bytes after redaction, with the truncation marker; `0`, the value for every other hook, leaves only the 64 KiB stream cap, which also clamps a larger value. Its `cache_ttl_seconds` is not honoured, and the conversion logs that once. Their tool matcher is written in kiro-cli's tool names, so the caller passes `extra_hooks_tool_names`, the names the harness's own id for the call stands for. An agent spec's own hook (`spec_origin` `user` or `project`) reads the stdin names kiro-cli's V2 engine, the one Crew runs on, gives every spec hook (`spec_hooks.kiro_cli_hook_payload`): a camelCase `hook_event_name`, `tool_name` as kiro-cli's full name (`shell`, `read`, `write`, `subagent`, or `@server/tool`), `tool_tags`, and `assistant_response` beside `assistant_text` on Stop. A `~/.kiro/hooks` file hook (`user_file`) was written for KAS and keeps the PascalCase event and the first `extra_hooks_tool_names` name; stored hooks keep their names too. `run_script_hook` asks the `events` governance check about the event in the store's PascalCase either way. A dashboard turn, a subagent run and a channel bot's turn (`messaging/tool_hooks.py`) pass them on PostToolUse as on PreToolUse (#25320): the id the call's permission request stated, else, for a call its frame classified as a shell command, KAS's shell tool (`spec_hooks.post_tool_hook_tool_id`), kept beside the call's canonical tool name and trusted MCP server so an `@server/tool` matcher still meets an MCP call (`spec_hooks.PostToolIdentity`, recorded per call in `_ChatTurn._pending_tool_ids` and the run's own map), because KAS's `tool_call` frame names no built-in tool and titles it in prose; a call nothing names keeps title matching. claude's `tool_call` frames carry no tool id either, so on claude, where Crew fires every spec hook event but PreToolUse (`ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`), a call that asked permission is named by the id its request stated (`claude#Edit` meets an `fs_write` matcher), and a call of kind `execute` that did not ask is named by the same shell fallback and meets an `execute_bash` matcher. codex is the other backend in that set alone. Under the `read-only` mode Crew sets, most codex calls ask no permission, so the `tool_call` event names the call itself (`harness_tool_id`, stamped by the session update parser and the direct client on codex only). The name comes from codex's row in `HARNESS_TOOL_TABLES` (`CODEX_TOOL_IDS_BY_KIRO_TOOL`, the model tools codex-acp 2.3.0 offers), read off what codex-acp writes and never off the title, which is a command or prose (`tool_call_identity.codex_tool_name`): a top-level `name` (`exec_command`, `write_stdin`), kind `edit` as `apply_patch` (codex's file change), kind `search` with `rawInput.type` `webSearch` as `web_search`, and kind `read` or `search` with no `rawInput`, or kind `execute`, as `exec_command`, since codex has no read or search tool and those are commands it parsed. So `codex#apply_patch` meets an `fs_write` matcher and `codex#exec_command` an `execute_bash` one (a `cat` included). `view_image` gets no name, because codex-acp reports it as one `tool_call` frame that is already `completed` and sends no update after it, so the turn gets no result to fire a PostToolUse hook on. An MCP call, which codex-acp also sends as kind `execute` but marks `_meta.is_mcp_tool_call`, gets no codex name, is classified as not shell and keeps its `@server/tool` names. A `postToolUse` matcher for a kiro-cli built-in outside the codex row (`fs_read`, `grep`, `glob`, `web_fetch`, `use_subagent`, `code`) meets no built-in codex call, so a new codex chat session gets a notice naming it, and a subagent, task-runner or cron turn names it as `hooks.postToolUse[<matcher>]` in the keys its notice lists (`spec_hooks.post_tool_matchers_no_builtin_meets`). Both notices say the hook still runs after an MCP tool with the same name, because the matcher meets an MCP call's bare tool name (`hook_dispatch.pre_tool_match_names`). Both fire PostToolUse once per call, on its terminal result (`tool_final`, or a status in `TERMINAL_TOOL_STATUSES`): a progress frame that carries partial output, as opencode sends, neither fires it nor retires the call's name. Every event kiro-cli runs a spec hook for (`agentSpawn` on the session's first turn, `userPromptSubmit`, `preToolUse` once per call at its permission request, `postToolUse`, `stop`) is pinned through a real `chat_runner._run_chat` KAS turn by `test_kas_spec_hooks_turn_loop.py`. The approval card adds no PreToolUse fire, for spec hooks and Hooks-page hooks alike: a call the gate (`HookManager.on_tool_call`) passes to the card had its PreToolUse fire at the gate, before the card, and approving the card does not fire it again (`_ChatTurn._pre_tool_hooks_fired`, set by that fire and reset at the start of every permission request's decision). On a backend in `ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS` that leaves one fire per call. On any other backend, kiro-cli among them, a Hooks-page hook also gets the informational fire on the call's `tool_call` frame (`dashboard/chat_turn/tool_rows.py`), so a call there that asks permission meets it twice, at the frame and at the gate. A deny-rules override card is drawn before the gate's fire and a host with no context builder never runs the gate, so those calls fire PreToolUse once, on the approval. The shells:
+a hook is therefore **not portable across platforms**. A Hooks-page tool hook's matcher may list plain tool names separated by `|`, each matched on its own beside the whole matcher (`tool_identity._hook_matcher_alternatives`, read by the fire, the KAS hooks list and the KAS projection's coverage), so `fs_write|execute_bash` meets either tool and a call titled with the same text (the shell command `ls|wc`) still meets `ls|wc`. Read whole, `fs_write|execute_bash` is a literal naming no known tool, so the projection covers every gateable capability for it. A matcher holding a glob character (`*`, `?`, `[`) or a space is not split: its parts would meet calls its author never named (`*|sh*` would hold `*`). Spec hooks and `~/.kiro/hooks` files keep kiro-cli's matcher rules, which refuse `|`; the approve, deny and confirm lists keep `_tool_matches`, where a `|` meaning would widen a saved pattern. A stored PreToolUse hook's tool matcher is compared with every name the call is known by (`hook_dispatch.pre_tool_match_names`): its title, its trusted identity and the kiro-cli names the harness's own id for the call stands for, so `execute_bash` meets KAS's `run_command`, goose's `shell`, opencode's `bash` and claude's `Bash` (`acp/harness_tool_names.py`; on claude the id is the name the adapter stamps in `_meta.claudeCode.toolName`). `ScriptHookStore.fire` also runs a caller's never-persisted `extra_hooks` (an agent spec's own `hooks` on a backend that cannot run them, `agent_sdk/spec_hooks.py`) after the stored ones, through the same matcher, gate and spawn, in `extra_hooks_cwd` (the session's workspace), and their payload's `cwd` says so. An object-form spec hook's `max_output_size` rides on the in-memory `ScriptHook.max_output_size` (never saved, like `spec_origin`), and `run_script_hook` cuts that hook's stdout to that many UTF-8 bytes after redaction, with the truncation marker; `0`, the value for every other hook, leaves only the 64 KiB stream cap, which also clamps a larger value. Its `cache_ttl_seconds` is not honoured, and the conversion logs that once. Their tool matcher is written in kiro-cli's tool names, so the caller passes `extra_hooks_tool_names`, the names the harness's own id for the call stands for. An agent spec's own hook (`spec_origin` `user` or `project`) reads the stdin names kiro-cli's V2 engine, the one Crew runs on, gives every spec hook (`spec_hooks.kiro_cli_hook_payload`): a camelCase `hook_event_name`, `tool_name` as kiro-cli's full name (`shell`, `read`, `write`, `subagent`, or `@server/tool`), `tool_tags`, and `assistant_response` beside `assistant_text` on Stop. A `~/.kiro/hooks` file hook (`user_file`) was written for KAS and keeps the PascalCase event and the first `extra_hooks_tool_names` name; stored hooks keep their names too. `run_script_hook` asks the `events` governance check about the event in the store's PascalCase either way. A dashboard turn, a subagent run and a channel bot's turn (`messaging/tool_hooks.py`) pass them on PostToolUse as on PreToolUse: the id the call's permission request stated, else, for a call its frame classified as a shell command, KAS's shell tool (`spec_hooks.post_tool_hook_tool_id`), kept beside the call's canonical tool name and trusted MCP server so an `@server/tool` matcher still meets an MCP call (`spec_hooks.PostToolIdentity`, recorded per call in `_ChatTurn._pending_tool_ids` and the run's own map), because KAS's `tool_call` frame names no built-in tool and titles it in prose; a call nothing names keeps title matching. claude's `tool_call` frames carry no tool id either, so on claude, where Crew fires every spec hook event but PreToolUse (`ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`), a call that asked permission is named by the id its request stated (`claude#Edit` meets an `fs_write` matcher), and a call of kind `execute` that did not ask is named by the same shell fallback and meets an `execute_bash` matcher. codex is the other backend in that set alone. Under the `read-only` mode Crew sets, most codex calls ask no permission, so the `tool_call` event names the call itself (`harness_tool_id`, stamped by the session update parser and the direct client on codex only). The name comes from codex's row in `HARNESS_TOOL_TABLES` (`CODEX_TOOL_IDS_BY_KIRO_TOOL`, the model tools codex-acp 2.3.0 offers), read off what codex-acp writes and never off the title, which is a command or prose (`tool_call_identity.codex_tool_name`): a top-level `name` (`exec_command`, `write_stdin`), kind `edit` as `apply_patch` (codex's file change), kind `search` with `rawInput.type` `webSearch` as `web_search`, and kind `read` or `search` with no `rawInput`, or kind `execute`, as `exec_command`, since codex has no read or search tool and those are commands it parsed. So `codex#apply_patch` meets an `fs_write` matcher and `codex#exec_command` an `execute_bash` one (a `cat` included). `view_image` gets no name, because codex-acp reports it as one `tool_call` frame that is already `completed` and sends no update after it, so the turn gets no result to fire a PostToolUse hook on. An MCP call, which codex-acp also sends as kind `execute` but marks `_meta.is_mcp_tool_call`, gets no codex name, is classified as not shell and keeps its `@server/tool` names. A `postToolUse` matcher for a kiro-cli built-in outside the codex row (`fs_read`, `grep`, `glob`, `web_fetch`, `use_subagent`, `code`) meets no built-in codex call, so a new codex chat session gets a notice naming it, and a subagent, task-runner or cron turn names it as `hooks.postToolUse[<matcher>]` in the keys its notice lists (`spec_hooks.post_tool_matchers_no_builtin_meets`). Both notices say the hook still runs after an MCP tool with the same name, because the matcher meets an MCP call's bare tool name (`hook_dispatch.pre_tool_match_names`). Both fire PostToolUse once per call, on its terminal result (`tool_final`, or a status in `TERMINAL_TOOL_STATUSES`): a progress frame that carries partial output, as opencode sends, neither fires it nor retires the call's name. Every event kiro-cli runs a spec hook for (`agentSpawn` on the session's first turn, `userPromptSubmit`, `preToolUse` once per call at its permission request, `postToolUse`, `stop`) is pinned through a real `chat_runner._run_chat` KAS turn by `test_kas_spec_hooks_turn_loop.py`. The approval card adds no PreToolUse fire, for spec hooks and Hooks-page hooks alike: a call the gate (`HookManager.on_tool_call`) passes to the card had its PreToolUse fire at the gate, before the card, and approving the card does not fire it again (`_ChatTurn._pre_tool_hooks_fired`, set by that fire and reset at the start of every permission request's decision). On a backend in `ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS` that leaves one fire per call. On any other backend, kiro-cli among them, a Hooks-page hook also gets the informational fire on the call's `tool_call` frame (`dashboard/chat_turn/tool_rows.py`), so a call there that asks permission meets it twice, at the frame and at the gate. A deny-rules override card is drawn before the gate's fire and a host with no context builder never runs the gate, so those calls fire PreToolUse once, on the approval. The shells:
 
 | | Shell | Env var in a command | Quote grouping |
 |---|---|---|---|
@@ -7875,7 +7875,7 @@ Merge rules (implemented in `_merge_kiro_hooks()` in `agent_materialization/kiro
 - Malformed entries (missing `command`, non-dict, non-list) are skipped with warning
 - Commands are validated via allowlist regex (`[a-zA-Z0-9/_.-]`), must be absolute paths to existing files, not in sensitive locations (`is_sensitive_path`); symlinks and path traversal are resolved before the sensitive-path check
 - Matcher values must be strings; non-string matchers are skipped
-- Matcher content is validated via allowlist regex (`[a-zA-Z0-9_.*-]`) with a 200-char max length; kiro-cli's MCP forms `@server` and `@server/tool` (tool part may glob with `*`) are also accepted, because kiro-cli documents both and an MCP-scoped hook otherwise never reached the spec (#29841)
+- Matcher content is validated via allowlist regex (`[a-zA-Z0-9_.*-]`) with a 200-char max length; kiro-cli's MCP forms `@server` and `@server/tool` (tool part may glob with `*`) are also accepted, because kiro-cli documents both and an MCP-scoped hook would otherwise never reach the spec
 - Only `command` and `matcher` fields are kept from user entries; arbitrary extra keys are stripped
 - Applied in both `build_agent_config()` (fresh install) and `_refresh_dynamic_fields()` (existing config refresh)
 - Re-applied without a restart by the owner-only `POST /api/kiro-hooks/rescan` (the Hooks page's rescan button), which calls `rebuild_agent_spec()`
@@ -8115,7 +8115,8 @@ request-supplied path or another active slot. The V1 notebook query reuses
 `memory_v2.terms` for CJK pairs and identifiers, strips question filler, and
 prefers lines matching at least half the remaining topic terms; when no line
 reaches that bar it admits lines sharing at least two distinct terms (one when
-the query has a single term), ranked by matches, so an older notebook line that
+the query has a single term), ranked by matches with ties in reverse path order
+(so the newest dated history file comes first), so an older notebook line that
 the old first turn showed unconditionally stays reachable from a natural
 question. A single shared word never admits a line on a multi-term query.
 English terms use quoted
@@ -8130,8 +8131,10 @@ when the rebuild yields no rows or the query still fails does it report
 `index_unavailable`, never a claim that no memory exists. V2 does not use the
 Markdown fallback. Both recall paths preserve truncated, cited evidence when
 a record exceeds its share. Repeated lessons do not reserve recall capacity.
-Merged V1 facts and episodes share query-coverage ranking, retaining a floor
-for already-admitted semantic evidence; lower-ranked tails are omitted first.
+Merged V1 facts and episodes share query-coverage ranking, each row scored on
+the text it returns (a notebook row on its snippet, not its whole file, with the
+same stemmed term match that admitted the file), retaining a floor for
+already-admitted semantic evidence; lower-ranked tails are omitted first.
 The complete response remains bounded to 3,000 context characters and 16,384
 transport bytes. This is lexical recovery, not translation or a guarantee that
 the model will call the tool. Notebook/history writes maintain the index;

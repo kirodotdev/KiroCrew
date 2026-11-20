@@ -254,6 +254,10 @@ app's tools do not get that approval, so an installed or registry app's block
 validates and installs but lists nothing yet. Until it does, ship an MCP server of your
 own (`mcpServers`); the user approves each of its calls.
 
+A listed tool is also called without an approval card by the app's own agents (the
+ones its `agents` declare), in the app's chats and in its cron jobs. An agent of
+another app, and any other tool your agent calls, asks as usual.
+
 ```json
 "agentTools": {
   "route": "agent-tools",
@@ -619,12 +623,11 @@ new glyph name by pull request.
 **The host owns the matcher; a manifest names one rather than supplying it.** The
 collected value is spliced into an instruction handed to an agent with tools, so it has
 to be checked before the prompt is built — but `kind` selects one of a fixed set the
-host implements, and there is no way to ship a regex of your own. An earlier revision
-of this contract accepted `argument.pattern`; a pattern from a manifest runs against
-the field on every keystroke on the thread that draws the launcher, and shapes like
-`^(a+)+$` or `^(a|aa)+$` are a few characters long and exponential, so an `argument`
-that still carries `pattern` is now REFUSED rather than migrated — leaving it to fall
-back on `text` would accept any non-empty string with `autoSend` still on. An unknown
+host implements, and there is no way to ship a regex of your own. An `argument` that
+carries `pattern` is REFUSED: a pattern from a manifest would run against the field
+on every keystroke on the thread that draws the launcher, and shapes like
+`^(a+)+$` or `^(a|aa)+$` are a few characters long and exponential. Falling back on
+`text` instead would accept any non-empty string with `autoSend` still on. An unknown
 `kind` is refused for the same reason.
 
 `kind: "url"` parses the value with the runtime's own URL parser and then applies
@@ -1900,7 +1903,7 @@ packages at all.
 | `permissions.spawn` | boolean | May start a background agent through the host's subagent manager (`ctx.spawn`) |
 | `permissions.jobs` | boolean | May run durable background work through `ctx.job` and the app-owned `_jobs/*` routes |
 | `permissions.bots` | string[] | Bot scopes, `"read"` and `"wake"`; any other entry is dropped. `read` lists the Bots the owner ticked for this app with their status and goals; `wake` sends one of them a fixed line the gateway writes. The owner ticks Bots in the app's detail page, and a fresh install reaches none. Also declare `/api/members` in `permissions.api`. A scope an update adds waits for the owner's approval. Never reaches a Bot's chats, briefing or rules. Called from the app's backend with its app token ([api-reference](api-reference.md#bots-permissionsbots-from-your-backend)) |
-| `permissions.proposeCrewmate` | boolean | **Preview, switched off**: `ctx.crewmate` stays `None` until the owner view that lists the cards lands (#21718). May propose one Bot from a `.crewmate` bundle through `ctx.crewmate`. Gates a real capability like `spawn`: `ctx.crewmate` is absent unless the value is literally `true`. Each proposal is an owner change card; only the owner's press creates the Bot ([api-reference](api-reference.md#bot-proposals-ctxcrewmate)) |
+| `permissions.proposeCrewmate` | boolean | **Preview, switched off**: `ctx.crewmate` stays `None` until an owner view lists the cards. May propose one Bot from a `.crewmate` bundle through `ctx.crewmate`. Gates a real capability like `spawn`: `ctx.crewmate` is absent unless the value is literally `true`. Each proposal is an owner change card; only the owner's press creates the Bot ([api-reference](api-reference.md#bot-proposals-ctxcrewmate)) |
 | `permissions.agentTurns` | boolean | May run agent turns on sessions keyed `<app>-<id>` through `ctx.turns`: every tool goes through the host's tool gate under this app's identity, and every turn is admitted as Crew automation. Gates a real capability like `spawn`: `ctx.turns` is absent unless the value is literally `true` ([api-reference](api-reference.md#agent-turns-ctxturns)) |
 | `permissions.chatSlots` | boolean | May open and drive dashboard chat slots keyed `<app>-<id>` through `ctx.chat_slots`: turns through the host's own chat runner under this app's identity, the slot's queue, stop, archive, transcript and the AutoNudge loops on those slots, never another slot. Shown at the trust prompt. `ctx.chat_slots` is absent unless the value is literally `true` (App Kit seam level 7, [api-reference](api-reference.md#chat-slots-ctxchat_slots)) |
 | `permissions.hiddenSessions` | boolean | Keeps the chats this app creates out of the session lists: the chat sidebar, the Sessions page, recently closed and Older sessions. The app creates such a chat with `mode` set to its own app id on `POST /api/chat/slots`, from its backend (app token, or `ctx.chat_slots.open(state, key, hidden=True)`) or its page (the SDK adds `embed_app`); any other mode is refused with `invalid_mode`, so it never hides another app's chat or yours, and an existing chat keeps its mode. Taken only while the app is installed, enabled and trusted, and only as the literal `true`; once that stops, its closed chats are listed in Older sessions again. Hides the list row only: the chat's approvals and questions still chime and notify like any chat's, and nothing is deleted. Open them from the app's page (an embedded `ChatPanel` shows its own bound chat). Shown at the trust prompt and on the app's detail page |
@@ -1909,7 +1912,7 @@ packages at all.
 | `permissions.reachableByUserSessions` | string[] | What the owner's own chats may do, through the session tools, to the sessions this app owns: `"read"` (`session_read_message`, `session_summary`) and `"send"` (`session_send`). Empty by default, which keeps every app session refused as `app_scoped_target`. Other entries are ignored. Shown at the trust prompt; an update that adds a verb waits for the owner's approval on the app's page. Only a persistent chat the owner opened is admitted, never an incognito, scheduled, agent-created, channel-linked or Bot session, and stop, close and revive stay refused ([session control](../system-specs/modules/session-control.md#app-sessions-the-owners-chats-may-reach)) |
 | `permissions.desktopCapabilities` | string[] | What the app's [desktop windows](#desktop--windows-and-global-shortcuts-in-the-desktop-app) may ask the desktop app for: `"screenCapture"` (be granted a screen through `getDisplayMedia`), `"localFiles"` (reveal a local file in the system file manager, open a local image in the system viewer) and `"gatewayChoice"` (list the operator's gateways, remote ones over SSH or SSM included, and load the app's windows from the one picked). Empty by default, which refuses all three. Other entries are ignored. Shown at the trust prompt and on the app's page; an update that adds one waits for the owner's approval there. The desktop app serves a capability only to a window of an app that declares it and whose owner approved it, and to a window loaded from another gateway only what the app also holds there. An app switched off on this computer keeps them in the windows a gateway chosen with `gatewayChoice` still serves it, so `screenCapture` and `localFiles` still act on this computer there |
 | `permissions.browserSites` | string[] | Pages your app's own agent may drive Crew's browser on without asking the owner at each step, at most 16. Each is an exact `https://` origin plus a path pattern: `https://www.youtube.com/watch`, `https://www.bilibili.com/video/*`. `*` matches any run of characters, `/` included; the query and fragment are not compared. The origin follows the `ui.frameSources` rules (no port, user info, wildcard, IP, `localhost` or public suffix); the path starts with `/` and has no `%`, `?`, `#`, empty, `.` or `..` segment. Install never approves them: the owner approves them on the app's page, and an update that adds one waits there. While the app is enabled, trusted and approved, only sessions your app owns get the `browser` tool without a card, and those sessions are held to these pages: opening another is refused, and a page that lands elsewhere is moved to `about:blank`. The agent types and clicks in a browser that holds the owner's logins on these pages. Your page's media buttons use [`useBrowserMedia`](api-reference.md), which needs `/api/browser/media` in `permissions.api` |
-| `permissions.browser` | string[] | What your app may do on the browser tabs of its own chat slots (RFC #38322): `"view"` (show the live view of its own slot and draw over it), `"read"` (read that page) and `"act"` (open pages, click and type there). Empty by default; other entries are ignored. Shown at the trust prompt, but install approves no verb: the owner approves each on the app's page, and an update that adds one holds that one back while the others keep working. Has an effect only while **App browser access** (`dashboard.feature_previews.app_browser_sdk`) is on; off, the app still installs and [`ctx.browser`](api-reference.md#browser-ctxbrowser) is absent |
+| `permissions.browser` | string[] | What your app may do on the browser tabs of its own chat slots: `"view"` (show the live view of its own slot and draw over it), `"read"` (read that page) and `"act"` (open pages, click and type there). Empty by default; other entries are ignored. Shown at the trust prompt, but install approves no verb: the owner approves each on the app's page, and an update that adds one holds that one back while the others keep working. Has an effect only while **App browser access** (`dashboard.feature_previews.app_browser_sdk`) is on; off, the app still installs and [`ctx.browser`](api-reference.md#browser-ctxbrowser) is absent |
 | `permissions.webhookSource` | boolean | Takes inbound webhook deliveries on the app's own routes, governed by the security policy's `webhooks` scope as the source named by the app's name ([`ctx.webhook_source`](api-reference.md#webhook-source-ctxwebhook_source), seam level 7). Absent unless the value is literally `true`; shown, with the source id, at the trust prompt. Grants no route or authentication of its own |
 | `permissions.exposeToApps` | string[] | App names (or `"*"`) allowed to request cross-app visibility into this app's slots/subagents |
 
@@ -2586,7 +2589,7 @@ before it runs your command, which is the same silent failure:
 - `name` must not be `library` (the dashboard serves `/apps/library` as a static
   page — the installed-app management surface — and it registers ahead of the
   `/apps/:name` route, so an app by that name would have an unreachable page).
-- `name` must not be `registry`, `registries`, `blob`, `install`, or `register`;
+- `name` must not be `registry`, `registries`, `blob`, `install`, `register` or `market`;
   those are shared literal segments beneath `/api/apps/`, registered ahead of the
   per-app catch-all. These reserved-name refusals use the machine-readable error
   code `reserved_app_name` at every install door.
@@ -2617,8 +2620,9 @@ before it runs your command, which is the same silent failure:
   directory (see [Credential masks](#credential-masks))
 - `agentReadOnlyDirs` must be an array of at most 32 paths relative to the app's data
   directory (see [Agent read-only directories](#agent-read-only-directories))
-- Each cron entry must specify either `every` or `cron_expr`, and at least one of
-  `agent`, `agent_sequence`, `message`, `command` or `script`
+- Each cron entry must have a `name`, must specify either `every` or `cron_expr`,
+  and at least one of `agent`, `agent_sequence`, `message`, `command` or `script`;
+  `command` and `script` are mutually exclusive
 - A non-empty `crons` requires `"cron": true` under `permissions`. Install,
   update and self-registration refuse the manifest otherwise; an app already
   installed keeps loading and firing its crons until its next update

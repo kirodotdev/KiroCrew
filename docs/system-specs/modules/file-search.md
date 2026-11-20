@@ -58,7 +58,7 @@ ordinary fuzzy search. `website/src/test/FilePickerMenu.specs.test.tsx` pins it.
 |---|---|---|
 | `q` | yes | Query string. Queries shorter than the accepted minimum return an empty result set; `test_short_query_returns_empty` pins the boundary. |
 | `project` | no | An existing, non-sensitive directory after `expanduser` and `realpath` canonicalization. It takes precedence over `workspace`; `api_file_search` enforces the root check and `test_project_scoping` pins its scope. |
-| `workspace` | no | Workspace name resolved through `workspace_dir_for` only when `project` is absent. A missing workspace does not establish scope, so `api_file_search` uses its fallback roots. |
+| `workspace` | no | Workspace name resolved through `workspace_dir_for` only when `project` is absent. A workspace whose directory does not exist is 404 `{"results": [], "error": "Workspace directory not found", "code": "workspace_not_found"}` rather than a fall-through to the fallback roots, which would return another directory's files. |
 | `kinds` | no | `all` (default), `files`, or `dirs`. Unrecognized values fall back to `all`. |
 | `limit` | no | Result page size. `api_file_search` normalizes it to a positive server ceiling; invalid input uses the default. The ceiling is load-bearing because candidate collection scales with the requested page size; `test_limit_clamped_at_server_ceiling`, `test_limit_non_integer_falls_back_to_default`, and `test_limit_negative_or_zero_clamped_to_floor` pin the contract. |
 
@@ -68,7 +68,7 @@ anyone else (403 `owner_only`, or 401 for a stale pre-owner session), because
 sensitive `project` is 403 `{"error": "Access denied", "code": "access_denied"}`; a
 `project` that is not a directory is 404
 `{"results": [], "error": "Project directory not found", "code": "project_not_found"}`.
-The short-query exit and the missing-project exit each write an `allowed` SEL
+The short-query exit and the missing-project and missing-workspace exits each write an `allowed` SEL
 record (`_audit_file_search_exit`), so a granted request never ends at the gate
 unrecorded; `test_file_search.py` and `test_owner_gate_file_readers.py` pin both.
 
@@ -215,7 +215,7 @@ this text", one row per file.
 
 Response: `{"results", "truncated", "engine", "skipped_docs", "root"}`. Each result
 is `{"file", "line", "preview", "label"}`; `line` is 0 for a document hit, which
-has no line to reveal, and `label` names a place inside the document (`p 2`,
+has no line to reveal, and `label` names a place inside the document (`page 2`,
 `slide 7`, `Costs · row 12`) or is empty where the format has none, as `.docx`
 does not.
 
@@ -315,7 +315,7 @@ slot because it holds its worker for the length of the search.
 Two paths produce results:
 
 1. **In-memory index fast path.** Used when the request resolves to one safe scoped root and that root's `FileIndex` is ready and untruncated. `api_file_search` selects it and `FileIndex.search` applies the `kinds` filter and ranking.
-2. **Per-request walk fallback.** Used otherwise. `api_file_search` gives files and directories independent scanned-entry and candidate budgets, scans files first at each level, and applies an independent directories-entered ceiling. The independent budgets prevent one kind from starving the other, while the traversal ceiling guarantees a narrow, deep tree terminates even after a kind's collector is done; `test_files_and_dirs_have_independent_scan_budgets`, `test_many_matching_dirs_do_not_starve_files`, and `test_walk_stops_at_overall_scan_ceiling` pin those invariants.
+2. **Per-request walk fallback.** Used otherwise. `api_file_search` gives files and directories independent scanned-entry and candidate budgets, scans files first at each level, and applies an independent directories-entered ceiling (`_WALK_MAX_DIRS_VISITED`) and a wall-clock budget (`_WALK_TIME_BUDGET_SECS`, sampled every `_WALK_DEADLINE_STRIDE` entries), so a slow store returns the partial set gathered before the deadline. The independent budgets prevent one kind from starving the other, while the traversal ceiling guarantees a narrow, deep tree terminates even after a kind's collector is done; `test_files_and_dirs_have_independent_scan_budgets`, `test_many_matching_dirs_do_not_starve_files`, and `test_walk_stops_at_overall_scan_ceiling` pin those invariants.
 
 ### Scope and containment
 
@@ -327,7 +327,7 @@ Both result paths exclude dot-prefixed **files**, directories named by shared `f
 
 ## Security
 
-Both file and directory candidates are resolved with `os.path.realpath` **before** the `is_sensitive_path` check, so a symlink pointing into a sensitive tree is rejected on its real path rather than its link path. `FileIndex._walk` and the fallback collector inside `api_file_search` must remain symmetric: a divergence would let a sensitive target be reachable as a file but not as a directory, or the reverse. Realpath here guards sensitive targets, not root containment; the scope rule above documents the deliberate boundary.
+Both file and directory candidates are resolved with `os.path.realpath` **before** the `is_sensitive_canonical_path` check, so a symlink pointing into a sensitive tree is rejected on its real path rather than its link path. `FileIndex._walk` and the fallback collector inside `api_file_search` must remain symmetric: a divergence would let a sensitive target be reachable as a file but not as a directory, or the reverse. Realpath here guards sensitive targets, not root containment; the scope rule above documents the deliberate boundary.
 
 ## FileIndex
 
@@ -346,7 +346,7 @@ per-request walk.
 
 ## Scope of this module
 
-This document covers discovery -- how the two endpoints and the index find
+This document covers discovery -- how the three endpoints and the index find
 files and directories by name and by content, and how the picker stages them in
 the composer -- and the folder reference lifecycle below.
 
@@ -484,7 +484,7 @@ shows literally — the same trade-off inline file mentions make.
 | `test/test_file_grep.py` | Engine parity, the stdin pattern channel, anchored exclusions, deadline-bounded extraction, row redaction |
 | `website/src/test/FileBrowserRail.test.tsx` | Toggle default and remount, request floor, status row, document note, project-switch invalidation |
 | `website/src/test/fileGrep.test.ts` | The wire call: path, URL-encoded `root`/`q`, body returned as-is, transport errors surface |
-| `test/test_file_index.py` | Index build, refresh, registry refcounting |
+| `test/test_file_index.py` | Index build, refresh, registry sharing, LRU eviction and walk-only verdicts |
 | `test/test_file_search_dirs.py` | Directory results, `kinds` filter, independent scan budgets, dirs-visited ceiling, symlink security |
 | `website/src/test/FilePickerMenu.dirs.test.tsx` | Folder rows, selection payloads, trailing slash |
 | `website/src/test/FilePickerMenu.specs.test.tsx` | Spec pick: lists `.kiro/specs/` (folders first, a loose file still pickable), names the project on each row, passes the typed prefix, inserts a folder mention, falls back to fuzzy search inside a spec or without a project |

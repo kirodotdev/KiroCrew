@@ -3,8 +3,8 @@ title: The work ledger drops the advisory goal item cap and its one-time notice
 status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-09
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: [33601]
 tracking-issues: []

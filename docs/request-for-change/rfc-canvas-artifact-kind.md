@@ -1,10 +1,10 @@
 ---
 title: Canvas artifact kind — a static whiteboard saved as JSON Canvas
-status: draft
+status: implemented
 author: dodgeblaster
 created: 2026-11-16
-last-audited: 2026-11-16
-audited-at: ff01b2edfb      # main; the implementation was read at #35618 head 0f92a3a4ca
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 38136
 implementation-prs: [35618]
 tracking-issues: [36836]
@@ -14,11 +14,13 @@ superseded-by: []
 
 # RFC: Canvas Artifact Kind — a Static Whiteboard Saved as JSON Canvas
 
-**Status:** draft. Nothing is on main. The whole implementation is open as
-[#35618](https://github.com/kirodotdev/KiroCrew/pull/35618), which passes every
-check and waits on this document: its review asked for a maintainer's design
-sign-off because the change adds a concept and a file format people will keep
-on disk. Acceptance is recorded in this document; #35618 merges after it.
+**Status:** implemented. The whole implementation,
+[#35618](https://github.com/kirodotdev/KiroCrew/pull/35618), merged on
+2026-11-19 after maintainer dodgeblaster recorded the owner decision on it
+([comment](https://github.com/kirodotdev/KiroCrew/pull/35618#issuecomment-6836361848):
+a FigJam-style canvas on an owned format). On main at `c157748343`:
+`canvas` in `ALLOWED_KINDS` and `.canvas` in `artifact_store/rules.py`, and
+the editor under `website/src/components/canvas/`.
 
 ## 1. Summary
 

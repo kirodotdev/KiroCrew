@@ -363,6 +363,41 @@ def _package_in_force(slug: str) -> tuple[instance.PinnedPackage | None, bool]:
     return instance.pinned_package(record), instance.keeps_older_package_rule(record)
 
 
+async def package_for_reader(
+    slug: str, member: str, *, named: str = ""
+) -> tuple[str, instance.PinnedPackage | None]:
+    """``(package slug or "", pinned page)`` in force for *slug*'s applied page.
+
+    ONE selection for every reader, so the page route and the others cannot drift.
+    *named* is a slug the caller asked for (``?dashboard=``); only an older record
+    serves it. A staged page is never a package: staging pins nothing. The caller
+    applies :func:`_name_unsafe` and answers a raised store error (:func:`_refusal`).
+    """
+    # WHICH PAGE IS IN FORCE is the instance record's to say. A record that pins a
+    # package is served from the gateway's own snapshot of the bytes the owner saved,
+    # so no later artifact write, delete-and-save or version pruning moves the page.
+    # A record that released packages serves its template copy. Only an older record
+    # keeps the rule of looking a package up by the crewmate's binding.
+    package_slug = named
+    pinned, older_rule = await _run(lambda: _package_in_force(slug))
+    if pinned is not None:
+        package_slug = pinned.slug
+    elif not older_rule:
+        package_slug = ""
+    if older_rule and not package_slug:
+        # Named by the crewmate's own binding, off the loop: it lists the artifact
+        # library. THE PACKAGE LINE'S OWN LOOKUP, one for every caller that asks.
+        package_slug = await _run(lambda: _bound_package_slug(member))
+        # ONLY A PAGE A PERSON CUT. A bound package with no such version is the
+        # crewmate's saved draft between `dashboard_save` and `dashboard_apply`, and
+        # the tab keeps the page it had -- the same answer the write check and the
+        # turn block give (`dashboard_agentic.has_person_cut_version`).
+        bound = package_slug
+        if bound and not await _run(lambda: dashboard_agentic.has_person_cut_version(bound)):
+            package_slug = ""
+    return package_slug, pinned
+
+
 async def _run(fn: Callable[[], Any]) -> Any:
     """Run a blocking call off the event loop: file IO, or work over a whole page."""
     return await asyncio.to_thread(fn)
@@ -505,34 +540,12 @@ async def _serve(
     #: caller that NAMES a package asked for that package and still gets it; the tab
     #: never sends both.
     staged_only = request.query.get("preview") == "1" and not package_slug
-    # WHICH PAGE IS IN FORCE is the instance record's to say. A record that pins a
-    # package is served from the gateway's own snapshot of the bytes the owner saved,
-    # so no later artifact write, delete-and-save or version pruning moves the page.
-    # A record that released packages serves its template copy. Only an older record
-    # keeps the rule of looking a package up by the crewmate's binding.
     pinned: instance.PinnedPackage | None = None
-    older_rule = False
     if not staged_only:
         try:
-            pinned, older_rule = await _run(lambda: _package_in_force(slug))
+            package_slug, pinned = await package_for_reader(slug, _member, named=package_slug)
         except Exception as exc:
             return _refusal(exc)
-        if pinned is not None:
-            package_slug = pinned.slug
-        elif not older_rule:
-            package_slug = ""
-    if older_rule and not package_slug:
-        # Named by the crewmate's own binding, off the event loop because it lists the
-        # artifact library. THE PACKAGE LINE'S OWN LOOKUP answers this -- one
-        # implementation of "which package is bound here" for every caller that asks.
-        package_slug = await _run(lambda: _bound_package_slug(_member))
-        # ONLY A PAGE A PERSON CUT. A bound package with no such version is the
-        # crewmate's saved draft between `dashboard_save` and `dashboard_apply`, and
-        # the tab keeps the page it had -- the same answer the write check and the
-        # turn block give (`dashboard_agentic.has_person_cut_version`).
-        bound = package_slug
-        if bound and not await _run(lambda: dashboard_agentic.has_person_cut_version(bound)):
-            package_slug = ""
     if _name_unsafe(package_slug):
         # A SLUG IS A NAME TOO, and it travels further than the others: the body carries
         # it twice, every pushed frame carries it, and the refetch answers with it. An

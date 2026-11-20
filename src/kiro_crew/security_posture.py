@@ -72,6 +72,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.
         "crewmate_bundle.py",
+        # The on-demand channel SDK installer: `redact_url` cuts pip's output and
+        # the index it names to scheme and host before they reach the gateway log
+        # and the install error, so a mirror credential in a URL is never logged.
+        # It is not an agent-output egress path.
+        "sdk_extras.py",
         # Pure helper: `_run_apply_child` redacts the tail of the boot-time
         # `kirocrew update` child's output before it is stored as the armed update's
         # `pending_apply_error`. It emits nothing itself; the dashboard status route
@@ -87,6 +92,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The no-tools notice row's agent name, redacted before the row is handed to
         # `append_and_surface`; the transcript broadcast is the registered sink.
         "dashboard/agent_no_tools_notice.py",
+        # Pure derivation: `shape_snapshot` takes the redactor as an argument
+        # (`redact`) and applies it to each bound field value before a widget block
+        # reads it; the module emits nothing. The widget routes that serve the
+        # snapshot are the egress.
+        "dashboard/widget_snapshot.py",
         # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
         # only caller is `notifications/bridge.py`, the registered sink that hands
         # the copy to a transport.
@@ -144,6 +154,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # used solely to name the offending field in the refusal, never emitted as
         # content, so this classifies a name rather than being an output boundary.
         "artifact_store/dashboard_package.py",
+        # Validator only, the same ground: a dashboard package's `widgets` refusal
+        # quotes what the author wrote (an id, a field name, a tone key), so the
+        # refusal sentence is redacted before it is raised. Nothing it returns is
+        # content; it scrubs its own error text, not an egress payload.
+        "artifact_store/dashboard_widgets.py",
         # Drives the backup redaction pass and reports what it did, but applies no
         # redactor itself: the outbound bytes are rewritten in `snapshot_redact.py`,
         # which is the registered sink. What matches the call-site scan here are the
@@ -1153,6 +1168,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cli_commands_cron.py",
         "cli_commands_eval.py",
         "cli_commands_learn.py",
+        # Operator's own terminal during `kirocrew cron history`: redacts a run's
+        # job name, summary, error and trace exactly as the dashboard history
+        # routes do, before printing the local run store to the operator who owns
+        # it. Same classification as `cli_commands_cron.py` above.
+        "cli_cron_history.py",
         # Slack sub-surfaces whose posted output is covered by the two Slack rows.
         "slack/events.py",
         "slack/events_home_tab.py",

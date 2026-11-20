@@ -979,6 +979,24 @@ manifest file, so an explicit refresh always retries, and the marker lives in
 `by-source/`, so the GC sweep reclaims it. A missing, expired or unreadable
 marker reads as absent and the listing fetches.
 
+An anonymous ssh fetch is also skipped while its ssh destination has just
+refused the sign-in. ssh refuses before it names a repository, so a `Permission
+denied (<methods>)` from one app's clone holds for every app at the same
+`user@host[:port]` (`_anonymous_ssh_destination`). Only ssh's own whole line
+counts (`_is_ssh_sign_in_refusal`, which ends a line at `\n` alone), never the
+phrase inside git's echo of a repository path or branch, which an index chooses.
+A row whose branch or URL holds a newline takes no part, because git echoes both
+in its own errors, nor does a URL holding a `%` escape, because git decodes it
+before it echoes the path. `_resolve_manifest`
+records the refusal in process memory (`_SSH_SIGN_IN_REFUSED`), never in the
+agent-writable data home, and for `_MANIFEST_NEGATIVE_CACHE_TTL` the other rows
+there run with `allow_remote=False` and write the marker above. So a cold listing
+pays one wave of refused clones per destination, not one clone per app. The
+memory holds at most `_SSH_SIGN_IN_REFUSED_MAX` destinations of at most
+`_SSH_DESTINATION_MAX_CHARS` characters and is cleared when full;
+`refresh_registries` forgets it. Owner-designated fetches and https rows never
+take part.
+
 A failed registry-index fetch is remembered the same way, one level up.
 `_fetch_and_cache_external_registry` writes an empty `_registry_<stem>.failed.json`
 marker beside the index cache when the fetch fails, and removes it when a fetch
@@ -1362,7 +1380,9 @@ hangs off that request. Writing a ceiling-denied server into `allowedTools` woul
 therefore route around the one control the docs promise cannot be routed around.
 
 So the grant is intersected with Level 1 POLICY at policy-write time
-(`_ceiling_forbids_mcp`, `gate_decision(ceiling, None, …)`):
+(`apps/bridges_agents.py::_ceiling_filtered_allowed`, which asks
+`platform.governance.may_skip_gate`; a server reference is probed as
+`gate_decision(ceiling, None, "mcp__<server>__probe")`):
 
 | Ceiling | Result |
 |---|---|
@@ -2740,6 +2760,17 @@ and no spawn) gets no secret: `await ctx.app_token()` returns that same app-scop
 token, passing `ctx.app_token` as the client's `on_auth_expired` renews it, and
 `ctx.gateway_origin()` returns the origin a spawned backend gets
 (`apps/gateway_origin.loopback_gateway_origin`, one rule for both).
+
+The spawns that run an app's third-party code before its backend starts get
+neither the secret nor the gateway's own credential. The `npm install` of a
+`backend.entryPoint` app (`apps/backend.py`, lifecycle scripts) takes the
+backend env as it is before `KIROCREW_PROXY_SECRET` and
+`KIROCREW_GATEWAY_ORIGIN_PROOF` are added. That install, the `pip install -r`
+of `apps/backend_runtime/provisioning.py` (source builds) and the `.venv`
+interpreter probe of `apps/interpreter.py` each pass
+`sandbox.app_backend_secret_mask_targets()` as `extra_hidden_dirs`, which
+masks `.local_secret` and every `run/gateway-*.secret` file that exists at
+spawn time and leaves `run/` itself readable.
 
 **`SlotOrigin` is declared by the layer that knows it, never derived.**
 `get_or_create_slot` cannot distinguish a person typing from a background
@@ -7150,6 +7181,22 @@ the app can ship its own `mcpServers` entry, whose calls are approved one by one
 path that asks before each call (a server of its own outside `allowedTools`, or a
 per-tool approval); that is a maintainer's decision, not this seam's.
 
+**The app's own agent calls them unasked too.** An app agent carries no `allowedTools`,
+so on its own its call to a tool listed here reaches the approval card, and an
+unattended run (the app's cron) is refused when the card expires. The tool gate's `app-own-tools` row
+(`hooks._tier_app_own_tools`, conditions in `apps/own_agent_tools.gate_grants`) approves
+the call when three facts name one first-party app: the gateway's stamp on the run (the
+slot's `_app`, or a cron job's host-written `created_by`, which the cron turn hands the
+gate as `app_run` beside the agent its client was started on), the agent that actually
+ran (a shipped manifest of that app declares it), and the app that declares the tool
+here. The declared set is the one this section defines, read at each call, so the row
+adds no second rule for a changed manifest: a tool an installed tree adds beyond its
+wheel copy is not declared and asks. Another app's tool, a core tool, a shell call, an
+agent the app does not ship (the owner's agent that an alias such as `default` resolves
+to included), a person's session and a job an agent made with `cron_add` keep the card.
+The row runs after every deny row and governance, and a `confirm_tools` pattern still
+asks.
+
 **The readers.** The scan stats `<apps dir>/<name>/app.json` for every installed app and
 caches on each file's mtime and size and on the first-party set. It keeps a tool only
 when the app's whole block validates, and drops a name two apps both declare. Nothing
@@ -7272,10 +7319,10 @@ pod, 120s to stop one, 45s to read). `backend.hooks.routes`
 (`agent_tools:register_routes`) registers `POST /api/apps/dev-fleet/agent-tools` in the
 gateway, which re-asserts the pod routes' own caller gate (local origin and
 `internal_auth`) and host-exec grant, runs the same verb `agent_pod_api` serves, and
-answers the text the core tool rendered, refusals included; a missing, non-string or blank `worktree` is the pod routes' `invalid_worktree` 400 instead. The core's hand-written `apps` domain no
-longer declares, handles or maps them (its `TOOL_APPS`), so adoption's E10 no longer refuses
-`dev-fleet` on that table. The name-keyed governance rows stay in the core and still
-apply, because the names did not change: the channel agent's dispatch deny on `pod_up`
+answers the text the core tool rendered, refusals included; a missing, non-string or blank `worktree` is the pod routes' `invalid_worktree` 400 instead. The core's hand-written `apps` domain does
+not declare, handle or map them, so adoption's E10 does not refuse `dev-fleet` on that
+table. The name-keyed governance rows are in the core and apply to the app's tools,
+because the names are the same: the channel agent's dispatch deny on `pod_up`
 and `pod_restart` (`channel.py`), the remote session's local-only fence on `pod_up`,
 `pod_restart` and `pod_down` (`session_environment.LOCAL_ONLY_CORE_TOOLS`), and the
 title rows. `test/test_dev_fleet_pod_agent_api.py` pins the declaration, the route and a
@@ -7294,12 +7341,11 @@ a body only on POST and only a JSON object, the decoded body sanitized and then
 redacted before a handler reads it, and the hold of `POST /rotation/arm` for a caller
 whose forwarded `X-Session-Key` is a channel agent's (`channel:...`), refused with 403
 `channel_agent_refused` and audited. An allowed call is answered by the handler the
-app's own route serves, behind the same enable gate. The core rows the tool needed are
-gone: its descriptor, handler and `TOOL_APPS` row in the `apps` domain, its validation
-schema and allowlist (the `validation_parts` owner `app_schemas`, which held nothing else
-and was deleted), the internal-secret admission
-of the routes it reached (`dashboard/server_internal_paths.py`), and the per-operation
-channel deny (`channel.py`, `mcp_core_parts/governance.py`). The header the hold reads
+app's own route serves, behind the same enable gate. The core holds
+no row for the tool: no descriptor, handler or `apps`-domain entry, no validation
+schema or allowlist in `validation_parts`, no internal-secret admission of the routes
+it reaches (`dashboard/server_internal_paths.py`), and no per-operation channel deny
+(`channel.py`, `mcp_core_parts/governance.py`). The header the hold reads
 is set by the `kirocrew-core` client's lenient resolver, which tries the sources the
 strict one accepts, in the same order, before its ancestor walk: whenever the strict
 resolver names a channel agent, the header names the same key, so every call the core
@@ -10177,11 +10223,11 @@ runs in the dashboard document with the owner's cookie, so telling one app's pag
 another's needs an app-scoped credential, which this route does not have. A slot held to
 `NO_PAGES` answers with `browser_ops.SITES_REVOKED_TEXT`, which says the sites were
 withdrawn and that approving them again on the app's page ends the hold. It never starts the browser (`no_tab`), touches
-nothing while the person has taken the tab over (`user_in_control`), takes the op lock and
+nothing while the person has taken the tab over (`user_in_control`), takes the op lock (queueing for it through `_MEDIA_GATE`, one gateway-wide gate, so at most one media request of any session waits ahead of an agent op, under one `LOCK_WAIT_S` deadline from arrival, else 409 `browser_busy`) and
 the takeover fence (`LiveHub.op_fence`), points the daemon at the session's own tab without raising it, and runs the
 walker's `media` method in the isolated world (`browser_harness/media.py`), after the same
 page check. A play the browser refuses gets one click on the element, after the page is judged again, and a `state` read writes no audit row (a player polls it). The SDK's
-`useBrowserMedia` (`website/src/app-sdk/browserMedia.ts`) is the page's handle; it sends
+`useBrowserMedia` (`website/src/app-sdk/browserMedia.ts`) is the page's handle (its `pollMs` is raised to at least 500 ms; a non-finite or non-positive value reads once); it sends
 through the scoped client, so the app declares `/api/browser/media`. Its `onEnded` option
 is the continuous-play cue: called once per ending, derived in the page from the `ended`
 field of the state it already polls, so it adds no route, no event and nothing the agent

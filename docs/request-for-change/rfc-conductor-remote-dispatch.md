@@ -3,10 +3,10 @@ title: Local conductor dispatches sessions to a remote crew
 status: draft
 author: zejiangg
 created: 2026-10-06
-last-audited: 2026-10-28
-audited-at: c6789799df
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 17273
-implementation-prs: []
+implementation-prs: [25524, 25548, 25556, 26651, 26897, 26940, 26956, 26976, 34782, 37673, 37910, 37913, 39150]
 tracking-issues: [13476]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,14 @@ superseded-by: []
 
 # RFC: Local conductor dispatches sessions to a remote crew
 
-**Status:** `draft`. Nothing here is built. Measured against main `c6789799df`.
+**Status:** `draft`. No maintainer acceptance (wave 0) is recorded, but most
+waves are on main behind the default-off `work_ledger.remote_dispatch` Feature
+Preview, through the PRs in `implementation-prs` (#25556 and #34782 carry
+maintainer iamwhatever's first-principles overrides for their own shape)
+(`remote_dispatch.py`, `work_ledger_remote.py`,
+`dashboard/handlers/remote_ingest.py`, `dashboard/handlers/remote_batch_pull.py`,
+and `reply` in `WORK_WAKE_STATUSES` in `work_vocab.py`). Re-checked at
+`0c5d8bd5f3`. The baseline below was measured against main `c6789799df`.
 Builds on the accepted [rfc-remote-crew-sidebar.md](rfc-remote-crew-sidebar.md):
 a session on a crew is owned by the peer, and this machine is only a window onto
 it through `/api/instances/{id}/proxy/...`.

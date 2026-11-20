@@ -324,6 +324,7 @@ _PACKAGE_REEXPORTS = (
     "api_discord_config_save",
     "api_feishu_config_get",
     "api_feishu_config_save",
+    "api_feishu_sdk_install",
     "api_imessage_config_get",
     "api_imessage_config_save",
     "api_notification_ack",

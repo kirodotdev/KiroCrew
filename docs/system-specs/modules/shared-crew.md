@@ -454,11 +454,11 @@ again. One rule decides it for every surface
 for them. Until then the dashboard looks as it does for one person.
 
 The same rule shows the sidebar's identity row (`SidebarIdentityRow`, under the
-header): "<name> via Kiro Login", "via Tailscale" or "via Systems Manager" (the
-name alone at this machine or on an unnamed path, from the mode body's
-`viewer_via`), naming who this tab's sends are recorded as before they are sent,
-and a read-only "Shared · N here now", where N counts People rows with an open tab
-plus the viewer (`sharedCrewUi.isHereNow`). It has no toggle. Because it follows
+header): "<name> via Tailscale" or "via Systems Manager" (the name alone at
+this machine, over Kiro Login, the default way in, or on an unnamed path, from
+the mode body's `viewer_via`), naming who this tab's sends are recorded as before
+they are sent, and a read-only "Shared". Who is here now is left to Settings >
+People. It has no toggle. Because it follows
 the same rule, a relay teammate on a Crew whose preview is off sees no identity
 row, as they see no bylines.
 
@@ -520,14 +520,14 @@ Login for `kiro_relay`, Your organization for a `directory` row or, while the mo
 is `console`, any row not at this machine); the local operator carries none, and
 a session creator with no provenance takes the one source that is on, else none
 (`sharedCrewUi.soleSource`; Remove still reads only the derived provenance). The
-same person can be a row once per source, so N counts distinct people by login,
+same person can be a row once per source, and a line under the heading says so;
+N counts those rows, so the number matches the rows a reader sees. Once the rows
+are read, each source card counts the distinct people under its chip, by login,
 else by an e-mail label, else by id, never by a bare display name
-(`sharedCrewUi.distinctPeopleCount`), and a line under the heading says so. The
-owner's local rows read `owner.owner_name` for every reader (`people_view`), so
-the owner and their own relay row count once. Once the rows are read, each
-source card counts the distinct people under its chip, so a card and the list
-agree. "You", "You · Owner" and "Crew owner" mark
-rows as before.
+(`sharedCrewUi.distinctPeopleCount`); the owner's local rows read
+`owner.owner_name` for every reader (`people_view`), so the owner and their own
+relay row count once there. "You", "You · Host" (the viewer who is this
+machine's owner) and "Crew owner" mark rows as before.
 
 Remove sits only where it works, for the owner: an SSM person (Remove revokes the
 invite they opened); a person or invite of a single-use Tailscale invite (Remove);
@@ -737,7 +737,7 @@ audience is the host-owner split above (`is_host_owner_dashboard_request`, and
 which admits a teammate. The owner's socket, stream and reads keep the whole
 diagnostic, and the persisted row keeps it. A session export (`GET
 /api/chat/slots/{slot}/export`, either format) carries user and assistant turns
-only, so no reader's file holds the row. Session search (`_searchable_contents`) and the
+only, so no reader's file holds the row. Session search (`history_search.py::_iter_message_texts`, the one source of the search fold and its snippets) and the
 session-list preview (`last_message_info`, the `preview` of `GET /api/sessions?preview=1`)
 skip the row for every reader: neither string carries a row type to redact by.
 The machine owner is never a teammate, whichever path they came in on: the owner on
@@ -1086,7 +1086,9 @@ the `creators` dimension of `chat-sidebar/rows.ts`): it narrows the rows the
 list already holds, live and peer rows alike, from each row's own
 `attribution`, so closed sessions are reached through Older Sessions as before.
 The section lists You (the verified viewer), each person in People (named
-through `principalName`, so the owner reads `owner.owner_name`), anyone a row
+through `principalName`, so the owner reads `owner.owner_name`, and the owner's
+row tagged "(Crew owner)" as People tags it, since the owner's sign-in can also
+reach the Crew as a teammate under the same name), anyone a row
 names that People does not, and Unattributed, each with its session count over
 every row; a long name or e-mail is cut with an ellipsis and shown in full on
 hover. Rows are checkboxes and ticked rows OR together. A row reads as the

@@ -193,6 +193,7 @@ export type {
   CloudLaunchSignin,
   KiroLoginTarget,
   CloudIdentity,
+  CloudInstanceType,
   LaunchJob,
   LaunchTaskSighting,
   LaunchTaskReport,

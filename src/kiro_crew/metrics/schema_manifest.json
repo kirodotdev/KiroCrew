@@ -20,6 +20,7 @@
             "app"
           ]
         },
+        "entity_version": {},
         "via": {
           "values": [
             "default",
@@ -30,12 +31,118 @@
       }
     },
     {
+      "name": "kirocrew.app.present",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "present"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "backend": {
+          "values": [
+            "none",
+            "other",
+            "running",
+            "stopped"
+          ]
+        },
+        "entity_version": {},
+        "status": {
+          "values": [
+            "disabled",
+            "enabled",
+            "other"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.app.run_time",
+      "kind": "counter",
+      "unit": "s",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "run_time"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "duration": {
+          "values": [
+            "gt_4h",
+            "le_10s",
+            "le_15m",
+            "le_1h",
+            "le_1m",
+            "le_4h",
+            "le_5m",
+            "other"
+          ]
+        },
+        "entity_version": {}
+      }
+    },
+    {
+      "name": "kirocrew.app.session_started",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "session_started"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "entity_version": {},
+        "kind": {
+          "values": [
+            "background",
+            "channel",
+            "chat",
+            "cron",
+            "heartbeat",
+            "other",
+            "subagent",
+            "task_runner",
+            "workflow_step"
+          ]
+        }
+      }
+    },
+    {
       "name": "kirocrew.app.task.completed",
       "kind": "counter",
       "unit": "1",
       "scope": "kiro_crew",
       "temporality": "delta",
-      "status": "active",
+      "status": "deprecated",
       "attributes": {
         "app": {},
         "outcome": {
@@ -43,6 +150,63 @@
             "error",
             "ok",
             "other"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.app.uninstalled",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "uninstalled"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "entity_version": {},
+        "keep_data": {
+          "values": [
+            "false",
+            "true"
+          ]
+        }
+      }
+    },
+    {
+      "name": "kirocrew.app.updated",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "updated"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "entity_version": {},
+        "via": {
+          "values": [
+            "default",
+            "other",
+            "store"
           ]
         }
       }
@@ -758,7 +922,8 @@
           "values": [
             "dashboard",
             "other",
-            "spawn"
+            "spawn",
+            "startup"
           ]
         },
         "outcome": {

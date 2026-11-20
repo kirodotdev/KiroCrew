@@ -337,6 +337,28 @@ def test_session_key_is_namespaced_and_stable():
     assert "whatsapp" in k1
 
 
+def test_a_typed_trust_reply_grants_through_the_dispatchers_own_manager():
+    """The reply grants before the request resolves, so it must reach the same
+    manager the decider's ``trusted`` predicate reads, or the next tool asks."""
+    from kiro_crew.messaging import approval, session_trust
+
+    d, _client, sessions, _transport = _make()
+    writes: list[tuple[str, str]] = []
+    sessions.set_approval_policy = lambda key, policy: writes.append((key, policy))
+    key = d._session_key(_DM, is_operator=True)
+
+    async def reply() -> str:
+        approval.open_approval(key, "r1", conversation_id=_DM)
+        return d._consume_approval_reply(_msg("3"))
+
+    try:
+        assert asyncio.run(reply()) == approval.RECEIPT_TRUSTED
+        assert writes == [(key, "auto")]
+    finally:
+        approval.reset_for_tests()
+        session_trust.clear_trusted_sessions()
+
+
 def test_group_scope_uses_forum_chat_type_in_session_key():
     d, _client, _sessions, _transport = _make()
     assert d._session_key(_GROUP) != d._session_key(_DM)

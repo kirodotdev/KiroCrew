@@ -104,6 +104,67 @@ from kiro_crew.metrics.recorder import MetricsRecorder
             {"app": "weather-app", "via": "store"},
             {"Feature": "app", "Activity": "installed", "Entity": "weather-app", "via": "store"},
         ),
+        (
+            "kirocrew.app.updated",
+            {"app": "weather-app", "via": "store", "entity_version": "1.1.0"},
+            {
+                "Feature": "app",
+                "Activity": "updated",
+                "Entity": "weather-app",
+                "via": "store",
+                "entity_version": "1.1.0",
+            },
+        ),
+        (
+            "kirocrew.app.uninstalled",
+            {"app": "private", "entity_version": "private", "keep_data": "true"},
+            {
+                "Feature": "app",
+                "Activity": "uninstalled",
+                "Entity": "private",
+                "entity_version": "private",
+                "keep_data": "true",
+            },
+        ),
+        (
+            "kirocrew.app.session_started",
+            {"app": "weather-app", "entity_version": "1.2.0", "kind": "subagent"},
+            {
+                "Feature": "app",
+                "Activity": "session_started",
+                "Entity": "weather-app",
+                "entity_version": "1.2.0",
+                "kind": "subagent",
+            },
+        ),
+        (
+            "kirocrew.app.run_time",
+            {"app": "weather-app", "entity_version": "2.1.0", "duration": "le_1m"},
+            {
+                "Feature": "app",
+                "Activity": "run_time",
+                "Entity": "weather-app",
+                "entity_version": "2.1.0",
+                "duration": "le_1m",
+            },
+        ),
+        (
+            "kirocrew.app.present",
+            {
+                "app": "weather-app",
+                "entity_version": "1.1.0",
+                "status": "disabled",
+                "backend": "stopped",
+            },
+            {
+                "Feature": "app",
+                "Activity": "present",
+                "Entity": "weather-app",
+                "entity_version": "1.1.0",
+                "status": "disabled",
+                "backend": "stopped",
+            },
+        ),
     ],
 )
 def test_each_metric_gets_its_shape(name, attrs, expected):

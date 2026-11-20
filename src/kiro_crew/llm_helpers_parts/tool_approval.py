@@ -288,6 +288,7 @@ async def _resolve_permission(
     session_key: str = "",
     agent: str = "",
     app: str = "",
+    app_run: tuple[str, str] = ("", ""),
     on_decision: Callable[[str, str, str], None] | None = None,
     spec_floor: Callable[[LLMEvent], Awaitable[str | None]] | None = None,
 ) -> bool:
@@ -874,6 +875,7 @@ async def _resolve_permission(
             session_key=session_key,
             agent=agent,
             app=app,
+            app_run=app_run,
             **hook_gate_kwargs(event),
             # READ_ONLY asks for the classifier's verdict alone: the gate skips
             # its grant tiers (`auto_approve_tools`, app-own-server), which vouch

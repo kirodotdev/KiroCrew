@@ -321,7 +321,9 @@ default (off) on every platform while the route is in shadow testing, and the
 relay route runs on the kiro-cli the user installed. Nothing in the build,
 the installer or the shell flips the switch; that stays the user's own step. `BUNDLE_KAS=0 make desktop` opts a build out (the payload is ~55 MB
 compressed, ~370 MB extracted per architecture); the switch then needs
-`kirocrew kas install` first, exactly as a pip install does. `KAS_BUNDLE_URL`
+`kirocrew kas install` first, exactly as a pure-wheel pip install does. CI refuses
+`BUNDLE_KAS=0` (`GITHUB_ACTIONS=true`), so no released artifact ships without the
+engine (the engine guarantee, #39623); the opt-out is for local builds. `KAS_BUNDLE_URL`
 names another manifest host (a mirror serving the same bytes; the pin refuses
 anything else).
 
@@ -745,13 +747,26 @@ same way). Key details:
   one, which fails the whole macOS release (see
   [stt-streaming](../system-specs/modules/stt-streaming.md) for how the runtime
   then authenticates a decoder whose bytes signing rewrote).
-- **Feishu SDK bundled** — every backend installs the `[feishu]` extra
-  (`lark-oapi` and its dependencies). Settings shows no `pip` command for a
-  bundled interpreter and each update replaces the whole bundle, so a channel
-  SDK the build leaves out cannot be added later. Windows ships bytecode only
-  for traced import closures, so its build traces `lark_oapi` too: the channel
-  imports it on the gateway loop. macOS does not trace it (see below), so a
-  macOS gateway with the Feishu channel on compiles it in memory at every start.
+- **Feishu SDK installed on first use, not bundled** — `lark-oapi` is about
+  11,000 files per backend that most users never load. The Feishu Settings
+  panel's **Install** (`POST /api/feishu/sdk/install`, `kiro_crew.sdk_extras`)
+  runs the bundle's pip with `--target --no-deps --require-hashes
+  --only-binary :all:` against `sdk_extras_locks/feishu.txt`, into
+  `<data home>/extras/feishu/<cpXY-platform-machine>/`, outside the signed
+  bundle so updates keep it. pip compiles its bytecode there. The install
+  records a hash of the lock's pins; a release that changes a pin in the lock
+  makes the gateway treat the old install as missing and install the new set
+  the same way. pip downloads
+  from the package mirror the user set up for pip, if any, and falls back once
+  to pypi.org when that mirror cannot serve the files. The gateway
+  appends that directory to `sys.path` before it probes or imports the SDK. The
+  `extras` leaf is READONLY in every agent sandbox and fenced from the agent's
+  file tools, like `browser-harness`. Only the three distributions core lacks
+  are locked (`lark-oapi`, `pycryptodome`, `requests-toolbelt`); the rest of
+  its closure is already in the bundle. A channel that is already enabled when
+  the SDK is missing gets it installed in the background at gateway start and
+  is then started (`feishu.gateway._schedule_sdk_install`), so updating from a
+  bundled build keeps Feishu working.
 - **Dashboard bundled** — the SPA is staged into
   `lib/python3.12/site-packages/kiro_crew/static/dist/` inside the bundle.
 - **Pruned** — `__pycache__`, test dirs, and unused stdlib (tkinter, idlelib,
@@ -873,7 +888,12 @@ manager brings the gateway straight back, the shell re-checks the new holder
 instead of starting a second one. A failed stop surfaces the start-failure
 dialog, naming the pid still holding the port, instead of spawning into it. SSH
 forwards, other data folders, unknown owners and Windows keep the existing spawn
-path, and a gateway that answers inside the window is reused as before.
+path, and a gateway that answers inside the window is reused as before. When
+that spawn exits and the owner probe had found a program this app did not
+start on the port, the gateway-failure dialog shows the `foreign-holder`
+refusal naming that program, not the bare exit code. A spawn killed by a
+signal keeps its own message: the port refusal exits with code 1, never by a
+signal.
 
 With no gateway to reuse, the shell locates the backend binary via
 [`find-bin.js`](../../website/electron/find-bin.js), spawns it as `kirocrew
@@ -1296,7 +1316,8 @@ carries internal identifiers and boot diagnostics, so the first view is the
 title, the message and the actions. Unfolding it grows the window to fit the
 log pane, and never shrinks a window the user made taller.
 
-The dialog also explains the refusals that start nothing:
+The dialog also explains the refusals that leave this launch without a local
+gateway:
 
 - **`crew-configured`**: the local gateway is on, but a recorded crew owns this
   port, so the shell does not bind it. Start Local Gateway re-execs on a free
@@ -1314,7 +1335,8 @@ The dialog also explains the refusals that start nothing:
   identified as someone else's; it is still refused, because adopting a holder
   no one identified would post this machine's local secret to it. This is the
   one refusal that shows the launch log and Reveal Log, because this launch
-  wrote the holder's pid and command there.
+  wrote the holder's pid and command there. A holder that does not answer
+  reaches this refusal too, once the gateway this launch spawned past it exits.
 
 After a Start Local Gateway click, the record names the outcome so the next
 dialog describes it: the restarted copy never served a gateway (offered again),

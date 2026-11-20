@@ -582,7 +582,7 @@ with the results.
 | | Chat lifecycle hook | `register_hook` |
 |---|---|---|
 | Created by | you, on the Hooks tab | an agent, mid-turn |
-| Fires on | one of five session events | an inbound HTTP POST |
+| Fires on | one of six session events | an inbound HTTP POST |
 | Runs | a shell command you wrote | a fresh agent turn |
 | Lives in | the `hooks` list in `hooks.json` | a top-level entry in the same file |
 

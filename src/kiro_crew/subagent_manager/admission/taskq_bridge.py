@@ -50,6 +50,7 @@ from .taskq_bridge_window import (  # noqa: F401 - re-exported
 from .types import (  # noqa: F401 - the module's public surface
     MEMORY_WAIT_UNTIL_KEY,
     MIN_RECHECK_DELAY_SECS,
+    PARENT_END_TOMBSTONE_CAUSE,
     QUEUED_STOP_TOMBSTONE_CAUSE,
     REFUSAL_TOMBSTONE_CAUSE,
     WINDOW_ENTRY_RECOVERING,
@@ -307,7 +308,10 @@ class _TaskqBridgeMixin(ManagerComponent):
         (``write_refusal_tombstone``) and answers ``REFUSED``, a ``queued_stop``
         cause the queued-stop marker (``write_queued_stop_tombstone``) and
         answers ``STOPPED``: the two verdicts the boot reconcile settles a
-        ``queued`` row on. With no tombstone, or
+        ``queued`` row on. A ``parent_end`` cause also answers ``STOPPED``: the
+        conversation that owns the row is gone, so whichever attempt wrote it, the
+        row must not run again. That holds for a claim released back to ``queued``
+        after the teardown recorded its parent end. With no tombstone, or
         one whose cause proves nothing (``gateway_restart``), the run is done
         when its result is whole by ``result_is_whole``, the rule the orphan
         reconcile announces it with, so the row and the parent's notice agree.
@@ -346,7 +350,7 @@ class _TaskqBridgeMixin(ManagerComponent):
                 cause = str(tombstone.get("cause") or "")
                 if cause == REFUSAL_TOMBSTONE_CAUSE:
                     return REFUSED
-                if cause == QUEUED_STOP_TOMBSTONE_CAUSE:
+                if cause in (QUEUED_STOP_TOMBSTONE_CAUSE, PARENT_END_TOMBSTONE_CAUSE):
                     return STOPPED
                 if cause != "gateway_restart":
                     return tombstone_terminal_state(cause, str(tombstone.get("outcome") or ""))
@@ -1321,7 +1325,7 @@ class _TaskqBridgeMixin(ManagerComponent):
     lane_refill_scheduler = _window.lane_refill_scheduler
     # From ``taskq_bridge_cancel``: cancelling persisted rows that have not started.
     taskq_cancel_queued_async = _cancel.taskq_cancel_queued_async
-    taskq_row_is_claimed_unstarted_async = _cancel.taskq_row_is_claimed_unstarted_async
+    taskq_unstarted_claim_generation_async = _cancel.taskq_unstarted_claim_generation_async
     taskq_cancel_queued = _cancel.taskq_cancel_queued
     taskq_cancel_unstarted = _cancel.taskq_cancel_unstarted
     taskq_cancel_queued_each = _cancel.taskq_cancel_queued_each

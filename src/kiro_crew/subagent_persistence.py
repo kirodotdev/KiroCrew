@@ -103,6 +103,8 @@ from kiro_crew.subagent_persistence_state import (
     write_run_agent,
 )
 from kiro_crew.subagent_persistence_tombstones import (
+    PARENT_END_TOMBSTONE_CAUSE,
+    RESTART_TOMBSTONE_CAUSE,
     _finite_time,
     clear_leaked_process,
     clear_tombstone,
@@ -118,6 +120,7 @@ from kiro_crew.subagent_persistence_tombstones import (
     settle_delivered_batch,
     write_finished_result,
     write_tombstone,
+    write_tombstone_if_absent,
 )
 
 #: The one tombstone cause that marks a run whose result reached its parent.
