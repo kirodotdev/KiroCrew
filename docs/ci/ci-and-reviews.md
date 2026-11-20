@@ -300,6 +300,21 @@ Three structural facts explain most of the rest:
   pull request body that names the issue (`#N` or its URL), and any failure to
   read or parse the issue all run every test. `test/test_ci_main_red_skip.py`
   pins each case.
+- **A shard can retry its few failed tests once, and records each flaky pass.**
+  `scripts/ci_shard_retry.py` is a pytest plugin (`-p scripts.ci_shard_retry`)
+  that no workflow loads yet. It does nothing unless `CI_SHARD_RETRY=1` and
+  `CI_SHARD_RETRY_EVENT=pull_request`, so main keeps every flaky red. When 1 to 5
+  tests failed in setup, call or teardown, one fresh serial pytest pass with the
+  session's own arguments runs only those tests; the job turns green only if all
+  of them pass. More than 5 failures, a crashed worker, a collection error or a
+  session stopped by `-x` / `--maxfail` retries nothing. Report-writing options
+  (`--junitxml`, `--report-log`, `--cov*`, `--json-report*`) are dropped from the
+  retry so the first session's reports stay whole. Each test that passed only on
+  retry is one JSON line (`nodeid`, `first_failure`, `shard`, `head_sha`) in
+  `CI_SHARD_RETRY_RECORD`, default `ci-shard-retry.jsonl` under `$RUNNER_TEMP`;
+  `CI_SHARD_RETRY_SHARD` and `CI_SHARD_RETRY_HEAD_SHA` fill the last two.
+  `python scripts/ci_shard_retry.py summary` writes one job summary line per
+  flaky test. `test/test_ci_shard_retry.py` pins each case.
 - **Do not merge a feature PR past a non-green `PR Readiness`.** The ruleset's
   bypass actors can, and a `pending` readiness is not a judgement about a red
   lane: it skips lanes that have not reported yet. #11947 merged 14 s after its
