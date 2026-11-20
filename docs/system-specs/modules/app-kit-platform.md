@@ -964,7 +964,13 @@ Its fetch keeps running in the background to fill the cache for the next
 listing. `_resolve_manifest_once` shares a running fetch, keyed on the same
 source coordinates as the cache, with any listing that asks for it, so a
 reopened page does not clone a source again. One gate per event loop keeps all
-listings together at `_MANIFEST_RESOLVE_CONCURRENCY` clones.
+listings together at `_MANIFEST_RESOLVE_CONCURRENCY` clones. A shared fetch
+(`_join_manifest_fetch`) holds only the row's `_slim_prewarm_row` projection
+(its `_PREWARM_ROW_FIELDS`, with a null one kept as null) and a digest of the
+whole row, and a batch past its deadline hands each row it has not settled
+to that row's shared fetch and stops. So a fetch past the listing holds none of
+the fields an index adds that no fetch reads. A fetch that hands its input back
+unchanged answers each waiter with a copy of its own whole row.
 
 A failed registry-index fetch is remembered the same way, one level up.
 `_fetch_and_cache_external_registry` writes an empty `_registry_<stem>.failed.json`
