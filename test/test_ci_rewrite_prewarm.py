@@ -36,7 +36,7 @@ import os
 import sys
 from pathlib import Path
 
-_WATCHED = ("kiro_crew", "conftest", "test_alpha", "test_beta", "test_gamma")
+_WATCHED = ("kiro_crew", "conftest", "test_alpha", "test_beta", "test_gamma", "prewarm_pkg")
 
 
 def loaded():
@@ -141,10 +141,24 @@ def scenarios(tmp_path_factory):
     got there through the root the prewarm was given.
     """
     base = Path(os.path.realpath(tmp_path_factory.mktemp("rewrite-prewarm")))
-    roots = {name: _tree(base / name) for name in ("hit", "cold", "elsewhere", "broken")}
+    names = ("hit", "cold", "elsewhere", "broken", "product")
+    roots = {name: _tree(base / name) for name in names}
     for name in ("conftest.py", "test/conftest.py", "test/test_alpha.py"):
         _write(roots["hit"], name, _IMPORT_MARKER + "def test_alpha():\n    assert True\n")
     broken = _write(roots["broken"], "test/test_broken.py", "def test_broken(:\n")
+    # A product package on the ini's pythonpath: one module a test imports, one nothing
+    # imports, one that does not compile.
+    product = roots["product"]
+    _write(product, "setup.cfg", "[tool:pytest]\ntestpaths = test apps\npythonpath = src\n")
+    _write(product, "src/prewarm_pkg/__init__.py", "")
+    _write(product, "src/prewarm_pkg/used.py", _IMPORT_MARKER + "VALUE = 2\n")
+    _write(product, "src/prewarm_pkg/unused.py", _IMPORT_MARKER + "VALUE = 3\n")
+    uncompilable = _write(product, "src/prewarm_pkg/bad.py", "def bad(:\n")
+    _write(
+        product,
+        "test/test_alpha.py",
+        "from prewarm_pkg import used\n\n\ndef test_alpha():\n    assert used.VALUE == 2\n",
+    )
 
     def step(do: str, name: str, cache: str = "cache", **extra: object) -> dict[str, object]:
         return {
@@ -163,6 +177,8 @@ def scenarios(tmp_path_factory):
         step("prewarm", "elsewhere", cache="other", jobs=1),
         step("collect", "elsewhere"),
         step("prewarm", "broken", jobs=1),
+        step("prewarm", "product", jobs=2),
+        step("collect", "product"),
     ]
     driver = _write(base, "driver.py", _DRIVER)
     plan_file = _write(base, "plan.json", json.dumps(plan))
@@ -195,7 +211,7 @@ def scenarios(tmp_path_factory):
     assert child.returncode == 0, child.stdout + child.stderr
     results = json.loads((base / "results.json").read_text(encoding="utf-8"))
     assert not list((base / "decoy-cache").rglob("*-pytest-*.pyc"))
-    return {"results": results, "base": base, "broken": broken}
+    return {"results": results, "base": base, "broken": broken, "uncompilable": uncompilable}
 
 
 def _stems(pycs: dict[str, object]) -> set[str]:
@@ -261,6 +277,60 @@ def test_a_file_that_cannot_be_rewritten_is_left_to_pytest(scenarios):
     assert "5 of 6 files cached, 1 left to pytest" in prewarm["stdout"], prewarm["stdout"]
     assert f"left to pytest: {scenarios['broken']}: SyntaxError" in prewarm["stdout"]
     assert _stems(prewarm["pycs"]) == {"conftest", "test_alpha", "test_beta", "test_gamma"}
+
+
+def _product_pycs(pycs: dict[str, object]) -> dict[str, object]:
+    """The import-cache pycs of the scenario's product package, by module name."""
+    return {
+        name.rsplit("/", 1)[-1].split(".", 1)[0]: stamp
+        for name, stamp in pycs.items()
+        if "/src/prewarm_pkg/" in name and "-pytest-" not in name
+    }
+
+
+def test_product_modules_are_compiled_without_being_executed(scenarios):
+    prewarm = scenarios["results"]["product.prewarm"]
+
+    assert prewarm["exit"] == 0
+    assert "3 of 4 product modules compiled, 1 left to the importer" in prewarm["stdout"]
+    assert f"left to the importer: {scenarios['uncompilable']}: " in prewarm["stdout"]
+    assert set(_product_pycs(prewarm["pycs"])) == {"__init__", "used", "unused"}
+    assert prewarm["loaded"] == []
+    assert prewarm["markers"] == []
+
+
+def test_import_reads_the_compiled_product_module_instead_of_compiling_it(scenarios):
+    before = _product_pycs(scenarios["results"]["product.prewarm"]["pycs"])
+    collect = scenarios["results"]["product.collect"]
+
+    assert collect["exit"] == 0 and "3 passed" in collect["stdout"], collect["stdout"]
+    # The module ran, so it was imported; an importer that did not accept the pyc
+    # would have written its own over it, with a new mtime.
+    assert "used.py.imported" in collect["markers"]
+    assert "unused.py.imported" not in collect["markers"]
+    assert _product_pycs(collect["pycs"]) == before
+
+
+def test_a_tree_without_a_pythonpath_compiles_no_product_module(scenarios):
+    prewarm = scenarios["results"]["hit.prewarm"]
+
+    assert "product modules" not in prewarm["stdout"]
+
+
+def test_product_files_are_every_module_under_the_ini_pythonpath(tmp_path):
+    root = _tree(tmp_path)
+    _write(root, "setup.cfg", "[tool:pytest]\ntestpaths = test\npythonpath = src missing\n")
+    for name in ("src/pkg/__init__.py", "src/pkg/deep/mod.py", "src/top.py"):
+        _write(root, name, "")
+    _write(root, "src/pkg/data.json", "{}")
+    _write(root, "src/pkg/__pycache__/stale.py", "")
+    _write(root, "other/outside.py", "")
+
+    found = sorted(
+        path.relative_to(root).as_posix() for path in ci_rewrite_prewarm.product_files(root)
+    )
+
+    assert found == ["src/pkg/__init__.py", "src/pkg/deep/mod.py", "src/top.py"]
 
 
 def test_unusable_arguments_never_fail_the_step(tmp_path, capsys):

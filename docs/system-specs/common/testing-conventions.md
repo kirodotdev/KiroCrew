@@ -7129,7 +7129,9 @@ reduced and leaf scopes keep pure hash ownership.
 Before the Linux and Windows full-suite test step, `scripts/ci_rewrite_prewarm.py`
 writes pytest's assertion-rewrite pyc for the shard's test files (same hash and
 pin file) and every `conftest.py` loaded during collection, in parallel and without importing them, under
-the `sys.pycache_prefix` the rootdir conftest sets. It changes where a worker's
+the `sys.pycache_prefix` the rootdir conftest sets, and then compiles every module
+under `src/` to the import cache under the same root, so a worker reads a product
+module's bytecode instead of compiling it during collection. It changes where a worker's
 collection time goes, not which files the shard collects, and never fails the
 job. `test/test_ci_rewrite_prewarm.py` owns the proof that pytest reads those
 pycs; a change to the cache root in `test/conftest_floor_configure.py` must keep

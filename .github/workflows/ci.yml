@@ -1680,7 +1680,11 @@ jobs:
       # rewrites the asserts of every test file, because a fresh runner has no
       # cached pyc. This writes those pycs once, one process per core, without
       # importing a test module, conftest or kiro_crew, into the cache root the
-      # rootdir conftest points pytest at. Full suite only: it is the arm that
+      # rootdir conftest points pytest at. It then compiles every module under
+      # src/ to the ordinary import cache under the same root: that root is
+      # empty on a fresh runner, so each worker would compile the ~3,900 product
+      # modules one shard's collection imports, all workers the same ones at
+      # once. Full suite only: it is the arm that
       # takes --file-shard-pins. Same shell as the test step, so the same user
       # and home, which is what the cache root is derived from. Best effort:
       # the script exits 0 whatever happens, and a file it did not cache is

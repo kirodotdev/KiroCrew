@@ -22,6 +22,14 @@ What is rewritten:
   two from the in-tree ``__pycache__`` and not from here; the conftests of
   deeper directories are loaded during collection, after the redirect.
 
+Then it compiles the product modules: every ``*.py`` under the directories the ini's
+``pythonpath`` names (``src``), to the ordinary import cache under the same root, with
+``py_compile``. The rootdir conftest redirects bytecode to a root that is empty on a
+fresh runner, so every worker would otherwise compile each product module it imports
+while it collects, all workers the same ones at the same time: one shard's collection
+imports about 3,900 of them. Third-party and standard-library modules are left to the
+workers; a shard needs a sixth of the installed ones.
+
 What is not: modules pytest rewrites only because something registered them at
 import time (``pytest_plugins``, ``register_assert_rewrite``), and files a
 conftest ``pytest_ignore_collect`` hook would drop. The first group is rewritten
@@ -45,7 +53,7 @@ import multiprocessing
 import os
 import sys
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
 from scripts.ci_file_shards import file_shard, read_pins
@@ -64,6 +72,8 @@ _DEFAULT_NORECURSEDIRS = (
     "{arch}",
 )
 _BUDGET_SECONDS = 240.0
+#: Product modules that did not compile are named up to this many, then counted.
+_REPORTED_UNCOMPILED = 5
 
 
 def pycache_prefix() -> str | None:
@@ -198,11 +208,52 @@ def _rewrite_reporting(source: str) -> tuple[str, str | None]:
     return source, rewrite_file(source)
 
 
-def prewarm(
-    files: list[Path], prefix: str | None, jobs: int, budget: float = _BUDGET_SECONDS
-) -> tuple[int, list[tuple[str, str]], bool]:
-    """Rewrite ``files`` across ``jobs`` processes.
+def product_files(root: Path) -> list[Path]:
+    """Every ``*.py`` under the directories the ini's ``pythonpath`` puts on ``sys.path``.
 
+    Reads file names only. A module nothing imports gets a pyc nobody reads.
+    """
+    files: list[Path] = []
+    for entry in _words(_pytest_ini(root).get("pythonpath"), ()):
+        top = root / entry
+        if not top.is_dir():
+            continue
+        for directory, subdirs, names in os.walk(top):
+            subdirs[:] = sorted(name for name in subdirs if name != "__pycache__")
+            files += [Path(directory, name) for name in sorted(names) if name.endswith(".py")]
+    return files
+
+
+def compile_file(source: str) -> str | None:
+    """Compile one module to the import cache; return why not, or None.
+
+    The pyc is the one ``import`` writes: same path under ``sys.pycache_prefix``, same
+    invalidation mode. Never raises: a file that does not compile, or a cache directory
+    that cannot be written, leaves the module for the importing process.
+    """
+    try:
+        import py_compile
+
+        py_compile.compile(source, doraise=True)
+    except Exception as exc:  # noqa: BLE001 -- best effort: the importer compiles this file
+        return f"{type(exc).__name__}: {exc}".splitlines()[0]
+    return None
+
+
+def _compile_reporting(source: str) -> tuple[str, str | None]:
+    return source, compile_file(source)
+
+
+def prewarm(
+    files: list[Path],
+    prefix: str | None,
+    jobs: int,
+    budget: float = _BUDGET_SECONDS,
+    work: Callable[[str], tuple[str, str | None]] = _rewrite_reporting,
+) -> tuple[int, list[tuple[str, str]], bool]:
+    """Run ``work`` on ``files`` across ``jobs`` processes; by default, rewrite them.
+
+    ``work`` takes a path and returns it with why it was not cached, or None.
     Returns (files cached, [(file, reason)] skipped, whether the budget ran out).
     Largest files go first so the processes finish close together. ``spawn`` on
     every OS: the children start from a clean interpreter, as on Windows. One
@@ -222,7 +273,7 @@ def prewarm(
             for source in sources:
                 if time.monotonic() >= deadline:
                     return written, skipped, True
-                reason = rewrite_file(source)
+                reason = work(source)[1]
                 if reason is None:
                     written += 1
                 else:
@@ -234,7 +285,7 @@ def prewarm(
     pool = context.Pool(min(jobs, len(sources)), _use_prefix, (prefix,))
     try:
         # One file per task: only the unchunked iterator takes a timeout.
-        results = pool.imap_unordered(_rewrite_reporting, sources)
+        results = pool.imap_unordered(work, sources)
         for _ in sources:
             try:
                 source, reason = results.next(timeout=max(0.0, deadline - time.monotonic()))
@@ -305,6 +356,23 @@ def _run(argv: list[str] | None) -> None:
     print(
         f"{label}: {written} of {len(files)} files cached, {len(skipped)} left to pytest, "
         f"{jobs} processes, elapsed {elapsed:.1f} s, cache {prefix}"
+    )
+    modules = product_files(root)
+    if not modules or timed_out:
+        return
+    compiled, uncompiled, timed_out = prewarm(
+        modules, prefix, jobs, args.budget_seconds - elapsed, _compile_reporting
+    )
+    for source, reason in uncompiled[:_REPORTED_UNCOMPILED]:
+        print(f"{label}: left to the importer: {source}: {reason}")
+    if len(uncompiled) > _REPORTED_UNCOMPILED:
+        print(f"{label}: and {len(uncompiled) - _REPORTED_UNCOMPILED} more left to the importer")
+    if timed_out:
+        print(f"{label}: stopped at the {args.budget_seconds:.0f} s budget; importers do the rest")
+    print(
+        f"{label}: {compiled} of {len(modules)} product modules compiled, "
+        f"{len(uncompiled)} left to the importer, "
+        f"elapsed {time.perf_counter() - started - elapsed:.1f} s"
     )
 
 
