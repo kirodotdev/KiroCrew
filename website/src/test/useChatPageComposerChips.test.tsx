@@ -33,7 +33,6 @@ function harness(over: Partial<Opts> = {}) {
     id: 'test-provider',
     capabilities: { reasoningEffort: false },
     resolveModel: vi.fn().mockResolvedValue('m-1'),
-    resolveDefaultEffort: vi.fn().mockResolvedValue(''),
   }
   const opts: Opts = {
     currentSlot: { key: 'slot-a', agent: 'builder', model: 'm-2' } as ChatSlot,

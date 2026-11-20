@@ -120,7 +120,7 @@ describe('useComposerChips', () => {
       defaultAgent: 'default',
       pendingAgent: '',
       installedAgents: [],
-      provider: { id: 'acp', capabilities: { reasoningEffort: false }, resolveModel: vi.fn(), resolveDefaultEffort: vi.fn().mockResolvedValue('') } as never,
+      provider: { id: 'acp', capabilities: { reasoningEffort: false }, resolveModel: vi.fn() } as never,
       availableModels: [{ name: 'auto', description: '' }],
       codexPairModels: false,
       selectionCapabilities: undefined,

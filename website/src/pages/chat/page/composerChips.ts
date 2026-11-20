@@ -3,7 +3,7 @@ import { useMutation, useQuery, type QueryClient } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import type { KiroCrewAgent } from '../../../components/AgentSelector'
 import { filterInteractiveModels, legacyCodexEffort, modelWithoutEffort } from '../../../hooks/useInteractiveModels'
-import { useKirocrewConfigReader } from '../../../hooks/useKirocrewConfigReader'
+import { useDefaultEffort } from '../../../hooks/useDefaultEffort'
 import { useSettingsDefaultModel } from '../../../hooks/useSettingsDefaultModel'
 import { i18nT } from '../../../i18n/t'
 import { effortOffOnAuto, modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
@@ -191,13 +191,7 @@ export function useComposerChips({
   // default — the backend applies `slot.reasoning_effort or agent.reasoning_effort`
   // — so the composer must show the inherited value rather than a bare
   // "Default", which read as "the model decides" and hid the real setting.
-  const readKirocrewConfig = useKirocrewConfigReader()
-  const { data: _defaultEffort } = useQuery({
-    queryKey: ['default-effort', provider.id],
-    queryFn: () => provider.resolveDefaultEffort(readKirocrewConfig),
-    enabled: provider.capabilities.reasoningEffort,
-  })
-  const defaultEffort = _defaultEffort || ''
+  const defaultEffort = useDefaultEffort(provider.capabilities.reasoningEffort)
   // Effort actually in force for the active slot: per-slot override, else the
   // configured default. Display only — the slot's raw value still drives the
   // picker so "no override" stays distinguishable from an explicit pick.

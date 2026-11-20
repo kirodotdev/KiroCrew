@@ -196,10 +196,6 @@ export interface ProviderAdapter {
   /** The provider-level default model for NEW sessions ('' when none is set).
    *  Distinct from resolveModel, which resolves a specific agent template. */
   resolveDefaultModel(): Promise<string>
-  /** The provider-level default reasoning effort for NEW sessions ('' = none,
-   *  i.e. let the model choose). A per-session override always outranks it.
-   *  `readConfig` supplies the gateway config body from a shared query cache. */
-  resolveDefaultEffort(readConfig: () => Promise<unknown>): Promise<string>
 
   fetchUsage(): Promise<NormalizedUsage>
 

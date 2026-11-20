@@ -8307,6 +8307,8 @@
       "older_sessions_tip": "Lists every saved session not open as a tab, including ones you just closed and Slack or Discord chats. Open one to bring it back as a tab.",
       "only_show_sessions_that_have_no_tags": "Only show sessions that have no tags",
       "bulk_switch_keeps_conversation": "Pick a model for every session. The conversation is kept and continues on the new model.",
+      "bulk_effort_keep": "Keep current effort",
+      "bulk_effort_needs_effort_model": "Pick a model that uses effort levels to set effort too.",
       "bulk_switch_stops_running_reply": "Running sessions switch too, and their current reply is stopped.",
       "pinned": "Pinned",
       "pinned_sessions_are_kept": "Pinned sessions are kept.",

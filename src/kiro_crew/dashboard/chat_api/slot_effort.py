@@ -199,6 +199,59 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
     )
 
 
+async def _push_live_effort(provider: AcpProvider, effort: str, slot_name: str) -> str:
+    """Push *effort* to the live *provider*: the one live push both effort routes share.
+
+    ``change_effort`` for a level, ``clear_effort(every_model=True)`` for ``""``
+    (Default), so Default never pins the configured level. Used by
+    ``api_chat_slot_reasoning_effort`` and the bulk model switch's
+    :func:`_bulk_effort_only_switch`. The caller has checked that *provider*
+    supports effort, offers the level and runs no turn, since a push during a
+    turn would race the streaming prompt loop.
+
+    Returns ``"applied"`` (the session runs the level now), ``"not_applied"``
+    (the session takes it only on a restart), ``"overlay_busy"`` (nothing
+    changed: another writer holds the workspace effort overlay), ``"refused"``
+    (the harness refused the level and kept its prior one) or ``"failed"`` (the
+    push raised for another reason). The exception text of the last two stays
+    in the log line: it can carry agent-authored words, a path or a host.
+    """
+    try:
+        if effort:
+            pushed: bool | None = await provider.change_effort(effort)
+        else:
+            pushed = await provider.clear_effort(every_model=True)
+    except Exception as exc:
+        # change_effort rolls back its own override and overlay before raising.
+        if provider.switches_by_relaunch is True or (
+            effort and getattr(exc, "command_refused", False) is True
+        ):
+            # The relaunch refused the level and put the prior one back, or
+            # kiro-cli refused it and change_effort rolled back. Committing it,
+            # or cold-starting on it, would only fail the same way on every
+            # later message.
+            logger.warning(
+                "change_effort(%s) refused for slot %s: %s: %s",
+                effort,
+                slot_name,
+                type(exc).__name__,
+                exc,
+            )
+            return "refused"
+        logger.warning(
+            "change_effort(%s) failed for slot %s: %s: %s",
+            effort,
+            slot_name,
+            type(exc).__name__,
+            exc,
+        )
+        return "failed"
+    if pushed is None:
+        # clear_effort changed nothing: neither the overlay nor the provider's map.
+        return "overlay_busy"
+    return "applied" if pushed else "not_applied"
+
+
 async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/reasoning-effort — set reasoning effort.
 
@@ -365,43 +418,23 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             # change_effort handles both backends and persists the per-model
             # override + overlay. "" clears the slot's level → fall back to the
             # model default (kiro: /effort with the workspace default; claude: the
-            # adapter's ``default`` live), else False asks for the reset below.
-            try:
-                if effort:
-                    _updated_live = await provider.change_effort(effort)
-                else:
-                    _updated_live = await provider.clear_effort(every_model=True)
-            except Exception as exc:
-                if provider.switches_by_relaunch is True or (
-                    effort and getattr(exc, "command_refused", False) is True
-                ):
-                    # The relaunch refused the level and put the prior one back,
-                    # or kiro-cli refused it and change_effort rolled back.
-                    # Committing it, or resetting to cold-start on it, would only
-                    # fail the same way on every later message.
-                    logger.warning(
-                        "change_effort(%s) refused for slot %s: %s: %s",
-                        effort,
-                        name,
-                        type(exc).__name__,
-                        exc,
-                    )
-                    # A fixed sentence: the exception text can carry agent-authored
-                    # words, a path or a host. The log line above keeps the detail.
-                    return web.json_response(
-                        {
-                            "error": "The agent did not accept the reasoning effort change.",
-                            "code": "effort_refused",
-                        },
-                        status=400,
-                    )
-                logger.warning(
-                    "change_effort(%s) failed for slot %s: %s: %s — falling back to reset",
-                    effort,
-                    name,
-                    type(exc).__name__,
-                    exc,
+            # adapter's ``default`` live). A push the session cannot take live,
+            # or one that failed, leaves _updated_live False for the reset below.
+            outcome = await _push_live_effort(provider, effort, name)
+            if outcome == "refused":
+                # A fixed sentence: the exception text can carry agent-authored
+                # words, a path or a host. The push's log line keeps the detail.
+                return web.json_response(
+                    {
+                        "error": "The agent did not accept the reasoning effort change.",
+                        "code": "effort_refused",
+                    },
+                    status=400,
                 )
+            if outcome == "applied":
+                _updated_live = True
+            elif outcome == "overlay_busy":
+                _updated_live = None
         elif not effort_commit_needs_reset(provider):
             # Model does not support effort: persist the slot value for when the
             # user switches to a capable model, but do not touch the live session.
