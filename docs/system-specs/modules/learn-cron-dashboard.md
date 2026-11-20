@@ -5702,9 +5702,15 @@ CLI always shows the two sign-in commands in the Kiro card rather than a
 button-less "repair" dead end.
 
 **The first-run gate is the one screen that polls the HOST rather than the latch.**
-`kiroPrerequisiteIsBlocking(status)` is true only while the full-screen first-run
-gate is the whole UI (not `ready`, not `initial_setup_complete`, owner). In that
-state the gate polls every 5s AND passes `?refresh=1`, because the two steps it is
+`kiroPrerequisiteIsBlocking(status, kiroGated)` (`hooks/useKiroPrerequisite.ts`)
+is true only while a full-screen gate is the whole UI: the first-run gate (not
+`ready`, not `initial_setup_complete`, and `setup_allowed` is not `false`), a
+closed LTS login gate (`lts_login_required`), or the out-of-date card
+(`acp_supported === false`) when a loaded config runs a Kiro harness. In that
+state the gate polls every 5s AND passes `?refresh=auto`, which the gateway
+coalesces behind a short floor so several open tabs cannot multiply the spawns.
+A non-owner (`setup_allowed === false`) polls the latch every 3s and never
+probes; the server ignores a refresh from a non-owner. It probes because the two steps it is
 waiting on — installing from kiro.dev and signing in, possibly from a terminal —
 touch the gateway not at all, so a latch-reading poll could never observe either
 and the gate would hold until the user pressed Check again. The cost is bounded to
@@ -5715,8 +5721,11 @@ reauthentication chrome for an established install — that decision is unchange
 
 Ready dashboards continue prerequisite polling every 30 seconds, but that poll
 is a **free read of the gateway's latched state** — it spawns no `kiro-cli`.
-Only `api.kiroPrerequisite(true)` (`?refresh=1`), wired to the gate's Refresh /
-Check again buttons via a one-shot `forceProbe` ref, asks the host to re-probe.
+Only `checkAgain` from `useKiroPrerequisite` (`api.kiroPrerequisite('explicit')`,
+`?refresh=explicit`), wired to the Check again buttons, asks the host to
+re-probe outside a blocking gate. It cancels any read in flight and fetches the
+shared `KIRO_PREREQUISITE_KEY` entry, so every reader sees the same probe. The
+server also accepts `1` and `true` as `explicit`.
 A later sign-out is therefore surfaced by the failing *turn*, not by the poll:
 `chat_runner`'s `AcpAuthRequired` handler puts the actionable `kiro-cli login`
 message straight into the transcript.
