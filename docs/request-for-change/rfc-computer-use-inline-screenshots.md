@@ -1,5 +1,5 @@
 ---
-title: Computer Use -- screenshots the model can see, and several actions in one call
+title: Computer Use -- screenshots the model can see, when the call asks for one
 status: draft
 author: inariku, with Kiro Crew
 created: 2026-10-26
@@ -12,11 +12,14 @@ supersedes: []
 superseded-by: []
 ---
 
-# RFC: Computer Use -- screenshots the model can see, and several actions in one call
+# RFC: Computer Use -- screenshots the model can see, when the call asks for one
 
 - Status: `draft`. Nothing here is built. Measured against main `3a651796a0`. The
   draft [#24316](https://github.com/kirodotdev/KiroCrew/pull/24316) prototypes an
   earlier shape of this design (section 6).
+- Scope: earlier revisions of this document also proposed running several actions
+  in one call (`computer_batch`). That part was taken out on 2026-11-20 at the
+  author's request, so that this document needs one decision (section 4).
 - Related: [`rfc-jev-task-executor`](rfc-jev-task-executor.md) (accepted), whose
   rollout step 4 splits the same dispatch chokepoint this design needs;
   [`rfc-remote-computer-use`](rfc-remote-computer-use.md) (draft), whose wire carries
@@ -34,29 +37,22 @@ superseded-by: []
 Computer Use gives the chat model a text tree and, at most, the path of a JPEG on
 disk. To see the window, the model has to spend a second tool call reading that file,
 and whether that read works depends on the harness and its sandbox (section 2.2). On
-a large browser window it gets no screenshot at all. Each action is one tool call
-followed by a full re-walk, so a ten-field form is ten model turns.
+a large browser window it gets no screenshot at all.
 
-This document proposes two changes:
+This document proposes a screenshot in the reply, when the call asks for one.
+`computer_get_state` gains an optional boolean argument, `inline_image`. When a call
+sets it, the calling session's harness is in a positive set measured to pass a
+tool-result image to the model (`ACP_BACKENDS_TOOL_RESULT_IMAGES`, starting as
+`{KAS}`), the screenshot passes today's capture floors, and a file read of the
+spooled JPEG by that session would run today without a prompt, the reply carries the
+screenshot as an MCP image block beside today's text. A call that omits the argument
+gets today's reply byte for byte. Nothing is added to the keystone or to
+`config.json`, and no default changes.
 
-1. **A screenshot in the reply, when the call asks for one.** `computer_get_state`
-   gains an optional boolean argument, `inline_image`. When a call sets it, the
-   calling session's harness is in a positive set measured to pass a tool-result
-   image to the model (`ACP_BACKENDS_TOOL_RESULT_IMAGES`, starting as `{KAS}`), the
-   screenshot passes today's capture floors, and a file read of the spooled JPEG by
-   that session would run today without a prompt, the reply carries the screenshot
-   as an MCP image block beside today's text. A call that omits the argument gets
-   today's reply byte for byte. Nothing is added to the keystone or to `config.json`,
-   and no default changes.
-2. **`computer_batch`.** One call runs a short list of actions against one window.
-   Each step is checked by name against the governance decision before any step
-   runs, then goes through the existing dispatch chokepoint; the batch stops at the
-   first refusal or UI drift and returns one refreshed tree at the end.
-
-For the first change, the decision asked of the maintainers is section 10.1: may
-`computer_get_state` return an image when the call asks for one? The whole-window
-floor for a window holding a password field and the rule that a truncated tree is not
-photographed are unchanged.
+The decision asked of the maintainers is section 10.1: may `computer_get_state`
+return an image when the call asks for one? The whole-window floor for a window
+holding a password field and the rule that a truncated tree is not photographed are
+unchanged.
 
 ## 2. Motivation
 
@@ -94,10 +90,6 @@ photographed are unchanged.
   the first case from the other three, so all of them suppress the image. The
   `computer-use` skill calls this suppression "Routine for a browser or an Electron
   app at the default budget".
-- **One action per call, one walk per action.** Every mutating tool in
-  `computer_use/tools.py` `_run` verifies the target's fingerprint against a fresh
-  walk (`service.verify_fingerprint`), acts, settles for `POST_ACTION_SETTLE_SECS`,
-  re-walks and renders the whole tree, with `want_image=False`.
 - **Nothing structured leaves the chokepoint.** `tools._dispatch` returns a string.
   `rfc-jev-task-executor` section 3.5 proposes splitting it into one executor and two
   output adapters; `git grep dispatch_structured -- src` is empty at `3a651796a0`, so
@@ -118,7 +110,7 @@ file-read tool. Where that works was checked on 2026-11-20:
 `docs/system-specs/modules/security.md` records the readable directory as an
 accepted residual ("the screenshot directory stays agent-readable"). So today a look
 costs the model a second tool call, and the operator's read rules can stop that read
-(section 8). The first change removes the second call on a harness that can carry the
+(section 8). This document removes the second call on a harness that can carry the
 image in the tool result, and keeps those read rules deciding (section 5.3).
 
 ### 2.3 What this costs
@@ -126,9 +118,7 @@ image in the tool result, and keeps those read rules deciding (section 5.3).
 The model drives a GUI from a text outline it cannot check against the pixels. When
 the outline is wrong or thin (Electron stubs, unlabeled buttons, canvases), it has to
 decide on its own to read a file, at the cost of one more tool call, and only where
-that read works (2.2). A form with ten fields is ten round trips through the model,
-each re-reading a tree of up to 1200 nodes. Section 2.5 compares Kiro Crew with Codex
-on these points.
+that read works (2.2). Section 2.5 compares Kiro Crew with Codex on this point.
 
 ### 2.4 Probe: which harnesses pass a tool-result image to the model
 
@@ -193,16 +183,15 @@ measured at `3a651796a0`.
 |---|---|---|---|
 | What an observation gives the model | The accessibility tree and a screenshot, the image returned to the model (third-party) | The tree, and a screenshot only as a spooled file path | The image in the same reply when the call asks, on measured harnesses (5.2, 5.3) |
 | A large browser window | Photographed (third-party) | Not photographed once the report exceeds `max_tree_nodes` (2.1) | Unchanged (section 10.2) |
-| Actions per model call | Several: the API guide recommends a code-execution mode that runs many actions, loops and branches in one call, and Codex exposes Computer Use as a JavaScript runtime, `cua_repl` ([openai/codex#42454](https://github.com/openai/codex/issues/42454)) | One, then a full re-walk | Several, as a fixed list of tool steps, not code (5.4, section 9) |
+| Actions per model call | Several: the API guide recommends a code-execution mode that runs many actions, loops and branches in one call, and Codex exposes Computer Use as a JavaScript runtime, `cua_repl` ([openai/codex#42454](https://github.com/openai/codex/issues/42454)) | One, then a full re-walk | Out of scope (section 4) |
 | Choosing among an app's windows | Targets by app name; per-agent window ownership is requested in [openai/codex#20852](https://github.com/openai/codex/issues/20852) | One window per app on main; `window_id` in [#24203](https://github.com/kirodotdev/KiroCrew/pull/24203) | Assumed, not required |
 | Web pages and tabs | Handled inside the same runtime through a Chrome extension, with tab handles and locators (third-party) | Separate tools (the Browser panel, `playwright-cli`), not Computer Use | Out of scope (section 4); requested in [#23095](https://github.com/kirodotdev/KiroCrew/issues/23095) and [#10974](https://github.com/kirodotdev/KiroCrew/issues/10974) |
 | Background input on macOS | SkyLight per-process event posting ([Cua write-up](https://github.com/trycua/cua/blob/main/blog/inside-macos-window-internals.md)) | The same SkyLight calls (`macos_skylight.py`) | No change |
 | Permission | Per app, with "Always allow" (use-case page) | One operator opt-in on the keystone `computer_use.json`, ANDed with `capabilities.computer_use` | No change |
 
 The foundations match: both read the accessibility tree and post input to a
-background process the same way. This document addresses the first and third rows,
-which decide how often the model can check its work against the pixels and how many
-turns a multi-step task costs.
+background process the same way. This document addresses the first row, which
+decides how often the model can check its work against the pixels.
 
 ## 3. Goals
 
@@ -215,18 +204,24 @@ turns a multi-step task costs.
 - G3. The image leaves only when a file read of the spooled JPEG by the same session
   would run today without a prompt. Where Kiro Crew cannot establish that, no image
   leaves.
-- G4. A short run of actions on one window costs one model turn, not one per action,
-  and still passes every per-action check the single tools pass.
-- G5. No floor moves: a window holding a secure field is never photographed, and the
+- G4. No floor moves: a window holding a secure field is never photographed, and the
   truncated-tree rule changes only through section 10.2.
-- G6. One image can never wedge a session's history: every inline image is held to
+- G5. One image can never wedge a session's history: every inline image is held to
   the budget `kiro_crew/imaging.py` defines (`MAX_IMAGE_EDGE_PX`,
   `MAX_IMAGE_B64_BYTES`) before it leaves the gateway.
-- G7. No new setting: no keystone key, no `config.json` key, no `computer_use.*`
+- G6. No new setting: no keystone key, no `config.json` key, no `computer_use.*`
   scope, no capability row, and no changed default.
 
 ## 4. Non-goals
 
+- Running several actions in one call. Earlier revisions of this document proposed
+  `computer_batch`, a fixed list of tool steps on one window under one approval. It
+  was taken out on 2026-11-20 at the author's request so that this document needs
+  one decision. It comes back as its own RFC once this one is decided and the number
+  of calls a fixed set of tasks takes has been measured. Running model-written code
+  instead (Codex's `cua_repl`) is out of scope too: the code would run inside the
+  gateway process that holds desktop access, and every action inside a script would
+  bypass the per-call chokepoint and audit.
 - Photographing a truncated tree. Section 10.2's recommended answer keeps today's
   rule, so a Chrome or Electron window at the default `max_tree_nodes` still gets no
   image, and this document alone does not solve the Chrome case in
@@ -240,12 +235,11 @@ turns a multi-step task costs.
   actions, tabs and viewports) and
   [#10974](https://github.com/kirodotdev/KiroCrew/issues/10974) (an agent browser in
   the user's signed-in session).
-- Running model-written code (Codex's `cua_repl`). See section 9.
 - Changing the Jev executor, its consent model or its "no pixels to Jev" rule. That
   rule is about the Jev loop; this document is about the chat model.
 - Multi-display selection.
-- Returning a screenshot from every mutating tool. Only `computer_get_state` and the
-  end of a `computer_batch` can attach one, and only when the call asks.
+- Returning a screenshot from every mutating tool. Only `computer_get_state` can
+  attach one, and only when the call asks.
 
 ## 5. Design
 
@@ -396,59 +390,7 @@ same budget only to brokered servers. The text half still names the spooled path
 says the image is attached, so the live view, the user and a harness that later
 drops the block are unaffected.
 
-Mutating tools stay `want_image=False`. `computer_batch` can attach one image at its
-end (5.4).
-
-### 5.4 `computer_batch`
-
-```
-computer_batch(app, window_id?, steps, screenshot?, inline_image?)
-steps: [{"tool": "computer_click" | "computer_type_text" | "computer_press_key" |
-                 "computer_set_value" | "computer_scroll" | "computer_perform_action" |
-                 "computer_drag",
-         "args": {...}}]   # 1..MAX_BATCH_STEPS, args as the single tool takes them
-```
-
-- **One window.** `app` and `window_id` belong to the batch; a step's `args` may not
-  name another. A batch cannot hop between applications.
-- **Every step is governed under its own name, before any step runs.** The
-  governance gate (`hook_runtime/governance_gate._governance_denial`, through
-  `governance_parts/evaluator.gate_decision` and `tool_calls.classify_tool_title`)
-  sees only the title of the call it approves, so for a batch it sees
-  `@kirocrew-computer/computer_batch`, never the step tools. Inside the dispatcher,
-  `gate.require_computer_use` writes an audit record and makes no decision. The batch
-  therefore evaluates each step's `@kirocrew-computer/<step tool>` ref against the
-  same `POLICY ∩ PROFILE` decision the gate would make for that tool called alone,
-  and refuses the whole batch, before running anything, if any step is denied. An
-  administrator who denies `computer_type_text` by name gets that tool refused inside
-  a batch exactly as outside it.
-- **Every step passes the chokepoint.** Each step is then dispatched under its own
-  tool name through the same ordered `_dispatch` (enable, identity resolution, audit,
-  target policy, secure-target refusal, fingerprint check) and audited as that tool.
-- **Indices bind to the snapshot the model saw.** Each element step resolves its
-  index against the cached snapshot from the `computer_get_state` that preceded the
-  batch, and `verify_fingerprint` compares it with a fresh walk before acting. The
-  per-step refresh walk is skipped and the cache is not replaced mid-batch, so a step
-  that changes the window (opens a dialog, reorders a list) makes the next element
-  step fail its fingerprint check instead of acting on an element the model never
-  saw. The check compares role, subrole and title at the index, so it carries the
-  same limit the single tools do ("Index lifecycle (and its honest limit)" in
-  `computer-use.md`): a changed window whose element at that index happens to match
-  is not caught.
-- **Stops at the first problem.** A refusal, a driver error or drift ends the batch.
-  The reply lists every step as `done`, `refused: <reason>` or `not run`, then one
-  refreshed tree, cached for the next call, plus the screenshot when the batch set
-  `inline_image` and 5.3 applies. Steps that ran are not undone; the reply says so.
-- **Excluded:** `computer_launch_app`, observation tools, `computer_end_turn`, and
-  `click_method: "global"` (the one path that moves the user's real pointer), pending
-  section 10.6.
-- **Classification.** `batch` gets a row in the existing code-owned
-  `_CU_ACTION_CLASSES` table (`platform/governance_parts/tool_calls.py`) carrying
-  `mutate`, so `hooks._cu_read_only_auto_approve` never auto-approves it as an
-  observation and `gate`'s is-it-mutating check reads it correctly. The row adds no
-  `computer_use.*` scope and no approval ordinal. It is not a governance control:
-  no evaluator reads a class pattern such as `@mutate` as a deny today, so the
-  by-name step check above is what enforces a ceiling.
+Mutating tools stay `want_image=False`.
 
 ## 6. Migration plan
 
@@ -491,24 +433,14 @@ keystone key and its reader go, and the argument and the read check come in.
    through `kiro-cli chat`, names content shown only in a real window. It is recorded
    as manual evidence on the PR, not as a test. A route that fails it does not get
    images, and if both fail the set ships empty. Blocked on section 10.1.
-3. **`computer_batch`** (5.4).
-   Exit: a batch of N steps produces N per-step SEL records under the step tool
-   names; a step that opens a dialog makes the next element step fail with drift and
-   the reply marks the rest `not run`; a step naming another `app` or `window_id`, a
-   launch step and a `global` click are refused before any step runs; with an `mcp`
-   deny on `@kirocrew-computer/computer_type_text`, a batch containing a
-   `computer_type_text` step is refused before its first step runs, and the same
-   batch without that step runs.
-   Blocked on sections 10.5 and 10.6.
-4. **Truncated-tree capture**: not planned. Section 10.2's recommended answer keeps
+3. **Truncated-tree capture**: not planned. Section 10.2's recommended answer keeps
    today's rule; a change would be its own RFC.
 
 ## 7. Backward compatibility
 
 Compatible. A call that omits `inline_image` gets a byte-identical reply on every
 harness, the argument is new and optional, `build_tool_response` gains only an
-optional parameter, nothing in the keystone or `config.json` changes, and
-`computer_batch` is a new tool.
+optional parameter, and nothing in the keystone or `config.json` changes.
 
 ### 7.1 What else phase 2 changes
 
@@ -582,14 +514,14 @@ The implementation PR updates these in the same commit as the code:
   blocks only (phase 2 pins this with a test). The spooled JPEG keeps today's `0o600`
   file and ring trim.
 - **No history wedge.** The gateway route downscales or drops every image before it
-  leaves (G6), independent of the MCP gateway relay.
+  leaves (G5), independent of the MCP gateway relay.
 - **Audit.** Every request records whether the image was attached, and why not (5.3).
 - **No new Computer Use row.** AGENTS.md governs Computer Use by one on/off row, the
   operator opt-in on the keystone `computer_use.json` ANDed with
   `capabilities.computer_use` ([`rfc-crew-lts-edition`](rfc-crew-lts-edition.md),
   appendix "Desktop control"), and forbids finer `computer_use.*` scopes, more
-  capability rows, approval ordinals and pointer permits. The first change adds none
-  of these and no key. The on/off row still decides whether `computer_get_state` runs
+  capability rows, approval ordinals and pointer permits. This design adds none of
+  these and no key. The on/off row still decides whether `computer_get_state` runs
   at all; the read check asks only the questions the gate already asks of a file
   read (deny rules, `filesystem.read`, `tools`, `hooks.confirm_tools`, the spec's
   grant).
@@ -597,13 +529,7 @@ The implementation PR updates these in the same commit as the code:
   like the other `ACP_BACKENDS_*` sets, and is not a governance row. The attach
   decision runs in band (5.3).
 - **Sensitive paths.** The keystone, `computer_use.json` and `computer_use/gate.py`
-  are not touched; phase 3's class row lives in
-  `platform/governance_parts/tool_calls.py`.
-- **Batch.** Every step passes the full chokepoint and is audited separately. What
-  changes is that one tool call, and therefore one interactive approval in a
-  non-autopilot session, covers several actions. The spec's `call` section says a
-  tool that runs other tools "would let a model launder one per-call gate decision
-  into many"; section 10.5 asks the maintainers to rule on that for this tool.
+  are not touched.
 
 ## 9. Alternatives considered
 
@@ -627,19 +553,13 @@ The implementation PR updates these in the same commit as the code:
   file (2.2) the model cannot see it at all.
 - **Embed the image as base64 text.** The model would receive a string, not an
   image, at several thousand characters per screenshot.
-- **Codex-style code execution** (a JavaScript REPL driving the desktop). Rejected:
-  model-written code would run inside the gateway process that holds desktop access,
-  and every action inside a script would bypass the per-call chokepoint and audit.
 - **Images on every mutating tool.** Rejected for now: each image is replayed with
-  the history on every later turn. The batch's single final image covers the
-  "act, then look" case.
-- **Leave multi-step work to Jev.** Jev serves closed subtasks and does not read
-  images (`rfc-jev-task-executor` section 6). Both can exist: Jev for cheap, closed
-  errands; the batch for steps the chat model plans itself.
+  the history on every later turn. A model that wants to see the result of an
+  action asks on the `computer_get_state` that follows it.
 
 ## 10. Open questions and recommended answers
 
-Sections 10.1, 10.5 and 10.6 are open. Sections 10.2 to 10.4 carry the author's
+Section 10.1 is the one open question. Sections 10.2 to 10.4 carry the author's
 recommended answers; the maintainers decide, and a sign-off on 10.1 accepts them
 unless the maintainer says otherwise.
 
@@ -678,16 +598,3 @@ section 3.5 describes (one executor returning a private `DispatchResult` with ty
 refusals, and `dispatch_tool` as its text adapter), so Jev's `dispatch_structured`
 adapter can sit on the same split later instead of a second one. Jev's author is
 asked before phase 1 opens.
-
-### 10.5 One approval for a batch
-
-Do maintainers accept that one `computer_batch` call covers up to `MAX_BATCH_STEPS`
-actions under one approval, given every step is checked by name, dispatched and
-audited on its own? Options: (a) accept; (b) offer the tool only in sessions whose
-approval mode already pre-approves Computer Use; (c) drop the batch and ship only the
-screenshot change.
-
-### 10.6 Batch limits
-
-`MAX_BATCH_STEPS` (20 is a placeholder), the allowed step tools, and whether
-`click_method: "global"` may appear in a batch at all.
