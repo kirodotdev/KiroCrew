@@ -1,1 +1,1 @@
-import os
+x: int = "a"
