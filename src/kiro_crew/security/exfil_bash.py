@@ -165,16 +165,18 @@ def _inert_line_allows(command: str) -> bool:
     variable, an unquoted substitution, `${ …; }`), a redirection, any other
     separator, or a first word outside `_CARVEOUT_VERBS` and *programs* keeps the
     deny. With no such program on the line, no HTTP client can run."""
-    # A builtin and a filter that execute nothing; never ``printf``, whose ``-v``
-    # writes a variable (``BASH_CMDS[date]`` rebinds a verb).
-    programs = _CARVEOUT_VERBS | {"echo", "cat"}
+    # A builtin and filters that execute nothing; never ``printf``, whose ``-v``
+    # writes a variable (``BASH_CMDS[date]`` rebinds a verb), and never ``sort``,
+    # whose ``--compress-program`` runs one.
+    programs = _CARVEOUT_VERBS | {"echo", "cat", "head", "tail", "wc"}
     # A list or a pipe: a paren, a backtick or a heredoc is refused.
     separators = ("", ";", "&", "&&", "||", "|", "\n")
     # Only the time zone or locale: never ``PATH``, ``LD_PRELOAD`` or another
     # variable that changes which program runs.
     locale_prefix = re.compile(r"(?:TZ|LANG|LC_[A-Z]+)=[A-Za-z0-9_./:+-]*\Z")
-    # The reader can misplace a word end at an escape (``\ #`` reads as a comment).
-    if "\\" in command or "#" in command:
+    # The reader can misplace a word end at an escape (``\ #`` reads as a comment),
+    # so only a backslash that is literal inside quotes passes.
+    if "#" in command or not _backslashes_are_quoted_literals(command):
         return False
     # Bound the reader's work: a real conversion line is short and barely nested.
     if len(command) > 2000 or command.count("$(") > 4:
@@ -187,8 +189,50 @@ def _inert_line_allows(command: str) -> bool:
             return False
         while raws and locale_prefix.match(raws[0]):
             raws.pop(0)
-        if raws and raws[0] not in programs:
+        if raws and raws[0] not in programs and not _is_read_only_gh(raws):
             return False
+    return True
+
+
+#: ``gh`` subcommands that read GitHub and take no local file as a body. ``gh api``,
+#: ``gh gist``, ``gh release`` and every ``create``/``edit``/``comment`` can send a
+#: file, so they are not here; a flag before the subcommand fails closed too.
+_READ_ONLY_GH = frozenset(
+    (("search",), ("issue", "view"), ("issue", "list"), ("pr", "view"), ("pr", "list"))
+)
+
+
+def _is_read_only_gh(raws: "list[str]") -> bool:
+    """Whether the raw words *raws* are a :data:`_READ_ONLY_GH` call of ``gh``."""
+    return (
+        len(raws) >= 2
+        and raws[0] == "gh"
+        and ((raws[1],) in _READ_ONLY_GH or tuple(raws[1:3]) in _READ_ONLY_GH)
+    )
+
+
+def _backslashes_are_quoted_literals(command: str) -> bool:
+    """Whether every backslash in *command* is a literal character to bash.
+
+    That is a backslash inside single quotes, or inside double quotes before a
+    character it does not escape there (``"a\\|b"`` is the four characters it
+    shows). An unquoted backslash, or one before ``$``, a backtick, ``"``, ``\\`` or
+    a newline inside double quotes, returns False, so the reader's word ends and
+    bash's cannot differ at one. A ``$(`` anywhere with a backslash anywhere also
+    returns False: inside a substitution the quoting starts over.
+    """
+    if "\\" in command and "$(" in command:
+        return False
+    quote = ""
+    for i, char in enumerate(command):
+        if quote == "'":
+            if char == "'":
+                quote = ""
+        elif char == "\\":
+            if quote != '"' or command[i + 1 : i + 2] in ("$", "`", '"', "\\", "\n", ""):
+                return False
+        elif char in "'\"" and quote in ("", char):
+            quote = "" if quote else char
     return True
 
 

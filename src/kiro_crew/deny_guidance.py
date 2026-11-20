@@ -69,6 +69,7 @@ from kiro_crew.platform import context as platform_context
 from kiro_crew.platform.capability_bound import bind_capability_manager
 from kiro_crew.platform.defaults import DefaultCapabilityManager
 from kiro_crew.security import s3_direction as _s3_direction
+from kiro_crew.security.diagnostics import refusal_rule_id
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,17 @@ DENY_CLASS_REMOTE_SCRIPT = "remote_script"
 #: a form the reader CAN read, not to hand the file to the user. Chosen only when
 #: the subject is download-shaped; an actual upload keeps the exfil-shape prose.
 DENY_CLASS_S3_UNREAD_DOWNLOAD = "s3_unread_download"
+
+#: The ``-d @`` file-body row (``data-exfil-curl-file-body``). The gate matches
+#: that text anywhere on the line, so it also stops a ``date`` epoch conversion or
+#: a search for the flag itself, and the exfil-shape prose names no form that
+#: passes. This class keeps the upload answer and adds the forms that do pass.
+#: Chosen only for the exfil GATE's refusal, by the rule id on its own diagnostic
+#: line. The regex tier's row for the same id matches ``curl`` with a ``--data @``
+#: form and has no inert-line carve-out, so a line this prose says passes can still
+#: meet it; its refusal keeps the exfil-shape prose.
+DENY_CLASS_FILE_BODY_TEXT = "file_body_text"
+_FILE_BODY_RULE_ID = "data-exfil-curl-file-body"
 
 #: Ordered (class, anchors) rules, matched case-insensitively as substrings of
 #: the refusal text. Order is precedence and is load bearing: a command can
@@ -588,6 +600,23 @@ REMEDIATION: dict[str, str] = {
         "shape, say that plainly and report it as an over-block instead of hunting "
         "for a form that slips past."
     ),
+    DENY_CLASS_FILE_BODY_TEXT: (
+        "This rule refuses a request body read from a local file: `-d @file`, "
+        "`--data @file` and the other `--data` forms. It matches that text anywhere "
+        "on the line, without knowing which program reads it, so a line that only "
+        "mentions it is refused too. If a local file's contents were meant to leave "
+        "this host, that is the refused action: do not re-spell it; name the file and "
+        "the destination and let the user send it themselves. If no file was going "
+        "anywhere, these forms pass: `date -u -d @<epoch>` as one plain command with "
+        "a literal epoch, once per epoch (a loop keeps a live `$` beside `-d @`, so "
+        "it stays refused); Python's `datetime.fromtimestamp` for many epochs at "
+        "once; and a search for the text with your file-search tool, or a line made "
+        "only of `grep`, `date`, `echo`, `cat`, `head`, `tail`, `wc` and read-only "
+        "`gh` search, view and list calls, with no `$`, no backtick and no redirect. "
+        "A line that names `curl` together with a `--data @` form is refused by a "
+        "second rule wherever that pair appears, so search for that pair with the "
+        "file-search tool."
+    ),
     DENY_CLASS_SELF_PROTECTION: (
         "This refusal is about what the action would DO — reach the product's own "
         "credential mint, or stop the supervisor that is running you — so it is not "
@@ -832,10 +861,25 @@ def classify_deny(reason: str, subject: str = "") -> str:
     named = (_named_identity(reason) or "").lower()
     for deny_class, matchers in _CLASS_MATCHERS:
         if any(matcher.search(text) for matcher in matchers):
-            return deny_class
+            return _file_body_refinement(reason, deny_class)
         if any(matcher.search(named) for matcher in _NAMED_PATTERN_MATCHERS.get(deny_class, ())):
             return deny_class
     return ""
+
+
+def _file_body_refinement(reason: str, deny_class: str) -> str:
+    """*deny_class*, or :data:`DENY_CLASS_FILE_BODY_TEXT` for the ``-d @`` row.
+
+    For the exfil gate, whose first line names no rule, so the anchor scan answers
+    it. Only an exfil-shape answer is refined, and only when the rule id on the
+    gate's own diagnostic line is that row's (the LAST such line, so a quoted one
+    in the refused command cannot choose it). A regex-tier refusal names its rule on
+    its first line and never reaches this. Display only: it picks prose and can
+    never make anything allowed.
+    """
+    if deny_class == DENY_CLASS_EXFIL_SHAPE and refusal_rule_id(reason) == _FILE_BODY_RULE_ID:
+        return DENY_CLASS_FILE_BODY_TEXT
+    return deny_class
 
 
 def remediation_for(reason: str, subject: str = "", *, credential_tool_hint: str = "") -> str:

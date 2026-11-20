@@ -1,0 +1,6 @@
++67
+The `-d @` file-body gate's inert-line carve-out in `exfil_bash` also reads `head`,
+`tail`, `wc` and read-only `gh` search, view and list calls as inert, and accepts a
+backslash that bash reads as a plain character inside quotes. `diagnostics` gains
+`refusal_rule_id`, which the deny guidance uses to give that rule's refusal its own
+prose and which the debug handler now shares.
