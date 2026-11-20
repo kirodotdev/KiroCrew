@@ -895,7 +895,14 @@ may not depend on what else the list holds. The row's value is the object. An
 enrolled member carries it into its copy unchanged and in place, the owner can
 remove it and set it back to Inherited, and a Parent that adds or changes one
 waits for approval like any other `resources` change. The editor cannot set an
-object row, since no string spells it.
+object row, since no string spells it. A Bot's **Add abilities** copies an object
+into the Bot's own file as written (`mate_worker_kit`), and the worker merge
+carries it onto the worker spec (`mate_worker.worker_additions`,
+`merge_worker_spec`), so KAS is sent what a session of the agent itself is sent.
+Both dedupe `resources` by the same row key (`mate_worker.resource_entries`): an
+entry whose key the Bot or the worker base already holds is skipped, never added
+twice. A relative `file://` entry is copied as written, because its anchor is the
+session's folder, not the folder the spec file lives in.
 
 `_skills_injection_plan` is the single decision for `skill://`. It reads the
 mapping, and only an unmapped custom agent's row also depends on the harness:

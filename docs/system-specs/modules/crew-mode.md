@@ -358,7 +358,9 @@ Both list tools, MCP servers, skills and resources, partitioned by each
 capability row's `state` (`inherited` → Comes with, `local` → Added to). The
 **Resources** group holds every `resources` entry the worker loads that is not
 a skill (a `file://` document or glob, such as the base's steering glob or a
-file an add copied in), named by its path. An added row that names
+file an add copied in), named by its path, and every knowledge-base object, named
+`<type>:<name>`; an add copies such an object as written and the worker spec
+carries it (`agent-spec-fields.md`, Resources). An added row that names
 a stored row carries **Remove**, which goes through the capabilities `remove`
 op. A name in the file's own `skills` list counts as stored: an add copies that
 list as written, so an entry can outlive the agent that listed it, and a
