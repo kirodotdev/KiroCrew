@@ -3,8 +3,8 @@ title: Live browser in chat -- Browser Harness behind a gateway CDP relay, watch
 status: draft
 author: bolichen97
 created: 2026-10-31
-last-audited: 2026-10-31
-audited-at: 0301f8b34f
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: []
 tracking-issues: [22561]

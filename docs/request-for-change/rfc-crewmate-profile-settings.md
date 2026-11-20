@@ -3,8 +3,8 @@ title: Crewmate settings — Trust by default, set on the profile, not in the ch
 status: implemented
 author: iamwhatever
 created: 2026-10-07
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr:
 implementation-prs: [17836]
 tracking-issues: []

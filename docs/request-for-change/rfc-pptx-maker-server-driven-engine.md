@@ -3,8 +3,8 @@ title: "PPTX Maker: follow SDPM v0.10"
 status: draft
 author: sktok
 created: 2026-09-30
-last-audited: 2026-11-08
-audited-at: 0bdd7950d9
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 22323
 implementation-prs: []
 tracking-issues: []

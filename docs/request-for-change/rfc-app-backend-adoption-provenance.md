@@ -4,8 +4,8 @@ status: draft
 kind: decision
 author: kirocrew-worker (drafted for maintainer decision)
 created: 2026-09-25
-last-audited: 2026-09-25
-audited-at: 27dbd6db5f
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: [13650]
 tracking-issues: [13403]

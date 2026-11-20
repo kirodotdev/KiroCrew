@@ -3,8 +3,8 @@ title: Host resource pressure goes on the work ledger and wakes the conductor, w
 status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
-last-audited: 2026-11-14
-audited-at: 16e11a1870
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 36304
 implementation-prs: [36481, 37164]
 tracking-issues: []

@@ -3,8 +3,8 @@ title: Crewmate greeting on open — the warm resume card and the cold welcome
 status: accepted
 author: iamwhatever
 created: 2026-10-07
-last-audited: 2026-10-07
-audited-at: c65697eaf6
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr:
 implementation-prs: [17797, 17822]
 tracking-issues: []

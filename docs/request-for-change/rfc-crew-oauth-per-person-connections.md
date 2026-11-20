@@ -3,8 +3,8 @@ title: Per-person Connection tokens in a shared Crew
 status: draft
 author: buluoray, with kirocrew agent session
 created: 2026-11-18
-last-audited: 2026-11-18
-audited-at: e80c677c04a
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: []
 tracking-issues: []

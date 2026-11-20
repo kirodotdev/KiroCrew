@@ -3,8 +3,8 @@ title: Show per-session readiness in the composer, hold a message typed too earl
 status: draft
 author: kirocrew agent session, directed by chenmingwei23
 created: 2026-11-12
-last-audited: 2026-11-12
-audited-at: d9839eee5d
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 35886
 implementation-prs: []
 tracking-issues: [35875]

@@ -3,8 +3,8 @@ title: ACP backend failover — an opt-in chain a sub-agent spawn falls through 
 status: draft
 author: severity1
 created: 2026-11-02
-last-audited: 2026-11-02
-audited-at: f2c0d926cf
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 27581
 implementation-prs: [26123]
 tracking-issues: [13892]
@@ -14,8 +14,11 @@ superseded-by: []
 
 # RFC: ACP Backend Failover
 
-> **Status:** `draft`. Nothing is on main. Phase 1 is implemented in the open
-> pull request [#26123](https://github.com/kirodotdev/KiroCrew/pull/26123);
+> **Status:** `draft`. Phase 1 is on main from
+> [#26123](https://github.com/kirodotdev/KiroCrew/pull/26123), merged
+> 2026-11-02 (`src/kiro_crew/acp_failover.py`, called from
+> `dashboard/messaging_api/spawn.py`); Phase 2 is not started. No maintainer
+> acceptance is recorded, so the status stays `draft`. In that pull request
 > maintainer bolichen97 asked for this document to land first, as its own
 > change, and recorded two decisions on that pull request
 > ([comment](https://github.com/kirodotdev/KiroCrew/pull/26123#issuecomment-6555008023),
