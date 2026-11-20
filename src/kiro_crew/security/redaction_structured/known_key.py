@@ -16,10 +16,11 @@ The input the key sits in decides how the value is read:
 - assignment at a line start (an optional unified-diff marker ``+``, ``-`` or space,
   blanks, optional ``export``/``set``/``setx``/``declare`` word, YAML ``- ``, Markdown
   ``*``), separator ``=`` or ``:``; ``KEY=value`` glued after a blank, ``;``, ``&``,
-  ``|`` or ``(``; ``KEY = value`` after a blank on a longer line; or, for a gate that
-  reads a fixed shape (``aws_secret_40``, ``b64_run``), ``KEY: value`` or ``KEY=value``
-  anywhere on a line (a table cell ``| *SecretAccessKey:* ...``, a URL query). An assignment inside a quoted
-  string on a longer line is not read (owner ruling: the parser is not widened for it).
+  ``|``, ``(``, ``,``, a quote, ``[`` or ``{``; ``KEY = value`` after a blank on a
+  longer line; or, for a gate that reads a fixed shape (``aws_secret_40``,
+  ``b64_run``), ``KEY: value`` or ``KEY=value`` anywhere on a line (a table cell
+  ``| *SecretAccessKey:* ...``, a URL query). Other assignments inside a quoted string
+  on a longer line (``"x password: v"``) are not read.
 
 The value gate then decides: ``aws_secret_40`` takes a run of exactly 40
 AWS-secret-alphabet characters ending the value; ``b64_run`` takes a base64 run of at
@@ -67,7 +68,7 @@ _BLANKS = " \t"
 _CONT = frozenset(ALNUM + "_-.=/+~%")
 _LEAD_WORDS = frozenset({"", "export", "set", "setx", "declare", "-"})
 _DIFF_MARKS = frozenset("+- ")
-_INLINE_BEFORE = frozenset(" \t;&|(")
+_INLINE_BEFORE = frozenset(" \t;&|(,'\"[{")
 # Where a key a fixed-shape gate reads may start on a longer line: a URL query or a path
 # segment included.
 _MIDLINE_BEFORE = frozenset(" \t*|(,;?&/")
@@ -78,6 +79,8 @@ _CODE = "code"
 _LITERAL = "literal"
 _YAML = "yaml"
 _INI = "ini"
+# An assignment later on a line (``q password=...``): code or a free-text query.
+_INLINE = "inline"
 
 
 class _More(Exception):
@@ -178,7 +181,8 @@ def _reads_as_code(value: str, key: str, context: str) -> bool:
     no blank around the ``=`` (an env, ini or properties file), and a field of a
     ``;``-separated connection string. A line-start mapping takes a bare word holding a
     digit as written (*context* ``yaml``, ``password: ...``, and ``ini``,
-    ``password = ...``), and so does YAML a word longer than a type's name: a type
+    ``password = ...``), as does an assignment later on a line (*context* ``inline``,
+    ``q password=...``), and so does YAML a word longer than a type's name: a type
     annotation (``password: SecretStr``) names a type, which holds no digit.
     """
     if value[0] in _CODE_HEADS or any(ch in _CODE_CHARS for ch in value):
@@ -190,7 +194,7 @@ def _reads_as_code(value: str, key: str, context: str) -> bool:
         return True
     if context == _LITERAL or key.isupper() or key.startswith("-"):
         return False
-    if context in (_YAML, _INI) and not _DIGIT_SET.isdisjoint(value):
+    if context in (_YAML, _INI, _INLINE) and not _DIGIT_SET.isdisjoint(value):
         return False
     if context == _YAML and len(value) > _TYPE_NAME_MAX:
         return False
@@ -385,9 +389,10 @@ def _read(rd: _Reader, ks: int, ke: int, key: str, row: KnownKeyRow) -> tuple[in
         flush = sep == "=" and sep_at == ke and k == j
         context = _LITERAL if flush else (_YAML if sep == ":" else _INI)
         return _value_after_sep(rd, k, gate, key, context)
-    # ``KEY=value`` glued after a blank or a shell separator.
+    # ``KEY=value`` glued after a blank, a shell separator, a comma or an opening quote
+    # or bracket.
     if prev in _INLINE_BEFORE and nxt == "=" and rd.at(ke + 1) != "=":
-        return _value_after_sep(rd, ke + 1, gate, key, _LITERAL if prev == ";" else _CODE)
+        return _value_after_sep(rd, ke + 1, gate, key, _LITERAL if prev == ";" else _INLINE)
     # ``aws configure set <key> <value>``: the CLI's own way to write a key.
     if prev in _BLANKS and prev and text[max(0, ks - 64) : ks].rstrip().endswith("configure set"):
         j = rd.blanks(ke, at_least=1)
@@ -399,7 +404,7 @@ def _read(rd: _Reader, ks: int, ke: int, key: str, row: KnownKeyRow) -> tuple[in
         if j is not None and rd.at(j) == "=" and rd.at(j + 1) not in ("=", ""):
             k = rd.blanks(j + 1, at_least=1)
             if k is not None:
-                return _value_after_sep(rd, k, gate, key)
+                return _value_after_sep(rd, k, gate, key, _INLINE)
     # ``KEY: value`` on a longer line, for a gate whose fixed shape decides the value.
     if gate != "secret_literal" and prev and prev in _MIDLINE_BEFORE:
         j = rd.blanks(ke)
