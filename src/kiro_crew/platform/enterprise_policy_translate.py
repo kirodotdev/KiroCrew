@@ -96,6 +96,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 import yaml  # type: ignore[import-untyped]
 
 from kiro_crew.platform.governance import _ORDINAL_SCALES, MODE_ALLOW, MODE_DENY
+from kiro_crew.platform.governance_parts import matching as _matching
 from kiro_crew.platform.governance_parts.baseline import BASELINE_CONTROLS
 from kiro_crew.platform.governance_parts.catalog import SCOPE_CATALOG
 from kiro_crew.platform.governance_parts.matching import _MATCHERS, _expand
@@ -311,7 +312,8 @@ def _non_canonical(text: str) -> str:
     written, so only a pattern already in the item's form can match: an absolute path
     (``/``, ``~`` or ``~/...``) with one ``/`` between segments, no trailing ``/``, no
     ``.`` or ``..`` segment, and none of the shapes fnmatch and minimatch read
-    differently.
+    differently. On a Windows gateway only ``~`` or ``~/...`` is absolute, because
+    the item there has a drive and a ``/``-rooted pattern has none.
     """
     if not text:
         return "an empty path"
@@ -321,6 +323,10 @@ def _non_canonical(text: str) -> str:
         return "a drive letter"
     if not (text.startswith("/") or text == "~" or text.startswith("~/")):
         return "not an absolute or home path"
+    if text.startswith("/") and _matching._WINDOWS_PATHS:
+        # A Windows item always carries a drive (``_norm_item``), so a pattern rooted
+        # without one meets no local path there. A remote-workspace path is refused too.
+        return "rooted without a drive, so it matches no local path on a Windows gateway"
     if "$" in text or any(op in text for op in _EXTGLOB_OPENERS):
         return "no Crew form for this path glob"
     if "[" in text:

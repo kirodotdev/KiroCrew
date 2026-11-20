@@ -281,9 +281,36 @@ class TestUnknownValues:
                 "  - {capability: fs_read, effect: deny, match: ['.env']}\n"
             )
 
-    @pytest.mark.parametrize("pattern", ["/", "~", "~/.ssh/**", "/srv/**/key", "/srv/{a,b}.pem"])
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            pytest.param("/", marks=_POSIX_PATHS),
+            "~",
+            "~/.ssh/**",
+            pytest.param("/srv/**/key", marks=_POSIX_PATHS),
+            pytest.param("/srv/{a,b}.pem", marks=_POSIX_PATHS),
+        ],
+    )
     def test_a_canonical_file_pattern_is_read(self, pattern):
         assert t._fs_patterns(pattern, t.DENY_ROLE)
+
+    @pytest.mark.parametrize("capability", ["fs_read", "fs_write"])
+    @pytest.mark.parametrize("pattern", ["/srv/data/**", "/", "/srv/{a,b}.pem"])
+    def test_a_driveless_file_pattern_refuses_a_deny_and_drops_an_allow_on_windows(
+        self, _floor_monkeypatch, capability, pattern
+    ):
+        """On Windows every item has a drive, so a ``/``-rooted pattern meets none."""
+        from kiro_crew.platform.governance_parts import matching
+
+        _floor_monkeypatch.setattr(matching, "_WINDOWS_PATHS", True)
+        with pytest.raises(t.Unrepresentable, match="rooted without a drive"):
+            t.translate(
+                "rules:\n"
+                f"  - {{capability: {capability}, effect: allow}}\n"
+                f"  - {{capability: {capability}, effect: deny, match: ['{pattern}']}}\n"
+            )
+        assert t._fs_patterns(pattern, t.ALLOW_ROLE) == []
+        assert t._fs_patterns("~/.ssh/**", t.DENY_ROLE)
 
     def test_a_brace_range_deny_refuses_the_policy(self):
         with pytest.raises(t.Unrepresentable):
