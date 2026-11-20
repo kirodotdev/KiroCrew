@@ -95,7 +95,9 @@ class _StubService(KasLoginService):
         if provider_str == "facebook":
             raise ValueError(provider_str)
         if start_url == "malformed":
-            raise InvalidStartUrlError("Start URL must use https.")
+            malformed = InvalidStartUrlError("Start URL must use https.")
+            malformed.reason = "not_https"
+            raise malformed
         if start_url == "refused-by-aws":
             raise StartUrlRejectedError("AWS did not accept the start URL.")
         if start_url == "refused-in-region":
@@ -225,17 +227,21 @@ async def test_begin_device_missing_and_unknown_provider():
     assert _body(resp)["code"] == "invalid_provider"
 
 
-@pytest.mark.parametrize("start_url", ["malformed", "refused-by-aws"])
+@pytest.mark.parametrize(
+    "start_url, reason", [("malformed", "not_https"), ("refused-by-aws", "aws_rejected")]
+)
 @pytest.mark.asyncio
-async def test_begin_device_bad_start_url_is_a_coded_400_with_the_reason(start_url):
+async def test_begin_device_bad_start_url_is_a_coded_400_with_the_reason(start_url, reason):
     """Whether Crew or AWS refuses the start URL, the form gets a 400 it can fix
-    with the reason as the message, not a 502 that reads as an outage."""
+    with the reason as the message, not a 502 that reads as an outage, and the
+    reason's name, which the form says in the user's language."""
     resp = await api_kas_login_begin_device(
         _FakeRequest(_StubService(), {"provider": "idc", "start_url": start_url})
     )
     assert resp.status == 400
     body = _body(resp)
     assert body["code"] == "invalid_start_url"
+    assert body.get("reason") == reason
     assert "start url" in body["error"].lower()
 
 
