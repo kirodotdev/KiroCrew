@@ -24,6 +24,7 @@ import pytest
 
 from kiro_crew import member_goals, member_records, members, sandbox, session_token_sig
 from kiro_crew.sandbox import userns_available
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 pytestmark = [
     pytest.mark.skipif(sys.platform != "linux", reason="the namespace launcher is Linux-only"),
@@ -214,7 +215,7 @@ def test_a_sandboxed_backend_cannot_write_beside_a_signed_session_record(home, k
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=120,
+        timeout=FALLBACK_TIMEOUT_SECS,
     )
 
     output = proc.stdout + proc.stderr
