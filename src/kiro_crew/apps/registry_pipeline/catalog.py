@@ -56,6 +56,7 @@ from kiro_crew.apps.registry_pipeline.indexes import (
     _registry_fetch_failure,
 )
 from kiro_crew.apps.registry_pipeline.manifests import (
+    _REGISTRY_ROW_KEYS,
     _SSH_SIGN_IN_REFUSED,
     _merge_manifest,
     _resolve_manifest,
@@ -66,7 +67,11 @@ from kiro_crew.apps.registry_pipeline.sources import (
     _is_pinned_registry_move,
     _load_registry_file,
 )
-from kiro_crew.apps.registry_pipeline.store_art import _prewarm_owner_tier_store_assets
+from kiro_crew.apps.registry_pipeline.store_art import (
+    _PREWARM_ROW_FIELDS,
+    _prewarm_owner_tier_store_assets,
+    _slim_prewarm_row,
+)
 from kiro_crew.apps.registry_pipeline.subprocess_env import _detect_probe_env
 from kiro_crew.apps.version import parse_version as _parse_version
 from kiro_crew.sandbox import (
@@ -117,53 +122,137 @@ _MANIFEST_BATCHES: set[asyncio.Future[Any]] = set()
 _MANIFEST_FETCH_GATE: dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
 
 
+#: What ``copy.deepcopy`` and ``json.dumps`` raise for a value an index nests too
+#: deep, or builds of types JSON never yields.
+_UNCOPYABLE_ROW_ERRORS = (RecursionError, TypeError, ValueError)
+
+
 def _forget_manifest_fetch(key: str, task: asyncio.Task[Any]) -> None:
     if _MANIFEST_FETCHES.get(key) is task:
         del _MANIFEST_FETCHES[key]
 
 
-async def _resolve_manifest_once(entry: dict[str, Any]) -> dict[str, Any]:
-    """``_resolve_manifest``, shared by every listing that asks while it runs."""
+def _bare_listing_row(entry: dict[str, Any]) -> dict[str, Any]:
+    """*entry* reduced to its name and the coordinates that are strings."""
+    return {k: entry[k] for k in _PREWARM_ROW_FIELDS if isinstance(entry.get(k), str)}
+
+
+def _own_listing_row(entry: dict[str, Any]) -> dict[str, Any]:
+    """A deep copy of listing row *entry*, or its bare row when it cannot be copied.
+
+    Every row a listing hands back goes through here, so a row an index nests past
+    the recursion limit shows bare instead of failing the whole listing.
+    """
+    import copy  # local: see ``_join_manifest_fetch``
+
+    try:
+        return copy.deepcopy(entry)
+    except _UNCOPYABLE_ROW_ERRORS:
+        bare = _bare_listing_row(entry)
+        logger.warning("store listing shows %r bare: its row cannot be copied", bare.get("name"))
+        return bare
+
+
+def _waiter_listing_row(entry: dict[str, Any], merged: dict[str, Any]) -> dict[str, Any]:
+    """The merged row a fetch answered, with *entry*'s own registry keys.
+
+    The fetch holds only ``_PREWARM_ROW_FIELDS``, so the other registry keys
+    (``detectInstalled``, ``resources``, ``_index_author`` ...) come from the
+    waiter's entry, the values ``_merge_manifest`` keeps from it; the fetch keys
+    keep the merged values, which ``_merge_manifest`` cleaned (``repo``).
+    """
+    row = {
+        k: merged.get(k, v) if k in _PREWARM_ROW_FIELDS else v
+        for k, v in entry.items()
+        if k in _REGISTRY_ROW_KEYS
+    }
+    row.update((k, v) for k, v in merged.items() if k not in _REGISTRY_ROW_KEYS)
+    return row
+
+
+def _join_manifest_fetch(entry: dict[str, Any]) -> asyncio.Task[dict[str, Any] | None] | None:
+    """The shared ``_resolve_manifest`` task for *entry*, joined or started now.
+
+    The task answers the merged row, or ``None`` when ``_resolve_manifest`` handed
+    back its input unchanged (no clone URL, a failed or skipped fetch): each waiter
+    then answers its OWN entry. The task holds only the entry's digest and its
+    ``_PREWARM_ROW_FIELDS``, the keys a background fetch reads, so a row an index
+    pads with fields it never needs costs a fetch still running nothing beyond
+    those keys.
+
+    ``None`` instead of a task when ``_slim_prewarm_row`` rejects the entry (a fetch
+    key that is neither a string nor ``None``, or too long), the entry's key cannot
+    be computed, or ``_MANIFEST_FETCHES_MAX`` fetches already run: that row gets no
+    fetch and answers ``_stale_manifest_row``.
+    """
     # Local imports: every module-level name here is re-exported by the registry
     # facade, and stdlib modules are not part of its surface.
-    import copy
     import hashlib
 
+    # The shared fetch works on its own dict of the fetch keys: the caller stamps
+    # trust fields on its entry (``_apply_trust_fields`` pops ``_index_author``)
+    # while a fetch past the budget still runs for listings that join it later.
+    # The task holds these strings past the listing, so they get a prewarm row's
+    # length cap: a padded row starts no fetch. A ``None`` key is kept as ``None``,
+    # since ``_resolve_manifest`` reads a missing ``branch`` as ``main``.
+    fetch_entry = _slim_prewarm_row(entry, allow_none=True)
+    if fetch_entry is None:
+        logger.info("store listing fetches no app.json for a row with a malformed source")
+        return None
     loop = asyncio.get_running_loop()
-    # The whole entry is in the key, not only its coordinates: the merged row keeps
-    # the entry's ``_registry`` and ``_index_author``, so a seed row and an external
-    # row naming the same source must not answer with each other's row.
-    key = hashlib.sha256(
-        json.dumps(
-            [_manifest_source_coordinates(entry), entry], sort_keys=True, default=repr
-        ).encode()
-    ).hexdigest()
+    # The whole entry is in the key, not only its coordinates: a seed row and an
+    # external row naming the same source differ in ``_registry``, which the fetch
+    # reads, and must not answer with each other's row.
+    try:
+        key = hashlib.sha256(
+            json.dumps(
+                [_manifest_source_coordinates(entry), entry], sort_keys=True, default=repr
+            ).encode()
+        ).hexdigest()
+    except _UNCOPYABLE_ROW_ERRORS:
+        logger.info(
+            "store listing fetches no app.json for %r: its row cannot be keyed", entry.get("name")
+        )
+        return None
     task = _MANIFEST_FETCHES.get(key)
     if task is None or task.get_loop() is not loop:
+        # Every fetch is in the map, so the cap bounds the fetches the background
+        # holds. A row that would pass it starts none and answers its fallback row.
+        if key not in _MANIFEST_FETCHES and len(_MANIFEST_FETCHES) >= _MANIFEST_FETCHES_MAX:
+            logger.info(
+                "store listing fetches no app.json for %r: %d fetches already run",
+                entry.get("name"),
+                len(_MANIFEST_FETCHES),
+            )
+            return None
         gate = _MANIFEST_FETCH_GATE.get(loop)
         if gate is None:
             # Gates of closed loops are dropped here, so the map holds one entry.
             _MANIFEST_FETCH_GATE.clear()
             gate = _MANIFEST_FETCH_GATE[loop] = asyncio.Semaphore(_MANIFEST_RESOLVE_CONCURRENCY)
 
-        # The shared fetch works on its own copy: the caller stamps trust fields on
-        # its entry (``_apply_trust_fields`` pops ``_index_author``) while a fetch
-        # past the budget still runs for listings that join it later.
-        fetch_entry = copy.deepcopy(entry)
-
-        async def _gated() -> dict[str, Any]:
+        async def _gated() -> dict[str, Any] | None:
             async with gate:
-                return await _resolve_manifest(fetch_entry)
+                row = await _resolve_manifest(fetch_entry)
+            return None if row is fetch_entry else row
 
         task = loop.create_task(_gated())
-        if len(_MANIFEST_FETCHES) < _MANIFEST_FETCHES_MAX:
-            _MANIFEST_FETCHES[key] = task
-            task.add_done_callback(lambda done: _forget_manifest_fetch(key, done))
+        _MANIFEST_FETCHES[key] = task
+        task.add_done_callback(lambda done: _forget_manifest_fetch(key, done))
+    return task
+
+
+async def _resolve_manifest_once(entry: dict[str, Any]) -> dict[str, Any]:
+    """``_resolve_manifest``, shared by every listing that asks while it runs."""
     # Shielded: a listing that stops waiting must not cancel a fetch it shares.
     # Each waiter gets its own deep copy, because the listing stamps install status
     # and trust fields on the row and ``_apply_trust_fields`` pops ``_index_author``;
     # no row object crosses between the shared fetch and a listing.
-    return copy.deepcopy(await asyncio.shield(task))
+    task = _join_manifest_fetch(entry)
+    if task is None:
+        return await asyncio.to_thread(_stale_manifest_row, entry)
+    row = await asyncio.shield(task)
+    return _own_listing_row(entry if row is None else _waiter_listing_row(entry, row))
 
 
 def _stale_manifest_row(entry: dict[str, Any]) -> dict[str, Any]:
@@ -174,14 +263,12 @@ def _stale_manifest_row(entry: dict[str, Any]) -> dict[str, Any]:
     failed fetch gives. A copy on every path, because the shared fetch for *entry*
     may still be running. Blocking: reads the cache files.
     """
-    import copy  # local: see ``_resolve_manifest_once``
-
     if not _entry_git_url(entry):
-        return copy.deepcopy(entry)
+        return _own_listing_row(entry)
     cached = _read_manifest_cache(entry, ignore_ttl=True) or _read_installed_manifest_cache(
         entry, ignore_ttl=True
     )
-    return copy.deepcopy(_merge_manifest(entry, cached) if cached else entry)
+    return _own_listing_row(_merge_manifest(entry, cached) if cached else entry)
 
 
 async def _gather_listing_manifests(
@@ -195,6 +282,11 @@ async def _gather_listing_manifests(
     whole budget. A row still resolving at the deadline answers through
     ``_stale_manifest_row``. Its fetch keeps running in the background and fills
     the cache.
+
+    *resolve* is ``_resolve_manifest_once`` or a wrapper that calls it: at the
+    deadline the batch hands each row it has not settled to that row's shared fetch
+    (``_join_manifest_fetch``) and stops, so nothing past the listing holds the
+    caller's rows.
     """
     loop = asyncio.get_running_loop()
     if deadline is None:
@@ -214,6 +306,22 @@ async def _gather_listing_manifests(
     except TimeoutError:
         pass
     pending = [i for i in range(len(entries)) if i not in settled]
+    # The batch's waiters hold the caller's whole rows, so it does not outlive the
+    # listing. Each row it has not settled joins or starts its shared fetch, which
+    # holds only the keys the fetch reads and waits on the shared gate; the batch is
+    # then cancelled, and the shielded fetches keep running to fill the cache.
+    joined: list[asyncio.Task[Any]] = []
+    try:
+        for i in pending:
+            task = _join_manifest_fetch(entries[i])
+            if task is not None:
+                joined.append(task)
+    finally:
+        _MANIFEST_BATCHES.discard(batch)
+        batch.cancel()
+    fetches = asyncio.gather(*joined, return_exceptions=True)
+    _MANIFEST_BATCHES.add(fetches)
+    fetches.add_done_callback(_MANIFEST_BATCHES.discard)
     logger.info(
         "store listing answered with %d of %d app manifests still fetching",
         len(pending),
@@ -223,13 +331,11 @@ async def _gather_listing_manifests(
         *(asyncio.to_thread(_stale_manifest_row, entries[i]) for i in pending),
         return_exceptions=True,
     )
-    import copy  # local: see ``_resolve_manifest_once``
-
-    # The batch keeps running and still holds the settled rows, so the listing takes
-    # copies of them as well.
-    results: list[Any] = [copy.deepcopy(settled.get(i)) for i in range(len(entries))]
+    # Each settled row is this listing's own copy (``_resolve_manifest_once``), and
+    # the batch, cancelled above, holds none of them.
+    results: list[Any] = [settled.get(i) for i in range(len(entries))]
     for i, row in zip(pending, stale, strict=True):
-        results[i] = row
+        results[i] = row if isinstance(row, dict) else _own_listing_row(entries[i])
     return results
 
 
