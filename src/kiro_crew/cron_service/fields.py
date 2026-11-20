@@ -703,7 +703,10 @@ def apply_job_update(
         if recaptured is not None:
             job.execution_context = recaptured
     if "channel" in kwargs:
-        job.channel = kwargs["channel"] or None
+        channel = kwargs["channel"] or None
+        if "thread_ts" not in kwargs and job.channel != channel:
+            job.thread_ts = None
+        job.channel = channel
     if "thread_ts" in kwargs:
         # With ``channel``, decides where a run's output lands. Falsy clears,
         # as for ``channel`` and mcp_cron's blank-to-None. A granted script
