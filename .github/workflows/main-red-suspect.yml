@@ -17,7 +17,9 @@ name: Main Red Suspect
 # suspected issues that run answers: one whose test the `Main is red:` issue now
 # names (main is red, that issue tracks it), and, after a green run that ran the
 # full backend suite and contains the recorded base, every such one (main was
-# green). `.github/scripts/main_red_suspect.py` holds the rules and says what
+# green). A test closed that way is not suspected again for 24 hours: main ran
+# it green after 3 pull requests failed it, so it is more likely flaky than
+# broken. `.github/scripts/main_red_suspect.py` holds the rules and says what
 # counts.
 #
 # A NOTICE ONLY, AND NEVER A SKIP: `scripts/ci_main_red_skip.py` deselects tests
@@ -49,6 +51,8 @@ name: Main Red Suspect
 # suspected issue, at most 3 (green). A failed pull request run costs 2 issue
 # reads and stops there while a `Main is red:` issue is open. Otherwise it reads
 # its own jobs and up to 3 annotation sets, and stops when they name no test.
+# One read of the suspected issues closed in the last 24 hours follows, and it
+# stops when a green main run closed one for every test that fails here.
 # Then: the list of failed pull request runs of the last 3 hours (read to the
 # end), and for each of the newest 10 other pull requests its jobs and up to 3
 # annotation sets. A pull request and its changed files (2 reads) are read only

@@ -35,6 +35,10 @@ WHAT COUNTS (all of it, else nothing is written):
 * One of their bases is contained in the other two; it is recorded. A break, if
   there is one, is in that commit or an earlier one, so a push run on `main`
   that contains it and passes the full backend suite closes the issue.
+* No suspected issue for the test was closed by a green main run in the last
+  `COOLDOWN_HOURS` hours. Main ran it green after 3 pull requests failed it, so
+  it is more likely flaky than broken, and without this a flaky test files one
+  issue per flake.
 * Every set of 3 among the runs read is tried, lowest pull request numbers
   first, so neither the order of the run list nor which run started this
   decides whether an issue opens or what it says.
@@ -75,6 +79,7 @@ STATE_OPEN = "<!-- " + STATE_MARKER + " "
 STATE_CLOSE = " -->"
 MIN_WITNESSES = 3
 WINDOW_HOURS = 3
+COOLDOWN_HOURS = 24
 MAX_CANDIDATES = 10
 MAX_JOBS_PER_RUN = 3
 MAX_CHANGED_FILES = 300
@@ -466,31 +471,55 @@ def _labelled(issue: dict[str, Any], label: str) -> bool:
     )
 
 
-def _open_issues(pages: list[Any], label: str) -> list[dict[str, Any]]:
+def _issues(pages: list[Any], label: str, state: str = "open") -> list[dict[str, Any]]:
     rows = [row for page in pages if isinstance(page, list) for row in page]
     return [
         row
         for row in rows
         if isinstance(row, dict)
         and "pull_request" not in row
-        and row.get("state") == "open"
+        and row.get("state") == state
         and _id(row.get("number"))
         and _labelled(row, label)
     ]
 
 
-def suspects_in(pages: list[Any]) -> list[tuple[int, dict[str, Any]]]:
-    """``(number, record)`` of each open suspected issue this workflow filed, oldest first."""
+def _filed_here(pages: list[Any], state: str) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """``(issue, record)`` of each suspected issue in ``state`` that this workflow filed."""
     found = []
-    for issue in _open_issues(pages, LABEL):
+    for issue in _issues(pages, LABEL, state):
         if not watch.is_watcher_author(issue.get("user")):
             continue
         if not str(issue.get("title", "")).startswith(TITLE_PREFIX):
             continue
-        state = parse_state(str(issue.get("body") or ""))
-        if state is not None:
-            found.append((int(issue["number"]), state))
+        record = parse_state(str(issue.get("body") or ""))
+        if record is not None:
+            found.append((issue, record))
+    return found
+
+
+def suspects_in(pages: list[Any]) -> list[tuple[int, dict[str, Any]]]:
+    """``(number, record)`` of each open suspected issue this workflow filed, oldest first."""
+    found = [(int(issue["number"]), record) for issue, record in _filed_here(pages, "open")]
     return sorted(found, key=lambda pair: pair[0])
+
+
+def cooling_in(pages: list[Any], since: str) -> set[str]:
+    """Tests whose suspected issue a green main run closed at or after ``since``.
+
+    Main ran such a test green after 3 pull requests failed it, so it is more
+    likely flaky than broken, and suspecting it again at once would file one
+    issue per flake. ``since`` and `closed_at` are UTC stamps of one format, so
+    they compare as text.
+    """
+    cooling: set[str] = set()
+    for issue, record in _filed_here(pages, "closed"):
+        closed = issue.get("closed_at")
+        if issue.get("state_reason") != "not_planned" or not isinstance(closed, str):
+            continue
+        if closed >= since:
+            cooling |= {without_group(nodeid) for nodeid in record["failures"]}
+    return cooling
 
 
 def confirmed_in(pages: list[Any]) -> tuple[int, set[str]] | None:
@@ -502,7 +531,7 @@ def confirmed_in(pages: list[Any]) -> tuple[int, set[str]] | None:
             "body": issue.get("body"),
             "author": issue.get("user"),
         }
-        for issue in _open_issues(pages, CONFIRMED_LABEL)
+        for issue in _issues(pages, CONFIRMED_LABEL)
     ]
     issue = watch.pick_issue(rows)
     if issue is None:
@@ -598,10 +627,14 @@ class Api:
             self._relations[(newer, older)] = mirror.get(status or "", status)
         return self._relations[(older, newer)]
 
-    def issues(self, label: str) -> list[Any] | None:
-        return self.get(
-            f"the open `{label}` issues", f"issues?state=open&labels={label}&per_page=100", True
-        )
+    def issues(self, label: str, closed_since: str = "") -> list[Any] | None:
+        """The open issues under ``label``, or those closed and updated since a stamp."""
+        if closed_since:
+            what = f"the `{label}` issues closed since {closed_since}"
+            query = f"state=closed&labels={label}&since={closed_since}"
+        else:
+            what, query = f"the open `{label}` issues", f"state=open&labels={label}"
+        return self.get(what, f"issues?{query}&per_page=100", True)
 
     def failures(self, run_id: int, known: set[str]) -> Failures:
         """What a run's failed backend test jobs name, without the tests in ``known``."""
@@ -670,7 +703,7 @@ def _open_state(
     return confirmed_in(main_red), suspects_in(suspected)
 
 
-def detect(api: Api, trigger: Run, workflow_id: int, since: str) -> int:
+def detect(api: Api, trigger: Run, workflow_id: int, since: str, cool_since: str) -> int:
     """Open one suspected issue when 3 pull requests with a recent failed run agree.
 
     The run that started this must name a failing test, which keeps the reads
@@ -693,6 +726,17 @@ def detect(api: Api, trigger: Run, workflow_id: int, since: str) -> int:
     failures = api.failures(trigger.run_id, known)
     if not failures:
         api.say("This run names no failing test that is not already suspected.")
+        return 0
+    closed = api.issues(LABEL, cool_since)
+    if closed is None:
+        return 0
+    known |= cooling_in(closed, cool_since)
+    failures = frozenset(pair for pair in failures if without_group(pair[0]) not in known)
+    if not failures:
+        api.say(
+            f"Main ran every test that fails here green in the last {COOLDOWN_HOURS} hours, "
+            "after it was suspected; not suspecting it again yet."
+        )
         return 0
     left = api.remaining()
     if left is not None and left < RATE_FLOOR:
@@ -785,7 +829,8 @@ def settle(api: Api, run_id: int, head: str, conclusion: str) -> int:
         text = (
             f"Main was green: the `CI` push run for `{head[:12]}` "
             f"(https://github.com/{api.repo}/actions/runs/{run_id}) contains "
-            f"`{state['base'][:12]}` and passed the full backend suite. Closing as not confirmed."
+            f"`{state['base'][:12]}` and passed the full backend suite. Closing as not confirmed; "
+            f"these tests are not suspected again for {COOLDOWN_HOURS} hours."
         )
         api.close(number, text, "not_planned")
     return 0
@@ -815,8 +860,11 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None, gh: G
         print("The event has no usable pull request, base, workflow or account; writing nothing.")
         return 0
     now = datetime.datetime.now(datetime.timezone.utc)
-    since = (now - datetime.timedelta(hours=WINDOW_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    code = detect(api, Run(run_id, pr, head, base, actor), workflow_id, since)
+    since, cool_since = (
+        (now - datetime.timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for hours in (WINDOW_HOURS, COOLDOWN_HOURS)
+    )
+    code = detect(api, Run(run_id, pr, head, base, actor), workflow_id, since, cool_since)
     api.say(f"{api.calls} API call(s) made.")
     return code
 

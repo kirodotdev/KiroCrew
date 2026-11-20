@@ -316,8 +316,9 @@ Three structural facts explain most of the rest:
   `main` can deselect a test. A push run on `main` closes the suspected issue:
   a red one once the `Main is red:` issue names the test (that issue tracks it),
   a green one that ran the full backend suite and contains the recorded base
-  (main was green). At most 3 are open at once and a test is in one of them
-  only. It reads nothing more while a `Main is red:` issue is open, reads at
+  (main was green), and a test closed that way is not suspected again for 24
+  hours, so a flaky test does not file one issue per flake. At most 3 are open
+  at once and a test is in one of them only. It reads nothing more while a `Main is red:` issue is open, reads at
   most the newest 10 other failed pull request runs of the last 3 hours, reads
   no other run when fewer than 1,500 API requests are left for the token, changes nothing on
   a pull request and cannot fail a job. It holds `actions: read`,

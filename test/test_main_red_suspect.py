@@ -53,6 +53,8 @@ skip = load_skill_script(
 REPO = "example/repo"
 BOT = {"login": "github-actions[bot]", "type": "Bot"}
 SINCE = "2026-11-20T00:00:00Z"
+COOL_SINCE = "2026-11-19T03:00:00Z"
+CLOSED_AT = "2026-11-20T02:00:00Z"
 WORKFLOW_ID = 7
 BASE = "b" * 40
 OLDER_BASE = "a" * 40
@@ -213,15 +215,18 @@ class FakeGh:
             if issue["number"] == number:
                 issue["state"] = "closed"
                 issue["state_reason"] = fields["state_reason"]
+                issue["closed_at"] = CLOSED_AT
         return 0, json.dumps({"number": number}), ""
 
     def _read(self, path: str) -> tuple[int, str, str]:
         if path.startswith("issues?"):
             label = path.split("labels=")[1].split("&")[0]
+            state = path.split("state=")[1].split("&")[0]
+            assert ("since=" in path) == (state == "closed")
             rows = [
                 issue
-                for issue in self.open_issues()
-                if any(lab["name"] == label for lab in issue["labels"])
+                for issue in self.issues
+                if issue["state"] == state and any(lab["name"] == label for lab in issue["labels"])
             ]
             return 0, json.dumps(rows), ""
         if path.startswith("actions/workflows/"):
@@ -282,12 +287,12 @@ class FakeGh:
         raise AssertionError(f"unexpected read {path}")
 
 
-def _detect(gh: FakeGh, trigger: int = 1) -> Any:
+def _detect(gh: FakeGh, trigger: int = 1, cool_since: str = COOL_SINCE) -> Any:
     """Run `detect` for the failed run of pull request ``trigger``; return the Api."""
     pr = gh.prs[trigger]
     api = mod.Api(gh, REPO)
     run = mod.Run(9000 + trigger, trigger, _head(trigger), pr["base"], pr["actor"].lower())
-    assert mod.detect(api, run, WORKFLOW_ID, SINCE) == 0
+    assert mod.detect(api, run, WORKFLOW_ID, SINCE, cool_since) == 0
     return api
 
 
@@ -798,7 +803,7 @@ def test_only_the_newest_runs_are_read_and_only_their_failed_backend_jobs() -> N
     assert all(int(call.split("/")[1]) < 200 for call in gh.reads("GET check-runs/"))
     # A run that is in no group of 3 costs its jobs and one annotation set only.
     assert gh.reads("pulls/") == [] and gh.reads("compare/") == []
-    assert api.calls == 2 + 2 + 1 + 2 * mod.MAX_CANDIDATES
+    assert api.calls == 2 + 2 + 1 + 1 + 2 * mod.MAX_CANDIDATES
 
 
 def test_a_run_beyond_the_newest_ten_is_not_read_so_its_evidence_waits() -> None:
@@ -868,7 +873,10 @@ def test_a_changed_file_list_github_cut_short_is_unknown() -> None:
     assert mod.changed_files([{"status": "ahead"}]) is None
 
 
-@pytest.mark.parametrize("fragment", ["issues?", "actions/runs/9001", "actions/workflows/"])
+@pytest.mark.parametrize(
+    "fragment",
+    ["issues?state=open", "issues?state=closed", "actions/runs/9001", "actions/workflows/"],
+)
 def test_a_read_that_fails_opens_nothing_and_says_why(fragment: str) -> None:
     gh = FakeGh(THREE, refuse=(fragment,))
     api = _detect(gh)
@@ -985,6 +993,77 @@ def test_a_main_run_with_no_suspected_issue_open_costs_one_read(conclusion: str)
     assert gh.writes() == []
 
 
+# ── A test main ran green is not suspected again at once ─────────────────────
+
+
+def _suspected_then_green() -> FakeGh:
+    """Three pull requests agree, an issue is filed, and a green main run closes it."""
+    gh = FakeGh(THREE, main_jobs=FULL_GREEN, relations={f"{BASE}...{MAIN_HEAD}": "ahead"})
+    _detect(gh)
+    _settle(gh, "success")
+    assert gh.open_issues() == [] and gh.issues[0]["state_reason"] == "not_planned"
+    return gh
+
+
+def test_a_test_main_just_ran_green_is_not_suspected_again() -> None:
+    gh = _suspected_then_green()
+    for trigger in (1, 2, 3):
+        api = _detect(gh, trigger=trigger)
+        assert gh.open_issues() == []
+        assert gh.reads("actions/workflows/")[1:] == [], "no other run is read for it"
+        assert any("not suspecting it again yet" in line for line in api.lines)
+    assert gh.writes().count("POST repos/example/repo/issues") == 1
+
+
+def test_another_test_is_still_suspected_while_the_first_cools() -> None:
+    gh = _suspected_then_green()
+    other = {"test/test_other.py::test_b": "boom"}
+    for number, author in ((11, "barbara"), (12, "hopper"), (13, "lovelace")):
+        gh.prs[number] = _pr(number, author, failures={**FAILS, **other})
+    _detect(gh, trigger=11)
+    (issue,) = gh.open_issues()
+    assert mod.parse_state(issue["body"])["failures"] == other
+
+
+def test_after_the_cool_down_the_test_is_suspected_again() -> None:
+    gh = _suspected_then_green()
+    _detect(gh, cool_since="2026-11-20T02:00:01Z")
+    assert len(gh.open_issues()) == 1
+    gh = _suspected_then_green()
+    _detect(gh, cool_since=CLOSED_AT)
+    assert gh.open_issues() == [], "an issue closed exactly at the stamp still cools"
+
+
+def test_an_issue_that_main_confirmed_does_not_cool_its_test() -> None:
+    """Closed because main was red on it: when that break ends and comes back, it is news."""
+    gh = FakeGh(THREE, issues=(_suspect_issue(), _confirmed_issue()))
+    _settle(gh, "failure")
+    for issue in gh.issues:
+        issue["state"] = "closed"
+        issue.setdefault("state_reason", "completed")
+        issue["closed_at"] = CLOSED_AT
+    _detect(gh)
+    assert len(gh.open_issues()) == 1
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"user": {"login": "mallory"}},
+        {"title": "Main may be red: x"},
+        {"body": "no record"},
+        {"labels": [{"name": "bug"}]},
+        {"state_reason": "completed"},
+        {"closed_at": None},
+        {"closed_at": "2026-11-19T02:59:59Z"},
+    ],
+)
+def test_only_an_issue_this_workflow_filed_and_main_closed_green_cools_a_test(over: dict) -> None:
+    closed = {"state": "closed", "state_reason": "not_planned", "closed_at": CLOSED_AT}
+    assert mod.cooling_in([[_suspect_issue(**closed)]], COOL_SINCE) == {NODE}
+    assert mod.cooling_in([[_suspect_issue(**{**closed, **over})]], COOL_SINCE) == set()
+
+
 # ── The command line ─────────────────────────────────────────────────────────
 
 EVENT = {
@@ -1005,6 +1084,8 @@ def test_the_detect_command_reads_the_event_from_the_environment() -> None:
     assert len(gh.open_issues()) == 1
     (listing,) = gh.reads("actions/workflows/7/runs")
     assert "event=pull_request&status=failure&created=%3E%3D" in listing
+    (closed,) = gh.reads("issues?state=closed")
+    assert f"labels={mod.LABEL}&since=" in closed
 
 
 def test_the_settle_command_reads_the_event_from_the_environment(tmp_path: Path) -> None:
