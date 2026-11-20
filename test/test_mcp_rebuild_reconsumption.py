@@ -398,3 +398,63 @@ class TestScopeOwnedIsExcluded:
             "an alias-colliding scope entry that supplies the command must read as "
             "owning it, or the record would shadow a live declaration"
         )
+
+
+_POINTER = {"type": "registry"}
+_LOCAL_LAUNCH = {"command": "uvx", "args": ["some-mcp"]}
+
+
+class TestASupersededRegistryMarkerIsDropped:
+    """A ``"type": "registry"`` marker does not outlive the launch that replaced it.
+
+    The marker says "resolve this name from the admin's catalog", so a marked entry
+    is not a server this side may launch: the gateway refuses to route it. When a
+    source now declares a local launch for the name, the marker is stale. The store
+    merge only overwrites the keys its entry carries, so a marker the previous
+    rebuild wrote would otherwise be read back on every rebuild, forever.
+    """
+
+    def test_a_marker_from_the_previous_rebuild_is_dropped(self, tmp_path: Path) -> None:
+        """The spec's own earlier pointer must not stick to the store's launch."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        first = _emitted(tmp_path, cfg_dir, {"srv": _POINTER})
+        assert first["srv"] == _POINTER, "precondition: the pointer is carried verbatim"
+
+        out = _emitted(tmp_path, cfg_dir, {}, kirocrew_servers={"srv": _LOCAL_LAUNCH})
+        assert out["srv"]["command"] == "uvx"
+        assert "type" not in out["srv"], (
+            "the registry marker the previous rebuild wrote survived the store's local "
+            "launch, so the entry stays one the gateway refuses to route"
+        )
+
+    def test_the_store_launch_outranks_a_kiro_global_pointer(self, tmp_path: Path) -> None:
+        """The store wins a tie, so its launch replaces the global pointer as a set."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        out = _emitted(
+            tmp_path, cfg_dir, {"srv": _POINTER}, kirocrew_servers={"srv": _LOCAL_LAUNCH}
+        )
+        assert out["srv"]["command"] == "uvx"
+        assert "type" not in out["srv"]
+
+    def test_a_kiro_global_switch_to_a_local_launch_drops_it(self, tmp_path: Path) -> None:
+        """The same scope replacing its pointer with a launch takes the launch as a set."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        _emitted(tmp_path, cfg_dir, {"srv": _POINTER})
+        out = _emitted(tmp_path, cfg_dir, {"srv": _LOCAL_LAUNCH})
+        assert out["srv"]["command"] == "uvx"
+        assert "type" not in out["srv"]
+
+    def test_a_pointer_with_no_local_launch_is_kept(self, tmp_path: Path) -> None:
+        """No source declares a launch, so the marker is the declaration and stays."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        _emitted(tmp_path, cfg_dir, {"srv": _POINTER})
+        out = _emitted(tmp_path, cfg_dir, {"srv": _POINTER})
+        assert out["srv"] == _POINTER
+
+    def test_a_store_entry_that_declares_the_marker_keeps_it(self, tmp_path: Path) -> None:
+        """The marker is dropped only when the source's own entry does not carry it."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        out = _emitted(
+            tmp_path, cfg_dir, {}, kirocrew_servers={"srv": {**_POINTER, **_LOCAL_LAUNCH}}
+        )
+        assert out["srv"]["type"] == "registry"
