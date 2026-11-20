@@ -1104,7 +1104,7 @@ The decision model and the provider it calls; see [Decisions](decisions.md).
 
 ### Resource limits
 
-OS resource limits applied to processes the gateway spawns. Each is unset by default, which leaves the inherited limit.
+OS resource limits applied to processes the gateway spawns. Each is unset by default. Unset, `max_open_files` applies a built-in 1024; the other three leave the inherited limit.
 
 | Key | Description | Default |
 |-----|-------------|---------|
