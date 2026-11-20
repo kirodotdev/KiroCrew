@@ -786,10 +786,8 @@ not thread, semantics). macOS and Linux hosts without delegation have no hard
 per-subtree process/memory ceiling; they retain the file-descriptor cap and
 post-failure reapers. See [`resource-protection.md`](resource-protection.md).
 
-**Launcher self-poisoning by the same user is accepted, not defended (CWE-345;
-tracked as CWE-778 by
-[#371](https://github.com/kirodotdev/KiroCrew/pull/371) /
-[#417](https://github.com/kirodotdev/KiroCrew/issues/417)).** The resolved
+**Launcher self-poisoning by the same user is accepted, not defended (CWE-345,
+also classed as CWE-778).** The resolved
 `kiro-cli` launcher is executed in place with no signature, hash, ownership or
 install-source check — the only gate is `platform_compat.is_executable_file`
 (`kiro_cli.py`) — so an agent running as the invoking user can overwrite its own
