@@ -39,7 +39,11 @@ test("a failed apply logs its pid at start and its exit, run time and output siz
 
 test("a timeout kill is logged and reported as a timeout, never as exited 1", async (t) => {
   const orig = cp.spawn;
-  t.after(() => { cp.spawn = orig; });
+  const origExecFile = cp.execFile;
+  t.after(() => { cp.spawn = orig; cp.execFile = origExecFile; });
+  // On a Windows host the timeout runs taskkill; never let it reach a real
+  // pid. A failed taskkill falls back to child.kill() below.
+  cp.execFile = (file, args, opts, cb) => setImmediate(() => cb(new Error("taskkill stubbed")));
   // A child that never exits on its own: only the timeout's kill closes it.
   cp.spawn = () => {
     const child = new EventEmitter();
@@ -82,7 +86,7 @@ function fakeWindowsChild(pid) {
   return child;
 }
 
-test("on Windows a timeout ends the command's whole process tree with taskkill", async (t) => {
+test("on Windows a timeout ends the command's whole process tree with taskkill", { timeout: 5_000 }, async (t) => {
   const origSpawn = cp.spawn;
   const origExecFile = cp.execFile;
   t.after(() => { cp.spawn = origSpawn; cp.execFile = origExecFile; });
@@ -105,7 +109,7 @@ test("on Windows a timeout ends the command's whole process tree with taskkill",
   assert.deepStrictEqual({ timedOut: r.timedOut, failed: r.failed }, { timedOut: true, failed: true });
 });
 
-test("on Windows a taskkill that fails falls back to killing the child", async (t) => {
+test("on Windows a taskkill that fails falls back to killing the child", { timeout: 5_000 }, async (t) => {
   const origSpawn = cp.spawn;
   const origExecFile = cp.execFile;
   t.after(() => { cp.spawn = origSpawn; cp.execFile = origExecFile; });
@@ -118,6 +122,21 @@ test("on Windows a taskkill that fails falls back to killing the child", async (
   const r = await exec.runManagedCommand("pkgtool update", { timeout: 1, label: "update command" });
   assert.strictEqual(child.killed, true);
   assert.strictEqual(r.timedOut, true);
+});
+
+test("on Windows a taskkill that throws on spawn falls back to killing the child", { timeout: 5_000 }, async (t) => {
+  const origSpawn = cp.spawn;
+  const origExecFile = cp.execFile;
+  t.after(() => { cp.spawn = origSpawn; cp.execFile = origExecFile; });
+  asWindows(t);
+  const child = fakeWindowsChild(4247);
+  cp.spawn = () => child;
+  cp.execFile = () => { throw new Error("spawn taskkill.exe ENOENT"); };
+  const { log } = recordingLog();
+  const exec = execFor("pkgtool update", log);
+  const r = await exec.runManagedCommand("pkgtool update", { timeout: 1, label: "update command" });
+  assert.strictEqual(child.killed, true);
+  assert.deepStrictEqual({ timedOut: r.timedOut, failed: r.failed }, { timedOut: true, failed: true });
 });
 
 test("a command that exits in time is not timed out while a helper still holds its pipes", async (t) => {
