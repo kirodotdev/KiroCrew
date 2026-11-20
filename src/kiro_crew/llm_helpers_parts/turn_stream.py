@@ -119,7 +119,7 @@ async def stream_and_collect(
     on_steer_consumed: Callable[[str], None] | None = None,
     on_complete: Callable[[LLMEvent], None] | None = None,
     on_compaction: Callable[[LLMEvent], None] | None = None,
-    on_tool_gate: Callable[[str, bool, bool, str], None] | None = None,
+    on_tool_gate: Callable[[str, bool, bool, str, bool], None] | None = None,
     retry_transient: bool = True,
     max_turns: int | None = None,
     session_key: str = "",
@@ -171,7 +171,8 @@ async def stream_and_collect(
             prompts carried, and this is how a caller learns of it. Raising from
             the callback is swallowed.
         on_tool_gate: Optional callback invoked once per tool permission
-            decision with ``(tool_title, approved, security_blocked, reason)``. Lets a
+            decision with ``(tool_title, approved, security_blocked, reason,
+            hook_refused)``. Lets a
             caller tell "the model did work" apart from "every tool the model
             attempted was blocked" — a distinction the returned text cannot
             carry, because a model whose tools were all refused still returns
@@ -183,6 +184,10 @@ async def stream_and_collect(
             the refusal text the audit row recorded (for a deny pattern it names
             the rule that matched), empty for an approval: without it an
             unattended caller can only say that a call was refused, not why.
+            ``hook_refused`` is True only for a call *spec_hooks* blocked
+            because a policy refused to run the hook (mechanism
+            ``spec_hook_refused``): the hook never gave a verdict, so the call
+            is lost on every run until the policy names the hook.
             Delivered when the attempt settles, not mid-stream, and decisions
             from an abandoned retry attempt are discarded: they describe work
             the final turn never did. ``tool_title`` and ``reason`` can echo
@@ -303,7 +308,7 @@ async def stream_and_collect(
         # abandoned attempt describe work the final turn never did. Committing them
         # would let a refusal from a discarded attempt outvote a clean retry and fail
         # a healthy job.
-        gate_this_attempt: list[tuple[str, bool, bool, str]] = []
+        gate_this_attempt: list[tuple[str, bool, bool, str, bool]] = []
         # Tool calls that reached the gate, and tool calls that actually ran.
         # A tool auto-approved upstream never raises a permission request, so it
         # executes without a gate decision: correlating the two by
@@ -375,7 +380,13 @@ async def stream_and_collect(
                     if on_tool_gate:
                         _mech, _why = _decision[-1][1:] if _decision else ("", "")
                         gate_this_attempt.append(
-                            (event.title or "", approved, _mech.startswith("always_deny"), _why)
+                            (
+                                event.title or "",
+                                approved,
+                                _mech.startswith("always_deny"),
+                                _why,
+                                _mech == "spec_hook_refused",
+                            )
                         )
                         if event.tool_call_id:
                             gate_decided_ids.add(event.tool_call_id)
@@ -683,9 +694,9 @@ async def stream_and_collect(
                 for consumed_text in consumed_this_attempt:
                     on_steer_consumed(consumed_text)
             if not retrying and on_tool_gate:
-                for gate_title, gate_approved, gate_blocked, gate_reason in gate_this_attempt:
+                for gate_decision in gate_this_attempt:
                     try:
-                        on_tool_gate(gate_title, gate_approved, gate_blocked, gate_reason)
+                        on_tool_gate(*gate_decision)
                     except Exception:
                         # A caller's bookkeeping must never abort the turn.
                         logger.debug("on_tool_gate callback failed", exc_info=True)
@@ -698,7 +709,7 @@ async def stream_and_collect(
                     if _exec_id and _exec_id in gate_decided_ids:
                         continue
                     try:
-                        on_tool_gate(_exec_title, True, False, "")
+                        on_tool_gate(_exec_title, True, False, "", False)
                     except Exception:
                         logger.debug("on_tool_gate callback failed", exc_info=True)
 

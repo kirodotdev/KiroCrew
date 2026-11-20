@@ -100,11 +100,13 @@ class CronTurnHooks:
             spec.unreadable or any(h.event == HOOK_EVENT_PRE_TOOL_USE for h in spec.hooks)
         )
 
-    async def refusal(self, event: Any) -> str | None:
+    async def refusal(self, event: Any) -> tuple[str, bool] | None:
         """Why the spec's PreToolUse hooks refuse *event*'s permission request, or ``None``.
 
-        The spec's hooks alone, through an empty store, so a Hooks-page hook keeps
-        the informational role it has on a cron turn. Governed under the turn's own
+        Returns ``(reason, policy_refused)``: *policy_refused* is True when a
+        policy refused to run the hook that blocks, so it never ran. The spec's
+        hooks alone, through an empty store, so a Hooks-page hook keeps the
+        informational role it has on a cron turn. Governed under the turn's own
         session key.
         """
         from kiro_crew.hooks import ScriptHookStore, permission_pre_tool_block
@@ -114,9 +116,10 @@ class CronTurnHooks:
             # deferred: tool_permission imports llm_helpers, which reaches the cron path.
             from kiro_crew.tool_permission import SPEC_HOOKS_UNREADABLE
 
-            return SPEC_HOOKS_UNREADABLE
+            return SPEC_HOOKS_UNREADABLE, False
         sid = getattr(self._provider, "session_id", "")
-        return await permission_pre_tool_block(
+        refused: list[bool] = []
+        reason = await permission_pre_tool_block(
             ScriptHookStore(load=False),
             spec.hooks,
             spec.cwd,
@@ -128,7 +131,9 @@ class CronTurnHooks:
             session_key=self._hooks.turn.session_key,
             acp_session_id=sid if isinstance(sid, str) and sid else None,
             raw_tool_params=getattr(event, "raw_tool_params", None),
+            on_policy_refused=lambda: refused.append(True),
         )
+        return None if reason is None else (reason, bool(refused))
 
     async def observe(self, event: Any) -> None:
         """Re-read the spec after a mid-turn agent switch, with the same staleness rule."""

@@ -1754,19 +1754,23 @@ Run Now whose gate verdict succeeds before its delivery fails) clears the stamp,
 so that run's failure counts and its merge applies its own pause state and count.
 
 `stream_and_collect`'s `on_tool_gate` callback reports each tool permission
-decision as `(tool_title, approved, security_blocked, reason)`, where `reason`
-is the refusal text the audit row recorded (for a deny pattern, the rule that
-matched). Both cron agent paths
+decision as `(tool_title, approved, security_blocked, reason, hook_refused)`,
+where `reason` is the refusal text the audit row recorded (for a deny pattern,
+the rule that matched) and `hook_refused` is true only for a call the agent
+spec's own PreToolUse hooks blocked because a policy refused to run the hook
+(audit mechanism `spec_hook_refused`, from `ScriptHookResult.refused`). Both
+cron agent paths
 (single-agent and the sequential `agent_sequence` loop) tally those decisions
-per run and route the outcome through one shared verdict with four arms:
+per run and route the outcome through one shared verdict with five arms:
 
 | Run's gate outcomes | `last_status` | Failure budget | Delivery |
 |---|---|---|---|
 | Every attempted call **security-blocked**, none approved | `error`, reason names the refused calls | `record_failure()` — the job's `auto_pause_limit()` applies (default 5, `0` = never) | unchanged |
 | Failure due to credential/auth expiry: an `AcpAuthRequired`, or an `AcpError` whose `auth_required` tag is `True` or whose `auth_error_code` is an expired token (typed data, not error text) | `error`, error text preserved | counted like any failure, but `record_failure(auth_expiry=True)` never auto-pauses; past the default threshold the never-pause backoff applies | unchanged; the alert skips the "run at the pause limit alerts" rule, so only `alert_after_failures` decides |
-| **Some** call security-blocked (another ran, or another refusal left capability unknown) | `error`, reason names the refused calls | neither counter moves | result prefixed with the same reason |
+| **Some** call security-blocked (another ran, or another refusal left capability unknown) | `error`, reason names the refused calls, then any calls blocked because a policy refused to run a spec hook, under the refused-hook head | neither counter moves | result prefixed with the same reason |
 | **No** call approved and none security-blocked, at least one refused another way (a governance `policy_deny`, a `spec_hook` refusal, a rejected or timed-out approval) | `error`, reason names the refused calls with their refusal text, or "not approved" | neither counter moves | result prefixed with the same reason |
-| No security block, and at least one approved call or no tool call at all | `ok` | `record_success()` | unchanged |
+| At least one call approved, none security-blocked, and at least one blocked because a policy refused to run a spec hook (`spec_hook_refused`) | `error`, reason `N of M tool call(s) blocked because policy refused to run a hook:` names those calls with the hook and its refusal | neither counter moves | result prefixed with the same reason |
+| No security block, no call blocked by a hook a policy refused to run, and at least one approved call or no tool call at all | `ok` | `record_success()` | unchanged |
 
 The some-blocked arm exists because the model's prose is its own account of the run:
 a turn whose final write was refused still reports the write as done. Without
@@ -1780,7 +1784,12 @@ spelling of the reason, shared by `last_error` and the result banner, so the
 cron row and the notification cannot name different calls. Each named call
 carries the first line of its refusal in parentheses (`spawn_run (Blocked by
 security policy: <pattern>)`), so the reader sees which rule fired rather than
-a bare refusal.
+a bare refusal. When the same run also lost calls because a policy refused to
+run a spec hook, the reason goes on after the security-gate part with `. N tool
+call(s) blocked because policy refused to run a hook: ` and those calls, which
+are often what stopped the job (#39973). The two parts share the 500-character
+line so that neither head is cut, and the reason still opens with the Partial
+wording.
 
 The no-approved arm covers a run whose every call was refused outside the
 security gate, for example an agent spec's PreToolUse hooks under a profile
@@ -1798,6 +1807,22 @@ timed-out approval, under the head
 equal share of the 500-character line. A title too long for its share keeps its
 start and its end and gives way before its rule does, down to 40 characters of
 title, so a long chained command cannot push the rule past the cap.
+
+The refused-hook arm covers a run in which another call ran, for example an
+agent whose spec has a PreToolUse hook on file reads, under a profile that
+turns hooks off, whose model then runs a shell `ls`. A policy that refuses to
+run the hook (governance or the shell deny list) leaves the call blocked with
+no verdict from the hook, so the same calls are lost on every run however the
+model adapts; it is a setup fault, not a model choice. The run does not read
+as `ok`, neither counter moves, and a `delete_after_run` one-shot is kept and
+auto-paused like any run that ends in `error`. The tally counts every such call
+and keeps the first three by name, and the reason names only those calls,
+each with the hook and its refusal in parentheses. Beside an approved call,
+every other refusal that is not a security block keeps the run `ok`: a
+governance `policy_deny`, a hook that ran and exited 2, a hook whose firing
+raised, a batch-guard deferral, and a rejected or timed-out approval. A model
+that adapts around such a refusal has done its job (#2666). The reason does
+not use the Partial wording, so the Schedule page shows the run as **Error**.
 
 The Schedule page shows the some-blocked arm as its own state, **Partial** (amber),
 not **Error**: a run that did all but one call must not look like one that

@@ -252,7 +252,10 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: ``safe_file_identity`` takes a keyword-only ``hold=None`` (an ``ExitStack`` that
 #: keeps the sampled descriptor open, so a replaced inode's number cannot be
 #: reused before the next sample), so its callers fit too.
-_BASE_SHAPE_DIGEST = "2f457c7b64470c2221cb447d314c0bbd7b73e607b9f47352b95409c24ff1678d"
+#: ``permission_pre_tool_block`` takes a trailing ``on_policy_refused=None`` keyword
+#: (a cron turn learns that a policy refused to run the hook that blocks), so every
+#: existing caller still fits.
+_BASE_SHAPE_DIGEST = "3334bfa8161d2516e9365ecdabe931b90894aceed168e78f8218f3664f8dd62f"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in
