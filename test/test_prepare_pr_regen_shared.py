@@ -175,6 +175,18 @@ def test_a_changed_generator_input_makes_the_output_stale(repo: Path) -> None:
     assert "  rewrote: gen/out.txt" in lines
 
 
+def test_a_changed_input_with_a_non_ascii_name_makes_the_output_stale(repo: Path) -> None:
+    """Line output C-quotes ``site/src/fé.ts`` with a leading double quote, which
+    matches no ``site/src/*`` pattern, so reading it that way leaves the output stale."""
+    _write(repo / "site" / "src" / "fé.ts", "export const x = 1\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "a non-ASCII generator input")
+    entry = _entry(["gen/out.txt"], REWRITE, inputs=["site/src/*"])
+    code, lines = rs.regen(str(repo), "main", [entry])
+    assert code == 20
+    assert "  rewrote: gen/out.txt" in lines
+
+
 def test_an_input_pattern_crosses_directories_and_misses_unrelated_paths(repo: Path) -> None:
     entries = [_entry(["gen/out.txt"], REWRITE, inputs=["site/src/*"])]
     assert rs.stale_entries(entries, ["site/src/a/b/c.ts"], []) == entries
