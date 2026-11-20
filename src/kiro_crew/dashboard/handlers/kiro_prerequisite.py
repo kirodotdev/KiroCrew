@@ -84,6 +84,27 @@ def _setup_left_only_kiro_cli(snapshot: dict[str, Any]) -> bool:
     )
 
 
+def _container_boundary_hint() -> bool:
+    """Whether the setup page may name ``agent.sandbox_allow_unsandboxed_exec``.
+
+    Only on a workload pod (``KIROCREW_WORKLOAD_IDENTITY``), and only when setting
+    it would grant unsandboxed exec: the edition's floor
+    (``edition_locks.unsandboxed_exec_floor``, which an LTS build uses to read a
+    declared ``true`` as the platform default) and a governance
+    ``sandbox.min_level`` floor both win over it, as in ``sandbox_facts``. Blocking
+    (the config and governance reads); call off the loop.
+    """
+    from kiro_crew import sandbox, workload_identity
+    from kiro_crew.config.loader import unsandboxed_exec_platform_default
+    from kiro_crew.edition_locks import unsandboxed_exec_floor
+
+    if not workload_identity.active():
+        return False
+    if not unsandboxed_exec_floor(True, unsandboxed_exec_platform_default()):
+        return False
+    return not sandbox._floor_mandates_sandbox(sandbox._governance_sandbox_floor())
+
+
 def _service(request: web.Request) -> KiroPrerequisiteService:
     service = request.app.get("kiro_prerequisite_service")
     if not isinstance(service, KiroPrerequisiteService):
@@ -220,7 +241,8 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
         snapshot = {**snapshot, "ready": True}
     snapshot = await _with_gate_state(request, snapshot)
     if _is_dashboard_owner(request):
-        return web.json_response({**snapshot, "setup_allowed": True})
+        hint = {"container_boundary_hint": await asyncio.to_thread(_container_boundary_hint)}
+        return web.json_response({**snapshot, **hint, "setup_allowed": True})
 
     # Authorized non-owner dashboard users need the readiness bit so the
     # application gate does not lock them out after the owner completes setup.
@@ -271,6 +293,8 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             # Same redaction, same shape-stability reason: whether the gateway host
             # has ``unzip`` is host state, and only the owner installs it.
             "unzip_missing": False,
+            # Same redaction and shape reason: how the host is deployed is host state.
+            "container_boundary_hint": False,
             # Redacted for the same reason as the block above, and kept present
             # for the same shape-stability reason: only the owner can act on a
             # missing spec (the repair is an owner-gated POST). A non-owner on an

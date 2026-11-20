@@ -3110,6 +3110,8 @@
       "agent_unverified_detail": "{{productName}} could not confirm that {{name}} is installed. Press Check again to verify the installation before using this agent. Setup stays open until your chosen agent is ready. You can switch agents here, or later in Settings > Agent Harness.",
       "agent_ready_to_use": "{{name}} is installed and ready to use.",
       "sandbox_blocked_agent_detail": "{{productName}} runs {{name}} inside a sandbox that keeps your credentials out of its reach. This host cannot provide that sandbox right now, so {{name}} stays unavailable until it can.",
+      "workload_pod_no_sandbox": "This host can't build a sandbox, as in a Kubernetes Restricted pod. To make the container the only boundary, set this and restart {{productName}}.",
+      "container_boundary_guide": "A team Crew pod: the container is the boundary",
       "sandbox_off_agent_detail": "{{productName}} runs {{name}} inside a sandbox that keeps your credentials out of its reach, but the sandbox is turned off in {{productName}}'s settings (agent.sandbox). Turn it back on to use {{name}}.",
       "use_agent": "Use {{name}}",
       "switching_agent": "Switching…",

@@ -8462,6 +8462,8 @@
       "agent_unverified_detail": "{{productName}} n’a pas pu confirmer que {{name}} est installé. Appuie sur Revérifier pour vérifier l’installation avant d’utiliser cet agent. La configuration reste ouverte jusqu’à ce que l’agent choisi soit prêt. Tu peux changer d’agent ici, ou plus tard dans Paramètres > Harness de l’agent.",
       "agent_ready_to_use": "{{name}} est installé et prêt à l’emploi.",
       "sandbox_blocked_agent_detail": "{{productName}} exécute {{name}} dans un bac à sable qui garde tes identifiants hors de sa portée. Cet hôte ne peut pas fournir ce bac à sable pour le moment, donc {{name}} reste indisponible jusqu’à ce qu’il le puisse.",
+      "workload_pod_no_sandbox": "Cet hôte ne peut pas créer de bac à sable, comme dans un pod Kubernetes Restricted. Pour que le conteneur soit la seule frontière, définis ceci et redémarre {{productName}}.",
+      "container_boundary_guide": "Un pod de Crew d'équipe : le conteneur est la frontière",
       "sandbox_off_agent_detail": "{{productName}} exécute {{name}} dans un bac à sable qui garde tes identifiants hors de sa portée, mais le bac à sable est désactivé dans les paramètres de {{productName}} (agent.sandbox). Réactive-le pour utiliser {{name}}.",
       "use_agent": "Utiliser {{name}}",
       "switching_agent": "Changement en cours…",

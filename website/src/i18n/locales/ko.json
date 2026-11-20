@@ -8042,6 +8042,8 @@
       "agent_unverified_detail": "{{productName}}이(가) {{name}}의 설치를 확인하지 못했습니다. 이 에이전트를 사용하기 전에 ‘다시 확인’을 눌러 설치를 확인하세요. 선택한 에이전트가 준비될 때까지 설정 화면은 열린 상태로 유지됩니다. 에이전트는 여기에서 전환할 수도 있고, 나중에 설정 > 에이전트 하네스에서 전환할 수도 있습니다.",
       "agent_ready_to_use": "{{name}}이(가) 설치되어 있으며 바로 사용할 수 있습니다.",
       "sandbox_blocked_agent_detail": "{{productName}}은(는) 자격 증명에 접근할 수 없도록 하는 샌드박스 안에서 {{name}}을(를) 실행합니다. 이 호스트는 지금 그 샌드박스를 제공할 수 없으므로, 제공할 수 있을 때까지 {{name}}을(를) 사용할 수 없습니다.",
+      "workload_pod_no_sandbox": "이 호스트는 샌드박스를 만들 수 없습니다(예: Kubernetes Restricted 파드). 컨테이너를 유일한 경계로 삼으려면 이 값을 설정하고 {{productName}}을(를) 다시 시작하세요.",
+      "container_boundary_guide": "팀 Crew 파드: 컨테이너가 경계",
       "sandbox_off_agent_detail": "{{productName}}은(는) 자격 증명에 접근할 수 없도록 하는 샌드박스 안에서 {{name}}을(를) 실행하지만, {{productName}} 설정(agent.sandbox)에서 샌드박스가 꺼져 있습니다. {{name}}을(를) 사용하려면 샌드박스를 다시 켜세요.",
       "use_agent": "{{name}} 사용",
       "switching_agent": "전환 중…",
