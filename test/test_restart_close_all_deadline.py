@@ -176,5 +176,6 @@ async def test_the_dashboard_restart_logs_each_step_as_it_starts(
         "stopping the MCP broker",
         "running pre-exec stops",
         "flushing safety-override records",
+        "draining the security event log",
         "exec",
     ]

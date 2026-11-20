@@ -78,6 +78,11 @@ API = "/api/sessions"
 #: The folder secret the release left: 64 hex characters, like the ones it generated.
 LEFT_IN_FOLDER = "0" * 63 + "1"
 
+#: (status, ``code``) of a refused folder secret. The first refusal of a streak is a
+#: 403; a repeat inside its window is counted and answered 429
+#: (``kiro_crew.dashboard.app_token_denials``). Both say ``invalid secret``.
+STALE_SECRET_REFUSALS = {(403, "invalid_secret"), (429, "auth_throttled")}
+
 #: When the release installed the apps; any fixed time before this boot.
 RELEASE_TIME = "2026-11-09T21:26:17Z"
 
@@ -500,7 +505,9 @@ async def _check_gateway_managed_apps(gw: IntegrationGateway) -> None:
     await _check_mcp_app(gw)
     for name in ALL_APPS:
         refused = await _exchange(gw, name, LEFT_IN_FOLDER)
-        assert refused.status == 403, (name, await refused.text())
+        body = await refused.json()
+        assert body.get("error") == "invalid secret", (name, refused.status, body)
+        assert (refused.status, body.get("code")) in STALE_SECRET_REFUSALS, (name, body)
 
 
 async def _toggle(gw: IntegrationGateway, name: str) -> None:

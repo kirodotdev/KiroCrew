@@ -332,6 +332,7 @@ from kiro_crew.config import loader as config_loader
 from kiro_crew.config.loader import CREDENTIAL_KEYS
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import (
+    app_token_denials,
     loop_watchdog,
     revocation_gen,
     status_counts,
@@ -825,6 +826,9 @@ def _reset_home_bound_globals() -> None:
     token_auth._app_perms_cache.clear()
     token_auth._app_perms_denied.clear()
     revocation_gen._gen = None
+    # The first boot's shutdown closed the refusal table, and a new process starts
+    # with it open and empty, so the next boot's first refusal is a 403 row again.
+    app_token_denials._reset()
     crash_guard._CRASH_LOG = None
     # The machine token fence's config.json read, keyed on the home's file.
     kas_machine._fence_config = None
