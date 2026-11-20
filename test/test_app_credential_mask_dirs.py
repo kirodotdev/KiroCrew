@@ -13,15 +13,19 @@ import json
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
+from app_backend_helpers import app_env_fixture  # noqa: F401
 from app_manager_helpers import _make_app_source
 
 from kiro_crew import sandbox, sandbox_plan
 from kiro_crew.apps import credential_masks
+from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 from kiro_crew.sandbox import SandboxCeilingUnsealable, userns_available
-from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+from kiro_crew.sel import sel_hmac_key_path
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
 
 _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX sandbox only")
 _NAMESPACE = [
@@ -468,3 +472,82 @@ class TestInTheNamespaceSandbox:
         report = _report(agent.stdout)
         assert report["marker"] == "1"
         assert report["first"] == [] and report["after"] == [], report
+
+
+# A stand-in app backend: report whether it can read the key, then serve until stopped.
+_KEY_PROBE_BACKEND = """
+import errno, http.server, json, os
+try:
+    with open({key!r}, "rb") as fh:
+        data = fh.read()
+    res = "read:" + str(len(data)) + (":KEY" if data == b"K" * 32 else ":other")
+except OSError as exc:
+    res = errno.errorcode.get(exc.errno, str(exc.errno))
+print("REPORT " + json.dumps({{"key_read": res}}), flush=True)
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve_forever()
+"""
+
+
+class TestASpawnedBackendCannotReadTheSelKey:
+    """The real spawn path (``start_app_backend`` -> ``wrap_argv`` -> namespace sandbox)."""
+
+    pytestmark = _NAMESPACE
+
+    def test_the_backend_cannot_read_the_key(self, app_env, tmp_path, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        # The gateway route the mask keys on: a bound port, an app token, an enable marker.
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+        monkeypatch.delenv("KIROCREW_BOUND_HOST", raising=False)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth.replace_legacy_app_secret", lambda _n: "per-app-secret"
+        )
+        monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
+        key = sel_hmac_key_path()
+        key.parent.mkdir(parents=True, exist_ok=True)
+        key.write_bytes(b"K" * 32)  # a stand-in; no real secret is read
+        name = "key-probe-app"
+        src = tmp_path / "source" / name
+        (src / "backend").mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "version": "1.0.0",
+                    "displayName": name,
+                    "description": "key read probe",
+                    "backend": {"entryPoint": "backend/server.py", "healthCheck": "/health"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (src / "backend" / "server.py").write_text(
+            _KEY_PROBE_BACKEND.format(key=str(key)), encoding="utf-8"
+        )
+        install_app(src)
+        try:
+            proc = bmod.start_app_backend(name)
+            if proc is None:
+                pytest.fail("the stand-in backend did not start under the real sandbox")
+            log = Path(proc.log_path)
+
+            def _report_line() -> str:
+                text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+                return next((ln for ln in text.splitlines() if ln.startswith("REPORT ")), "")
+
+            line = wait_until(
+                _report_line,
+                timeout=FALLBACK_TIMEOUT_SECS,
+                describe=lambda: log.read_text(encoding="utf-8", errors="replace")[-500:],
+            )
+        finally:
+            bmod.stop_app_backend(name)
+        key_read = json.loads(line[len("REPORT ") :])["key_read"]
+        warnings.warn(f"REALMACHINE-38807 key_read={key_read}", stacklevel=1)
+        assert key_read != "read:32:KEY", key_read
