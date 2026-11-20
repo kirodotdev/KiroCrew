@@ -10,6 +10,7 @@ a slug, and only the minting of a NEW id may refuse it. Runs under the autouse
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -24,7 +25,13 @@ _requires_nofollow = pytest.mark.skipif(
     reason="briefing reads and writes fail closed without O_NOFOLLOW",
 )
 
-DEVICES = ["con", "nul", "com1", "lpt9"]
+# On Windows `con.json` and `members/con/` are the device, not a file: the cases
+# that touch the filesystem for a device stem only make sense on POSIX.
+_posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="a device-stem path is the device on Windows"
+)
+
+DEVICES =["con", "nul", "com1", "lpt9"]
 
 
 def _config(**agents: str) -> SimpleNamespace:
@@ -37,6 +44,11 @@ def _config(**agents: str) -> SimpleNamespace:
 @pytest.mark.parametrize("slug", DEVICES)
 def test_an_existing_device_slug_still_validates(slug):
     assert members.validate_slug(slug) == slug
+
+
+@_posix_only
+@pytest.mark.parametrize("slug", DEVICES)
+def test_an_existing_device_slug_still_resolves_to_its_directory(slug):
     assert members.member_dir(slug).name == slug
 
 
@@ -50,6 +62,7 @@ def test_a_member_with_a_stored_device_id_keeps_it():
     assert members.member_slug("Bot", _config(Bot="con")) == "con"
 
 
+@_posix_only
 def test_an_existing_device_slug_can_be_written_and_read_back():
     members.write_member_rules("con", member="Con", text="be kind")
     assert members.read_member_rules("con", "Con") == "be kind"
@@ -59,6 +72,7 @@ def test_an_existing_device_slug_can_be_written_and_read_back():
     assert member_goals.read_goals("con", "Con")["goals"]
 
 
+@_posix_only
 @_requires_nofollow
 def test_an_existing_device_slug_keeps_its_notes():
     member_notes.write_member_notes("con", "hello")
