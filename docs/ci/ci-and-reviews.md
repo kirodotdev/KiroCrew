@@ -993,11 +993,28 @@ progress records go to the shared `pytest-progress` directory as one more file
 named by pid and a UUID, so the artifact and `scripts/ci_file_shard_pins.py` read
 them as before. The step is red when any part exits non-zero (a failed test, a
 collection error, a process that died), exits 0 without a JUnit file that counts
-a test, or runs past `--part-timeout`; a part that collected nothing is not red,
-unless no part collected anything. Only a green run combines the parts' coverage
+a test, or is still running at the run's deadline; a part that collected nothing
+is not red, unless no part collected anything. Only a green run combines the parts' coverage
 into the one `.coverage` that "Stage shard coverage data" requires, and a part
 that ran tests and left no coverage data makes the run red, so Coverage Combine
 never sees a shard with a part missing.
+
+A part's output reaches the job log when the part ends, not as it is written, so
+the script ends a part that hangs instead of leaving it to the job's
+`timeout-minutes`. `--run-timeout` is that budget less 10 minutes (the step
+reads the same expression as `JOB_BUDGET_MINUTES`), counted from the start of
+the step and shared by every part: a part that starts late does not get a later
+deadline. At the deadline the script kills what still runs (exit 124), prints
+those logs, starts nothing further (exit 126 for a part still queued) and exits
+non-zero, so the hung part is named in the log and the upload steps still run.
+Before the deadline, the script names the running parts once a minute, and a
+part whose log has not grown for six minutes has its log so far printed once,
+which is where a hung test's faulthandler dump is. A SIGINT or SIGTERM that
+reaches the script prints the log so far of every running part before it stops
+them. The `linux-part-logs-<N>` artifact keeps every part's whole log and JUnit
+file, with the two lists that say which files a part owned, for seven days,
+whether the step passed, failed or was cancelled. Do not raise the job's
+`timeout-minutes` to make room for a slow part; lower the work per shard.
 
 On the full suite, the step before `Run tests` in both jobs runs
 `scripts/ci_rewrite_prewarm.py` (an experiment, #39368). On a fresh runner

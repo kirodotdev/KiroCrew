@@ -428,12 +428,27 @@ class TestCIProgress(unittest.TestCase):
         self.assertRegex(command, r"PARTS=\$\(\( JOBS \* \d+ \)\)")
         self.assertNotIn("--workers", options)
         self.assertNotIn(" -n ", full_run)
-        # Every part's log reaches the job log, and a hung part ends the step
-        # inside the job's own budget instead of with it.
+        # Every part's log reaches the job log. A hung part must be ended and
+        # named by the script, so the run's deadline is this job's own budget
+        # (the same expression as `timeout-minutes`) less a margin for the
+        # set-up before the step and the uploads after it; a bound counted from
+        # each part's own start could outlast the job.
         self.assertIn("--print-logs", options)
-        bound = re.search(r"--part-timeout (\d+)", options)
-        self.assertIsNotNone(bound, "a hung part would run until the job is cancelled")
-        self.assertLess(int(bound.group(1)), 60 * 60)
+        self.assertIn('--run-timeout "$RUN_SECS"', options)
+        self.assertNotIn("--part-timeout", options)
+        self.assertEqual(step["env"]["JOB_BUDGET_MINUTES"], job["timeout-minutes"])
+        margin = re.search(r"RUN_SECS=\$\(\( \(JOB_BUDGET_MINUTES - (\d+)\) \* 60 \)\)", command)
+        self.assertIsNotNone(margin, "the run's deadline does not follow the job's budget")
+        self.assertGreaterEqual(int(margin.group(1)), 5)
+        # The parts' logs and JUnit files outlive a failed or cancelled step.
+        names = [s.get("name") for s in job["steps"]]
+        logs = job["steps"][names.index("Upload Linux part logs")]
+        self.assertIn("always()", logs["if"])
+        self.assertEqual(logs["with"]["name"], "linux-part-logs-${{ matrix.group }}")
+        for kept in ("shard-*.log", "junit-*.xml"):
+            self.assertIn("${{ runner.temp }}/sharded-suite/" + kept, logs["with"]["path"])
+        self.assertIn('--out "$RUNNER_TEMP/sharded-suite"', options)
+        self.assertLess(names.index("Upload Linux part logs"), names.index("Upload shard coverage"))
         self.assertIn('"${PROGRESS[@]}"', pytest_args)
         self.assertIn("--timeout=120", pytest_args)
         self.assertIn('-m "not ipv6_required and not real_venv"', pytest_args)

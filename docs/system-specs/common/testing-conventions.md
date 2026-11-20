@@ -5084,7 +5084,9 @@ pytest's own `collect_ignore` rules. And every file that names the same literal
 tests still run one at a time. `--outer-shards N --outer-shard K --outer-pins FILE` runs
 only the files CI file shard K of N owns, which is how the Linux `backend-test` job runs
 its shard; `--coverage-file` combines the parts' coverage into one data file,
-`--part-timeout` bounds a part, and `--print-logs` copies each part's log to stdout. A group name built at runtime (the `tree_scan_*` names in
+`--part-timeout` bounds a part from its own start and `--run-timeout` bounds the whole
+run, and `--print-logs` copies each part's log to stdout: when the part ends, when its
+log has not grown for six minutes, and when a stop ends it. A group name built at runtime (the `tree_scan_*` names in
 `test_facade_shared_checks.py` and `test_bindings_shared_checks.py`) is not seen; those
 groups only share a memoised scan, so a split costs memory, not correctness. Measured on one r7i.8xlarge (32 cores, 247 GiB), same tree, the
 baseline `-m "not ipv6_required and not real_venv" --timeout=120 -p no:cacheprovider`
@@ -7126,6 +7128,16 @@ single file and need no pin. To reproduce a shard, run the script with the same
 scripts.ci_file_shards --file-shards <parts> --file-shard <i>` and the
 `group-pins.txt` and `outer-shard-files.txt` the script wrote under `--out`
 (`--file-shard-pins=`, `--file-shard-targets=`).
+
+A part imports far fewer modules at collection than a worker that collected a whole
+shard, so more of `kiro_crew` is imported on first use, in the middle of a test. A test
+that replaces a name other modules bind at import (`from kiro_crew.sel import sel`)
+therefore decides what a module imported during that test keeps for the rest of the
+process: `test_cron_auto_pause_limit.py` replaced `kiro_crew.sel.sel`, `add_job`
+imported `chat_folders_paths` under it, and fifteen later tests in the part failed at
+the `chat_folders` facade's import. Import the module the code under test loads on first
+use at the top of the test file, before any test patches what it binds. Such a failure
+is deterministic for a given split; reproduce it by running the part.
 
 Before the Linux and Windows full-suite test step, `scripts/ci_rewrite_prewarm.py`
 writes pytest's assertion-rewrite pyc for the shard's test files (same hash and

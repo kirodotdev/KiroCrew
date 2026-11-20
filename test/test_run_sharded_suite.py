@@ -16,6 +16,10 @@ from scripts.ci_file_shards import file_shard, hash_shard, read_targets
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+#: POSIX: a child reports through a FIFO it keeps open, so the test's read blocks first
+#: for the child's pid and then for its exit, with no clock.
+_HAS_FIFO = hasattr(os, "mkfifo") and hasattr(os, "killpg")
+
 
 def test_the_plan_fits_the_parts_in_the_memory_budget() -> None:
     shards = runner.plan(jobs=8, available=16.0)
@@ -137,6 +141,9 @@ action, junit = sys.argv[1], sys.argv[2]
 if action == "crash":
     os.kill(os.getpid(), signal.SIGKILL)
 if action == "hang":
+    print("stuck in part", flush=True)
+    if len(sys.argv) > 3:
+        os.write(os.open(sys.argv[3], os.O_WRONLY), str(os.getpid()).encode())
     threading.Event().wait()
 if action in ("pass", "pass-with-coverage"):
     with open(junit, "w", encoding="utf-8") as stream:
@@ -181,38 +188,218 @@ def test_a_part_that_dies_makes_the_run_red_and_the_other_parts_still_finish(
     assert f"part 3/3: exit {runner.NO_TESTS_COLLECTED}" in out and "red: part 3" not in out
 
 
+class _Clock:
+    """The script's clock: it moves only when a test moves it, never with the wall."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    held = _Clock()
+    monkeypatch.setattr(runner, "_now", held)
+    return held
+
+
+def _once_started(fifo: Path, then, fds: list[int]) -> threading.Thread:
+    """Call *then* once the part reporting through *fifo* is running."""
+
+    def run() -> None:
+        pid, fd = _read_pid(fifo)
+        fds.append(fd)
+        if pid is not None:
+            then()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
+def _main_until_started(argv: list[str], fifo: Path, then) -> int:
+    """``main(argv)``, calling *then* once the hanging part behind *fifo* is running."""
+    fds: list[int] = []
+    waiter = _once_started(fifo, then, fds)
+    try:
+        return _run_main(argv, [fifo])
+    finally:
+        waiter.join()
+        for fd in fds:
+            _wait_exit(fd)
+
+
+@pytest.mark.skipif(not _HAS_FIFO, reason="needs process groups and FIFOs (POSIX)")
 @pytest.mark.timeout(60)
 def test_a_part_that_outlives_its_bound_is_killed_and_reported_red(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys, clock: _Clock
 ) -> None:
-    """The hanging part never exits by itself, so only the bound can end this run."""
-    _stand_in_parts(monkeypatch, tmp_path, {1: ["hang"], 2: ["pass"]})
+    """One job: the passing part has ended before the hanging one starts. The script
+    reads the hanging part's start before it launches it, so its bound is already set
+    when the part reports that it runs, which is when the clock moves past it."""
+    hung = _fifo(tmp_path / "hung")
+    _stand_in_parts(monkeypatch, tmp_path, {1: ["pass"], 2: ["hang", str(hung)]})
+    argv = ["--jobs", "1", "--shards", "2", "--part-timeout", "600", "--out", str(tmp_path / "o")]
+    moved = threading.Event()
+    launch = runner.Parts.launch
 
-    rc = runner.main(
-        ["--jobs", "2", "--shards", "2", "--part-timeout", "0.5", "--out", str(tmp_path / "o")]
-    )
+    def launch_then_hold(self, command, log, env=None):
+        """The worst schedule: nothing after the hanging part's launch runs until the
+        clock has moved, so a bound set after the launch would never be reached."""
+        child = launch(self, command, log, env)
+        if "hang" in command:
+            moved.wait()
+        return child
+
+    monkeypatch.setattr(runner.Parts, "launch", launch_then_hold)
+
+    def move_the_clock() -> None:
+        clock.advance(601)
+        moved.set()
+
+    try:
+        rc = _main_until_started(argv, hung, move_the_clock)
+    finally:
+        moved.set()
 
     out = capsys.readouterr().out
     assert rc == 1
-    assert f"red: part 1 (exit {runner.PART_TIMED_OUT}: ran past --part-timeout" in out
-    assert "red: part 2" not in out
+    assert f"red: part 2 (exit {runner.PART_TIMED_OUT}: still running at --part-timeout" in out
+    assert "part 1/2: exit 0, 2 tests" in out and "red: part 1" not in out
+
+
+@pytest.mark.skipif(not _HAS_FIFO, reason="needs process groups and FIFOs (POSIX)")
+@pytest.mark.timeout(60)
+def test_the_runs_own_deadline_ends_a_hung_part_prints_its_log_and_starts_no_more(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capfd, clock: _Clock
+) -> None:
+    """A part that starts late still ends at the run's deadline, not a part-timeout later."""
+    hung = _fifo(tmp_path / "hung")
+    _stand_in_parts(monkeypatch, tmp_path, {1: ["pass"], 2: ["hang", str(hung)], 3: ["pass"]})
+    out_dir = tmp_path / "o"
+    argv = ["--jobs", "1", "--shards", "3", "--part-timeout", "3000", "--run-timeout", "600"]
+    argv += ["--print-logs", "--out", str(out_dir)]
+
+    def late_start() -> None:
+        # The part has run 500 of its own 3000 seconds when the run's 600 are up.
+        clock.advance(601)
+
+    rc = _main_until_started(argv, hung, late_start)
+
+    out = capfd.readouterr().out
+    assert rc == 1
+    assert "part 1/3: exit 0, 2 tests" in out
+    assert f"red: part 2 (exit {runner.PART_TIMED_OUT}" in out
+    assert "--- part 2/3 log\nstuck in part\n--- end of part 2/3 log" in out
+    assert f"red: part 3 (exit {runner.PART_NOT_STARTED}: not started" in out
+    assert not (out_dir / "junit-3.xml").exists()
+
+
+@pytest.mark.skipif(not _HAS_FIFO, reason="needs process groups and FIFOs (POSIX)")
+@pytest.mark.timeout(60)
+def test_a_part_that_goes_quiet_has_its_log_printed_while_it_still_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capfd, clock: _Clock
+) -> None:
+    """A hung part's output must not wait for the part to end. The part writes its line
+    before it reports that it runs. From then on, each look that has a size on record for
+    the part moves the clock by one stall period: that look or the one before recorded the
+    log's final size, the next prints it, and a later one passes the run's deadline."""
+    hung = _fifo(tmp_path / "hung")
+    _stand_in_parts(monkeypatch, tmp_path, {1: ["hang", str(hung)]})
+    # How often the run looks, not a bound: the verdict reads the test's clock.
+    monkeypatch.setattr(runner, "WATCH_POLL_SECS", 0.01)  # flake-ok: poll interval
+    started = threading.Event()
+    look = runner.Watch.look
+
+    def look_then_move_the_clock(self) -> None:
+        up = started.is_set()
+        look(self)
+        if up and 1 in self.quiet:
+            clock.advance(runner.STALL_SECS + 1)
+
+    monkeypatch.setattr(runner.Watch, "look", look_then_move_the_clock)
+    argv = ["--jobs", "1", "--shards", "1", "--print-logs", "--out", str(tmp_path / "o")]
+    argv += ["--run-timeout", str(10 * runner.STALL_SECS)]
+
+    rc = _main_until_started(argv, hung, started.set)
+
+    out = capfd.readouterr().out
+    assert rc == 1
+    early = out.index("--- part 1/1 log so far (nothing written for")
+    assert "still running)\nstuck in part\n" in out[early:]
+    assert early < out.index("part 1/1: exit")
+    assert out.index("running: part 1 for") < out.index("part 1/1: exit")
+
+
+@pytest.mark.skipif(not _HAS_FIFO, reason="needs process groups and FIFOs (POSIX)")
+@pytest.mark.timeout(60)
+def test_a_stop_prints_the_log_so_far_of_the_parts_it_ends(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capfd
+) -> None:
+    """A cancelled CI job signals this script; what its parts wrote must reach stdout."""
+    hung = _fifo(tmp_path / "hung")
+    _stand_in_parts(monkeypatch, tmp_path, {1: ["hang", str(hung)], 2: ["pass"]})
+    argv = ["--jobs", "1", "--shards", "2", "--print-logs", "--out", str(tmp_path / "o")]
+
+    rc = _main_until_started(argv, hung, lambda: os.kill(os.getpid(), signal.SIGTERM))
+
+    out = capfd.readouterr().out
+    assert rc == 128 + signal.SIGTERM
+    assert "--- part 1/2 log so far (still running at the stop)\nstuck in part\n" in out
+    assert not (tmp_path / "o" / "junit-2.xml").exists()
 
 
 @pytest.mark.parametrize("waitid", [True, False], ids=["waitid", "no-waitid"])
 @pytest.mark.timeout(60)
-def test_a_bounded_wait_kills_the_part_on_every_platform(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, waitid: bool
+def test_a_wait_ends_at_the_earlier_of_the_parts_bound_and_the_runs_deadline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, waitid: bool, clock: _Clock
 ) -> None:
     if not waitid:
         monkeypatch.delattr(runner.os, "waitid", raising=False)
-    bounded = runner.Parts(timeout=0.5)  # flake-ok: the part blocks until killed
+    bounded = runner.Parts(timeout=600, deadline=clock() + 60)  # flake-ok: the test's clock
     with open(tmp_path / "log", "wb") as log:
         part = bounded.launch(
             [sys.executable, "-c", "import threading; threading.Event().wait()"], log
         )
+    clock.advance(61)
 
     assert bounded.wait(part) != 0
     assert part in bounded.overran and not bounded.live
+
+
+@pytest.mark.timeout(60)
+def test_a_parts_bound_counts_from_the_reading_taken_before_its_launch(
+    tmp_path: Path, clock: _Clock
+) -> None:
+    """Whatever happens between the launch and the wait, the bound is the one armed first."""
+    bounded = runner.Parts(timeout=600)  # flake-ok: the test's clock
+    armed = clock()
+    with open(tmp_path / "log", "wb") as log:
+        part = bounded.launch(
+            [sys.executable, "-c", "import threading; threading.Event().wait()"], log
+        )
+    clock.advance(601)
+
+    assert bounded.wait(part, armed) != 0
+    assert part in bounded.overran
+
+
+def test_a_part_whose_turn_comes_after_the_runs_deadline_is_not_started(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, clock: _Clock
+) -> None:
+    monkeypatch.setattr(runner, "part_command", lambda *_args: pytest.fail("must not start"))
+    late = runner.Parts(deadline=clock())  # flake-ok: the test's clock
+
+    assert runner.run_part(1, 1, 0, tmp_path, [], tmp_path / "p.txt", late) == (
+        1,
+        runner.PART_NOT_STARTED,
+        0.0,
+    )
 
 
 def test_an_unbounded_wait_records_no_overrun(tmp_path: Path, parts: runner.Parts) -> None:
@@ -365,8 +552,9 @@ def test_a_part_of_an_outer_shard_is_narrowed_to_that_shards_files(tmp_path: Pat
         ["--outer-shards", "8", "--outer-shard", "9"],
         ["--outer-pins", "pins.txt"],
         ["--part-timeout", "0"],
+        ["--run-timeout", "0"],
     ],
-    ids=["no-index", "no-count", "index-out-of-range", "pins-alone", "zero-timeout"],
+    ids=["no-index", "no-count", "index-out-of-range", "pins-alone", "zero-bound", "zero-run"],
 )
 def test_a_half_named_outer_shard_or_a_zero_bound_is_refused(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as refused:
@@ -425,7 +613,7 @@ def test_an_outer_shard_runs_as_parts_that_cover_exactly_its_files(
     monkeypatch.setenv("PYTHONPATH", str(REPO_ROOT))
     target = tmp_path / "combined" / ".coverage"
     target.parent.mkdir()
-    argv = ["--jobs", "2", "--shards", "2", "--part-timeout", "240"]
+    argv = ["--jobs", "2", "--shards", "2"]
     argv += ["--outer-shards", "2", "--outer-shard", "1", "--outer-pins", str(pins)]
     argv += ["--coverage-file", str(target), "--out"]
     plugins = ["-p", "xdist.plugin", "-p", "pytest_cov.plugin", "-p", "no:cacheprovider"]
@@ -505,10 +693,6 @@ def test_a_stopped_run_starts_no_further_part(tmp_path: Path) -> None:
     with open(tmp_path / "log", "wb") as log:
         assert parts.launch([sys.executable, "-c", "pass"], log) is None
 
-
-#: POSIX: a child reports through a FIFO it keeps open, so the test's read blocks first
-#: for the child's pid and then for its exit, with no clock.
-_HAS_FIFO = hasattr(os, "mkfifo") and hasattr(os, "killpg")
 
 #: A child that writes its pid to ``argv[1]`` (a FIFO the test reads, or a marker file),
 #: keeps it open and blocks until it is killed.

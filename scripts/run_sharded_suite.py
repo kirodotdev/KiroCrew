@@ -28,9 +28,19 @@ Arguments after ``--`` go to every pytest process. Each part writes ``junit-<i>.
 its part ends. Exit status is 0 only when every part passed. A part that collected
 nothing (pytest's exit 5) counts as passed, because its files belong to other parts; a
 run in which no part collected anything exits 5, as pytest does. A part is red when it
-exits with any other status, when it exits 0 without a JUnit file that counts a test, or
-when it runs longer than ``--part-timeout`` seconds (its process group is killed and it
-is reported as exit 124).
+exits with any other status or when it exits 0 without a JUnit file that counts a test.
+
+Two bounds end a part that does not end by itself: ``--part-timeout`` seconds from the
+part's own start, and ``--run-timeout`` seconds from this script's start, whichever comes
+first. The part's process group is killed and it is reported as exit 124; a part still
+queued when the run's time is up is not started and is reported as exit 126. A caller
+with a budget of its own (a CI job) passes ``--run-timeout`` below it, so a part that
+hangs is named, and its log printed, by this script instead of being cancelled with it.
+
+While parts run, a line a minute names the running ones. With ``--print-logs``, a part
+whose log has not grown for ``STALL_SECS`` has its log so far printed once (a hung
+test's stack dump is there), and a stop (SIGINT, SIGTERM, a part that cannot start)
+prints the log so far of every part it ends.
 
 ``--coverage-file PATH`` gives every part its own coverage data directory under
 ``--out`` (through ``COVERAGE_FILE``, so two parts never write one file) and, once every
@@ -87,6 +97,8 @@ NO_TESTS_COLLECTED = 5
 PART_TIMED_OUT = 124
 #: Reported for a part that exited 0 but left no JUnit file counting a test.
 PART_NO_RESULT = 125
+#: Reported for a part still queued when ``--run-timeout`` had passed.
+PART_NOT_STARTED = 126
 
 
 def available_gib() -> float | None:
@@ -259,6 +271,17 @@ def junit_counts(path: Path) -> tuple[int, int]:
 STOP_GRACE_SECS = 10.0
 #: Seconds between two looks at a part that is waited for with a bound or without waitid.
 PART_POLL_SECS = 0.05
+#: Seconds between two looks at the running parts while none has finished.
+WATCH_POLL_SECS = 5.0
+#: Seconds between two lines naming the running parts.
+HEARTBEAT_SECS = 60.0
+#: Seconds a running part's log may stay the same size before it is printed. A part
+#: writes a progress line at least every 30 s while its tests end, and the longest
+#: per-test timeout in the suite is 300 s.
+STALL_SECS = 360.0
+
+#: The clock every bound and the stall check read.
+_now = time.monotonic
 
 
 class Interrupted(Exception):
@@ -277,14 +300,27 @@ class Parts:
     cannot hand that id to anyone else until the reap.
     """
 
-    def __init__(self, timeout: float | None = None) -> None:
+    def __init__(self, timeout: float | None = None, deadline: float | None = None) -> None:
         self.lock = threading.Lock()
         self.stopped = False
         self.live: set[subprocess.Popen] = set()
         #: Seconds one part may run, or ``None`` for no bound.
         self.timeout = timeout
-        #: Parts killed at the bound.
+        #: The ``_now()`` reading at which every part must have ended, or ``None``.
+        self.deadline = deadline
+        #: Parts killed at a bound.
         self.overran: set[subprocess.Popen] = set()
+        #: Per running part index: the ``_now()`` reading at its start, and its log.
+        self.running: dict[int, tuple[float, Path]] = {}
+
+    def out_of_time(self) -> bool:
+        """Whether the run's own deadline has passed."""
+        return self.deadline is not None and _now() >= self.deadline
+
+    def snapshot(self) -> list[tuple[int, float, Path]]:
+        """``(index, start, log)`` of every running part, in index order."""
+        with self.lock:
+            return sorted((index, *entry) for index, entry in self.running.items())
 
     def launch(
         self, command: list[str], log, env: dict[str, str] | None = None
@@ -310,20 +346,24 @@ class Parts:
             self.overran.add(child)
             _signal_group(child, getattr(signal, "SIGKILL", signal.SIGTERM))
 
-    def wait(self, child: subprocess.Popen) -> int:
+    def wait(self, child: subprocess.Popen, started: float | None = None) -> int:
         """The part's exit status; on Linux, once nothing it started is left running.
 
-        A part still running ``timeout`` seconds after this call has its group killed and
-        is recorded in ``overran``.
+        A part still running ``timeout`` seconds after *started* (a ``_now()`` reading
+        its caller took before launching it; this call when omitted), or at the run's
+        ``deadline`` if that comes first, has its group killed and is recorded in
+        ``overran``.
         """
-        deadline = None if self.timeout is None else time.monotonic() + self.timeout
+        started = _now() if started is None else started
+        bounds = [self.deadline, None if self.timeout is None else started + self.timeout]
+        deadline = min((bound for bound in bounds if bound is not None), default=None)
         if platform_compat.IS_POSIX and hasattr(os, "waitid"):
             # Exited but not reaped: the zombie keeps the group id ours while a test's
             # leftover server or worker is killed.
             flags = os.WEXITED | os.WNOWAIT
             if deadline is not None:
                 while os.waitid(os.P_PID, child.pid, flags | os.WNOHANG) is None:
-                    if time.monotonic() >= deadline:
+                    if _now() >= deadline:
                         self._kill_overrun(child)
                         break
                     time.sleep(PART_POLL_SECS)
@@ -343,7 +383,7 @@ class Parts:
                 if rc is not None:
                     self.live.discard(child)
                     return rc
-            if deadline is not None and time.monotonic() >= deadline:
+            if deadline is not None and _now() >= deadline:
                 self._kill_overrun(child)
                 deadline = None
             time.sleep(PART_POLL_SECS)
@@ -407,18 +447,24 @@ def run_part(
 ) -> tuple:
     """``(index, exit status, seconds)``; status ``None`` when a stop came first.
 
-    The status is ``PART_TIMED_OUT`` for a part killed at the run's ``--part-timeout``.
+    The status is ``PART_TIMED_OUT`` for a part killed at a bound and ``PART_NOT_STARTED``
+    for one whose turn came after the run's deadline.
 
     A part that cannot be started stops the run before this thread takes the next
     queued part, so a broken launch (a missing interpreter, no file descriptors left)
     fails once, not once per part.
     """
     parts = parts or Parts()
+    if parts.out_of_time():
+        return index, PART_NOT_STARTED, 0.0
     started = time.monotonic()
+    # Read before the part exists, so its bound is set before anything it does.
+    armed = _now()
+    log_path = out / f"shard-{index}.log"
     try:
         # A result left by an earlier run in the same --out must not count for this one.
         (out / f"junit-{index}.xml").unlink(missing_ok=True)
-        with open(out / f"shard-{index}.log", "wb") as log:
+        with open(log_path, "wb") as log:
             command = part_command(index, shards, workers, out, extra, pins, targets)
             child = parts.launch(command, log, part_env(out, index, coverage))
     except BaseException:
@@ -427,16 +473,26 @@ def run_part(
         raise
     if child is None:
         return index, None, 0.0
-    rc = parts.wait(child)
+    with parts.lock:
+        parts.running[index] = (armed, log_path)
+    try:
+        rc = parts.wait(child, armed)
+    finally:
+        with parts.lock:
+            parts.running.pop(index, None)
     if child in parts.overran:
         rc = PART_TIMED_OUT
     return index, rc, time.monotonic() - started
 
 
-def print_log(index: int, shards: int, path: Path) -> None:
-    """Copy one part's log to stdout, folded into a group on GitHub Actions."""
+def print_log(index: int, shards: int, path: Path, state: str = "") -> None:
+    """Copy one part's log to stdout, folded into a group on GitHub Actions.
+
+    *state* says why a log is printed before its part ended (``" so far (...)"``).
+    """
     grouped = os.environ.get("GITHUB_ACTIONS") == "true"
-    print(f"::group::part {index}/{shards} log" if grouped else f"--- part {index}/{shards} log")
+    title = f"part {index}/{shards} log{state}"
+    print(f"::group::{title}" if grouped else f"--- {title}")
     sys.stdout.flush()
     try:
         sys.stdout.buffer.write(path.read_bytes())
@@ -444,6 +500,50 @@ def print_log(index: int, shards: int, path: Path) -> None:
         print(f"cannot read {path}: {exc}")
     sys.stdout.buffer.flush()
     print("::endgroup::" if grouped else f"--- end of part {index}/{shards} log", flush=True)
+
+
+class Watch:
+    """What the run says about its parts while they run.
+
+    A part's output goes to its log and reaches stdout only when the part ends, so a
+    part that never ends would say nothing. ``look`` names the running parts once every
+    ``HEARTBEAT_SECS`` and, with *show_logs*, prints once the log so far of a part whose
+    log has not grown for ``STALL_SECS``.
+    """
+
+    def __init__(self, parts: Parts, shards: int, show_logs: bool) -> None:
+        self.parts = parts
+        self.shards = shards
+        self.show_logs = show_logs
+        self.heartbeat_at = _now() + HEARTBEAT_SECS
+        #: Per part index: its log's size, when it reached it, whether that was printed.
+        self.quiet: dict[int, tuple[int, float, bool]] = {}
+
+    def look(self) -> None:
+        now = _now()
+        running = self.parts.snapshot()
+        if running and now >= self.heartbeat_at:
+            self.heartbeat_at = now + HEARTBEAT_SECS
+            names = ", ".join(f"part {index} for {now - start:.0f}s" for index, start, _ in running)
+            print(f"running: {names}", flush=True)
+        for index, _start, log in running:
+            try:
+                size = log.stat().st_size
+            except OSError:
+                size = 0
+            known = self.quiet.get(index)
+            if known is None or known[0] != size:
+                self.quiet[index] = (size, now, False)
+            elif self.show_logs and not known[2] and now - known[1] >= STALL_SECS:
+                self.quiet[index] = (size, known[1], True)
+                state = f" so far (nothing written for {now - known[1]:.0f}s, still running)"
+                print_log(index, self.shards, log, state)
+
+    def stopping(self) -> None:
+        """Print the log so far of every part a stop is about to end."""
+        if self.show_logs:
+            for index, _start, log in self.parts.snapshot():
+                print_log(index, self.shards, log, " so far (still running at the stop)")
 
 
 def _raise_interrupted(signum: int, _frame) -> None:
@@ -471,6 +571,7 @@ def main(argv: list[str] | None = None) -> int:
         "--coverage-file", type=Path, default=None, help="combine the parts' coverage here"
     )
     parser.add_argument("--part-timeout", type=float, default=None, help="seconds one part may run")
+    parser.add_argument("--run-timeout", type=float, default=None, help="seconds the run may take")
     parser.add_argument("--print-logs", action="store_true", help="copy each log to stdout")
     opts = parser.parse_args(args)
     outer = (opts.outer_shards, opts.outer_shard)
@@ -479,8 +580,11 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--outer-pins requires --outer-shards and --outer-shard")
     elif None in outer or not 1 <= opts.outer_shard <= opts.outer_shards:
         parser.error("an outer shard requires 1 <= --outer-shard <= --outer-shards")
-    if opts.part_timeout is not None and opts.part_timeout <= 0:
-        parser.error("--part-timeout must be positive")
+    for name in ("part_timeout", "run_timeout"):
+        if getattr(opts, name) is not None and getattr(opts, name) <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
+    # From here, so the time this script spends before the first part counts too.
+    deadline = None if opts.run_timeout is None else _now() + opts.run_timeout
     jobs = max(1, opts.jobs)
     shards = opts.shards or plan(jobs, available_gib())
     # Absolute: every part runs from the repository root, not from where this was started.
@@ -507,7 +611,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     results = []
-    parts = Parts(opts.part_timeout)
+    parts = Parts(opts.part_timeout, deadline)
+    watch = Watch(parts, shards, opts.print_logs)
     previous = {
         sig: signal.signal(sig, _raise_interrupted) for sig in (signal.SIGINT, signal.SIGTERM)
     }
@@ -529,19 +634,25 @@ def main(argv: list[str] | None = None) -> int:
             )
             for i in range(1, shards + 1)
         ]
-        for future in concurrent.futures.as_completed(futures):
-            index, rc, secs = future.result()
-            tests, bad = junit_counts(out / f"junit-{index}.xml")
-            if rc == 0 and not tests:
-                # pytest exits 0 only after it ran a test, and then it wrote the file.
-                rc = PART_NO_RESULT
-            results.append((index, rc, secs, tests, bad))
-            if opts.print_logs:
-                print_log(index, shards, out / f"shard-{index}.log")
-            print(
-                f"part {index}/{shards}: exit {rc}, {tests} tests, {bad} failed, {secs:.0f}s",
-                flush=True,
+        pending = set(futures)
+        while pending:
+            done, pending = concurrent.futures.wait(
+                pending, timeout=WATCH_POLL_SECS, return_when=concurrent.futures.FIRST_COMPLETED
             )
+            for future in done:
+                index, rc, secs = future.result()
+                tests, bad = junit_counts(out / f"junit-{index}.xml")
+                if rc == 0 and not tests:
+                    # pytest exits 0 only after it ran a test, and then it wrote the file.
+                    rc = PART_NO_RESULT
+                results.append((index, rc, secs, tests, bad))
+                if opts.print_logs and rc != PART_NOT_STARTED:
+                    print_log(index, shards, out / f"shard-{index}.log")
+                print(
+                    f"part {index}/{shards}: exit {rc}, {tests} tests, {bad} failed, {secs:.0f}s",
+                    flush=True,
+                )
+            watch.look()
         finished = True
     except Interrupted as stop:
         print(f"stopped by signal {stop.signum}: {len(results)} of {shards} parts finished")
@@ -553,6 +664,8 @@ def main(argv: list[str] | None = None) -> int:
             for sig in previous:
                 signal.signal(sig, signal.SIG_IGN)
             pool.shutdown(wait=False, cancel_futures=True)
+            # Before the stop: what stops this script may kill it a few seconds later.
+            watch.stopping()
             parts.stop()
         pool.shutdown(wait=True)
         for sig, handler in previous.items():
@@ -576,10 +689,11 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-#: What the two statuses this script assigns itself mean, for the red-part line.
+#: What the statuses this script assigns itself mean, for the red-part line.
 _RED_REASONS = {
-    PART_TIMED_OUT: ": ran past --part-timeout and was killed",
+    PART_TIMED_OUT: ": still running at --part-timeout or --run-timeout, and killed",
     PART_NO_RESULT: ": exited 0 without a JUnit file that counts a test",
+    PART_NOT_STARTED: ": not started, --run-timeout had passed",
 }
 
 

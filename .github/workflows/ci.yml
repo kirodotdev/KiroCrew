@@ -1460,6 +1460,8 @@ jobs:
           # Node ids red on main, deselected by scripts.ci_main_red_skip (see the
           # `changes` job). Read by the plugin from the environment only.
           CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+          # This job's own `timeout-minutes`, for the full suite's --run-timeout.
+          JOB_BUDGET_MINUTES: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 60 || 70 }}
         run: |
           # Reuse payload-free progress on full, reduced and repeated leaf runs.
           # A worker crash stays red; do not replace it and lose its failure report.
@@ -1584,11 +1586,20 @@ jobs:
           # part pays its own start-up. Each part writes its own JUnit file, log and
           # coverage data under --out, and its progress records beside the other
           # parts' (one file per process, named by pid and a UUID). The script
-          # exits non-zero when any part fails, dies, exits 0 with no test
-          # counted, or runs past --part-timeout (well inside this job's budget, so
-          # a hung part is named in the log instead of the job being cancelled);
-          # only when every part passed does it combine their coverage into the
-          # one .coverage that "Stage shard coverage data" requires.
+          # exits non-zero when any part fails, dies or exits 0 with no test
+          # counted; only when every part passed does it combine their coverage
+          # into the one .coverage that "Stage shard coverage data" requires.
+          #
+          # A part's output reaches this log when the part ends, so the script
+          # must end a part that hangs itself: --run-timeout is this job's budget
+          # less 10 minutes (set-up before this step, the uploads after it),
+          # counted from here. At that point it kills what still runs, prints
+          # those logs, starts nothing more and exits non-zero, so the hung part
+          # is named here and the steps below still run. Before that, a part
+          # whose log stops growing for six minutes has its log so far printed
+          # (a hung test's faulthandler dump is in it), and a SIGINT or SIGTERM
+          # that reaches the script prints the log so far of every running part.
+          RUN_SECS=$(( (JOB_BUDGET_MINUTES - 10) * 60 ))
           by_mem=$(( (mem_mib - 2048) / 1024 ))
           JOBS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$JOBS" -ge 1 ] || JOBS=1
@@ -1597,7 +1608,7 @@ jobs:
           python scripts/run_sharded_suite.py --jobs "$JOBS" --shards "$PARTS" \
             --outer-shards "$SHARD_COUNT" --outer-shard ${{ matrix.group }} \
             --outer-pins scripts/ci_file_shard_pins.txt \
-            --out "$RUNNER_TEMP/sharded-suite" --print-logs --part-timeout 3000 \
+            --out "$RUNNER_TEMP/sharded-suite" --print-logs --run-timeout "$RUN_SECS" \
             --coverage-file .coverage \
             -- ${PROGRESS[@]+"${PROGRESS[@]}"} -q --timeout=120 -m "not ipv6_required and not real_venv" \
             --cov=kiro_crew --cov=sage_lib \
@@ -1623,6 +1634,22 @@ jobs:
         with:
           name: linux-pytest-progress-${{ matrix.group }}
           path: ${{ runner.temp }}/pytest-progress/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # The full suite's parts: each one's whole log and JUnit file, and the two
+      # lists that say which files a part owned. Kept when the step fails or the
+      # job is cancelled, which is when the job log may not hold a part's output.
+      - name: Upload Linux part logs
+        if: ${{ always() && steps.scope.outputs.reduced == 'false' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-part-logs-${{ matrix.group }}
+          path: |
+            ${{ runner.temp }}/sharded-suite/shard-*.log
+            ${{ runner.temp }}/sharded-suite/junit-*.xml
+            ${{ runner.temp }}/sharded-suite/group-pins.txt
+            ${{ runner.temp }}/sharded-suite/outer-shard-files.txt
           if-no-files-found: ignore
           retention-days: 7
 
