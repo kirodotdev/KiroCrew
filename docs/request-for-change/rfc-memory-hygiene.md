@@ -3,8 +3,8 @@ title: Keep semantic memory small enough for consolidation to dedupe against
 status: draft
 author: iamwhatever
 created: 2026-10-22
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: null
 implementation-prs: [24511]
 tracking-issues: [16354]

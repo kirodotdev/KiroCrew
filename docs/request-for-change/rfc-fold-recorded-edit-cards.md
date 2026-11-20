@@ -4,7 +4,7 @@ status: partial
 author: iamwhatever
 created: 2026-10-16
 last-audited: 2026-11-20
-audited-at: fc89562d69
+audited-at: 0c5d8bd5f3
 doc-pr: 21354
 implementation-prs: [25650]
 tracking-issues: [21336]

@@ -3,8 +3,8 @@ title: The session-stable head of a new chat rides in the KAS agent prompt, so t
 status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 36964
 implementation-prs: [37108]
 tracking-issues: [36928]

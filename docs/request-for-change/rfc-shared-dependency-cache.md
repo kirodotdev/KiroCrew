@@ -4,8 +4,8 @@ status: draft
 kind: change
 author: Pearce Kieser (Pearcekieser)
 created: 2026-09-11
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 12937
 implementation-prs: [10259]
 tracking-issues: [10258]

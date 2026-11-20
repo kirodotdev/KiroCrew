@@ -3,8 +3,8 @@ title: Shared Slack access - the owner opts in to let named Slack users drive th
 status: implemented
 author: kyleseaman
 created: 2026-11-05
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 30760
 implementation-prs: [30760]
 tracking-issues: [22759, 30678]

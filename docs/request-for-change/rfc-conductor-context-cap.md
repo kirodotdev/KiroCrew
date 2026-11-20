@@ -4,7 +4,7 @@ status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-19
 last-audited: 2026-11-20
-audited-at: fc89562d69
+audited-at: 0c5d8bd5f3
 doc-pr: null
 implementation-prs: [22718, 27024, 29388]
 tracking-issues: [22082]

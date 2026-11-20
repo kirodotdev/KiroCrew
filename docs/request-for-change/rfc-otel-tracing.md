@@ -3,10 +3,10 @@ title: Native OpenTelemetry traces for every turn, step and session, with credit
 status: partial
 author: kyleseaman, with devmate
 created: 2026-11-05
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 31433
-implementation-prs: [31460, 35077]
+implementation-prs: [31460, 35077, 35792, 36153, 36717, 37005, 37158, 36833]
 tracking-issues: [1643]
 supersedes: []
 superseded-by: []
@@ -20,7 +20,7 @@ superseded-by: []
   phase 1a acceptance of 2026-11-10
   ([#34685](https://github.com/kirodotdev/KiroCrew/pull/34685)). Phases 1a and 1b are on main, via
   [#31460](https://github.com/kirodotdev/KiroCrew/pull/31460) and
-  [#35077](https://github.com/kirodotdev/KiroCrew/pull/35077). Phases 2 to 9 are not built; they land PR by PR on this
+  [#35077](https://github.com/kirodotdev/KiroCrew/pull/35077). Phases 2 ([#35792](https://github.com/kirodotdev/KiroCrew/pull/35792)), 3 ([#36153](https://github.com/kirodotdev/KiroCrew/pull/36153), [#36717](https://github.com/kirodotdev/KiroCrew/pull/36717)), 4 ([#37005](https://github.com/kirodotdev/KiroCrew/pull/37005), [#37158](https://github.com/kirodotdev/KiroCrew/pull/37158)) and the round traces of phase 5 ([#36833](https://github.com/kirodotdev/KiroCrew/pull/36833)) are on main too, in `src/kiro_crew/tracing/`; phase 2b (native SigV4) and phases 6 to 9 are not built (checked at `0c5d8bd5f3`); they land PR by PR on this
   design. Phase 9, opt-in content capture (§9.1), still goes through Sensitive Change Review when it is built. Code
   facts are measured at `9996c57111`, before phase 1a; the status was re-verified at `386875ed0d`.
 - Tracking issue: [#1643](https://github.com/kirodotdev/KiroCrew/issues/1643) (`tier:T3`). A maintainer signed off
