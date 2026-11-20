@@ -474,8 +474,9 @@ so a spec written for either tool loads here:
 
 Both shapes are held to the same bar: same command and matcher rules, same
 dedup, same per-event and total caps. Twelve triggers are accepted, each in
-kiro-agent's own PascalCase, its IDE camelCase spelling, or its CLI alias —
-the whole table from kiro-agent's `packages/kiro-agent/src/hooks/trigger-names.ts` at blob `2d4a3127e32e5e81e68d5c2ea406a6a5728f6d78`, matched without regard to case. Five map onto the five kiro-cli event
+kiro-agent's own PascalCase, its IDE camelCase spelling, its CLI alias, or the
+Open Plugins alias `afterFileEdit` — the whole table from kiro-agent's
+`packages/kiro-agent/src/hooks/trigger-names.ts`, matched without regard to case. Five map onto the five kiro-cli event
 names: `PreToolUse` to `preToolUse`, `PostToolUse` to `postToolUse`,
 `UserPromptSubmit` to `userPromptSubmit`, `SessionStart` to `agentSpawn`, `Stop`
 to `stop`. Only those five reach kiro-cli; a hook on `SessionEnd`, `PreTaskExec`,
