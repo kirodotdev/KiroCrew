@@ -19,6 +19,8 @@ counter                                        one increment per
 
 ``kirocrew.app.run_time``                      finished turn of an app's session,
                                                adds its seconds (``duration``)
+``kirocrew.app.present``                       installed app, once per UTC day
+                                               (``status``, ``backend``)
 ``kirocrew.channel.message.received``          inbound channel message, once
                                                admission has decided
 ``kirocrew.ui.control.clicked``                click on an agent-rendered control
@@ -69,6 +71,7 @@ APP_UPDATED = "kirocrew.app.updated"
 APP_UNINSTALLED = "kirocrew.app.uninstalled"
 APP_SESSION_STARTED = "kirocrew.app.session_started"
 APP_RUN_TIME = "kirocrew.app.run_time"
+APP_PRESENT = "kirocrew.app.present"
 CHANNEL_MESSAGE_RECEIVED = "kirocrew.channel.message.received"
 UI_CONTROL_CLICKED = "kirocrew.ui.control.clicked"
 TIPS_FEEDBACK = "kirocrew.tips.feedback"
@@ -474,6 +477,31 @@ def record_app_run_time(owning_app: object, duration_ms: object) -> None:
         )
     except Exception:  # telemetry must never break the measured path
         logger.debug("app run time emit failed", exc_info=True)
+
+
+#: Whether an installed app is enabled, on ``kirocrew.app.present``.
+APP_PRESENT_STATUS_VALUES: tuple[str, ...] = ("enabled", "disabled", OTHER)
+#: An installed app's backend process: ``none`` when its manifest runs none
+#: (no ``backend.entryPoint``), else ``running`` or ``stopped`` in this gateway.
+APP_PRESENT_BACKEND_VALUES: tuple[str, ...] = ("none", "running", "stopped", OTHER)
+
+
+def record_app_present(
+    app: object, status: object, backend: object, ids: dict[str, str] | None = None
+) -> None:
+    """*app* is installed today; the daily pass in :mod:`kiro_crew.metrics.app_present`.
+
+    *ids* as in :func:`app_public_id`.
+    """
+    _emit(
+        APP_PRESENT,
+        {
+            "app": app_public_id(app, ids),
+            "entity_version": app_public_version(app, ids),
+            "status": _closed(status, APP_PRESENT_STATUS_VALUES),
+            "backend": _closed(backend, APP_PRESENT_BACKEND_VALUES),
+        },
+    )
 
 
 # -- channel.message.received -------------------------------------------------

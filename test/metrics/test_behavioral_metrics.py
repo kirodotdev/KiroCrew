@@ -148,6 +148,23 @@ from kiro_crew.metrics.recorder import MetricsRecorder
                 "duration": "le_1m",
             },
         ),
+        (
+            "kirocrew.app.present",
+            {
+                "app": "weather-app",
+                "entity_version": "1.1.0",
+                "status": "disabled",
+                "backend": "stopped",
+            },
+            {
+                "Feature": "app",
+                "Activity": "present",
+                "Entity": "weather-app",
+                "entity_version": "1.1.0",
+                "status": "disabled",
+                "backend": "stopped",
+            },
+        ),
     ],
 )
 def test_each_metric_gets_its_shape(name, attrs, expected):

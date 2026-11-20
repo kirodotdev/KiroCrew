@@ -3157,6 +3157,7 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.app.uninstalled` | counter | `app` and `entity_version` (the removed version), read before the install record is removed; `keep_data`: `true` / `false` | `uninstall_app` once it commits; a `retired_builtin` cleanup is Crew's own removal and is not counted |
 | `kirocrew.app.session_started` | counter | `app` and `entity_version` of the provider's `owning_app`, as on `kirocrew.app.installed`; `kind`: the session's `session_kind` (9 values) | `record_session_started`, right after it counts `kirocrew.session.started`, when the provider's trusted `owning_app` (the caller's slot app) is set; a failure here leaves `session.started` counted |
 | `kirocrew.app.run_time` | counter, unit `s` | `app` and `entity_version` of the session's `owning_app`, as on `kirocrew.app.installed`; `duration`: `le_10s` / `le_1m` / `le_5m` / `le_15m` / `le_1h` / `le_4h` / `gt_4h` / `other`, the bucket of the rounded seconds (each edge in the lower bucket) | `emit_turn_duration`, from both turn callers (`_emit_turn_metric` and `_emit_turn_histogram`), when the live provider's `owning_app` is set; adds the turn's wall seconds rounded up; a turn with no duration adds nothing |
+| `kirocrew.app.present` | counter | `app` and `entity_version`, as on `kirocrew.app.installed`; `status`: `enabled` / `disabled` / `other`; `backend`: `none` (the manifest runs no `backend.entryPoint`), `running` / `stopped` (this gateway's tracked process), `other` | once per installed app per UTC day, from the gateway's background task `metrics/app_present.py`: first pass 10 minutes after start, then a check hourly and just after each UTC midnight; the day last recorded is the stamp `app_present_last_sent` beside the beacon's, so restarts the same day record once. No pass and no stamp while the recorder is off. Never on a request path |
 | `kirocrew.channel.message.received` | counter | `channel`, `admitted`, `automation` | `run_channel_turn`, once admission decides |
 | `kirocrew.ui.control.clicked` | counter | `control` (8 values) | `POST /api/telemetry/ui-control`, owner only, from the dashboard's option chips, question card and follow-up card |
 | `kirocrew.tips.feedback` | counter | `action`: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`; `source`: `curated` / `catalog` / `generated` / `other`; `feature`: a curated tip's id when the tip ships in `data/tips_curated.json` or is listed in the edition pool's `TipsPool.metric_tip_ids`, else the tip's doc when it is in `TIP_DOC_ALLOWLIST`, else `other` | `POST /api/tips/feedback`, after the tips state is saved (`tips_metrics.record_tip_feedback_metric`) |
@@ -3166,8 +3167,8 @@ Shared attributes (`metrics/usage_attrs.py`):
 Recording is an in-memory add after the measured action commits, and a recording
 failure never changes that action's result.
 
-The attributes above are what the emit sites pass. The five `kirocrew.app.*` lifecycle, session
-and run-time rows and the last three rows are the behavioral metrics (`BEHAVIORAL_METRICS` in `metrics/behavioral_metrics.py`, a
+The attributes above are what the emit sites pass. The six `kirocrew.app.*` lifecycle, session,
+run-time and presence rows and the last three rows are the behavioral metrics (`BEHAVIORAL_METRICS` in `metrics/behavioral_metrics.py`, a
 subset of `PRODUCT_METRICS`). On the live provider `MetricsRecorder` creates them on
 a second meter with scope `kiro.crew` (every other metric uses `kiro_crew`) and
 reshapes their attributes on the way in, so every sink sees: `Feature` (`tips`,
