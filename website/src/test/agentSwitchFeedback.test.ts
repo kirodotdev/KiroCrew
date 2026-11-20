@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { ApiError } from '../api/client'
-import { agentSwitchErrorNotice, agentSwitchFailureMessage, agentSwitchFailureNotice, isMemberNeedsNewChatError, isTurnInFlightError } from '../utils/agentSwitchFeedback'
+import { agentSwitchErrorNotice, agentSwitchFailureMessage, agentSwitchFailureNotice, isCrewModeLockedError, isMemberNeedsNewChatError, isTurnInFlightError } from '../utils/agentSwitchFeedback'
 import chatReducer, { setAgentSwitchNotice } from '../store/chatSlice'
 
 /** The gateway's real refusal shape for a mid-turn switch (chat_handlers.py). */
@@ -143,5 +143,28 @@ describe('agent switch failure feedback', () => {
     const initial = chatReducer(undefined, { type: 'test/init' })
     const next = chatReducer(initial, setAgentSwitchNotice({ message: 'm', newChatAgent: 'writer' }))
     expect(next.agentSwitchNotice).toEqual({ message: 'm', newChatAgent: 'writer' })
+  })
+})
+
+describe('a switch refused because the chat is in conductor mode', () => {
+  /** The gateway's real refusal (`_crew_mode_lock_refusal` in agent_switch.py). */
+  const crewModeLocked409 = () => new ApiError(
+    409,
+    'this chat is in conductor mode, which stays on its own agent',
+    JSON.stringify({ error: 'this chat is in conductor mode, which stays on its own agent', code: 'crew_mode_locked' }),
+  )
+  const blockedCopy = "Switching to writer was blocked because conductor mode can't be turned off for this chat."
+
+  it('shows the conductor mode copy, not the raw server error', () => {
+    expect(isCrewModeLockedError(crewModeLocked409())).toBe(true)
+    expect(agentSwitchFailureMessage(crewModeLocked409(), 'writer')).toBe(blockedCopy)
+  })
+
+  it('is plain status on the shared notice, not an error card', () => {
+    expect(agentSwitchFailureNotice(crewModeLocked409(), 'writer')).toEqual({ message: blockedCopy })
+  })
+
+  it('leaves other 409s alone', () => {
+    expect(isCrewModeLockedError(turnInFlight409())).toBe(false)
   })
 })

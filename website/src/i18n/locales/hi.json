@@ -10816,6 +10816,10 @@
       "chip_hint_busy": "जवाब के बाद उपलब्ध।",
       "switching_on": "Conductor mode चालू किया जा रहा है…",
       "switching_off": "Conductor mode बंद किया जा रहा है…",
+      "midchat_confirm_title": "इस चैट के लिए Conductor mode चालू करना है?",
+      "midchat_confirm_body": "इस चैट के लिए Conductor mode बंद नहीं किया जा सकता।",
+      "midchat_confirm_action": "Conductor mode चालू करो",
+      "midchat_confirm_dont_show": "यह सूचना फिर से मत दिखाओ",
       "title": "Conductor mode",
       "tagline_lead": "तुम लक्ष्य तय करो।",
       "tagline_strong": "तुम्हारी टीम काम करती है।",
@@ -23533,6 +23537,7 @@
   "utils": {
     "agentSwitchFeedback": {
       "turn_in_flight": "एक टर्न अभी चल रहा है — उसके पूरा होने पर फिर से आज़माएँ।",
+      "crew_mode_locked": "{{agent}} पर स्विच करना रोका गया, क्योंकि इस चैट के लिए Conductor mode बंद नहीं किया जा सकता।",
       "model_deferred": "{{model}} तुम्हारे अगले संदेश से काम संभालेगा। यह जवाब उसी मॉडल पर पूरा होगा जिससे यह शुरू हुआ था।",
       "member_needs_new_chat": "{{name}} की अपनी मेमोरी है, इसलिए यह केवल नई चैट शुरू कर सकता है। यह चैट अपना मौजूदा एजेंट रखती है।",
       "open_session": "सत्र खोलो",
