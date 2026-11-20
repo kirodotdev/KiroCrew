@@ -182,6 +182,19 @@ describe('parseRecoveryMessage', () => {
     expect(line).not.toMatch(/continuing|\bin progress\b|running/)
   })
 
+  it('words the user Continue detail in past tense, true after a clean finish too', () => {
+    // Continue after a clean finish injects the same prefix as after an
+    // interruption, so the detail must not claim either happened.
+    const manual = parseRecoveryMessage('[Continue — requested by the user]\nKeep going.')
+    const detail = manual?.detail.toLowerCase() ?? ''
+    expect(manual?.kind).toBe('manual')
+    expect(detail).not.toBe('')
+    expect(detail).not.toContain('recoverycard.')
+    expect(detail).not.toMatch(/\b\w+ing\b|\bin progress\b/)
+    expect(detail).not.toMatch(/interrupt|cut short|fail/)
+    expect(detail).not.toMatch(/continu|resum|request/)
+  })
+
   it('does not attribute a hook continuation to the user', () => {
     // `manual` is the user-pressed Continue row and reads "Continued at your
     // request". A hook continuation is machine-driven, so it must not borrow it.

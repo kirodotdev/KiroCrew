@@ -13575,7 +13575,7 @@
         "no_response_returned": "Keine Antwort",
         "nudge_cap_reached": "Nudge-Limit erreicht",
         "recovered_continuing": "Fortsetzung automatisch gesendet",
-        "resuming_the_interrupted_turn": "unterbrochener Durchlauf wird fortgesetzt",
+        "sent_without_a_new_instruction": "ohne neue Anweisung gesendet",
         "safety_policy_continuing": "Sicherheitsrichtlinie hat den Aufruf blockiert · Fortsetzung automatisch gesendet",
         "safety_policy_told_in_turn": "Sicherheitsrichtlinie hat den Aufruf blockiert · dem Agenten wurde der Grund noch in diesem Durchlauf mitgeteilt",
         "invalid_name_told_in_turn": "der Werkzeugname hat die Validierung nicht bestanden · dem Agenten wurde der Grund noch in diesem Durchlauf mitgeteilt",

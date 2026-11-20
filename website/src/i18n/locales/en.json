@@ -7729,7 +7729,7 @@
         "no_response_returned": "No response returned",
         "nudge_cap_reached": "nudge cap reached",
         "recovered_continuing": "continuation sent automatically",
-        "resuming_the_interrupted_turn": "resuming the interrupted turn",
+        "sent_without_a_new_instruction": "sent without a new instruction",
         "safety_policy_continuing": "safety policy blocked the call · continuation sent automatically",
         "safety_policy_told_in_turn": "safety policy blocked the call · the agent was told why, in this turn",
         "invalid_name_told_in_turn": "tool name validation blocked the call · the agent was told why, in this turn",

@@ -13270,7 +13270,7 @@
         "no_response_returned": "応答がありませんでした",
         "nudge_cap_reached": "ナッジ上限に到達",
         "recovered_continuing": "継続を自動送信しました",
-        "resuming_the_interrupted_turn": "中断したターンを再開中",
+        "sent_without_a_new_instruction": "新しい指示なしで送信済み",
         "safety_policy_continuing": "安全ポリシーにより呼び出しがブロックされました・継続を自動送信しました",
         "safety_policy_told_in_turn": "安全ポリシーが呼び出しをブロックしました · このターン内でエージェントに理由を伝えました",
         "invalid_name_told_in_turn": "ツール名の検証に失敗 · このターン内でエージェントに理由を伝えました",
