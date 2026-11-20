@@ -30,6 +30,10 @@ name: CI Red-Cause Census
 #   --max-wait-seconds 9000  all sleeps together; a reset past what is left
 #                            ends the census with what it read, marked Partial
 #   --max-points 30000       the most one run may spend, whatever the window
+#   --gh-timeout-seconds 900 one `gh` call: the 600 s the wrapper below may
+#                            sleep inside it on a spent limit, and 300 for
+#                            the call. A call ended mid-sleep would have
+#                            spent the wrapper's budget and read nothing
 #
 # The first step reads the bucket's size (`/rate_limit` is free) and fails
 # before any point is spent when the bucket is smaller than the reserve and one
@@ -66,7 +70,8 @@ name: CI Red-Cause Census
 # echoed.
 #
 # `test/test_ci_red_census_workflow.py` pins the triggers, the permissions, the
-# budget flags and their sum against the job timeout, and runs the census step
+# budget flags and their sum against the job timeout, the `gh` deadline against
+# the wrapper's wait, and runs the census step
 # with `python3` stubbed.
 
 on:
@@ -158,7 +163,8 @@ jobs:
           status=0
           python3 scripts/ci_red_cause_census.py "$@" --repo "$REPO" --out-dir census \
             --logs never --workers 4 --reserve-points 7500 --points-per-hour 5000 \
-            --max-wait-seconds 9000 --max-points 30000 > census/run.txt || status=$?
+            --max-wait-seconds 9000 --max-points 30000 --gh-timeout-seconds 900 \
+            > census/run.txt || status=$?
           cat census/run.txt
           {
             if [ -f census/summary.md ]; then

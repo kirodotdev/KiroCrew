@@ -41,6 +41,8 @@ BUCKET_POINTS = 15000
 # One weekday of this repository took 1,279 seconds to read; seven of them.
 READING_SECONDS = 7 * 1279
 HOSTED_JOB_LIMIT_MINUTES = 360
+# What the census allows one `gh` call that waits for nothing.
+CALL_SECONDS = 300
 
 
 def _document() -> dict:
@@ -167,6 +169,13 @@ def test_the_waits_and_the_reading_fit_the_job_timeout() -> None:
     assert job["timeout-minutes"] < HOSTED_JOB_LIMIT_MINUTES
 
 
+def test_one_gh_call_outlasts_the_whole_wait_the_wrapper_may_spend_inside_it() -> None:
+    (wrapper,) = [step for step in _job()["steps"] if step.get("uses") == RATE_LIMIT_ACTION]
+    # The wrapper sleeps inside the `gh` process the census started, and charges
+    # the sleep before it starts: a deadline inside the sleep loses both.
+    assert _flag("--gh-timeout-seconds") >= int(wrapper["with"]["max-wait"]) + CALL_SECONDS
+
+
 # ── The census step, executed ────────────────────────────────────────────────
 
 posix_bash = pytest.mark.skipif(
@@ -244,7 +253,7 @@ def test_a_scheduled_run_reads_the_seven_days_before_today(tmp_path: Path) -> No
     assert argv == (
         "scripts/ci_red_cause_census.py --last-days 7 --repo example/repo --out-dir census "
         "--logs never --workers 4 --reserve-points 7500 --points-per-hour 5000 "
-        "--max-wait-seconds 9000 --max-points 30000"
+        "--max-wait-seconds 9000 --max-points 30000 --gh-timeout-seconds 900"
     )
     assert written.startswith(SUMMARY)
     for line in COUNTS.splitlines():

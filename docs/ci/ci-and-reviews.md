@@ -598,6 +598,7 @@ about 21,000 points, so the run is paced by the script's own guard:
 | `--reserve-points` | 7,500 | It never starts a call with less than half the bucket left; when other jobs have spent it, it sleeps until the reset |
 | `--max-wait-seconds` | 9,000 | All sleeps together. A reset further away than what is left ends the census with what it read |
 | `--max-points` | 30,000 | The most one run spends, whatever window a dispatch asks for |
+| `--gh-timeout-seconds` | 900 | One `gh` call: the 600 seconds the `gh` wrapper may sleep inside it on a spent limit, and 300 for the call itself. The wrapper charges a sleep before it starts, so a call ended mid-sleep would have spent the wait budget and read nothing |
 
 A step before the census reads the bucket's size from `/rate_limit`, which
 costs nothing, and fails the job when it is under 12,500 points (the reserve

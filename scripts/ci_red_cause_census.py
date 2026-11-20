@@ -114,6 +114,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import functools
 import importlib.util
 import json
 import re
@@ -150,6 +151,10 @@ MAX_WORKERS = 8
 EVIDENCE_CHARS = 80
 ATTEMPTS = 3
 BACKOFF_SECONDS = (2, 10)
+# One `gh` call. Behind `.github/actions/gh-rate-limit` a call also sleeps out a
+# spent rate limit inside `gh`, so a workflow raises this by the wrapper's whole
+# wait budget (``--gh-timeout-seconds``): a call ended mid-sleep has spent the
+# budget and read nothing.
 GH_TIMEOUT_SECONDS = 300
 CAUSES = ("rate_limit", "broken_main", "infrastructure", "flaky", "diff")
 LOG_MODES = ("undecided", "never")
@@ -444,14 +449,14 @@ def classify(
 GhRunner = Callable[[list[str]], tuple[int, str, str]]
 
 
-def run_gh(argv: list[str]) -> tuple[int, str, str]:
+def run_gh(argv: list[str], timeout: float = GH_TIMEOUT_SECONDS) -> tuple[int, str, str]:
     try:
         done = subprocess.run(  # noqa: S603 - fixed argv, no shell
             ["gh", *argv],
             capture_output=True,
             encoding="utf-8",
             errors="replace",
-            timeout=GH_TIMEOUT_SECONDS,
+            timeout=timeout,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -471,7 +476,9 @@ class Api:
     With ``wait_left`` seconds to wait, reaching the reserve sleeps until the
     bucket's reset instead of stopping, and so does spending ``hourly_points``
     since the last such sleep. ``max_points`` still ends the census. One thread
-    sleeps; the others queue behind it and then read the budget again.
+    sleeps; the others queue behind it and then read the budget again. A reply
+    GitHub sent before a reset the census slept through describes the spent
+    bucket: its cost is counted and its reading of the bucket is not.
     """
 
     def __init__(
@@ -488,6 +495,7 @@ class Api:
         self._lock = threading.Lock()
         self._pace = threading.Lock()
         self._paced_from = 0
+        self._slept_past = ""
         self.reserve = reserve
         self.max_points = max_points
         self.hourly_points: int | None = None
@@ -552,24 +560,28 @@ class Api:
                     self.wait_left -= delay
                     self.waited_seconds += delay
                     self.waits += 1
+                    # From here a reply stamped with this reset, or an older
+                    # one, is from the bucket being slept out.
+                    self._slept_past = max(self._slept_past, self.reset_at)
+                    self.remaining = None
                 _progress(f"{reason}; waiting {delay:.0f}s for the bucket's reset")
                 self._sleep(delay)
-                # A read that was in flight may have reported the spent bucket
-                # during the sleep; the next read reports the new one.
                 with self._lock:
-                    self.remaining = None
                     self._paced_from = self.graphql_points
 
     def _read_budget(self, rate: Any) -> None:
         if not isinstance(rate, dict):
             return
         cost, remaining, reset_at = rate.get("cost"), rate.get("remaining"), rate.get("resetAt")
+        stamp = evidence_text(reset_at) if isinstance(reset_at, str) else ""
         with self._lock:
             self.graphql_points += cost if isinstance(cost, int) else 0
+            if stamp and stamp <= self._slept_past:
+                return
             if isinstance(remaining, int) and not isinstance(remaining, bool):
                 self.remaining = remaining
-            if isinstance(reset_at, str):
-                self.reset_at = evidence_text(reset_at)
+            if stamp:
+                self.reset_at = stamp
 
     def check_budget(self) -> None:
         """Read the bucket (one point) and stop here if it is already under the reserve."""
@@ -1310,6 +1322,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="wait for the bucket's reset, this many seconds in total, instead of stopping "
         "at the reserve or the hourly limit (default 0: stop)",
     )
+    parser.add_argument(
+        "--gh-timeout-seconds",
+        type=_positive,
+        default=GH_TIMEOUT_SECONDS,
+        help="the longest one gh call may take; behind .github/actions/gh-rate-limit, "
+        f"its max-wait and {GH_TIMEOUT_SECONDS} more (default {GH_TIMEOUT_SECONDS})",
+    )
     return parser
 
 
@@ -1320,7 +1339,7 @@ def main(
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    api = api or Api()
+    api = api or Api(run=functools.partial(run_gh, timeout=args.gh_timeout_seconds))
     if args.last_days is not None and args.since is None and args.until is None:
         today = api.now().date()
         args.since = parse_bound((today - dt.timedelta(days=args.last_days)).isoformat())
