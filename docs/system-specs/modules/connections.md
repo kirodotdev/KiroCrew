@@ -23,8 +23,8 @@ callers import, and neither owner imports it.
 
 The `control_plane/` and `vendors/` subtrees are connector-campaign slices rather
 than this subsystem's OAuth-grant plumbing. Their current contracts include the
-[capability-manifest](connector-capability-manifest.md),
-[conformance](connector-conformance.md), [GitHub](connector-github.md),
+[capability-manifest](connector-capability-manifest.md) (which also holds the
+conformance owner map), [GitHub](connector-github.md),
 [Microsoft Graph](microsoft-graph-runtime.md), and [Zoom](connector-zoom.md)
 specs.
 
