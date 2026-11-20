@@ -8,7 +8,8 @@ runs this file to file a notice from those failures, and to close it again.
 
     detect   after a failed `CI` run of a same-repository pull request: open one
              `ci: Main may be red: <node id>` issue when the same test fails with
-             the same message start on 3 pull requests
+             the same message start on 3 pull requests, and tell a pull request
+             that fails a suspected test so, once, in a comment
     settle   after a push run of `CI` on `main`: close the open suspected issues
              that run answers
 
@@ -42,6 +43,17 @@ WHAT COUNTS (all of it, else nothing is written):
 * Every set of 3 among the runs read is tried, lowest pull request numbers
   first, so neither the order of the run list nor which run started this
   decides whether an issue opens or what it says.
+
+THE COMMENT IS A HINT. A pull request gets one when its failed run, on its
+current head, fails a test of an open suspected issue with the same message
+start, it does not change that test's file, and its base contains the issue's
+recorded base: the 3 pull requests an issue names when it is filed, and any
+other on its next failed run. It says the same test fails on other pull
+requests, links the issue, and says the pull request's own change may still be
+the cause. It is written once per pull request and suspected issue, found by a
+marker among the Actions token's own comments, and never edited: when the issue
+closes, the link shows how it ended. It changes no check and skips no test. A
+fork's pull request never gets one, because a fork's run is never a witness.
 
 Annotation text is whatever a pull request's tests printed. It is read as JSON,
 never placed in a shell command, cut to printable ASCII, and written only inside
@@ -77,6 +89,8 @@ AREA_LABEL = "area: ci"
 STATE_MARKER = "main-red-suspect-state"
 STATE_OPEN = "<!-- " + STATE_MARKER + " "
 STATE_CLOSE = " -->"
+NOTICE_MARKER = "main-red-suspect-notice"
+MAX_NOTICE_LISTED = 10
 MIN_WITNESSES = 3
 WINDOW_HOURS = 3
 COOLDOWN_HOURS = 24
@@ -544,6 +558,51 @@ def covered(suspects: list[tuple[int, dict[str, Any]]]) -> set[str]:
     return {without_group(nodeid) for _, state in suspects for nodeid in state["failures"]}
 
 
+def notice_marker(issue: int) -> str:
+    """What marks the one comment a pull request gets for suspected issue ``issue``."""
+    return f"<!-- {NOTICE_MARKER} {issue} -->"
+
+
+def suspected_here(witness: Witness, state: dict[str, Any]) -> dict[str, str]:
+    """The tests of a suspected issue that ``witness`` fails the same way, in node id order."""
+    pairs = sorted(state["failures"].items())
+    return {nodeid: message for nodeid, message in pairs if witness.shows(nodeid, message)}
+
+
+def render_notice(issue: int, shown: dict[str, str], run: Run, repo: str) -> str:
+    """The comment for a pull request that fails tests of suspected issue ``issue``.
+
+    A hint and never a verdict: it must not read as leave to ignore the failure.
+    """
+    listed = list(shown.items())[:MAX_NOTICE_LISTED]
+    more = len(shown) - len(listed)
+    lines = [
+        notice_marker(issue),
+        f"A hint, not a verdict: {len(shown)} test(s) that fail in CI run "
+        f"[{run.head[:12]}](https://github.com/{repo}/actions/runs/{run.run_id}) of this pull "
+        f"request fail the same way on other pull requests, so `main` may be red on them "
+        f"(#{issue}, not confirmed).",
+        "",
+    ]
+    lines += [
+        f"- `{_span(nodeid)}`" + (f": `{_span(message)}`" if message else "")
+        for nodeid, message in listed
+    ]
+    if more > 0:
+        lines.append(f"- and {more} more, listed in #{issue}")
+    lines += [
+        "",
+        "This pull request's own change may still be the cause. If it could affect these "
+        "tests, treat the failure as yours. No test is skipped and no check changes because "
+        f"of this comment. #{issue} closes either way, saying whether `main` was red or green.",
+        "",
+        "Other failures of this run are not covered here. This comment is written once for "
+        f"#{issue} and is not updated.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 # -- the API -------------------------------------------------------------------
 
 
@@ -617,6 +676,8 @@ class Api:
 
     def relation(self, older: str, newer: str) -> str | None:
         """The compare status of ``newer`` against ``older``; each pair is read once."""
+        if older == newer:
+            return "identical"
         if (older, newer) not in self._relations:
             what = f"how {newer[:12]} relates to {older[:12]}"
             pages = self.get(what, f"compare/{older}...{newer}")
@@ -669,6 +730,26 @@ class Api:
             self.write(f"the close of #{number}", "PATCH", f"issues/{number}", fields)
             self.say(f"Closed suspected issue #{number}.")
 
+    def notify(self, issue: int, shown: dict[str, str], run: Run) -> None:
+        """Comment once on ``run``'s pull request that it fails tests of ``issue``.
+
+        The comments are read first. If they cannot be read nothing is written,
+        since a second comment could not be told from the first.
+        """
+        what = f"the comments of pull request {run.pr}"
+        pages = self.get(what, f"issues/{run.pr}/comments?per_page=100", True)
+        if pages is None:
+            return
+        marker = notice_marker(issue)
+        for row in (row for page in pages if isinstance(page, list) for row in page):
+            if not isinstance(row, dict) or not watch.is_watcher_author(row.get("user")):
+                continue
+            if marker in str(row.get("body") or ""):
+                return
+        body = render_notice(issue, shown, run, self.repo)
+        if self.write(what, "POST", f"issues/{run.pr}/comments", {"body": body}):
+            self.say(f"Told pull request {run.pr} that #{issue} suspects its failing test(s).")
+
 
 # -- the two commands ----------------------------------------------------------
 
@@ -693,6 +774,27 @@ def close_confirmed(
     return left
 
 
+def notify_suspected(
+    api: Api, trigger: Run, failures: Failures, suspects: list[tuple[int, dict[str, Any]]]
+) -> None:
+    """Tell the pull request of ``trigger`` about each open suspected issue it fails.
+
+    Its pull request is read only when a failing pair is in some issue's record.
+    """
+    matching = [
+        (number, state)
+        for number, state in suspects
+        if any(pair in failures for pair in state["failures"].items())
+    ]
+    witness = api.witness(trigger, failures) if matching else None
+    if witness is None:
+        return
+    for number, state in matching:
+        shown = suspected_here(witness, state)
+        if shown and api.relation(state["base"], trigger.base) in ("ahead", "identical"):
+            api.notify(number, shown, trigger)
+
+
 def _open_state(
     api: Api,
 ) -> tuple[tuple[int, set[str]] | None, list[tuple[int, dict[str, Any]]]] | None:
@@ -705,6 +807,9 @@ def _open_state(
 
 def detect(api: Api, trigger: Run, workflow_id: int, since: str, cool_since: str) -> int:
     """Open one suspected issue when 3 pull requests with a recent failed run agree.
+
+    Before that, tell the pull request of ``trigger`` about any open suspected
+    issue whose test it fails; after filing one, tell the 3 it names.
 
     The run that started this must name a failing test, which keeps the reads
     off a lint-only failure. It need not be one of the 3: every run re-reads the
@@ -719,13 +824,18 @@ def detect(api: Api, trigger: Run, workflow_id: int, since: str, cool_since: str
     if confirmed is not None:
         api.say(f"#{confirmed[0]} already says main is red; nothing to suspect.")
         return 0
+    named_here = api.failures(trigger.run_id, set())
+    if not named_here:
+        api.say("This run names no failing test.")
+        return 0
+    notify_suspected(api, trigger, named_here, suspects)
     if len(suspects) >= MAX_OPEN:
         api.say(f"{len(suspects)} suspected issues are open, the most kept at once.")
         return 0
     known = covered(suspects)
-    failures = api.failures(trigger.run_id, known)
+    failures = frozenset(pair for pair in named_here if without_group(pair[0]) not in known)
     if not failures:
-        api.say("This run names no failing test that is not already suspected.")
+        api.say("Every test that fails here is already suspected.")
         return 0
     closed = api.issues(LABEL, cool_since)
     if closed is None:
@@ -805,13 +915,17 @@ def detect(api: Api, trigger: Run, workflow_id: int, since: str, cool_since: str
         api.close(number, f"Filed without the `{LABEL}` label; closing.", "not_planned")
         return 0
     api.say(f"Filed suspected issue #{number} for {len(agreed)} test(s).")
+    for witness in chosen:
+        api.notify(number, suspected_here(witness, state), witness.run)
     return 0
 
 
 def settle(api: Api, run_id: int, head: str, conclusion: str) -> int:
     """Close the suspected issues a push run of `CI` on main answers."""
     suspected = api.issues(LABEL)
-    suspects = suspects_in(suspected or [])
+    if suspected is None:
+        return 0
+    suspects = suspects_in(suspected)
     if not suspects:
         api.say("No suspected issue is open.")
         return 0

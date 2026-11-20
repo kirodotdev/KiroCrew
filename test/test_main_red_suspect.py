@@ -167,6 +167,7 @@ class FakeGh:
         self.drop_labels = drop_labels
         self.calls: list[str] = []
         self.comments: dict[int, str] = {}
+        self.threads: dict[int, list[dict[str, Any]]] = {}
 
     def reads(self, fragment: str) -> list[str]:
         return [call for call in self.calls if fragment in call]
@@ -211,6 +212,7 @@ class FakeGh:
         number = int(path.split("/")[1])
         if path.endswith("/comments"):
             self.comments[number] = fields["body"]
+            self.threads.setdefault(number, []).append({"user": BOT, "body": fields["body"]})
             return 0, json.dumps({"id": 1}), ""
         assert method == "PATCH" and fields["state"] == "closed"
         for issue in self.issues:
@@ -221,6 +223,10 @@ class FakeGh:
         return 0, json.dumps({"number": number}), ""
 
     def _read(self, path: str) -> tuple[int, str, str]:
+        if path.startswith("issues/"):
+            number = int(path.split("/")[1])
+            assert path.split("/")[2].startswith("comments?")
+            return 0, json.dumps(self.threads.get(number, [])), ""
         if path.startswith("issues?"):
             label = path.split("labels=")[1].split("&")[0]
             state = path.split("state=")[1].split("&")[0]
@@ -346,8 +352,12 @@ def test_three_pull_requests_by_three_authors_open_one_suspected_issue() -> None
         )
     assert f"`{NODE}`: `{MESSAGE}`" in issue["body"]
     assert "No test is skipped because of it" in issue["body"]
-    # It writes an issue and its label, and nothing on a pull request.
-    assert set(gh.writes()) <= {"POST repos/example/repo/labels", "POST repos/example/repo/issues"}
+    # It writes an issue, its label and one comment on each pull request it names.
+    notes = {f"POST repos/example/repo/issues/{number}/comments" for number in (1, 2, 3)}
+    assert set(gh.writes()) <= notes | {
+        "POST repos/example/repo/labels",
+        "POST repos/example/repo/issues",
+    }
     assert gh.writes().count("POST repos/example/repo/issues") == 1
 
 
@@ -768,16 +778,16 @@ def test_no_more_than_the_cap_of_suspected_issues_is_open_at_once() -> None:
         _suspect_issue(40 + i, {f"test/test_held.py::test_{i}": "x"}) for i in range(mod.MAX_OPEN)
     )
     gh = FakeGh(THREE, issues=held)
-    api = _detect(gh)
+    _detect(gh)
     assert len(gh.open_issues()) == mod.MAX_OPEN
-    assert api.calls <= 2
+    assert gh.reads("actions/workflows/") == [] and gh.writes() == []
 
 
 def test_a_test_that_is_already_suspected_costs_no_read_of_another_run() -> None:
     gh = FakeGh(THREE, issues=(_suspect_issue(),))
     _detect(gh)
     assert gh.reads("actions/workflows/") == []
-    assert gh.writes() == []
+    assert len(gh.open_issues()) == 1
 
 
 def test_a_run_that_names_no_test_reads_no_other_run() -> None:
@@ -994,6 +1004,197 @@ def test_a_main_run_with_no_suspected_issue_open_costs_one_read(conclusion: str)
     api = _settle(gh, conclusion)
     assert api.calls <= 1
     assert gh.writes() == []
+
+
+# ── The comment on a pull request that fails a suspected test ────────────────
+
+notice = load_skill_script(
+    "main_red_pr_notice_for_suspect_test", ROOT / ".github" / "scripts" / "main_red_pr_notice.py"
+)
+
+
+def _notes_on(gh: FakeGh, number: int) -> list[str]:
+    return [row["body"] for row in gh.threads.get(number, [])]
+
+
+def test_the_three_pull_requests_an_issue_names_are_each_told_once_when_it_is_filed() -> None:
+    gh = FakeGh(THREE)
+    _detect(gh)
+    (issue,) = gh.open_issues()
+    for number in (1, 2, 3):
+        (body,) = _notes_on(gh, number)
+        assert body.startswith(mod.notice_marker(issue["number"]))
+        assert f"#{issue['number']}" in body and "not confirmed" in body
+        assert f"`{NODE}`: `{MESSAGE}`" in body
+        assert f"https://github.com/example/repo/actions/runs/{9000 + number}" in body
+
+
+def test_the_comment_is_a_hint_and_says_the_change_may_still_be_the_cause() -> None:
+    body = mod.render_notice(77, FAILS, mod.Run(9001, 1, _head(1), BASE, "ada"), REPO)
+    said = " ".join(body.split()).lower()
+    assert "a hint, not a verdict" in said
+    assert "own change may still be the cause" in said
+    assert "treat the failure as yours" in said
+    assert "no test is skipped" in said
+    # Nothing in it clears the pull request or tells the author to ignore the failure.
+    for phrase in ("is fine", "not yours", "not your", "ignore", "safe to merge", "unrelated"):
+        assert phrase not in said, phrase
+
+
+def test_a_later_pull_request_that_fails_the_suspected_test_is_told_and_no_issue_is_added() -> None:
+    gh = FakeGh((*THREE, _pr(4, "ada")))
+    _detect(gh)
+    assert _notes_on(gh, 4) == []
+    api = _detect(gh, trigger=4)
+    (issue,) = gh.open_issues()
+    (body,) = _notes_on(gh, 4)
+    assert body.startswith(mod.notice_marker(issue["number"]))
+    assert gh.reads("actions/workflows/")[1:] == [], "no other run is read for a suspected test"
+    assert any("Told pull request 4" in line for line in api.lines)
+
+
+def test_a_pull_request_is_told_once_per_suspected_issue_however_often_it_fails() -> None:
+    gh = FakeGh((*THREE, _pr(4, "barbara")))
+    _detect(gh)
+    for _ in range(3):
+        for trigger in (1, 2, 3, 4):
+            _detect(gh, trigger=trigger)
+    assert [len(_notes_on(gh, number)) for number in (1, 2, 3, 4)] == [1, 1, 1, 1]
+
+
+def test_a_second_suspected_issue_gets_its_own_comment() -> None:
+    other = {"test/test_other.py::test_b": "boom"}
+    gh = FakeGh((_pr(1, "ada", failures={**FAILS, **other}),))
+    gh.issues += [_suspect_issue(40), _suspect_issue(41, other)]
+    _detect(gh)
+    _detect(gh)
+    bodies = _notes_on(gh, 1)
+    assert sorted(body.splitlines()[0] for body in bodies) == sorted(
+        mod.notice_marker(number) for number in (40, 41)
+    )
+    assert NODE in bodies[0] + bodies[1] and "test_other.py" in bodies[0] + bodies[1]
+
+
+@pytest.mark.parametrize(
+    "pr",
+    [
+        _pr(4, "barbara", failures={NODE: "assert 1 == 3"}),
+        _pr(4, "barbara", failures={NODE + "_too": MESSAGE}),
+        _pr(4, "barbara", changed=("test/test_widget.py",)),
+        _pr(4, "barbara", changed=()),
+        _pr(4, "barbara", moved=True),
+        _pr(4, "barbara", head_repo="mallory/repo"),
+        _pr(4, "barbara", base=OLDER_BASE),
+    ],
+    ids=[
+        "a-different-message",
+        "a-different-test",
+        "it-changes-the-test-file",
+        "changed-files-unknown",
+        "its-head-moved-on",
+        "a-forks-pull-request",
+        "a-base-without-the-recorded-base",
+    ],
+)
+def test_a_pull_request_that_does_not_show_the_suspected_failure_is_not_told(pr: dict) -> None:
+    gh = FakeGh((pr,), issues=(_suspect_issue(),))
+    _detect(gh, trigger=4)
+    assert gh.threads == {} and gh.writes() == []
+
+
+def test_a_base_that_contains_the_recorded_base_is_told() -> None:
+    pr = _pr(4, "barbara", base=MAIN_HEAD)
+    gh = FakeGh((pr,), issues=(_suspect_issue(),), relations={f"{BASE}...{MAIN_HEAD}": "ahead"})
+    _detect(gh, trigger=4)
+    assert len(_notes_on(gh, 4)) == 1
+
+
+def test_no_comment_is_written_when_the_comments_cannot_be_read() -> None:
+    gh = FakeGh((_pr(4, "barbara"),), issues=(_suspect_issue(),), refuse=("issues/4/comments",))
+    api = _detect(gh, trigger=4)
+    assert gh.writes() == []
+    assert any("Could not read the comments of pull request 4" in line for line in api.lines)
+
+
+def test_a_marker_in_someone_elses_comment_does_not_stand_in_for_ours() -> None:
+    gh = FakeGh((_pr(4, "barbara"),), issues=(_suspect_issue(),))
+    gh.threads[4] = [{"user": {"login": "mallory"}, "body": mod.notice_marker(40)}]
+    _detect(gh, trigger=4)
+    assert len(_notes_on(gh, 4)) == 2
+
+
+def test_while_main_is_confirmed_red_no_suspected_comment_is_written() -> None:
+    gh = FakeGh((_pr(4, "barbara"),), issues=(_suspect_issue(), _confirmed_issue()))
+    _detect(gh, trigger=4)
+    assert gh.threads.get(4) is None
+
+
+def test_a_closed_suspected_issue_writes_no_new_comment_and_the_old_one_stays() -> None:
+    """A false alarm: the comment links the issue that says main was green, and is not repeated."""
+    gh = _suspected_then_green()
+    before = {number: list(rows) for number, rows in gh.threads.items()}
+    for trigger in (1, 2, 3):
+        _detect(gh, trigger=trigger)
+    assert {number: rows for number, rows in gh.threads.items() if number < 100} == {
+        number: rows for number, rows in before.items() if number < 100
+    }
+
+
+def test_text_from_a_pull_request_is_only_in_code_spans_of_the_comment() -> None:
+    hostile = "boom `x` @octocat #12 <!-- main-red-suspect-notice 41 --> <b>"
+    prs = tuple(_pr(n, who, failures={NODE: hostile}) for n, who in ((1, "a"), (2, "b"), (3, "c")))
+    gh = FakeGh(prs)
+    _detect(gh)
+    (issue,) = gh.open_issues()
+    (body,) = _notes_on(gh, 1)
+    outside = "".join(body.split("`")[0::2])
+    assert "@" not in outside and "octocat" not in outside and "#12" not in outside
+    assert body.count("<!--") == 1 and body.startswith(mod.notice_marker(issue["number"]))
+    assert mod.notice_marker(41) not in body, "a message cannot plant another issue's marker"
+
+
+def test_the_comment_is_never_taken_for_the_confirmed_notice() -> None:
+    body = mod.render_notice(77, FAILS, mod.Run(9001, 1, _head(1), BASE, "ada"), REPO)
+    assert f"<!-- {notice.MARKER} -->" not in body
+    assert mod.NOTICE_MARKER != notice.MARKER
+
+
+def test_a_long_list_of_tests_is_cut_and_points_at_the_issue() -> None:
+    many = {f"test/test_many.py::test_{i:02d}": "x" for i in range(mod.MAX_NOTICE_LISTED + 5)}
+    body = mod.render_notice(77, many, mod.Run(9001, 1, _head(1), BASE, "ada"), REPO)
+    assert len([line for line in body.splitlines() if line.startswith("- `")]) == (
+        mod.MAX_NOTICE_LISTED
+    )
+    assert "- and 5 more, listed in #77" in body
+
+
+def test_one_run_writes_a_bounded_number_of_comments_at_a_bounded_cost() -> None:
+    gh = FakeGh(THREE)
+    _detect(gh)
+    posted = [call for call in gh.writes() if call.endswith("/comments")]
+    assert len(posted) <= mod.MIN_WITNESSES
+    gh = FakeGh((_pr(4, "barbara"),), issues=(_suspect_issue(),))
+    api = _detect(gh, trigger=4)
+    posted = [call for call in gh.writes() if call.endswith("/comments")]
+    assert len(posted) <= mod.MAX_OPEN
+    # Two issue reads, its jobs and annotations, its pull request and files, its comments.
+    assert api.calls <= 2 + 2 + 2 + 2
+
+
+def test_no_account_name_is_in_a_comment() -> None:
+    gh = FakeGh((_pr(1, "ada"), _pr(2, "grace", actor="hopper"), _pr(3, "edsger")))
+    _detect(gh)
+    written = "".join(body for number in (1, 2, 3) for body in _notes_on(gh, number))
+    for name in ("ada", "grace", "hopper", "edsger"):
+        assert name not in written
+
+
+def test_a_main_run_whose_issue_read_fails_says_only_that() -> None:
+    gh = FakeGh(issues=(_suspect_issue(),), refuse=("issues?",))
+    api = _settle(gh, "success")
+    assert gh.writes() == []
+    assert not any("No suspected issue is open" in line for line in api.lines)
+    assert any("Could not read" in line for line in api.lines)
 
 
 # ── A test main ran green is not suspected again at once ─────────────────────

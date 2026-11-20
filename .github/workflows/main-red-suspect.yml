@@ -22,14 +22,27 @@ name: Main Red Suspect
 # broken. `.github/scripts/main_red_suspect.py` holds the rules and says what
 # counts.
 #
+# THE COMMENT: a suspected issue in the issue list reaches few authors, so a
+# pull request that fails a suspected test is told on the pull request, once per
+# suspected issue: the 3 the issue names when it is filed, and any other on its
+# next failed run. It gets the comment only when its run is on its current head,
+# fails the test with the same message start, it does not change the test's
+# file, and its base contains the issue's recorded base. The comment is a hint:
+# the same test fails on other pull requests, here is the issue, and this pull
+# request's own change may still be the cause. It is found by a marker among the
+# Actions token's own comments and never edited; when the issue closes, the link
+# shows whether main was red or green, and the 24 hour cool-down keeps a false
+# alarm from being repeated.
+#
 # A NOTICE ONLY, AND NEVER A SKIP: `scripts/ci_main_red_skip.py` deselects tests
 # for the issue the watcher's `pick_issue` returns, and `main-red-pr-notice.yml`
 # comments for the same one. A suspected issue has another title prefix, another
 # record marker and another label, so neither reads it. Whatever a pull request
 # run reports, the only thing that can deselect a test is still a red push run
 # on main, by the watcher's unchanged rules. This workflow changes no check,
-# label, assignee or comment of a pull request and cannot fail a job
-# (`continue-on-error`). Deleting this file and the script removes it.
+# label or assignee of a pull request, edits no comment of another workflow,
+# and cannot fail a job (`continue-on-error`). Deleting this file and the
+# script removes it.
 #
 # WHO CAN CAUSE AN ISSUE: annotations are written by the code a pull request
 # runs, so one pull request can report any failure it likes. An issue needs 3
@@ -38,7 +51,9 @@ name: Main Red Suspect
 # authors, in runs started by 3 accounts, each failing on its current head and
 # none changing the test's file. That takes three accounts with write access.
 # What they get is one issue that says "may be red" and is closed by the next
-# green run on main.
+# green run on main, and one comment saying so on each pull request that fails
+# that test with that message. A fork's pull request is never a witness, so it
+# never gets the comment.
 #
 # NEVER RUNS PR CODE: the script is read from a sparse checkout of main
 # (`workflow_run` checks out the default branch). Annotation text is data: `gh`
@@ -51,6 +66,10 @@ name: Main Red Suspect
 # suspected issue, at most 3 (green). A failed pull request run costs 2 issue
 # reads and stops there while a `Main is red:` issue is open. Otherwise it reads
 # its own jobs and up to 3 annotation sets, and stops when they name no test.
+# When one of them is in an open suspected issue it reads its pull request, its
+# changed files and its comments (3 reads, 1 compare for a different base) and
+# writes at most one comment per suspected issue, so at most 3. Filing an issue
+# adds one comment read and one write for each of the 3 pull requests it names.
 # One read of the suspected issues closed in the last 24 hours follows, and it
 # stops when a green main run closed one for every test that fails here.
 # Then: the list of failed pull request runs of the last 3 hours (read to the
@@ -64,11 +83,12 @@ name: Main Red Suspect
 # PERMISSIONS: `actions: read` for runs and jobs; `checks: read` for the
 # annotations of a failed job's check run; `contents: read` for the checkout and
 # the compare reads; `pull-requests: read` for a pull request's author, head and
-# base; `issues: write` to file, comment on and close the suspected issue and to
-# create its label.
+# base; `issues: write` to file, comment on and close the suspected issue, to
+# create its label, and to write the comment on a pull request (a pull request
+# is an issue to the comments endpoint).
 #
-# `test/test_main_red_suspect.py` pins the gate, the permissions, the rules and
-# the three checks that keep a suspected issue out of the skip.
+# `test/test_main_red_suspect.py` pins the gate, the permissions, the rules, the
+# comment and the three checks that keep a suspected issue out of the skip.
 
 on:
   workflow_run:
