@@ -397,7 +397,7 @@ def test_a_run_whose_head_repository_is_gone_is_excluded(gh: FakeGh, tmp_path: P
 def test_a_failing_file_with_no_tier_withholds_the_rates(gh: FakeGh, tmp_path: Path) -> None:
     failed_run(gh, 1, 7, ["test/test_new.py"])
 
-    assert run_main(tmp_path) == 1
+    assert run_main(tmp_path) == ledger.EXIT_WITHHELD == 3
 
     assert not (tmp_path / "rates.json").exists()
     text = summary(tmp_path)
@@ -504,6 +504,43 @@ def test_the_upper_bound_is_wilsons_and_is_rounded_up() -> None:
     run = {"kind": "run", "run": 1, "fork": False, "verdict": "select", "tiers": {"G": 100}}
     bound = ledger.fit([run], [])["G"]["upper95"]
     assert bound >= ledger.wilson_upper(0, 100) and bound - ledger.wilson_upper(0, 100) < 1e-8
+
+
+@pytest.mark.parametrize(("failures", "trials"), [(1, 0), (1, 1), (2, 1), (3, 2), (50, 7)])
+def test_a_count_the_interval_is_not_defined_on_is_never_skippable(
+    failures: int, trials: int
+) -> None:
+    assert ledger.wilson_upper(failures, trials) == 1.0
+    run = {"kind": "run", "run": 1, "fork": False, "verdict": "select", "tiers": {"G": trials}}
+    failure = {"tier": "G", "fork": False, "diff_caused": True}
+
+    fitted = ledger.fit([run], [failure] * failures)["G"]
+
+    assert (fitted["rate"], fitted["upper95"]) == (1.0, 1.0)
+
+
+def test_a_ledger_with_more_failures_than_trials_still_reports(gh: FakeGh, tmp_path: Path) -> None:
+    held = {**OLD_RUN, "source": "1:pr-7", "verdict": "select", "tiers": {"G": 1}}
+    failure = {k: v for k, v in SKIP.items() if k != "reason"} | {
+        "kind": "failure",
+        "tier": "G",
+        "miss": True,
+        "rerun_green": False,
+        "main_red": False,
+    }
+    lines = [held, {**failure, "file": "test/test_a.py"}, {**failure, "file": "test/test_c.py"}]
+    assert all(ledger.valid_row(row) for row in lines)
+    (tmp_path / "ledger.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in lines), encoding="utf-8"
+    )
+    gh.add(2, 8, [[job(21, 1)]], verdict={**VERDICT, "tiers": {"B": ["test/test_b.py"]}})
+
+    # A pass that appends, then reports over those rows: it ends, and proposes nothing skippable.
+    assert run_main(tmp_path) == 0
+
+    assert len(rows(tmp_path)) == 4
+    assert rates(tmp_path)["tiers"]["G"] == {"rate": 1.0, "upper95": 1.0}
+    assert "| G | 1 | 2 | 0 | 1.00000000 | 1.00000000 |" in summary(tmp_path)
 
 
 def test_the_proposed_bound_never_rounds_down() -> None:
@@ -721,7 +758,7 @@ def test_a_ledger_line_of_the_wrong_shape_stops_the_pass_before_it_appends(
     failed_run(gh, 1, 7, ["test/test_a.py"])
     (tmp_path / "ledger.jsonl").write_text(line + "\n", encoding="utf-8")
 
-    assert run_main(tmp_path) == 2
+    assert run_main(tmp_path) == ledger.EXIT_NOT_RECORDED == 2
 
     assert (tmp_path / "ledger.jsonl").read_text(encoding="utf-8") == line + "\n"
     assert not (tmp_path / "rates.json").exists()
@@ -774,7 +811,7 @@ def test_every_row_the_writer_emits_reads_back(
     first = run_main(tmp_path)
 
     # Whatever GitHub or a log said, the ledger written is one the next pass accepts.
-    assert first in (0, 1)
+    assert first in (0, ledger.EXIT_WITHHELD)
     written = ledger.read_ledger(tmp_path / "ledger.jsonl")
     assert all(ledger.valid_row(row) for row in written)
     assert written == rows(tmp_path) and 2 in {row["run"] for row in written}
@@ -825,7 +862,7 @@ def test_an_unreadable_main_red_issue_records_nothing(
         return gh.gh_json(args, root)
 
     monkeypatch.setattr(shadow, "_gh_json", no_issues)
-    assert run_main(tmp_path) == 2
+    assert run_main(tmp_path) == ledger.EXIT_NOT_RECORDED == 2
     assert rows(tmp_path) == []
 
 
