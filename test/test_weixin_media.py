@@ -493,8 +493,8 @@ class TestAttachmentIngestion:
 class TestInboundMediaRouting:
     def test_capabilities_declare_inbound_files(self) -> None:
         assert WEIXIN_CAPABILITIES.files_inbound is True
-        # Outbound is still unimplemented; the contract must not claim it.
-        assert WEIXIN_CAPABILITIES.files_outbound is False
+        # Outbound pictures ride the renderer's inline-image upload.
+        assert WEIXIN_CAPABILITIES.files_outbound is True
 
     def test_media_only_message_is_dispatched_not_dropped(self, tmp_path) -> None:
         """A screenshot with no caption must not vanish.

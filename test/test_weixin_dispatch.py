@@ -8,6 +8,7 @@ an outbound iLink send through the shared TurnDriver.
 from __future__ import annotations
 
 import asyncio
+import base64
 from typing import Any
 
 import pytest
@@ -1417,3 +1418,215 @@ def test_say_reports_whether_the_message_landed(tmp_path):
 
     client.send_message = _down
     assert asyncio.run(d._say("u1", "hi")) is False
+
+
+# ── inline pictures ───────────────────────────────────────────────────────────
+#: A real 2x2 PNG: outbound extraction admits a file on its byte signature.
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP8zwACTGCSAQANHQEDgslx/wAAAABJRU5ErkJggg=="
+)
+
+
+class ImageClient(FakeClient):
+    """FakeClient that also records picture sends, in order with text sends."""
+
+    def __init__(self, fail_images: bool = False):
+        super().__init__()
+        self.images: list[dict] = []
+        self.order: list[str] = []
+        self.fail_images = fail_images
+
+    async def send_message(self, *, to, text, context_token, client_id):
+        self.order.append("text")
+        return await super().send_message(
+            to=to, text=text, context_token=context_token, client_id=client_id
+        )
+
+    async def send_image(self, *, to, image_item, context_token, client_id):
+        if self.fail_images:
+            raise RuntimeError("iLink 503")
+        self.order.append("image")
+        self.images.append({"to": to, "item": image_item, "context_token": context_token})
+        return {"ret": 0}
+
+
+@pytest.fixture
+def _fake_upload(monkeypatch):
+    """Stand in for the CDN upload; records the bytes each picture carried."""
+    uploaded: list[bytes] = []
+
+    async def _upload(client, *, to_user_id, data):
+        uploaded.append(data)
+        return {"type": 2, "image_item": {"media": {"encrypt_query_param": "p"}}}
+
+    monkeypatch.setattr("kiro_crew.weixin.turn_renderer.upload_image", _upload)
+    monkeypatch.setattr("kiro_crew.weixin.turn_renderer._CHUNK_DELAY_S", 0)
+    return uploaded
+
+
+def _image_renderer(tmp_path, client, *, allowed=True, root=True):
+    r = WeixinRenderer(
+        client,
+        "userA",
+        WEIXIN_CAPABILITIES,
+        ctx_store=ContextTokenStore(str(tmp_path)),
+        account_id="acct1",
+        uploads_allowed=allowed,
+    )
+    if root:
+        r.authorize_upload_root(str(tmp_path))
+    return r
+
+
+def _render(r, text):
+    async def go():
+        await r.on_text_chunk(text)
+        await r.on_done()
+
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize("allowed, root", [(True, True), (False, True), (True, False)])
+def test_an_inline_picture_is_sent_after_the_text_only_when_allowed(
+    tmp_path, _fake_upload, allowed, root
+):
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(_PNG)
+    client = ImageClient()
+    renderer = _image_renderer(tmp_path, client, allowed=allowed, root=root)
+    _render(renderer, f"Here:\n\n![c]({chart})")
+
+    if allowed and root:
+        assert [s["text"] for s in client.sent] == ["Here:"]
+        assert client.order == ["text", "image"]
+        assert _fake_upload == [_PNG]
+        assert client.images[0]["to"] == "userA"
+    else:
+        assert [s["text"] for s in client.sent] == [f"Here:\n\n![c]({chart})"]
+        assert client.images == [] and _fake_upload == []
+
+
+def test_a_picture_outside_the_upload_root_keeps_its_path(tmp_path, _fake_upload):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(_PNG)
+    client = ImageClient()
+    r = _image_renderer(tmp_path, client, root=False)
+    r.authorize_upload_root(str(root))
+    _render(r, f"![c]({outside})")
+    assert client.images == [] and _fake_upload == []
+    assert str(outside) in client.sent[0]["text"]
+
+
+def test_a_picture_only_answer_sends_just_the_picture(tmp_path, _fake_upload):
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(_PNG)
+    client = ImageClient()
+    _render(_image_renderer(tmp_path, client), f"![c]({chart})")
+    assert client.sent == []
+    assert client.order == ["image"]
+
+
+def test_a_failed_picture_names_its_path(tmp_path, _fake_upload):
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(_PNG)
+    client = ImageClient(fail_images=True)
+    _render(_image_renderer(tmp_path, client), f"Here:\n\n![c]({chart})")
+    assert client.sent[0]["text"] == "Here:"
+    assert "未能发送" in client.sent[1]["text"] and str(chart) in client.sent[1]["text"]
+
+
+def test_a_lost_failure_report_after_a_delivered_answer_does_not_fail_the_turn(
+    tmp_path, _fake_upload
+):
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(_PNG)
+    client = ImageClient(fail_images=True)
+    working = client.send_message
+
+    async def _text_once(**kw):
+        if client.sent:
+            raise RuntimeError("weixin 503")
+        return await working(**kw)
+
+    client.send_message = _text_once
+    _render(_image_renderer(tmp_path, client), f"Here:\n\n![c]({chart})")
+    assert [s["text"] for s in client.sent] == ["Here:"]
+
+
+def test_a_failed_picture_only_answer_still_fails_when_its_report_is_lost(tmp_path, _fake_upload):
+    """Nothing of the answer landed, so the turn must not pass as delivered."""
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(_PNG)
+    client = ImageClient(fail_images=True)
+
+    async def _down(**_kw):
+        raise RuntimeError("weixin 503")
+
+    client.send_message = _down
+    with pytest.raises(RuntimeError):
+        _render(_image_renderer(tmp_path, client), f"![c]({chart})")
+
+
+@pytest.mark.parametrize("restricted", [False, True])
+def test_dispatcher_binds_the_session_cwd_and_honours_the_upload_ceiling(
+    tmp_path, monkeypatch, _fake_upload, restricted
+):
+    async def _ceiling(*_args, **_kwargs):
+        return restricted
+
+    monkeypatch.setattr("kiro_crew.weixin.transport_dispatch.uploads_restricted", _ceiling)
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(_PNG)
+    provider = FakeProvider(f"Plotted.\n\n![chart]({chart})")
+    provider.cwd = str(tmp_path)
+    d, _, _ = _make(tmp_path, provider=provider)
+    client = ImageClient()
+    d.client = client
+
+    asyncio.run(d.handle_message(_msg("plot it")))
+
+    if restricted:
+        assert [s["text"] for s in client.sent] == [f"Plotted.\n\n![chart]({chart})"]
+        assert client.images == []
+    else:
+        assert [s["text"] for s in client.sent] == ["Plotted."]
+        assert _fake_upload == [_PNG]
+
+
+def test_dispatcher_admits_the_sessions_own_scratch_but_not_another(
+    tmp_path, monkeypatch, _fake_upload
+):
+    """The provider's $KIROCREW_SCRATCH sits outside its cwd and still uploads;
+    another runtime's allocation beside it keeps its path."""
+    from kiro_crew import agent_scratch
+
+    async def _open(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr("kiro_crew.weixin.transport_dispatch.uploads_restricted", _open)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    monkeypatch.delenv("KIROCREW_SCRATCH_ROOT", raising=False)
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    mine = agent_scratch.allocate_scratch("runtime")
+    other = agent_scratch.allocate_scratch("runtime")
+    shot = mine / "shot.png"
+    shot.write_bytes(_PNG)
+    foreign = other / "shot.png"
+    foreign.write_bytes(_PNG + b"\0")
+    provider = FakeProvider(f"Done.\n\n![a]({shot})\n\n![b]({foreign})")
+    provider.cwd = str(cwd)
+    provider.work_scratch_dir = mine
+    d, _, _ = _make(tmp_path, provider=provider)
+    client = ImageClient()
+    d.client = client
+
+    asyncio.run(d.handle_message(_msg("screenshot it")))
+
+    assert _fake_upload == [_PNG]
+    assert len(client.sent) == 1
+    assert str(foreign) in client.sent[0]["text"] and str(shot) not in client.sent[0]["text"]

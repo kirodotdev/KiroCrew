@@ -41,7 +41,9 @@ file arrives as native media (`send_document`), and an inline image reference in
 reply follows the reply's text the same way: a JPG or PNG up to 2 MB as a picture,
 any other image as a file. On Feishu an inline image reference in a direct-message
 reply arrives as an image message (a group reply keeps the path), but `file_send`
-has no Feishu leg.
+has no Feishu leg. Weixin is the same: an inline image reference up to 10 MB
+arrives as a picture after the reply's text, and `file_send` has no Weixin leg
+yet.
 
 **Tappable choices** is the total number of interactive options one prompt may
 present. Above the cap, the remainder degrades to a numbered list in the message

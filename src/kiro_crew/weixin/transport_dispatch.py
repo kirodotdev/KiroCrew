@@ -64,6 +64,7 @@ from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.messaging.upload_gate import uploads_restricted
 from kiro_crew.safety_override import safety_override
 from kiro_crew.session_lifecycle import (
     STOP_DECLINED_COMPACTING_TEXT,
@@ -388,6 +389,9 @@ class WeixinDispatcher:
             account_id=self.account_id,
             typing_cache=self.typing_cache,
             session_key=session_key,
+            # An incognito or temporary session keeps printing a picture's path,
+            # the same ceiling every other channel's inline upload applies.
+            uploads_allowed=not await self._uploads_restricted(session_key),
         )
 
         # The turn skeleton (acquire -> identity -> context -> TurnDriver ->
@@ -437,6 +441,13 @@ class WeixinDispatcher:
                 # hard deny still wins. With no grant the predicate is False and
                 # every tool still needs an approval this channel cannot give.
                 auto_approve_session=lambda: safety_override().is_active(),
+                # Pictures upload only from the provider's OWN resolved cwd and its
+                # `$KIROCREW_SCRATCH`, read when the provider binds: on a session's
+                # first turn there is no provider before this point.
+                bind_provider=lambda p: renderer.authorize_upload_root(
+                    getattr(p, "cwd", "") or "",
+                    scratch_root=str(getattr(p, "work_scratch_dir", None) or ""),
+                ),
                 persist=lambda user_text, reply, is_new: self._persist_turn(
                     session_key, user_text, reply, is_new, agent
                 ),
@@ -446,6 +457,23 @@ class WeixinDispatcher:
             ),
             sessions=self.sessions,
             ctx_builder=self.ctx_builder,
+        )
+
+    async def _uploads_restricted(self, session_key: str) -> bool:
+        """True when this session must not ship local file bytes to Weixin.
+
+        The shared ceiling (:func:`kiro_crew.messaging.upload_gate.uploads_restricted`):
+        an incognito or temporary conversation never uploads. The persisted-transcript
+        probe is passed in because ``messaging`` may not import ``dashboard``.
+        """
+        # circular import: the dashboard gateway imports the channel transports.
+        from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+
+        return await uploads_restricted(
+            getattr(self, "dashboard_state", None),
+            session_key,
+            channel_type="weixin",
+            persisted_probe=_probe_persisted_session,
         )
 
     async def _handle_busy(self, inbound: InboundMessage, session_key: str) -> None:
