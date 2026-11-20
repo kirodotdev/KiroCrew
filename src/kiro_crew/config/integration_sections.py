@@ -1280,10 +1280,12 @@ class TunnelConfig:
         metadata=_meta(
             "Kiro Relay",
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
-            "the caller named by the relay. Unset (the default) turns it on only for a "
-            "team Crew (Relay Lease Token Type API_KEY) or a host with a workload "
-            "identity whose Relay Lease Credential names its credential; a Crew on a "
-            "personal sign-in stays off until you run kirocrew remote-control on. True "
+            "the caller named by the relay. Unset (the default) turns it on for a Crew "
+            "on a personal sign-in (Relay Lease Credential empty or kiro-sign-in, no "
+            "Relay Lease Token Type, no workload identity), and for a team Crew (Relay "
+            "Lease Token Type API_KEY) or a host with a workload identity whose Relay "
+            "Lease Credential names its credential; kirocrew remote-control off turns "
+            "it off. True "
             "is on and false is off, whatever the Crew's credential. It holds a lease (from Relay "
             "Lease Service URL, or the built-in one when that is empty) on Relay Lease "
             "Credential, or on a personal Crew's own Kiro sign-in when that is empty. A "

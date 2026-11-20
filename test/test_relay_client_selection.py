@@ -11,7 +11,7 @@ import asyncio
 import dataclasses
 import json
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from relay_client_helpers import (
@@ -73,19 +73,27 @@ class _EditionTunnel(DefaultTunnelProvider):
 
 
 class TestSelection:
-    def test_off_by_default(self) -> None:
-        cfg = KiroCrewConfig()
-        # Unset, and with no team key or workload identity that is off.
-        assert cfg.tunnel.relay_enabled is None
-        assert type(build_default_context(cfg).tunnel) is DefaultTunnelProvider
+    def test_a_stored_off_composes_the_default(self) -> None:
+        # The field default is unset, which a personal sign-in hosts on.
+        assert KiroCrewConfig().tunnel.relay_enabled is None
+        assert type(build_default_context(_cfg(relay_enabled=False)).tunnel) is (
+            DefaultTunnelProvider
+        )
 
     def test_relay_enabled_puts_the_relay_client_in_the_slot(self) -> None:
-        provider = build_default_context(_cfg(relay_enabled=True)).tunnel
-        assert isinstance(provider, RelayTunnelProvider)
-        assert provider.enabled() is True
-        # Composition starts nothing: no client, no status, no URL.
-        assert provider.status_snapshot() is None
-        assert provider.public_url() == ""
+        for cfg in (_cfg(relay_enabled=True), _cfg()):
+            provider = build_default_context(cfg).tunnel
+            # Composed lazily: the relay client loads on the first start or status.
+            assert isinstance(provider, bootstrap.LazyRelayTunnelProvider)
+            assert provider.enabled() is True
+            assert provider.public_url() == ""
+            # Composition starts nothing: no client, no status, no URL.
+            assert provider.status_snapshot() is None
+            assert isinstance(provider.loaded(), RelayTunnelProvider)
+            assert provider.public_url() == ""
+            # The tunnel status reads this marker without importing the relay client.
+            assert provider.kiro_relay is True and provider.loaded().kiro_relay is True
+        assert getattr(DefaultTunnelProvider(), "kiro_relay", False) is False
 
     def test_a_stand_in_config_never_selects_it(self) -> None:
         assert type(bootstrap._public_tunnel_provider(MagicMock())) is DefaultTunnelProvider
@@ -551,15 +559,44 @@ class TestThroughTheTunnelWrapper:
         await server._start_aea_tunnel(app, MagicMock(), cfg, 0)
         assert provider_mod.gateway_ingress() is gateway
 
-    @pytest.mark.parametrize("relay_enabled", [False, None, 1, "true"])
-    async def test_gateway_with_relay_off_never_imports_provider(
-        self, monkeypatch, relay_enabled
+    async def test_the_guard_gets_the_loaded_relay_provider_not_the_lazy_one(
+        self, monkeypatch
     ) -> None:
+        from kiro_crew.dashboard import server
+        from kiro_crew.remote_control import guard as guard_mod
+
+        cfg = _cfg(relay_enabled=True)
+        set_context(build_default_context(cfg))
+        lazy = current_context().tunnel
+        assert isinstance(lazy, bootstrap.LazyRelayTunnelProvider)
+        monkeypatch.setattr(server, "setup_tunnel", AsyncMock(return_value=MagicMock()))
+        handed: list[Any] = []
+        monkeypatch.setattr(
+            guard_mod, "install_for_relay", lambda mgr, provider: handed.append(provider)
+        )
+        app = MagicMock()
+        app.middlewares = []
+        await server._start_aea_tunnel(app, MagicMock(), cfg, 0)
+        # The guard's isinstance check sees the relay provider itself.
+        assert len(handed) == 1 and isinstance(handed[0], RelayTunnelProvider)
+        assert handed[0] is lazy.loaded()
+
+    @pytest.mark.parametrize(
+        "tunnel",
+        [
+            {"relay_enabled": False},
+            # Unset with a token type and no credential: not a personal sign-in.
+            {"relay_enabled": None, "relay_lease_token_type": "API_KEY"},
+            {"relay_enabled": 1},
+            {"relay_enabled": "true"},
+        ],
+    )
+    async def test_gateway_with_relay_off_never_imports_provider(self, monkeypatch, tunnel) -> None:
         import sys
 
         from kiro_crew.dashboard import server
 
-        cfg = _cfg(relay_enabled=relay_enabled)
+        cfg = _cfg(**tunnel)
         set_context(build_default_context(cfg))
         monkeypatch.setitem(sys.modules, "kiro_crew.relay_client.provider", None)
         await server._start_aea_tunnel({}, MagicMock(), cfg, 0)
@@ -570,9 +607,12 @@ def test_composing_with_the_relay_off_never_imports_the_relay_client(monkeypatch
 
     # An entry of None makes any import of the module raise ImportError.
     monkeypatch.setitem(sys.modules, "kiro_crew.relay_client.provider", None)
-    assert type(build_default_context(KiroCrewConfig()).tunnel) is DefaultTunnelProvider
-    with pytest.raises(ImportError):
-        build_default_context(_cfg(relay_enabled=True))
+    assert type(build_default_context(_cfg(relay_enabled=False)).tunnel) is DefaultTunnelProvider
+    # Relay on composes without the import too; the first start loads it.
+    for cfg in (_cfg(relay_enabled=True), _cfg()):
+        tunnel = build_default_context(cfg).tunnel
+        with pytest.raises(ImportError):
+            tunnel.status_snapshot()
 
 
 def _lock_tunnel(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -604,7 +644,9 @@ class TestTheRelaySwitch:
         from kiro_crew.edition_locks import relay_selected
 
         assert relay_selected(_cfg(relay_enabled=True)) is True
-        assert relay_selected(_cfg()) is False
+        assert relay_selected(_cfg(relay_enabled=False)) is False
+        # Unset on a personal sign-in hosts by default.
+        assert relay_selected(_cfg()) is True
         # A stand-in config answers every attribute truthily, and a config with no
         # tunnel section has no switch at all.
         assert relay_selected(MagicMock()) is False
@@ -640,7 +682,7 @@ class TestTheRelaySwitch:
         from kiro_crew.dashboard import server
 
         cfg = _cfg(relay_enabled=True)
-        set_context(build_default_context(KiroCrewConfig()))
+        set_context(build_default_context(_cfg(relay_enabled=False)))
         _lock_tunnel(monkeypatch)
         monkeypatch.setitem(sys.modules, "kiro_crew.relay_client.provider", None)
         await server._start_aea_tunnel({}, MagicMock(), cfg, 0)

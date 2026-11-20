@@ -1,5 +1,8 @@
 # Connector conformance foundation (W00-S4)
 
+Status: planned. The `ConformanceRun` and `EvidenceReceipt` records it maps are not
+built yet, so their field names are not in the code.
+
 This document is the **conformance foundation** deliverable of stream `W00`.
 It adds no validator. It records, in one place, which component discharges each
 conformance responsibility the campaign requires, so that no responsibility is

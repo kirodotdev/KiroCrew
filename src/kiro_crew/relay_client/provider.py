@@ -26,7 +26,12 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
 
-from kiro_crew.relay_client.client import STATE_CONNECTED, STATE_ERROR, RelayClient
+from kiro_crew.relay_client.client import (
+    STATE_CONNECTED,
+    STATE_ERROR,
+    STATE_STOPPED,
+    RelayClient,
+)
 from kiro_crew.relay_client.ingress import CrewIngress, LoopbackIngress
 from kiro_crew.relay_client.lease import (
     DEFAULT_LEASE_REGION,
@@ -45,7 +50,7 @@ from kiro_crew.relay_client.protocol import (
     is_loopback_host,
 )
 from kiro_crew.relay_client.token_source import HostTokenSource, UnavailableHostTokenSource
-from kiro_crew.remote_control.hosting import relay_requested
+from kiro_crew.remote_control.hosting import personal_by_default, relay_requested
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.kiro_relay.ingress import RelayIngress as GatewayRelayIngress
@@ -61,6 +66,10 @@ _CREW_DOMAIN_MAX_CHARS = 189
 
 class RelaySettingsError(ValueError):
     """A relay setting that cannot be used; the message names the setting."""
+
+
+class RelayBindUnreachable(RelaySettingsError):
+    """The gateway is bound to one non-loopback address, which the relay cannot hand to."""
 
 
 @dataclass(frozen=True)
@@ -86,6 +95,10 @@ class RelaySettings:
     lease_token_type: str = ""
     #: The built-in lease service's Region for a Crew whose credential names none.
     lease_region: str = ""
+    #: A personal Crew that hosts only by default: a bind the relay cannot reach
+    #: leaves it stopped with a WARNING, not an error
+    #: (``remote_control.hosting.personal_by_default``).
+    personal_default: bool = False
 
     @classmethod
     def from_config(cls, cfg: Any) -> "RelaySettings":
@@ -94,6 +107,7 @@ class RelaySettings:
             # A stand-in config object answers any attribute truthily, so only the
             # one rule's answer turns it on.
             enabled=relay_requested(tunnel),
+            personal_default=personal_by_default(tunnel),
             host_url="",
             crew_domain="",
             lease_url=_setting_text(tunnel, "relay_lease_url"),
@@ -346,7 +360,7 @@ def gateway_listener() -> tuple[str, int]:
         address = None
     if address is not None and is_loopback_host(host):
         return str(address), int(raw)
-    raise RelaySettingsError(
+    raise RelayBindUnreachable(
         f"the relay hands requests over loopback, but the gateway is bound to {host!r}"
     )
 
@@ -376,6 +390,9 @@ IngressFactory = Callable[[], CrewIngress]
 class RelayTunnelProvider:
     """The ``TunnelProvider`` that holds this Crew's host connection to the Kiro relay."""
 
+    #: Marks the Kiro relay's provider for readers that must not import this module.
+    kiro_relay = True
+
     def __init__(
         self,
         settings: RelaySettings,
@@ -395,6 +412,9 @@ class RelayTunnelProvider:
         self._on_connect: Optional[Callable[[str], Awaitable[None]]] = None
         self._on_disconnect: Optional[Callable[[], Awaitable[None]]] = None
         self._error = ""
+        #: The status state a start refusal reports: an error, or stopped for a bind
+        #: a default personal Crew cannot host on yet.
+        self._error_state = STATE_ERROR
 
     @property
     def settings(self) -> RelaySettings:
@@ -423,8 +443,17 @@ class RelayTunnelProvider:
             self._settings.validate()
             ingress = self._ingress_factory() if self._ingress_factory else self._loopback()
         except RelaySettingsError as exc:
-            logger.error("Remote Control relay not started: %s", exc)
+            # Nobody chose to host a default personal Crew, so a bind the relay
+            # cannot reach leaves it stopped, said as a WARNING; the next start with
+            # a loopback or wildcard bind hosts. Every other refusal is an error.
+            quiet = self._settings.personal_default and isinstance(exc, RelayBindUnreachable)
+            logger.log(
+                logging.WARNING if quiet else logging.ERROR,
+                "Remote Control relay not started: %s",
+                exc,
+            )
             self._error = str(exc)
+            self._error_state = STATE_STOPPED if quiet else STATE_ERROR
             return
         self._error = ""
         self._ingress = ingress
@@ -471,7 +500,13 @@ class RelayTunnelProvider:
         if self._client is not None:
             return self._client.snapshot()
         if self._error:
-            return {"state": STATE_ERROR, "url": "", "error": self._error}
+            return {
+                "state": self._error_state,
+                "url": "",
+                "error": self._error,
+                # Only the quiet bind refusal is a wait on this Crew, not a fault.
+                "cannot_host_yet": self._error_state == STATE_STOPPED,
+            }
         return None
 
     async def ensure_available(self, *, install: bool = True) -> str:

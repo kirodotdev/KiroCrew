@@ -648,6 +648,23 @@ def test_the_tally_counts_every_call_but_keeps_three_bounded_names(security_bloc
     assert len(summary) <= _CRON_FAILURE_DETAIL_CAP
 
 
+def test_a_long_refused_title_gives_way_to_its_rule() -> None:
+    """A long chained command must not push the rule that refused it past the cap,
+    and the cut keeps the command's end, where the refused segment sits."""
+    from kiro_crew.slack.gateway import _CRON_FAILURE_DETAIL_CAP, _GateTally
+
+    tally = _GateTally()
+    tally.approved = 13
+    chain = "mkdir -p out && " + "aws logs filter-log-events --start-time X && " * 20 + "tail-step"
+    tally.note(chain, False, True, "Blocked: command matches rule zebra")
+
+    summary = tally.refusal_summary()
+    assert summary.startswith("1 of 14 tool call(s) blocked by the security gate: mkdir -p out")
+    assert summary.endswith("tail-step (Blocked: command matches rule zebra)")
+    assert len(summary) <= _CRON_FAILURE_DETAIL_CAP
+    assert "\n" not in summary
+
+
 class TestMultiAgentSequence:
     """The sequential (agent_sequence) path carries the same verdict as the
     single-agent one, so a multi-agent job's failure counter moves in both

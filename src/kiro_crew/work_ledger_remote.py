@@ -230,6 +230,11 @@ def remote_liveness(board: str, item: WorkItem) -> tuple[bool, bool] | None:
     A remote item never reaches the peer from here: the answer is what the last
     ingest stored, so a read row and the wake gate agree. With no record yet both
     read ``False``. Never raises.
+
+    A stored ``running`` counts only while the crew is up and the last pull that
+    reached it is within :data:`REMOTE_PULL_FRESH_SECS`. A down crew keeps its last
+    answers (``_mark_down``), so without this a worker last seen running on a crew
+    that went away would never read quiet-and-not-running and never go stale.
     """
     if not item.worker_instance_id:
         return None
@@ -240,7 +245,18 @@ def remote_liveness(board: str, item: WorkItem) -> tuple[bool, bool] | None:
         stored = None
     if stored is None:
         return False, False
-    return stored.running, stored.closed
+    return stored.running and _crew_seen_recently(stored), stored.closed
+
+
+def _crew_seen_recently(stored: RemoteState, now: datetime | None = None) -> bool:
+    """Whether *stored*'s crew is up and a pull reached it within the fresh bound."""
+    if stored.crew_state not in ("connected", "connecting"):
+        return False
+    moment = parse_stamp(stored.ingested_at) if stored.ingested_at else None
+    if moment is None:
+        return False
+    age = ((now or datetime.now(timezone.utc)) - moment).total_seconds()
+    return -REMOTE_PULL_FRESH_SECS < age <= REMOTE_PULL_FRESH_SECS
 
 
 def item_liveness(
@@ -418,11 +434,7 @@ def remote_pull_fresh(board: str, item: WorkItem, now: datetime | None = None) -
     if not stored.roster_read:
         # The slot list was not read, so whether the worker is gone is unknown.
         return False
-    moment = parse_stamp(stored.ingested_at) if stored.ingested_at else None
-    if moment is None:
-        return False
-    age = ((now or datetime.now(timezone.utc)) - moment).total_seconds()
-    return -REMOTE_PULL_FRESH_SECS < age <= REMOTE_PULL_FRESH_SECS
+    return _crew_seen_recently(stored, now)
 
 
 def _require_peer_text(value: Any, cap: int, name: str) -> str:

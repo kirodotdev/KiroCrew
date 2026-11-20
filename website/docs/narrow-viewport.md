@@ -377,7 +377,7 @@ reading), leads to **Settings -> Kiro account**, whose **Credits** section
 (`KiroCreditsCard`) renders the modal's body. On a Kiro harness (kiro-cli or KAS)
 that section is always there (its Refresh fills an empty reading); on any other
 harness only for a reading the desktop segment would show --
-`kiroAccountEntry = kiroCreditSurface || (reading !== null && !pillHidden)`, the
+`kiroAccountEntry = kiroCreditSurface || (kiroUsageState !== null && !pillHidden)`, the
 segment's own derivation minus the warming `null`. The tab itself shows while the
 build offers Kiro sign-in or that section has something to show.
 Off the chat route the phone header keeps the logo -> nav drawer

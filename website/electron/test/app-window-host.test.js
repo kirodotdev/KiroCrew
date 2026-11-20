@@ -261,6 +261,24 @@ test("a refused credential is re-resolved once, then left as unknown", async (t)
   assert.ok(mints >= 2);
 });
 
+test("a link token is re-resolved before the gateway's 300 s window refuses it", async (t) => {
+  const clock = { now: 1_000_000 };
+  let mints = 0;
+  const { host, state } = makeHost([appRow("pets", OVERLAY_APP)], {
+    fetchGatewayAuth: async () => ({ value: `tok${++mints}`, viaCookie: false }),
+    now: () => clock.now,
+  });
+  t.after(() => host.stop());
+  await host.start();
+  clock.now += 239_000;
+  await host.reconcileOnce();
+  assert.strictEqual(mints, 1, "reused inside the refresh age");
+  clock.now += 1_000;
+  await host.reconcileOnce();
+  assert.strictEqual(mints, 2, "re-minted at 240 s, before any refusal");
+  assert.match(state.fetches.at(-1).url, /token=tok2$/);
+});
+
 test("a cookie credential loads the page bare and probes with the cookie", async (t) => {
   const { host, fake, state } = await started([appRow("pets", OVERLAY_APP)], {
     fetchGatewayAuth: async () => ({ value: "sess", viaCookie: true }),

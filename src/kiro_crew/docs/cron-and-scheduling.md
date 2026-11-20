@@ -232,7 +232,7 @@ A stateless job has no chat tab: its result reaches the bell, Slack and the job'
 cron_add(
     name="monthly-status",
     message="draft this month's status update; do not post it",
-    cron="0 9 8 * *",
+    cron_expr="0 9 8 * *",
     new_chat_per_run=true
 )
 ```
