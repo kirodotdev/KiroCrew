@@ -6,14 +6,15 @@ export type TouchLayoutChoice = (typeof TOUCH_LAYOUT_CHOICES)[number]
 /** Fired on `window` after the choice changes, so `useIsMobile` re-reads the form at once. */
 export const TOUCH_LAYOUT_CHANGED_EVENT = 'mc:touch-layout-changed'
 
-// The choice a write could not save (site storage blocked), so it still applies
-// to this page; a saved choice is read back from storage instead.
+// The choice a write could not save (site storage blocked or full). It wins over
+// whatever storage still holds, so the pick applies to this page; the next write
+// that lands clears it and storage is the source again.
 let unsavedChoice: TouchLayoutChoice | null = null
 
 /** The saved choice; anything missing or unknown reads as Automatic. */
 export function readTouchLayoutChoice(): TouchLayoutChoice {
   const stored = safeGetItem(TOUCH_LAYOUT_KEY)
-  return TOUCH_LAYOUT_CHOICES.find(choice => choice === stored) ?? unsavedChoice ?? 'auto'
+  return unsavedChoice ?? TOUCH_LAYOUT_CHOICES.find(choice => choice === stored) ?? 'auto'
 }
 
 export function saveTouchLayoutChoice(choice: TouchLayoutChoice) {

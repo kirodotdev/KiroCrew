@@ -137,6 +137,7 @@ describe('the Touch screen layout choice on a touch-first device', () => {
     localStorage.removeItem(KEY)
   })
   afterEach(() => {
+    vi.restoreAllMocks()
     localStorage.removeItem(KEY)
     delete (navigator as unknown as Record<string, unknown>).userAgent
     delete (navigator as unknown as Record<string, unknown>).userAgentData
@@ -194,15 +195,16 @@ describe('the Touch screen layout choice on a touch-first device', () => {
     expect(narrow.result.current).toBe(true)
   })
 
-  it('a choice the browser refuses to save still applies to this page', async () => {
+  it('a choice the browser refuses to save still applies to this page, over an older saved one', async () => {
     const { saveTouchLayoutChoice, readTouchLayoutChoice } = await import('../lib/touchLayoutForm')
+    localStorage.setItem(KEY, 'phone')
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError') })
     setUA(PHONE_UA, true)
     const { result } = renderHook(() => useIsMobile())
     expect(result.current).toBe(true)
     act(() => { saveTouchLayoutChoice('desktop') })
-    expect(localStorage.getItem(KEY)).toBeNull()
+    expect(localStorage.getItem(KEY)).toBe('phone')
     expect(result.current).toBe(false)
     vi.restoreAllMocks()
     act(() => { saveTouchLayoutChoice('auto') })
