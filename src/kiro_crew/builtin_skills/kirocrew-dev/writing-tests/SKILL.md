@@ -172,10 +172,9 @@ that fakes the default home (`beacon.is_default_home`), the platform or a
 privilege depends on the production check it answers. Change the fake and the
 check in the same pull request: a new check means searching `test/` for the
 tests that reach it, and removing a fake means searching for every assertion that
-still relies on it. Two parallel pull requests, one dropping the `home` fixture's
-default-home fake and one adding a default-home check to `off_offer_due()`, were
-each green alone and red together on every run of `main`. Keep the fake scoped to
-the class that needs it. Full telling:
+still relies on it. Otherwise one pull request that drops a fixture's fake and
+another that adds a check reading it are each green alone and red together on
+`main`. Keep the fake scoped to the class that needs it. Full rule:
 [testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md#a-faked-host-condition-changes-with-the-check-that-reads-it).
 
 ### 1c. A child process inherits pytest's CWD, which is the repo root
