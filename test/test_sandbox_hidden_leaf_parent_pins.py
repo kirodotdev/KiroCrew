@@ -168,6 +168,7 @@ print("REPORT " + json.dumps([attempt(args[i], args[i + 1]) for i in range(0, le
 class TestACallerHiddenFilesParentStaysInPlace:
     pytestmark = _NAMESPACE
 
+    @pytest.mark.xfail(strict=True, reason="main lacks caller-parent pins; #39551 adds them")
     def test_renaming_the_parent_folder_is_refused(self, home):
         user_home = Path(os.environ["HOME"]).resolve()
         secret = user_home / ".config" / "x" / "secret"
