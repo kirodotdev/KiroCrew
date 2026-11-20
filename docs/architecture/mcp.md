@@ -3332,8 +3332,11 @@ answers `tools/list` from):
 - **Crew routing:** `route_crew`, `select_crew`
 - **Session work ledger:** `session_ledger_read`, `session_ledger_record`
 - **MCP resource subscriptions:** `resource_subscribe`, `resource_subscriptions`,
-  `resource_unsubscribe` (strict session identity only; a session subscribes,
-  lists and removes its own, and another session's id answers `not_found`.
+  `resource_unsubscribe` (strict session identity only, and the gateway also
+  requires the transport to attest the declared key
+  (`member_memory_auth.session_key_is_attested`), refusing an unattested one as
+  `identity`; a session subscribes, lists and removes its own, and another
+  session's id answers `not_found`.
   Behind `mcp_gateway.resource_subscriptions.enabled`, refusing as `disabled`
   when it is off. Contract:
   [rfc-mcp-resource-subscriptions](../request-for-change/rfc-mcp-resource-subscriptions.md) §4.9.3)
