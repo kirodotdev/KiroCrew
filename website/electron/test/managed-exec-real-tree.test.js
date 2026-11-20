@@ -50,7 +50,9 @@ function taskkill(pid) {
   });
 }
 
-const tick = () => new Promise((r) => setTimeout(r, 100));
+// The interval between reads of the real OS process list, which has no event
+// to await; each loop that uses it is bounded or ends when the run settles.
+const tick = () => new Promise((r) => setTimeout(r, 100)); // flake-ok: poll interval for real tasklist reads, no event exists
 
 test("on Windows a timeout ends the real cmd.exe tree before its command finishes", { skip, timeout: 60_000 }, async () => {
   const lines = [];
