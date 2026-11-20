@@ -31,6 +31,7 @@ _posix_only = pytest.mark.skipif(
     sys.platform == "win32", reason="a device-stem path is the device on Windows"
 )
 
+
 class _NoBinding:
     def lstat(self):
         raise FileNotFoundError
