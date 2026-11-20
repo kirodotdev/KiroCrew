@@ -102,7 +102,7 @@ Two other ways to authorize a remote server:
   on the entry and no browser flow happens at all. A `${VAR}` reference is resolved
   when the handshake is sent; an unresolved one stays literal, which then reads as a
   server asking for a sign-in.
-- **An operator-registered OAuth app**, for the two vendors that refuse runtime
+- **An operator-registered OAuth app**, for the vendors that refuse runtime
   registration. See [credentials](#credentials-and-what-kiro-crew-can-see) below.
 
 ### The tools appear in the next *cold* session
@@ -271,7 +271,8 @@ grant.** The token files are keyed on the URL, not on the entry, so a later reco
 silently resumes the old grant. Use the card's **Disconnect**, or the vendor's own
 revoke page, when you mean to end access.
 
-For the two vendors needing an operator-registered app, the split is:
+For the vendors needing an operator-registered app (GitHub, Asana, the six Google
+cards and Slack), the split is:
 
 | Half | Where it goes |
 |---|---|
