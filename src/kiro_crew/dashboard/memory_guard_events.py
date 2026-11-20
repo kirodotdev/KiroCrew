@@ -3,16 +3,21 @@
 Two seams: the resource-pressure notifier's guard trigger schedules a guard pass on
 the session manager, and each tree the guard handles posts one notice in the chat
 that started it and, after a stop by a bound worker, one ``question`` report on that
-worker's item, which wakes its conductor through the ordinary report wake.
+worker's item, which wakes its conductor through the ordinary report wake. A chat
+with no dashboard tab that lives on a channel gets the notice in its channel
+conversation.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import session_memory_guard
+from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_text
+from kiro_crew.messaging.link import is_channel_session_key
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -30,6 +35,17 @@ def wire_memory_guard(self: DashboardState) -> None:
         )
 
     tasks: set[asyncio.Task[Any]] = set()
+
+    def _spawn(coro: Coroutine[Any, Any, Any]) -> None:
+        task = asyncio.get_running_loop().create_task(coro)
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    async def _notify_channel(key: str, message: str) -> None:
+        try:
+            await deliver_channel_text(self, key, message, tool_name="chat.memory_guard_notice")
+        except Exception:
+            logger.exception("Failed to deliver memory-guard notice to channel chat %s", key)
 
     def _on_memory_guard_stop(key: str, message: str, summary: str | None) -> None:
         from kiro_crew import session_ledger
@@ -53,14 +69,12 @@ def wire_memory_guard(self: DashboardState) -> None:
                 )
             except Exception:
                 logger.exception("Failed to append memory-guard notice to slot %s", slot_key)
+        elif is_channel_session_key(key):
+            _spawn(_notify_channel(key, message))
         if summary is None:
             return
         from kiro_crew.dashboard.memory_guard_report import record_guard_report
 
-        task = asyncio.get_running_loop().create_task(
-            record_guard_report(self, session_ledger.ledger_key(slot_key or key), summary)
-        )
-        tasks.add(task)
-        task.add_done_callback(tasks.discard)
+        _spawn(record_guard_report(self, session_ledger.ledger_key(slot_key or key), summary))
 
     sessions.on_memory_guard_stop = _on_memory_guard_stop
