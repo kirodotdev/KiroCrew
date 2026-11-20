@@ -1229,11 +1229,27 @@ name, so the stream's session reads the refs the helper made (the quick ask's
 targets, the frame slots). A count
 that cannot be taken refuses: `screenshot` answers `secret_check_failed`, and a
 decision-hook capture is skipped. Any frame, `object` or `embed` the top
-document cannot read (`unreadableFrames`), hidden or not, refuses too, with or
-without the live view: `screenshot` answers `unreadable_frame_on_page`. The live
-stream's frame inspector (`FrameOps.count`) still adds its child-frame counts,
-but it does not yet prove it checked every frame, so it is not trusted to lift
-the refusal. A hidden frame counts because a page can show it for the moment the
+document cannot read (`unreadableFrames`), hidden or not, refuses too when no live
+view holds the tab: `screenshot` answers `unreadable_frame_on_page`. With the live
+view, the stream attaches every out-of-process frame at every depth (auto-attach
+is turned on inside each attached frame's session), and the refusal is lifted only
+when `FrameOps.coverage` proves every unreadable frame was checked: at the top and
+inside each attached frame, the frames its walk cannot read (plus any frame owner
+the walk missed) must equal the frames attached directly under that document, with
+no secret-looking field or uninspected frame in a closed shadow root. Each attached
+frame's committed URL must also pass the browse gate (`_frame_url_allowed`, the
+check snapshot applies before it reads a frame) before that frame is read, so a
+frame from a refused site keeps the refusal standing, before and after the
+capture. A same-site
+frame with no session of its own, a count that cannot be taken, or more than
+`frames.FRAME_COVERAGE_CAP` (32) attached frames leave the refusal standing, and
+it names what was not checked, by frame host only. Once covered, the inspector
+(`FrameOps.count`) adds every attached frame's counts, nested ones included, so a
+value in a nested frame still refuses the capture; the decision hooks read the
+same counts, so a covered page can also reach the decision model. The live view
+and the recorder mask a secret field in a nested frame by painting the whole
+top-level frame that holds it, since a nested viewport cannot be placed exactly in
+page pixels. A hidden frame counts because a page can show it for the moment the
 image is taken. An `object` or `embed` always counts: the field counts walk only
 into iframe and frame documents, so a PDF opened in the tab refuses too. A frame
 in a closed shadow root is out of the walk's reach, so the browser's own count
@@ -1241,9 +1257,9 @@ of `iframe`/`frame`/`object`/`embed` elements (`frame_owner_count`:
 `DOM.getDocument` with `pierce`, read by the helper worker, which also sees
 out-of-process frames) is compared with the ones the walk reached
 (`framesSeen`); any it missed count, and more seen than the browser holds means
-the page changed between the reads and refuses as well. The cost: a page that
-embeds a frame from another site (a video, a map, an ad, a sign-in widget)
-refuses screenshots for now, live view or not; snapshot still works. A secret-looking field (a password, one-time-code or quick-ask field, or one
+the page changed between the reads and refuses as well. The cost: with no live
+view, a page that embeds a frame from another site (a video, a map, an ad, a
+sign-in widget) refuses screenshots; snapshot still works. A secret-looking field (a password, one-time-code or quick-ask field, or one
 the walker's `secretish` names) inside a closed shadow root is out of every
 page-side walk, so the browser's own DOM is asked (`closed_secret_count`, and
 the live stream's replay mask asks the same through its session): any such
@@ -1285,7 +1301,7 @@ the last navigate or snapshot.
 | `read` | the page's text in the walker's isolated world: the root's `innerText`, the whole page and not only the viewport, followed by the text of each open shadow root and same-origin frame `innerText` skips (Chromium's `innerText` does not enter a shadow root); an element with a box gives its `innerText`; any other element, and a shadow root, is read child by child, and a text node counts only when its range draws a box, so a `display:none` ref, a hidden frame's body and an unassigned slottable give no text while a `display: contents` element's children still do (an element with no box would fall back to `textContent`, script bodies included). So an unselected tab panel (`hidden` or `display:none`) and the body of a closed `details` are left out of the text (checked in headless Chromium); click the tab or open the section first. A frame this world cannot read (cross-origin, or an `object` / `embed`) is counted as `scanFrames` counts it, in a `note`, never read. The gateway redacts credentials and exfiltration URLs and neutralizes fence look-alikes in the whole content before it pages it, so a token cannot straddle two pages and the shim never grows a page past its cap; the shim puts the page, and the page title, between the untrusted-page fences (`context_assembly/markers.py`) with every fence look-alike neutralized, so a forged note or hand-back line stays inside; the URL in the header is neutralized too. `ref` scopes it to one element (`ref_stale` when gone; a cross-origin frame ref is `bad_ref`); `offset` pages it, `READ_CONTENT_CAP` characters a result so the shim's header still fits its 20,000 cap, with `total`, `next_offset` while more remains, and `digest`, a hash of the whole redacted content that changes when the page changed between calls. The page side stops at 2,000,000 characters, or sooner once the JSON-escaped content (6 bytes per non-ASCII unit) would pass 3.5 MiB under the worker's 4 MiB reply cap, and says `truncated`. A `format` other than absent or `text` is refused with `bad_format`; a negative, non-integer or past-the-end `offset` is `bad_offset` |
 | `click` | a ref or `x`,`y`; `clicks: 2` is a double click. A ref is scrolled into view once, then re-measured without scrolling every 0.1 s until two reads in a row agree within 1 px (at most 6 re-reads), so a page that moves its layout on scroll is clicked where the target settled; a ref that measures empty to the end is refused `ref_stale` |
 | `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers); a ref settles as for `click` |
-| `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land. `type {ref?, steps: [{text} | {key, modifiers?}]}` (`browser_harness/type_steps.py`, reached from `ops.py` by a call-time import) runs its steps in order in one op: `ref` is focused once, each text step runs the focused-field checks above and each key step `press_key`'s guards, and the first refusal, a `dialog_open` included, ends it with the step's 0-based index as `step` and at the front of its `error`. A malformed list (not 1 to `STEPS_CAP` (50) steps, a step that is neither shape, a key step whose key `press_key` would refuse as unknown, `text` or a truthy `submit` beside `steps`) is refused `bad_steps` before anything runs; `TEXT_CAP` bounds the text of all steps together. A `\t` in `text` inserts a tab character, not the Tab key |
+| `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land. `type {ref?, steps: [{text} | {key, modifiers?}]}` (`browser_harness/type_steps.py`, reached from `ops.py` by a call-time import) runs its steps in order in one op: `ref` is focused once, each text step runs the focused-field checks above and each key step `press_key`'s guards, and the first refusal, a `dialog_open` included, ends it with the step's 0-based index as `step` and at the front of its `error`. A malformed list (not 1 to `STEPS_CAP` (50) steps, a step that is neither shape, a key step whose key `press_key` would refuse as unknown, `text` or a truthy `submit` beside `steps`) is refused `bad_steps` before anything runs; `TEXT_CAP` bounds the text of all steps together. When focus is in a rich editor (`isContentEditable`) holding a non-empty selection inside it (`activeField().selected`), a Delete key clears the selection before `Input.insertText`, for a plain `type` and for each text step alike: Word on the web keeps only as many inserted characters as the selection held. A `\t` in `text` inserts a tab character, not the Tab key |
 | `paste` | `text` plus optional `html`, behind the same focus refusals as `type`. The walker dispatches one `paste` event on the field carrying both as `text/html` and `text/plain`, so the page's own editor builds the table or headings as it would from a clipboard paste; the clipboard itself is never written, and nothing on Kiro Crew's side parses or inserts the HTML. A script's paste event inserts nothing by itself, so when the page does not cancel it the focus refusals run again (on `ref` focused again, or on whatever then holds focus when no `ref` was given), the plain `text` is typed (`type_text`) and the result says `handled: false`. Focus inside a cross-origin frame is reached only through the field's frame ref (`f<n>e<n>`), else `focus_in_frame` |
 | `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named |
 | `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path |
@@ -1327,6 +1343,9 @@ under the tab and named `f<tag>e<n>`. Before reading a child's outline or acting
 on one of its refs, the op applies the same `OpContext.url_allowed` predicate to
 the child's current URL. Refused children stay marked unread; a refused frame-ref
 action answers `redirect_refused` through the existing blank-tab refusal path.
+A frame still loading or attaching reads as unread too, so the snapshot's note
+tells the agent to wait for the load and snapshot again before working by
+coordinates.
 The quick ask's hit test at a field in a
 frame passes when the browser's topmost node there is the frame's `<iframe>`, or,
 for a same-process frame, a node of that same frame.
