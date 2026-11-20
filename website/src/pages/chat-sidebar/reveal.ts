@@ -58,7 +58,7 @@ const REVEAL_FLASH_FADE_MS = 500
 const REVEAL_SETTLE_SLACK_MS = 50
 
 /** Consumes session and folder reveal requests and flashes the target row. */
-export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors, folders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView }: {
+export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors, folders, drawnFolders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView }: {
   sidebarRootRef: RefObject<HTMLDivElement>
   dispatch: AppDispatch
   localSlots: Slot[]
@@ -71,6 +71,10 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
   expandFolderAncestors: (folderId: string) => void
   expandConductorAncestors: (key: string) => void
   folders: ChatFolder[]
+  /** The folders the Sessions list draws (`folders` minus a hidden Bot home).
+   *  A folder reveal looks its target up here, so a folder with no row ends the
+   *  request before the text filter or the flat view is touched. */
+  drawnFolders: ChatFolder[]
   /** The folder query is idle and its last fetch succeeded, so a folder
    *  missing from `folders` is missing on the server too. False while the
    *  query is in error, because a failed fetch does not show that. */
@@ -359,9 +363,10 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     const folderId = revealRequest.target
     // Consume immediately: the request must not survive to a later remount.
     dispatch(clearSlotReveal())
-    const target = folders.find(f => f.id === folderId)
+    const target = drawnFolders.find(f => f.id === folderId)
     if (!target) {
-      // Deleted folder, or a request that outlived the folder list it named.
+      // Deleted folder, a request that outlived the folder list it named, or a
+      // Bot home the Sessions list does not draw (#39653).
       // eslint-disable-next-line no-console -- a reveal's only success signal is the scroll+flash, so this early return is the one path where the user's click provably did nothing and nothing else records it
       console.debug('reveal-in-sidebar: no folder for id', folderId)
       return
@@ -375,9 +380,9 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // hides the subtree (`filterHiddenSubtree`), so clearing only the target
     // itself would leave it hidden behind an ancestor.
     const chain = new Set<string>()
-    for (let cur: ChatFolder | undefined = target, guard = 0; cur && guard < folders.length + 1; guard += 1) {
+    for (let cur: ChatFolder | undefined = target, guard = 0; cur && guard < drawnFolders.length + 1; guard += 1) {
       chain.add(cur.id)
-      cur = cur.parent_id ? folders.find(f => f.id === cur!.parent_id) : undefined
+      cur = cur.parent_id ? drawnFolders.find(f => f.id === cur!.parent_id) : undefined
     }
     setFilterHiddenFolders(prev => {
       if (![...chain].some(id => prev.has(id))) return prev
@@ -406,6 +411,6 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // their preference comes back on reload.
     setFlatView(false)
     runReveal('folder', folderId, folderId)
-  }, [revealRequest, shownTick, sidebarRootRef, dispatch, folders, expandFolderAncestors, runReveal, setSlotFilter, setFilterHiddenFolders, setFlatView, setRevealForcedVisible])
+  }, [revealRequest, shownTick, sidebarRootRef, dispatch, drawnFolders, expandFolderAncestors, runReveal, setSlotFilter, setFilterHiddenFolders, setFlatView, setRevealForcedVisible])
   return { revealFlash }
 }
