@@ -283,6 +283,10 @@ class TestCapAlignment:
         # A job's project directory: set from the CLI only, never via
         # CRON_ADD_SCHEMA (MCP cron_add does not take it). General ID cap applies.
         "project_path",
+        # A job's pinned channel destination: chosen on the Schedule page, so it
+        # is accepted on POST/PATCH /api/crons and has no CRON_ADD_SCHEMA entry.
+        "channel_type",
+        "target_id",
     }
 
     def test_table_caps_match_cron_add_schema(self):
