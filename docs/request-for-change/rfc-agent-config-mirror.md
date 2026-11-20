@@ -4,10 +4,10 @@ status: partial
 revision: v1
 author: zejiangg, with Kiro
 created: 2026-09-02
-last-audited: 2026-10-05
-audited-at: e281ecaf33
-doc-pr:
-implementation-prs: []
+last-audited: 2026-11-20
+audited-at: fc89562d69
+doc-pr: 7717
+implementation-prs: [7717, 9987, 10335, 10939, 16847, 22403, 24732, 26559, 37974]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -15,15 +15,17 @@ superseded-by: []
 # RFC: Agent Config Mirror — one declared contract for projecting the agent spec onto every backend
 
 - Status: partial — the declared mirror contract, projection-kind and disposition
-  vocabularies, registry, parity guards, and Claude Code, Codex, Copilot,
-  DeepSeek, Goose, MiMo Code, OpenCode, and Strands mirrors are on main. The contract ships as a registry keyed by backend
+  vocabularies, registry, parity guards, and Antigravity, Claude Code, Codex,
+  Copilot, DeepSeek, Goose, MiMo Code, OpenCode, and Strands mirrors are on main
+  (#7717, #9987, #10335, #10939, #16847, #22403, #24732, #26559, #37974). The contract ships as a registry keyed by backend
   id (`providers/mirrors/registry.py`: `PROJECTIONS` and `mirror_for`), not as
   a defaulted method on `LLMProvider`; see `../../src/kiro_crew/providers/mirrors/README.md`.
-  KAS remains an external projection and kiro-cli remains native, so the
-  relocation plan is not complete.
+  KAS remains an external projection and kiro-cli remains native (no
+  `mirrors/kas.py` or `mirrors/kiro_cli.py`), so §5 PRs 3 and 4 are open and the
+  relocation plan is not complete. Checked at `fc89562d69`.
 - Author: zejiangg, with Kiro
 - Created: 2026-09-02
-- Audited against: `e281ecaf33`
+- Audited against: `fc89562d69`
 - Related: `../system-specs/modules/agent-host-contract.md` (the host contract
   this RFC adds a bucket to),
   `../system-specs/modules/claude-code-provider.md`,
