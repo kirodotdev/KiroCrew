@@ -87,6 +87,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_check import _manual_check_task  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _manual_verdict  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _manual_verdict_at  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_check import _no_check  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _read_feed_manifest  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _record_into  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_check import _release_update_check_task  # noqa: F401

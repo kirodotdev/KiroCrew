@@ -321,7 +321,8 @@ def status_update_fields(next_start: dict[str, object] | None = None) -> dict[st
 async def api_update_check(request: web.Request) -> web.Response:
     """GET /api/update/check — the update capability contract for this install.
 
-    Runs the isolated check (the update popup). A
+    Runs the isolated check (the update popup), unless the owner's click verdict
+    is live: the popup it raised then reads that verdict, and no check runs. A
     person's "Check for updates" click is ``POST`` (:func:`api_update_check_now`).
 
     ``state`` and ``progress`` are absent on purpose: they describe an apply/drain
@@ -347,6 +348,11 @@ async def api_update_check_now(request: web.Request) -> web.Response:
     return await _update_check_response(manual=is_host_owner_dashboard_request(request))
 
 
+async def _no_check() -> None:
+    """Stand in for a check that is not run, so the response reads the shown verdict."""
+    return None
+
+
 async def _update_check_response(*, manual: bool) -> web.Response:
     """Run a check (manual or isolated) and answer with the capability contract."""
     # The manual Check is the other way the effect becomes known before the
@@ -354,7 +360,15 @@ async def _update_check_response(*, manual: bool) -> web.Response:
     # are warranted here where a status frame could not afford them. Alongside
     # the check (the two are independent), and through the shared single-flight
     # task, so N tabs opening About at once derive once.
-    check = _do_update_check(manual=True) if manual else _do_update_check()
+    if manual:
+        check = _do_update_check(manual=True)
+    elif _live_manual_verdict() is not None:
+        # The popup the click's verdict raised reads it here. An isolated check
+        # could not sign in, so it would only erase that verdict and report the
+        # failure the click just got past; the poll and boot check still end it.
+        check = _no_check()
+    else:
+        check = _do_update_check()
     verdict, _ = await asyncio.gather(check, _refresh_auto_update_effect_once())
     # This request's own run, not the shared cache: the other slot's check can
     # write that cache while the reads below are awaited.

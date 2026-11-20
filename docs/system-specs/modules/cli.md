@@ -3396,8 +3396,9 @@ only a signed-in fetch could reach never turns the unattended apply into retries
 that cannot sign in. The status frame and the check response show the click's
 verdict, with the click's own time as `update_last_checked_at`, for
 `_MANUAL_VERDICT_TTL_S` (ten minutes). Any other check that finishes (the boot
-check, the poll, the update popup's `GET`), the next click, and a channel switch
-drop it, so an old answer never sits beside a newer check time: after that the
+check, the poll), the next click, and a channel switch drop it; the update popup's
+`GET` reads a live click verdict instead of running an isolated check that would
+erase it, so an old answer never sits beside a newer check time: after that the
 badge shows the isolated check's own result, `git_fetch_failed` on a private
 remote, and the owner clicks again. A feed install's click has no such split and
 writes the cache as every check does. `POST /api/update` arms the version the

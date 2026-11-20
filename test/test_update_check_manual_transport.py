@@ -391,6 +391,31 @@ class TestTheClicksVerdictIsScoped:
         orch.sessions.pause_turn_admission_for_update.assert_not_awaited()
         assert call("update_available") not in orch.dashboard_state.push_refresh.call_args_list
 
+    def test_the_popups_get_reads_the_click_without_ending_it(
+        self, helper_home, git_checkout, monkeypatch
+    ):
+        # The popup the click's verdict raised asks GET for its notes. An isolated
+        # check there could not sign in and would erase the verdict at once.
+        _no_effect_refresh(monkeypatch)
+        _click_found_an_update(git_checkout, monkeypatch)
+        stamp = updates._manual_verdict_at
+
+        async def _run():
+            client = await _client({"app": "", "user": OWNER})
+            try:
+                resp = await client.get("/api/update/check")
+                return resp.status, await resp.json()
+            finally:
+                await client.close()
+
+        status, body = asyncio.run(_run())
+        assert status == 200
+        assert git_checkout["fetches"] == [True]
+        assert body["check_status"] == "succeeded"
+        assert body["update_available"] is True
+        assert body["last_checked_at"] == stamp
+        assert updates._manual_verdict is not None
+
     def test_the_next_isolated_check_clears_it(self, helper_home, git_checkout, monkeypatch):
         _click_found_an_update(git_checkout, monkeypatch)
         assert updates._manual_verdict is not None
@@ -470,6 +495,7 @@ class TestTheUpdateTheBadgeOffersArms:
         # Update the badge offered. The arm names the verdict it showed.
         from kiro_crew.platform import update_provider
 
+        _no_effect_refresh(monkeypatch)
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         monkeypatch.setattr(
             "kiro_crew.platform.update_capability.derive_capability",
@@ -484,9 +510,12 @@ class TestTheUpdateTheBadgeOffersArms:
             app = web.Application(middlewares=[_as_owner])
             app["state"] = SimpleNamespace(owner_id=OWNER, push_refresh=lambda *_a, **_k: None)
             app.router.add_post("/api/update", updates.api_update_apply)
+            app.router.add_get("/api/update/check", updates.api_update_check)
             client = TestClient(TestServer(app))
             await client.start_server()
             try:
+                # The popup the verdict raised reads it before the person presses Update.
+                await client.get("/api/update/check")
                 resp = await client.post("/api/update", json={"when": "next-start"})
                 return resp.status, await resp.json()
             finally:
