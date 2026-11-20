@@ -143,7 +143,7 @@ Deny-by-default, in both directions:
   instruction and is ignored, so a bare `@bot` does not start an empty turn.
 - **Slash commands work in a group too.** A group message has to mention the
   bot, so it arrives as `@FeishuBot /new`. That single leading mention is
-  removed before matching, so `/new`, `/reset`, `/compact`, `/stop` and `/help` still intercept
+  removed before matching, so `/new`, `/reset`, `/compact`, `/agent`, `/stop`, `/cancel` and `/help` still intercept
   there instead of being sent to the agent as a prompt.
   Only a bare command intercepts, and **a message naming anyone else is never a
   command**: `@FeishuBot please run /new later` and `@FeishuBot /new @Alice` are
@@ -180,6 +180,8 @@ masked preview: a saved secret can be **replaced or cleared, never read back**.
 | `/new` (or `/reset`) | Start a fresh session; the old context is dropped. |
 | `/compact` | Compact the current context in place. |
 | `/agent [name]` | Show the agent and the ones you can pick; `/agent <name>` switches, `/agent default` goes back. |
+| `/stop` (or `/cancel`) | Stop the reply that is running. |
+| `/help` | List these commands. |
 
 Anything else is a prompt.
 

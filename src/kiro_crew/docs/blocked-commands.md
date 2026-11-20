@@ -136,10 +136,12 @@ Two limits are deliberate:
 
 - The agent cannot edit any of this. The files live on the sensitive-path floor,
   which is what stops a prompt-injected agent from rewriting its own ceiling.
-- On a host with an enterprise governance policy, the credential, sensitive-file,
-  self-protection, git-publish, reverse-shell and pipe-to-shell categories are
-  **pinned** and cannot be disabled — including by "disable all". Your
-  organization's policy composes with your settings on a tightest-wins basis.
+- On a host with an enterprise governance policy, every built-in rule that
+  policy pins (a `commands`-scope deny whose pattern is the rule's own regex, for
+  example credential, self-protection or git-publish rules) is **pinned** and
+  cannot be disabled — including by "disable all". Which rules are pinned is the
+  policy's choice, and `kirocrew policy show` lists them. Your organization's
+  policy composes with your settings on a tightest-wins basis.
 
 Both are about what you may change. What the rules can *see* is a separate
 limit, and the tighter one: see **What this tier cannot see** above before you
