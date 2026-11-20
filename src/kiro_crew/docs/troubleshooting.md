@@ -147,9 +147,6 @@ skipped. Do not put the key in the systemd unit or in
 `kirocrew service install` warns when it sees a key in your shell that the
 service will not inherit.
 
-Releases before 0.3.0 filtered `KIRO_API_KEY` out of the probe entirely, so no
-placement works on those; use `kiro-cli login` or upgrade.
-
 ### A service-started gateway lacks AWS container credentials, region or the ssh-agent
 
 A gateway started by `kirocrew service install` does not inherit the installing
@@ -627,7 +624,8 @@ directory named the way Kiro Crew names one: eight hex characters, such as
 with at least one letter (`runtime-0123abcd`). A folder you made or cloned
 there under any other name is left alone (a dated name such as
 `backup-20261105` is not a Kiro Crew name), as is any folder with no `.owner`
-file under `KIROCREW_SCRATCH_ROOT`, which can hold folders of your own.
+file under `KIROCREW_SCRATCH_ROOT` (Windows only, below), which can hold folders
+of your own.
 On Linux such a directory is also kept while a running process still uses it,
 as above; macOS and Windows have no such check, so a process that uses one
 without writing to it for a week finds it moved.
@@ -793,7 +791,7 @@ skip to step 6.
 
 This almost always means Kiro Crew was started as root once, for example with
 `sudo kirocrew ...`. `sudo` keeps your `HOME`, so that run wrote root-owned files
-into your own data home. Kiro Crew now refuses such a run, but it does not change
+into your own data home. Kiro Crew refuses such a run, but it does not change
 the owner of files back by itself: doing that as root inside a folder an agent can
 write is not safe to automate.
 
