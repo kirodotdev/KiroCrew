@@ -29,6 +29,18 @@ export const isWinElectron = isElectron && mc?.platform === 'win32'
 export const isLinuxFramelessElectron = isElectron && mc?.platform === 'linux' && !!mc?.linuxFrameless
 
 /**
+ * True when the INSTALLED shell serves the in-app application menu on a
+ * frameless Linux window. Separate from `isLinuxFramelessElectron`, which
+ * answers a different question: that flag describes the window (no frame, so
+ * reserve header space), this one describes the shell (its main process
+ * answers the menu's two seams). An older shell reports the first and not the
+ * second, so gating the menu on the window alone paints a trigger whose popups
+ * open empty. Absent on any shell older than the feature — see
+ * electron/preload.js.
+ */
+export const shellServesLinuxAppMenu = isElectron && !!mc?.linuxAppMenu
+
+/**
  * Width reserved on the right of the header for the injected Linux caption
  * controls (three 36px buttons — see #electron-linux-controls in
  * electron/main.js). Mirrors WIN_CAPTION_OVERLAY_WIDTH below; keep in sync
