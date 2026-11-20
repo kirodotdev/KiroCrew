@@ -1018,7 +1018,7 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
 - `exfil.py` — credential EGRESS, the layer above output redaction: the URL and token layer that decides whether a URL carries a credential in its path or query, the safe-diagnostic family that reports such a finding as a rule id, a component and a character-class shape rather than the bytes it matched, the operator-extensible OAuth authorization-endpoint set, the data-egress and reverse-shell command gate, the metadata-address folder that collapses every alternate encoding of the instance metadata endpoint onto one dotted quad, and the metadata check built on it. It imports `redaction.py`, plus `denied_rules.py` for the command gate's single-command eligibility test, and nothing else in the package, and the direction to redaction is the design rather than an accident: redaction decides whether a run of text IS a credential, this module decides whether a command or a URL is carrying one OUT, so the egress side reads redaction's shape predicates and redaction reads nothing here. The environment tier that re-enforces two catalog rows lives in `denied_rules.py` instead, because it resolves those rule ids to row objects at import time — a dependency on the catalog rather than on anything here, and eager so an unresolvable id fails at import instead of silently retiring an always-on block. The endpoint sanitizer is redaction's by responsibility but sits in `display_safety.py`, above this module: it consults this module's egress pattern set, so placing it in `redaction.py` would point the load-time edge back the wrong way.
   - `exfil.py` is a mirror facade over three owner modules beside it, on the same terms; the URL classifier, the blocked-link records, the URL redactor, the OAuth credential diagnosis and the metadata folder and check stay in the facade. New work goes to the owner of its responsibility:
     - `exfil_url_rules.py` — the URL and query patterns, the decode bound, the hard credential markers and the presigned-URL validator.
-    - `exfil_git_object.py` — the git object name carve-out from the base64-blob test: a query value that is exactly 40 lowercase hex digits (a SHA-1 commit name) does not count as a blob.
+    - `exfil_git_object.py` — the two carve-outs from the base64-blob test: a query value that is exactly 40 lowercase hex digits (a SHA-1 commit name) does not count as a blob, and neither does a run of plain words or ids joined by `+` (a form-encoded space, as in a batched ticket search). A word is letters in one case, or a capital then lowercase, then digits; a piece that mixes case, puts a letter after a digit or holds `/`, an empty piece, and a piece the pattern matches on its own (an AWS key id) keep the run firing.
     - `exfil_oauth.py` — the OAuth authorization-endpoint set (builtin, operator file, discovered), its SEL audit events and the safe shape diagnostics.
     - `exfil_bash.py` — the data-egress and reverse-shell command gate, which reads the deny tier's single-command eligibility test from `denied_rules.py` and, for the date/search carve-out, the first raw word (quotes kept, split at live space and tab only) from `shell_commands.py`. The carve-out also holds for a whole line (`_inert_line_allows`) when every command the shared reader finds in it, those of a double-quoted `$(…)` included, starts with a carve-out verb or `echo`/`cat` after an optional `TZ`/`LANG`/`LC_*` prefix, joined only by `;`, `&`, `&&`, `||`, `|` or a newline, with no redirection and no live `$` or backtick left in any word. `printf` is excluded on purpose: `printf -v 'BASH_CMDS[date]' …` rebinds the `date` verb to another program, in any spelling of the option. Anything else keeps the deny.
 - `argv_rules.py` — the `chmod`/`chown` deny rows and the `dd` raw-disk row, matched on a
@@ -4053,6 +4053,25 @@ command and `s///e` flag run a shell. Anything with shell evaluation in it falls
 through to the unchanged denial — including the reporter's multi-statement
 diagnostic loop, which needs `$(…)` and is not carved out; its individual
 `date` conversion run on its own is.
+
+A whole line passes too when every command on it, read by the shared reader
+(`_inert_line_allows`), runs nothing that could send: `date`, the inert-search
+verbs, `echo`, `cat`, `head`, `tail`, `wc`, or a read-only `gh` call (`search`,
+`issue view`, `issue list`, `pr view`, `pr list`, written with no flag before the
+subcommand), joined by a list or a pipe, with no live `$` or backtick, no
+redirection and no `#`. `printf` and `sort` are not in the set (`-v` writes a
+variable, `--compress-program` runs one), nor is any `gh` call that can send a
+file. A backslash passes only where bash reads it as a plain character inside
+quotes, and never on a line that also holds `$(`, where the quoting starts over.
+
+A refusal by this gate gets its own guidance (`deny_guidance.DENY_CLASS_FILE_BODY_TEXT`):
+it keeps the upload answer and names the forms that pass. The gate's first line names
+no rule, so the guidance is chosen by the rule id on its own last diagnostic line
+(`diagnostics.refusal_rule_id`). The regex tier's row for the same id
+(`.*curl.*--?data…@.*`) has no inert-line carve-out, so a search line naming `curl`
+with a `--data @` form is still refused there; its refusal keeps the exfil-shape
+guidance, and the file-body guidance says to search for that pair with the
+file-search tool.
 
 A file search is not a command line at all. A call whose host-trusted identity names
 the `grep` or `glob` built-in (`mcp_identity_trusted`, no server, the name in
