@@ -1,10 +1,10 @@
 ---
 title: Update Architecture (install-shape capability contract)
-status: in-progress
+status: partial
 author: zezhexu
 created: 2026-07-31
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 1003
 implementation-prs: [1734, 15838, 16202, 16245]
 tracking-issues: []
@@ -13,7 +13,7 @@ superseded-by: []
 ---
 # RFC: Update Architecture (install-shape capability contract)
 
-- Status: in-progress — the backend capability contract
+- Status: partial — the backend capability contract
   (`platform/update_capability.py`), managed-venv wheel engine
   (`platform/wheel_engine.py`) and host-local dashboard approval step-up
   (`platform/update_stepup.py`) ship, and the gateway's unattended apply runs
