@@ -1,0 +1,15 @@
++426
+A code-loader name written as a method (`re.compile`) was resolved as the builtin
+by its bare word alone, so a regex pattern naming the product tripped the mint
+check. The fix narrows `compile` by its ARGUMENT, not by proving its receiver. A
+`compile` call that parses and whose first argument is a plain string literal that
+does not itself name the package is inert data (a regex), so the console-script
+name match is skipped while the mint-surface and product-import checks still run.
+A COMPUTED first argument (`open(shutil.which('kirocrew')).read()`) stays denied
+whatever the receiver is at run time, which closes the module-cache-swap and
+attribute-rebind class (sys.modules.update, __setitem__, operator.setitem, an
+alias of sys.modules, re.__setattr__) without chasing each spelling. The three
+sites that resolve a loader by a dotted head -- the direct call, the grouping and
+the alias -- share this rule; a word-split heredoc that cannot show its literal
+keeps the lexical receiver proof, whose for-loop target scan now steps over the
+inserted newlines.
