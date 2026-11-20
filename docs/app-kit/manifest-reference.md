@@ -721,6 +721,7 @@ import map `ui.pages` uses, so React stays a single instance.
 | `session.folderId` | string? | Folder the chat is filed in, `''` at top level. A dashboard grouping with its own id -- **not** a directory, so key per-folder state on this and not on `cwd` |
 | `session.folderName` | string? | Folder's display name, to name it back to the user |
 | `session.cwd` | string | Working directory recorded for the session, when known |
+| `session.member` | `{ name }`? | In a Bot's own thread, the Bot's display name, so a control can say who the user is talking to. Undefined in every other chat |
 | `onClose` | function | Dismiss the control, e.g. after committing a change |
 
 The control is remounted when the session changes, so per-chat state cannot leak
