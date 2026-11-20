@@ -133,8 +133,8 @@ own `/api/apps/<app>/` or `/apps/<app>/` namespace):
 | `backend_env_names` | `KIROCREW_DEVFLEET_REPO` | forwarded to every app backend by `apps/backend.py` |
 | `backend_env_prefixes` | `KIROCREW_DEVFLEET_BIN_` | as above, by prefix |
 | `config_top_keys` | `dev_fleet` | `config/validation.py`'s unrecognized-key warning skips it |
-| `strict_internal_paths` | the five `/api/apps/dev-fleet/pod/*` verbs | folded into `server._STRICT_INTERNAL_API_PATHS` |
-| `relay_credential_paths` | `/api/apps/dev-fleet/pod-token`, `/apps/dev-fleet/api/pod/token` | refused to every relayed caller by `kiro_relay/limits.py` |
+| `strict_internal_paths` | the five `/api/apps/dev-fleet/pod/*` verbs | folded into `dashboard.server_internal_paths._STRICT_INTERNAL_API_PATHS` |
+| `relay_credential_paths` | `/api/apps/dev-fleet/pod-token`, `/apps/dev-fleet/api/pod/token` | refused to every relayed caller by `dashboard/kiro_relay/limits.py` |
 
 `host_grants.py` is a data module, and the package `__init__` imports its two route
 modules inside `register_routes` only: the seam is read in the MCP servers and the
@@ -509,10 +509,10 @@ waits, then finds the tree present and refuses `path_exists`.
 **In the page** the action is the **Create worktree from latest stable** item of the
 toolbar's labelled **More actions** menu, a keyboard-operable `DropdownMenu`. Prune merged
 stays the toolbar's one button and the menu's trigger is the row's second control
-(`max-two-buttons-per-row` counts the trigger), so Refresh moved from a toolbar button
-into the menu, as its first item beside Create worktree from latest stable. The Refresh
+(`max-two-buttons-per-row` counts the trigger), so Refresh is a menu item, the first,
+beside Create worktree from latest stable. The Refresh
 item's accessible name is its visible label, "Refresh", and its hover `title` is
-"Refresh fleet". The new item's
+"Refresh fleet". The Create item's
 visible label names the whole action and is its accessible name, so it carries no `title`
 hint. While the request runs, the menu trigger shows a spinner and is `aria-busy`, and the
 reopened item reads "Creating stable worktree…" and is disabled; the result is a toast
@@ -561,7 +561,7 @@ Contract:
   bus, these routes are the one path from an agent-writable worktree to code running
   unsandboxed as the user, so enabling Dev Fleet on such a host now carries that
   surface. App admission policy can deny the app outright where that is unwanted.
-- **Named one by one in `server._STRICT_INTERNAL_API_PATHS`** (declared as the app's
+- **Named one by one in `dashboard.server_internal_paths._STRICT_INTERNAL_API_PATHS`** (declared as the app's
   `strict_internal_paths` host grant, see *Host grants*), never as a
   `/api/apps/dev-fleet/pod` prefix. That table is exact-or-prefix
   (`path == entry or path.startswith(entry + "/")`), and this app's neighbourhood
@@ -696,7 +696,7 @@ and `dirty_check_failed`. `merged_dirty`, `closed_dirty` and `active` can be ove
 by discarding or forcing. The auto-prune reaper (`_auto_prune_once`) removes only
 `code == "merged"`; `closed` and `empty` stay manual.
 
-### Parallel execution & per-item progress (issue #435)
+### Parallel execution & per-item progress
 
 `prune-run` accepts a batch of names and processes them **concurrently** rather than one
 at a time. The design separates the two cost classes:
@@ -832,9 +832,8 @@ Pod lifecycle verbs (`up`/`down`/`restart`/`provision`) shell the CLI via
 (`kiro_crew/__main__`, which also runs the required SSL-cert / UTF-8-console
 setup), never `-m kiro_crew.cli`. `kiro_crew/cli.py` has no
 `if __name__ == "__main__"` guard, so `python -m kiro_crew.cli <cmd>` imports the
-module, runs no `main()`, and exits 0 with no output — which turned every pod op
-into a **silent no-op the backend reported as success** (the "Stopped but still
-running" bug, issue #220). As defence-in-depth, `_pod_up` and `_pod_down` both
+module, runs no `main()`, and exits 0 with no output — which would turn every pod op
+into a **silent no-op the backend reported as success**. As defence-in-depth, `_pod_up` and `_pod_down` both
 re-check `runtime.active_names` after the CLI returns and fail closed
 (`pod not active after start` / `pod still active after shutdown`) — a CLI exit 0
 is never taken as proof of the state change, in either direction.
@@ -1048,7 +1047,7 @@ step needs before using them, so provisioning a **fresh** worktree (no
   after an interrupted pip run. The pip path is unchanged: after `python -m venv`, upgrades pip, then runs
   `pip install --editable <checkout> --group dev` so the PEP 735 `dev`
   dependency-group (pytest, flake8, isort, mypy, …) is present and the build
-  gate can run inside the pod venv (issue #230). `pip --group` needs pip
+  gate can run inside the pod venv. `pip --group` needs pip
   ≥ 25.1; if the command exits nonzero (older pip) it falls back to a
   runtime-only `pip install --editable <checkout>` and `_say`s a warning that
   dev tools were skipped — provisioning never hard-fails just because the dev
@@ -1061,7 +1060,7 @@ step needs before using them, so provisioning a **fresh** worktree (no
   rewriting the tracked `website/package-lock.json`, so provisioning never
   dirties the worktree), otherwise
   it skips (fast idempotent path). Without this, a fresh worktree's `npm run
-  build` dies with `tsc: command not found` (issue #229).
+  build` dies with `tsc: command not found`.
 
 ### Pod Unit Self-Heal
 
@@ -1187,8 +1186,8 @@ happens (zero overlap against a non-empty buffer), the client inserts a visible
 `[… lines missed …]` marker line into the panel so the transcript never
 silently overstates its completeness — the panel is the best client-side
 reconstruction plus an explicit gap signal, not a guaranteed-complete
-transcript. The heuristic's retirement path (a `since=<index>` cursor or raised
-tail on `/run` for a guaranteed-complete log) is tracked in issue #321.
+transcript. A guaranteed-complete log would need a `since=<index>` cursor or a
+raised tail on `/run`.
 
 **Reattach on button-click (single-flight).** The provision endpoint is
 single-flighted per checkout: if a provision is already running it replies
@@ -1233,8 +1232,7 @@ provision cannot be dismissed. A successful response therefore survives reload.
 
 Dev Fleet's two slowest actions — **Restart Gateway** and **Sync (Pull+Build)** —
 narrate their progress so users don't read them as hung and fire them again. A
-duplicate Restart Gateway causes a second real ~10s gateway outage
-([issue #639](https://github.com/kirodotdev/KiroCrew/issues/639)).
+duplicate Restart Gateway causes a second real ~10s gateway outage.
 
 ### Restart identity handshake
 
@@ -1342,7 +1340,7 @@ onto the run entry (`step` / `step_label`), so `/run` can name the CURRENT step
 even after the marker scrolls out of the 60-line output tail window. The
 frontend shows that label beside the "Syncing" spinner. This reuses the
 existing `_RUNS` / `::step::` / `/run` run-tracking mechanism — the same channel
-the provision log panel uses (#320) — rather than adding a second one.
+the provision log panel uses — rather than adding a second one.
 
 `sync_run_id` — the pointer a freshly-mounted page reattaches that stepper to —
 and each row's `provision_run_id` are read at **request time** and overlaid onto
@@ -1859,7 +1857,7 @@ choose the gateway's next image. Instead:
   `live._make_live`). `_make_live` refuses with `wrong_process` if it is ever
   invoked in a process that has a pointer provider installed (i.e. the backend).
   `_MAKE_LIVE_LOCK` / `_MAKE_LIVE_COMMITTED` live in the gateway with it, so
-  `restart-gateway` moved too.
+  `restart-gateway` runs there too.
 - **The backend reads pointer state through the gateway.** `server.main` installs
   a `GatewayPointerBroker` (`pointer_broker.py`) as `live`'s pointer provider: it
   exchanges the app secret at `POST /api/apps/dev-fleet/token` and reads
@@ -1897,7 +1895,7 @@ choose the gateway's next image. Instead:
   as visible text beside it ("Packaged install: can't confirm this checkout is
   running.", also the badge's `title`) instead of the plain **live** badge. A pointer outage is
   `live_state_known: false`, not this field.
-- **No inline filesystem reads on the gateway loop.** `_make_live_inner` now runs
+- **No inline filesystem reads on the gateway loop.** `_make_live_inner` runs
   on the loop that serves the whole dashboard, so every probe of the pointer, the
   checkout path or the service drop-in (`snapshot`, `_staged_target`, `exists`,
   `_in_pod`, `_same_path`, the plan's `validate`, `write_target`, `restore`,
@@ -2423,8 +2421,10 @@ name than the same remote written without a query.
 
 ## Output Redaction
 
-All user-visible output passes through `redact_credentials()` and
-`redact_exfiltration_urls()` before HTTP response serialization.
+All user-visible output passes through `runtime._redact()` (`kiro_crew.security.redact`,
+the exfiltration-URL and credential passes together) before HTTP response
+serialization; the agent-tool relay (`agent_tools.py`) applies
+`redact_exfiltration_urls()` and `redact_credentials()` to a refusal message.
 
 ## Platform Behavior
 
@@ -2442,7 +2442,7 @@ Declaring one platform per capability is not expressible here: `os` is a single
 list describing the whole app, so any value is a summary. `["linux"]` was the
 wrong summary — it read as "does not run on macOS" for an app whose non-pod half
 runs there fine, which is the same misinformation in the opposite direction from
-the pre-#1254 silence (an absent `platform` block defaults to
+omitting the block (an absent `platform` block defaults to
 `["macos", "linux"]`, quietly advertising macOS parity).
 
 The declaration is **not** an install gate for this app: `installMode` is the
@@ -2631,9 +2631,8 @@ is all that is wanted: it is a smaller tool and needs no narration script.
 
 `kirocrew-worktree-dev` carries no app-bridged copy: the canonical copy is
 owned by the `kirocrew-dev` development-skills suite under
-`src/kiro_crew/builtin_skills/`, and the app-bridged duplicate was removed
-because two copies of the same skill drift and get loaded nondeterministically
-against each other (PR #353 arbiter finding). That single-copy rule is what
+`src/kiro_crew/builtin_skills/`, because two copies of the same skill drift and
+get loaded nondeterministically against each other. That single-copy rule is what
 matters here; where the one copy lives is a packaging question, and it lives in
 the packaged tree so `_ensure_builtin_skills` reaches every distribution. The
 project-dir mechanism reaches only some: `_project_skills_dir()` reads
@@ -2670,10 +2669,12 @@ frontend-only seeded session pattern.
 The `POST /apps/dev-fleet/api/worktree/remove` endpoint (and its `force` variant)
 performs a fresh uncached resolution of the live gateway's worktree path before any
 removal. If the target worktree is the one currently running the live gateway process,
-the request is refused with a descriptive error — regardless of the `force` flag.
+or is the staged cutover target, the request is refused with a descriptive error —
+regardless of the `force` flag.
 
-The check uses `_live_worktree_path()` which performs a fresh filesystem resolution
-(no caching) to avoid TOCTOU issues where a previously-cached path is stale.
+The check calls `_live_worktree_path(fresh=True)`, which bypasses the 30 s display
+cache (in the backend, a `fresh=1` read through the gateway's pointer broker), so a
+previously-cached path cannot be stale at the check.
 
 ## Forced Removal Refusal Matrix
 
@@ -2701,7 +2702,6 @@ Additional pre-gates (evaluated before the matrix above):
 | Cached MERGED but fresh verification fails | **Refuse** | `refused_stale_merged` |
 | Fresh-MERGED but branch OID not contained in PR head | **Refuse** | `refused_uncontained_fresh_head` |
 | Target is the live gateway worktree | **Refuse** | (live-worktree guard) |
-| Worktree inside another worktree (containment) | **Refuse** | `refused_containment` |
 
 **Invariant:** `git worktree remove --force` is unreachable from any code path.
 Both clean-removal branches (unmerged and merged) set `force_use_git_force = False`
