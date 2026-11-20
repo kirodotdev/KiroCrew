@@ -118,7 +118,11 @@ name: Main Red Watch
 # (first 20, annotations only, as the look back reads them) for each. The
 # record is the open issue's; with none open it is the newest among the closed
 # main-red issues (one more read), because an issue closed while main was red
-# leaves no green run in the run list and its runs were recorded.
+# leaves no green run in the run list and its runs were recorded. Three limits
+# keep the replay to those reads. Two can leave the streak a run short: any
+# green run ends the walk back, a reduced one included, and a replayed job is
+# read from its annotations, never its log. One can count a run twice: a closed
+# issue is found by the main-red label, so one filed without it is not seen.
 # `.github/scripts/main_red_previous.py` applies the rules
 # above to each in order, so the issue names the first red commit and counts
 # the streak as if a watcher had finished every one. This also covers a watcher
