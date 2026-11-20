@@ -7,6 +7,7 @@ reader matches one that always re-reads, and lines main allows stay allowed.
 
 from __future__ import annotations
 
+import random
 import re
 
 import pytest
@@ -90,6 +91,9 @@ class TestSpanReaderSkip:
             'echo "$(cat <<E\nx\nE\n)" "$(a)" "$(b <<< c)"',
             'x="$(cat <<E',
             _gh_batch(3, '"${REPO}"'),
+            # Bodies longer than the first prefix, and a heredoc that closes only past it.
+            'x="$(cat <<E\n' + "y" * 3000 + '\n)\nE\n)"; echo "$(a)"',
+            'x="$(cat <<E\n' + "y\n" * 600 + 'E\n)"; cat <<E\n)\nE\n"$(b)"',
         ],
         ids=lambda line: line[:24],
     )
@@ -111,3 +115,58 @@ class TestSpanReaderSkip:
         refusal = is_denied(pad + 'echo "$(cat \'a"b\')" ; ssh -p 22 localhost id')
         assert refusal is not None
         assert _rule_pattern("sandbox-escape-ssh-self") in refusal.splitlines()[0]
+
+    def test_a_line_of_bodies_that_each_hold_a_heredoc_reads_a_prefix_per_body(self, monkeypatch):
+        # Counted, not timed: the characters re-read must grow with the number of bodies,
+        # not with bodies times line length.
+        def chars(n):
+            line = "".join("echo \"$(cat <<'E'\nt\nE\n)\"\n" for _ in range(n)) + "echo ssh"
+            read = []
+            real = _shell_commands.heredoc_text_spans
+            with monkeypatch.context() as mp:
+                mp.setattr(
+                    _shell_commands, "heredoc_text_spans", lambda t: read.append(len(t)) or real(t)
+                )
+                _shell_commands._double_quoted_substitution_spans(line)
+            return sum(read)
+
+        assert chars(200) < 2.5 * chars(100)
+
+    def test_the_span_reader_matches_a_reader_that_always_rereads_on_random_text(self):
+        rng = random.Random(39106)
+        pieces = [
+            '"$(',
+            ")",
+            '"',
+            "'",
+            "<<E\n",
+            "<<'E'\n",
+            "<<-E\n",
+            "E\n",
+            "\n",
+            "x",
+            " ",
+            "$(",
+            "${",
+            "}",
+            ":-",
+            "<<<",
+            "$((",
+            "))",
+            "\\",
+            "`",
+            "#",
+            "ssh ",
+            "cat ",
+            ";",
+        ]
+        for _ in range(3000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 60)))
+            assert _shell_commands._double_quoted_substitution_spans(text) == _always_reread(text)
+
+    def test_the_random_reader_check_crosses_the_prefix_size(self, monkeypatch):
+        rng = random.Random(7)
+        pieces = ['"$(cat <<E\n', 'E\n)"', "a" * 300 + "\n", "$(", ")", "<<'E'\n", "E\n"]
+        for _ in range(300):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 40)))
+            assert _shell_commands._double_quoted_substitution_spans(text) == _always_reread(text)
