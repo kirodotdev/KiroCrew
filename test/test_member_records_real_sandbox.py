@@ -24,7 +24,6 @@ import pytest
 
 from kiro_crew import member_goals, member_records, members, sandbox, session_token_sig
 from kiro_crew.sandbox import userns_available
-from kiro_crew.sel import sel_hmac_key_path
 
 pytestmark = [
     pytest.mark.skipif(sys.platform != "linux", reason="the namespace launcher is Linux-only"),
@@ -194,13 +193,9 @@ _NOT_SEALED_ON_MAIN = pytest.mark.xfail(
 
 
 @pytest.fixture
-def key_file(home):
-    key_path = sel_hmac_key_path()
-    assert str(key_path).startswith(str(home.parent)), key_path
-    key_path.parent.mkdir(parents=True, exist_ok=True)
-    key_path.write_bytes(_KEY)
-    key_path.chmod(0o600)
-    return key_path
+def key_file(home, monkeypatch):
+    """A stand-in MAC key, so no real key is read."""
+    monkeypatch.setattr(session_token_sig, "_load_hmac_key", lambda: _KEY)
 
 
 @_NOT_SEALED_ON_MAIN
