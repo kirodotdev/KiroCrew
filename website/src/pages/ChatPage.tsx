@@ -1246,7 +1246,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             />
             <ChatDropOverlay active={dragOver} />
             <ChatTranscriptView
-              embedded={embedded} popout={popout} activeSlot={activeSlot} appToolCallIds={appToolCallIds} titleInTopbar={titleInTopbar} workerBreadcrumb={workerBreadcrumb} activityOpen={activityOpen}
+              embedded={embedded} popout={popout} steerOnly={!!(currentCrewRoot && currentSlot)} activeSlot={activeSlot} appToolCallIds={appToolCallIds} titleInTopbar={titleInTopbar} workerBreadcrumb={workerBreadcrumb} activityOpen={activityOpen}
               completedTurnCount={completedTurnCount} cursorIsForActiveSlot={cursorIsForActiveSlot} kiroCrewVersion={kiroCrewVersion} loadingOlder={loadingOlder} olderFailed={olderFailed}
               setTurnDisclosureFor={setTurnDisclosureFor} slotHasMore={slotHasMore} slotLoading={slotLoading} slotRunning={slotRunning} slotState={slotState} environmentStart={environmentStart} slotStopping={slotStopping}
               slotSwitchTarget={slotSwitchTarget} turnDisclosure={turnDisclosure} turnRowMayBeLive={turnRowMayBeLive} setInput={setInput} isWelcomeState={transcriptWelcome} crewModeOn={crewModeOn || crewWelcomeHeld} openTaskBoard={openTaskBoard} chatConfig={chatConfig}

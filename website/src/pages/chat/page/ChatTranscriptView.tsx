@@ -26,6 +26,8 @@ import { preparingCaption } from '../../../components/chat/preparingCaption'
 import PreparingReplyBubble from '../../../components/chat/PreparingReplyBubble'
 import type { ChatConfig } from '../ChatSettings'
 import TurnBlock from '../TurnBlock'
+import { useThinkingTip, useThinkingTipEnv } from '../ThinkingTip'
+import { useSlotRunsHere } from '../../../components/sessionEnvironmentHooks'
 
 /**
  * Height of the transcript's tail spacer, in px.
@@ -41,6 +43,8 @@ const TRANSCRIPT_TAIL_SPACER_PX = 16
 interface ChatTranscriptViewProps {
   embedded?: boolean
   popout?: boolean
+  /** The composer under this transcript is a crew worker's steer-only one, with no Steer / Queue menu. */
+  steerOnly?: boolean
   activeSlot: string | null
   appToolCallIds: ReadonlySet<string>
   titleInTopbar: boolean
@@ -110,7 +114,7 @@ interface ChatTranscriptViewProps {
  * The transcript column: the welcome hero, or the turn minimap and the scroll shell with its rows, the earlier-messages bar, the measurement farm, the footer, the pulse survey and the tail spacer; and the restore skeleton.
  */
 export default function ChatTranscriptView({
-  embedded, popout, activeSlot, appToolCallIds, titleInTopbar, workerBreadcrumb = false, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
+  embedded, popout, steerOnly = false, activeSlot, appToolCallIds, titleInTopbar, workerBreadcrumb = false, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
   slotLoading, slotRunning, slotState, environmentStart, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, crewModeOn, openTaskBoard, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
   onScrollPin, pinned, decideRow, currentSlot, projectDir = null, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, footerActivityKey, footerSentHere = false, footerToolsReturned = false, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
   spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, renderFarmItem, renderMessage, renderTurnItem,
@@ -120,6 +124,14 @@ export default function ChatTranscriptView({
   // hides the rows behind the skeleton: loaded is not yet visible.
   // The scroller is what the on-screen backstop probes.
   useMarkTranscriptShown(activeSlot, !slotLoading && !virt.restoreGate && !isWelcomeState && renderedDisplayItems.length > 0, () => scrollerRef.current)
+  // Exploratory tips beside "Thinking…" (ThinkingTip.tsx): the full dashboard
+  // chat only. Embedded and popped-out chats, phones and temporary sessions
+  // show none.
+  const thinkingTipLocal = !!currentSlot && currentSlot.executor !== 'remote'
+  const thinkingTipRunsHere = useSlotRunsHere(thinkingTipLocal ? currentSlot?.key : null)
+  const thinkingTipEnv = useThinkingTipEnv({ projectDir, localSession: thinkingTipLocal && thinkingTipRunsHere === true, splitSend: !steerOnly })
+  const thinkingTipBlocked = !!embedded || !!popout || currentSlot?.memory_mode === 'temporary' || !thinkingTipEnv.has('desktop')
+  const thinkingTip = useThinkingTip(slotRunning, activeSlot, thinkingTipBlocked, thinkingTipEnv)
   return (
     <RunInTerminalOriginSlot.Provider value={activeSlot}>
     <ChatProjectDirCtx.Provider value={projectDir}>
@@ -232,7 +244,7 @@ export default function ChatTranscriptView({
           scrollerEl={() => scrollerRef.current}
         />
         {/* Footer */}
-        <ChatFooter statusLabel={environmentStart} running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} activityKey={footerActivityKey} sentHere={footerSentHere} toolsReturned={footerToolsReturned} waitingOnUser={!!currentSlot?.pending_approval || !!currentSlot?.needs_input} />
+        <ChatFooter statusLabel={environmentStart} running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} activityKey={footerActivityKey} sentHere={footerSentHere} toolsReturned={footerToolsReturned} waitingOnUser={!!currentSlot?.pending_approval || !!currentSlot?.needs_input} thinkingTip={thinkingTip.tip} onThinkingTipShown={thinkingTip.onShown} onThinkingTipDismiss={thinkingTip.dismiss} thinkingTipError={thinkingTip.dismissError} thinkingTipLoadError={thinkingTip.loadError} />
         {/* The warm catch-up being prepared outside a turn: the gateway's
             caption inside a reply bubble, where the welcome then lands. */}
         <PreparingReplyBubble caption={preparingCaption(currentSlot)} shown={!!currentSlot?.preparing && !slotRunning} testId="chat-preparing-catch-up" />

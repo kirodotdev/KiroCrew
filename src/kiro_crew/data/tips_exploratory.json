@@ -1,0 +1,71 @@
+{
+  "_comment": "Exploratory tips: one line each, shown beside the Thinking... row while a turn runs, never in the tip card above the composer. Copy follows the 'Proposed one-line tip' column of the exploratory bank in the Contextual learning in Kiro Crew plan (E01-E05, E07-E09, E12-E14), except E03 and E13, reworded to start from what is on screen; the words are otherwise the plan's, the markup follows the design: **bold** for the lead phrase and UI names, `code` for keys and commands. 'requires' names what the dashboard must have for the tip to be usable where it appears; the dashboard shows a tip only when it can confirm every key, and an unknown key hides the tip. Ids are distinct from tips_curated.json ids because dismissals share one store. Loaded by kiro_crew.tips_exploratory.load_exploratory_tips.",
+  "tips": [
+    {
+      "id": "e01-split-view",
+      "body": "**Two chats side by side?** Turn on **Split View**, then press `⌘D` or `Ctrl+D`.",
+      "requires": ["desktop"],
+      "source": "https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/data/tips_curated.json"
+    },
+    {
+      "id": "e02-command-bar",
+      "body": "Press `⌘K` or `Ctrl+K` to open the **Command Bar**.",
+      "requires": ["keyboard", "command_bar"],
+      "source": "https://kiro.dev/docs/crew/chat/"
+    },
+    {
+      "id": "e03-steer-or-queue",
+      "body": "**Agent working?** Type a message, then use **▾** to **Steer** it in now or **Queue** it for later.",
+      "requires": ["split_send"],
+      "source": "https://kiro.dev/docs/crew/chat/#sending-while-the-agent-is-working"
+    },
+    {
+      "id": "e04-terminal",
+      "body": "**Need a shell?** Open **Terminal** in the navigation rail.",
+      "requires": ["desktop", "terminal"],
+      "source": "https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/data/tips_curated.json"
+    },
+    {
+      "id": "e05-keyboard-shortcuts",
+      "body": "Press `⌥K` or `Alt+K` for **Keyboard Shortcuts**.",
+      "requires": ["keyboard"],
+      "source": "https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/data/tips_curated.json"
+    },
+    {
+      "id": "e07-side-chat",
+      "body": "**Side question?** Type `/side` or `/btw`.",
+      "requires": [],
+      "source": "https://kiro.dev/docs/crew/chat/#side-chat"
+    },
+    {
+      "id": "e08-file-attachment",
+      "body": "**Need a file?** Type `@`, or drag it from **Files**.",
+      "requires": ["project_files"],
+      "source": "https://kiro.dev/docs/crew/chat/#what-you-can-do-in-chat"
+    },
+    {
+      "id": "e09-voice-input",
+      "body": "**Want to dictate?** Press **Voice input**.",
+      "requires": ["microphone"],
+      "source": "https://kiro.dev/docs/crew/chat/#what-you-can-do-in-chat"
+    },
+    {
+      "id": "e12-shell-command",
+      "body": "Run one command with `! command`. Review it first.",
+      "requires": ["local_session", "terminal_docked"],
+      "source": "https://kiro.dev/docs/crew/chat/#run-a-shell-command-from-the-composer"
+    },
+    {
+      "id": "e13-read-aloud",
+      "body": "On a finished reply, open **More › Read aloud**.",
+      "requires": ["speech_playback"],
+      "source": "https://kiro.dev/docs/crew/chat/#what-you-can-do-in-chat"
+    },
+    {
+      "id": "e14-focus-mode",
+      "body": "Hide distractions with **Focus mode** or `⌥⇧M` (`Alt+Shift+M`).",
+      "requires": ["desktop"],
+      "source": "https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/data/tips_curated.json"
+    }
+  ]
+}
