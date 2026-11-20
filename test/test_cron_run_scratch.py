@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 
 import kiro_crew.cron_script as cron_script
-from kiro_crew import agent_scratch, sandbox
+from kiro_crew import agent_scratch, agent_scratch_job, sandbox
 from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX spawn plumbing")
@@ -101,6 +101,44 @@ def test_script_cron_gets_its_own_temp_dir(tmp_path, wrap_calls):
         result = run_script_sandboxed(f"{script}:run", "scriptjob", timeout=30)
     assert result["status"] == "done", result
     _assert_run_scratch(result["message"], wrap_calls)
+
+
+def _write_script(body: str) -> Path:
+    crons = cron_script.config_dir() / "crons"
+    crons.mkdir(parents=True, exist_ok=True)
+    script = crons / "job_probe.py"
+    script.write_text("from kiro_crew.cron_script import Done\n" + body)
+    return script
+
+
+def test_the_script_child_joins_its_temp_dirs_job_and_is_then_resumed(
+    monkeypatch, tmp_path, wrap_calls
+):
+    order: list[object] = []
+    monkeypatch.setattr(agent_scratch_job, "join", lambda tree, pid: order.append(tree))
+    real_resume = cron_script._resume_cron_child
+    monkeypatch.setattr(
+        cron_script, "_resume_cron_child", lambda proc: order.append("resumed") or real_resume(proc)
+    )
+    script = _write_script("def run(ctx):\n    raise Done('ran')\n")
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = run_script_sandboxed(f"{script}:run", "scriptjob", timeout=30)
+
+    assert result["status"] == "done", result
+    assert len(order) == 2 and order[1] == "resumed", order
+    assert order[0] in {path.name for path in _scratch_entries()}
+
+
+def test_a_child_that_cannot_be_resumed_is_reaped_and_its_dir_removed(
+    monkeypatch, tmp_path, wrap_calls
+):
+    monkeypatch.setattr(cron_script, "_resume_cron_child", lambda proc: False)
+    script = _write_script("def run(ctx):\n    import time\n    time.sleep(60)\n")
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = run_script_sandboxed(f"{script}:run", "frozenjob", timeout=120)
+
+    assert result == {"status": "error", "error": cron_script._RESUME_ERROR}
+    assert _scratch_entries() == []
 
 
 def test_allocation_failure_degrades_to_inherited_temp(monkeypatch, wrap_calls):

@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from kiro_crew import _facade_mirror, platform_compat
 from kiro_crew.config.loader import config_dir
 from kiro_crew.cron_script_child_env import (
+    _RESUME_ERROR,
     _SCRATCH_OWNER_ERROR,
     _allocate_cron_scratch,
     _child_internal_secret,
@@ -46,6 +47,7 @@ from kiro_crew.cron_script_child_env import (
     _publish_script_session_token,
     _record_cron_scratch_owner,
     _resolve_dial_port,
+    _resume_cron_child,
 )
 from kiro_crew.cron_script_grants import (
     GRANT_REAPPROVAL_ERRORS,
@@ -526,6 +528,9 @@ def run_script_sandboxed(
                 stderr=subprocess.PIPE,
                 env=clean_env,
                 start_new_session=True,
+                # Suspended on Windows until the child has joined its scratch
+                # tree's Job object (0 on POSIX); see ``_resume_cron_child``.
+                creationflags=platform_compat.CREATE_SUSPENDED,
                 abort_retry=lambda: _spawn_cancelled(job_id),
                 # Locale decoding, on purpose: an arbitrary command writes in
                 # the host's encoding, and forcing UTF-8 with errors="replace"
@@ -560,6 +565,11 @@ def run_script_sandboxed(
                 # reaped, so remove the dir here (rmtree never follows a link).
                 cron_scratch_used = False
                 return {"status": "error", "error": _SCRATCH_OWNER_ERROR}
+            if not _resume_cron_child(proc):
+                _kill_proc_group(proc)
+                _drain_after_kill(proc, job_id)
+                cron_scratch_used = False  # nothing ran in it
+                return {"status": "error", "error": _RESUME_ERROR}
             try:
                 stdout, stderr = proc.communicate(
                     input=(stdin_payload + "\n") if stdin_payload is not None else None,
@@ -1134,7 +1144,7 @@ _EXPORTS.update(_facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded
 _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
-    from kiro_crew import agent_scratch  # noqa: F401
+    from kiro_crew import agent_scratch, agent_scratch_job  # noqa: F401
     from kiro_crew import mcp_structured_text as _structured_text  # noqa: F401
     from kiro_crew.agent_discovery import _read_agent_spec  # noqa: F401
     from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
