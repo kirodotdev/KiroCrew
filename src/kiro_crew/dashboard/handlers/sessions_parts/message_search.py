@@ -226,8 +226,11 @@ def _search(
     # The whole scan window, as the other post-filtering readers ask for it
     # (``search_candidate_cap``): the Bot, date and speaker filters run after the
     # ranking, so any smaller pull could hide a qualifying chat ranked below it.
-    # The loop below still stops once ``limit`` chats are listed.
-    ranked = log.search_sessions(q, search_candidate_cap(q), keys=keys, snippets=False)
+    # The loop below still stops once ``limit`` chats are listed. Keyword ranking
+    # alone: this lists the messages that hold the query, which a meaning row need not.
+    ranked = log.search_sessions(
+        q, search_candidate_cap(q), keys=keys, snippets=False, by_meaning=False
+    )
     agents = sorted({r["agent"] for r in ranked if isinstance(r.get("agent"), str) and r["agent"]})
     query = message_query(q)
     if not query.needles:

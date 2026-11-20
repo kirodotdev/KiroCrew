@@ -132,7 +132,8 @@ class _Flight:
         self.result: list[dict] | None = None
 
 
-_flights: dict[tuple[str, str, int, bool], _Flight] = {}
+#: Keyed by ``(directory, query, limit, snippets, by_meaning)``.
+_flights: dict[tuple[str, str, int, bool, bool], _Flight] = {}
 _flights_lock = threading.Lock()
 
 

@@ -156,7 +156,7 @@ def session_picker_card(*, prompt: str, choices: Any, nonce: str) -> dict[str, A
     actions = [
         {
             "type": "Action.Submit",
-            "title": f"{index + 1}. {choice.title}",
+            "title": f"{index + 1}. {choice.label}",
             "data": {"kc": KIND_SESSION, "nonce": nonce, "index": index},
         }
         for index, choice in enumerate(choices)

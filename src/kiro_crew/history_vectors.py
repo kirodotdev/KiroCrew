@@ -62,6 +62,19 @@ _SCHEMA = (
     " dev         TEXT    NOT NULL,"
     " ino         TEXT    NOT NULL,"
     " chunker     TEXT    NOT NULL)",
+    # One counter every write to a reference or a chunk advances, through triggers,
+    # so a reader can tell the vectors it holds are stale whichever writer moved
+    # them and whatever rowids or counts came back the same.
+    "CREATE TABLE IF NOT EXISTS store_revision("
+    " id INTEGER PRIMARY KEY CHECK (id = 1),"
+    " n  INTEGER NOT NULL)",
+    "INSERT OR IGNORE INTO store_revision VALUES (1, 0)",
+    *(
+        f"CREATE TRIGGER IF NOT EXISTS {table}_{event.lower()}_revision AFTER {event} ON {table}"
+        " BEGIN UPDATE store_revision SET n = n + 1 WHERE id = 1; END"
+        for table in ("chunk_ref", "chunk")
+        for event in ("INSERT", "UPDATE", "DELETE")
+    ),
 )
 
 
@@ -86,6 +99,11 @@ class SessionVectorStore:
         #: Set when a drop committed but its WAL truncate did not happen, so the
         #: dropped bytes may still be in the WAL; :meth:`settle` retries it.
         self.erasure_owed = False
+
+    @property
+    def db_path(self) -> Path:
+        """The store file this instance opens."""
+        return self._db_path
 
     def store_exists(self) -> bool:
         """Whether a store file is on disk. An unreadable path answers ``True``."""
@@ -118,7 +136,7 @@ class SessionVectorStore:
     def _init_schema(self, conn: sqlite3.Connection) -> None:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version and version != _STORE_VERSION:
-            for table in ("chunk_ref", "pending_text", "chunk", "session_state"):
+            for table in ("chunk_ref", "pending_text", "chunk", "session_state", "store_revision"):
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
             version = 0
         for statement in _SCHEMA:
@@ -202,6 +220,37 @@ class SessionVectorStore:
             if rows:
                 owners[chunk_id] = {row[0] for row in rows}
         return owners
+
+    def vector_rows(self, signature: str) -> list[tuple[str, int, int, int, bytes]]:
+        """Every ``(session, message index, start, end, vector)`` embedded in *signature*'s space.
+
+        One row per reference, so a chunk two sessions hold appears under both.
+        A vector from another space is never returned.
+        """
+        rows = (
+            self._ensure_open()
+            .execute(
+                "SELECT r.session_key, r.message_index, r.char_start, r.char_end, c.vector"
+                " FROM chunk_ref r JOIN chunk c USING (chunk_id)"
+                " WHERE c.vector IS NOT NULL AND c.signature = ?",
+                (signature,),
+            )
+            .fetchall()
+        )
+        return [(row[0], row[1], row[2], row[3], row[4]) for row in rows]
+
+    def vectors_fingerprint(self, signature: str) -> tuple[int, int]:
+        """A cheap value that changes when :meth:`vector_rows` would answer differently.
+
+        The store revision, which a trigger advances on every write to ``chunk_ref``
+        or ``chunk``, and the count of vectors in *signature*'s space.
+        """
+        conn = self._ensure_open()
+        revision = conn.execute("SELECT n FROM store_revision WHERE id = 1").fetchone()
+        vectors = conn.execute(
+            "SELECT count(*) FROM chunk WHERE signature = ?", (signature,)
+        ).fetchone()[0]
+        return int(revision[0]) if revision else 0, int(vectors)
 
     def write_vectors(self, vectors: Sequence[tuple[int, bytes]], signature: str) -> int:
         """Store each vector and delete its pending text, in one transaction.

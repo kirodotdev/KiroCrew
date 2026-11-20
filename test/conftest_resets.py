@@ -271,6 +271,25 @@ def _forget_observed_people():
 
 
 @per_test_guard
+def _forget_session_vector_legs():
+    """Give every test no loaded session meaning matrix and no idle timer.
+
+    ``history_vectors_search`` holds each store file's matrix, query memo and idle
+    timer in ``_STATES``, keyed by the file's path. A later test on the same worker
+    that reuses a path would read the earlier test's matrix, and the earlier
+    test's timer would still be running. Released and cleared before and after,
+    so a test that never imported the module pays one dict lookup.
+    """
+    legs = sys.modules.get("kiro_crew.history_vectors_search")
+    if legs is not None:
+        legs.reset_for_tests()
+    yield
+    legs = sys.modules.get("kiro_crew.history_vectors_search")
+    if legs is not None:
+        legs.reset_for_tests()
+
+
+@per_test_guard
 def _forget_offered_instance_types():
     """Give every test an empty EC2 instance-type offering cache.
 

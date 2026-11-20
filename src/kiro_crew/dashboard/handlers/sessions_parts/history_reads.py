@@ -56,7 +56,12 @@ from kiro_crew.history import (
     transcript_stems,
     transcript_withholds_derivation,
 )
-from kiro_crew.history_search import SearchRows, search_candidate_cap, search_coverage
+from kiro_crew.history_search import (
+    SearchRows,
+    search_candidate_cap,
+    search_coverage,
+    semantic_coverage,
+)
 from kiro_crew.messaging.link import _in_namespace
 from kiro_crew.security import redact
 from kiro_crew.validation import sanitize_string
@@ -569,6 +574,11 @@ async def api_sessions_search(request: web.Request) -> web.Response:
         # Present only when the scan window left sessions out, so the list can
         # say its results come from the newest sessions alone.
         body["scan"] = {"searched": coverage[0], "total": coverage[1]}
+    semantic = semantic_coverage(sessions)
+    if semantic is not None:
+        # Present only while the meaning index is still being built, so the list
+        # can say a missing hit may still arrive (RFC 8.3).
+        body["semantic"] = {"indexed": semantic[0], "eligible": semantic[1]}
     return web.json_response(body, headers=headers)
 
 
@@ -620,6 +630,11 @@ def _search_excluding_incognito(log: ConversationLog, q: str, limit: int) -> Sea
     above which an eligible one goes silently missing. The ranking slices to that
     window before any row here is seen, so the exclusion cannot be pushed into it
     without a mode filter inside the ranking. Blocking file IO; call it off the loop.
+
+    A row the meaning leg found (``match == "meaning"``) keeps its chunk snippet:
+    the ranking already read it under the transcript lock through the derivation
+    guard, and the keyword extractor would centre it on a word the chunk need not
+    hold. The row is still re-judged here like any other.
     """
     from kiro_crew.history_search import split_title_scope
 
@@ -632,6 +647,7 @@ def _search_excluding_incognito(log: ConversationLog, q: str, limit: int) -> Sea
     out = SearchRows(
         searched=getattr(candidates, "searched", 0),
         eligible=getattr(candidates, "eligible", 0),
+        semantic=getattr(candidates, "semantic", None),
     )
     for row in candidates:
         if len(out) >= limit:
@@ -643,7 +659,10 @@ def _search_excluding_incognito(log: ConversationLog, q: str, limit: int) -> Sea
             with log._locked(key):
                 if transcript_withholds_derivation(log, key):
                     continue
-                snippet = log._content_snippet(key, snippet_q) if row.get("snippet") else ""
+                if row.get("match") == "meaning":
+                    snippet = row.get("snippet") or ""
+                else:
+                    snippet = log._content_snippet(key, snippet_q) if row.get("snippet") else ""
         except HistoryLockTimeout:
             continue
         if snippet:

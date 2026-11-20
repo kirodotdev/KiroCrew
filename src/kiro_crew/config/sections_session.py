@@ -265,13 +265,16 @@ class SessionConfig:
         default=False,
         metadata=_meta(
             "Session Search by Meaning",
-            "Build a chunk store of session text in the background so session "
-            "search can later find a conversation by describing it. Off by "
-            "default. While on, the session index worker cuts each quiet session "
-            "into chunks with the embedding model's tokenizer, and the gateway embeds "
-            "them with the local embedding model at background priority (nothing is "
-            "embedded with the ollama_http provider); incognito and temporary "
-            "sessions are never read. Search does not read the store.",
+            "Let session search find a conversation by describing it, as well as "
+            "by its words. Off by default. While on, the session index worker cuts "
+            "each quiet session into chunks with the embedding model's tokenizer, "
+            "and the gateway embeds them with the local embedding model at "
+            "background priority. A search then also ranks sessions by meaning and "
+            "labels those rows; a long query that occurs whole in the best text "
+            "match keeps that session first. Nothing is embedded, and search stays "
+            "text only, with the ollama_http provider; incognito and temporary "
+            "sessions are never read. Read at each search, so a change needs no "
+            "restart.",
         ),
     )
     watchdog_rss_max_mb: int = field(

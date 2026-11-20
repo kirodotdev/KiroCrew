@@ -25,7 +25,11 @@ from urllib.parse import urlencode
 from kiro_crew import mcp_core
 from kiro_crew.context import RECALL_ROLES
 from kiro_crew.history import ConversationLog, TranscriptBusy, TranscriptWithheld
-from kiro_crew.history_search import search_coverage_note, split_title_scope
+from kiro_crew.history_search import (
+    search_coverage_note,
+    semantic_coverage_note,
+    split_title_scope,
+)
 from kiro_crew.mcp_tools.catalog.sessions import (  # noqa: F401
     TOOL_CALL_OUTPUT_MAX_CHARS,
     schemas,
@@ -230,6 +234,11 @@ def _crew_get_session(crew: str, key: str, max_messages: int, session_key: str) 
     return mcp_core._redact_history_output("\n".join(lines))
 
 
+#: How each hit says it matched, when the meaning leg answered (RFC session
+#: semantic search 8.2). A meaning snippet need not contain the query's words.
+_MATCH_KINDS = {"text": "text match", "meaning": "meaning match (may not contain your words)"}
+
+
 def search_chat_history(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SEARCH_CHAT_HISTORY_SCHEMA)
     session_key, refusal = mcp_core.require_strict_session_key(
@@ -270,13 +279,32 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
     # not a fixed limit*3 over-fetch: heavy incognito/workspace/date drops on
     # the first page could otherwise starve a caller whose real matches rank
     # lower, returning "no results" while hits exist.
-    # The excerpt is built below for the rows kept, so the ranking reads none.
+    def in_scope(meta: dict, full_meta: dict | None = None) -> bool:
+        """The caller's workspace and dates, and the full line's privacy, for one row."""
+        if full_meta is None:
+            full_meta = cl.get_metadata(meta.get("key", ""))
+        if mcp_core._history_is_incognito(full_meta) or mcp_core._history_is_incognito(meta):
+            return False  # EB-5: incognito/temporary never surface
+        if current_ws is not None and mcp_core._ws_bucket(full_meta.get("workspace")) != current_ws:
+            return False  # EB-cc3: workspace scoping (fail-closed; normalizes non-str)
+        modified = meta.get("modified", 0) or 0
+        if after_epoch is not None and modified < after_epoch:
+            return False
+        return before_epoch is None or modified < before_epoch
+
+    # The excerpt is built below for the rows kept, so the ranking reads none. The
+    # meaning leg caps its rows, so it fills that cap from in-scope sessions only.
     ranked: list[dict] = cl.search_sessions(
-        query, limit=mcp_core._search_history_scan(query), snippets=False
+        query,
+        limit=mcp_core._search_history_scan(query),
+        snippets=False,
+        meaning_accept=in_scope,
     )
     # Said in the reply, empty or not: a session older than the scan window was
     # never searched, and "no matches" must not read as "not in history".
     coverage_note = search_coverage_note(ranked)
+    # While the meaning index is still being built, a missing hit may still arrive.
+    semantic_note = semantic_coverage_note(ranked)
     # A leading ``title:`` term only picks which titles qualify; the transcript
     # was searched for the text after it, so the excerpt looks for that text too.
     scope = split_title_scope(query)
@@ -296,15 +324,7 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
         # would hide those sessions from search while they remain readable.
         if not cl.has_log(key):
             continue
-        full_meta = cl.get_metadata(key)
-        if mcp_core._history_is_incognito(full_meta) or mcp_core._history_is_incognito(meta):
-            continue  # EB-5: incognito/temporary never surface
-        if current_ws is not None and mcp_core._ws_bucket(full_meta.get("workspace")) != current_ws:
-            continue  # EB-cc3: workspace scoping (fail-closed; normalizes non-str)
-        modified = meta.get("modified", 0) or 0
-        if after_epoch is not None and modified < after_epoch:
-            continue
-        if before_epoch is not None and modified >= before_epoch:
+        if not in_scope(meta, cl.get_metadata(key)):
             continue
 
         # Through the derivation seam: the line checked above is a snapshot, and
@@ -314,13 +334,19 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
             rows_for_snippet = cl.derive_messages(key)
         except TranscriptWithheld:
             continue
-        snippet = mcp_core._extract_history_snippet(rows_for_snippet, snippet_query)
+        if meta.get("match") == "meaning":
+            # The matched chunk, read by the ranking under the same seam: the
+            # keyword excerpt would centre on a word the chunk need not hold.
+            snippet = meta.get("snippet") or ""
+        else:
+            snippet = mcp_core._extract_history_snippet(rows_for_snippet, snippet_query)
         results.append(
             {
                 "session_key": key,
                 "title": meta.get("title") or key,
                 "date": meta.get("created") or "",
                 "snippet": snippet,
+                "match": meta.get("match"),
             }
         )
         if len(results) >= limit:
@@ -334,8 +360,9 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
             outcome="no_results",
             metadata={"query_len": len(query)},
         )
-        if coverage_note:
-            return f"No matching conversations found. {coverage_note}"
+        notes = " ".join(note for note in (coverage_note, semantic_note) if note)
+        if notes:
+            return f"No matching conversations found. {notes}"
         return "No matching conversations found. Try different keywords."
 
     lines = [
@@ -344,9 +371,12 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
     ]
     if coverage_note:
         lines.append(f"_{coverage_note}_")
+    if semantic_note:
+        lines.append(f"_{semantic_note}_")
     for r in results:
         lines.append("\n---")
-        lines.append(f"**{r['title']}**  ·  `{r['session_key']}`")
+        kind = f"  ·  {_MATCH_KINDS[r['match']]}" if r["match"] in _MATCH_KINDS else ""
+        lines.append(f"**{r['title']}**  ·  `{r['session_key']}`{kind}")
         if r["date"]:
             lines.append(f"_{r['date']}_")
         if r["snippet"]:

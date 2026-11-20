@@ -260,6 +260,30 @@ class TestSearchAllEndpoint:
         assert row3["key"] == "ok3" and "modified" not in row3
 
     @pytest.mark.asyncio
+    async def test_a_peer_match_kind_is_kept_only_when_it_is_one_of_the_two(self, monkeypatch):
+        """RFC session semantic search 8.2: a peer's meaning row keeps its label,
+        and any other value is dropped, so the row reads as a text match."""
+        _enable_instances(monkeypatch)
+        rows = [
+            {"key": "m", "match": "meaning"},
+            {"key": "t", "match": "text"},
+            {"key": "x", "match": "<script>"},
+            {"key": "n", "match": ["meaning"]},
+            {"key": "none"},
+        ]
+        mgr = _Mgr({"a": (True, {"sessions": rows})})
+
+        data = await _json_of(await hi.api_instances_search_sessions(_request(_state([], mgr))))
+
+        assert [(r["key"], r.get("match")) for r in data["sessions"]] == [
+            ("m", "meaning"),
+            ("t", "text"),
+            ("x", None),
+            ("n", None),
+            ("none", None),
+        ]
+
+    @pytest.mark.asyncio
     async def test_peer_string_fields_are_length_clamped(self, monkeypatch):
         """A hostile/broken peer cannot ship unbounded strings to the browser:
         every string field is clamped to _PEER_FIELD_MAX_CHARS before redaction,

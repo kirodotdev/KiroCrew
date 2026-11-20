@@ -514,7 +514,7 @@ def test_search_chat_history_builds_no_ranking_snippets(tmp_path: Path, monkeypa
 class _CutShortLog(_ConversationLog):
     """A shared search whose scan window left older sessions out."""
 
-    def search_sessions(self, query: str, limit: int = 50) -> list[dict]:
+    def search_sessions(self, query: str, limit: int = 50, **_kwargs) -> list[dict]:
         return SearchRows(super().search_sessions(query, limit), searched=2000, eligible=2150)
 
 

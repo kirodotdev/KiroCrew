@@ -54,9 +54,12 @@ from kiro_crew.embeddings_settings import (
     _N_CTX,
     _POOLING_TYPE_LAST,
     _PRIORITY_SENTINEL,
+    EMBED_ROLE_DOCUMENT,
+    EMBED_ROLE_QUERY,
     PRIORITY_BULK,
     PRIORITY_INTERACTIVE,
     PRIORITY_NORMAL,
+    SESSION_QUERY_INSTRUCTION,
     EmbeddingWork,
     _embed_threads,
     _work_for_priority,
@@ -1297,13 +1300,19 @@ class LlamaCppEmbedder(EmbeddingBackend):
             raise job.error
         return job.result
 
-    def embed(self, text: str, *, priority: int = PRIORITY_NORMAL) -> list[float] | None:
+    def embed(
+        self, text: str, *, priority: int = PRIORITY_NORMAL, role: str = EMBED_ROLE_DOCUMENT
+    ) -> list[float] | None:
         """Embed a single text. Returns None on any failure."""
-        result = self.embed_batch([text], priority=priority)
+        result = self.embed_batch([text], priority=priority, role=role)
         return result[0] if result else None
 
     def embed_batch(
-        self, texts: list[str], *, priority: int = PRIORITY_NORMAL
+        self,
+        texts: list[str],
+        *,
+        priority: int = PRIORITY_NORMAL,
+        role: str = EMBED_ROLE_DOCUMENT,
     ) -> list[list[float]] | None:
         """Embed multiple texts. Returns None on any failure (incl. model not loaded yet).
 
@@ -1314,7 +1323,17 @@ class LlamaCppEmbedder(EmbeddingBackend):
         still gets vectors. Inference is serialized onto one owned thread;
         *priority* decides the order that single model serves competing callers
         (see ``PRIORITY_*``). The idle evictor never unloads while a call is in here.
+
+        *role* ``EMBED_ROLE_QUERY`` prefixes each text with
+        ``SESSION_QUERY_INSTRUCTION``, the asymmetric query form the model was
+        trained with; the default sends every text as given. Stored text is
+        always embedded bare, so a query and the text it should find share one
+        vector space under one signature.
         """
+        if role == EMBED_ROLE_QUERY:
+            texts = [SESSION_QUERY_INSTRUCTION + text for text in texts]
+        elif role != EMBED_ROLE_DOCUMENT:
+            raise ValueError(f"unknown embed role {role!r}")
         with self._inflight_lock:
             self._inflight += 1
         try:

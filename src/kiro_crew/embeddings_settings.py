@@ -286,6 +286,19 @@ PRIORITY_BULK = 2  # corpus loops: backfill, migration, ingestion, consolidation
 # Shutdown outranks everything so close() is not stuck behind a queued sweep.
 _PRIORITY_SENTINEL = -1
 
+# Embed roles. A document is embedded as given. A query is prefixed with the
+# instruction below, the asymmetric form Qwen3-Embedding was trained with: on the
+# session recall sets it lifts vector R@1 from 0.556 to 0.722. Only session
+# search's meaning leg sends a query; every other caller, memory recall
+# included, embeds bare, because its fixed cosine floors were set on bare
+# vectors and the prefix lowers every query-to-answer cosine.
+EMBED_ROLE_DOCUMENT = "document"
+EMBED_ROLE_QUERY = "query"
+SESSION_QUERY_INSTRUCTION = (
+    "Instruct: Given a search query, retrieve relevant passages from past "
+    "engineering conversations\nQuery: "
+)
+
 
 def _work_for_priority(priority: int) -> EmbeddingWork:
     """Only explicit deadlines expire bulk work waiting on the shared duty cycle."""

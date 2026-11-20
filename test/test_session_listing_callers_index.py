@@ -110,7 +110,7 @@ async def test_a_resume_title_fallback_after_an_in_process_write_reads_one_row(
     tmp_path, monkeypatch, files: int
 ) -> None:
     async def fallback(log: ConversationLog) -> None:
-        monkeypatch.setattr(log, "search_sessions", lambda _q, _limit: [])
+        monkeypatch.setattr(log, "search_sessions", lambda _q, _limit, **_kwargs: [])
         choices, _, _ = await session_resume.resolve_session_choices(log, "t1 t1", lambda t, _n: t)
         assert choices
 

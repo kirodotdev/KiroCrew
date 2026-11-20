@@ -103,7 +103,7 @@ class _ConversationLog:
     def list_sessions_indexed(self) -> list[dict]:
         return self.list_sessions()
 
-    def search_sessions(self, query: str, limit: int) -> list[dict]:
+    def search_sessions(self, query: str, limit: int, **_kwargs) -> list[dict]:
         self.searched.append(query)
         needle = query.casefold()
         return [r for r in self.rows if needle in str(r.get("title", "")).casefold()]
