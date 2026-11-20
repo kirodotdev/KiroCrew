@@ -25,9 +25,16 @@ Nothing in this module imports ctypes: all native work goes through
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from kiro_crew.computer_use import policy, windows_ffi
-from kiro_crew.computer_use.types import AppRef, ComputerUseError, WindowRef
+from kiro_crew.computer_use.types import (
+    ERR_WINDOW_NOT_FOUND,
+    TOOL_LIST_WINDOWS,
+    AppRef,
+    ComputerUseError,
+    WindowRef,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -258,8 +265,9 @@ def _same_app(candidate: AppRef, app: AppRef) -> bool:
     The pid AND the published identity, never the pid alone: a broker such as
     ``ApplicationFrameHost.exe`` fronts unrelated packaged apps under one pid, and
     :func:`_app_ref` gives each of those windows its own title as its identity.
-    Matching on the pid would list Settings' window as one of HP Audio Control's;
-    matching on both keeps each hosted app its own one-window application.
+    Matching on the pid would list Settings' window as one of HP Audio Control's
+    and let a ``window_id`` reach it; matching on both keeps each hosted app its own
+    one-window application.
     """
     return (
         candidate.pid == app.pid
@@ -280,6 +288,28 @@ def list_windows(app: AppRef) -> "tuple[WindowRef, ...]":
         WindowRef(window_id=ref.window_id, title=ref.window_title, bounds=window_bounds(ref))
         for ref in list_apps()
         if _same_app(ref, app)
+    )
+
+
+def resolve_window(app: AppRef, window_id: int) -> AppRef:
+    """The window of *app* whose top-level HWND is *window_id*.
+
+    Raises :class:`ComputerUseError` naming ``computer_list_windows`` when no live
+    window of *app* has that handle — closed, never existed, or now another
+    application's (HWNDs are recycled). The returned ref carries THAT window's own
+    title, so the dispatcher's target policy judges the window that will be driven.
+
+    Unlike :func:`apps_macos.resolve_window`, a denied title on a SIBLING window does
+    not refuse this one. That is the existing Windows rule, not a new gap: identity
+    and input are per top-level window here (see the module docstring), and
+    :func:`resolve_app` already resolves to one window without consulting its
+    siblings.
+    """
+    for ref in list_apps():
+        if int(ref.window_id) == int(window_id) and _same_app(ref, app):
+            return replace(ref, pinned_window=True)
+    raise ComputerUseError(
+        ERR_WINDOW_NOT_FOUND.format(window_id=window_id, app=app.name, tool=TOOL_LIST_WINDOWS)
     )
 
 
@@ -405,5 +435,6 @@ __all__ = [
     "list_apps",
     "list_windows",
     "resolve_app",
+    "resolve_window",
     "window_bounds",
 ]

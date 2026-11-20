@@ -118,6 +118,7 @@ from kiro_crew.computer_use.types import (
     ERR_UNKNOWN_KEY,
     ERROR_PREFIX,
     GOVERNED_VALUE_PLACEHOLDER,
+    MULTI_WINDOW_NOTE,
     OBS_A11Y_TREE,
     OBS_ELEMENT_VALUES,
     OBS_SCREENSHOT,
@@ -170,6 +171,7 @@ logger = logging.getLogger(__name__)
 # a drifted spelling here would be rejected by the schema as an unknown field
 # rather than silently ignored, which is why the schemas are mandatory.
 ARG_APP = "app"
+ARG_WINDOW_ID = "window_id"
 ARG_ELEMENT_INDEX = "element_index"
 ARG_TEXT = "text"
 ARG_KEY = "key"
@@ -435,16 +437,34 @@ def _dispatch(
         )
     cfg = enable_state.load_policy_config(state)
 
-    # (2) OS IDENTITY RESOLUTION — window list only, no tree walk, no pixels.
+    # (2) OS IDENTITY RESOLUTION — window list only, no tree walk, no pixels. An
+    #     optional ``window_id`` narrows the app to one of its windows; the driver
+    #     refuses an id that is not a live window of THIS application, so a recycled
+    #     id cannot point the call at another process.
+    #     A window-id refusal is DEFERRED like a stale index: "no window 5 in X"
+    #     would tell a caller the target policy is about to refuse whether that id
+    #     exists in a denied app. The app itself is resolved without the window so
+    #     step (5) still has an identity to check first.
     target: "AppRef | None" = None
+    window_error: "ComputerUseError | None" = None
     if tool_name in _APP_SCOPED_TOOLS:
-        target = svc.resolve_app(str(clean.get(ARG_APP) or ""))
+        query = str(clean.get(ARG_APP) or "")
+        window_id = _opt_int(clean, ARG_WINDOW_ID) or 0
+        try:
+            target = svc.resolve_app(query, window_id=window_id)
+        except ComputerUseError as exc:
+            if not window_id:
+                raise
+            # Raises the app's own error when the APP is what failed to resolve;
+            # only a failure confined to the window id survives to be deferred.
+            target = svc.resolve_app(query)
+            window_error = exc
 
     # (3) CACHED ELEMENT LOOKUP — in-memory, so the gate can bound the addressed
     #     element's role and subrole. Its refusals are deferred (see below).
     rec: "ElementRec | None" = None
     deferred: "StaleIndex | None" = None
-    if target is not None and tool_name in _ELEMENT_SCOPED_TOOLS:
+    if target is not None and window_error is None and tool_name in _ELEMENT_SCOPED_TOOLS:
         raw_index = clean.get(ARG_ELEMENT_INDEX)
         if isinstance(raw_index, int):
             try:
@@ -541,7 +561,9 @@ def _dispatch(
                 refusal, session_key=session_key, agent=agent, app=app, tool_name=tool_name
             )
 
-    # (6) DEFERRED SNAPSHOT-FRESHNESS REFUSAL — now that the call is authorized.
+    # (6) DEFERRED REFUSALS — now that the call is authorized.
+    if window_error is not None:
+        raise window_error
     if deferred is not None:
         raise deferred
 
@@ -710,14 +732,18 @@ def _run(
         if req.want_image and OBS_SCREENSHOT not in channels:
             req = replace(req, want_image=False)
             notes.append(OBS_SUPPRESSED_NOTE)
+        snap = svc.snapshot(target, req, session_key=session_key)
+        multi = _multi_window_note(svc, snap.app, cfg)
+        if multi:
+            notes.append(multi)
         return _render_snapshot(
-            svc.snapshot(target, req, session_key=session_key),
+            snap,
             req,
             session_key=session_key,
             agent=agent,
             app=app,
             extra_notes=tuple(notes),
-            screenshot_suppressed=bool(notes),
+            screenshot_suppressed=OBS_SUPPRESSED_NOTE in notes,
         )
 
     # ── Mutating verbs ──
@@ -1254,8 +1280,9 @@ def _with_notes(body: str, shaped: Mapping[str, Any]) -> str:
     """Append the ceiling's suppression notes below a rendered body.
 
     Appended AFTER the renderer's redaction pass on purpose: the notes are this
-    package's own static prose (no user data), and running them through redaction
-    could only mangle the explanation the model needs to stop retrying.
+    package's own prose, and running them through redaction again could only mangle
+    the explanation the model needs to stop retrying. A note that carries desktop
+    data is redacted where it is built (:func:`_multi_window_note`).
     """
     notes = tuple(str(note) for note in shaped.get(gate.PAYLOAD_NOTES) or () if str(note))
     if not notes:
@@ -1299,13 +1326,45 @@ def _permitted_windows(
     """The app's windows the target policy lets the model see.
 
     Each window is judged on its own title by the same ``policy.check_app`` that
-    ``computer_list_apps`` applies, so a window the operator denies is left out.
+    ``computer_list_apps`` applies, so a window the operator denies is left out. The
+    multi-window note counts the same set, so it never counts a window the listing
+    hides: a count that included a denied window would disclose that it exists and
+    point the model at a list that contradicts it.
     """
     return tuple(
         win
         for win in svc.list_windows(target)
         if policy.check_app(replace(target, window_id=win.window_id, window_title=win.title), cfg)
         is None
+    )
+
+
+def _multi_window_note(svc: "service.ComputerUseService", walked: AppRef, cfg: PolicyConfig) -> str:
+    """The "this app has N windows" note for a snapshot, or ``""``.
+
+    Without it a model has no reason to suspect a second window exists, so a small
+    helper window in front of the main one would keep the main one out of reach. Advisory:
+    a failed window-list read drops the note rather than failing a snapshot that
+    already succeeded. Counts only the windows :func:`_permitted_windows` lets
+    ``computer_list_windows`` show.
+    """
+    try:
+        count = len(_permitted_windows(svc, walked, cfg))
+    except Exception:
+        logger.debug("window count for the multi-window note failed", exc_info=True)
+        return ""
+    if count <= 1:
+        return ""
+    # The app label comes from the desktop (a process name, a bundle id, or on
+    # Windows a window title), and the note joins the reply after the tree's
+    # redaction pass, so it is redacted here.
+    return policy.redact_result(
+        MULTI_WINDOW_NOTE.format(
+            app=walked.bundle_id or walked.name,
+            count=count,
+            window_id=walked.window_id,
+            tool=TOOL_LIST_WINDOWS,
+        )
     )
 
 

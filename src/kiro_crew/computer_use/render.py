@@ -35,6 +35,7 @@ from kiro_crew.computer_use.types import (
     TRUNCATED_NOTE,
     TRUNCATED_WINDOW_NOTE,
     UNLISTED_APPS_NOTE,
+    WINDOW_ID_NOTE,
     WINDOW_ORIGIN_NOTE,
     WINDOWS_HEADER,
     AppRef,
@@ -85,7 +86,7 @@ def render_apps(apps: "tuple[AppRef, ...]") -> str:
 def render_windows(app: AppRef, windows: "tuple[WindowRef, ...]") -> str:
     """Render one application's on-screen windows, front to back.
 
-    One line per window: the ``window_id`` that names it, the title, and the screen
+    One line per window: the ``window_id`` to pass back, the title, and the screen
     rect. The rect is what tells a 66x20 helper from the real document window, so
     it is shown even though the title usually suffices. Titles are flattened and
     clipped like the app list's, and the whole listing ends with the redaction
@@ -242,6 +243,8 @@ def _trailer(snap: Snapshot, *, text_limit: int) -> list[str]:
     which is exactly what redaction exists for.
     """
     out: list[str] = []
+    if snap.app.window_id > 0:
+        out.append(WINDOW_ID_NOTE.format(window_id=snap.app.window_id))
     if snap.window_bounds is not None:
         x, y, width, height = snap.window_bounds
         out.append(

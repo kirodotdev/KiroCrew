@@ -361,6 +361,11 @@ MAX_TREE_DEPTH_LIMIT = 128
 DEFAULT_TEXT_LIMIT = 500
 MAX_TEXT_LIMIT = 20000
 MAX_ELEMENT_INDEX = 5000
+#: Upper bound of a ``window_id`` argument. A CoreGraphics window number is a
+#: ``uint32``, and a top-level HWND is a 32-bit value even in a 64-bit process, so
+#: both platforms' handles fit. The bound only keeps nonsense out of the driver:
+#: what makes an id valid is that the driver finds it among the app's live windows.
+MAX_WINDOW_ID = 0xFFFFFFFF
 MAX_TYPE_TEXT_LEN = 10000
 MAX_KEY_LEN = 64
 MAX_ACTION_LEN = 64
@@ -449,6 +454,9 @@ AX_EXPANDED = "AXExpanded"
 # into "the caret is in this one", which is the difference between typing into the
 # right box and guessing.
 AX_FOCUSED_UI_ELEMENT = "AXFocusedUIElement"
+# The window an element belongs to. Read off the focused element to tell whether
+# the app's caret is inside the window a pinned snapshot observes.
+AX_WINDOW = "AXWindow"
 # The user's current text selection inside the focused element. Read once per
 # walk, and NEVER for a secure element (a selected password is still a password).
 AX_SELECTED_TEXT = "AXSelectedText"
@@ -515,6 +523,17 @@ SELECTION_NOTE = "Selected text: [{text}]"
 WINDOW_ORIGIN_NOTE = (
     "Window origin on screen: x={x},y={y} ({width}x{height}). "
     "Element frames above are relative to it — add the origin for a screen point."
+)
+#: The id of the window a snapshot walked. Printed on every snapshot so the model
+#: can pass it back as ``window_id`` and keep acting on THIS window after the user
+#: focuses another one of the same app.
+WINDOW_ID_NOTE = "Window id: {window_id}."
+#: Appended by the dispatcher when the app has more than one window, because a
+#: model that does not know a second window exists has no reason to look for it —
+#: a 66x20 helper window in front of the main one would then hide it for good.
+MULTI_WINDOW_NOTE = (
+    "'{app}' has {count} windows; this is window_id {window_id}. Call {tool} to see "
+    "the others, and pass the same window_id to every action on this window."
 )
 
 # ── Rendering ──
@@ -657,7 +676,47 @@ AUDIT_POINTER_ITEM = "click_method={method}"
 # be filtered to this feature with one glob.
 AUDIT_TOOL_PREFIX = "computer_use:"
 ERR_NO_STATE = "no state for '{app}'. Call {tool} first."
+#: The no-state refusal, sharpened for the case the window selector creates: the
+#: session DID snapshot this app, but a different window of it than the one this
+#: call resolved to. Naming the window the indices belong to is what keeps the model
+#: from re-snapshotting the default window and acting on the wrong one.
+ERR_OTHER_WINDOW_STATE = (
+    "no state for this window of '{app}'. Your last {tool} of '{app}' was window_id "
+    "{window_id}: pass window_id={window_id} to act on that window, or call {tool} again."
+)
+#: A ``window_id`` that names no live window of the resolved application — closed,
+#: never existed, or (window ids are recycled) now owned by another process.
+ERR_WINDOW_NOT_FOUND = (
+    "window_id {window_id} is not an on-screen window of '{app}'. Call {tool} to see "
+    "its windows."
+)
 ERR_STALE_STATE = "state for '{app}' is {age}s old. Call {tool} again."
+#: A coordinate gesture on a pinned window whose point another window of the same
+#: application covers, or that lies outside the pinned window.
+ERR_POINT_NOT_IN_WINDOW = (
+    "({x:.0f}, {y:.0f}) is not on window_id {window_id} of '{app}': another window of "
+    "the same app is on top there, or the point is outside that window. Use an "
+    "element_index, or call {tool} on the window that is in front."
+)
+#: A scroll on a pinned window whose element refused the accessibility scroll action.
+#: The only fallback is a wheel event posted to the whole process, which the app may
+#: deliver to a different window of its own, so it is refused rather than reported as
+#: a scroll of the window the caller named.
+ERR_PINNED_SCROLL_FALLBACK = (
+    "element {index} refused the accessibility scroll action, and the wheel-event "
+    "fallback cannot be confined to window_id {window_id} of '{app}': the app may "
+    "deliver it to another of its windows. Scroll a different element, use "
+    "{key_tool} (for example pagedown) on an element of this window, or call {tool} "
+    "without window_id when this is the app's front window."
+)
+#: A keyboard verb on a pinned window that is not the app's front window. Keystrokes
+#: are posted to the whole process, which hands them to its key window, so they would
+#: land in a sibling (possibly one the operator denies) rather than the named window.
+ERR_PINNED_KEYS_NOT_FRONT = (
+    "window_id {window_id} is not the front window of '{app}', and keystrokes go to "
+    "the app's front window, not to the one named. Use {set_value_tool} to write a "
+    "field of this window, or bring this window to the front and call {tool} again."
+)
 ERR_UNKNOWN_INDEX = "element_index {index} is not in the last state for '{app}' ({count} elements)."
 ERR_INDEX_DRIFT = (
     "element_index {index} changed since the last {tool} (was {before}, now "
@@ -992,6 +1051,13 @@ class AppRef:
     bundle_id: str = ""
     window_id: int = 0
     window_title: str = ""
+    #: ``True`` when the caller CHOSE this window by ``window_id``. A pinned window is
+    #: walked only if the accessibility layer can find that exact window: the
+    #: title / ``AXMain`` / first-window fallbacks a default resolution uses would
+    #: silently observe a different window than the one the model asked for.
+    #: Excluded from equality on purpose: it changes how the window is located, not
+    #: which window this is, and :attr:`window_key` does not carry it either.
+    pinned_window: bool = field(default=False, compare=False)
 
     @property
     def key(self) -> str:
@@ -1206,7 +1272,8 @@ class WindowRef:
 
     ``window_id`` is an opaque handle: the CoreGraphics window number on macOS, the
     top-level HWND on Windows. It is only meaningful together with the app it was
-    listed for, because both platforms recycle the numbers.
+    listed for, and the drivers re-check that pairing on every use, because both
+    platforms recycle the numbers.
 
     ``bounds`` is the screen rect in the package's top-left convention, or ``None``
     when the window server did not report one. A small rect is worth showing: a

@@ -150,6 +150,16 @@ class ComputerUseBackend(abc.ABC):
         """The on-screen windows of *app*, front to back, in ``DriverResult.windows``."""
 
     @abc.abstractmethod
+    def resolve_window(self, app: AppRef, window_id: int) -> DriverResult:
+        """*app* narrowed to the window *window_id*, in ``DriverResult.app``.
+
+        MUST refuse an id that is not a live window of *app*'s own application
+        (window ids are recycled across processes), and MUST mark the returned ref
+        ``pinned_window`` so the walk refuses rather than substitutes when that
+        window has gone.
+        """
+
+    @abc.abstractmethod
     def launch_app(
         self,
         query: str,
@@ -299,6 +309,9 @@ class UnsupportedBackend(ComputerUseBackend):
         return self._refuse()
 
     def list_windows(self, app: AppRef) -> DriverResult:
+        return self._refuse()
+
+    def resolve_window(self, app: AppRef, window_id: int) -> DriverResult:
         return self._refuse()
 
     def launch_app(

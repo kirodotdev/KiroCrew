@@ -369,7 +369,7 @@ namespace-distinct from every other server's tools.
 | `computer_list_apps` | — | — | observe |
 | `computer_list_windows` | `app` | — | mutate |
 | `computer_launch_app` | `app` (≤128) | — | mutate |
-| `computer_get_state` | `app` | `text_limit` (1..20000, d=500), `max_tree_nodes` (1..5000, d=1200), `max_tree_depth` (1..128, d=64), `screenshot` (bool, d from config) | observe |
+| `computer_get_state` | `app` | `window_id`, `text_limit` (1..20000, d=500), `max_tree_nodes` (1..5000, d=1200), `max_tree_depth` (1..128, d=64), `screenshot` (bool, d from config) | observe |
 | `computer_click` | `app` + **exactly one of** (`element_index` \| `x`+`y`) | `click_count` (1..3, d=1), `mouse_button` (`left`\|`right`\|`middle`, d=left), `click_method` (`auto`\|`accessibility`\|`app_post`\|`sky_click`\|`global`, d=auto) | mutate, pointer |
 | `computer_drag` | `app`, `from_x`, `from_y`, `to_x`, `to_y` | `mouse_button`, `click_method`, `steps` (1..512, d=1), `path` (`straight`\|`curved`, d=straight) | mutate, pointer |
 | `computer_type_text` | `app`, `text` (≤10000), `element_index` | — | mutate, keyboard, text_entry |
@@ -473,6 +473,111 @@ title passed as `app` reaches that window.
   classed `mutate`, as described under the tool table.
 - `list_windows` is abstract on `ComputerUseBackend`, so every backend states how
   it enumerates windows; `UnsupportedBackend` refuses it like its other methods.
+
+### Window targeting (`window_id`)
+
+`computer_get_state` and the seven action tools take an optional `window_id`
+(0..`MAX_WINDOW_ID`, a `uint32`) naming one window `computer_list_windows` listed.
+Without it they reach the window the driver picks, as before.
+
+- **The driver checks the pairing, not the schema.** `resolve_window(app, id)`
+  accepts the id only if it is a live window of the RESOLVED application: the same
+  pid on macOS (CoreGraphics recycles window numbers across processes), the same pid
+  AND published identity on Windows (`_same_app` — `ApplicationFrameHost.exe` fronts
+  unrelated packaged apps under one pid, so a pid match would let a selector reach
+  Settings from HP Audio Control). Anything else is `ERR_WINDOW_NOT_FOUND`, naming
+  `computer_list_windows`. The returned ref is marked `AppRef.pinned_window`.
+- **The target policy answers before the window id does.** `tools._dispatch` defers
+  an `ERR_WINDOW_NOT_FOUND` like a stale index: it resolves the app without the
+  window, runs the target policy on it, and raises the window error only once the
+  call is authorized. Otherwise a denied app would answer "no window N" for a bad id
+  and the policy refusal for a good one, telling the caller which ids it holds.
+- **A pinned window is never substituted.** `snapshot_macos._select_window` normally
+  falls back from the window id to a title prefix, then `AXMain`, then `AXWindows[0]`.
+  For a pinned window only the id and (when the private id symbol answers `0` for
+  every window) the title prefix count, and the prefix only when exactly one window
+  carries it, because two same-titled windows cannot be told apart without ids.
+  The process's CoreGraphics window list also has to show exactly one window with
+  that prefix, and it has to be the pinned id (`_window_list_confirms_title`): if
+  the pinned window closed or was retitled between the two reads, the lone match
+  could be a sibling whose title starts with the same words, which the target
+  policy never checked.
+  Otherwise the walk refuses. The Windows walk already opens the HWND itself and
+  refuses a dead one. A pinned window is searched among every AX window, not only
+  the first `MAX_WINDOWS_TO_INSPECT` the default selection reads, because
+  `computer_list_windows` lists them all. Every call that finds the window again
+  passes the pin, the Electron and Chromium re-walks included, so a pinned window
+  gone during the wait leaves the first walk in place rather than walking a sibling.
+- **A real-pointer gesture on a pinned window lands on that window.** A `global`
+  click or drag carries no window, so `apps_macos.pid_owns_point` is passed the
+  pinned `window_id` (`macos_driver._pinned_id`) and refuses a point whose topmost
+  window is a sibling of the same process. The app-scoped `app_post` click and drag,
+  which the app routes to its own front window at the point, check every point with
+  `apps_macos.pinned_window_tops_point` and refuse with `ERR_POINT_NOT_IN_WINDOW`.
+  Without a pinned window both rules stay per process.
+- **A pinned scroll does not fall back to a process-wide wheel event.** When the
+  element refuses the AX scroll action, `MacOSBackend.scroll` normally posts a wheel
+  event to the pid, which names no window, so the app can scroll a sibling while the
+  reply refreshes the pinned one. For a pinned window it refuses with
+  `ERR_PINNED_SCROLL_FALLBACK`, which points at `computer_press_key` and at the
+  unpinned call. The Windows scroll is element-scoped and has no such fallback.
+- **Keystrokes to a pinned macOS window need it in front.** `post_text` and
+  `post_key` go to the process, which hands them to its key window, and focusing an
+  element of a background window does not make that window key. So `type_text` and
+  `press_key` on a pinned window refuse with `ERR_PINNED_KEYS_NOT_FRONT` unless
+  `apps_macos.pinned_window_is_front` finds it the process's front-most
+  normal-layer window, before any focus change. Otherwise the keystrokes would reach
+  a sibling the target policy never judged, including one an operator pattern
+  denies. `set_value` writes the element itself and is unaffected. On Windows,
+  when an element is addressed, the driver reads focus back off that element before
+  `SendInput` and refuses if it did not move, so the keystrokes reach the window the
+  model named.
+- **The multi-window note counts only listed windows.** `tools._multi_window_note`
+  counts `tools._permitted_windows`, the same `policy.check_app` filter
+  `computer_list_windows` applies, so a sibling an operator pattern denies is neither
+  counted nor listed.
+- **A pinned snapshot reports only its own window's selection.** macOS reads the
+  selection from the application's `AXFocusedUIElement`, which can sit in a sibling
+  window, including one an operator pattern denies. `snapshot_macos._window_selection`
+  keeps the selection on a pinned window only when the focused element's `AXWindow`
+  is that window, and drops it when the owner cannot be read. The unpinned default
+  window keeps reporting the app's selection.
+- **A denied title anywhere in a macOS process still refuses it.** Input is per pid
+  on macOS, so `apps_macos.resolve_window` returns the denied sibling instead of the
+  requested window and `policy.check_app` refuses the call — the rule `list_apps`
+  already follows when it collapses. Windows keeps its per-window rule: identity and
+  input are per top-level window there, and `resolve_app` never consulted siblings.
+  Operator `extra_denied_apps` title patterns are, as before, matched against the
+  window being driven only; widening them to siblings would be a new restriction.
+- **Indices stay bound to their window.** The snapshot cache is already keyed by
+  `AppRef.window_key` (app, pid, window id), so an action resolves to the window it
+  names. An action that omits `window_id` resolves to the default window; when the
+  session's indices belong to another window of the same app, `service.cached` says
+  so with `ERR_OTHER_WINDOW_STATE` (via `SnapshotIndex.sibling_window_id`) instead of
+  the bare "call `computer_get_state` first", which would lead the model to snapshot
+  the default window and act on it. Only a window never snapshotted gets that wording:
+  `service.cached` reads the age before `SnapshotIndex.require` drops an expired
+  entry, so an expired snapshot keeps the "state is Ns old" refusal.
+- **Discoverability.** Every snapshot prints `Window id: N.` in its trailer, and
+  `computer_get_state` adds `MULTI_WINDOW_NOTE` when the app has more than one
+  window. The note names the app from desktop data and joins the reply after
+  the tree's redaction pass, so `_multi_window_note` runs it through
+  `policy.redact_result` itself. The note is advisory: a failed window-list read drops it rather than
+  failing the snapshot.
+- **The default is unchanged.** Without `window_id` the drivers pick the same window
+  as before. The issue's "prefer a main/focused document window" default was not
+  changed: a size or `AXMain` heuristic would hide legitimate small dialogs, and the
+  explicit selector plus the multi-window note is the fix the issue names first.
+
+**What this reads without a prompt.** `computer_get_state` stays `observe`, so with
+a `window_id` it walks the named window of an app that passed the target policy,
+including a window other than the default one, without asking. Listing every
+sibling title stays behind the approval prompt (`computer_list_windows`), and the
+multi-window note discloses only the count of windows that listing would show. A
+`window_id` that names no window of an allowed app is refused with
+`ERR_WINDOW_NOT_FOUND`, so ids can be probed one call at a time.
+`resolve_window` is abstract on `ComputerUseBackend` like `list_windows`;
+`UnsupportedBackend` refuses it.
 
 ### Result shape: text only, by construction
 

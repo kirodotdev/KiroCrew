@@ -53,6 +53,7 @@ from kiro_crew.computer_use.types import (
     ERR_LAUNCH_NOT_INSTALLED,
     ERR_POINT_REQUIRED,
     ERR_UNKNOWN_CLICK_METHOD,
+    ERR_WINDOW_NOT_FOUND,
     LAUNCH_RESULT,
     LAUNCH_RESULT_NO_WINDOW,
     PERMISSION_GRANTED,
@@ -61,6 +62,7 @@ from kiro_crew.computer_use.types import (
     SECURE_SUBROLE,
     TOOL_GET_STATE,
     TOOL_LIST_APPS,
+    TOOL_LIST_WINDOWS,
     TRAIT_EDITABLE,
     AppRef,
     BackendStatus,
@@ -322,6 +324,10 @@ class FakeComputerUseBackend(ComputerUseBackend):
         #: ``AppRef.key``. Each is a full ref (its own ``window_id`` and title), so
         #: a test can stage a small helper window in front of the main one.
         self.extra_windows: dict[str, tuple[AppRef, ...]] = {}
+        #: Per-WINDOW trees, keyed by ``AppRef.window_key``. Consulted before
+        #: :attr:`trees`, so two windows of one app can show different controls and a
+        #: test can tell which window a walk or an action actually reached.
+        self.window_trees: dict[str, FakeNode] = {}
         #: Installed-but-not-running apps, for :meth:`launch_app`.
         self.launchable: tuple[AppRef, ...] = FAKE_LAUNCHABLE
         #: Whether a launch produces a window. ``False`` drives the third real
@@ -349,6 +355,7 @@ class FakeComputerUseBackend(ComputerUseBackend):
         self.trees = dict(FAKE_TREES)
         self.apps = FAKE_APPS
         self.extra_windows = {}
+        self.window_trees = {}
         self.launchable = FAKE_LAUNCHABLE
         self.launched_with_window = True
 
@@ -404,6 +411,21 @@ class FakeComputerUseBackend(ComputerUseBackend):
             windows=tuple(
                 WindowRef(window_id=w.window_id, title=w.window_title, bounds=FAKE_WINDOW_BOUNDS)
                 for w in self._windows_of(app)
+            ),
+        )
+
+    def resolve_window(self, app: AppRef, window_id: int) -> DriverResult:
+        self._record("resolve_window", app=app.key, window_id=window_id)
+        forced = self._forced()
+        if forced is not None:
+            return forced
+        for win in self._windows_of(app):
+            if win.window_id == window_id:
+                return DriverResult(ok=True, app=replace(win, pinned_window=True))
+        return DriverResult(
+            ok=False,
+            text=ERR_WINDOW_NOT_FOUND.format(
+                window_id=window_id, app=app.name, tool=TOOL_LIST_WINDOWS
             ),
         )
 
@@ -503,7 +525,7 @@ class FakeComputerUseBackend(ComputerUseBackend):
         forced = self._forced()
         if forced is not None:
             return forced
-        root = self.trees.get(app.key)
+        root = self.window_trees.get(app.window_key) or self.trees.get(app.key)
         if root is None:
             return DriverResult(
                 ok=False, text=ERR_APP_NOT_FOUND.format(query=app.name, tool=TOOL_LIST_APPS)

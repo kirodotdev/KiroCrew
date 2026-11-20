@@ -335,6 +335,12 @@ class WindowsBackend(ComputerUseBackend):
 
         return _guarded("list_windows", run)
 
+    def resolve_window(self, app: AppRef, window_id: int) -> DriverResult:
+        def run() -> DriverResult:
+            return DriverResult(ok=True, app=apps_windows.resolve_window(app, window_id))
+
+        return _guarded("resolve_window", run)
+
     def launch_app(
         self,
         query: str,
