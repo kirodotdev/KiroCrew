@@ -10670,6 +10670,7 @@
       "flow_needs_you": "তোমাকে দরকার",
       "eyebrow": "Conductor mode",
       "composer_chip_label": "এই চ্যাটে Conductor mode চালু আছে",
+      "composer_chip_label_worker": "Conductor mode · ওয়ার্কার",
       "back_to_main_chat": "মূল চ্যাটে ফিরে যাও",
       "parent_row_hint": "এর একজন ক্রু সদস্যকে দেখানো হচ্ছে",
       "steer_too_long": "{{name}}-কে পাঠানো বার্তা সর্বোচ্চ {{max}} অক্ষরের হতে পারে। পাঠাতে এটি ছোট করো।",

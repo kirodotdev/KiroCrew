@@ -3,7 +3,7 @@ import {
   DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeAgent, crewModeView, openingHidesSessionList, isConductorAgent, isDefaultAgentName, runsCrewMode,
   memoryModeAllowsCrewMode, runsConductor, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
   gatewayRunsCrewMode, CREW_APPROVAL_SURFACES, crewApprovalDecidableHere, crewModeEnabled, crewModeRoot, crewRootOf,
-  mateThreadsHidingSessions, busySlotKeys,
+  mateThreadsHidingSessions, busySlotKeys, showsAsCrewMode,
 } from './crewMode'
 import { applyLockedControls } from '../utils/editionLocks'
 import { crewMemberKeys } from '../store/dashboard/unread'
@@ -176,6 +176,21 @@ describe('runsCrewMode', () => {
     expect(runsCrewMode('old-one', 'template', 'old-one')).toBe(true)
     expect(runsCrewMode('kirocrew', 'template', 'old-one')).toBe(false)
     expect(runsCrewMode('old-one', 'template', '')).toBe(false)
+  })
+})
+
+describe('showsAsCrewMode -- the composer agrees with the gateway (#39260)', () => {
+  it('is a conductor root or a crew member on a conductor, never a chat opened outside any crew', () => {
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    const on = { agent: 'kirocrew-conductor', agent_kind: 'template' }
+    // The gateway's own root stamp decides, never the client's reading of the tree.
+    expect(showsAsCrewMode({ ...on, crew_mode_root: true })).toBe(true)
+    expect(showsAsCrewMode({ ...on, crew_mode_root: false, crew_root: 'root-1' })).toBe(true)
+    expect(showsAsCrewMode({ ...on, crew_mode_root: false })).toBe(false)
+    // No stamp yet (a switch's own answer): keeps the conductor's look.
+    expect(showsAsCrewMode(on)).toBe(true)
+    expect(showsAsCrewMode({ agent: 'kirocrew-worker', agent_kind: 'template', crew_mode_root: false, crew_root: 'root-1' })).toBe(false)
+    expect(showsAsCrewMode(undefined)).toBe(false)
   })
 })
 

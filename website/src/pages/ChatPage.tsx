@@ -29,7 +29,7 @@ import { useComposerDraftState, ComposerDraftSync, useComposerIntakeRefs, useMai
 import { useModelPickerModels, useNewSessionPicks, useSessionChoices, useSlotSelectionCapabilitiesQuery } from './chat/page/sessionPicks'
 import { useCrewModeSwitch } from './chat/page/crewModeSwitch'
 import ConductorModeEffect from '../components/crew/ConductorModeEffect'
-import { crewModeRoot, crewRootOf, mateRootOf, runsCrewMode } from '../lib/crewMode'
+import { crewModeRoot, crewRootOf, mateRootOf, showsAsCrewMode } from '../lib/crewMode'
 import { useCrewMode } from '../hooks/usePreviewFlag'
 import { useCrewRoot } from '../components/crew/useCrewRoot'
 import { useSteerDelivery, useRefusedPress, useRegenerate } from './chat/page/turnActions'
@@ -1273,7 +1273,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               crewModeOffered={crewModeEligible && !crewModeChosen && !slotLoading && showComposerMemoryChip} turnOnCrewMode={turnOnCrewMode}
               crewModeMidChatOffered={crewModeMidChat && !slotLoading && !showComposerMemoryChip}
               crewChipPressed={crewChipPressed}
-              agentPickerHidden={crewModeChosen || (!crewModeLeaving && runsCrewMode(currentSlot?.agent, currentSlot?.agent_kind, currentSlot?.crew_mode_agent))}
+              // Hidden while turning on, and on a chat the gateway conducts with (a
+              // root or a crew member). A chat another session opened onto a
+              // conductor outside any crew keeps its picker: nothing locks it (#39260).
+              agentPickerHidden={!crewModeLeaving && (crewModeSwitching === 'on' || showsAsCrewMode(currentSlot))}
               // In an LTS build too: the raw `crew_mode_root` stamp is the gateway's
               // own lock (`crew_mode_locked` once the chat has a message), so no switch.
               agentSwitchLocked={hasUserMessage && !!currentSlot?.crew_mode_root}
