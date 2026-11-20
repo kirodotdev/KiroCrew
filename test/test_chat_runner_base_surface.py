@@ -422,7 +422,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_emit_turn_metric",
             "function",
-            "(duration_ms: 'int | float | None', stop_reason: 'str | None', slot_key: 'str', *, elapsed_ms: 'int | float | None' = None, exhausted: 'bool' = False, usage: 'object' = None, model: 'str' = '', provider: 'str' = '', harness: 'str' = 'unknown', trigger: 'str' = 'other') -> 'None'",
+            "(duration_ms: 'int | float | None', stop_reason: 'str | None', slot_key: 'str', *, elapsed_ms: 'int | float | None' = None, exhausted: 'bool' = False, usage: 'object' = None, model: 'str' = '', provider: 'str' = '', harness: 'str' = 'unknown', trigger: 'str' = 'other', owning_app: 'str' = '') -> 'None'",
         ),
         (
             "_emit_recovery_outcome",

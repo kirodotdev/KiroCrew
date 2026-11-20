@@ -103,6 +103,8 @@ _FEATURES = frozenset(
         "kirocrew.app.uninstalled",
         # Entity / entity_version as above; kind is the session_kind.
         "kirocrew.app.session_started",
+        # Adds a turn's seconds; duration is app_duration_bucket.
+        "kirocrew.app.run_time",
         "kirocrew.channel.message.received",
         "kirocrew.ui.control.clicked",
     }
