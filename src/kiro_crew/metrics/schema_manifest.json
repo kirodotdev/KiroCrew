@@ -885,7 +885,8 @@
           "values": [
             "dashboard",
             "other",
-            "spawn"
+            "spawn",
+            "startup"
           ]
         },
         "outcome": {

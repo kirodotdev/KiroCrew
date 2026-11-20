@@ -15,7 +15,7 @@ from wheel_engine_helpers import (
     _stub_children,
 )
 
-from kiro_crew.platform import wheel_engine
+from kiro_crew.platform import wheel_engine, wheel_engine_platform
 from kiro_crew.platform.wheel_engine import ManagedVenvLayout, WheelUpdateError, promote
 from kiro_crew.platform_compat import IS_POSIX
 
@@ -37,6 +37,8 @@ class TestManifestFetchOrchestration:
     ) -> None:
         calls: list[str] = []
         raw = _raw(_manifest())
+        # A host no platform wheel is published for reads latest-cli.json alone.
+        monkeypatch.setattr(wheel_engine_platform, "host_wheel_tag", lambda: None)
         monkeypatch.setattr(
             wheel_engine,
             "_fetch_bytes",
@@ -55,6 +57,123 @@ class TestManifestFetchOrchestration:
         )
         assert calls == ["fetch", "verify"]
         assert payload["version"] == "9.9.9"
+
+
+class TestPlatformManifest:
+    """A host with a platform wheel reads ``latest-cli-<tag>.json`` first."""
+
+    _TAG = "manylinux_2_28_x86_64"
+
+    def _platform_raw(self, version: str = "9.9.9") -> bytes:
+        doc = _manifest(version=version)
+        doc["wheel_url"] = doc["wheel_url"].replace(
+            "-py3-none-any.whl", f"-py3-none-{self._TAG}.whl"
+        )
+        return _raw(doc)
+
+    def _fetch(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answers: dict) -> list[str]:
+        urls: list[str] = []
+        monkeypatch.setattr(wheel_engine_platform, "host_wheel_tag", lambda: self._TAG)
+        self.workdirs: list[Path] = []
+        monkeypatch.setattr(
+            wheel_engine,
+            "_verify_signature",
+            lambda canonical, signature, workdir, **k: self.workdirs.append(workdir),
+        )
+
+        def fetch(url, cap, timeout, **_kw):
+            urls.append(url)
+            answer = answers[url.rsplit("/", 1)[-1]]
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+
+        monkeypatch.setattr(wheel_engine, "_fetch_bytes", fetch)
+        return urls
+
+    def _call(self, tmp_path: Path, **kw):
+        return wheel_engine.fetch_verified_manifest(
+            channel="stable",
+            feed_base=_FEED_BASE,
+            artifact_base=_ARTIFACT_BASE,
+            workdir=tmp_path,
+            **kw,
+        )
+
+    def test_the_platform_manifest_names_the_platform_wheel(self, tmp_path, monkeypatch):
+        urls = self._fetch(
+            tmp_path,
+            monkeypatch,
+            {
+                "latest-cli.json": _raw(_manifest()),
+                f"latest-cli-{self._TAG}.json": self._platform_raw(),
+            },
+        )
+        payload = self._call(tmp_path)
+        assert payload["wheel_url"].endswith(f"-py3-none-{self._TAG}.whl")
+        assert urls == [
+            f"{_FEED_BASE}/feed/stable/latest-cli.json",
+            f"{_FEED_BASE}/feed/stable/latest-cli-{self._TAG}.json",
+        ]
+        # Each check gets its own scratch directory under the update's workdir: the
+        # no-/dev/fd fallback creates fixed names O_EXCL there.
+        assert len(set(self.workdirs)) == 2
+        assert all(w.parent == tmp_path for w in self.workdirs)
+
+    @pytest.mark.parametrize("code", [403, 404])
+    def test_an_absent_platform_manifest_falls_back_to_the_pure_wheel(
+        self, tmp_path, monkeypatch, code
+    ):
+        import urllib.error
+
+        absent = WheelUpdateError("could not fetch")
+        absent.__cause__ = urllib.error.HTTPError("u", code, "missing", {}, None)  # type: ignore[arg-type]
+        self._fetch(
+            tmp_path,
+            monkeypatch,
+            {f"latest-cli-{self._TAG}.json": absent, "latest-cli.json": _raw(_manifest())},
+        )
+        assert self._call(tmp_path)["wheel_url"].endswith("-py3-none-any.whl")
+
+    def test_a_network_failure_is_not_absence(self, tmp_path, monkeypatch):
+        self._fetch(
+            tmp_path,
+            monkeypatch,
+            {
+                f"latest-cli-{self._TAG}.json": WheelUpdateError("timed out"),
+                "latest-cli.json": _raw(_manifest()),
+            },
+        )
+        with pytest.raises(WheelUpdateError, match="timed out"):
+            self._call(tmp_path)
+
+    def test_a_platform_manifest_naming_the_pure_wheel_is_refused(self, tmp_path, monkeypatch):
+        self._fetch(
+            tmp_path,
+            monkeypatch,
+            {
+                "latest-cli.json": _raw(_manifest()),
+                f"latest-cli-{self._TAG}.json": _raw(_manifest()),
+            },
+        )
+        with pytest.raises(WheelUpdateError, match="canonical artifact URL"):
+            self._call(tmp_path)
+
+    def test_a_platform_manifest_for_another_version_falls_back(self, tmp_path, monkeypatch):
+        """A promoted stable or a mirrored insider publishes no platform wheels, so
+        the platform manifest still names the previous version: the channel's own
+        version wins and the pure wheel is installed."""
+        self._fetch(
+            tmp_path,
+            monkeypatch,
+            {
+                f"latest-cli-{self._TAG}.json": self._platform_raw(version="9.9.8"),
+                "latest-cli.json": _raw(_manifest()),
+            },
+        )
+        payload = self._call(tmp_path)
+        assert payload["version"] == "9.9.9"
+        assert payload["wheel_url"].endswith("-py3-none-any.whl")
 
 
 class TestPromotion:

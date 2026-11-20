@@ -115,6 +115,9 @@ __all__ = [
     "kas_engines_root",
     "make_universal_node",
     "manifest_url_for",
+    "PACKAGED_KAS_DIR_NAME",
+    "engine_roots",
+    "packaged_kas_root",
     "parse_manifest",
     "sweep_stale_staging",
     "trim_for_shipping",
@@ -231,6 +234,9 @@ class InstalledKasBundle:
     #: True when *root* is the desktop app's own staged copy
     #: (``BUNDLED_KAS_DIR_ENV``), not the data home's ``engines/kas``.
     bundled: bool = False
+    #: True when *root* is the copy a platform wheel carries inside the installed
+    #: ``kiro_crew`` package (:func:`packaged_kas_root`).
+    packaged: bool = False
 
 
 # ── host keys ──────────────────────────────────────────────────────────────────
@@ -439,6 +445,22 @@ def fetch_manifest(
 def kas_engines_root(home: Path | None = None) -> Path:
     """``<data home>/engines/kas``."""
     return (home or data_home()) / KAS_BUNDLE_ENGINES_LEAF / "kas"
+
+
+#: Package-relative directory a platform wheel stages the pinned engine under
+#: (``scripts/build_platform_wheels.py``). A pure wheel and a source checkout have none.
+PACKAGED_KAS_DIR_NAME = "_kas_engine"
+
+
+def packaged_kas_root() -> Path:
+    """``<kiro_crew package>/_kas_engine``: where a platform wheel carries its engine.
+
+    Inside the package directory, so the install-tree seal
+    (``sandbox_tiers._resolved_install_root_targets``) already makes it read-only for
+    every sandboxed child, and an update or rollback that swaps the package swaps the
+    engine with it.
+    """
+    return Path(__file__).resolve().parents[1] / PACKAGED_KAS_DIR_NAME
 
 
 def bundled_kas_root() -> Path | None:
@@ -915,8 +937,14 @@ def install_pinned(
     manifest's bytes before anything is parsed or fetched, so a host serving a
     different manifest under the pinned version's name installs nothing.
     """
+    explicit_root = root is not None
     root = root or kas_engines_root()
     present = installed_bundle(root=root, version=KAS_PIN_VERSION)
+    if present is None and not explicit_root:
+        # A platform wheel carries the pin inside the package: nothing to fetch.
+        present = installed_bundle(version=KAS_PIN_VERSION)
+        if present is not None and not present.packaged:
+            present = None
     if present is not None:
         return present
     # The local host checks install_bundle repeats; none of them reads the network.
@@ -1136,10 +1164,13 @@ def installed_bundle(
 ) -> InstalledKasBundle | None:
     """The engine this release runs (*version*, default the pin), or ``None``.
 
-    With no *root*, two roots are asked in order: the data home's ``engines/kas``
-    (an operator's own install, which wins), then the desktop app's staged copy
-    (:func:`bundled_kas_root`) when the shell exported one. An explicit *root* is
-    asked alone.
+    With no *root*, three roots are asked in order: the engine a platform wheel
+    carries inside the installed package (:func:`packaged_kas_root`, the same bytes
+    the pin names, shipped with this exact code), then the data home's
+    ``engines/kas`` (``kirocrew kas install``), then the desktop app's staged copy
+    (:func:`bundled_kas_root`) when the shell exported one. A version other than the
+    pin (an override) is never in the package, so it resolves from the data home. An
+    explicit *root* is asked alone.
 
     Never raises: a damaged record reads as "not installed" and is logged, so a
     spawn path can ask without a try/except.
@@ -1150,13 +1181,28 @@ def installed_bundle(
         return None
     if root is not None:
         return _read_installed(root, version, bundled=False)
-    found = _read_installed(kas_engines_root(), version, bundled=False)
+    packaged, home, bundled = engine_roots()
+    if (packaged / version).is_dir():
+        found = _read_installed(packaged, version, bundled=False, packaged=True)
+        if found is not None:
+            return found
+    found = _read_installed(home, version, bundled=False)
     if found is not None:
         return found
-    bundled = bundled_kas_root()
     if bundled is None:
         return None
     return _read_installed(bundled, version, bundled=True)
+
+
+def engine_roots() -> tuple[Path, Path, Path | None]:
+    """Every root Crew's own engine runs from, in the order :func:`installed_bundle` asks.
+
+    The package's ``_kas_engine`` (a platform wheel), the data home's ``engines/kas``,
+    and the desktop app's staged copy (``None`` when the shell exported none). The
+    harness reads the same tuple to tell Crew's engine from a kiro-cli relay, so the
+    lookup and that identity check cannot name different roots.
+    """
+    return packaged_kas_root(), kas_engines_root(), bundled_kas_root()
 
 
 def _stays_inside(rel: str) -> bool:
@@ -1173,7 +1219,9 @@ def _stays_inside(rel: str) -> bool:
     return ".." not in PureWindowsPath(rel).parts
 
 
-def _read_installed(root: Path, version: str, *, bundled: bool) -> InstalledKasBundle | None:
+def _read_installed(
+    root: Path, version: str, *, bundled: bool, packaged: bool = False
+) -> InstalledKasBundle | None:
     try:
         home = root / version
         record = json.loads((home / KAS_BUNDLE_INSTALL_RECORD_NAME).read_text(encoding="utf-8"))
@@ -1202,6 +1250,7 @@ def _read_installed(root: Path, version: str, *, bundled: bool) -> InstalledKasB
             node_bin=node_bin,
             acp_server=acp_server,
             bundled=bundled,
+            packaged=packaged,
         )
     except FileNotFoundError:
         return None

@@ -139,6 +139,11 @@ jobs:
       edition: lts
       ui_index_strict: true
 
+  build-platform-wheels:
+    name: Build Platform Wheels
+    needs: [build-wheel]
+    uses: ./.github/workflows/build-platform-wheels.yml
+
   build-desktop:
     name: Build Desktop
     needs: [version, release-candidate-tests, dependency-vulnerability-gate]
@@ -167,7 +172,7 @@ jobs:
 
   publish-cli:
     name: Publish CLI (lts channel)
-    needs: [version, build-wheel]
+    needs: [version, build-wheel, build-platform-wheels]
     permissions:
       contents: read
       id-token: write

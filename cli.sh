@@ -37,7 +37,8 @@
 #                                        runs and updates keep the choice)
 #                                        (env KIROCREW_MANAGED_PYTHON=0)
 #   --no-kas                             skip downloading the KAS engine this
-#                                        release pins (env KIROCREW_INSTALL_KAS=0)
+#                                        release pins now; the gateway installs
+#                                        it when it starts (env KIROCREW_INSTALL_KAS=0)
 #
 # KAS engine: after the wheel is installed, the installer runs the new
 # `kirocrew kas install`, which fetches the engine this release pins into the
@@ -142,9 +143,11 @@ Options / env:
                                        later runs and updates keep the choice)
                                        (env KIROCREW_MANAGED_PYTHON=0)
   --no-kas                             skip downloading the KAS engine this
-                                       release pins; by default the installer
-                                       runs `kirocrew kas install` once the
-                                       wheel is in (env KIROCREW_INSTALL_KAS=0)
+                                       release pins now; by default the
+                                       installer runs `kirocrew kas install`
+                                       once the wheel is in, and with this flag
+                                       the gateway installs it when it starts
+                                       (env KIROCREW_INSTALL_KAS=0)
   KIROCREW_VENV                        override the managed venv location
   KIROCREW_PYTHON_DIR                  override where uv-provisioned interpreters
                                        are stored (default: beside the data home,
@@ -918,6 +921,35 @@ else
   MANIFEST_URL="$FEED_BASE/feed/$CHANNEL_PATH/latest-cli.json"
   echo "Resolving KiroCrew ($CHANNEL channel) ..."
 fi
+# The platform wheel this host takes: the pure wheel plus the pinned KAS engine
+# (wheel_engine_platform.host_wheel_tag; glibc 2.28 is the bundled Node's floor).
+# Empty for every other host, and for a pinned version, which installs the pure
+# wheel. Its signed manifest is latest-cli-<tag>.json; when that is absent, the
+# install falls back to latest-cli.json and downloads the engine after pip.
+WHEEL_TAG=""
+if [ -z "$PIN_VERSION" ]; then
+  WHEEL_TAG="$("$PY" -I -c '
+import platform
+s, m = platform.system(), platform.machine().lower()
+tags = {("Linux", "x86_64"): "manylinux_2_28_x86_64", ("Linux", "aarch64"): "manylinux_2_28_aarch64",
+        ("Linux", "arm64"): "manylinux_2_28_aarch64", ("Darwin", "arm64"): "macosx_11_0_arm64",
+        ("Darwin", "x86_64"): "macosx_11_0_x86_64"}
+tag = tags.get((s, m), "")
+if s == "Darwin" and tag:
+    try:
+        tag = tag if int(platform.mac_ver()[0].split(".")[0]) >= 11 else ""
+    except ValueError:
+        tag = ""
+if s == "Linux" and tag:
+    lib, ver = platform.libc_ver()
+    try:
+        ok = lib == "glibc" and tuple(int(x) for x in ver.split(".")[:2]) >= (2, 28)
+    except ValueError:
+        ok = False
+    tag = tag if ok else ""
+print(tag)
+' 2>/dev/null || true)"
+fi
 # A pinned miss is policy far more often than it is a broken CDN: releases
 # published before manifest signing was enabled carry no signed manifest and are
 # permanently unpinnable. The URL alone reads as infrastructure failure, which
@@ -946,6 +978,22 @@ manifest_miss() {
 curl -fsS --proto '=https' --max-filesize 65536 "$MANIFEST_URL" \
   -o "$TMP/cli-manifest.json" \
   || manifest_miss $?
+# The platform manifest replaces it only when it names the same version: a
+# promoted stable or a mirrored insider publishes no platform wheels, so there it
+# still names the previous release. Either file is then verified in full below;
+# comparing the versions before that check trusts nothing a replayed, still
+# validly signed manifest could not already claim.
+if [ -n "$WHEEL_TAG" ]; then
+  if curl -fsS --proto '=https' --max-filesize 65536 "$FEED_BASE/feed/$CHANNEL_PATH/latest-cli-$WHEEL_TAG.json" \
+      -o "$TMP/cli-manifest-platform.json" 2>/dev/null \
+    && "$PY" -I -c 'import json,sys; a,b=(json.load(open(p)).get("version") for p in sys.argv[1:]); sys.exit(0 if isinstance(a,str) and a==b else 1)' \
+      "$TMP/cli-manifest.json" "$TMP/cli-manifest-platform.json" 2>/dev/null; then
+    mv -f "$TMP/cli-manifest-platform.json" "$TMP/cli-manifest.json"
+  else
+    WHEEL_TAG=""
+    rm -f "$TMP/cli-manifest-platform.json"
+  fi
+fi
 
 # The signature covers canonical JSON containing every field except the
 # signature itself. Reject duplicate/extra/missing keys, decode into bounded
@@ -1022,12 +1070,12 @@ echo "Verified signed manifest."
 # channel, and signed version; a valid signer cannot redirect this installer to
 # an unrelated origin by accident.
 if ! "$PY" - "$TMP/signed-payload.json" "$CHANNEL" "$PIN_VERSION" \
-    "$ARTIFACT_BASE" <<'PY'
+    "$ARTIFACT_BASE" "${WHEEL_TAG:-any}" <<'PY'
 import json
 import re
 import sys
 
-path, expected_channel, pinned_version, artifact_base = sys.argv[1:]
+path, expected_channel, pinned_version, artifact_base, wheel_tag = sys.argv[1:]
 payload = json.load(open(path, encoding="ascii"))
 expected_fields = {
     "algorithm", "channel", "key_id", "pub_date", "python_requires",
@@ -1059,7 +1107,7 @@ try:
     ):
         raise ValueError
     stem = "kirocrew_lts" if expected_channel == "lts" else "kirocrew"
-    wheel_name = f"{stem}-{version}-py3-none-any.whl"
+    wheel_name = f"{stem}-{version}-py3-none-{wheel_tag}.whl"
     expected_url = f"{artifact_base}/cli/{expected_channel}/{version}/{wheel_name}"
     if payload["wheel_url"] != expected_url:
         raise ValueError
@@ -1078,7 +1126,7 @@ WHEEL_URL="$(read_field wheel_url)"
 SHA="$(read_field sha256)"
 VER="$(read_field version)"
 if [ "$CHANNEL" = lts ]; then _WHEEL_STEM=kirocrew_lts; else _WHEEL_STEM=kirocrew; fi
-WHEEL_NAME="${_WHEEL_STEM}-${VER}-py3-none-any.whl"
+WHEEL_NAME="${_WHEEL_STEM}-${VER}-py3-none-${WHEEL_TAG:-any}.whl"
 WHL="$TMP/$WHEEL_NAME"
 
 echo "Downloading kirocrew $VER ..."
@@ -1528,11 +1576,26 @@ _path_hint
 # install then ends with the same 3, so a provisioning script sees it. A re-run
 # over an existing install keeps 0: every released `kirocrew update` re-runs
 # this live script on a pipx install and reads any non-zero as a failed update.
-# --no-kas skips the engine for an agent that does not use it.
+# --no-kas skips this download; the gateway then installs the engine at start.
 _KAS_RETRY="$BIN/kirocrew kas install"
 _KC_EXIT=0
 _kas_rc=0
-if [ "$INSTALL_KAS" = "1" ]; then
+# A platform wheel carries the engine inside the package. That is read through the
+# installed interpreter's own engine reader, not `kirocrew kas install`: an LTS
+# install refuses every `kas` verb but sign-in until someone signs in.
+_kas_packaged=0
+_kc_py="$(head -n 1 "$BIN/kirocrew" 2>/dev/null | sed -n 's/^#![[:space:]]*//p')"
+if [ -n "$_kc_py" ] && [ -x "$_kc_py" ] && "$_kc_py" -I -c '
+from kiro_crew.acp import kas_bundle
+found = kas_bundle.installed_bundle()
+raise SystemExit(0 if found is not None and found.packaged else 1)
+' >/dev/null 2>&1; then
+  _kas_packaged=1
+fi
+if [ "$_kas_packaged" = 1 ]; then
+  echo ""
+  echo "The built-in KAS engine is part of this install (no download needed)."
+elif [ "$INSTALL_KAS" = "1" ]; then
   echo ""
   echo "Downloading the built-in KAS engine (kirocrew kas install; skip with --no-kas) ..."
   if [ -x "$BIN/kirocrew" ]; then
@@ -1542,8 +1605,13 @@ if [ "$INSTALL_KAS" = "1" ]; then
   fi
   _tolerate "$_kas_rc"
   if [ "$_kas_rc" -ne 0 ] && [ "$_kas_rc" -ne 3 ]; then
-    echo "WARNING: could not download the built-in KAS engine; Kiro Crew is installed without it." >&2
-    echo "Retry when online: $_KAS_RETRY" >&2
+    # Engine guarantee: never "installed" without the engine. A first install
+    # fails; a re-run keeps 0 (see above), and so does LTS, whose `kas install`
+    # waits for a sign-in; the gateway installs the engine when it starts and
+    # reports it missing until then.
+    echo "ERROR: could not install the built-in KAS engine, so Kiro Crew cannot run its default agent yet." >&2
+    echo "The gateway retries when it starts. Retry now when online: $_KAS_RETRY" >&2
+    [ "$_KC_REPLACED_INSTALL" = 1 ] || [ "$CHANNEL" = lts ] || _KC_EXIT=1
   fi
 fi
 # Ubuntu 23.10+ ships kernel.apparmor_restrict_unprivileged_userns=1, and there

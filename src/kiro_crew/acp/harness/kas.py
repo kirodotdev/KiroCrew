@@ -237,7 +237,8 @@ def _bundle_route_selected() -> bool:
 def _runs_crew_engine_bundle(spawned_binary: str | None) -> bool:
     """Is *spawned_binary* inside one of Crew's own engine roots (the bundle's Node)?
 
-    The roots are the two :func:`kiro_crew.acp.kas_bundle.installed_bundle` reads:
+    The roots are the ones :func:`kiro_crew.acp.kas_bundle.installed_bundle` reads
+    (:func:`kiro_crew.acp.kas_bundle.engine_roots`): the package's ``_kas_engine``,
     the data home's ``engines/kas`` and the desktop app's staged copy. Positive
     identity only: a missing path, a kiro-cli relay or any failure is False.
     Blocking (resolves paths); call off the loop.
@@ -246,7 +247,7 @@ def _runs_crew_engine_bundle(spawned_binary: str | None) -> bool:
         return False
     from kiro_crew.acp import kas_bundle as kas_bundle_mod
 
-    roots = [kas_bundle_mod.kas_engines_root(), kas_bundle_mod.bundled_kas_root()]
+    roots = kas_bundle_mod.engine_roots()
     try:
         binary = Path(spawned_binary).resolve()
         return any(binary.is_relative_to(root.resolve()) for root in roots if root)
