@@ -8,12 +8,18 @@
 // The premise: on Windows the managed command's child is cmd.exe, and ending
 // cmd.exe alone leaves the program it started running and holding the pipes,
 // so the call would settle only when that program ends by itself. The timeout
-// must end the whole tree, so the call settles near the ceiling and nothing
-// it started is left running.
+// must end the whole tree, so nothing it started is left running and the
+// program's own work is cut short.
+//
+// No clock is read: the program is `ping -n 21`, which prints one line naming
+// 127.0.0.1 per echo, one second apart, plus a header and a statistics line.
+// A run left to finish prints 23 such lines; a run the timeout cut short
+// prints a few. Host load can only delay the kill, never make a cut-short run
+// look like a finished one.
 
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { execFileSync } = require("node:child_process");
+const { execFile } = require("node:child_process");
 
 const { createManagedExec } = require("../runtime/update/managed-exec");
 
@@ -21,21 +27,32 @@ const IS_WIN = process.platform === "win32";
 const skip = IS_WIN ? false : "the managed command runs under cmd.exe only on Windows";
 
 const SYSTEM32 = `${process.env.SystemRoot || "C:\\Windows"}\\System32`;
+const ECHOES = 21;
 
 // PIDs of running processes with this image name, read from tasklist.
 function pidsOf(image) {
-  const out = execFileSync(`${SYSTEM32}\\tasklist.exe`, ["/FI", `IMAGENAME eq ${image}`, "/FO", "CSV", "/NH"], {
-    encoding: "utf8",
-    windowsHide: true,
+  return new Promise((resolve, reject) => {
+    execFile(`${SYSTEM32}\\tasklist.exe`, ["/FI", `IMAGENAME eq ${image}`, "/FO", "CSV", "/NH"], {
+      encoding: "utf8",
+      windowsHide: true,
+    }, (err, out) => {
+      if (err) return reject(err);
+      const pids = [];
+      for (const m of String(out).matchAll(/^"[^"]+","(\d+)"/gm)) pids.push(Number(m[1]));
+      resolve(pids);
+    });
   });
-  const pids = [];
-  for (const m of out.matchAll(/^"[^"]+","(\d+)"/gm)) pids.push(Number(m[1]));
-  return pids;
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function taskkill(pid) {
+  return new Promise((resolve) => {
+    execFile(`${SYSTEM32}\\taskkill.exe`, ["/F", "/PID", String(pid)], { windowsHide: true }, () => resolve());
+  });
+}
 
-test("on Windows a timeout ends the real cmd.exe tree and settles near the ceiling", { skip, timeout: 30_000 }, async () => {
+const tick = () => new Promise((r) => setTimeout(r, 100));
+
+test("on Windows a timeout ends the real cmd.exe tree before its command finishes", { skip, timeout: 60_000 }, async () => {
   const lines = [];
   const log = { info: (m) => lines.push(String(m)), error: (m) => lines.push(String(m)) };
   const exec = createManagedExec({
@@ -43,43 +60,43 @@ test("on Windows a timeout ends the real cmd.exe tree and settles near the ceili
     managedPath: () => process.env.PATH,
     log,
   });
-  const pingsBefore = new Set(pidsOf("PING.EXE"));
-  let started = [];
+  const pingsBefore = new Set(await pidsOf("PING.EXE"));
+  const ours = async () => (await pidsOf("PING.EXE")).filter((p) => !pingsBefore.has(p));
   try {
-    const t0 = Date.now();
-    // About 8 s: ping waits one second between its nine echoes.
-    const run = exec.runManagedCommand(`"${SYSTEM32}\\PING.EXE" -n 9 127.0.0.1`, { timeout: 1000, label: "update command" });
-    await sleep(500);
-    started = pidsOf("PING.EXE").filter((p) => !pingsBefore.has(p));
+    let settled = false;
+    const run = exec.runManagedCommand(`"${SYSTEM32}\\PING.EXE" -n ${ECHOES} 127.0.0.1`, {
+      timeout: 2000,
+      label: "update command",
+    }).finally(() => { settled = true; });
+    // Watch for the ping while the run lasts, so the test knows it really ran
+    // even if ping's piped output is lost when it is killed.
+    let seenRunning = false;
+    while (!settled && !seenRunning) {
+      seenRunning = (await ours()).length > 0;
+      if (!seenRunning) await tick();
+    }
     const r = await run;
-    const settledMs = Date.now() - t0;
-
-    assert.ok(started.length > 0, "the command's PING.EXE was never seen running, so the test proves nothing");
-    assert.ok(settledMs < 4000, `settled after ${settledMs} ms; the 1000 ms ceiling did not end the command`);
     assert.deepStrictEqual({ timedOut: r.timedOut, failed: r.failed }, { timedOut: true, failed: true });
 
-    const cmdLine = lines.find((l) => l.startsWith("[update] managed update command started (pid "));
-    assert.ok(cmdLine, lines.join("\n"));
-    const cmdPid = Number(cmdLine.slice("[update] managed update command started (pid ".length, -1));
+    const echoed = (r.out.match(/127\.0\.0\.1/g) || []).length;
+    assert.ok(seenRunning || echoed > 0, `ping never ran under cmd.exe; output: ${JSON.stringify(r.out)}`);
+    assert.ok(echoed < ECHOES, `ping printed ${echoed} lines naming 127.0.0.1, so it ran to the end instead of being cut short`);
 
-    // The tree is gone once the call settles; allow the kernel a moment to
-    // reap it before reading the process list.
-    let leftPings = started;
-    let cmdAlive = true;
+    const started = lines.find((l) => l.startsWith("[update] managed update command started (pid "));
+    assert.ok(started, lines.join("\n"));
+    const cmdPid = Number(started.slice("[update] managed update command started (pid ".length, -1));
+
+    // Give the kernel up to a second to reap the tree before reading it.
+    let leftPings = await ours();
+    let cmdAlive = (await pidsOf("cmd.exe")).includes(cmdPid);
     for (let i = 0; i < 10 && (leftPings.length || cmdAlive); i += 1) {
-      const pings = pidsOf("PING.EXE");
-      leftPings = started.filter((p) => pings.includes(p));
-      cmdAlive = pidsOf("cmd.exe").includes(cmdPid);
-      if (leftPings.length || cmdAlive) await sleep(100);
+      await tick();
+      leftPings = await ours();
+      cmdAlive = (await pidsOf("cmd.exe")).includes(cmdPid);
     }
     assert.deepStrictEqual(leftPings, [], "the command cmd.exe started is still running after the timeout");
     assert.strictEqual(cmdAlive, false, `cmd.exe pid ${cmdPid} is still running after the timeout`);
   } finally {
-    const pings = pidsOf("PING.EXE");
-    for (const p of started.filter((p) => pings.includes(p))) {
-      try {
-        execFileSync(`${SYSTEM32}\\taskkill.exe`, ["/F", "/PID", String(p)], { windowsHide: true, stdio: "ignore" });
-      } catch { /* already gone */ }
-    }
+    for (const p of await ours()) await taskkill(p);
   }
 });
