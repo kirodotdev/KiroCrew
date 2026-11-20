@@ -18,13 +18,14 @@ backend has for the same sign-ins, which kiro-cli keeps host-wide in
 What is stored, and where:
 
 - Only keys of the engine's MCP namespace are accepted,
-  ``kiro.mcp.<sha256 hex>.(client|tokens|verifier|discovery)``. The hash is the
-  engine's own digest of the server URL, headers and OAuth config, so a changed
-  server config reads as a different key and never inherits a grant. Any other
-  key, and a value over :data:`MAX_VALUE_CHARS`, is refused, so the engine cannot
-  use Crew as a general key-value store.
-- ``client`` (the dynamic client registration) and ``tokens`` persist, in a
-  DEDICATED vault at ``<data_home>/kas/mcp-grants/.vault/``. It has its own key
+  ``kiro.mcp.<sha256 hex>.(client|kiro-path-client|tokens|verifier|discovery)``.
+  The hash is the engine's own digest of the server URL, headers and OAuth
+  config, so a changed server config reads as a different key and never inherits
+  a grant. Any other key, and a value over :data:`MAX_VALUE_CHARS`, is refused,
+  so the engine cannot use Crew as a general key-value store.
+- ``client``, ``kiro-path-client`` (the client registration, under either kind)
+  and ``tokens`` persist, in a DEDICATED vault at
+  ``<data_home>/kas/mcp-grants/.vault/``. It has its own key
   file and is neither the user Secrets vault (so it is not listed in Settings ->
   Secrets and cannot be granted to a cron) nor the Kiro sign-in vault (so a Kiro
   logout leaves MCP grants alone and the reverse). The whole ``kas`` directory is
@@ -49,7 +50,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.mcp_grant_kas import persistence_enabled
+from kiro_crew.mcp_grant_kas import PERSISTED_KINDS, persistence_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +87,13 @@ def is_secret_method(method: object) -> bool:
 
 
 #: The engine's MCP OAuth key shape: ``kiro.mcp.<sha256 hex>.<kind>``.
-_KEY_RE = re.compile(r"\Akiro\.mcp\.[0-9a-f]{64}\.(client|tokens|verifier|discovery)\Z")
+_KEY_RE = re.compile(
+    r"\Akiro\.mcp\.[0-9a-f]{64}\.("
+    + "|".join(re.escape(kind) for kind in (*PERSISTED_KINDS, "verifier", "discovery"))
+    + r")\Z"
+)
 #: Kinds that outlive the engine process. The rest stay in runtime memory.
-_PERSISTED_KINDS = frozenset({"client", "tokens"})
+_PERSISTED_KINDS = frozenset(PERSISTED_KINDS)
 #: Largest value accepted, in characters. A client registration or token set is a
 #: few KB; the cap stops a runaway value from bloating a vault that every get
 #: re-reads whole.
@@ -129,7 +134,7 @@ def with_secret_storage(capabilities: dict[str, Any]) -> dict[str, Any]:
 
 
 class McpGrantStore:
-    """The dedicated vault holding persisted MCP ``client`` / ``tokens`` entries."""
+    """The dedicated vault holding persisted MCP client registration and ``tokens`` entries."""
 
     def __init__(self, data_home: str | Path) -> None:
         from kiro_crew.mcp_grant_kas import grant_store_root

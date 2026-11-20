@@ -744,7 +744,7 @@ moments after the user asked for the connection to be gone is not a race worth
 keeping), then — in ONE locked transaction — removes the MCP entry from the
 scopes that configure this provider and unlinks the stored grant artifacts.
 After it, the sign-in a KAS Connect saved in Crew's grant vault is removed too
-(its `tokens` and `client` entries, `mint_kas.forget_kas_sign_in`), because while
+(its `tokens` and client registration entries, `mint_kas.forget_kas_sign_in`), because while
 chats run on KAS the card's verdict reads that vault beside kiro-cli's cache.
 Which ones is decided in the same locked census by the engine's identity, not
 kiro-cli's: the vault keys a sign-in by `mcp_grant_kas.kas_connection_hash` (the
