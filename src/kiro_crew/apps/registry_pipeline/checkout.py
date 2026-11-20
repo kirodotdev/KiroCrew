@@ -278,6 +278,14 @@ def _resolved_clone_commit(clone_root: Path) -> str:
     return ""
 
 
+def _is_checkout(dest: Path) -> bool:
+    """True when *dest* is a directory holding a ``.git`` directory.
+
+    Sync so callers hand both stats to one ``asyncio.to_thread`` hop.
+    """
+    return dest.is_dir() and (dest / ".git").is_dir()
+
+
 async def _clone_origin_url(dest: Path) -> str | None:
     """Read *dest*'s ``origin`` remote URL. Returns None when unreadable.
 
@@ -579,9 +587,9 @@ async def _git_fetch_ref(
     created_here = False
     succeeded = False
     try:
-        if (dest / ".git").is_dir():
+        if await asyncio.to_thread((dest / ".git").is_dir):
             pass  # a checkout we can fetch into; never ours to delete
-        elif dest.exists():
+        elif await asyncio.to_thread(dest.exists):
             # Refuse rather than adopt. `not (dest / ".git").is_dir()` answers "is
             # there a checkout here", which is NOT "am I creating this": a plain
             # directory of the user's files, or a `.git` FILE from a worktree link,
@@ -927,7 +935,7 @@ async def _git_clone_or_pull(
     # than a different one moved out of the way (retain it, never restore).
     moved_aside_is_restorable = False
 
-    if dest.is_dir() and (dest / ".git").is_dir():
+    if await asyncio.to_thread(_is_checkout, dest):
         # The credential posture was decided from *git_url* — but a persisted
         # clone pulls from ITS OWN `origin`, which can be a different URL
         # (e.g. a registry replaced with the same app name leaves the old
@@ -1017,7 +1025,7 @@ async def _git_clone_or_pull(
                 }
             moved_aside_is_restorable = True
 
-    if not commit and dest.is_dir() and (dest / ".git").is_dir():
+    if not commit and await asyncio.to_thread(_is_checkout, dest):
         # Branch re-convergence only applies to branch-tracking entries. A
         # commit-pinned install never reuses the existing tree (the `if commit:`
         # block below moves it aside and re-fetches detached regardless), so
@@ -1081,7 +1089,7 @@ async def _git_clone_or_pull(
             # strand it as an undiscoverable `.stale-*` sibling.
             moved_aside_is_restorable = True
 
-    if dest.is_dir() and (dest / ".git").is_dir():
+    if await asyncio.to_thread(_is_checkout, dest):
         if commit:
             # A PINNED INSTALL NEVER REUSES AN EXISTING TREE.
             #
@@ -1413,7 +1421,7 @@ async def _git_clone_or_pull(
                 # process holds OPEN still refuses to unlink on Windows. Move IT
                 # aside so the restore rename cannot collide. Keep the path inside
                 # app-sources.
-                if dest.exists():
+                if await asyncio.to_thread(dest.exists):
                     partial_name = f"{dest.name}.partial-{uuid.uuid4().hex[:8]}"
                     partial_aside = dest.with_name(partial_name)
                     try:

@@ -729,6 +729,7 @@ if _typing.TYPE_CHECKING:
         _git_fetch_branch,
         _git_fetch_commit,
         _git_fetch_ref,
+        _is_checkout,
         _mkdtemp_settled,
         _names_a_missing_ref,
         _resolved_clone_commit,
