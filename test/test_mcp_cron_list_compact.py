@@ -121,8 +121,24 @@ class TestCronListCompact:
         svc._save()
         out = _call_tool_inner("cron_list", {})
         assert "err=BOOM" in out
-        assert "…" in out
+        assert " ... " in out
         assert "Q" * 400 not in out
+
+    def test_compact_last_error_keeps_the_refusal_rule_at_its_end(self, home):
+        """A gate refusal names its rule last, after a long command title."""
+        svc = CronService(base_dir=home)
+        job = svc.add_job(name="refused", message="hi", every_secs=300)
+        job.last_status = "error"
+        job.last_error = (
+            "1 of 3 tool call(s) blocked by the security gate: "
+            + "echo step && " * 40
+            + "tail-step (Blocked: matches rule zebra)"
+        )
+        svc._save()
+        out = _call_tool_inner("cron_list", {})
+        err_line = next(line for line in out.splitlines() if "err=" in line)
+        assert "err=1 of 3 tool call(s) blocked" in err_line
+        assert err_line.endswith("tail-step (Blocked: matches rule zebra)")
 
     def test_compact_includes_result_for_script_jobs(self, home):
         """Script/command jobs surface non-trivial last_result in compact."""
