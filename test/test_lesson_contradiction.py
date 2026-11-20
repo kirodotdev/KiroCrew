@@ -399,6 +399,41 @@ class TestResolveAndSupersede:
         finally:
             await asyncio.to_thread(vs.close)
 
+    @pytest.mark.parametrize("announce", [True, False])
+    async def test_a_sweep_delete_announces_lessons_changed(self, tmp_path, announce):
+        """The sweep deletes after learn_add returned: its delete gets its own frame."""
+        from kiro_crew import lesson_events
+        from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
+
+        vs = VectorMemoryStore(db_path=tmp_path / "memory.db")
+        await asyncio.to_thread(vs.init)
+        frames: list[dict] = []
+        lesson_events.set_lessons_changed_hook(frames.append)
+        try:
+            await asyncio.to_thread(
+                vs.set_semantic, "lesson.old", {"rule": "Use X", "category": "tool"},
+                1.0, "consolidation",
+            )
+            seen_body = (await asyncio.to_thread(vs.get_lessons))[0]["value_json"]
+            candidates = [{"key": "lesson.old", "rule": "Use X", "similarity": 0.6}]
+            with (
+                patch(
+                    "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
+                    new=AsyncMock(return_value=[("lesson.old", seen_body)]),
+                ),
+                patch("kiro_crew.dashboard.handlers.cron._sel"),
+            ):
+                await _resolve_and_supersede(
+                    MagicMock(), "dashboard:ui", "Do NOT use X", candidates, vs,
+                    announce=announce,
+                )
+            assert await asyncio.to_thread(vs.get_semantic, "lesson.old") is None
+            expected = [{"action": "removed", "source": "user_explicit", "count": 1}]
+            assert frames == (expected if announce else [])
+        finally:
+            lesson_events.set_lessons_changed_hook(None)
+            await asyncio.to_thread(vs.close)
+
     async def test_swallows_exceptions(self, caplog):
         """A failed sweep must not propagate — the lesson is already persisted."""
         from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
@@ -576,10 +611,30 @@ class TestApiLessonsCreateSchedulesSweep:
                     "rule": "r",
                     "similarity": 0.6,
                     "applies": LESSON_APPLIES_ON_TOPIC,
+                    "source": "consolidation",
                 }
             ]
         )
         assert len(tasks) == 1
+
+    @pytest.mark.parametrize("source", ["user_explicit", None, "", 7])
+    async def test_a_finding_a_person_saved_is_never_swept(self, source):
+        """A model verdict may retire an extracted finding, not one a person saved.
+
+        The sweep deletes after ``learn_add`` returned, so its caller never hears
+        of it; a row whose writer is unknown is protected the same way.
+        """
+        candidate = {
+            "key": "lesson.mine",
+            "rule": "r",
+            "similarity": 0.6,
+            "applies": LESSON_APPLIES_ON_TOPIC,
+        }
+        if source is not None:
+            candidate["source"] = source
+        tasks = await self._run([candidate])
+        assert tasks == []
+        self._sweep.assert_not_called()
 
     async def test_no_task_when_no_candidates(self):
         tasks = await self._run([])
@@ -626,6 +681,7 @@ class TestApiLessonsCreateSchedulesSweep:
             "rule": "in repo Y do Z",
             "similarity": 0.6,
             "applies": LESSON_APPLIES_ON_TOPIC,
+            "source": "consolidation",
         }
         tasks = await self._run(
             [standing, finding], submitted_applies=submitted_applies
