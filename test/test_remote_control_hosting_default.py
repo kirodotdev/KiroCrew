@@ -167,6 +167,91 @@ def test_status_says_when_it_is_on_only_by_default(tmp_path, monkeypatch, capsys
     assert capsys.readouterr().out == f"Remote Control: on\n   {BY_DEFAULT_NOTICE}\n"
 
 
+def _workload_host(monkeypatch: pytest.MonkeyPatch, region: str) -> None:
+    monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY", "spiffe")
+    monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY_SVID_FILE", "/run/stand-in/svid")
+    monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY_AUDIENCE", "https://runtime.example.test")
+    monkeypatch.setenv(
+        "KIROCREW_WORKLOAD_IDENTITY_PROFILE_ARN",
+        f"arn:aws:codewhisperer:{region}:000000000000:profile/STANDINPROFILE",
+    )
+
+
+@pytest.mark.parametrize("as_json", [False, True], ids=["text", "json"])
+def test_status_says_a_crew_key_whose_region_differs_from_the_profile_is_on(
+    tmp_path, monkeypatch, capsys, as_json: bool
+) -> None:
+    # The profile ARN is the JWT-SVID lease's; a crew key leases from its setting.
+    from kiro_crew.remote_control.cli import BY_DEFAULT_NOTICE, run
+
+    _workload_host(monkeypatch, "eu-central-1")
+    path = tmp_path / "config.json"
+    tunnel = {"relay_lease_credential": KEY_FILE, "relay_lease_region": "us-east-1"}
+    path.write_text(json.dumps({"tunnel": tunnel}), encoding="utf-8")
+    monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: path)
+    monkeypatch.setattr("kiro_crew.config.loader.config_local_path", lambda: tmp_path / "l.json")
+    with pytest.raises(SystemExit):
+        run(argparse.Namespace(remote_control_action="status", json=as_json))
+    out = capsys.readouterr().out
+    if as_json:
+        assert json.loads(out) == {"requested": True, "locked": False, "by_default": True}
+    else:
+        assert out == f"Remote Control: on\n   {BY_DEFAULT_NOTICE}\n"
+
+
+@pytest.mark.parametrize("as_json", [False, True], ids=["text", "json"])
+def test_status_says_a_jwt_svid_crew_whose_region_differs_from_its_profile_is_on(
+    tmp_path, monkeypatch, capsys, as_json: bool
+) -> None:
+    # A JWT-SVID lease leases from its setting too: the profile ARN never picks it.
+    from kiro_crew.remote_control.cli import BY_DEFAULT_NOTICE, run
+
+    _workload_host(monkeypatch, "eu-central-1")
+    path = tmp_path / "config.json"
+    tunnel = {"relay_lease_credential": "/run/stand-in/svid", "relay_lease_region": "us-east-1"}
+    path.write_text(json.dumps({"tunnel": tunnel}), encoding="utf-8")
+    monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: path)
+    monkeypatch.setattr("kiro_crew.config.loader.config_local_path", lambda: tmp_path / "l.json")
+    with pytest.raises(SystemExit):
+        run(argparse.Namespace(remote_control_action="status", json=as_json))
+    out = capsys.readouterr().out
+    if as_json:
+        assert json.loads(out) == {"requested": True, "locked": False, "by_default": True}
+    else:
+        assert out == f"Remote Control: on\n   {BY_DEFAULT_NOTICE}\n"
+
+
+@pytest.mark.parametrize("as_json", [False, True], ids=["text", "json"])
+def test_status_says_a_jwt_svid_crew_with_an_unusable_region_cannot_start(
+    tmp_path, monkeypatch, capsys, as_json: bool
+) -> None:
+    from kiro_crew.auth.login.control_plane import CONTROL_PLANE_REGIONS
+    from kiro_crew.remote_control.cli import BY_DEFAULT_NOTICE, run
+
+    _workload_host(monkeypatch, "eu-central-1")
+    path = tmp_path / "config.json"
+    tunnel = {"relay_lease_credential": "/run/stand-in/svid", "relay_lease_region": "xx-test-9"}
+    path.write_text(json.dumps({"tunnel": tunnel}), encoding="utf-8")
+    monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: path)
+    monkeypatch.setattr("kiro_crew.config.loader.config_local_path", lambda: tmp_path / "l.json")
+    with pytest.raises(SystemExit):
+        run(argparse.Namespace(remote_control_action="status", json=as_json))
+    out = capsys.readouterr().out
+    why = (
+        "tunnel.relay_lease_region names no Region the built-in lease service covers "
+        f"({', '.join(CONTROL_PLANE_REGIONS)}): name one, or set tunnel.relay_lease_url"
+    )
+    if as_json:
+        assert json.loads(out) == {
+            "requested": True,
+            "locked": False,
+            "by_default": True,
+            "problem": why,
+        }
+    else:
+        assert out == f"Remote Control: can't start\n   {why}\n   {BY_DEFAULT_NOTICE}\n"
+
+
 # ── test and seeded gateways ─────────────────────────────────────────────────
 
 

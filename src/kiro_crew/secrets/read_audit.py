@@ -14,11 +14,10 @@ with every turn. A ``(secret, caller, purpose)`` triple therefore writes at most
 one row per :data:`WINDOW_SECS`; the triple's next row carries ``repeats=N``,
 the reads its window absorbed. At most :data:`MAX_TRACKED` triples are
 remembered; past that the oldest is forgotten, and one with absorbed reads
-writes its count as a row first. A triple is remembered by at most
-:data:`MAX_NAME_CHARS` of the secret's name, the name's length and a CRC-32
-checksum of it (a cheap marker for names that share their first characters;
-a name is not a credential, so no cryptographic hash is needed), so the
-memory a triple holds does not grow with the name. Reads absorbed after a triple's last row are
+writes its count as a row first. A triple is remembered by the SHA-256 digest
+of the secret's name, so the memory a triple holds does not grow with the name
+and two different names never share a triple. A row shows a name longer than
+:data:`MAX_NAME_CHARS` clipped, with a CRC-32 marker of the whole name. Reads absorbed after a triple's last row are
 written with its next read, so a gateway that stops before that read leaves
 them unwritten.
 
@@ -38,6 +37,7 @@ swallowed: an audit that cannot be written never fails the read.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 import threading
@@ -83,8 +83,8 @@ class _Window:
 
 
 _lock = threading.Lock()
-#: (clipped name, name length, name checksum, caller, purpose) -> its window
-_seen: dict[tuple[str, int, str, str, str], _Window] = {}
+#: (SHA-256 of the name, caller, purpose) -> its window
+_seen: dict[tuple[bytes, str, str], _Window] = {}
 _clock: Callable[[], float] = time.monotonic
 #: (when, answer) of the last disk read of the switch, for a process with no watcher.
 _loaded: tuple[float, bool] | None = None
@@ -172,14 +172,17 @@ def _due(name: str, caller: str, purpose: str, now: float) -> list[_Row]:
     Empty when the read is absorbed. A triple forgotten to keep the bound writes
     its absorbed reads as a row of its own first, so eviction never loses a count.
     """
-    marker = format(zlib.crc32(name.encode("utf-8", "surrogatepass")), "08x")
-    key = (name[:MAX_NAME_CHARS], len(name), marker, caller, purpose)
+    encoded = name.encode("utf-8", "surrogatepass")
+    key = (hashlib.sha256(encoded).digest(), caller, purpose)
     with _lock:
         state = _seen.get(key)
         if state is not None and now - state.last < WINDOW_SECS:
             state.absorbed += 1
             return []
-        shown = state.shown if state is not None else _shown(name, marker)
+        if state is not None:
+            shown = state.shown
+        else:
+            shown = _shown(name, format(zlib.crc32(encoded), "08x"))
         rows = [(shown, caller, purpose, state.absorbed if state is not None else 0)]
         _seen.pop(key, None)
         while len(_seen) >= MAX_TRACKED:

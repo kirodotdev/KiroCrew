@@ -336,13 +336,49 @@ async def test_an_empty_lease_credential_is_refused_not_the_sign_in(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "region", "expected"),
+    [
+        ("set-url", "", set()),
+        ("built-in", "", {"us-east-1"}),
+        ("built-in", "eu-central-1", {"eu-central-1"}),
+    ],
+    ids=["set-url", "built-in", "built-in-with-setting"],
+)
 async def test_the_lease_carries_the_svid_file_with_no_token_type_or_profile(
-    workload: Path, no_agent_identity_seam: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    workload: Path,
+    no_agent_identity_seam: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    region: str,
+    expected: set,
 ) -> None:
+    from kiro_crew.auth.login import control_plane
+
     monkeypatch.setattr(lease_module, "_data_home", lambda: tmp_path)
     token = workload.read_text().strip()
+    asked: list = []
     async with FakeLeaseService({token}) as lease:
-        settings = RelaySettings.from_config(_cfg(lease.url, str(workload)))
+        if route == "built-in":
+            # tunnel.relay_lease_region, else us-east-1, picks the built-in URL, never the
+            # profile ARN's Region; the ARN stays out of the body.
+            monkeypatch.setenv(wi.ENV_PROFILE_ARN, PROFILE_ARN.replace("us-east-1", "eu-central-1"))
+            monkeypatch.setattr(
+                control_plane,
+                "known_control_plane_url",
+                lambda region: asked.append(region) or lease.url,
+                raising=False,
+            )
+
+            def no_fallback(profile_arn: object) -> str:
+                raise AssertionError("a workload lease fell back to the sign-in's lookup")
+
+            monkeypatch.setattr(lease_module, "built_in_lease_url", no_fallback)
+        url = lease.url if route == "set-url" else ""
+        cfg = _cfg(url, str(workload))
+        cfg.tunnel.relay_lease_region = region
+        settings = RelaySettings.from_config(cfg)
         settings.validate()
         source = lease_token_source(settings)
         assert source is not None
@@ -355,6 +391,7 @@ async def test_the_lease_carries_the_svid_file_with_no_token_type_or_profile(
     assert renew["auth"] == release["auth"] == f"Bearer {token}"
     assert renew["token_type"] is None and release["token_type"] is None
     assert "profileArn" not in renew["body"] and "profileArn" not in release["body"]
+    assert set(asked) == expected
 
 
 # ── readiness ──

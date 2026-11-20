@@ -66,8 +66,8 @@ All six, together:
    label green. `readiness: maintainer review` is not a failure to fix: the
    remaining gate is a human one, so report it rather than pushing.
 2. Mergeable: no conflicts, not draft, not `CHANGES_REQUESTED`.
-3. **The green still describes today's base** — `green_age.py --pr <n>` exits 0.
-   Exit 30 means the rollup is green about a tree nobody merges; exit 2 satisfies
+3. **The green still describes today's base** — `green_age.py --pr <n>` exits 0,
+   or its 30 re-checked green (Phase 3 step 5); exit 2 satisfies
    this criterion no more than it blocks it, so report it and let the user rule.
 4. One clean commit on a feature branch (when the profile sets `single_commit`).
 5. **Every raised concern answered on the PR** — see "Dispositions" below. A
@@ -441,9 +441,9 @@ full suites are CI's job and the Phase 3 poll is the authority on them.
 ### Phase 3 — Push & check
 
 **Once the PR is open, only five things justify a new push:** a CI red, a review
-finding, **a defect in the diff this PR already carries**, **`green_age.py` exit
-30**, or a rebase onto a base that now carries the red-main fix or clears a
-conflict. Anything else — an improvement, a new surface, an adjacent fix — goes to
+finding, **a defect in the diff this PR already carries**, **a red green-age
+re-check**, or a rebase onto a base that now carries the red-main
+fix or clears a conflict. Anything else — an improvement, a new surface, an adjacent fix — goes to
 a follow-up branch.
 
 **Do not push while the previous head still has runs in flight** — amend into the
@@ -520,8 +520,8 @@ comes after a record, never instead of one:
 5. **Check the green, then poll.** Each cycle,
    `python3 $SKILL_DIR/scripts/green_age.py --pr <n>` first. **0** → nothing to do.
    **2** → keep polling, and after **three consecutive** 2s report the reason and
-   hand the PR over. **30** → re-sync through **Phase 1**, run only the related
-   tests for the files the line names, push with the SHA-pinned lease, and post ONE
+   hand the PR over. **30** → re-check in a throwaway detached worktree
+   (`rationale.md`). **Green: do NOT push**; on a red or conflict, fix it, push with the SHA-pinned lease, and post ONE
    comment: `Rebased: main moved in <files> since this head went green (<old-base> -> <new-base>); CI re-running.`
    Exit 30 does NOT override the no-push-while-runs-are-in-flight rule above.
 

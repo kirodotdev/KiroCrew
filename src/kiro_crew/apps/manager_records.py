@@ -1146,7 +1146,7 @@ def _declared_grant_entries(permissions: Any) -> dict[str, list[str]]:
 #: update's new entries. ``bots``: the owner decides which Bots an app reaches.
 #: ``browserSites``: the pages the app's own agent drives the browser on unasked.
 #: ``browser``: the verbs ``ctx.browser`` and ``BrowserView`` use on its own slots' tabs.
-_OWNER_APPROVED_FAMILIES = (BOT_GRANT_FAMILY, "browserSites", "browser")
+_OWNER_APPROVED_FAMILIES = (BOT_GRANT_FAMILY, "browserSites", "browser", "kiroOperations")
 
 
 def _consented_grant_entries(permissions: Any) -> dict[str, list[str]]:

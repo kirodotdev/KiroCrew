@@ -988,22 +988,29 @@ class KasLoginService:
         registered, so a cancelled login ("use a code instead", start over) can
         never leave a credential behind that the user did not see land.
         """
-        callback = await portal.wait_for_callback(
-            sock, port, state, timeout_secs=LOOPBACK_TIMEOUT_SECS
-        )
-        redirect_uri = portal.rebuild_redirect_uri(port, callback["path"], callback["login_option"])
-        # The portal page is where the user actually picks Google vs GitHub;
-        # the button they clicked here only chose the transport. Trust the
-        # callback's login_option so the stored provider matches the account.
-        chosen = _social_from_login_option(callback["login_option"]) or provider
-        session = await self._http()
-        try:
-            return await portal.exchange_code(
-                chosen, callback["code"], verifier, redirect_uri, session=session
+
+        async def _exchange(callback: dict) -> KasToken:
+            redirect_uri = portal.rebuild_redirect_uri(
+                port, callback["path"], callback["login_option"]
             )
-        except (portal.PortalAuthError, aiohttp.ClientError, asyncio.TimeoutError) as err:
-            # The browser came back; the auth service, reached or not, did not finish.
-            raise _LoopbackExchangeError(str(err)) from err
+            # The portal page is where the user actually picks Google vs GitHub;
+            # the button they clicked here only chose the transport. Trust the
+            # callback's login_option so the stored provider matches the account.
+            chosen = _social_from_login_option(callback["login_option"]) or provider
+            session = await self._http()
+            try:
+                return await portal.exchange_code(
+                    chosen, callback["code"], verifier, redirect_uri, session=session
+                )
+            except (portal.PortalAuthError, aiohttp.ClientError, asyncio.TimeoutError) as err:
+                # The browser came back; the auth service, reached or not, did not finish.
+                raise _LoopbackExchangeError(str(err)) from err
+
+        # The tab's page waits for the exchange, so it never says "Login complete"
+        # for a sign-in the exchange then fails.
+        return await portal.wait_for_callback(
+            sock, port, state, _exchange, timeout_secs=LOOPBACK_TIMEOUT_SECS
+        )
 
     async def _poll_loopback(self, login_id: str, pending: _PendingLoopbackLogin) -> dict[str, Any]:
         """Report the listener task's state; terminal outcomes drop the entry.

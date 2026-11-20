@@ -189,7 +189,9 @@ class TestSettings:
         self, tmp_path, monkeypatch, caplog, old: dict
     ) -> None:
         # None of these keys ever shipped in a release. A file that still names
-        # one loads, keeps it on save, logs no warning, and the key has no effect.
+        # one loads, keeps it on save, and the key has no effect. It logs no warning,
+        # except that the old Region key is close enough to the lease Region key to
+        # name it once.
         lease = {"relay_lease_url": "https://lease.example", "relay_lease_credential": "/abs/cred"}
         config_file = tmp_path / "config.json"
         config_file.write_text(
@@ -203,7 +205,12 @@ class TestSettings:
         settings = RelaySettings.from_config(cfg)
         settings.validate()
         assert (settings.host_url, settings.crew_domain) == ("", "")
-        assert [r.getMessage() for r in caplog.records if key in r.getMessage()] == []
+        named = [r.getMessage() for r in caplog.records if key in r.getMessage()]
+        if key == "relay_region":
+            (hint,) = named
+            assert hint.endswith("tunnel.relay_region (did you mean tunnel.relay_lease_region?)")
+        else:
+            assert named == []
         cfg.save()
         assert json.loads(config_file.read_text(encoding="utf-8"))["tunnel"][key] == old[key]
 

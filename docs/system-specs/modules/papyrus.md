@@ -147,7 +147,7 @@ a caller who can reach any one route can read, overwrite or publish the owner's 
 `_require_enabled` runs two checks in order. A disabled app answers 403 `app_disabled`
 to everyone. Then `require_owner_dashboard_request` (`dashboard/handlers/_shared_access.py`)
 lets only the owner through and answers everyone else with 403 `owner_only`, writing a
-SEL denial record named `papyrus.<route>`. The same wrapper covers all 19 routes, so a
+SEL denial record named `papyrus.<route>`. The same wrapper covers all 20 routes, so a
 route added to `register_routes` cannot skip the gate.
 
 | Caller | Result |
@@ -289,7 +289,8 @@ operations are a multi-second compile and a network git call — so
 app was a stdlib `ThreadingHTTPServer` on its own port using blocking
 `subprocess.run`; here:
 
-- every child process is spawned with `asyncio.create_subprocess_exec` and awaited
+- every child process is spawned with `sandbox.create_subprocess_limited` (an
+  `asyncio.create_subprocess_exec` wrapper that applies the limits after exec) and awaited
   under an `asyncio.wait_for` timeout (`COMPILE_TIMEOUT_SEC` 120s,
   `BIBTEX_TIMEOUT_SEC` 60s, clone 120s, network git 60s, local git 15s);
 - a timeout kills the whole **process tree** via
@@ -309,8 +310,7 @@ app was a stdlib `ThreadingHTTPServer` on its own port using blocking
   (`is_dir`/`exists`). With `KIROCREW_HOME` on a stalled network mount those
   syscalls block for as long as the mount takes to answer, wedging every session,
   every cron job and the liveness heartbeat *inside the authorization check* —
-  before the handler has done any work of its own. Twenty-two call sites had that
-  shape;
+  before the handler has done any work of its own;
 - the compiler download itself runs on a daemon thread, not the loop and not a
   pooled executor (see Managed compiler). Pinned by
   `test/test_papyrus_tectonic.py::TestEventLoopDiscipline` and
@@ -355,8 +355,8 @@ a refused name never reaches `gitops` or the compiler.
 
 1. Resolve the main document (`store.resolve_main_file`).
 2. Locate a compiler, widest-trust first: `pdflatex` on PATH, then `tectonic`, then
-   a userspace TeX Live install under `~/texlive` (the usual no-sudo route, which is
-   not on PATH), then **the app's own managed Tectonic install**. The managed copy
+   a userspace install (`~/texlive/*/bin/*/pdflatex`, the usual no-sudo route, which
+   is not on PATH, or `~/.local/bin/tectonic`), then **the app's own managed Tectonic install**. The managed copy
    is probed LAST on purpose — a user who installed a real TeX distribution must
    keep using it, so provisioning can never displace their `pdflatex`. Cached
    process-wide, including the negative result, so a successful provision MUST call
@@ -400,10 +400,9 @@ authoritative. Carried over from upstream and pinned by
 
 ## Managed compiler
 
-A stock machine has no LaTeX compiler, so before this the app was broken by
-default on a fresh `pip install kirocrew`: every compile answered *"No LaTeX
-compiler found"*, and the only remedy on offer was a multi-gigabyte TeX Live
-install. There is no LaTeX compiler on PyPI either — the `tectonic` name there is
+A stock machine has no LaTeX compiler, so without a managed install every
+compile on a fresh `pip install kirocrew` would answer *"No LaTeX compiler
+found"*, and the only other remedy is a multi-gigabyte TeX Live install. There is no LaTeX compiler on PyPI either — the `tectonic` name there is
 an unrelated placeholder (version `0.0.0dev`, no files).
 
 `tectonic.py` closes that gap. **Tectonic** is one self-contained static binary
@@ -517,8 +516,10 @@ second click while one runs starts nothing. The transfer is
 videos use: the sha256 is computed over the **stream**, and the archive reaches its
 path only once the digest matches, so extraction never sees unverified bytes.
 Redirects may change host (the release url 302s to GitHub's asset host) but never
-leave https. The binary is `chmod`-ed and then `os.replace`-d into place, so it is
-never observable at its final path without its exec bit.
+leave https. The exec bit is set through the staging file's descriptor
+(`platform_compat.fchmod_safe`) before `asset_downloader.install_verified`
+renames it into place, so it is never observable at its final path without its
+exec bit.
 
 Every failure degrades cleanly and leaves the manual route working:
 
@@ -612,7 +613,7 @@ cannot reach:
 - **A symlink at the name.** `read_text`/`write_text` both follow one, so
   `attributes -> /dev/null` made the pin unobservable AND unwritable (silently
   inert forever), and `attributes -> <any file>` turned a `GET /git` status poll
-  into an arbitrary-file append that also read the victim's contents back. Both
+  into an arbitrary-file append that also read the victim's contents back.
   **All three** of `.git`, `.git/info` and `.git/info/attributes` are refused
   if any is a link — symlink **or Windows junction**, via the shared
   `store.is_reparse_link`. Each segment needs its own check for a different reason:
@@ -810,8 +811,10 @@ skill matching the request. Each is trigger-loaded on LaTeX vocabulary rather th
 The manifest deliberately declares **no** `skills` entry: a builtin app's
 directory receives only `app.json` at registration, so a manifest-declared path
 would log a "skill directory not found" warning on every boot while the bundled
-copy is what actually reaches users. Once the app is adopted onto its own
-repository (app-kit-platform.md § Former built-in adoption), that repository ships
+copy is what actually reaches users. The wheel pins the app (`apps/adoption-pins.json`) at
+`KiroCrewCaptain/kirocrew-app-papyrus` with `minAppSdkLevel` 1; once a host
+adopts it onto that repository (app-kit-platform.md § Former built-in adoption),
+the repository ships
 the five skills as `papyrus/<skill>`: the sync stops installing or updating the
 packaged copies and the catalog hides them, so each skill shows once, from the
 repository, and none after an uninstall.
@@ -821,7 +824,7 @@ repository, and none after an uninstall.
 `app.json` declares `platform.os: ["macos", "linux", "windows"]`. The Windows
 support does not live in `tectonic.py`. The managed compiler already handles
 Windows (a pinned `x86_64-pc-windows-msvc` asset, the `.zip` extraction leg,
-`tectonic.exe`, `chmod` via `platform_compat.chmod_safe`), and process handling
+`tectonic.exe`, the exec bit via `platform_compat.fchmod_safe`), and process handling
 throughout uses no bare `fcntl`/`os.killpg`/`signal.SIGKILL`:
 `start_new_session=IS_POSIX` + `creationflags=CREATE_NEW_PROCESS_GROUP`, and
 kills via `platform_compat.kill_process_tree_async`.
@@ -907,6 +910,7 @@ that host reports `supported: false` and keeps the manual install path.
 | `website/src/apps/papyrus/CoAuthorPanel.tsx` | Embedded native chat |
 | `website/src/apps/papyrus/api.ts` | Typed fetch wrapper |
 | `website/src/apps/papyrus/lib.ts` | Pure helpers (tree, word count, persistence) |
+| `website/src/apps/papyrus/companionPrompt.ts` | The co-author's skill load order (base skill, then the matching task skill) |
 | `website/src/pierre/config.ts` | LaTeX grammar override for `.tex`/`.ltx`/`.sty`/`.cls` |
 | `website/public/app-assets/papyrus/` | Icon + light/dark hero art |
 
@@ -953,6 +957,13 @@ imports it nor names it where it could act on it:
 | `website/src/apps/papyrus/PapyrusPageCoverage.test.tsx` | Compile, git, file-tree, and co-author workspace flows beyond the leave/flush guards |
 | `website/src/apps/papyrus/CoAuthorPanel.cov80.test.tsx` | Co-author body states, header actions, and activating the paper's slot (another chat made active, recorded replacement, deleted session, pending and failed close, gateway failure) |
 | `website/src/apps/papyrus/FileTree.cov80.test.tsx` | Artifact filtering, file glyphs, directory collapse, main-file protection, and the empty state |
+| `website/src/apps/papyrus/PapyrusApi.coverage.test.ts` | Request shapes (method, query string, JSON body) and error handling of the typed fetch wrapper |
+| `website/src/apps/papyrus/PapyrusDiagnosticsDescription.a11y.test.tsx` | Each diagnostics row is described by its own message |
+| `website/src/apps/papyrus/PapyrusPaperTitle.test.tsx` | The paper list shows the title over the directory, renames through the field, and reports a refused rename in the user's language |
+| `website/src/apps/papyrus/PapyrusWorkspaceTitle.test.tsx` | The open paper's toolbar names it by title (or directory) and follows a rename without a reload |
+| `website/src/apps/papyrus/ProjectList.coverage.test.tsx` | Create and clone from the landing view, including a refusal and a failed clone |
+| `website/src/apps/papyrus/papyrusNarrow.test.ts` | Short-height and phone-width layouts keep the editor floor and the file tree reachable |
+| `website/src/apps/papyrus/papyrusResizeAria.test.tsx` | Resize grips report a position inside their advertised range, and the co-author panel yields width instead of the editor |
 | `website/src/apps/papyrus/papyrusBoundary.test.ts` | Nothing outside `src/apps/papyrus/` imports the app's UI except the `/papyrus` row of `apps/builtinRegistry.ts` |
 | `test/test_core_papyrus_independence.py` | No core module imports the app's package, and every core string literal naming the app is a listed, reasoned exception (see Core independence) |
 

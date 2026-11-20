@@ -1065,4 +1065,12 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "the in-memory prompt record, passes the exfiltration-URL and credential "
         "redactors before it reaches the owner's browser.",
     ),
+    (
+        "App Kiro call error bodies",
+        "apps/kiro_calls.py",
+        "The Kiro BFF's own error message, passed back to the app that made the call "
+        "in `kiro.message`. The upstream can echo request headers, so every token the "
+        "call sent is replaced first (a bare token matches no secret pattern) and the "
+        "credential scanner then runs over the text, cut to 300 characters.",
+    ),
 )

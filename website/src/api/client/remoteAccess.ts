@@ -152,6 +152,8 @@ export interface RemoteControlState {
   locked: boolean
   running: boolean
   relayed?: boolean
+  /** Why config keeps a requested relay from starting, in plain words; absent otherwise. */
+  problem?: string
 }
 
 export function createRemoteAccessEndpoints({ get, post, put, j }: ClientTransport) {

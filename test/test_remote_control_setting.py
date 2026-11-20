@@ -535,6 +535,32 @@ class TestTheRoute:
         body = await (await client.get("/api/remote-control")).json()
         assert body == {"requested": True, "locked": True, "running": False, "relayed": False}
 
+    @pytest.mark.parametrize(
+        ("region", "problem"),
+        [("us-east-1", False), ("eu-central-1", False), ("", False), ("xx-test-9", True)],
+    )
+    async def test_get_says_why_a_jwt_svid_crew_with_an_unusable_region_cannot_start(
+        self, client, config_file, monkeypatch, region: str, problem: bool
+    ) -> None:
+        # The card shows this instead of asking for a restart that would not connect.
+        # A Region unlike the profile ARN's is no problem: the setting picks it.
+        monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY", "spiffe")
+        monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY_SVID_FILE", "/run/stand-in/svid")
+        monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY_AUDIENCE", "https://runtime.example.test")
+        monkeypatch.setenv(
+            "KIROCREW_WORKLOAD_IDENTITY_PROFILE_ARN",
+            "arn:aws:codewhisperer:eu-central-1:000000000000:profile/STANDINPROFILE",
+        )
+        tunnel = {"relay_lease_credential": "/run/stand-in/svid", "relay_lease_region": region}
+        config_file.write_text(json.dumps({"tunnel": tunnel}), encoding="utf-8")
+        body = await (await client.get("/api/remote-control")).json()
+        assert body["requested"] is True and body["running"] is False
+        if problem:
+            assert body["problem"].startswith("tunnel.relay_lease_region names no Region")
+            assert "KIROCREW_WORKLOAD_IDENTITY_PROFILE_ARN" not in body["problem"]
+        else:
+            assert "problem" not in body
+
     async def test_the_dashboard_cannot_turn_it_on(self, client, config_file) -> None:
         # Turning on is the terminal command's job.
         resp = await client.put("/api/remote-control", json={"enabled": True})

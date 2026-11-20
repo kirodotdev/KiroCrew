@@ -9583,7 +9583,7 @@
       "patrol_tasks_still_open_one": "{{count}} task still open",
       "patrol_tasks_still_open_other": "{{count}} tasks still open",
       "patrol_stopped_manual": "You paused it",
-      "patrol_stopped_runtime": "Hit its {{limit}} time limit",
+      "patrol_stopped_runtime": "Hit its time limit of {{limit}}",
       "patrol_stopped_cycles": "Hit its check limit",
       "patrol_stopped_other": "Stopped",
       "patrol_pause": "Pause",

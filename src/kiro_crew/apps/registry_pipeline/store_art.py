@@ -1440,7 +1440,7 @@ _PREWARM_ROW_FIELDS = ("name", "gitUrl", "repo", "branch", "subdirectory", "comm
 _PREWARM_FIELD_MAX_LEN = 2048
 
 
-def _slim_prewarm_row(entry: dict[str, Any]) -> dict[str, Any] | None:
+def _slim_prewarm_row(entry: dict[str, Any], *, allow_none: bool = False) -> dict[str, Any] | None:
     """Project *entry* to the fields a prewarm clone needs, or ``None`` to reject it.
 
     :func:`_fetch_owner_tier_store_assets` reads ``name``/``gitUrl``/``repo``/
@@ -1457,12 +1457,17 @@ def _slim_prewarm_row(entry: dict[str, Any]) -> dict[str, Any] | None:
     rejected and never appended to ``todo``, rather than retained with an unbounded
     string that would sit in memory for the batch's life and feed a cache key or a
     clone argv. A missing field is not a rejection: the projection just omits it.
+    With *allow_none*, a field that is ``None`` is kept as ``None`` instead of
+    rejecting the row.
     """
     slim: dict[str, Any] = {}
     for key in _PREWARM_ROW_FIELDS:
         if key not in entry:
             continue
         value = entry[key]
+        if value is None and allow_none:
+            slim[key] = None
+            continue
         if not isinstance(value, str) or len(value) > _PREWARM_FIELD_MAX_LEN:
             return None
         slim[key] = value

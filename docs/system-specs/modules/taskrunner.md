@@ -325,7 +325,7 @@ class TaskRunner:
     def attach_workflow_service(self, service: WorkflowRunPublisher | None) -> None
     async def plan(self, input_text: str = "", source: str = "text", spec_path: str = "", agent: str = "", workspace_dir: str = "", workflow_name: str = "", workflow_id: str = "", workflow_slug: str = "", workflow_revision: int = 0, workflow_source: str = "", session_key: str = "", execution_context: ExecutionContext | None = None, start_priority: StartPriority = BACKGROUND) -> Project
     async def run(self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, input_content: str | None = None) -> Project
-    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, *, session_key: str = "", execution_context: ExecutionContext | None = None, input_content: str | None = None) -> str
+    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, *, session_key: str = "", execution_context: ExecutionContext | None = None, input_content: str | None = None, task_id: str = "") -> str
     def cancel(self, task_id: str | None = None, *, exact: bool = False) -> None  # None = cancel all
     def pause(self, task_id: str) -> None
     def status(self) -> dict
@@ -338,7 +338,7 @@ class TaskRunner:
     # Mutation APIs await fsync-backed persistence off the event loop.
     async def update_plan(task_id: str, tasks: list[dict]) -> TaskRun
     async def update_task(task_id: str, index: int, updates: dict) -> dict
-    async def execute_plan(task_id: str, agent: str = "", fresh: bool = False, workspace_dir: str = "", auto_approve: bool = False) -> str
+    async def execute_plan(task_id: str, agent: str = "", fresh: bool = False, workspace_dir: str = "", auto_approve: bool = False, adopting: bool = False) -> str
     async def retry_from_task(task_id: str, from_task: int, agent: str = "") -> str
     async def delete_run(task_id: str) -> bool
 
@@ -728,9 +728,9 @@ re-derived at every run entry (see *Live config* below):
 - `compute_memory_sized_parallel_cap` is the **host-safe ceiling**: available
   memory and the learned/configured per-agent memory cost size the result, then
   `agent.subagent_auto_max` caps it, never below 3 (3 when memory cannot be
-  read), so the auto value is never 0. It keeps the memory arithmetic the
-  subagent cap dropped (`compute_max_subagents` is now the bare
-  `subagent_auto_max` ceiling, because memory bounds subagents per start)
+  read), so the auto value is never 0. It carries the memory arithmetic the
+  subagent cap does not use (`compute_max_subagents` is the
+  `subagent_auto_max` ceiling, because the spawn floor bounds subagents per start)
   because no per-start memory floor prices a TaskRunner step. CPU is
   deliberately not a sizing term; the adaptive controller reacts to failing
   work instead.
@@ -1049,7 +1049,7 @@ Notifications with a run are prefixed with `[run.name]`, falling back to the spe
 | Revised plan | Revised plan | New step count + titles |
 | Possible loop | Warning: Possible loop | Same error repeated Nx |
 | Token budget | Error: Token budget exceeded | Usage vs budget |
-| Branch ready | 🌿 Branch: `name` | Shown in completion summary |
+| Branch ready | Branch: `name` | Shown in completion summary |
 
 The completion summary's step list and `TASK_PROGRESS.md` mark each step from one
 map, `task_reporter.TASK_STATUS_ICONS`: Passed, Failed, Running, Reviewing,
