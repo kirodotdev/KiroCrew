@@ -87,7 +87,7 @@ my-app/
 | Field | Rule | Why |
 |-------|------|-----|
 | `skills` | Prefer canonical string paths `["skills/my-skill"]` | Legacy object entries with `path` or `name` are normalized by `AppManifest.from_dict`, but the public manifest schema is `string[]` |
-| `permissions` | Must be an **object**; supported grants are `api`, `events`, `mcpTools`, `storage`, `network`, `memory`, `cron`, `sessionApproval`, `spawn`, `jobs`, and `exposeToApps` | A non-object parses to empty permissions, and malformed capability grants fail closed |
+| `permissions` | Must be an **object**; the common grants are `api`, `events`, `mcpTools`, `storage`, `network`, `memory`, `cron`, `sessionApproval`, `spawn`, `jobs` and `exposeToApps`, and the full set (`memberThreads`, `chatSlots`, `agentTurns`, `browser`, `bots`, `webhookSource` and the rest) is in the [manifest reference](../../docs/app-kit/manifest-reference.md#permissions--declared-capabilities) | A non-object parses to empty permissions, and malformed capability grants fail closed |
 | `resources` | Omit from `app.json`; declare app resources with `agents`, `skills`, `sops`, and `mcpServers` | `resources` is install/registry ownership metadata (`"gateway"` or `"app"`), not an app-manifest resource array |
 | `ui.entry` | Use an ESM `.mjs` bundle; `.js` is also served | HTML is not in the app UI static-file allowlist |
 | `ui.pages[].iconUrl` | Use an app-relative image path for a custom icon | `ui.pages[].icon` also works for supported host Lucide names and falls back to `Package` |
@@ -535,8 +535,7 @@ users actually decide.
 Disable removes every cron job the app owns (`created_by="app:<name>"`),
 whether or not the manifest declares `permissions.cron`: `_cleanup_app_crons`
 in `src/kiro_crew/apps/hooks_integration.py` is keyed off the running cron
-service, not the grant (#13788, which closed
-[issue #10997](https://github.com/kirodotdev/KiroCrew/issues/10997)). When the
+service, not the grant. When the
 cron store is busy or unreadable, disable reports `cron_cleanup: failed ...`
 in its result instead of raising, so read the result rather than assuming.
 
@@ -581,8 +580,18 @@ Publish the app as a plain git repository (any git host — e.g. GitHub):
 
 ### 2. App Registry Entry
 
-Open a pull request to the Kiro Crew repo adding an entry to
-`src/kiro_crew/apps/app-registry.json`:
+The live App Store reads `official-registry.json` from the hosted catalog at
+`https://apps.crew.kiro.dev/`. That catalog is maintainer-curated from
+[kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps): request a
+listing with an
+[App Store listing request](https://github.com/kirodotdev/KiroCrew/issues/new?template=app-store-listing.yml)
+issue naming the git source and ref, and a maintainer authors the row and pins the
+commit. No Kiro Crew release is involved.
+
+`src/kiro_crew/apps/app-registry.json` in the Kiro Crew repo is only the offline
+seed a client falls back to when the catalog host is unreachable; it changes
+through a normal pull request and ships with the next release. The seed (and any
+federated registry index) uses this row shape:
 ```json
 {
   "name": "my-app",
@@ -592,11 +601,8 @@ Open a pull request to the Kiro Crew repo adding an entry to
 ```
 
 `gitUrl` alone resolves. `repo` is a legacy alias for the same clone URL and is
-only read when `gitUrl` is absent; it is never a slug.
-
-That file is the offline seed. The live App Store reads `official-registry.json`
-from the hosted catalog at `https://apps.crew.kiro.dev/`, so a listing lands there
-too, alongside its editorial and category-order files.
+only read when `gitUrl` is absent; it is never a slug. The full flow is in the
+[publishing guide](../../docs/app-kit/publishing-guide.md#10-add-a-registry-entry).
 
 Display metadata (description, tags, author) comes from `app.json` in the app's own repo (cached 24h).
 
@@ -886,42 +892,13 @@ and use `position: absolute; inset: 0` for the overlay.
 - Probe a backend route without auth plumbing: an auth-gated route returning
   401/403 proves it is REGISTERED; 404 means the module didn't load.
 
-## Graduating an External App to a Builtin
+## An App Stays External
 
-When an app proves out and should ship with Kiro Crew, port it into the repo —
-the contracts CHANGE on both sides. Template: `src/kiro_crew/apps/builtins/issue_radar/`.
-
-- Layout: `src/kiro_crew/apps/builtins/<snake_name>/` with `app.json`,
-  `backend/routes.py`, optional `skills/<skill>/SKILL.md`, `tests/`.
-- **Backend contract flips**: builtins use `register_routes(app: web.Application) -> None`
-  registering FULL paths (`/api/apps/<name>/…`) directly on the router — the
-  external AppRoute-list/RouteRegistry contract does not apply. Wrap every
-  handler in an enabled-check gate (see issue_radar's `_require_enabled`):
-  builtin routes exist at startup even while the app is disabled.
-- **Wiring**: in-process builtin backends must be listed in
-  `BUILTIN_NAMES` (`apps/builtins/__init__.py`) — that startup loop is what
-  calls `register_routes`. (Subprocess-backend builtins like dev_fleet use
-  `backend.entryPoint` + port instead and are NOT listed.) App Store discovery
-  is separate and automatic via `discover_builtin_apps()` scanning `app.json`.
-- **UI becomes a real React page**: `website/src/apps/<name>/…Page.tsx`
-  registered in `website/src/apps/builtinRegistry.ts` (lazy import). You now
-  import MarkdownRenderer, lucide-react, the ui kit, and app-sdk components
-  directly — delete the module-map feature detection and CSS override hacks.
-  Note ChatEmbed requires an `AppApiProvider` ancestor; builtin pages mount
-  their own.
-- Icon/assets: `website/public/app-assets/<name>/`; manifest `iconUrl`
-  `/app-assets/<name>/icon.svg`. Skills ride `manifest.skills` (paths relative
-  to the app root), registered at enable-time.
-- Keep `defaultEnabled: false`; users opt in via the App Store.
-- Full worktree + build-gate discipline applies (see the kirocrew-worktree-dev
-  skill) — this is now Kiro Crew source.
-- **Tests**: the suite under `tests/` follows the repo's test rules — the
-  [writing-tests](../../src/kiro_crew/builtin_skills/kirocrew-dev/writing-tests/SKILL.md)
-  skill and the
-  [Determinism contract](../../docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first).
-  The rootdir `conftest.py` floor applies there (plus the app's own `tests/conftest.py`
-  where one exists), not `test/conftest.py`, and the helpers under `test/` are not on
-  your import path: take shared test support from
-  `kiro_crew.testing`, which ships in the package (`kiro_crew.testing.clock`, `.wait`,
-  `.ids` and `.links`), and the rootdir's `manual_clock`, `seeded_rng` and `local_tz`
-  fixtures.
+Kiro Crew accepts no new built-in app: an app that proves out stays in its own
+repository and reaches users through the official catalog (see Publishing to App
+Store above). Never port it under `src/kiro_crew/apps/builtins/`, add it to
+`BUILTIN_NAMES`, or give it a page under `website/src/apps/`. A capability an app
+cannot get from outside core is an App Kit seam gap, fixed with a generic seam.
+Rule and seams: the "No built-in apps" section of the repository's `AGENTS.md`,
+the [decision](../../docs/decisions/2026-11-01-kiro-crew-accepts-no-new-built-in-apps.md)
+and [app-kit-platform](../../docs/system-specs/modules/app-kit-platform.md).

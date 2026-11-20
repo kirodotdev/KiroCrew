@@ -96,7 +96,9 @@ backend/            notable modules (the directory holds more, e.g. runner,
   pr_checks.py      PR status, CI checks, and the watcher verdict
 spine/              the target-agnostic engine (driver, gate, measurer, keeper…)
 profiles/
-  github_repo/      the GitHub/GitLab target profile (PR/MR recipe lives here)
+  github_repo/      the repository target profile and its GitHub PR recipe
+  gitlab_repo/      the GitLab MR recipe and its `glab` wrapper
+  pr_recipe_base.py what the PR and MR recipes share
 skills/             ai-discover, metric-design
 agents/             discovery, pr-author, scout, engineer
 docs/MANUAL.md      user manual — how to run it, read findings, and configure it
@@ -111,9 +113,12 @@ profile, not touching the engine.
 ## Tests
 
 ```bash
-python -m pytest src/kiro_crew/apps/builtins/auto_improvement/tests/ \
-  --override-ini="addopts="
+python -m pytest src/kiro_crew/apps/builtins/auto_improvement/tests/
 ```
+
+Keep `setup.cfg`'s addopts: a bare `--override-ini="addopts="` drops
+`--dist loadgroup` and the timeout, which the repository's test rules forbid
+for a multi-test run.
 
 They are in the default collection (`setup.cfg` `testpaths` includes
 `src/kiro_crew/apps/builtins`); the explicit path scopes the run to this app.

@@ -169,14 +169,19 @@ backend/
   dispatch.py             the cycle: poll -> claim -> ledger-match -> sweep
   store.py                atomic claim index (one incident per signal)
   ledger.py               append-only knowledge ledger + hygiene
+  ledger_sync.py          git-native ledger sync (a shared, append-only JSONL file)
+  ledger_index.py         projects the ledger into the vector store for similar-match
+  policy_store.py         the autonomy ceiling (mode + act-rules) on the keystone floor
   rotation.py             autonomy gate + rotation-driven tier arming
+  agent_tool_hook.py      the route the app's `agentTools` block names
   slot_watch.py           derives "waiting on a person" from the live chat
   handover.py             the shift digest
   slack_out.py            the Slack pin board
   notify_out.py           local desktop notifications (no credential, no inbound URL)
   secrets.py              keystone credential store
   providers/              cloudwatch, pagerduty, incidentio, datadog, github_issues,
-                          webhook, schedule_file, noop
+                          webhook (Alertmanager, Sentry, scripts), schedule_file,
+                          noop, and the shared http helper
 tests/                    unit + contract tests
 ```
 

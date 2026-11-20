@@ -558,6 +558,15 @@ rather than reporting a silent success. These are human debug/diagnostic twins o
 | `/kirocrew channels` | Open tracked channels modal |
 | `/kirocrew restart` | Restart the gateway (needs a systemd supervisor) |
 
+### Slack Code Channel Commands
+Answered in a code channel while `slack.code_channels` is on; elsewhere `agent` falls back to the app-wide selector above.
+
+| Command | Description |
+|---------|-------------|
+| `/kirocrew agent [<name>]` | List the channel session's agents, or switch it to one |
+| `/kirocrew approval [normal\|reads\|trust]` | Show or set the channel session's approval mode |
+| `/summarize`, `/wrap-up`, `/create-pr` | The channel's runtime commands |
+
 ## Environment Variables
 
 | Variable | Purpose | Default |
