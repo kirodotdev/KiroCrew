@@ -19,7 +19,7 @@ function fakeWindowModule() {
   const opened = [];
   const openWindow = (opts) => {
     const w = {
-      opts, focused: 0, closed: false, cbs: { status: [], closed: [], visibility: [], unreachable: [], action: [], chord: [] },
+      opts, focused: 0, closed: false, cbs: { status: [], closed: [], visibility: [], unreachable: [], action: [], chord: [], theme: [], loaded: [] },
       endpointId: opts.endpointId,
       notices: [],
       reload() {},
@@ -27,6 +27,8 @@ function fakeWindowModule() {
       onUnreachable: (cb) => w.cbs.unreachable.push(cb),
       onNoticeAction: (cb) => w.cbs.action.push(cb),
       onChord: (cb) => w.cbs.chord.push(cb),
+      onThemeDark: (cb) => w.cbs.theme.push(cb),
+      onLoaded: (cb) => w.cbs.loaded.push(cb),
       focus() { w.focused += 1; },
       close() { if (!w.closed) { w.closed = true; w.cbs.closed.forEach((cb) => cb()); } },
       isClosed: () => w.closed,
@@ -213,11 +215,14 @@ test("the preload bridge carries only the endpoint ID, a rect and its viewport, 
       + '  setPaneOverlay: (endpointId, active) => ipcRenderer.invoke("relay-crew:pane-overlay", String(endpointId || ""), !!active),\n'
       + '  setPaneInactive: (endpointId, inactive) => ipcRenderer.invoke("relay-crew:pane-inactive", String(endpointId || ""), !!inactive),\n'
       + '  closePane: (endpointId) => ipcRenderer.invoke("relay-crew:pane-close", String(endpointId || "")),\n'
+      + '  // This shell sends a pane\'s `loaded` event, so the dashboard may wait for it.\n'
+      + '  paneLoadEvents: true,\n'
       + '  onPaneEvent: (cb) => {\n'
       + '    const handler = (_e, m) => cb({\n'
       + '      type: String(m?.type || ""),\n'
       + '      endpointId: String(m?.endpointId || ""),\n'
       + '      index: Number.isInteger(m?.index) ? m.index : -1,\n'
+      + '      dark: typeof m?.dark === "boolean" ? m.dark : null,\n'
       + '    });\n'
       + '    ipcRenderer.on("relay-crew:pane-event", handler);\n'
       + '    return () => ipcRenderer.removeListener("relay-crew:pane-event", handler);\n'
@@ -926,7 +931,7 @@ test("closeAll closes a pane and stops its renewal", async () => {
   assert.equal(s.opener.paneFor(ID), null);
 });
 
-test("a pane's chord and close reach only the dashboard that opened it, and a window sends neither", async () => {
+test("a pane's chord, theme, load and close reach only the dashboard that opened it, and a window sends none", async () => {
   const s = setup();
   const sent = { mine: [], other: [] };
   const dashboard = (into, destroyed = false) => ({
@@ -936,15 +941,20 @@ test("a pane's chord and close reach only the dashboard that opened it, and a wi
   await s.opener.open(OTHER, { parent: {}, dashboard: dashboard(sent.other, true), bounds: { x: 0, y: 0, width: 10, height: 10 } });
   const [pane, gone] = s.panes.opened;
   pane.cbs.chord.forEach((cb) => cb(2));
+  pane.cbs.theme.forEach((cb) => cb(true));
+  pane.cbs.loaded.forEach((cb) => cb());
   gone.cbs.chord.forEach((cb) => cb(1));
   s.opener.closeAll("SIGNED_OUT");
   assert.deepEqual(sent.mine, [
     ["relay-crew:pane-event", { endpointId: ID, type: "chord", index: 2 }],
+    ["relay-crew:pane-event", { endpointId: ID, type: "theme", dark: true }],
+    ["relay-crew:pane-event", { endpointId: ID, type: "loaded" }],
     ["relay-crew:pane-event", { endpointId: ID, type: "closed" }],
   ]);
   assert.deepEqual(sent.other, [], "nothing to a destroyed dashboard");
   await s.opener.open(ID);
   assert.equal(s.win.opened[0].cbs.chord.length, 0, "a window registers no chord listener");
+  assert.equal(s.win.opened[0].cbs.theme.length, 0, "nor a theme listener");
   assertNoSecrets([...sent.mine]);
 });
 

@@ -7858,9 +7858,10 @@
       "new_crew": "Neu",
       "seen_not_saved": "Konnte nicht speichern, dass du das gesehen hast. Es wird wieder als neu angezeigt.",
       "open_crew_failed": "{{name}} konnte nicht geöffnet werden.",
-      "connect": "Verbinden",
       "connect_crew": "{{name}} verbinden",
-      "connected": "Verbunden"
+      "connected": "Verbunden",
+      "not_connected": "Nicht verbunden",
+      "connecting": "Verbinde…"
     },
     "instancesViewport": {
       "connecting": "Wird verbunden…",

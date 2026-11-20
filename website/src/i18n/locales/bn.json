@@ -7858,9 +7858,10 @@
       "new_crew": "নতুন",
       "seen_not_saved": "তুমি এটা দেখেছ, সেটা সংরক্ষণ করা যায়নি। এটি আবার নতুন হিসেবে দেখাবে।",
       "open_crew_failed": "{{name}} খোলা যায়নি।",
-      "connect": "সংযোগ করো",
       "connect_crew": "{{name}}-এ সংযোগ করো",
-      "connected": "সংযুক্ত"
+      "connected": "সংযুক্ত",
+      "not_connected": "সংযুক্ত নয়",
+      "connecting": "সংযোগ হচ্ছে…"
     },
     "instancesViewport": {
       "connecting": "কানেক্ট হচ্ছে…",

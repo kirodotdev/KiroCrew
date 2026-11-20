@@ -935,7 +935,6 @@ export default function App() {
           }
           : { gridArea: 'content' }}
       >
-        {relayPanesOn && <Suspense fallback={null}><RelayCrewPaneHost /></Suspense>}
         <div className={`relative flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
         {/* Mounted for the page's life in a relay Crew window, so its live
             region exists before the drop; the host view joins it on a drop. */}
@@ -946,6 +945,9 @@ export default function App() {
             the tabIndex={-1} page headings do. Inert while the reconnecting
             view covers it, so focus and keystrokes cannot reach a composer
             the user cannot see. */}
+        {/* Exactly <main>'s box, so the relay connecting cover takes its size by CSS alone. */}
+        <div className="relative flex flex-col min-h-0 min-w-0 flex-1">
+        {relayPanesOn && <Suspense fallback={null}><RelayCrewPaneHost /></Suspense>}
         <main id="main-content" tabIndex={-1} {...hiddenChromeProps(contentCovered || relayActive !== null)} style={relayActive !== null ? { visibility: 'hidden' } : undefined} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying: contentCovered })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
           {/* Inert does not reach what main portals out (the guide pill, a
               link preview, a page's Modal): take those off screen with it. */}
@@ -998,6 +1000,7 @@ export default function App() {
           </MobileNavRailContext.Provider>
           </OffScreenOverlayScope>
         </main>
+        </div>
         {/* App-wide docked terminal panel — renders beside <main> (right) or
             below it (bottom). The detached bar (popped-out state) always renders
             below the flex wrapper as a full-width strip regardless of position. */}

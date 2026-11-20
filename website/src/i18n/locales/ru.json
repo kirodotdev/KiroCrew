@@ -8276,9 +8276,10 @@
       "new_crew": "Новая",
       "seen_not_saved": "Не удалось сохранить, что ты это видел. Оно снова будет отмечено как новое.",
       "open_crew_failed": "Не удалось открыть {{name}}.",
-      "connect": "Подключиться",
       "connect_crew": "Подключиться к {{name}}",
-      "connected": "Подключено"
+      "connected": "Подключено",
+      "not_connected": "Нет подключения",
+      "connecting": "Подключение…"
     },
     "instancesViewport": {
       "connecting": "Подключение…",

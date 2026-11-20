@@ -8067,9 +8067,10 @@
       "new_crew": "Novo",
       "seen_not_saved": "Não foi possível salvar que você viu isto. Vai aparecer como novo de novo.",
       "open_crew_failed": "Não foi possível abrir {{name}}.",
-      "connect": "Conectar",
       "connect_crew": "Conectar {{name}}",
-      "connected": "Conectado"
+      "connected": "Conectado",
+      "not_connected": "Não conectado",
+      "connecting": "Conectando…"
     },
     "instancesViewport": {
       "connecting": "Conectando…",

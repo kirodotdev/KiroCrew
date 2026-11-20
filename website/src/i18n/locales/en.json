@@ -5166,9 +5166,10 @@
       "new_crew": "New",
       "seen_not_saved": "Couldn't save that you've seen this. It will show as new again.",
       "open_crew_failed": "Couldn't open {{name}}.",
-      "connect": "Connect",
       "connect_crew": "Connect {{name}}",
-      "connected": "Connected"
+      "connected": "Connected",
+      "not_connected": "Not connected",
+      "connecting": "Connecting…"
     },
     "instancesViewport": {
       "loading_pane": "Loading pane…",
