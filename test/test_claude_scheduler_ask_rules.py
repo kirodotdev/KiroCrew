@@ -132,7 +132,7 @@ class TestSchedulerAskRules:
         path = _settings(tmp_path)
         path.parent.mkdir(parents=True)
         older = json.dumps({"permissions": {"defaultMode": "default"}}, indent=2) + "\n"
-        path.write_text(older, encoding="utf-8")
+        path.write_text(older, encoding="utf-8", newline="")  # same bytes as recorded on Windows
         assert sp.record(path, older, "older-build") is True
         _the_owning_process_died()
 
@@ -150,7 +150,7 @@ class TestSchedulerAskRules:
         path = _settings(tmp_path)
         path.parent.mkdir(parents=True)
         older = json.dumps({"permissions": {"defaultMode": "default"}}, indent=2) + "\n"
-        path.write_text(older, encoding="utf-8")
+        path.write_text(older, encoding="utf-8", newline="")  # same bytes as recorded on Windows
         assert sp.record(path, older, "live-sibling") is True
 
         client = _client(tmp_path, permission_mode="default")
@@ -171,7 +171,7 @@ class TestSchedulerAskRules:
         if cause == "declined":
             _project_owned(tmp_path, {"permissions": {}})
         else:
-            monkeypatch.setattr(client_claude_seed, "_claude_settings_usable", lambda _p: False)
+            monkeypatch.setattr(client_mod, "_claude_settings_usable", lambda _p: False)
         client = _client(tmp_path)
         # Below the settingSources floor, so the exclusion is refused as well.
         client._claude_adapter_disk_version = "0.83.0"
