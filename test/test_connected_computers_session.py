@@ -1,8 +1,8 @@
 """Connected computers: starting a chat on a computer, and missing enforcement.
 
 * B06 -- a computer that cannot confine commands to the shared folder is
-  unavailable with a plain reason; there is no unconfined fallback, and
-  sharing runs only on Linux for now.
+  unavailable with a plain reason; there is no unconfined fallback on Linux or
+  macOS, and a system with no plan at all refuses.
 * B10 -- an offline computer refuses the start; the chat is not moved.
 * B12 -- a removed or revoked computer refuses the start; nothing is rebound.
 * flag -- a crafted start while the feature is off is refused before any
@@ -61,15 +61,15 @@ def registry(tmp_path):
 
 
 class TestB06MissingEnforcement:
-    @pytest.mark.parametrize("platform", ["win32", "darwin", "freebsd14"])
+    @pytest.mark.parametrize("platform", ["freebsd14", "sunos5"])
     def test_b06_an_unsupported_os_is_unavailable_with_a_reason(self, platform, monkeypatch):
-        """Linux only for now: macOS refuses exactly as Windows does, with no probe."""
+        """A system with no plan refuses with no probe."""
 
         def no_probe(name: str) -> None:
             raise AssertionError("an unsupported OS looks up no sandbox tool")
 
         monkeypatch.setattr(confinement, "_bin", no_probe)
-        with pytest.raises(ConfinementUnavailable, match="only on Linux"):
+        with pytest.raises(ConfinementUnavailable, match="Linux, macOS and Windows only"):
             confinement.plan_for_this_machine(platform)
 
     def test_b06_linux_without_bubblewrap_is_unavailable(self, monkeypatch):

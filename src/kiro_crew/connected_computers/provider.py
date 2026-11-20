@@ -38,8 +38,23 @@ _NOTICE: Final[str] = (
 )
 
 
-def notice_for(label: str, root: str) -> str:
-    return _NOTICE.format(label=label, root=root)
+#: The Windows wording: no OS sandbox there (the owner's decision), so commands
+#: reach whatever the user's account can, and the model must not claim otherwise.
+_NOTICE_UNCONFINED: Final[str] = (
+    "\n\nThis session's files and shell are on the user's own computer {label}, in "
+    "{root}. Use the @workspace tools for every file and command; the gateway's own "
+    "file and shell tools are not available. The file tools stay inside that "
+    "folder, but commands are NOT confined on this computer: they can read and "
+    "change any file the user's account can, so keep every command to that folder. "
+    "Git uses that computer's own logins, if it has any reachable from that folder. "
+    "Do not go looking for keys or tokens."
+)
+
+
+def notice_for(label: str, root: str, platform: str = "") -> str:
+    """The model's notice for a connected computer; *platform* is its ``ready`` OS."""
+    template = _NOTICE_UNCONFINED if platform == "win32" else _NOTICE
+    return template.format(label=label, root=root)
 
 
 async def prepare_connected_session(
@@ -85,6 +100,7 @@ async def prepare_connected_session(
         session_key=session_key,
         exposed_mcp=conn.mcp,
         broker=brk,
+        platform=conn.platform,
     )
     return PreparedRemoteSession(
         launch,  # type: ignore[arg-type]  # a duck-typed launch: see launch.py

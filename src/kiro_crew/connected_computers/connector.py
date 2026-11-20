@@ -196,9 +196,17 @@ class _LocalChannel:
         :data:`STOP_GRACE_SECS` to exit, then SIGKILL; the leader is reaped under
         the helper's own bound. The group is signalled only while the leader is
         unreaped, so a recycled pid is never signalled. Windows, and a child that
-        already exited, get the platform's tree kill instead. The commands the
-        tool server started run in sessions of their own; its SIGTERM retirement
-        unwinds a running one, and the sandbox's own PID namespace ends the rest.
+        already exited, get the platform's tree kill instead. On Linux the
+        commands the tool server started run in sessions of their own; its
+        SIGTERM retirement unwinds a running one, and the sandbox's own PID
+        namespace ends the rest. macOS and Windows have no such namespace, so
+        there the server keeps every command with itself
+        (``--end-commands-with-server``): on POSIX it tracks each command's own
+        process group and ends every tracked group on this stop's SIGTERM,
+        inside the grace, before it exits; on Windows every command is in a job
+        that ends every member when the server exits. On macOS a process that
+        left its group for a session of its own (``setsid``) is not tracked and
+        outlives this stop (providers.md, the weaker macOS guarantee).
 
         Every caller shares one stop, which runs to its end even when a caller
         is cancelled (lost liveness cancels a ``close`` midway): the kill never
@@ -534,6 +542,13 @@ class Connector:
         if family == protocol.KIND_WORKSPACE:
             tools = tools_dir()
             argv = [sys.executable, "-I", "-u", os.path.join(tools, "workspace_tools.py")]
+            if sys.platform == "win32":
+                # Windows has no /bin/sh: commands run through cmd.exe.
+                argv += ["--shell", "cmd"]
+            if sys.platform in ("darwin", "win32"):
+                # No PID namespace ends what a command leaves running, so the
+                # server keeps every command with itself and stopping it ends them.
+                argv.append("--end-commands-with-server")
             return [*argv, "--root", self.grant.root], {}, [tools]
         for exposed in self.grant.mcp:
             if exposed.name == name:

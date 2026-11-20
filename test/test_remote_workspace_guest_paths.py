@@ -5,6 +5,10 @@ tool's targets with ``posixpath`` (``platform/guest_paths.py``), chosen per call
 the type the permission-event builder tags the call's arguments with. A local call
 keeps the gateway's own ``os.path`` reading, on Windows exactly as before.
 
+A Windows connected computer is the one guest that is not Linux: its workdir is a
+native Windows path, and its targets are read with ``ntpath`` the way it opens
+them, on every gateway OS (the ``WIN_`` tests at the end).
+
 Every test here runs on every OS, Windows shards included. ``windows_reading``
 also pins the Windows reading on a POSIX host, by pointing the matcher's ``os``
 at ``ntpath``: the deny then binds only through the guest flavour, so dropping the
@@ -13,6 +17,7 @@ tag anywhere between the builder and the matcher fails these tests on Linux CI t
 
 from __future__ import annotations
 
+import copy
 import ntpath
 import os
 import posixpath
@@ -85,7 +90,7 @@ def _policy(monkeypatch, **filesystem):
     return ceiling
 
 
-def _event(tool, kind, params, *, remote=True, server="workspace"):
+def _event(tool, kind, params, *, remote=True, server="workspace", root=ROOT, folds=False):
     """The event a KAS ``session/request_permission`` for ``@server/tool`` builds."""
     tool_call_id = "tc-1"
     event, _ = build_permission_event(
@@ -106,18 +111,19 @@ def _event(tool, kind, params, *, remote=True, server="workspace"):
         mcp_server_name_cache={tool_call_id: server},
         tool_name_cache={tool_call_id: tool},
         remote_workspace_server=se.WORKSPACE_SERVER_NAME if remote else "",
-        remote_workspace_root=ROOT if remote else "",
+        remote_workspace_root=root if remote else "",
+        remote_workspace_case_insensitive=folds,
     )
     assert event is not None
     return event
 
 
-def _judge(tool, path, *, kind="read", remote=True, **extra):
+def _judge(tool, path, *, kind="read", remote=True, root=ROOT, folds=False, **extra):
     """A workspace call judged the way production judges it: the KAS permission
     frame through ``build_permission_event``, ``ToolCall.from_event``, the gate."""
-    se.remember_remote_workspace("chat-remote", "dev", ROOT)
+    se.remember_remote_workspace("chat-remote", "dev", root)
     try:
-        event = _event(tool, kind, {"path": path, **extra}, remote=remote)
+        event = _event(tool, kind, {"path": path, **extra}, remote=remote, root=root, folds=folds)
         call = ToolCall.from_event(event)
         return hooks.HookManager().on_tool_call(
             event.title, session_key="chat-remote", **call.kwargs()
@@ -530,3 +536,265 @@ def test_a_remote_diff_block_path_is_anchored_as_the_guest_reads_it(diff_path, a
     found = edit_target_candidates(GuestPathParams({}, root=ROOT), diff_path, tool_kind="edit")
     assert found.unanchored is not anchored
     assert (diff_path in found) is anchored
+
+
+# ── a Windows connected computer: its targets are its own Windows paths ──────
+
+WIN_ROOT = "C:\\Projects\\app"
+
+#: Every one of these is a file that computer opens inside C:\Projects\app.
+WIN_INSIDE = [
+    "x",
+    "sub\\..\\x",
+    "sub/../x",
+    "C:\\Projects\\app\\x",
+    "c:/projects/app/x",  # either separator, and a deny folds ASCII case
+    "C:\\PROJECTS\\APP\\x",
+    "\\Projects\\app\\x",  # rooted on the workdir's drive
+    "secret.txt.",  # Windows drops a trailing dot or space from a name
+    "secret.txt  ",
+    "x::$DATA",  # the default stream is the file
+    "\\\\?\\C:\\Projects\\app\\x",
+]
+
+#: Every one of these is a file that computer opens OUTSIDE C:\Projects\app.
+WIN_OUTSIDE = [
+    "..\\other\\x",
+    "C:\\Projects\\other\\x",
+    "D:\\Projects\\app\\x",
+    "\\\\server\\share\\Projects\\app\\x",
+]
+
+
+def test_win_a_call_on_a_windows_computer_is_tagged_as_a_guest_call():
+    # Before, a non-POSIX workdir left the call untagged: judged as a gateway path.
+    event = _event("read_file", "read", {"path": "x"}, root=WIN_ROOT)
+    assert isinstance(event.raw_tool_params, GuestPathParams)
+    assert event.raw_tool_params.root == WIN_ROOT
+    assert event.raw_tool_params["path"] == "C:\\Projects\\app\\x"
+    assert not event.raw_tool_params.also_local
+
+
+@pytest.mark.parametrize("pattern", ["C:\\Projects\\app\\**", "C:/Projects/app/**"])
+@pytest.mark.parametrize("path", WIN_INSIDE)
+def test_win_a_deny_binds_every_spelling_of_a_path_inside_it(monkeypatch, reading, path, pattern):
+    _policy(monkeypatch, write={"mode": "deny", "deny": [pattern]})
+    assert _denied(_judge("write_file", path, kind="edit", root=WIN_ROOT))
+
+
+@pytest.mark.parametrize("path", WIN_OUTSIDE)
+def test_win_a_deny_does_not_bind_a_path_opened_elsewhere(monkeypatch, reading, path):
+    _policy(monkeypatch, write={"mode": "deny", "deny": ["C:\\Projects\\app\\**"]})
+    assert not _denied(_judge("write_file", path, kind="edit", root=WIN_ROOT))
+
+
+@pytest.mark.parametrize(
+    "path, permitted",
+    [
+        ("public\\x", True),
+        ("C:\\Projects\\app\\public\\x", True),
+        ("public\\..\\private\\x", False),
+        ("..\\..\\Windows\\x", False),
+        ("C:\\Windows\\x", False),
+        ("D:x", False),  # drive-relative: no anchor
+        ("public\\x.", False),  # a folded spelling is not admitted by an allow
+        ("public\\PROGRA~1\\x", False),  # an 8.3 short name names another long name
+        ("public\\%TEMP%\\x", False),
+        ("public\\x:stream", False),
+        ("\\\\?\\C:\\Projects\\app\\public\\x", False),
+        ("c:\\projects\\app\\public\\x", False),  # an allow never folds case
+    ],
+)
+def test_win_an_allow_confines_to_its_prefix(monkeypatch, reading, path, permitted):
+    _policy(monkeypatch, read={"mode": "allow", "allow": ["C:\\Projects\\app\\public\\**"]})
+    assert _denied(_judge("read_file", path, root=WIN_ROOT)) is not permitted
+
+
+def test_win_a_posix_rule_never_binds_a_windows_computer_s_file(monkeypatch, reading):
+    _policy(monkeypatch, read={"mode": "deny", "deny": ["/workspace/app/**"]})
+    assert not _denied(_judge("read_file", "x", root=WIN_ROOT))
+
+
+@pytest.mark.parametrize(
+    "item, root, norm",
+    [
+        ("x", WIN_ROOT, "C:\\Projects\\app\\x"),
+        ("..\\x", WIN_ROOT, "C:\\Projects\\x"),
+        ("c:/a/./b//c/..", WIN_ROOT, "C:\\a\\b"),
+        ("/etc/passwd", WIN_ROOT, "C:\\etc\\passwd"),
+        ("a. \\b ", WIN_ROOT, "C:\\Projects\\app\\a\\b"),
+        ("\\\\?\\UNC\\srv\\sh\\x", WIN_ROOT, "\\\\srv\\sh\\x"),
+        ("x", "\\\\srv\\sh\\app", "\\\\srv\\sh\\app\\x"),
+        ("D:x", WIN_ROOT, None),
+        ("x:stream", WIN_ROOT, None),
+    ],
+)
+def test_win_guest_norm(item, root, norm):
+    assert guest_norm(GuestPath(item, root)) == norm
+
+
+@pytest.mark.parametrize(
+    "item, unverifiable",
+    [
+        ("C:\\Projects\\app\\x", False),
+        ("sub/x", False),
+        ("\\\\srv\\sh\\x", False),
+        ("x.", True),
+        ("x ", True),
+        ("x::$DATA", True),
+        ("PROGRA~1", True),
+        ("%TEMP%\\x", True),
+        ("$env\\x", True),
+        ("\\\\.\\C:\\x", True),
+        ("D:x", True),
+    ],
+)
+def test_win_guest_unverifiable(item, unverifiable):
+    assert guest_unverifiable(GuestPath(item, WIN_ROOT)) is unverifiable
+
+
+@pytest.mark.parametrize(
+    "diff_path, anchored",
+    [("C:\\Projects\\app\\x", True), ("\\\\srv\\sh\\x", True), ("x", False), ("/x", False)],
+)
+def test_win_a_diff_block_path_is_anchored_as_that_computer_reads_it(diff_path, anchored):
+    from kiro_crew.platform.tool_paths import edit_target_candidates
+
+    found = edit_target_candidates(GuestPathParams({}, root=WIN_ROOT), diff_path, tool_kind="edit")
+    assert found.unanchored is not anchored
+
+
+@pytest.mark.parametrize(
+    "root", ["C:\\Projects\\app", "d:\\a b\\c", "\\\\server\\share\\app", "/home/me/app"]
+)
+def test_win_every_root_the_gateway_accepts_is_an_absolute_guest_workdir(root):
+    from kiro_crew.connected_computers import protocol
+    from kiro_crew.platform.guest_paths import guest_windows, guest_workdir_absolute
+
+    assert protocol.valid_root(root)
+    assert guest_workdir_absolute(root)
+    assert guest_windows(root) is not root.startswith("/")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "\\\\./C:/Projects/app/.env",
+        "//?/C:/Projects/app/.env",
+        "\\\\?\\C:/Projects/app/.env",
+        "//?\\C:\\Projects\\app\\.env",
+        "\\\\.\\C:\\Projects\\app\\.env",
+        "/??/C:/Projects/app/.env",
+    ],
+)
+def test_win_every_spelling_of_a_device_prefix_meets_a_deny(monkeypatch, reading, path):
+    assert guest_norm(GuestPath(path, WIN_ROOT)) == "C:\\Projects\\app\\.env"
+    _policy(monkeypatch, read={"mode": "deny", "deny": ["**/.env"]})
+    assert _denied(_judge("read_file", path, root=WIN_ROOT))
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["D:x", "x:stream", "\\\\.\\PhysicalDrive0", "//?/Volume{0-1}/x", "\\\\?\\GLOBALROOT\\x"],
+)
+def test_win_a_target_with_no_file_to_name_is_refused_by_any_deny(monkeypatch, reading, path):
+    assert guest_norm(GuestPath(path, WIN_ROOT)) is None
+    # Even a deny naming something else: the target cannot be shown to miss it.
+    _policy(monkeypatch, read={"mode": "deny", "deny": ["C:\\Elsewhere\\**"]})
+    assert _denied(_judge("read_file", path, root=WIN_ROOT))
+
+
+def test_win_a_named_file_outside_a_deny_still_passes(monkeypatch, reading):
+    _policy(monkeypatch, read={"mode": "deny", "deny": ["C:\\Elsewhere\\**"]})
+    assert not _denied(_judge("read_file", "\\\\?\\C:\\Projects\\app\\x", root=WIN_ROOT))
+
+
+# -- a deny is at least as wide as the guest filesystem's own aliasing -----------
+
+
+@pytest.mark.parametrize(
+    "path, deny",
+    [
+        ("PRIVAT~1\\key.pem", "C:\\Projects\\app\\private\\**"),  # an 8.3 short name
+        ("private::$INDEX_ALLOCATION\\key.pem", "C:\\Projects\\app\\private\\**"),
+        ("report.docx:Zone.Identifier", "C:\\Projects\\app\\report.docx"),  # a stream
+    ],
+)
+def test_win_an_alias_spelling_meets_a_file_or_folder_deny(monkeypatch, reading, path, deny):
+    _policy(monkeypatch, read={"mode": "deny", "deny": [deny]})
+    assert _denied(_judge("read_file", path, root=WIN_ROOT))
+
+
+@pytest.mark.parametrize("path", ["public\\$schema.json", "public\\100%.txt"])
+def test_win_a_literal_dollar_or_percent_name_meets_only_the_denies_that_name_it(
+    monkeypatch, reading, path
+):
+    _policy(monkeypatch, read={"mode": "deny", "deny": ["C:/Projects/app/private/**"]})
+    assert not _denied(_judge("read_file", path, root=WIN_ROOT))
+    _policy(monkeypatch, read={"mode": "deny", "deny": ["C:/Projects/app/public/**"]})
+    assert _denied(_judge("read_file", path, root=WIN_ROOT))
+
+
+MAC_ROOT = "/Users/owner/project"
+
+
+def test_mac_a_deny_meets_the_other_case_as_apfs_opens_it(monkeypatch, reading):
+    _policy(monkeypatch, read={"mode": "deny", "deny": ["/Users/owner/project/private/**"]})
+    assert _denied(_judge("read_file", "PRIVATE/secret.txt", root=MAC_ROOT, folds=True))
+    assert not _denied(_judge("read_file", "public/x", root=MAC_ROOT, folds=True))
+
+
+def test_linux_a_deny_still_matches_only_its_own_case(monkeypatch, reading):
+    _policy(monkeypatch, read={"mode": "deny", "deny": ["/Users/owner/project/private/**"]})
+    assert not _denied(_judge("read_file", "PRIVATE/secret.txt", root=MAC_ROOT))
+
+
+def test_mac_an_allow_still_matches_only_its_own_case(monkeypatch, reading):
+    _policy(monkeypatch, read={"mode": "allow", "allow": ["/Users/owner/project/public/**"]})
+    assert not _denied(_judge("read_file", "public/x", root=MAC_ROOT, folds=True))
+    assert _denied(_judge("read_file", "PUBLIC/x", root=MAC_ROOT, folds=True))
+
+
+def test_mac_a_deny_meets_the_other_unicode_form_as_apfs_opens_it(monkeypatch, reading):
+    _policy(
+        monkeypatch, read={"mode": "deny", "deny": ["/Users/owner/project/private/caf\u00e9.txt"]}
+    )
+    assert _denied(_judge("read_file", "private/cafe\u0301.txt", root=MAC_ROOT, folds=True))
+    assert _denied(_judge("read_file", "PRIVATE/CAF\u00c9.txt", root=MAC_ROOT, folds=True))
+
+
+@pytest.mark.parametrize(
+    "deny, path",
+    [
+        ("/Users/owner/project/keys/?.pem", "keys/\u00df.pem"),  # folds to two letters
+        ("/Users/owner/project/[A-z]*", "_secret"),  # folding drops "_" from the range
+    ],
+)
+def test_mac_a_deny_still_matches_as_written_where_folding_would_miss(
+    monkeypatch, reading, deny, path
+):
+    _policy(monkeypatch, read={"mode": "deny", "deny": [deny]})
+    assert _denied(_judge("read_file", path, root=MAC_ROOT, folds=True))
+
+
+def test_win_a_deny_meets_a_non_ascii_letter_in_the_other_case(monkeypatch, reading):
+    _policy(monkeypatch, read={"mode": "deny", "deny": ["C:/Projects/app/private/\u00e9.txt"]})
+    assert _denied(_judge("read_file", "private\\\u00c9.txt", root=WIN_ROOT))
+    assert not _denied(_judge("read_file", "public\\\u00c9.txt", root=WIN_ROOT))
+
+
+def test_linux_a_deny_does_not_fold_the_unicode_form(monkeypatch, reading):
+    _policy(
+        monkeypatch, read={"mode": "deny", "deny": ["/Users/owner/project/private/caf\u00e9.txt"]}
+    )
+    assert not _denied(_judge("read_file", "private/cafe\u0301.txt", root=MAC_ROOT))
+
+
+def test_the_mac_flag_reaches_the_tagged_arguments_and_survives_a_copy():
+    event = _event("read_file", "read", {"path": "x"}, root=MAC_ROOT, folds=True)
+    assert isinstance(event.raw_tool_params, GuestPathParams)
+    assert event.raw_tool_params.case_insensitive is True
+    # deepcopy rebuilds the item through the same __reduce__ a pickle uses.
+    item = copy.deepcopy(GuestPath("x", MAC_ROOT, True))
+    assert item.case_insensitive is True
+    assert _event("read_file", "read", {"path": "x"}).raw_tool_params.case_insensitive is False

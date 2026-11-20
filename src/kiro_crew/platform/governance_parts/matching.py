@@ -15,9 +15,15 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
-from typing import Callable, Dict, Tuple
+import unicodedata
+from typing import Callable, Dict, Optional, Tuple
 
-from kiro_crew.platform.guest_paths import GuestPath, guest_norm
+from kiro_crew.platform.guest_paths import (
+    GuestPath,
+    guest_alias_windows,
+    guest_norm,
+    guest_windows,
+)
 
 # ──────────────────────────────────────────────────────────────────────────
 # Enforcer-owned registries (NEVER sourced from a policy/profile document)
@@ -134,13 +140,21 @@ def _match_path(item: str, pattern: str, *, any_case: bool = False) -> bool:
     ``posixpath`` instead (:func:`~kiro_crew.platform.guest_paths.guest_norm`):
     anchored at the guest workdir, ``..`` and a leading ``//`` collapsed, no
     ``~``/``$VAR`` expansion with this gateway's values. Chosen per item, so a local
-    call on a Windows gateway is matched exactly as before. One with no anchor
+    call on a Windows gateway is matched exactly as before. A Windows connected
+    computer's target (its workdir a native Windows path) is normalized with
+    ``ntpath`` instead and matched as a Windows gateway matches its own paths. One with no anchor
     matches no pattern; ``classify_tool_args`` pairs it with the never-permittable
     unverifiable item, which an allow-mode set refuses.
     """
     if isinstance(item, GuestPath):
         norm = guest_norm(item)
-        return norm is not None and fnmatch.fnmatchcase(norm, _expand(pattern))
+        if norm is None:
+            return False
+        if guest_windows(item.root):
+            # A Windows connected computer: read as a Windows gateway reads its
+            # own paths, either separator and, for a deny, either ASCII case.
+            return _match_local_path(norm, _expand(pattern), any_case=any_case, windows=True)
+        return fnmatch.fnmatchcase(norm, _expand(pattern))
     return _match_local_path(_norm_item(item), _expand(pattern), any_case=any_case)
 
 
@@ -152,8 +166,41 @@ def _match_denied_path(item: str, pattern: str) -> bool:
     ``private`` and ``Private`` are two directories. Folding case in an allow would
     admit the one the operator did not name; folding it in a deny refuses at most
     a directory the operator did not name, which fails closed.
+
+    A deny on a guest is at least as wide as that filesystem's own aliasing. A
+    Windows target that names no file, or that is an alias spelling (an 8.3
+    short name, a stream, a namespace prefix: ``guest_alias_windows``), meets
+    every deny, since the guest may open a denied file through it. A macOS
+    target (``case_insensitive``) and a Windows target are also compared folded
+    (``_guest_fold``: one Unicode form, full Unicode case), as APFS and NTFS open
+    either spelling. A Linux guest and every allow match as written.
     """
+    if guest_alias_windows(item):
+        return True
+    if isinstance(item, GuestPath):
+        windows = guest_windows(item.root)
+        if item.case_insensitive or windows:
+            norm = guest_norm(item)
+            if norm is None:
+                return False
+            if fnmatch.fnmatchcase(
+                _guest_fold(norm, windows=windows), _guest_fold(_expand(pattern), windows=windows)
+            ):
+                return True
+    # The folded comparison only adds matches: the as-written one always runs too.
     return _match_path(item, pattern, any_case=True)
+
+
+def _guest_fold(text: str, *, windows: bool) -> str:
+    """*text* in the one spelling a macOS or Windows filesystem treats it as.
+
+    Both open a name whatever its Unicode case, and APFS also whatever its
+    composed or decomposed form, so a deny compares this folded text. On Windows
+    either separator is the same one. Used only for a deny, where it can only
+    widen what the pattern covers.
+    """
+    folded = unicodedata.normalize("NFC", unicodedata.normalize("NFC", text).casefold())
+    return folded.replace("\\", "/") if windows else folded
 
 
 def _match_host(item: str, pattern: str) -> bool:
@@ -358,7 +405,9 @@ def _norm_item(path_str: str) -> str:
 _WINDOWS_PATHS = os.name == "nt"
 
 
-def _match_local_path(item: str, pattern: str, *, any_case: bool = False) -> bool:
+def _match_local_path(
+    item: str, pattern: str, *, any_case: bool = False, windows: Optional[bool] = None
+) -> bool:
     """Whether a normalized local item meets an expanded pattern on this gateway.
 
     POSIX compares the two as written. On Windows ``abspath`` writes an item with
@@ -369,7 +418,9 @@ def _match_local_path(item: str, pattern: str, *, any_case: bool = False) -> boo
     the other separator (``_windows_glob``), and with *any_case* an ASCII letter
     also meets its other case. Only a deny asks for that (``_match_denied_path``):
     a directory may be case sensitive, and there an allow that folded case would
-    admit a sibling the operator did not name.
+    admit a sibling the operator did not name. *windows* overrides this gateway's
+    own reading: a Windows connected computer's target is read the Windows way on
+    every gateway.
 
     Nothing else changes, which is what keeps every rule's character sets intact.
     The item is matched exactly as written, and a bracket expression, ``?`` and
@@ -388,7 +439,7 @@ def _match_local_path(item: str, pattern: str, *, any_case: bool = False) -> boo
     """
     if fnmatch.fnmatchcase(item, pattern):
         return True
-    if not _WINDOWS_PATHS:
+    if not (_WINDOWS_PATHS if windows is None else windows):
         return False
     either_separator = _windows_glob(_upper_drive(pattern))
     if re.match(either_separator, _upper_drive(item)):

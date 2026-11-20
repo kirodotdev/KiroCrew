@@ -22,6 +22,7 @@ from kiro_crew.platform.governance_parts.matching import (
 from kiro_crew.platform.guest_paths import (
     GuestPath,
     guest_also_local,
+    guest_case_insensitive,
     guest_root,
     guest_unverifiable,
 )
@@ -297,7 +298,10 @@ _UNSPLITTABLE_COMMAND_ITEM = _UnmatchableCommand(
 
 
 def _governed_targets(
-    paths: Iterable[str], root: Optional[str], also_local: bool = False
+    paths: Iterable[str],
+    root: Optional[str],
+    also_local: bool = False,
+    case_insensitive: bool = False,
 ) -> Tuple[str, ...]:
     """The governed items for *paths*: unchanged for a local call (``root`` None).
 
@@ -310,7 +314,7 @@ def _governed_targets(
     paths = tuple(paths)
     if root is None:
         return paths
-    items: list = [GuestPath(path, root) for path in paths]
+    items: list = [GuestPath(path, root, case_insensitive) for path in paths]
     if any(guest_unverifiable(item) for item in items):
         items.append(_GUEST_UNVERIFIABLE_ITEM)
     if also_local:
@@ -447,6 +451,7 @@ def classify_tool_args(
     # targets as the plain strings the gateway's own rules match.
     root = guest_root(raw_params)
     also_local = guest_also_local(raw_params)
+    folds = guest_case_insensitive(raw_params)
     if is_edit_call(tool_kind, diff_path):
         # The edit's judged target set is the params∪diff-block union, from the
         # same helper both edit gates consume — a diff-only edit (params carry
@@ -456,7 +461,7 @@ def classify_tool_args(
         # evidence whatever the spec-optional ``kind`` field says, so a
         # kindless (or mislabelled) call carrying one is classified here too.
         candidates = edit_target_candidates(params, diff_path, tool_kind=tool_kind)
-        targets = _governed_targets(candidates, root, also_local)
+        targets = _governed_targets(candidates, root, also_local, folds)
         edit_pairs: list = [("filesystem.write", path) for path in targets]
         if candidates.truncated:
             edit_pairs.append(("filesystem.write", _TRUNCATED_SCAN_ITEM))
@@ -485,7 +490,7 @@ def classify_tool_args(
         return ()
     pairs: list = []
     found, paths_truncated = _tool_arg_paths(params)
-    paths = _governed_targets(found, root, also_local)
+    paths = _governed_targets(found, root, also_local, folds)
     url = params.get("url") or params.get("uri")
     has_command = bool(params.get("command"))  # a shell tool → commands scope
     if tool_kind == _KIND_READ:
@@ -532,7 +537,12 @@ def classify_image_reads(raw_params: Optional[Mapping[str, object]]) -> Tuple[Tu
         return ()
     entries = [op for op in ops if isinstance(op, Mapping) and op.get("mode") == "Image"]
     found = target_paths({"operations": entries}, ("image_paths", "paths"))
-    targets = _governed_targets(found, guest_root(raw_params), guest_also_local(raw_params))
+    targets = _governed_targets(
+        found,
+        guest_root(raw_params),
+        guest_also_local(raw_params),
+        guest_case_insensitive(raw_params),
+    )
     pairs = [("filesystem.read", path) for path in targets]
     if found.truncated:
         pairs.append(("filesystem.read", _TRUNCATED_SCAN_ITEM))

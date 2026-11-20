@@ -21,13 +21,12 @@ from __future__ import annotations
 
 import ntpath
 import os
-import posixpath
 import re
 from collections.abc import Mapping
 from types import MappingProxyType, ModuleType
 from typing import cast
 
-from kiro_crew.platform.guest_paths import GuestPathParams
+from kiro_crew.platform.guest_paths import GuestPathParams, guest_absolute
 
 #: EVERY argument name a tool may carry its target file path under. Public because
 #: it is shared with the consent prompt in ``cli_chat``: a prompt that disclosed a
@@ -403,10 +402,11 @@ def edit_target_candidates(
             return candidates
     if diff_path:
         # A remote workspace's diff block names a guest file: anchored only when it
-        # is absolute as the guest reads it (POSIX, nothing expanded), whatever this
-        # gateway's os.path makes of ``/workspace/app/x``.
+        # is absolute as the guest reads it (POSIX, or Windows on a Windows
+        # connected computer; nothing expanded), whatever this gateway's os.path
+        # makes of ``/workspace/app/x``.
         if isinstance(raw_params, GuestPathParams):
-            anchored = posixpath.isabs(diff_path)
+            anchored = guest_absolute(diff_path, raw_params.root)
         else:
             anchored = _is_anchored(diff_path)
         if not anchored:

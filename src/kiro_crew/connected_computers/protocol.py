@@ -73,6 +73,8 @@ import asyncio
 import base64
 import binascii
 import json
+import ntpath
+import posixpath
 from typing import Any, Final
 
 PROTOCOL_VERSION: Final[int] = 1
@@ -130,6 +132,33 @@ def valid_mcp_name(value: Any) -> bool:
         and 0 < len(value) <= MCP_NAME_MAX
         and value[0] in _ALNUM
         and all(ch in MCP_NAME_CHARS for ch in value)
+    )
+
+
+def valid_root(root: Any) -> bool:
+    """A root the gateway can show and match: the computer's own absolute path.
+
+    POSIX (``/home/me/app``) or Windows, with a drive letter (``C:\\Projects\\app``)
+    or a UNC share (``\\\\server\\share\\app``). Either is normalized as its own
+    system writes it, so no ``.`` or ``..`` part, doubled or trailing separator,
+    or ``/`` in a Windows path is left; a whole disk or share, a relative or
+    drive-relative path, a device path (``\\\\?\\``, ``\\\\.\\``), a stream name
+    (``:`` after the drive) and any NUL or control character are refused.
+    """
+    if not isinstance(root, str) or not root or not all(ch.isprintable() for ch in root):
+        return False
+    if root.startswith("/"):
+        return root != "/" and posixpath.normpath(root) == root
+    drive, rest = ntpath.splitdrive(root)
+    if drive.startswith(("\\\\?\\", "\\\\.\\")) or ":" in rest:
+        return False
+    lettered = len(drive) == 2 and drive[1] == ":" and drive[0].isascii() and drive[0].isalpha()
+    unc = drive.startswith("\\\\") and drive.count("\\") == 3 and not drive.endswith("\\")
+    return (
+        (lettered or unc)
+        and rest.startswith("\\")
+        and rest != "\\"
+        and ntpath.normpath(root) == root
     )
 
 

@@ -165,10 +165,10 @@ class TestPlatformChoice:
             ps.protected_store_for_this_machine()
         assert seen == [tmp_path]
 
-    def test_this_machine_refuses_off_linux(self, monkeypatch, tmp_path):
+    def test_this_machine_refuses_a_system_with_no_store(self, monkeypatch, tmp_path):
         from kiro_crew.config import paths
 
         monkeypatch.setattr(paths, "config_dir", lambda: tmp_path)
-        monkeypatch.setattr(ps.sys, "platform", "darwin")
+        monkeypatch.setattr(ps.sys, "platform", "freebsd14")
         with pytest.raises(ProtectionUnavailable, match="no OS protection"):
             ps.protected_store_for_this_machine()

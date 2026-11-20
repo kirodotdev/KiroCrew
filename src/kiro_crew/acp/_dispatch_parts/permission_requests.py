@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import posixpath
 import re
 from collections.abc import Iterable
 from typing import Any, NamedTuple, cast
@@ -59,7 +58,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_STRANDS,
 )
 from kiro_crew.mcp_gateway.tool_surface import mcp_identity_name, mcp_identity_unreadable
-from kiro_crew.platform.guest_paths import GuestPathParams
+from kiro_crew.platform.guest_paths import GuestPathParams, guest_anchor, guest_workdir_absolute
 from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL
 from kiro_crew.session_environment import WORKSPACE_DENY_ALIASES, WORKSPACE_TOOL_KINDS
 
@@ -78,8 +77,9 @@ def _anchored_in_workspace(params: dict | None, root: str) -> dict | None:
     anchored = dict(params)
     for key in _WORKSPACE_PATH_ARGUMENTS:
         value = anchored.get(key)
-        if isinstance(value, str) and not posixpath.isabs(value):
-            anchored[key] = posixpath.normpath(posixpath.join(root, value or "."))
+        if isinstance(value, str):
+            # POSIX, or Windows on a Windows connected computer (guest_anchor).
+            anchored[key] = guest_anchor(root, value)
     return anchored
 
 
@@ -801,6 +801,7 @@ def build_permission_event(
     deepseek_read_only_issue: str = "the harness composition was not read back",
     remote_workspace_server: str = "",
     remote_workspace_root: str = "",
+    remote_workspace_case_insensitive: bool = False,
 ) -> tuple[AcpEvent | None, dict[str, str] | None]:
     """Build an ``EVENT_PERMISSION_REQUEST`` from a ``session/request_permission``.
 
@@ -1437,7 +1438,7 @@ def build_permission_event(
     # reads the guest's path and not one under this gateway's working directory.
     if (
         remote_workspace_server
-        and posixpath.isabs(remote_workspace_root)
+        and guest_workdir_absolute(remote_workspace_root)
         and _mcp_identity_trusted
         and _mcp_server_name == remote_workspace_server
         and _tool_name in WORKSPACE_TOOL_KINDS
@@ -1453,10 +1454,15 @@ def build_permission_event(
             _unreadable_reason = _unreadable_reason or "workspace_arguments_unreadable"
         _resolved_raw_params = _anchored_in_workspace(_resolved_raw_params, remote_workspace_root)
         # Tagged by TYPE, which no model input can forge: governance then matches
-        # these targets as the guest's POSIX paths, not as this gateway's. A call
+        # these targets as the guest's own paths (POSIX, or Windows on a Windows
+        # connected computer), not as this gateway's. A call
         # with no arguments is tagged too, so a diff block's path is still a guest's.
         if _resolved_raw_params is None or isinstance(_resolved_raw_params, dict):
-            _resolved_raw_params = GuestPathParams(_resolved_raw_params, root=remote_workspace_root)
+            _resolved_raw_params = GuestPathParams(
+                _resolved_raw_params,
+                root=remote_workspace_root,
+                case_insensitive=remote_workspace_case_insensitive,
+            )
         _command = _resolved_raw_params.get("command") if _resolved_raw_params else None
         _runs_shell = tool_kind == "execute"
         is_shell = is_shell or _runs_shell
@@ -1464,7 +1470,7 @@ def build_permission_event(
             title = _redact(_command)
     elif (
         remote_workspace_server
-        and posixpath.isabs(remote_workspace_root)
+        and guest_workdir_absolute(remote_workspace_root)
         and (not _mcp_identity_trusted or _mcp_server_name == remote_workspace_server)
         and (_resolved_raw_params is None or isinstance(_resolved_raw_params, dict))
     ):
@@ -1473,7 +1479,10 @@ def build_permission_event(
         # know. Its targets may be the guest's or this gateway's, so they are judged
         # under both readings and must pass every rule under each.
         _resolved_raw_params = GuestPathParams(
-            _resolved_raw_params, root=remote_workspace_root, also_local=True
+            _resolved_raw_params,
+            root=remote_workspace_root,
+            also_local=True,
+            case_insensitive=remote_workspace_case_insensitive,
         )
     elif isinstance(_resolved_raw_params, GuestPathParams):
         # Only the branch above may tag a call: it is reached from the runtime's own

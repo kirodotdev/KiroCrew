@@ -200,8 +200,12 @@ class ConnectedComputerLaunch:
         exposed_mcp: Sequence[str] = (),
         broker: Optional[ConnectionBroker] = None,
         python: Optional[str] = None,
+        platform: str = "",
     ) -> None:
         self.device_id = device_id
+        #: The computer's ``sys.platform`` from its authenticated ``ready``; a macOS
+        #: one names files case-insensitively, which a deny then matches too.
+        self.platform = platform if isinstance(platform, str) else ""
         self.label = label or device_id
         self.session_key = session_key
         self.exposed_mcp = tuple(exposed_mcp)
@@ -302,8 +306,10 @@ class ConnectedComputerLaunch:
         it is only shown to the model and matched by the tool gate. The computer
         never takes a path from this side.
         """
-        if not isinstance(workdir, str) or not workdir.startswith("/"):
-            raise ValueError("a connected computer's root must be an absolute POSIX path")
+        if not protocol.valid_root(workdir):
+            raise ValueError(
+                "a connected computer's root must be an absolute, normalized POSIX or Windows path"
+            )
         if self.broker.live(self.device_id) is None:
             from kiro_crew.connected_computers.broker import DeviceOffline
 
