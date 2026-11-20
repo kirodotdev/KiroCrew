@@ -47,9 +47,9 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
   // Split-view panes draw the SAME transcript rows as the single-chat surface,
   // through the SDK's row registry: the live ToolCallLine (purpose / input /
   // output / live status), the workflow and sub-agent launch cards, thinking
-  // traces, sent files, auto-nudge turns, recovery injects, workflow
-  // completions. The SDK's built-in registry is store-free by design and so
-  // draws weaker rows — or nothing at all — for most of these; the
+  // traces, sent files, auto-nudge turns, workflow completions. The SDK's
+  // built-in registry is store-free by design and so draws weaker rows — or
+  // nothing at all — for most of these; the
   // store-connected set is supplied here as host entries instead, which is the
   // registry's intended extension path and keeps app-sdk/ChatMessageList
   // Redux-free for the embed SDK.

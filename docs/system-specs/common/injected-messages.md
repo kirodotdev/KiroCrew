@@ -264,8 +264,9 @@ boundary:
 | `heartbeat` | A heartbeat task's prompt delivered with `deliver:prompt:dashboard:<slot>` | Collapsed one-line note |
 
 `resolveInjectCard` in `website/src/pages/chat/RecoveryCard.tsx` is the single
-decision point, shared by `ChatPage` and the `transcriptRenderers` registry so the
-surfaces cannot disagree. It prefers a recognised content marker (durable, and
+decision point. The app-sdk default registry (`website/src/app-sdk/messageRenderers.tsx`)
+calls it, so `ChatPage`, every split-view pane and an app's `ChatEmbed` cannot
+disagree. It prefers a recognised content marker (durable, and
 carrying per-kind copy no tag reproduces), then applies a POSITIVE allowlist:
 only `recovery`, `synthesis`, `workflow` and `heartbeat` become a note. Everything
 else — including a row with no stamp, written by a gateway older than the field —

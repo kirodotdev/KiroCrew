@@ -11,7 +11,11 @@ const sshRemoteAuthority = '//vscode-remote/ssh-remote+'
 
 /**
  * The link that opens `absPath` in the viewer's local `editor`, which connects to
- * `host` over the viewer's own SSH: `<editor>://vscode-remote/ssh-remote+<host><path>`.
+ * `host` over the viewer's own SSH: `<editor>://vscode-remote/ssh-remote+<host><path>:1`.
+ *
+ * The `:1` line suffix is what makes the editor open a FILE: without a
+ * `:<line>`, VS Code reads an `ssh-remote` path as a folder and opens it as an
+ * empty remote workspace. The editor strips the suffix before opening the file.
  *
  * null when the editor or host is unset, or the path is not absolute or has a
  * `.`/`..` segment: URL parsing drops dot segments before the editor reads the
@@ -32,7 +36,7 @@ export function remoteEditorUrl(editor: string, host: string, absPath: string): 
   const encode = (segment: string) =>
     encodeURIComponent(segment).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
   try {
-    return `${editor}:${sshRemoteAuthority}${host}${segments.map(encode).join('/')}`
+    return `${editor}:${sshRemoteAuthority}${host}${segments.map(encode).join('/')}:1`
   } catch {
     return null
   }

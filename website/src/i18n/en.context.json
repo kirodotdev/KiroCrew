@@ -1301,6 +1301,8 @@
     "sharedCrew.invite_key_expired": "Badge: the API key has expired.",
     "sharedCrew.invite_err_daemon": "Error: the local Tailscale service is not running.",
     "sharedCrew.you": "Badge beside the viewer's own row in the People list: marks the person reading the screen.",
+    "sharedCrew.you_host": "Badge beside the viewer's own row in the People list when the viewer is this machine's owner: 'Host' as in the person whose machine runs the Crew, not a server name.",
+    "sharedCrew.started_by_owner": "A row of the session list's 'Started by' filter for the Crew's owner; {{name}} is the owner's name or e-mail. Tells the owner apart from a teammate with the same e-mail.",
     "sharedCrew.console_link": "Link on the 'Your organization' card in Settings > People that opens the organization's Console, where access is managed.",
     "sharedCrew.composer_taken_over": "Banner that replaces the composer's button row, and the composer's placeholder, after another collaborator took over typing from this user in a shared session: this user's message box is read-only again. {{name}} is that person's display name.",
     "sharedCrew.take_over_typing": "Button on the locked composer's banner: takes the typing turn from the collaborator who is typing, so this user can type and send. Imperative verb.",
@@ -1430,6 +1432,7 @@
     "components.relayCrews.group_team_crews": "Heading of the Crew switcher's group of Crews opened through the Kiro relay, and the Notifications source name for its notes. 'Remote' as in on another machine.",
     "components.relayCrews.type_personal": "Type label on a Remote Crews row, before its status: a Crew only its owner can open. Shown with a lock icon. An adjective, paired with 'Shared'.",
     "components.relayCrews.type_team": "Type label on a Remote Crews row, before its status: a Crew shared with other people. Shown with a group icon. An adjective, paired with 'Private'.",
+    "components.relayCrews.connected": "State word at the end of a Remote Crews row in the Crew switcher: this Crew is open in this window, not in front, and its host is online. Choosing the row brings its tab forward; the x beside it disconnects. An adjective (\"is connected\"), used where \"Connect\" shows for a Crew that is not open.",
     "sharedCrew.sources_title": "Settings > People: heading over one card per way people reach this Crew (Tailscale, AWS SSM, your organization, Kiro Login).",
     "sharedCrew.sources_note": "Settings > People: one line under 'Connection sources'. A source is a way people reach this Crew.",
     "sharedCrew.source_people": "Settings > People source card: how many distinct people came in through this source. {{n}} is a number.",
@@ -1487,6 +1490,11 @@
     "components.canvas.hue": "Accessible name of the slider for the colour's hue (its position around the colour wheel) in the canvas editor's custom colour picker.",
     "components.canvas.swatch_ice": "Name of a very pale blue-green colour in the canvas editor's colour palette, read out and shown as a tooltip; the colour of ice, not frozen water itself.",
     "components.canvas.swatch_red": "Name of the red colour in the canvas editor's colour palette, read out and shown as a tooltip.",
-    "components.canvas.swatch_sky": "Name of a pale sky-blue colour in the canvas editor's colour palette, read out and shown as a tooltip."
+    "components.canvas.swatch_sky": "Name of a pale sky-blue colour in the canvas editor's colour palette, read out and shown as a tooltip.",
+    "components.crewMode.midchat_confirm_title": "Title of the confirm dialog shown when the person turns conductor mode on in a chat that already has messages. Conductor mode is a product feature name kept in English.",
+    "components.crewMode.midchat_confirm_body": "One short line in the warning color in that confirm dialog, under the conductor mode explanation: once turned on, conductor mode cannot be turned off for this chat.",
+    "components.crewMode.midchat_confirm_action": "Confirm button of that dialog: turns conductor mode on for this chat.",
+    "utils.agentSwitchFeedback.crew_mode_locked": "One-sentence notice shown when the person tries to switch the agent of a chat that is in conductor mode (agent picker, /agent command or keyboard shortcut) and the gateway refuses it. {{agent}} is the agent they picked. Nothing changed: the chat stays on its agent.",
+    "components.crewMode.midchat_confirm_dont_show": "Checkbox label in the confirm dialog shown before conductor mode turns on in a chat that has messages. Checked and confirmed, the dialog is skipped on later switches."
   }
 }

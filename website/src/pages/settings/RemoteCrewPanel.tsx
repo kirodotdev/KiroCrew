@@ -179,6 +179,9 @@ export function RemoteCrewPanel() {
   const [identityStartUrl, setIdentityStartUrl] = useState(() => identityDraft?.start_url ?? readCompanySignIn().startUrl)
   const [identityRegion, setIdentityRegion] = useState(() => identityDraft?.region ?? readCompanySignIn().region)
   const [subnetId, setSubnetId] = useState(launchDraft?.subnet_id ?? '')
+  // Sign in to Kiro on the new crew. On by default; a crew on another agent
+  // harness works without it, so the reader may turn it off.
+  const [signinOnLaunch, setSigninOnLaunch] = useState(launchDraft?.signinOnLaunch ?? true)
   const identityTouched = useRef(identityDraft !== null)
   // Render-visible twin of the ref: an explicit choice must re-render the
   // Launch gate even when it re-selects the already-checked default.
@@ -195,10 +198,14 @@ export function RemoteCrewPanel() {
   // Only a sign-in choice the reader made is kept: the inherited preselection
   // is read again on the next visit anyway.
   const currentLaunchDraft = useMemo<CrewLaunchDraft | null>(
-    () => (subnetId || identityChosen
-      ? { subnet_id: subnetId, identity: identityChosen ? { mode: identityMode, start_url: identityStartUrl, region: identityRegion } : null }
+    () => (subnetId || identityChosen || !signinOnLaunch
+      ? {
+          subnet_id: subnetId,
+          identity: identityChosen ? { mode: identityMode, start_url: identityStartUrl, region: identityRegion } : null,
+          ...(!signinOnLaunch ? { signinOnLaunch: false } : {}),
+        }
       : null),
-    [subnetId, identityChosen, identityMode, identityStartUrl, identityRegion],
+    [subnetId, identityChosen, identityMode, identityStartUrl, identityRegion, signinOnLaunch],
   )
   // Held on every edit, like the add form, so every exit keeps it.
   useEffect(() => { dispatch(setCrewLaunchDraft(currentLaunchDraft)) }, [dispatch, currentLaunchDraft])
@@ -575,15 +582,18 @@ export function RemoteCrewPanel() {
     return m
   }, [launches])
   // instance_id → its launch job while the Kiro sign-in is missing or being
-  // redone. Newest job per instance wins (the list is created-at descending), so
-  // a crew re-signed by a later retry drops out once that retry confirms. The
-  // polled copy of the active job outranks the list's snapshot of it: the list
-  // is refetched on demand, the poll every few seconds, and the row must show the
-  // code the moment the gateway publishes it.
+  // redone. Only the newest job per instance counts (the list is created-at
+  // descending), whatever its state: a re-launch onto the same stack that signed
+  // in or skipped the sign-in must not let an older unsigned job, with its stale
+  // code, stand in for it. The polled copy of the active job outranks the list's
+  // snapshot of it: the list is refetched on demand, the poll every few seconds,
+  // and the row must show the code the moment the gateway publishes it.
   const signinJobByInstanceId = useMemo(() => {
+    const seen = new Set<string>()
     const m = new Map<string, LaunchJob>()
     for (const j of launches) {
-      if (!j.instance_id || m.has(j.instance_id)) continue
+      if (!j.instance_id || seen.has(j.instance_id)) continue
+      seen.add(j.instance_id)
       const live = launchStatusQuery.data?.id === j.id ? launchStatusQuery.data : j
       if (needsSignin(live) || (!isTerminal(live) && isRegistered(live))) m.set(j.instance_id, live)
     }
@@ -856,6 +866,17 @@ export function RemoteCrewPanel() {
     },
     onSettled: (_r, _e, id) => { void queryClient.invalidateQueries({ queryKey: ['cloud', 'launch', id] }) },
   })
+  // Goes on to Connect without the Kiro sign-in. The worker acts on it within a
+  // poll, so the card's own poll shows the skipped step.
+  const signinSkipMutation = useMutation({
+    mutationFn: (id: string) => api.cloudLaunchSigninSkip(id),
+    onMutate: () => setActionErr(null),
+    onError: e => setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))),
+    onSettled: (_r, _e, id) => {
+      reloadLaunches()
+      void queryClient.invalidateQueries({ queryKey: ['cloud', 'launch', id] })
+    },
+  })
   // Takes its body as VARIABLES rather than closing over the form state: a
   // registered provisioner's form owns its own inputs, and the core cannot read
   // them. The built-in call site passes the panel's own profile/region/size.
@@ -999,7 +1020,7 @@ export function RemoteCrewPanel() {
     region: region.trim(),
     size_key: sizeKey,
     ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}),
-    ...loginTargetBody,
+    ...(signinOnLaunch ? loginTargetBody : { skip_signin: true }),
   }
   const builtinLaunchKey = launchGuardKey(builtinLaunchBody)
   // The launch these settings went out with failed. Its line never reads as a
@@ -1025,13 +1046,13 @@ export function RemoteCrewPanel() {
   // The gateway refuses a launch while any crew setup is still running
   // (`launch_already_running`), so neither launch button is offered until it ends.
   const setupRunning = !!activeJob && !isTerminal(activeJob)
-  const launchReady = blockingOk && regionOk && identityOk && !launchMutation.isPending && !setupRunning
+  const launchReady = blockingOk && regionOk && (identityOk || !signinOnLaunch) && !launchMutation.isPending && !setupRunning
   const launchBuiltin = () => {
     sentLaunchDraft.current = currentLaunchDraft
     // Held again: an earlier launch's success dropped it.
     dispatch(setCrewLaunchDraft(currentLaunchDraft))
     sentLaunchKey.current = builtinLaunchKey
-    if (identityMode === 'identity_center') rememberCompanySignIn(identityStartUrl, identityRegion)
+    if (signinOnLaunch && identityMode === 'identity_center') rememberCompanySignIn(identityStartUrl, identityRegion)
     launchMutation.mutate(builtinLaunchBody)
   }
 
@@ -1246,6 +1267,7 @@ export function RemoteCrewPanel() {
           setupRunning={setupRunning} launchFailed={launchFailed} launchFailedBeforeProvision={launchFailedBeforeProvision}
           launchFailedCrewListed={launchFailedCrewListed} identityResolving={identityResolving} identityUnknown={identityUnknown}
           identityOk={identityOk} regionOk={regionOk} blockingOk={blockingOk} blockingCheck={blockingCheck}
+          signinOnLaunch={signinOnLaunch} setSigninOnLaunch={setSigninOnLaunch}
         />
         </>
         ) : registeredProvisioner && selectedProvisioner ? (
@@ -1305,6 +1327,8 @@ export function RemoteCrewPanel() {
             onFetchSignin={id => signinMutation.mutate(id)}
             fetchingSignin={signinMutation.isPending}
             signinNotice={signinNotice && signinNotice.jobId === activeJob.id ? signinNotice : null}
+            onSkipSignin={id => signinSkipMutation.mutate(id)}
+            skippingSignin={signinSkipMutation.isPending}
           />
         )}
       </div>

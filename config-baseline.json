@@ -7706,7 +7706,7 @@
         "sessions_limit": 10,
         "use_tunnel_url": false,
         "session_folder": "",
-        "show_in_session_list": true,
+        "show_in_session_list": false,
         "auto_link_sessions": false,
         "agent_sessions": false,
         "code_channel_dispatch": false,
@@ -8055,7 +8055,7 @@
         "slack"
       ],
       "label": "Session Folder",
-      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) files them in a 'Slack' folder, created on first use, while Show Slack Conversations In The Session List is on, and leaves them unfiled while it is off; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -8071,10 +8071,10 @@
         "slack"
       ],
       "label": "Show Slack Conversations In The Session List",
-      "help": "List conversations that start in Slack (threads, DMs, channel mentions) in the dashboard's session list. Off removes them from the list only: they keep working in Slack, stay in History and search, still raise approvals and notifications, and come back when this is turned on again; nothing is closed or deleted. The conversation open in the dashboard, and one waiting on an approval or an answer, keep their rows. Sessions started in the dashboard and linked to Slack, and Slack code channel sessions with their helper agents, are always listed. On by default; no restart.",
+      "help": "List conversations that start in Slack (threads, DMs, channel mentions) in the dashboard's session list. Off (the default) keeps them out of the list only: they keep working in Slack, stay in History and search, and still raise approvals and notifications; nothing is closed or deleted. The conversation open in the dashboard, and one waiting on an approval or an answer, keep their rows. On, and with no Session Folder set, new ones are filed in a 'Slack' folder, created on first use. Sessions started in the dashboard and linked to Slack, and Slack code channel sessions with their helper agents, are always listed and stay in their own folders. No restart.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": true
+      "defaultValue": false
     },
     {
       "path": "slack.auto_link_sessions",
@@ -12919,7 +12919,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Relay Viewer Relay Domain",
-      "help": "For testing only, read only while tunnel.relay_viewer_enabled is on and tunnel.relay_viewer_cps_url is set: a dev relay's domain, for example us-east-1.relay.example.invalid. The viewer then lists a remote Crew, and sends its access token, only when the Crew's address is exactly https://<endpoint ID>.<this domain> with no port. Otherwise a Crew is listed only at https://<endpoint ID>.<region>.relay.kiro.dev with no port, and opened at exactly that address.",
+      "help": "For testing only, read only while tunnel.relay_viewer_enabled is on and tunnel.relay_viewer_cps_url is set: a dev relay's domain, for example us-east-1.relay.example.invalid. The viewer then lists a remote Crew, and sends its access token, only when the Crew's address is exactly https://<endpoint ID>.<this domain> with no port. Otherwise a Crew is listed at the address the control plane gives, when it is https://<endpoint ID>.<host> with no port, and opened at exactly that address.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

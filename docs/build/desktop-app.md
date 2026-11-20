@@ -751,7 +751,10 @@ same way). Key details:
   runs the bundle's pip with `--target --no-deps --require-hashes
   --only-binary :all:` against `sdk_extras_locks/feishu.txt`, into
   `<data home>/extras/feishu/<cpXY-platform-machine>/`, outside the signed
-  bundle so updates keep it. pip compiles its bytecode there. pip downloads
+  bundle so updates keep it. pip compiles its bytecode there. The install
+  records a hash of the lock's pins; a release that changes a pin in the lock
+  makes the gateway treat the old install as missing and install the new set
+  the same way. pip downloads
   from the package mirror the user set up for pip, if any, and falls back once
   to pypi.org when that mirror cannot serve the files. The gateway
   appends that directory to `sys.path` before it probes or imports the SDK. The

@@ -28,6 +28,7 @@ from unittest.mock import patch
 
 import pytest
 
+from kiro_crew.dashboard import chat_compaction_notice
 from kiro_crew.dashboard.chat_compaction_notice import (
     deliver_channel_compaction_notice,
     notice_text,
@@ -268,6 +269,49 @@ class TestSlackDelivery:
 
         with _permit_governance():
             await deliver_channel_compaction_notice(state, "slack:ts-1", 90.0, success=True)
+
+        assert client.posted == []
+
+
+@pytest.mark.asyncio
+class TestPlainTextDelivery:
+    async def test_slack_gets_the_text_as_is_under_the_callers_audit_name(self) -> None:
+        client = _SlackClient()
+        state = _state(slack_client=client, sessions=_Sessions(slack_link=("ts-1", "C123")))
+
+        with patch(
+            "kiro_crew.dashboard.chat_compaction_notice.vet_and_audit",
+            return_value=SimpleNamespace(permitted=True),
+        ) as vet:
+            await chat_compaction_notice.deliver_channel_text(
+                state, "slack:ts-1", "plain words", tool_name="chat.x"
+            )
+
+        assert client.posted == [("C123", "plain words", "ts-1")]
+        assert vet.call_args.kwargs["tool_name"] == "chat.x"
+
+    async def test_discord_gets_the_text_as_is(self) -> None:
+        transport = _Transport()
+        state = _state(
+            transport=transport,
+            sessions=_Sessions(origin=ChannelLink("discord", channel_id="chan-9")),
+        )
+
+        with _permit_governance():
+            await chat_compaction_notice.deliver_channel_text(
+                state, "discord:kirocrew:direct:u1", "plain words", tool_name="chat.x"
+            )
+
+        assert transport.sent == [("chan-9", "plain words", None)]
+
+    async def test_a_key_that_is_not_a_channel_posts_nothing(self) -> None:
+        client = _SlackClient()
+        state = _state(slack_client=client, sessions=_Sessions(slack_link=("ts-1", "C123")))
+
+        with _permit_governance():
+            await chat_compaction_notice.deliver_channel_text(
+                state, "cron:abc", "plain words", tool_name="chat.x"
+            )
 
         assert client.posted == []
 

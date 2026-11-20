@@ -1362,8 +1362,8 @@ class TunnelConfig:
             "us-east-1.relay.example.invalid. The viewer then lists a remote Crew, and sends "
             "its access token, only when the Crew's address is exactly "
             "https://<endpoint ID>.<this domain> with no port. Otherwise a Crew is listed "
-            "only at https://<endpoint ID>.<region>.relay.kiro.dev with no port, and opened at "
-            "exactly that address.",
+            "at the address the control plane gives, when it is https://<endpoint ID>.<host> "
+            "with no port, and opened at exactly that address.",
         ),
     )
 

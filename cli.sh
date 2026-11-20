@@ -815,6 +815,27 @@ PINNED_KEY_SHA="$($SHA_CMD "$TMP/cli-manifest-public.der" | awk '{print $1}')"
 [ "$CLI_MANIFEST_KEY_ID" = "sha256:$PINNED_KEY_SHA" ] \
   || err "embedded CLI manifest public key fingerprint mismatch"
 
+# Install under a umask that masks group/other WRITE, so bin/kirocrew and
+# every dir above it that this run creates are born non-group-writable --
+# whether pipx or the managed venv builds the tree. `kirocrew service install`
+# refuses to attach its AppArmor unprivileged-userns profile to a launcher
+# whose file -- or any ancestor dir -- is group- or world-writable, since
+# another local user could plant an executable at that path and inherit the
+# grant. venv/pip/pipx and uv honour the process umask, so a permissive umask
+# (002, the stock Ubuntu default for a user with a same-name primary group)
+# would otherwise yield 0775 dirs and the profile install would refuse,
+# recurring on every re-install. The tightening starts HERE, before the
+# interpreter block, because on a fresh account the managed-Python step is
+# what creates ~/.kiro (the parent of crew-python and crew-venv). Tightening
+# at BIRTH (not with a post-build chmod) leaves no window in which a
+# same-group user could modify the tree before it is hardened and blessed,
+# and never touches a directory the user already had. We OR the caller's
+# umask with 022 so we only ever ADD the write-mask bits -- a stricter umask
+# (e.g. 077) is preserved, never loosened. The install branches below restore
+# it once their tree is built.
+_KC_PREV_UMASK="$(umask)"
+umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
+
 PY=""
 # The interpreter choice is STICKY: a completed install records its mode in
 # the data home (next to `channel`), and a later run without an explicit flag
@@ -1071,27 +1092,14 @@ GOT="$($SHA_CMD "$WHL" | awk '{print $1}')"
 [ "$GOT" = "$SHA" ] || err "SHA-256 mismatch (expected $SHA, got $GOT) — refusing to install"
 echo "Verified SHA-256."
 
-# Build under a umask that masks group/other WRITE, so bin/kirocrew and its
-# dirs are born non-group-writable -- whether pipx or the managed venv builds
-# them. `kirocrew service install` refuses to attach its AppArmor
-# unprivileged-userns profile to a launcher whose file -- or any ancestor dir
-# -- is group- or world-writable, since another local user could plant an
-# executable at that path and inherit the grant. venv/pip/pipx honour the
-# process umask, so a permissive umask (002, common on shared dev hosts) would
-# otherwise yield a 0775 tree and the profile install would refuse, recurring
-# on every re-install. Tightening at BIRTH (not with a post-build chmod) leaves
-# no window in which a same-group user could modify the tree before it is
-# hardened and blessed. We OR the caller's umask with 022 so we only ever ADD
-# the write-mask bits -- a stricter umask (e.g. 077) is preserved, never
-# loosened. Each branch restores it once its tree is built.
+# The umask was tightened before the interpreter block (see there); each
+# branch below restores it once its tree is built.
 #
 # _KC_REPLACED_INSTALL turns 1 when this run writes over an existing install
 # (both branches install into the same tree a running gateway was loaded
 # from); the closing restart hint is printed only then, and only a run without
 # it ends with exit 3 on a host that cannot run the KAS engine.
 _KC_REPLACED_INSTALL=0
-_KC_PREV_UMASK="$(umask)"
-umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
 if command -v pipx >/dev/null 2>&1; then
   echo "Installing with pipx ..."
   # `pipx install --force` over an EXISTING kirocrew venv is not transactional

@@ -391,6 +391,23 @@ async def kas_crew_signin_ready(
     return True
 
 
+async def workload_turns_ready() -> bool:
+    """Whether a workload host can serve a new chat turn with no kiro-cli login.
+
+    True when ``KIROCREW_WORKLOAD_IDENTITY`` is set, a new turn starts on KAS and
+    the JWT-SVID file is usable now (:func:`kas_crew_signin_ready` for a cold
+    start). The setup gate reads it beside the kiro-cli probe, so the people a
+    relay brings in to a fresh pod reach the chat instead of "The gateway owner
+    needs to finish setup". The probe itself stays kiro-cli's own answer. Blocking
+    reads run in a thread; never raises.
+    """
+    from kiro_crew import workload_identity
+
+    if not workload_identity.active():
+        return False
+    return await kas_crew_signin_ready(None)
+
+
 def _log_safe_path(request: object) -> str:
     """The request path, rendered so it cannot forge a log line.
 

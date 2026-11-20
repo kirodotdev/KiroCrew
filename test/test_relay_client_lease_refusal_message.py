@@ -7,6 +7,7 @@ only plain words reach it: anything else is dropped whole.
 from __future__ import annotations
 
 import logging
+import string
 from pathlib import Path
 from typing import Any, Optional
 
@@ -15,7 +16,10 @@ from test_relay_client_lease import CREDENTIAL, FakeLeaseService, StepClock, mak
 
 from kiro_crew.relay_client import lease as lease_module
 from kiro_crew.relay_client.token_source import HostTokenRetryLater, HostTokenUnavailable
-from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
+from kiro_crew.testing.synthetic_credentials import (
+    SAMPLE_SLACK_BOT_TOKEN,
+    synth,
+)
 
 
 @pytest.mark.parametrize(
@@ -28,7 +32,8 @@ from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
             "profileArn is required for this operation when signed in as a person.",
         ),
         ("x" * 500, "x" * 200),
-        (f"Invalid token {SAMPLE_SLACK_BOT_TOKEN}", "Invalid token [REDACTED: credential]"),
+        # Its digit runs read as an account id, so it is dropped before redaction.
+        (f"Invalid token {SAMPLE_SLACK_BOT_TOKEN}", None),
         ("bell\x07here", None),
         ("\x1b[31mred", None),
         ("not caf\u00e9", None),
@@ -37,6 +42,9 @@ from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
         ("role arn:aws:iam::x:role/y", None),
         # Built at run time so the source carries no account-id shaped literal.
         ("account " + "4" * 12 + " is off", None),
+        ("account " + ",".join(["4444"] * 3) + " is off", None),
+        ("account " + ":".join(["4444"] * 3) + " is off", None),
+        ("try again at 10:30:00", "try again at 10:30:00"),
         ("   ", None),
         ("", None),
         (5, None),
@@ -55,6 +63,9 @@ from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
         "email",
         "arn",
         "account-id",
+        "account-id-commas",
+        "account-id-colons",
+        "time-kept",
         "blank",
         "empty",
         "not-a-string",
@@ -122,3 +133,46 @@ async def test_a_stop_names_the_message_and_an_unshown_one_keeps_todays_text(
             )
         finally:
             await source.aclose()
+
+
+#: An AWS access key id and a temporary one, built at run time from pieces.
+_KEY_ID = "".join(["AK", "IA"]) + synth(16, string.ascii_uppercase + string.digits, seed=5)
+_TEMP_KEY_ID = "".join(["AS", "IA"]) + synth(16, string.ascii_uppercase + string.digits, seed=6)
+_DIGITS = "4" * 12
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "role arn :aws:iam::x:role/y",
+        "role ARN  : aws",
+        "account " + " ".join([_DIGITS[:4], _DIGITS[4:8], _DIGITS[8:]]) + " is off",
+        "account " + "-".join([_DIGITS[:4], _DIGITS[4:8], _DIGITS[8:]]) + " is off",
+        "account " + ".".join([_DIGITS[:3], _DIGITS[3:6], _DIGITS[6:9], _DIGITS[9:]]),
+        "ARN AWS IAM " + " ".join([_DIGITS[:3], _DIGITS[3:6], _DIGITS[6:9], _DIGITS[9:]]),
+        f"key {_KEY_ID} refused",
+        f"key {_TEMP_KEY_ID} refused",
+    ],
+    ids=[
+        "arn-spaced",
+        "arn-upper",
+        "id-spaces",
+        "id-dashes",
+        "id-dots",
+        "id-groups",
+        "key",
+        "temp-key",
+    ],
+)
+def test_an_arn_an_account_id_or_a_key_id_in_any_spelling_hides_the_message(
+    message: str,
+) -> None:
+    assert lease_module.refusal_message({"message": message}) is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["Retry in 15 minutes.", "Learn more in the guide.", "error 4040 then 12 more"],
+)
+def test_plain_text_with_a_few_digits_is_still_shown(message: str) -> None:
+    assert lease_module.refusal_message({"message": message}) == message

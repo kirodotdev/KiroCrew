@@ -47,6 +47,7 @@ import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
 import { agentNoToolsAgent, resolveGatewayNotice } from '../pages/chat/gatewayNotice'
 import AgentNoToolsNotice from '../pages/chat/AgentNoToolsNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
+import RecoveryCard, { resolveInjectCard } from '../pages/chat/RecoveryCard'
 import { warmBriefBodyOf } from '../components/chat/WarmBriefCard'
 import { grillRowId } from '../components/chat/GrillCard'
 import { grillKeysSentAfter } from './protocol/grillMarker'
@@ -784,6 +785,26 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     id: 'tool_lifecycle',
     roles: ['tool_call', 'tool_result'],
     render: (m, ctx) => toolRow(m, ctx),
+  },
+  {
+    // Shape-matched (`'*'` plus a role check) so a host's role-keyed `inject`
+    // row, such as ChatPage's bubble, cannot outrank the card.
+    id: 'recovery_inject',
+    roles: ['*'],
+    match: m => m.role === 'inject' && resolveInjectCard(m) !== null,
+    render: (m, ctx) => {
+      const parsed = resolveInjectCard(m)
+      if (!parsed) return null
+      return ctx.row(<RecoveryCard parsed={parsed} disclosureKey={ctx.key} />)
+    },
+  },
+  {
+    // Model-only: the refusal's own `notice` row already shows the person.
+    // Shape-matched for the same reason as `recovery_inject`.
+    id: 'automation_notice_inject',
+    roles: ['*'],
+    match: m => m.role === 'inject' && (m.meta as { injectKind?: unknown } | undefined)?.injectKind === 'automation_notice',
+    render: () => null,
   },
   {
     id: 'inject',

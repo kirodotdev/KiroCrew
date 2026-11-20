@@ -18,6 +18,7 @@ import {
   Loader2,
   KeyRound,
   ChevronDown,
+  SkipForward,
   X,
 } from 'lucide-react'
 import {
@@ -33,7 +34,7 @@ import { i18nT } from '../../i18n/t'
 import { fmtCurrency, fmtElapsed } from '../../i18n/format'
 import { useSecondClock } from '../../hooks/useSecondClock'
 import {
-  isTerminal, isRemoving, isRegistered, needsSignin, connectWaiting, isSsoLaunch, cancelCopy, type SizeTier,
+  isTerminal, isRemoving, isRegistered, needsSignin, connectWaiting, isSsoLaunch, cancelCopy, signinSkipped, type SizeTier,
   tierLabel, tierWhy, gatewayIsDown, failureSentence, type SigninNotice, HOURS_PER_MONTH, SIZE_FLAG,
 } from './remoteCrewPanelModel'
 
@@ -778,6 +779,7 @@ export function PrereqRow({
 /** The launch-in-progress card (setup tab): 4 steps + device-code sign-in. */
 export function LaunchProgressCard({
   job, onCancel, onRestartSignin, restartingSignin, onFetchSignin, fetchingSignin, signinNotice, cancelling,
+  onSkipSignin, skippingSignin,
 }: {
   job: LaunchJob
   onCancel: (id: string) => void
@@ -787,8 +789,16 @@ export function LaunchProgressCard({
   fetchingSignin: boolean
   signinNotice: SigninNotice | null
   cancelling: boolean
+  /** Go on to Connect without the Kiro sign-in, while a launch signs in. */
+  onSkipSignin: (id: string) => void
+  skippingSignin: boolean
 }) {
   const terminal = isTerminal(job)
+  const skipped = signinSkipped(job)
+  // Only a launch that has not registered its crew yet: on a registered crew
+  // the sign-in is a retry, and its Cancel already keeps the crew.
+  const canSkip = !terminal && !skipped && !isRegistered(job)
+    && job.steps.some(st => st.key === 'signin' && st.state === 'active')
   // The gateway deliberately KEEPS job.signin when the sign-in wait ran out (it is
   // cleared only once sign-in is confirmed, or when a restart reaps the job), so the
   // user can still finish from the dashboard. Gating the block on `awaiting_signin`
@@ -801,7 +811,7 @@ export function LaunchProgressCard({
   // A surviving code stays visible on ANY terminal job, `needsSignin` or not: the
   // gateway keeps it precisely so setup can be finished here, and a job whose
   // steps do not name the connect step would otherwise lose it.
-  const showSignin = job.status === 'awaiting_signin' || unsigned || signinInFlight || (terminal && !!job.signin)
+  const showSignin = !skipped && (job.status === 'awaiting_signin' || unsigned || signinInFlight || (terminal && !!job.signin))
   return (
     <Card>
       <div className="flex items-center gap-2 flex-wrap mb-3">
@@ -861,7 +871,11 @@ export function LaunchProgressCard({
                   sign-in lands -- a warn-tinted hollow circle, so the reader does
                   not see the same key on a status and a step and read them as
                   one thing. */}
-              {waiting && step.key === 'signin' && (step.state === 'skipped' || step.state === 'pending')
+              {skipped && step.key === 'signin' && step.state === 'skipped'
+                // Skipped by choice: not the waiting key, which says the reader
+                // still owes something, and not a failure.
+                ? <SkipForward size={15} className="text-muted" data-testid="step-skipped-signin" aria-hidden="true" />
+                : waiting && step.key === 'signin' && (step.state === 'skipped' || step.state === 'pending')
                 ? <KeyRound size={15} className="text-warn" data-testid="step-waiting-signin" />
                 : waiting && step.key === 'connect' && step.state === 'done'
                 ? <Circle size={15} className="text-warn" data-testid="step-waiting-connect" aria-hidden="true" />
@@ -882,6 +896,14 @@ export function LaunchProgressCard({
                   Painting it red here too would show one failure twice. */}
               {step.detail ? <div className="text-[12px] text-muted mt-0.5 whitespace-pre-wrap">{step.detail}</div> : null}
               {isRunningProvision(step) && <ProvisionElapsed job={job} className="text-[12px] text-muted mt-0.5" />}
+              {step.key === 'signin' && canSkip && (
+                <Btn className="mt-1.5" onClick={() => onSkipSignin(job.id)} disabled={skippingSignin} data-testid="signin-skip">
+                  <SkipForward className="lucide-inline" aria-hidden="true" />{' '}
+                  {skippingSignin
+                    ? i18nT('pages.settings.remoteCrewPanel.skipping_sign_in')
+                    : i18nT('pages.settings.remoteCrewPanel.skip_sign_in')}
+                </Btn>
+              )}
             </div>
           </li>
         ))}
@@ -896,6 +918,13 @@ export function LaunchProgressCard({
           fetching={fetchingSignin}
           notice={signinNotice}
         />
+      )}
+
+      {/* The one place that says where to sign in later; the crew row stays plain. */}
+      {skipped && (
+        <p className="mt-3 text-[12px] text-muted" data-testid="signin-skipped-note">
+          {i18nT('pages.settings.remoteCrewPanel.sign_in_skipped_note')}
+        </p>
       )}
 
       {/* No hand-off: this card sits in the setup flow whose form fields

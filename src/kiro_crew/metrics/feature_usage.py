@@ -10,6 +10,9 @@ counter                                        one increment per
                                                tier (``hit``: a lesson went in)
 ``kirocrew.app.installed``                     first install of an app from a registry
                                                (``via``: store / default)
+``kirocrew.app.updated``                       registry install over an installed app
+``kirocrew.app.uninstalled``                   uninstall the person asked for
+                                               (``keep_data``)
 ``kirocrew.channel.message.received``          inbound channel message, once
                                                admission has decided
 ``kirocrew.ui.control.clicked``                click on an agent-rendered control
@@ -32,8 +35,8 @@ name outside :data:`SHIPPED_SKILL_IDS` is one bucket, ``custom``. That list is i
 memory at import, so neither importing this module nor labelling a skill reads the
 filesystem. :func:`app_public_id`, the label of ``kirocrew.app.installed``, names
 the shipped built-ins and the apps installed from the store, and any other app is
-``private``; it reads a set the gateway fills off the event loop, so labelling with
-it reads no file either.
+``private``; it and :func:`app_public_version`, their version, read a map the
+gateway fills off the event loop, so labelling with them reads no file either.
 
 **Recording never changes the result of what it measures.** Every function here
 swallows its own failures after a debug log, and each call site records only
@@ -55,6 +58,8 @@ LESSON_INJECTED = "kirocrew.lesson.injected"
 #: carries the closed ``skill`` label from :func:`skill_label`.
 SKILL_LAZY_LOAD_COUNT = "kirocrew.skill.lazy_load.count"
 APP_INSTALLED = "kirocrew.app.installed"
+APP_UPDATED = "kirocrew.app.updated"
+APP_UNINSTALLED = "kirocrew.app.uninstalled"
 CHANNEL_MESSAGE_RECEIVED = "kirocrew.channel.message.received"
 UI_CONTROL_CLICKED = "kirocrew.ui.control.clicked"
 TIPS_FEEDBACK = "kirocrew.tips.feedback"
@@ -251,19 +256,22 @@ def skill_label(name: object) -> str:
 APP_PRIVATE = "private"
 
 
-#: Every app with a public id (:mod:`kiro_crew.apps.store_origin`): the shipped
-#: built-ins by their ``app.json`` name, and the apps installed from the store. Filled
-#: off the event loop by :func:`refresh_public_app_ids`; empty until then, so every
-#: app is ``private`` before the first fill.
-_public_app_ids: frozenset[str] = frozenset()
+#: Every app with a public id (:mod:`kiro_crew.apps.store_origin`), mapped to its
+#: version: the shipped built-ins by their ``app.json`` name, and the apps installed
+#: from the store. Filled off the event loop by :func:`refresh_public_app_ids`, one
+#: assignment per fill; empty until then, so every app is ``private`` before the
+#: first fill.
+_public_app_ids: dict[str, str] = {}
 
 
-def refresh_public_app_ids() -> None:
+def refresh_public_app_ids() -> dict[str, str] | None:
     """Re-read which apps have a public id. Reads the install records: call off the loop.
 
     The gateway runs it at boot and after every app lifecycle change
     (``slots_push.refresh_app_state``), and a registry install runs it before it
-    counts the install. Never raises; a failed read keeps the last set.
+    counts the install. Returns the map this call read, so a caller can label from
+    its own scan even when a concurrent refresh swaps in an older one. Never raises;
+    a failed read keeps the last set and returns ``None``.
 
     shortcut: only a gateway process fills the set, so a CLI process labels every
     app ``private``; fill it there too once a CLI path records an app metric.
@@ -272,21 +280,50 @@ def refresh_public_app_ids() -> None:
     try:
         from kiro_crew.apps.store_origin import public_app_ids
 
-        _public_app_ids = public_app_ids()
+        ids = public_app_ids()
     except Exception:
         logger.debug("public app ids refresh failed", exc_info=True)
+        return None
+    _public_app_ids = ids
+    return ids
 
 
-def app_public_id(app: object) -> str:
+def app_public_id(app: object, ids: dict[str, str] | None = None) -> str:
     """*app*'s public id: a shipped built-in's or a store install's name, else ``private``.
 
     Not a string is ``other``. Whether an install came from the store is read from
     its install record, so an app the store later delists keeps its id. Reads only
-    memory.
+    memory. *ids* is a map :func:`refresh_public_app_ids` returned; default the last
+    one filled.
     """
     if not isinstance(app, str):
         return OTHER
-    return app if app in _public_app_ids else APP_PRIVATE
+    return app if app in (_public_app_ids if ids is None else ids) else APP_PRIVATE
+
+
+#: A version an app with a public id sends as itself: three dot-separated numbers.
+#: ``SEMVER_RE`` (``apps/manifest_names.py``) lets any text follow ``-`` or ``+``,
+#: so a pre-release or build suffix is ``other``.
+_PUBLIC_VERSION = re.compile(r"^\d{1,4}\.\d{1,4}\.\d{1,4}$")
+
+
+def app_public_version(app: object, ids: dict[str, str] | None = None) -> str:
+    """*app*'s installed version, the ``entity_version`` label beside :func:`app_public_id`.
+
+    ``private`` whenever :func:`app_public_id` is ``private``, so a private app's
+    version never leaves the machine. For an app with a public id, its version when
+    it is ``N.N.N`` (at most four digits each, ``1.2.3``), else ``other``
+    (``1.2.3-beta``, ``1.2.3+build``, empty). Not a string is ``other``. Reads only
+    memory: *ids*, a map :func:`refresh_public_app_ids` returned, else the one it
+    last filled.
+    """
+    known = _public_app_ids if ids is None else ids
+    if not isinstance(app, str):
+        return OTHER
+    if app not in known:
+        return APP_PRIVATE
+    version = known.get(app)
+    return version if isinstance(version, str) and _PUBLIC_VERSION.match(version) else OTHER
 
 
 #: How an install was asked for: ``store`` from the store or a registry the owner
@@ -294,9 +331,52 @@ def app_public_id(app: object) -> str:
 APP_INSTALL_VIA_VALUES: tuple[str, ...] = ("store", "default", OTHER)
 
 
-def record_app_installed(app: object, via: object) -> None:
-    """*app* was installed for the first time, asked for *via* (``store`` / ``default``)."""
-    _emit(APP_INSTALLED, {"app": app_public_id(app), "via": _closed(via, APP_INSTALL_VIA_VALUES)})
+def record_app_installed(app: object, via: object, ids: dict[str, str] | None = None) -> None:
+    """*app* was installed for the first time, asked for *via* (``store`` / ``default``).
+
+    *ids* as in :func:`app_public_id`.
+    """
+    _emit(
+        APP_INSTALLED,
+        {
+            "app": app_public_id(app, ids),
+            "via": _closed(via, APP_INSTALL_VIA_VALUES),
+            "entity_version": app_public_version(app, ids),
+        },
+    )
+
+
+def record_app_updated(app: object, via: object, ids: dict[str, str] | None = None) -> None:
+    """A registry install replaced an installed *app*; labelled with the new version.
+
+    *ids* as in :func:`app_public_id`.
+    """
+    _emit(
+        APP_UPDATED,
+        {
+            "app": app_public_id(app, ids),
+            "via": _closed(via, APP_INSTALL_VIA_VALUES),
+            "entity_version": app_public_version(app, ids),
+        },
+    )
+
+
+def record_app_uninstalled(public_id: object, public_version: object, *, keep_data: bool) -> None:
+    """An uninstall the person asked for committed.
+
+    *public_id* and *public_version* are :func:`app_public_id` and
+    :func:`app_public_version` of the app, read BEFORE its install record was
+    removed, so they name the version that went. Anything that is not a string
+    is ``other``.
+    """
+    _emit(
+        APP_UNINSTALLED,
+        {
+            "app": public_id if isinstance(public_id, str) else OTHER,
+            "entity_version": public_version if isinstance(public_version, str) else OTHER,
+            "keep_data": _bool(keep_data),
+        },
+    )
 
 
 # -- channel.message.received -------------------------------------------------

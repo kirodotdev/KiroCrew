@@ -116,6 +116,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
             name=name,
             error=f"app {name!r} cannot be uninstalled (lifecycle=locked) — use disable instead",
         )
+    # The uninstall count's labels, read now while the record still names the
+    # version being removed. A retired-builtin cleanup is Crew's own removal, not
+    # the person's, so it is not counted.
+    counted = None if retired_builtin else _uninstall_labels(name)
     dest = app_dir(name)
     if not dest.is_dir():
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
@@ -593,7 +597,41 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     from kiro_crew.apps.hidden_sessions import request_hiding_refresh
 
     request_hiding_refresh()
+    if counted is not None:
+        _count_uninstall(counted, keep_data=keep_data)
     return AppResult(ok=True, name=name, message=f"uninstalled {name}{residual}")
+
+
+def _uninstall_labels(name: str) -> tuple[str, str] | None:
+    """``(app_public_id, app_public_version)`` of *name*; ``None`` when they cannot be read.
+
+    The map is re-read first, while *name*'s install record is still on disk: a CLI
+    process never fills it otherwise, and every app would read ``private``. The
+    re-read scans the install records, so this runs only off the event loop, as
+    ``uninstall_app`` does.
+    """
+    try:
+        from kiro_crew.metrics.feature_usage import (
+            app_public_id,
+            app_public_version,
+            refresh_public_app_ids,
+        )
+
+        ids = refresh_public_app_ids()
+        return app_public_id(name, ids), app_public_version(name, ids)
+    except Exception:  # recording never changes the uninstall's result
+        logger.debug("uninstall labels failed for %s", name, exc_info=True)
+        return None
+
+
+def _count_uninstall(labels: tuple[str, str], *, keep_data: bool) -> None:
+    """Count one committed uninstall; never raises."""
+    try:
+        from kiro_crew.metrics.feature_usage import record_app_uninstalled
+
+        record_app_uninstalled(*labels, keep_data=keep_data)
+    except Exception:  # recording never changes the uninstall's result
+        logger.debug("uninstall count failed for %s", labels[0], exc_info=True)
 
 
 def trust_grant_removal_blocked(name: str) -> str | None:

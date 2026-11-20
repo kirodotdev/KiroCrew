@@ -76,10 +76,10 @@ beforeEach(() => {
 })
 
 describe('Markdown panel ⋯ menu: Open in VS Code', () => {
-  it('links to the file on the SSH host, each path segment encoded', () => {
+  it('links to the file on the SSH host, each path segment encoded, at line 1 so it opens as a file', () => {
     openMenu('/home/u/my notes#1 (copy).md')
     const row = screen.getByRole('menuitem', { name: 'Open in VS Code' })
-    expect(row.getAttribute('href')).toBe('vscode://vscode-remote/ssh-remote+dev-box/home/u/my%20notes%231%20%28copy%29.md')
+    expect(row.getAttribute('href')).toBe('vscode://vscode-remote/ssh-remote+dev-box/home/u/my%20notes%231%20%28copy%29.md:1')
     expect(row.getAttribute('target')).toBeNull()
   })
 
@@ -120,7 +120,7 @@ describe('remoteEditorUrl', () => {
   it('builds no link a dot segment could point at another host', () => {
     expect(remoteEditorUrl('vscode', 'dev-box', '/a/../../ssh-remote+other/x')).toBeNull()
     expect(remoteEditorUrl('vscode', 'dev-box', 'relative/x')).toBeNull()
-    expect(remoteEditorUrl('vscode', 'dev-box', '/home/u/.env')).toBe('vscode://vscode-remote/ssh-remote+dev-box/home/u/.env')
+    expect(remoteEditorUrl('vscode', 'dev-box', '/home/u/.env')).toBe('vscode://vscode-remote/ssh-remote+dev-box/home/u/.env:1')
   })
 
   it('builds no link for a name the desktop editor-link check refuses', () => {

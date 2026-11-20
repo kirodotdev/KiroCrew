@@ -881,6 +881,8 @@ async def test_with_no_domain_set_the_mint_pins_the_window_to_the_listed_host(vi
         f"https://{EP}.evil.example.test",
         f"https://{EP}.relay.example.test:8443",
         f"https://{EP}.us-east-1.relay.kiro.dev",
+        f"https://{EP}.kiro-relay.eu-central-1.on.aws",
+        f"https://{EP}.kiro-relay.eu-central-1.on.aws.evil.example.test",
     ],
 )
 @pytest.mark.parametrize(
@@ -895,11 +897,12 @@ async def test_with_no_domain_set_the_mint_pins_the_window_to_the_listed_host(vi
         "relaý.example.test",
     ],
 )
-async def test_a_crew_is_kept_only_under_the_set_domain_or_in_kiros_relay_zone(
+async def test_a_crew_is_kept_only_under_the_set_domain_or_at_its_own_name(
     viewer, monkeypatch, crew_url, domain
 ) -> None:
     on_domain = crew_url == f"https://{EP}.relay.example.test"
-    in_zone = crew_url == f"https://{EP}.us-east-1.relay.kiro.dev"
+    # With no domain set, the address CPS lists is trusted when it has no port.
+    in_zone = ":8443" not in crew_url
     kept = (not domain.strip() and in_zone) or (domain == "relay.example.test" and on_domain)
     viewer.tunnel.relay_viewer_relay_domain = domain
     raw = {"endpointId": EP, "crewUrl": crew_url, "name": "Build box", "crewType": "PERSONAL"}

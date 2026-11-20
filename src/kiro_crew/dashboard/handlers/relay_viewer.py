@@ -604,7 +604,7 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
     logger.info("relay viewer: mint %s -> done", endpoint_id)
     _audit(request, "success", endpoint_id)
     # No dev relay domain: pin the window to the exact host the control plane listed for
-    # this Crew. The list kept only https://<endpointId>.<region>.relay.kiro.dev.
+    # this Crew. The list kept only https://<endpointId>.<host> with no port.
     crew_domain = settings[2]
     relay_domain = crew_domain or (urlsplit(crew.crew_url).hostname or "")[len(endpoint_id) + 1 :]
     return _ok(
