@@ -3,8 +3,8 @@ title: Notification Bridge (bus egress fanout to chat transports)
 status: partial
 author: zezhexu
 created: 2026-07-28
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 670
 implementation-prs: [32384, 32537, 32918]
 tracking-issues: [589]
