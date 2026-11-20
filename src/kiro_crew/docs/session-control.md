@@ -50,7 +50,7 @@ conductor: a session that can dispatch but cannot edit a file. Always pass
 | Argument | Required | Meaning |
 |---|---|---|
 | `title` | no | Short sidebar name. Say what the session is FOR. Follows `session_rename`'s character rules (`invalid_title`), then is cut to 200 characters; a title whose first 200 characters show nothing is refused |
-| `agent` | no (but always pass it) | Agent to bind the session to. In a Bot's own chat it is not used: the session is always the Bot's own worker, on the Bot's memory and workspace with the worker's own tools plus whatever the Bot's settings add. Naming another Bot there is refused like any cross-workspace agent |
+| `agent` | no (but always pass it) | Agent to bind the session to. In a Bot's own chat the session is the Bot's own worker, on the Bot's memory and workspace with the worker's own tools plus whatever the Bot's settings add, unless `agent` names one of the Bot's **worker agents** (`agents.<bot>.worker_agents`, set by its owner): then the worker runs as that agent template, on the Bot's memory and workspace, under the stricter of the template's limits and the Bot's (see [Worker agents](#a-bots-worker-agents)). With a list set, any other name is refused with `worker_agent_not_allowed` (HTTP 403); with none set, the name is not used. Naming another Bot there is refused like any cross-workspace agent |
 | `agent_kind` | no | One value, `template`: run the shared template `agent` names on your own memory, even when a Bot carries the same name. Omit for name-first resolution (a Bot wins, with its own memory). A bare `kirocrew-worker` already means `template`, because that worker needs no memory of its own. Requires `agent` (`agent_kind_requires_agent` otherwise); a kind that does not resolve is refused `agent_unresolved` rather than falling back to whoever answers by default |
 | `folder` | no | Sidebar folder id or `/`-separated path to file it into, atomically with creation. Missing path segments are created (`mkdir -p`). The create is checked first, so a create that would be refused normally leaves no new empty folder behind (a race can still leave one). A folder with a project gives the new session that project; without one, the new session works in your own project |
 | `model` | no | Model the session starts on, pinned as if the person picked it in the model dropdown (same guard; refused with `model_rejected` when the picker would refuse it). Omitted, it is filled as below |
@@ -1332,6 +1332,40 @@ and nothing is created. A session that a worker opens on another template is
 not counted here; the per-creator cap above still bounds it. A worker keeps its
 seat until it is closed, even after its work is done: close one that has
 finished (`session_close`), then try again.
+
+### A Bot's worker agents
+
+A Bot's owner can list agent templates its workers may run as, in
+`agents.<bot>.worker_agents` (a list of agent names; empty by default). Only the
+owner sets it, through the crew update route or the config file; no Bot tool can
+change it. When the Bot's own chat calls `session_create(agent="<name>")` with a
+listed name, the worker runs as that template instead of the Bot's worker:
+
+- **Its own spec.** The template's prompt, `tools`, `allowedTools`,
+  `toolsSettings` and MCP servers, resolved as for any session of it. The one
+  addition is the work ledger (`kirocrew-work`), so the worker can read its brief
+  and report on the item it is bound to.
+- **The Bot's memory and workspace**, the way a template you open from a Bot runs
+  on the caller's memory.
+- **The stricter permissions win.** Nothing the template allows can widen what the
+  Bot is allowed, and nothing the Bot allows widens the template. A tool the
+  template does not list stays unavailable. A pre-approval the Bot's own worker
+  does not hold is dropped, so that call asks. The Bot's excluded tools, denied
+  commands and paths, and `ask`/`deny` permission rules are added. An allow list
+  such as `allowedCommands` keeps only what the Bot's own list also holds. The
+  session runs under the Bot's approval mode (its Profile Permissions), and your
+  security policy, held limits and revoked approvals still decide every call.
+- **Attributed.** The worker's execution record names the template
+  (`worker_agent`), and `work_ledger_read` and the Crew board show `worker_agent`
+  on any item bound to it.
+- **A worker like any other.** It counts toward **Workers at once**, takes the
+  Bot's harness (a harness that cannot carry the Bot's limits refuses it, as it
+  refuses the Bot's own worker), and binding (`work_ledger_record action=bind`),
+  reports and patrol work as for the Bot's own worker.
+
+A name that is not on the list is refused with `worker_agent_not_allowed`; it
+never falls back to the Bot's own worker. Leaving `agent` out, or naming the
+worker itself, still opens the Bot's own worker.
 
 ## Combining two chats
 

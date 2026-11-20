@@ -1073,6 +1073,7 @@ def build_config(
                         else crew.default("worker_model")
                     ),
                     worker_reasoning_effort=coerce_effort(crew.get("worker_reasoning_effort")),
+                    worker_agents=_sections.coerce_worker_agents(crew.get("worker_agents")),
                     max_workers=crew.read(
                         "max_workers", _safe_int, lo=BOT_MAX_WORKERS_MIN, hi=BOT_MAX_WORKERS_MAX
                     ),

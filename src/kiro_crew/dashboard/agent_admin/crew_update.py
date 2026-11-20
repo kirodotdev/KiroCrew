@@ -349,6 +349,14 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if "worker_agents" in body:
+        from kiro_crew.mate_worker_delegates import worker_agents_refusal
+
+        worker_agents_reason = worker_agents_refusal(body["worker_agents"])
+        if worker_agents_reason:
+            return web.json_response(
+                {"error": worker_agents_reason, "code": "invalid_worker_agents"}, status=400
+            )
     if "dynamic_capabilities" in body and not isinstance(body["dynamic_capabilities"], bool):
         return web.json_response(
             {
@@ -626,6 +634,13 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "worker_reasoning_effort" in body:
             agent.worker_reasoning_effort = body["worker_reasoning_effort"].strip()
             changed.append("worker_reasoning_effort")
+        if "worker_agents" in body:
+            # Validated above. Owner-only like max_workers: a Bot cannot widen
+            # the set of agents it may run its workers as.
+            from kiro_crew.config.sections import coerce_worker_agents
+
+            agent.worker_agents = coerce_worker_agents(body["worker_agents"])
+            changed.append("worker_agents")
         if "max_workers" in body:
             # Validated above. Only this owner route writes it: no Bot tool does.
             agent.max_workers = body["max_workers"]

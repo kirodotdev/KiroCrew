@@ -84,8 +84,8 @@ def _session_tools() -> tuple[Tool, ...]:
                             "therefore gets a second conductor, which has no fs_write and "
                             "cannot do the work. Name the agent the child needs "
                             "explicitly \u2014 kirocrew-worker for a leaf work item. "
-                            "In a Bot's own chat this field is not used: the "
-                            "session is always that Bot's own worker."
+                            "In a Bot's own chat: that Bot's own worker, or one "
+                            "of its listed worker agents."
                         ),
                     },
                     "agent_kind": {

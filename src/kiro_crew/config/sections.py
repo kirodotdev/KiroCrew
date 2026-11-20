@@ -409,6 +409,7 @@ from kiro_crew.config.sections_session import (  # noqa: F401
     WorkspaceConfig,
     _archive_retention_days,
     _migrate_workspaces,
+    coerce_worker_agents,
 )
 from kiro_crew.config.sections_shared_crew import (  # noqa: F401
     CHILD_DEADLINE_SECONDS,

@@ -812,9 +812,22 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
     )
 
     remote_live = await asyncio.to_thread(work_ledger.remote_liveness_map, key, items)
+    # The agent template each bound worker runs as, from its attested record
+    # (`mate_worker_delegates.bound_worker_agent`); the key itself stays masked.
+    from kiro_crew.mate_worker_delegates import bound_worker_agent
+
+    worker_agents = await asyncio.to_thread(
+        lambda: {
+            item.item_id: bound_worker_agent(item.worker_session_key)
+            for item in items
+            if item.worker_session_key and not item.worker_instance_id
+        }
+    )
     rows: list[dict[str, Any]] = []
     for item in items:
         row = item.to_dict()
+        if worker_agents.get(item.item_id):
+            row["worker_agent"] = worker_agents[item.item_id]
         row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
         running, closed, looping, held = work_ledger.item_liveness(
             key,

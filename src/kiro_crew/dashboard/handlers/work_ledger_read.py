@@ -131,6 +131,17 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         lambda: {item.item_id: work_ledger.read_undelivered(key, item) for item in shown}
     )
     remote_live = await asyncio.to_thread(work_ledger.remote_liveness_map, key, shown)
+    # Which agent template each bound worker runs as, when its Bot delegated it to
+    # one of its `worker_agents`: read off each worker's attested record.
+    from kiro_crew.mate_worker_delegates import bound_worker_agent
+
+    worker_agents = await asyncio.to_thread(
+        lambda: {
+            item.item_id: bound_worker_agent(item.worker_session_key)
+            for item in shown
+            if item.worker_session_key and not item.worker_instance_id
+        }
+    )
     rows: list[dict[str, Any]] = []
     for item in shown:
         row = _row_with_flags(
@@ -144,8 +155,12 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         )
         if item.worker_instance_id or item.retired_bindings:
             row.update(await asyncio.to_thread(_remote_row_fields, key, item))
+        if worker_agents.get(item.item_id):
+            row["worker_agent"] = worker_agents[item.item_id]
         if compact:
             compact_row = {name: row[name] for name in _COMPACT_ROW_FIELDS}
+            if "worker_agent" in row:
+                compact_row["worker_agent"] = row["worker_agent"]
             if item.worker_instance_id or item.retired_bindings:
                 from kiro_crew.dashboard.handlers.remote_ingest import (
                     REMOTE_ROW_FIELDS,
