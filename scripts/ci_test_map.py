@@ -17,6 +17,19 @@ to the test files that touched it.
     select  given a diff (`--base B --head H`, or `--name-status FILE`) and a
             map, print the test files it would run, or fall back to the full
             suite and say why
+    guard-tier
+            write the guard tier to `scripts/ci_guard_tier.txt`, one test file
+            per line; `--check` exits 1 when the checked-in list is stale
+
+The guard tier runs as one pytest invocation that lists the tree once:
+
+    KIROCREW_GUARD_TIER_RUN=1 python -m pytest -n0 $(cat scripts/ci_guard_tier.txt)
+
+`KIROCREW_GUARD_TIER_RUN=1` keeps `test/source_corpus.py`'s sorted file list for
+the whole session instead of dropping it at every module's teardown. The list is
+a per-process cache, so `-n0` is what makes it ONE walk; under `-n N` (setup.cfg
+defaults to `-n auto`) each xdist worker lists the tree once, N walks in all
+rather than one per module.
 
 The map
 -------
@@ -57,6 +70,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+GUARD_TIER_LIST = REPO_ROOT / "scripts" / "ci_guard_tier.txt"
 SCHEMA = 1
 FULL = 3
 
@@ -175,6 +189,14 @@ def guard_tier(root: Path) -> list[str]:
     return corpus_gates(root)
 
 
+def guard_tier_text(root: Path) -> str:
+    """The checked-in form of the guard tier: one path per line, for `$(cat ...)`."""
+    tier = guard_tier(root)
+    if not tier:
+        raise ValueError("guard tier is empty: refusing to write it")
+    return "\n".join(tier) + "\n"
+
+
 def share(selection: Selection, test_map: Mapping[str, Any]) -> float:
     """Share of the map's test node ids the selection would run (full = 1.0)."""
     counts: Mapping[str, int] = test_map["tests"]
@@ -221,6 +243,25 @@ def _cmd_select(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_guard_tier(args: argparse.Namespace) -> int:
+    text = guard_tier_text(Path(args.root).resolve())
+    out = Path(args.out)
+    if not args.check:
+        out.write_text(text, encoding="utf-8")
+        print(f"guard tier: {len(text.splitlines())} test files -> {out}")
+        return 0
+    current = out.read_text(encoding="utf-8") if out.is_file() else ""
+    if current == text:
+        return 0
+    want, have = set(text.splitlines()), set(current.splitlines())
+    for path in sorted(want - have):
+        print(f"missing from {out.name}: {path}", file=sys.stderr)
+    for path in sorted(have - want):
+        print(f"no longer in the guard tier: {path}", file=sys.stderr)
+    print(f"{out} is stale: run `python3 scripts/ci_test_map.py guard-tier`", file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--root", default=str(REPO_ROOT), help="repository root")
@@ -235,9 +276,13 @@ def main(argv: list[str] | None = None) -> int:
     pick.add_argument("--head")
     pick.add_argument("--name-status", help="file holding `git diff --name-status -M` output")
     pick.add_argument("--json", action="store_true", help="print one JSON verdict line")
+    tier = sub.add_parser("guard-tier", help="write the guard tier list, or --check it")
+    tier.add_argument("--out", default=str(GUARD_TIER_LIST), help="list to write or check")
+    tier.add_argument("--check", action="store_true", help="exit 1 when the list is stale")
     args = parser.parse_args(argv)
+    commands = {"build": _cmd_build, "select": _cmd_select, "guard-tier": _cmd_guard_tier}
     try:
-        return _cmd_build(args) if args.cmd == "build" else _cmd_select(args)
+        return commands[args.cmd](args)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

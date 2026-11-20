@@ -2440,7 +2440,14 @@ Two things the survey CANNOT tell you, both of which misled the first pass:
   for a module-scoped teardown; it used to memoise ~160 MB of source text for the life of
   the worker, paid by every later test on it (see the tenth pass). And mark the module
   as one `xdist_group` (see "Keeping the suite fast"): a per-module cache that xdist
-  spreads over five workers is warmed five times.
+  spreads over five workers is warmed five times. One exception: the guard-tier run
+  (`KIROCREW_GUARD_TIER_RUN=1 python -m pytest -n0 $(cat scripts/ci_guard_tier.txt)`,
+  the list written and checked by `scripts/ci_test_map.py guard-tier`) keeps the path
+  list for the whole session, so the tree is listed once. The list is per process, so
+  only `-n0` makes it one walk; under `-n N` it is one walk per worker. Text and ASTs
+  are still never cached. A test that points the corpus at another root, or plants or
+  removes a file it must see, clears the list itself (`source_corpus._paths.cache_clear()`
+  or `repo_files.cache_clear()`) rather than relying on the module teardown.
 - **A repo-WIDE corpus scan enumerates via git, never the filesystem.** `rglob` and
   `os.walk` from the repo root descend every gitignored tree and every checkout nested
   under it, so a worktree under `.claude/worktrees/` (the Claude Code harness creates

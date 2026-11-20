@@ -85,6 +85,10 @@ def test_load_map_refuses_another_schema(tmp_path: Path) -> None:
 def _run_pytest_with_recorder(project: Path, out: Path) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(ROOT), str(project)])}
     env.pop("PYTEST_XDIST_WORKER", None)
+    # The child is its own session: no outer plugin, option or coverage tracer.
+    outer = ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "COV_CORE_SOURCE", "COV_CORE_DATAFILE")
+    for name in (*outer, "COVERAGE_PROCESS_START"):
+        env.pop(name, None)
     return subprocess.run(
         [
             sys.executable,
@@ -214,6 +218,38 @@ def test_guard_tier_is_the_leaf_scope_corpus_gates() -> None:
 
     tier = ctm.guard_tier(ROOT)
     assert tier and tier == corpus_gates(ROOT)
+
+
+def test_the_checked_in_guard_tier_list_is_current(capsys: pytest.CaptureFixture[str]) -> None:
+    assert ctm.main(["guard-tier", "--check"]) == 0, capsys.readouterr().err
+
+
+def test_the_guard_tier_check_fails_when_a_tree_reading_test_is_added(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    test_dir = tmp_path / "test"
+    test_dir.mkdir()
+    # Formatted, so this module's own text does not read as a test-tree join.
+    gate = "FILES = ROOT / {!r}\n".format("test")
+    (test_dir / "test_gate.py").write_text(gate, encoding="utf-8")
+    (test_dir / "test_leaf.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+    listed = tmp_path / "tier.txt"
+    argv = ["--root", str(tmp_path), "guard-tier", "--out", str(listed)]
+    assert ctm.main(argv) == 0
+    assert listed.read_text(encoding="utf-8") == "test/test_gate.py\n"
+    assert ctm.main([*argv, "--check"]) == 0
+
+    (test_dir / "test_new_gate.py").write_text(gate, encoding="utf-8")
+    capsys.readouterr()
+    assert ctm.main([*argv, "--check"]) == 1
+    assert "missing from tier.txt: test/test_new_gate.py" in capsys.readouterr().err
+
+
+def test_an_empty_guard_tier_is_never_written(tmp_path: Path) -> None:
+    (tmp_path / "test").mkdir()
+    listed = tmp_path / "tier.txt"
+    assert ctm.main(["--root", str(tmp_path), "guard-tier", "--out", str(listed)]) == 2
+    assert not listed.exists()
 
 
 def test_shadow_judge_counts_a_missed_failing_file() -> None:

@@ -163,7 +163,8 @@ def _release_source_corpus_after_module():
     ``src/`` to prove its ratchet still fails needs the next module to re-walk.
     Module scope keeps the sharing the ratchets rely on while bounding the
     retention to the module that needed it. Import is deferred and tolerant so a
-    module that never touches the corpus pays nothing.
+    module that never touches the corpus pays nothing. In the guard-tier run
+    (``KIROCREW_GUARD_TIER_RUN=1``) ``_clear_caches`` keeps the list for the session.
     """
     yield
     try:

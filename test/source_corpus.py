@@ -33,7 +33,8 @@ that touched the corpus -- including ones that parse a dozen files in a second
 -- therefore carried a +200 MiB high-water mark that was the cache, not the
 gate. The read itself is 0.1 s and the NFKC pass 0.5 s, so both are repeated
 per call instead; the only thing memoised is the sorted file list (a megabyte),
-dropped by :func:`_clear_caches` at module teardown.
+dropped by :func:`_clear_caches` at module teardown, or kept for the session in
+the guard-tier run (``KIROCREW_GUARD_TIER_RUN=1``).
 
 And it never narrows a gate. A literal is only accepted as a filter when the
 gate's AST pattern cannot match without that literal appearing in the source
@@ -464,14 +465,25 @@ def repo_files_named(*suffixes: str) -> tuple[Path, ...]:
     return tuple(path for path in repo_files() if path.name.endswith(suffixes))
 
 
+#: Set for the guard-tier run (``scripts/ci_test_map.py``'s module docstring):
+#: hundreds of tree-reading modules in one session, where a re-walk per module is
+#: the cost the run exists to remove. Read once at import, because a test that
+#: edits ``os.environ`` must not change what a later module's teardown does.
+_SHARE_LIST_FOR_SESSION = os.environ.get("KIROCREW_GUARD_TIER_RUN") == "1"
+
+
 def _clear_caches() -> None:
-    """Drop the cached file list.
+    """Drop the cached file list, unless this is the guard-tier run.
 
     It is small (a megabyte of ``Path`` objects), but it is an ``lru_cache``
     global and would otherwise live for the rest of the xdist worker.
     ``test/conftest.py``'s module-scoped ``_release_source_corpus_after_module``
     calls this at every module's teardown; the next gate that needs the corpus
     re-walks the tree (~50 ms). The text itself is never cached, so there is
-    nothing larger to release -- see the module docstring for why.
+    nothing larger to release -- see the module docstring for why. With
+    ``KIROCREW_GUARD_TIER_RUN=1`` the list is kept for the session instead: it is
+    the only thing shared, and that run's whole point is to list the tree once.
     """
+    if _SHARE_LIST_FOR_SESSION:
+        return
     _paths.cache_clear()

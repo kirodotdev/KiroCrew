@@ -363,6 +363,24 @@ class TestCorpusHealth:
             "reads this, so a short corpus makes all of them pass while blind."
         )
 
+    @pytest.mark.parametrize("shared", [False, True])
+    def test_only_the_guard_tier_run_keeps_the_file_list_past_a_module(self, shared, monkeypatch):
+        monkeypatch.setattr(source_corpus, "_SHARE_LIST_FOR_SESSION", shared)
+        walks: list[Path] = []
+        real_root = source_corpus.src_root
+
+        def counted_root() -> Path:
+            walks.append(real_root())
+            return walks[-1]
+
+        monkeypatch.setattr(source_corpus, "src_root", counted_root)
+        source_corpus._paths.cache_clear()
+        # Two modules in a row, each reading the corpus and then torn down.
+        for _module in range(2):
+            source_corpus._paths()
+            source_corpus._clear_caches()
+        assert len(walks) == (1 if shared else 2)
+
     def test_every_file_is_python_under_the_package(self):
         root = src_root()
         assert (root / "security" / "__init__.py").is_file(), f"{root} is not the kiro_crew package"
