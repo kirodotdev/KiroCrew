@@ -306,7 +306,14 @@ Three structural facts explain most of the rest:
   pull request changes, still runs. More than 50 ids deselects nothing. A push,
   merge group or `release/**` run, a `main-red-fix` or `ci-full-run` label, a
   pull request body that names the issue (`#N` or its URL), and any failure to
-  read or parse the issue all run every test. `test/test_ci_main_red_skip.py`
+  read or parse the issue all run every test. The read uses the job's token,
+  which draws on the rate limit every workflow in the repository shares. When
+  the API refuses it for a rate limit (`Retry-After`, `X-RateLimit-Remaining: 0`,
+  a 429, or a body that says so), the step reads once without the token, which
+  costs no wait, and only then sleeps for the reset, for at most 300 s in total
+  and not at all when the reset is further away than that. A 403 that names no
+  rate limit is a permission error and is not retried. The `Main-red skip:` line
+  of the step says which of these happened. `test/test_ci_main_red_skip.py`
   pins each case.
 - **Do not merge a feature PR past a non-green `PR Readiness`.** The ruleset's
   bypass actors can, and a `pending` readiness is not a judgement about a red
