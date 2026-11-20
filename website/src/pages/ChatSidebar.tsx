@@ -146,7 +146,7 @@ function ChatSidebar({
   // only the binding is scoped, which forces every call site inside this file
   // to say which collection it means.
   slots: slotsProp, activeSlot, unreadSlots, history, historyHasMore,
-  defaultAgent, installedAgents, rowAgents, rowChoices, mode, onWidthChange, onDragChange, fillsHost, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession, collapsible,
+  defaultAgent, installedAgents, rowAgents, rowChoices, mode, onWidthChange, onDragChange, fillsHost, onSelectSlot, splitMode = false, onOpenSlotInNewTab, onOpenSource, onOpenPeerSession, collapsible,
   chatDropTarget, onDropSessionRef, canStageSessionRef, staticRows,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -309,6 +309,7 @@ function ChatSidebar({
     commitRecentAmount, changeRecentUnit, runningSet, recentSet,
   } = useSessionStatusFilters({ unreadSlots, activeFilters, pausedFilters, enableFilter, localSlots, disableFilter })
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
+  const openFailed = useAppSelector(s => s.chat.slotOpenFailed != null && s.chat.slotOpenFailed === activeSlot)
   const connected = useConnected()
   // Shared Crew "Started by" filter: a client-side filter dimension like the
   // model one (`./chat-sidebar/creators`). The selection is remembered per Crew;
@@ -908,7 +909,7 @@ function ChatSidebar({
   // Through the conductor mode read (`crewMode` above re-renders on the edition lock).
   const crewParent = (crewMode && activeSlot && crewRootOf(slotsProp.find(s => s.key === activeSlot))) || null
   const rowScene: RowScene = {
-    activeSlot, crewWindow, crewParent, shell: rowShell,
+    activeSlot, crewWindow, crewParent, splitMode, openFailed, shell: rowShell,
     local: {
       recentRank, subagentCounts, subagentApprovalCounts, poppedOut,
       digits: digitModifierHeld ? shortcutDigitByKey : null,

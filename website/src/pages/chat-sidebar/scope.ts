@@ -74,6 +74,10 @@ export interface ChatSidebarProps {
    *  When provided, this fires AFTER the switchSlot dispatch so consumers
    *  can react to user-driven selection (e.g. to navigate the URL). */
   onSelectSlot?: (key: string) => void
+  /** The chat page is in Split View. A click on the open chat's row then means
+   *  "leave the split for this chat", so it does not toggle the side panel and
+   *  the row offers no tooltip saying it would. */
+  splitMode?: boolean
   /**
    * Render session rows WITHOUT Framer layout projection (`layout`/`layoutId`).
    *

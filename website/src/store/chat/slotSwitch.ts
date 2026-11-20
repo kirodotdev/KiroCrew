@@ -554,6 +554,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       const { key, messages: fetchedMessages, hasMore, queue, nextBefore } = action.payload
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away during fetch
+      if (state.slotOpenFailed === key) state.slotOpenFailed = null
       // The user's open of this session has landed (see `ChatState.userOpen`):
       // only its own gesture load, never a plain switch that superseded it.
       const openArg = action.meta?.arg
@@ -905,6 +906,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // The run mirrors stay as they are: they describe the selected chat's
       // run, which `pending` seeded and live frames keep current, so a turn
       // still running there keeps its Stop.
+      state.slotOpenFailed = target
       state.messages = []
       setPagingCursor(state, false, 0)
       state.slotLoading = false

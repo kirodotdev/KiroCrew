@@ -15856,7 +15856,9 @@
       "show_sessions_count_other": "Mostrar {{n}} sessões",
       "hide_sessions_count_one": "Ocultar {{n}} sessão",
       "hide_sessions_count_many": "Ocultar {{n}} sessões",
-      "hide_sessions_count_other": "Ocultar {{n}} sessões"
+      "hide_sessions_count_other": "Ocultar {{n}} sessões",
+      "reclick_toggles_side_panel": "Clique de novo para mostrar ou ocultar o painel lateral",
+      "reclick_toggles_side_panel_shortcut": "Clique de novo para mostrar ou ocultar o painel lateral ({{shortcut}})"
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",

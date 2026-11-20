@@ -518,6 +518,8 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // page carries.
       const endedTurnHistory = reportedRunning && !running
       if (endedTurnHistory) return
+      // This page loads the pane a failed open left empty (see `slotOpenFailed`).
+      if (state.slotOpenFailed === key) state.slotOpenFailed = null
       // A queue hand-off emits no `chat_done` for the turn it ends, so the guard
       // above cannot see a page captured before a requeued steer's drain. Such a
       // page still shows the steer's old row un-retired and lacks the drained

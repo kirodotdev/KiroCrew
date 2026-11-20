@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { cancelReclickPanelToggle } from '../lib/reclickPanelToggle'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
@@ -1087,6 +1088,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (sidebarClickOpensTab) ensureSlotTab(key)
     if (isMobile) closeSidebar()
   }, [clearSplitOnSelect, sidebarClickOpensTab, ensureSlotTab, isMobile, closeSidebar])
+  // A toggle still waiting belongs to the chat it was clicked on: any switch away
+  // (keyboard, tab, palette) drops it.
+  useEffect(() => () => cancelReclickPanelToggle(), [activeSlot])
   const flyoutSwitch = useCallback((key: string) => {
     // User gesture on a listed session row (collapsed-sidebar flyout): the
     // announced class, same as the expanded sidebar's own rows.

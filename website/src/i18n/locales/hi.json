@@ -15455,7 +15455,9 @@
       "show_sessions_count_one": "{{n}} सत्र दिखाएँ",
       "show_sessions_count_other": "{{n}} सत्र दिखाएँ",
       "hide_sessions_count_one": "{{n}} सत्र छिपाएँ",
-      "hide_sessions_count_other": "{{n}} सत्र छिपाएँ"
+      "hide_sessions_count_other": "{{n}} सत्र छिपाएँ",
+      "reclick_toggles_side_panel": "साइड पैनल दिखाने या छिपाने के लिए फिर से क्लिक करो",
+      "reclick_toggles_side_panel_shortcut": "साइड पैनल दिखाने या छिपाने के लिए फिर से क्लिक करो ({{shortcut}})"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
