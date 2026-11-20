@@ -153,6 +153,9 @@ def _adversarial() -> list[tuple[str, Callable[[int], str]]]:
         ("star_run", fill("*")),
         ("plain", fill("lorem ipsum dolor ")),
         ("deep_quotes", fill('"\\"')),
+        ("cookie_pairs", fill("cookie=AAAAAAAA; ")),
+        ("cookie_header_pairs", fill("a=AAAAAAAA; cookie=B; ", lead="Cookie: ")),
+        ("cookie_colon", fill("cookie: ")),
     ]
 
 

@@ -88,3 +88,88 @@ describe('useBrowserMedia', () => {
     expect(bodies).toEqual([])
   })
 })
+
+function gets(): number {
+  return bodies.filter(b => 'GET' in b).length
+}
+
+describe('useBrowserMedia polling', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  function mountPoll(pollMs: number, sessionKey = 'app-tunes-1') {
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(AppApiProvider, { appName: 'tunes', allowedApiPaths: [BROWSER_MEDIA_PATH], allowedEvents: [] }, children)
+    return renderHook(({ key }: { key: string }) => useBrowserMedia(key, { pollMs }), {
+      wrapper,
+      initialProps: { key: sessionKey },
+    })
+  }
+
+  it('keeps one state read in flight while the route is slow, then resumes', async () => {
+    vi.useFakeTimers()
+    const resolvers: ((r: Response) => void)[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost')
+      bodies.push({ GET: Object.fromEntries(url.searchParams) })
+      return new Promise<Response>(res => { resolvers.push(res) })
+    }))
+    mountPoll(100)
+    // The first read is out; ten seconds of ticks add nothing while it hangs.
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+    expect(gets()).toBe(1)
+    // Let it answer: the next tick is free to send again.
+    await act(async () => {
+      resolvers[0](new Response(JSON.stringify({ ok: true, session_key: 'app-tunes-1', media: PLAYING }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+    expect(gets()).toBe(2)
+  })
+
+  it('polls once per interval when the route answers (unchanged count)', async () => {
+    vi.useFakeTimers()
+    mountPoll(100)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    // The mount read, then one per 100 ms across the second.
+    expect(gets()).toBe(11)
+  })
+
+  it('starts a fresh read for a new session key even while the old read hangs', async () => {
+    vi.useFakeTimers()
+    const seen: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost')
+      seen.push(url.searchParams.get('session_key') ?? '')
+      return new Promise<Response>(() => {})
+    }))
+    const { rerender } = mountPoll(100, 'app-tunes-1')
+    await act(async () => {})
+    expect(seen).toEqual(['app-tunes-1'])
+    await act(async () => { rerender({ key: 'app-tunes-2' }) })
+    expect(seen).toEqual(['app-tunes-1', 'app-tunes-2'])
+  })
+
+  it('resumes polling on the next tick after a read fails', async () => {
+    vi.useFakeTimers()
+    // The route answers, but with a refusal: `send` catches it, so `.finally` must still
+    // clear the in-flight flag and let the next tick read again.
+    answer = () => new Response(JSON.stringify({ error: 'no tab', code: 'no_tab' }), { status: 409 })
+    mountPoll(100)
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+    // The mount read, then one per 100 ms: polling did not wedge after the failure.
+    expect(gets()).toBe(4)
+  })
+
+  it('still sends a refresh while a poll read is in flight', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost')
+      bodies.push({ GET: Object.fromEntries(url.searchParams) })
+      return new Promise<Response>(() => {})
+    }))
+    const { result } = mountPoll(100)
+    await act(async () => {})
+    expect(gets()).toBe(1)
+    await act(async () => { void result.current.refresh() })
+    expect(gets()).toBe(2)
+  })
+})

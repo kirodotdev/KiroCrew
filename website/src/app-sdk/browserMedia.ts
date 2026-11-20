@@ -137,9 +137,19 @@ export function useBrowserMedia(
     // A song that already ended when the page mounts counts once: the page then
     // picks the next one, which is what continuous play wants.
     wasEnded.current = false
-    void send('state')
+    // Only one poll read is ever in flight: a tick that falls while one is still
+    // out sends nothing, so a slow read (the browser lock is held by an agent op)
+    // never queues a read per tick. The flag lives in the effect, so a new session
+    // or interval starts fresh and is not held up by the old read. `send` never
+    // rejects (it catches every error), so `.finally` always clears the flag.
+    let reading = true
+    void send('state').finally(() => { reading = false })
     if (pollMs <= 0) return
-    const timer = setInterval(() => { void send('state') }, pollMs)
+    const timer = setInterval(() => {
+      if (reading) return
+      reading = true
+      void send('state').finally(() => { reading = false })
+    }, pollMs)
     return () => clearInterval(timer)
   }, [send, pollMs])
 
