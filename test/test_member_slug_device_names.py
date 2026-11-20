@@ -1,113 +1,77 @@
-"""A member slug equal to a Windows device name is refused at the slug source.
+"""Windows device stems are refused where a member id is MINTED, never on a read.
 
-``validate_slug`` is the one gate every writer of ``members/<slug>`` and
-``member-records/<kind>/<slug>.json`` passes first, so one refusal there covers
-them all. ``slug_for_name`` maps such a display name to a safe slug instead.
-Runs under the autouse ``_isolate_kirocrew_home`` fixture, so paths are tmp.
+A POSIX install can already hold a member whose slug is a device stem: the
+upgrade keeps one on purpose (``memory_stores._allocate_member_id`` with
+``refuse_damaged=False``) because that member's records are keyed by it. So
+``validate_slug``, ``slug_for_name`` and ``member_slug`` must keep answering such
+a slug, and only the minting of a NEW id may refuse it. Runs under the autouse
+``_isolate_kirocrew_home`` fixture, so paths are tmp.
 """
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from kiro_crew import member_goals, member_notes, members
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
-from kiro_crew.members import MemberSlugError, slug_for_name, validate_slug
+from kiro_crew.members_parts.member_sessions import member_slot_key
+from kiro_crew.memory_stores import _allocate_member_id
 
-DEVICES = ["con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9"]
+_requires_nofollow = pytest.mark.skipif(
+    not members.member_briefing_supported(),
+    reason="briefing reads and writes fail closed without O_NOFOLLOW",
+)
 
-
-def test_the_device_set_is_the_shared_one():
-    assert {"con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9"} <= WINDOWS_DEVICE_STEMS
-
-
-@pytest.mark.parametrize("stem", sorted(WINDOWS_DEVICE_STEMS))
-def test_validate_slug_refuses_every_device_stem(stem):
-    with pytest.raises(MemberSlugError):
-        validate_slug(stem)
+DEVICES = ["con", "nul", "com1", "lpt9"]
 
 
-@pytest.mark.parametrize("bad", ["CON", "Nul", "COM1", "lpt3", "con.txt", "CON.txt", "aux.json"])
-def test_validate_slug_refuses_case_and_extension_variants(bad):
-    with pytest.raises(MemberSlugError):
-        validate_slug(bad)
-
-
-@pytest.mark.parametrize("ok", ["com10", "lpt0", "console", "con-1", "nulls", "com"])
-def test_validate_slug_still_accepts_near_misses(ok):
-    assert validate_slug(ok) == ok
-
-
-@pytest.mark.parametrize("name", ["CON", "con", "Nul", "COM1", "lpt9", "CON.txt", "aux.json"])
-def test_slug_for_name_maps_a_device_name_to_a_safe_slug(name):
-    slug = slug_for_name(name)
-    assert slug not in WINDOWS_DEVICE_STEMS
-    assert validate_slug(slug) == slug
-
-
-def test_slug_for_name_suffixes_a_bare_device_name():
-    assert slug_for_name("CON") == "con-bot"
-    assert slug_for_name("COM1") == "com1-bot"
-
-
-def test_member_slug_refuses_a_stored_device_member_id():
-    config = SimpleNamespace(agents={"Bot": SimpleNamespace(member_id="con")})
-    with pytest.raises(MemberSlugError):
-        members.member_slug("Bot", config)
-
-
-def test_member_slug_of_a_device_named_bot_without_id_is_safe():
-    config = SimpleNamespace(agents={})
-    assert members.member_slug("NUL", config) == "nul-bot"
-
-
-@pytest.fixture
-def no_filesystem(monkeypatch):
-    """Any directory creation or atomic write fails the test: refusal comes first."""
-
-    def boom(*_a, **_k):
-        raise AssertionError("filesystem touched before the slug was refused")
-
-    monkeypatch.setattr(os, "mkdir", boom)
-    monkeypatch.setattr(os, "makedirs", boom)
-    monkeypatch.setattr(Path, "mkdir", boom)
+def _config(**agents: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        agents={name: SimpleNamespace(member_id=mid) for name, mid in agents.items()},
+        memory_stores={},
+    )
 
 
 @pytest.mark.parametrize("slug", DEVICES)
-def test_member_dir_refuses_a_device_slug(slug, no_filesystem):
-    with pytest.raises(MemberSlugError):
-        members.member_dir(slug)
+def test_an_existing_device_slug_still_validates(slug):
+    assert members.validate_slug(slug) == slug
+    assert members.member_dir(slug).name == slug
 
 
-@pytest.mark.parametrize("slug", ["con", "nul", "com1"])
-def test_dm_binding_writer_refuses_a_device_slug(slug, no_filesystem):
-    with pytest.raises(MemberSlugError):
-        members.write_dm_binding(slug, member="Bot", slot_key=f"dm:{slug}")
+@pytest.mark.parametrize("name", ["Con", "NUL", "Com1"])
+def test_a_legacy_member_keeps_its_name_derived_slug(name):
+    assert members.slug_for_name(name) == name.lower()
+    assert members.member_slug(name, _config()) == name.lower()
 
 
-@pytest.mark.parametrize("slug", ["con", "aux", "lpt1"])
-def test_member_rules_writer_refuses_a_device_slug(slug, no_filesystem):
-    with pytest.raises(MemberSlugError):
-        members.write_member_rules(slug, member="Bot", text="be kind")
+def test_a_member_with_a_stored_device_id_keeps_it():
+    assert members.member_slug("Bot", _config(Bot="con")) == "con"
 
 
-@pytest.mark.parametrize("slug", ["prn", "com9"])
-def test_member_notes_writer_refuses_a_device_slug(slug, no_filesystem):
-    with pytest.raises(MemberSlugError):
-        member_notes.write_member_notes(slug, "hello")
+def test_an_existing_device_slug_can_be_written_and_read_back():
+    members.write_member_rules("con", member="Con", text="be kind")
+    assert members.read_member_rules("con", "Con") == "be kind"
+    members.write_dm_binding("con", member="Con", slot_key=member_slot_key("con"))
+    assert members.read_dm_binding("con") is not None
+    member_goals.set_goal("con", "Con", "ship it", by="human")
+    assert member_goals.read_goals("con", "Con")["goals"]
 
 
-@pytest.mark.parametrize("slug", ["con", "nul"])
-def test_member_goals_writer_refuses_a_device_slug(slug, no_filesystem):
-    with pytest.raises(MemberSlugError):
-        member_goals.set_goal(slug, "Bot", "ship it", by="human")
+@_requires_nofollow
+def test_an_existing_device_slug_keeps_its_notes():
+    member_notes.write_member_notes("con", "hello")
+    assert members.read_member_briefing("con") == "hello"
 
 
-@pytest.mark.parametrize("slug", ["con", "lpt2"])
-def test_member_goals_path_refuses_a_device_slug(slug):
-    with pytest.raises(MemberSlugError):
-        member_goals.member_goals_path(slug)
+@pytest.mark.parametrize("name", ["CON", "con", "Nul", "COM1", "lpt9"])
+def test_a_new_bot_named_for_a_device_gets_a_non_device_member_id(name):
+    member_id = _allocate_member_id(_config(), name)
+    assert member_id not in WINDOWS_DEVICE_STEMS
+    assert members.validate_slug(member_id) == member_id
+
+
+@pytest.mark.parametrize("stem", sorted(WINDOWS_DEVICE_STEMS))
+def test_no_new_member_id_is_ever_a_device_stem(stem):
+    assert _allocate_member_id(_config(), stem) not in WINDOWS_DEVICE_STEMS
