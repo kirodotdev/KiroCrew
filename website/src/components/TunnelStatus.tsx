@@ -4,6 +4,9 @@ import { StatCard } from './ui'
 import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
+
+/** The states a default-only personal Crew waits in while it cannot host yet. */
+const QUIET_STATES: ReadonlySet<TunnelStatusData['state']> = new Set(['starting', 'reconnecting', 'stopped'])
 /** Human-readable label, color, and tooltip for a tunnel status.
  *  Pure function — unit tested independently of react-query.
  *
@@ -15,6 +18,9 @@ export function tunnelDisplay(
   s: TunnelStatusData | null,
 ): { value: string; colorClass: string; tooltip?: string } | null {
   if (!s) return null
+  // A personal Crew the relay hosts only by default and that cannot host YET (it
+  // retries on its own): nothing to show. A final relay failure ('error') stays loud.
+  if (s.reason === 'personal_default' && QUIET_STATES.has(s.state)) return null
   switch (s.state) {
     case 'connected': {
       const mins = Math.max(0, Math.round((s.uptime || 0) / 60))

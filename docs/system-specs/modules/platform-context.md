@@ -78,7 +78,7 @@ omit the policy.
 | `package_manager` | adapter | **RESERVED** — `DefaultPackageManager`; install hints are inline in `doctor_checks/features.py` (use `CapabilityManager`) | — (slot inert) |
 | `knowledge` | adapter | `DefaultKnowledgeProvider` (no extra connectors) | enterprise doc connector (`extra_connectors`) |
 | `memory_files` | adapter | `DefaultMemoryFilesProvider` (memory's markdown source text on local disk) | a non-local `MemoryFiles` for memory's markdown source. `memory_files_for` does not catch a provider error: `PlatformCompositionError` propagates and nothing falls back to local disk. Memory's derived state (the FTS index, the SQLite stores, the FAISS vectors) stays local and does not travel through this seam |
-| `tunnel` | adapter | `DefaultTunnelProvider` (no-op); the Kiro relay client (`relay_client.provider.RelayTunnelProvider`) instead when `tunnel.relay_enabled` asks for it (`remote_control/hosting.py::relay_requested`: `true`, or unset on a Crew with a team key or a workload identity) | internal tunnel supervisor, which the relay client never replaces |
+| `tunnel` | adapter | `DefaultTunnelProvider` (no-op); the Kiro relay client (`relay_client.provider.RelayTunnelProvider`, behind `platform.bootstrap.LazyRelayTunnelProvider`) instead when `tunnel.relay_enabled` asks for it (`remote_control/hosting.py::relay_requested`: `true`, or unset on a Crew with a personal sign-in, a team key or a workload identity) | internal tunnel supervisor, which the relay client never replaces |
 | `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off; OTLP destinations from `telemetry.otlp_endpoint` and `telemetry.otlp_endpoints`, then the Kiro telemetry destination from `metrics/kiro_export.py`) | RUM/Cognito config + its own OTLP collector |
 | `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler, no internal-reachable paths, no company sign-in default) | secretary/taskkeeper routes + enterprise SSO PTY login |
 | `jail` | adapter | `DefaultJailProvider` (no-op, never jails) | enterprise process isolation |
@@ -1110,9 +1110,12 @@ Wired sites:
   `DefaultTunnelProvider` unless `edition_locks.py::relay_selected` says
   `tunnel.relay_enabled` asks for the relay and `local_enable_locked("tunnel")` is
   false, and
-  then `relay_client/provider.py::public_tunnel_provider`'s `RelayTunnelProvider`,
-  the Kiro relay's host leg (protocol v1). `relay_selected` imports nothing from
-  `relay_client/`, so a composition with the relay off never loads it. Only the
+  then `bootstrap.py::LazyRelayTunnelProvider`, which builds
+  `relay_client/provider.py::public_tunnel_provider`'s `RelayTunnelProvider`, the
+  Kiro relay's host leg (protocol v1), on its first `start()` or `status_snapshot()`.
+  Neither `relay_selected` nor the wrapper imports `relay_client/`, so a composition
+  that never starts a tunnel (a hook, an MCP server, a CLI command) never loads it;
+  `_start_aea_tunnel` hands the guard the loaded provider. Only the
   public composition calls it, so a companion that composes its own context keeps
   its own provider and never gets the relay client. The choice is made once, at
   composition (the key is `restart=True`), and construction does no I/O. The manager stays edition-neutral
@@ -1133,12 +1136,29 @@ Wired sites:
   stores three values: `true` (`kirocrew remote-control on`) hosts, `false`
   (`off`, a pod seed, or a full save by an older build, whose default was `false`)
   never hosts, and unset
-  (`null` or absent, the field default) hosts only when
+  (`null` or absent, the field default) hosts on a personal sign-in
+  (`tunnel.relay_lease_credential` empty or `kiro-sign-in`, no
+  `relay_lease_token_type`, and no `KIROCREW_WORKLOAD_IDENTITY`), and when
   `tunnel.relay_lease_credential` names a credential other than `kiro-sign-in`
   and it is a team key (`relay_lease_token_type` `API_KEY`) or the deployment sets
-  `KIROCREW_WORKLOAD_IDENTITY`. A personal sign-in never hosts by default, and a
-  stored value always wins, so no install is migrated: an older install that stores
-  nothing and has a team key hosts after the upgrade, since the key was its choice. The rule reads only the
+  `KIROCREW_WORKLOAD_IDENTITY`. A stored value always wins, so no install is
+  migrated: an older install that stores nothing hosts after the upgrade on a
+  personal sign-in or a team key, and `kirocrew remote-control off` stores `false`.
+  A personal Crew that hosts only by default (`hosting.py::personal_by_default`) is
+  quiet while it cannot host yet: `/api/tunnel/status` keeps the reason in `error`
+  and adds `reason: "personal_default"` while the state is `starting`,
+  `reconnecting` or `stopped` with no error or with an eligibility hold, and the
+  Overview tile renders nothing for it. The lease client raises its sign-in and
+  access-refusal holds with `cannot_host_yet` (`lease.py::_Later`,
+  `token_source.py::HostTokenRetryLater`); the relay client's snapshot and
+  `tunnel/manager.py::TunnelStatus` carry it. A fault on the way (a timeout, a
+  refused connection, a 5xx) and an `error` state are never marked, so they show
+  as for any Crew. A gateway bound to one non-loopback address
+  (`provider.py::RelayBindUnreachable`) leaves such a Crew `stopped` with one
+  WARNING, until a start on a loopback or wildcard bind; any other unusable setting
+  stays an `error`. A Crew with no Kiro sign-in or no Kiro profile is held like
+  Builder ID (`LeaseSignInCannotHost`, 60 s recheck), at INFO when it was never
+  signed in. The rule reads only the
   config object and the environment, so `relay_selected` stays free of I/O.
   `tunnel.relay_enabled` is a fail-closed path (`validation._FAIL_CLOSED_PATHS`):
   a quoted `"false"` is kept and reads as off instead of falling back to unset.

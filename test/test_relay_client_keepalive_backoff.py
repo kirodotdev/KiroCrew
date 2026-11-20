@@ -351,6 +351,42 @@ async def test_a_source_that_cannot_renew_yet_does_not_spend_the_one_renewal() -
 
 
 @asyncio_test
+async def test_the_snapshot_says_when_the_wait_is_on_the_crew_and_a_later_fault_clears_it() -> None:
+    from kiro_crew.relay_client.token_source import HostTokenRetryLater
+
+    async with FakeRelay() as relay, FakeCrew() as crew:
+        client, source, ingress = make_client(relay, crew, sleep=RecordingSleep())
+        calls: list[int] = []
+        held: list[dict] = []
+        release = asyncio.Event()
+
+        async def current():
+            calls.append(len(calls))
+            if len(calls) == 1:
+                raise HostTokenRetryLater("the Crew is not signed in to Kiro", cannot_host_yet=True)
+            if len(calls) == 2:
+                held.append(client.snapshot())
+                raise HostTokenRetryLater("the lease service could not be reached")
+            held.append(client.snapshot())
+            await release.wait()
+            raise HostTokenRetryLater("stopping")
+
+        source.current = current  # type: ignore[method-assign]
+        await client.start()
+        try:
+            await async_wait_until(lambda: len(held) == 2)
+            # The eligibility hold is marked; the fault after it is not.
+            assert held[0]["state"] == STATE_RECONNECTING
+            assert held[0]["error"] == "the Crew is not signed in to Kiro"
+            assert held[0]["cannot_host_yet"] is True
+            assert held[1]["error"] == "the lease service could not be reached"
+            assert held[1]["cannot_host_yet"] is False
+        finally:
+            release.set()
+            await stop(client, ingress)
+
+
+@asyncio_test
 async def test_another_instance_holding_the_crew_waits_for_a_renewal_for_this_one() -> None:
     # host-leg.json, 4409: stop connecting, report that another instance holds the
     # Crew, and connect again only after a lease renewal succeeds for this instance.

@@ -465,14 +465,16 @@ credential instead of your Kiro sign-in. Leave it empty.
 
 ### Hosting this Crew on the relay
 
-To let people open a personal Crew through the Kiro relay, turn Remote Control on
-where the Crew runs, then restart. On a personal Crew it is off by default:
+A personal Crew hosts on the Kiro relay by default: once it starts, people the relay
+lets open it can reach it, with no `remote-control on`. The first time it connects,
+the log and the bell say so once. To keep it off, run this where the Crew runs; a
+stored off sticks across restarts and upgrades:
 
 ```bash
-kirocrew remote-control on
-kirocrew restart
+kirocrew remote-control off
 ```
 
+`kirocrew remote-control on`, then `kirocrew restart`, turns it back on.
 `kirocrew remote-control status` says whether it is on.
 
 A personal Crew needs nothing else. A Crew is personal when it sets no
@@ -481,8 +483,18 @@ holds its lease with the Crew's own Kiro
 sign-in, which must be IAM Identity Center or your organization's identity
 provider with a Kiro profile. Builder ID and social sign-ins can't host a Crew.
 While the sign-in can't be used, the tunnel status says why and tries again, so
-signing in resumes hosting without another restart. A Builder ID or social sign-in
-is held quietly: the log says so once, and the Crew checks again every minute.
+signing in resumes hosting without another restart. A Crew with no sign-in, a
+sign-in with no Kiro profile, and a Builder ID or social sign-in are held quietly:
+the log says so once (at INFO when the Crew was never signed in), and the Crew
+checks again every minute. While a personal Crew that is on only by default can't
+host yet, the Overview page shows nothing for it; `/api/tunnel/status` still names
+the reason. That covers a gateway bound to one address other than loopback, which
+the relay can't reach: the Crew stays stopped until it restarts on a loopback or
+wildcard bind. A fault on the way, such as a lease service that times out or
+refuses the connection, still shows on the Tunnel tile, and so does a failure it
+can't recover from by itself, such as a relay that refuses this version. A Crew
+you turned on with `remote-control on` shows every reason on the Overview page's
+Tunnel tile.
 
 A team Crew leases with its crew API key. Store the key under **Settings →
 Secrets**, then name it:

@@ -101,7 +101,7 @@ def relay_selected(cfg: Any) -> bool:
     The one rule for the relay switch: the public composition's tunnel slot, the
     dashboard app's relay ingress and the gateway's ingress publish all ask it.
     What config asks for is ``remote_control.hosting.relay_requested``: ``True`` is
-    on, unset is on only for a team key or a workload identity, anything else is
+    on, unset is on for a personal sign-in, a team key or a workload identity, anything else is
     off (a stand-in config object answers any attribute truthily). An LTS build
     ignores the switch with the rest of the ``tunnel`` control (RFC D3). It reads
     only *cfg* and the environment, and imports nothing from
