@@ -1,12 +1,12 @@
 ---
 title: Where a crewmate's sessions live — the mate home folder, or lineage stamps with no dispatcher folders
-status: accepted
+status: partial
 author: iamwhatever
 created: 2026-11-02
-last-audited: 2026-11-02
-audited-at: 764aade2c2
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
-implementation-prs: []
+implementation-prs: [26952, 28869, 28931, 29276, 30220, 37713]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,9 @@ superseded-by: []
 
 # RFC: Where a crewmate's sessions live
 
-**Status:** accepted 2026-11-03. The maintainer Joe Guo (@iamwhatever) merged it in [#27837](https://github.com/kirodotdev/KiroCrew/pull/27837) and picked path B; the pick is recorded in [2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md](../decisions/2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md). This document changes no code and supersedes nothing. Every "on main" claim below was checked at main `764aade2c2` (2026-11-02); citations name files and symbols at that commit.
+**Status:** partial. Path B is mostly on main: lineage stamps ([#26952](https://github.com/kirodotdev/KiroCrew/pull/26952)), Crew panel routing ([#28869](https://github.com/kirodotdev/KiroCrew/pull/28869)), approvals and questions in the mate chat ([#29276](https://github.com/kirodotdev/KiroCrew/pull/29276)), the grouped Sessions tab ([#28931](https://github.com/kirodotdev/KiroCrew/pull/28931)), and hiding a Bot's sessions from the lists, first behind a preview ([#30220](https://github.com/kirodotdev/KiroCrew/pull/30220)) and then by default ([#37713](https://github.com/kirodotdev/KiroCrew/pull/37713)). The code removal is not done: dispatchers still get `chat_folder_file_self` (`agent_materialization/conductor_agents.py`).
+
+Accepted 2026-11-03. The maintainer Joe Guo (@iamwhatever) merged it in [#27837](https://github.com/kirodotdev/KiroCrew/pull/27837) and picked path B; the pick is recorded in [2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md](../decisions/2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md). This document changes no code and supersedes nothing. Every "on main" claim below was checked at main `764aade2c2` (2026-11-02); citations name files and symbols at that commit.
 
 ## The question
 
