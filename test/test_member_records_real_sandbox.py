@@ -11,15 +11,18 @@ provides and the shard runners do not, so there these tests skip with that reaso
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import platform
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
 
-from kiro_crew import member_goals, member_records, members, sandbox
+from kiro_crew import member_goals, member_records, members, sandbox, session_token_sig
 from kiro_crew.sandbox import userns_available
 
 pytestmark = [
@@ -145,3 +148,106 @@ def test_records_left_in_the_old_layout_are_moved_before_the_child_starts(home, 
         assert report["paths"][str(path)]["read"]["ok"] is False, (mode, path, report)
     for path in paths:
         assert path.read_bytes() == contents[path.parent.name]
+
+
+# --- signed session records: where a sandboxed backend can and cannot write ---------------
+_RECORD_CHILD = r"""
+import errno, json, os, sys
+
+def write(path):
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("forged")
+        return "WROTE"
+    except OSError as exc:
+        return errno.errorcode.get(exc.errno, str(exc.errno))
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return "read:" + str(len(fh.read()))
+    except OSError as exc:
+        return errno.errorcode.get(exc.errno, str(exc.errno))
+
+folder, record = sys.argv[1], sys.argv[2]
+report = {
+    "mnt_ns": os.readlink("/proc/self/ns/mnt"),
+    "marker": os.environ.get("KIROCREW_SANDBOX_ACTIVE"),
+    "write": write(os.path.join(folder, "forged-record.sig")),
+    "read": read(record),
+}
+print("REPORT " + json.dumps(report), flush=True)
+"""
+
+_TOKEN = "probe-token"
+_SESSION = "probe-session"
+_KEY = b"k" * 32
+# Only a build that keeps the records in their own sealed folder passes; main keeps them in
+# the writable data-home root, where the write below succeeds.
+_SEALED_FOLDER_BUILD = hasattr(session_token_sig, "SESSION_TOKEN_DIR")
+_NOT_SEALED_ON_MAIN = pytest.mark.xfail(
+    condition=not _SEALED_FOLDER_BUILD,
+    strict=True,
+    reason="main keeps the signed session records in the writable data-home root",
+)
+
+
+@pytest.fixture
+def key_file(home, monkeypatch):
+    """A stand-in MAC key, so no real key is read."""
+    monkeypatch.setattr(session_token_sig, "_load_hmac_key", lambda: _KEY)
+
+
+@_NOT_SEALED_ON_MAIN
+def test_a_sandboxed_backend_cannot_write_beside_a_signed_session_record(home, key_file):
+    session_token_sig.publish_session_token(_TOKEN, _SESSION)
+    record = session_token_sig._sig_path(_TOKEN, home)
+    assert record.read_text(encoding="utf-8").endswith(_SESSION)
+    env = {k: v for k, v in os.environ.items() if k != "KIROCREW_SANDBOX_ACTIVE"}
+
+    proc = subprocess.run(
+        sandbox.namespace_argv(
+            [sys.executable, "-c", _RECORD_CHILD, str(record.parent), str(record)], "standard"
+        ),
+        cwd=home,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    (line,) = [ln for ln in proc.stdout.splitlines() if ln.startswith("REPORT ")]
+    report = json.loads(line[len("REPORT ") :])
+    warnings.warn(
+        f"REALMACHINE-38288 folder={record.parent.relative_to(home)!s} "
+        f"write={report['write']} read={report['read']} "
+        f"forged_on_disk={(record.parent / 'forged-record.sig').exists()} "
+        f"kernel={platform.release()}",
+        stacklevel=1,
+    )
+    assert report["marker"] == "1", output
+    assert report["mnt_ns"] != os.readlink("/proc/self/ns/mnt"), output
+    assert report["write"] == "EROFS", report
+    assert report["read"].startswith("read:"), report
+    assert not (record.parent / "forged-record.sig").exists()
+    assert session_token_sig.verify_session_token(_TOKEN) == _SESSION
+
+
+@_NOT_SEALED_ON_MAIN
+def test_a_record_left_at_the_old_root_path_is_not_trusted_after_an_upgrade(home, key_file):
+    digest = hashlib.sha256(_TOKEN.encode("utf-8", "surrogatepass")).hexdigest()
+    mac = session_token_sig._compute_sig(_KEY, _TOKEN, _SESSION)
+    (home / f"session_token_{digest}.sig").write_text(f"{mac}\n{_SESSION}", encoding="utf-8")
+    warnings.warn(
+        f"REALMACHINE-38288 legacy_root_record_verifies="
+        f"{session_token_sig.verify_session_token(_TOKEN) == _SESSION}",
+        stacklevel=1,
+    )
+
+    assert session_token_sig.verify_session_token(_TOKEN) == ""
+
+    session_token_sig.publish_session_token(_TOKEN, _SESSION)
+    assert session_token_sig.verify_session_token(_TOKEN) == _SESSION
