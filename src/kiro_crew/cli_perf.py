@@ -107,8 +107,11 @@ def _write_artifact(output: Path, text: str) -> bool:
     message and a nonzero exit, not a traceback over a profile that was collected
     successfully.
 
-    0o600 because a profile names code paths and file layout from the user's
-    machine; it is diagnostic data, not world-readable output.
+    Owner-only because a profile names code paths and file layout from the user's
+    machine; it is diagnostic data, not world-readable output. ``restrict_to_owner``
+    rather than ``mode=0o600``: on Windows a mode sets no DACL, so the file would
+    keep whatever its folder grants by inheritance. If the lockdown fails, the
+    write raises and is reported below instead of leaving a readable file.
     """
     # Expand a leading ``~``/``~user`` on the caller-supplied path, matching every
     # other caller path in the CLI (cli_commands_app, cli_config, ...). Without it
@@ -119,7 +122,7 @@ def _write_artifact(output: Path, text: str) -> bool:
     try:
         output = output.expanduser()
         output.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(output, text, mode=0o600)
+        atomic_write(output, text, restrict_to_owner=True)
     except (OSError, RuntimeError) as exc:
         print(f"Could not write the profile to {output}: {exc}", file=sys.stderr)
         return False
