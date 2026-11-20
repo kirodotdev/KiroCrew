@@ -1,10 +1,10 @@
 ---
 title: Conductor context cap -- the gateway trims a goal conductor's KAS chat to 150K tokens at a turn start
-status: partial
+status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-19
-last-audited: 2026-11-03
-audited-at: e5353f39bb
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: [22718, 27024, 29388]
 tracking-issues: [22082]
@@ -14,11 +14,14 @@ superseded-by: []
 
 # RFC: Conductor context cap
 
-- Status: partial (2026-11-03, section 9): phase 1 is on main, and the
-  cold-only amendment below is built in
-  [#29388](https://github.com/kirodotdev/KiroCrew/pull/29388), which is still
-  open, so main keeps Rule A (`CONTEXT_CAP_HIGH_TOKENS` in
-  `dashboard/chat_turn/context_cap.py`). As drafted, two
+- Status: implemented (checked at `fc89562d69`): phase 1 is on main from
+  [#22718](https://github.com/kirodotdev/KiroCrew/pull/22718) and
+  [#27024](https://github.com/kirodotdev/KiroCrew/pull/27024), and the
+  cold-only amendment below from
+  [#29388](https://github.com/kirodotdev/KiroCrew/pull/29388) (merged
+  2026-11-17): Rule A and `CONTEXT_CAP_HIGH_TOKENS` are gone, and
+  `dashboard/chat_turn/context_cap.py` trims only past
+  `CONTEXT_CAP_CACHE_SECS`. Phase 2 (section 10) is left to a later RFC. As drafted, two
   decisions came before the implementation pull request (section 9): acceptance by the user
   (iamwhatever), the maintainer who owns the conductor patrol, and agreement
   from bolichen97, whose ruling on

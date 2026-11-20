@@ -1,10 +1,10 @@
 ---
 title: The person may delete an empty folder inside a Bot's home folder, and the empty-folder cleanup offers it
-status: accepted
+status: implemented
 author: buluoray (drafted with an agent session)
 created: 2026-11-16
-last-audited: 2026-11-17
-audited-at: 0ce99889fc5
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr: 38152
 implementation-prs: [38808]
 tracking-issues: [37434]
@@ -14,9 +14,14 @@ superseded-by: []
 
 # RFC: The person may delete an empty folder inside a Bot's home folder
 
-Status: accepted. A maintainer (bolichen97) approved and merged this RFC in
+Status: implemented. A maintainer (bolichen97) approved and merged this RFC in
 [#38152](https://github.com/kirodotdev/KiroCrew/pull/38152), and
-[#38808](https://github.com/kirodotdev/KiroCrew/pull/38808) builds it. It
+[#38808](https://github.com/kirodotdev/KiroCrew/pull/38808) (merged 2026-11-18)
+built it: `delete_empty_bot_subfolder` in
+`src/kiro_crew/dashboard/mate_subfolder_delete.py`, called from
+`api_chat_folder_delete` in `dashboard/chat_folders_routes.py`, and the cleanup
+gate `is_person_browser` in `dashboard/chat_folder_cleanup.py`. Checked at
+`fc89562d69`. It
 answers [#37434](https://github.com/kirodotdev/KiroCrew/issues/37434), which a
 maintainer triaged as a design-level change to the rule that a Bot's home
 folder belongs to the Bot. Every code reference below was read at

@@ -1,12 +1,12 @@
 ---
 title: Edit cards fold once the turn's changed-files card records them
-status: accepted
+status: partial
 author: iamwhatever
 created: 2026-10-16
-last-audited: 2026-10-16
-audited-at: 5c790ca239
-doc-pr:
-implementation-prs: []
+last-audited: 2026-11-20
+audited-at: fc89562d69
+doc-pr: 21354
+implementation-prs: [25650]
 tracking-issues: [21336]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,14 @@ superseded-by: []
 
 # RFC: Edit cards fold once the turn's changed-files card records them
 
-- Status: accepted. This is the product owner's decision, given 2026-10-16 on
+- Status: partial. The snapshot half of §2 (v3 `str_replace`, `fs_write` and
+  `fs_append` record file changes in `_snapshot_write_target`,
+  `src/kiro_crew/dashboard/chat_turn/file_changes.py`) landed in
+  [#25650](https://github.com/kirodotdev/KiroCrew/pull/25650) (merged
+  2026-10-29). The fold half is not built: no `file_change_recorded` stamp
+  exists on main and `isDiffCardItem` in `website/src/pages/chat/TurnBlock.tsx`
+  still keeps every diff card out of both folds. Checked at `fc89562d69`.
+  Accepted as the product owner's decision, given 2026-10-16 on
   [#21336](https://github.com/kirodotdev/KiroCrew/issues/21336). It amends the
   fold rule of [rfc-tool-derived-diff-cards.md](rfc-tool-derived-diff-cards.md)
   § 3.1 (a diff card stays out of both folds), in its own document so that one
