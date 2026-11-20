@@ -1427,6 +1427,14 @@
       "hint": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew — and shows each connected crew’s sessions in their own group in the Sessions list. Unfinished."
     },
     {
+      "id": "developer.close-finished-remote-crew-setup-cards",
+      "label": "Close finished Remote Crew setup cards",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.close-finished-remote-crew-setup-cards",
+      "description": "A finished setup card gets a close button and goes away by itself. The crew stays in My Crews.",
+      "hint": "When a new Remote Crew finishes setting up, its card under Settings > Remote Crew gets a close button. It also closes by itself 2 minutes after it finished, and stays closed after a reload. The crew itself stays in My Crews."
+    },
+    {
       "id": "developer.connected-computers",
       "label": "Connected computers",
       "tab": "developer",
@@ -1566,6 +1574,14 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.shared-crew",
       "description": "People tab, invites and shared sessions"
+    },
+    {
+      "id": "developer.use-your-company-s-sign-in",
+      "label": "Use your company's sign-in",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.use-your-company-s-sign-in",
+      "description": "Signs in through your company's setup when one is installed. Your own sign-in is not changed.",
+      "hint": "Some companies install Kiro Crew with their own sign-in setup for one IAM Identity Center portal, and can start the agent with a credential this computer provides. Turn this on to use that setup. Your own sign-in is not changed, and with no company setup installed, nothing happens."
     },
     {
       "id": "developer.visual-refresh",

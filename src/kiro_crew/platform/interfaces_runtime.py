@@ -927,6 +927,30 @@ class DashboardContributor(Protocol):
         """
         ...
 
+    def idc_sign_in_profiles(self) -> Dict[str, Dict[str, Any]]:
+        """IAM Identity Center start URLs that sign in with the edition's own form.
+
+        ``{start_url: {"scopes": [...], "grant_types": [...], "issuer_url": str,
+        "profile_arn": str}}``. WIRED: ``auth/login/endpoints.py`` reads it only
+        while the ``crew_client`` feature preview is on. Such a start URL registers
+        its own SSO-OIDC client with that form, takes the pinned profile instead of
+        asking the control plane, and, while it is the stored sign-in, gets no usage
+        call and no local KAS start. ``{}`` (the Default) changes nothing. v1 method
+        addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
+    def kas_engine_auth(self) -> Optional[Any]:
+        """How Crew's own KAS engine bundle gets its credential on this host.
+
+        An :class:`~kiro_crew.agent_sdk.kas_engine_auth.EngineAuth`, or ``None`` (the
+        Default) for Crew's own sign-in. WIRED: ``agent_sdk/kas_engine_auth.py`` asks it
+        at each KAS spawn and cold-turn readiness check, only while the
+        ``crew_client`` feature preview is on. Blocking is allowed: it is called
+        off the event loop. v1 method addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
     def mixed_internal_api_paths(self) -> "frozenset[str]":
         """Edition paths an internal loopback caller may reach (Default: empty).
 

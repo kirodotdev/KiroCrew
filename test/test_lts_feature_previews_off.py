@@ -64,6 +64,19 @@ def test_lts_server_readers_read_every_preview_off(lts, all_on):
     assert not any(readers.values()), readers
 
 
+def test_lts_reads_the_crew_client_lane_off(lts, all_on):
+    """The Remote Crew client lane (``crew_client``, ``launch_card_close``) reads off in an
+    LTS build though config stores true. The dashboard side is the ``PREVIEW_FLAGS`` loop
+    in ``website/src/test/ltsFeaturePreviewsOff.test.tsx``."""
+    from kiro_crew.crew_client_preview import preview_on
+
+    stored = KiroCrewConfig.load().dashboard.feature_previews
+    assert stored["crew_client"] is True and stored["launch_card_close"] is True
+    assert preview_on() is False
+    seen = edition_locks.feature_previews(stored)
+    assert not seen.get("crew_client") and not seen.get("launch_card_close")
+
+
 def test_oss_server_readers_still_follow_the_switch(all_on):
     readers = _readers()
     assert all(readers.values()), readers

@@ -275,6 +275,14 @@ class SpawnPlan:
     native_context_documents: tuple[tuple[str, str], ...] = field(default=(), kw_only=True)
     """Admitted sources owned by this exact native launch configuration."""
 
+    engine_auth: Any = field(default=None, kw_only=True)
+    """The edition engine credential this spawn runs under (``agent_sdk/kas_engine_auth.py``).
+
+    ``None`` for Crew's own sign-in, the only value off the ``crew_client`` preview.
+    The runtime keeps it, so a live session's turn gate judges the credential the
+    running process was started with, not the current configuration.
+    """
+
     engine_bundle: bool = field(default=False, kw_only=True)
     """This spawn runs Crew's own installed KAS engine bundle, with no kiro-cli.
 
