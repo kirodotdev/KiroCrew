@@ -3,8 +3,8 @@ title: Recall process pool -- answer a turn's memory reads in child processes so
 status: implemented
 author: chenmingwei23, with kirocrew-worker
 created: 2026-11-01
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 26868
 implementation-prs: [26868]
 tracking-issues: [26600]
