@@ -331,7 +331,8 @@ Three structural facts explain most of the rest:
   says the pull request's own change may still be the cause; it is never edited,
   changes no check, label or assignee, and a fork's pull request never gets one. It holds `actions: read`,
   `checks: read`, `contents: read`, `pull-requests: read` and `issues: write`.
-  `test/test_main_red_suspect.py` pins each rule with `gh` faked.
+  `test/test_main_red_suspect.py` and `test/test_main_red_suspect_notice.py` pin
+  each rule with `gh` faked (`test/main_red_suspect_fake.py`).
 - **A pull request does not run the tests that are red on main.** The `changes`
   job of `ci.yml` reads the open `Main is red:` issue once per run
   (`scripts/ci_main_red_skip.py decide`), and every `Backend Tests` shard, Linux

@@ -96,8 +96,9 @@ name: Main Red Suspect
 # create its label, and to write the comment on a pull request (a pull request
 # is an issue to the comments endpoint).
 #
-# `test/test_main_red_suspect.py` pins the gate, the permissions, the rules, the
-# comment and the three checks that keep a suspected issue out of the skip.
+# `test/test_main_red_suspect.py` pins the gate, the permissions, the rules and
+# the three checks that keep a suspected issue out of the skip;
+# `test/test_main_red_suspect_notice.py` pins the comment.
 
 on:
   workflow_run:
