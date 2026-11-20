@@ -35,8 +35,10 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `!channel` | Show current channel activation mode |
 | `!channel always/mention/observe/review/off` | Set channel activation mode |
 | `!channel agent <name/off>` | Set per-channel agent override |
+| `!project <path>` / `!project off` | Set or clear the project whose `.kiro` agents `!ta` can find in this thread (does not change the working directory); bare `!project` shows it |
 | `!voice on/off` | Speak this thread's answers as well as typing them |
 | `!link-to-dashboard` | Import this thread's history into a dashboard session and link it |
+| `!restart` | Same as `/kirocrew restart` |
 
 `!allowlist` and `/kirocrew @user` are not accepted while access is owner-only, and
 `slack.allowed_users` in config has no effect.
@@ -47,6 +49,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 |---------|-------------|
 | `!dashboard` | Get a presigned dashboard link (DM'd to you) |
 | `!dashboard 2h` | Dashboard link with custom duration (max 20h) |
+| `!title <text>` | Set this thread's title (up to 80 characters) |
 | `!stop` | Force-halt the current agent turn in this thread. Bypasses the per-session semaphore and cancels the active task. See "Emergency Stop" below |
 
 ## Keyword Commands
@@ -56,13 +59,12 @@ Available to all allowed users (no `!` prefix needed):
 | Command | Description |
 |---------|-------------|
 | `status` | Show runtime stats (uptime, sessions, crons, lessons) |
-| `ping` | Auto-reply with `pong` |
 | `cron list` | List all scheduled cron jobs |
-| `cron remove <id>` | Remove a cron job |
+| `cron remove <id>` | Remove a cron job (`cron remove all` removes every job) |
 | `cron pause <id>` | Pause a cron job |
 | `cron resume <id>` | Resume a paused cron job |
-| `spawn run "task"` | Spawn a background subagent |
-| `spawn list` | List running subagents |
+| `spawn <task>` (or `bg <task>`) | Spawn a background subagent |
+| `spawn list` (or `spawn status`) | List running subagents |
 | `task run <path>` | Run an autonomous task from a spec file (`project run` is an alias; a bare `run <path>` is not a command) |
 | `task run status` | Check task runner status |
 | `task run cancel` | Cancel the running task |
