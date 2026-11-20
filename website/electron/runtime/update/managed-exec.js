@@ -6,8 +6,6 @@
  * The marker already passed readExternallyManaged's provenance test before this
  * is built; what this owns is the ENVIRONMENT the commands run in.
  */
-const { windowsSystemToolPaths } = require("../../windows-port");
-
 function createManagedExec({ managed, managedPath, log }) {
   // Bound retained output so a chatty command cannot exhaust memory (we keep
   // DRAINING both streams either way), and cap how long an apply / check runs.
@@ -202,7 +200,7 @@ function createManagedExec({ managed, managedPath, log }) {
     const killOnTimeout = () => {
       if (process.platform !== "win32" || !child.pid) { child.kill(); return; }
       try {
-        const { taskkill } = windowsSystemToolPaths(process.env.SystemRoot || "C:\\Windows");
+        const taskkill = `${process.env.SystemRoot || "C:\\Windows"}\\System32\\taskkill.exe`;
         cp.execFile(taskkill, ["/T", "/F", "/PID", String(child.pid)], { windowsHide: true, timeout: 10000 }, (err) => {
           if (err) child.kill();
         });
