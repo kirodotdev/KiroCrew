@@ -1,4 +1,4 @@
-"""Whose git config the update check's fetch reads.
+"""Whose git config the update check's fetch reads, and how long the click's verdict lasts.
 
 The boot check, the 12-hour poll and ``GET /api/update/check`` run the isolated check:
 no credential helper. The owner's "Check for updates" click is ``POST
@@ -18,16 +18,26 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from slack_gateway_helpers import _make_orchestrator, _mock_dashboard_state
 
+from kiro_crew import update_next_start
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.platform import update_governance
 from kiro_crew.platform.governance import parse_policy
-from kiro_crew.platform.update_capability import MANAGED_BY_GIT, MODE_NOTIFY, UpdateCapability
+from kiro_crew.platform.update_capability import (
+    AUTO_EFFECT_INSTALL,
+    AUTO_ROUTE_GIT,
+    MANAGED_BY_GIT,
+    MODE_NOTIFY,
+    AutoUpdateEffect,
+    UpdateCapability,
+)
 from kiro_crew.shared_crew.contracts import (
     ACTOR_REQUEST_KEY,
     ActorContext,
@@ -309,26 +319,186 @@ class TestTheClickSignsInThroughTheHelper:
         monkeypatch.setattr(updates, "repo_exec_config_reason", _probe)
         asyncio.run(updates._do_update_check(manual=True))
         assert git_checkout["fetches"] == [False]
-        assert updates.get_update_info()["error_code"] == "git_fetch_failed"
+        assert updates._manual_verdict["error_code"] == "git_fetch_failed"  # type: ignore[index]
 
 
-class TestALaterIsolatedCheckReportsItsOwnAnswer:
-    def test_an_isolated_fetch_failure_after_a_click_shows_the_failure(
+_FAR_FUTURE_TTL = 10**12
+
+
+def _click_found_an_update(git_checkout, monkeypatch) -> None:
+    """The owner's click on a private remote found a newer build (3 commits behind)."""
+    _standalone(monkeypatch)
+    # The default TTL is minutes; a test never waits on a clock, so it is widened.
+    monkeypatch.setattr(updates, "_MANUAL_VERDICT_TTL_S", _FAR_FUTURE_TTL)
+    git_checkout["rev_list"] = b"0\t3\n"
+    asyncio.run(updates._do_update_check(manual=True))
+
+
+class TestTheClicksVerdictIsScoped:
+    def test_a_click_never_writes_the_cache_the_gateway_acts_on(
         self, helper_home, git_checkout, monkeypatch
     ):
-        # A click that found an update leaves nothing behind: the next isolated
-        # check's own answer is what the badge and the gateway's update cycle read.
-        _standalone(monkeypatch)
-        git_checkout["rev_list"] = b"0\t3\n"
-        asyncio.run(updates._do_update_check(manual=True))
-        assert updates.get_update_info()["update_available"] is True
+        before = dict(updates._update_info)
+        stamp = updates.last_checked_at()
+        _click_found_an_update(git_checkout, monkeypatch)
 
-        asyncio.run(updates._do_update_check())
+        assert git_checkout["fetches"] == [True]
+        assert updates._manual_verdict["update_available"] is True  # type: ignore[index]
+        assert updates.get_update_info() == before
+        assert updates.last_checked_at() == stamp
+
+    def test_the_badge_shows_the_click_at_the_clicks_own_time(
+        self, helper_home, git_checkout, monkeypatch
+    ):
+        _click_found_an_update(git_checkout, monkeypatch)
+
+        fields = updates.status_update_fields(next_start={})
+        assert fields["update_available"] is True
+        assert fields["update_check_status"] == "succeeded"
+        assert fields["update_last_checked_at"] == updates._manual_verdict_at
+        assert fields["update_last_checked_at"] != updates.last_checked_at()
+
+    def test_the_gateways_update_cycle_ignores_the_click(
+        self, helper_home, git_checkout, monkeypatch
+    ):
+        # The click found a newer build; the gateway's own isolated check cannot
+        # sign in. The cycle reads its own failure, never the click's verdict, so
+        # it neither applies nor announces what only the click could see.
+        _click_found_an_update(git_checkout, monkeypatch)
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = MagicMock()
+        orch.sessions.pause_turn_admission_for_update = AsyncMock(return_value=True)
+        orch._auto_apply_wheel_update = AsyncMock()
+        effect = AutoUpdateEffect(AUTO_EFFECT_INSTALL, AUTO_ROUTE_GIT)
+        cfg = SimpleNamespace(auto_update=True, dashboard=SimpleNamespace(update_nudge={}))
+        with (
+            patch("kiro_crew.config.KiroCrewConfig.load", return_value=cfg),
+            patch("kiro_crew.platform.update_governance.update_required", return_value=False),
+            patch("kiro_crew.slack.gateway.auto_update_effect", return_value=effect),
+        ):
+            asyncio.run(orch._check_for_updates())
+
         assert git_checkout["fetches"] == [True, False]
         assert updates.get_update_info()["error_code"] == "git_fetch_failed"
+        orch._auto_apply_wheel_update.assert_not_awaited()
+        orch.sessions.pause_turn_admission_for_update.assert_not_awaited()
+        assert call("update_available") not in orch.dashboard_state.push_refresh.call_args_list
+
+    def test_the_next_isolated_check_clears_it(self, helper_home, git_checkout, monkeypatch):
+        _click_found_an_update(git_checkout, monkeypatch)
+        assert updates._manual_verdict is not None
+
+        asyncio.run(updates._do_update_check())
+        assert updates._manual_verdict is None
         fields = updates.status_update_fields(next_start={})
         assert fields["update_check_status"] == "failed"
         assert fields["update_available"] is not True
+        assert fields["update_last_checked_at"] == updates.last_checked_at()
+
+    def test_the_next_click_replaces_it(self, helper_home, git_checkout, monkeypatch):
+        _click_found_an_update(git_checkout, monkeypatch)
+        git_checkout["rev_list"] = b"0\t0\n"
+        asyncio.run(updates._do_update_check(manual=True))
+        assert updates._manual_verdict["update_available"] is False  # type: ignore[index]
+
+    def test_it_expires(self, helper_home, git_checkout, monkeypatch):
+        _click_found_an_update(git_checkout, monkeypatch)
+        assert updates._live_manual_verdict() is not None
+
+        monkeypatch.setattr(updates, "_MANUAL_VERDICT_TTL_S", -1)
+        assert updates._live_manual_verdict() is None
+        fields = updates.status_update_fields(next_start={})
+        assert fields["update_available"] is not True
+        assert fields["update_last_checked_at"] == updates.last_checked_at()
+
+    def test_the_default_lifetime_is_short(self):
+        assert 0 < updates._MANUAL_VERDICT_TTL_S <= 900
+
+    def test_a_channel_switch_clears_it(self, monkeypatch):
+        monkeypatch.setattr(updates, "_manual_verdict", {"check_status": "succeeded"})
+        monkeypatch.setattr(updates, "_check_generation", updates._check_generation)
+        monkeypatch.setattr(updates, "_last_update_check", updates._last_update_check)
+        original = dict(updates._update_info)
+        try:
+            updates._invalidate_update_check("stable")
+        finally:
+            updates._update_info.clear()
+            updates._update_info.update(original)
+        assert updates._manual_verdict is None
+
+    def test_a_feed_install_click_writes_the_cache_as_before(self, monkeypatch):
+        capability = UpdateCapability(
+            supported=True,
+            managed_by="kirocrew",
+            mode=MODE_NOTIFY,
+            can_download=True,
+            can_apply=False,
+            requires_restart=True,
+        )
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(updates, "derive_capability", lambda: capability)
+
+        async def _feed(_capability) -> None:
+            updates._set_update_info(
+                managed_by="kirocrew", check_status="succeeded", update_available=True
+            )
+
+        monkeypatch.setattr(updates, "_check_release_feed", _feed)
+        original = dict(updates._update_info)
+        try:
+            asyncio.run(updates._do_update_check(manual=True))
+            info = dict(updates.get_update_info())
+        finally:
+            updates._update_info.clear()
+            updates._update_info.update(original)
+        assert updates._manual_verdict is None
+        assert info["update_available"] is True
+
+
+class TestTheUpdateTheBadgeOffersArms:
+    def test_the_owner_who_saw_the_click_verdict_can_arm_it(
+        self, helper_home, git_checkout, monkeypatch, tmp_path
+    ):
+        # The isolated check cannot sign in, so arming through it would refuse an
+        # Update the badge offered. The arm names the verdict it showed.
+        from kiro_crew.platform import update_provider
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.derive_capability",
+            lambda **_kw: SimpleNamespace(managed_by=MANAGED_BY_GIT),
+        )
+        monkeypatch.setattr(update_provider, "resolve_provider", lambda: None)
+        _click_found_an_update(git_checkout, monkeypatch)
+        assert updates.status_update_fields(next_start={})["update_available"] is True
+        assert updates.status_update_fields(next_start={})["update_can_apply"] is True
+
+        async def _run():
+            app = web.Application(middlewares=[_as_owner])
+            app["state"] = SimpleNamespace(owner_id=OWNER, push_refresh=lambda *_a, **_k: None)
+            app.router.add_post("/api/update", updates.api_update_apply)
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                resp = await client.post("/api/update", json={"when": "next-start"})
+                return resp.status, await resp.json()
+            finally:
+                await client.close()
+
+        status, body = asyncio.run(_run())
+        assert status == 202, body
+        assert git_checkout["fetches"] == [True]
+        assert body["version"] == "1.0.0"
+        assert update_next_start.read().armed_version == "1.0.0"
+
+
+@web.middleware
+async def _as_owner(request: web.Request, handler: Callable) -> web.StreamResponse:
+    request["app"] = ""
+    request["user"] = OWNER
+    return await handler(request)
 
 
 class TestTheTwoChecksDoNotShareASlot:

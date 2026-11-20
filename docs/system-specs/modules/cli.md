@@ -3388,10 +3388,23 @@ unreadable answer is isolated. Only the machine owner's `POST`
 (`is_host_owner_dashboard_request`) is a click; any other `POST`, a Shared Crew
 teammate's that passes the owner gate included, runs the isolated check.
 
-Each check's own answer is what the cache, the badge and the gateway's update cycle
-read: a later isolated check whose fetch cannot sign in reports `git_fetch_failed`
-even after a click succeeded, and the owner clicks again to re-check with their git
-config.
+**The click's verdict is scoped to the click.** On a git checkout the owner's click
+records its answer in `_manual_verdict` (with `_manual_verdict_at`), never in
+`_update_info`, and leaves the 12-hourly clock `_last_update_check` alone. The
+cache is what the gateway's auto-update and the arm path act on, so a verdict that
+only a signed-in fetch could reach never turns the unattended apply into retries
+that cannot sign in. The status frame and the check response show the click's
+verdict, with the click's own time as `update_last_checked_at`, for
+`_MANUAL_VERDICT_TTL_S` (ten minutes). Any other check that finishes (the boot
+check, the poll, the update popup's `GET`), the next click, and a channel switch
+drop it, so an old answer never sits beside a newer check time: after that the
+badge shows the isolated check's own result, `git_fetch_failed` on a private
+remote, and the owner clicks again. A feed install's click has no such split and
+writes the cache as every check does. `POST /api/update` arms the version the
+badge shows: while the click's verdict is live and succeeded, the arm names it
+instead of re-running an isolated check that cannot sign in and would refuse an
+Update the badge offered. The arm records only the version; the apply at the
+next start does its own fetch.
 
 Commit distance is the primary signal because `__version__` is bumped only at a
 release: comparing version strings alone reported "you're on the latest version"
