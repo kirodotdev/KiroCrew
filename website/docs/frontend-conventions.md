@@ -249,13 +249,14 @@ nothing for `openOnTap` consumers.
 
 `components/MarkdownRenderer.tsx` is the renderer's only import path. Its default
 export (the memoized component), its named exports and its module id are what
-the consumers import and what about 150 specs mock, so all three stay there. It
+the consumers import and what more than 250 specs mock, so all three stay there. It
 is also the composition root: what has to be decided in one place lives in it,
 and every other concern has one owner under `components/markdown/`.
 
 | Owner | Holds |
 |---|---|
 | `MarkdownRenderer.tsx` | the ordered remark and rehype chains, and the parser built from them that the source repairs read (`AUTOLINK_PARSER`); `MD_COMPONENTS`, the element-to-renderer map, with the fence `code` override and the link overrides `MdAnchor` / `MdParagraph`; the per-block source passes and their order (`MarkdownBlock`); fence dispatch (`BlockRenderer`); the root component and its providers |
+| `markdown/remarkBase.ts` | the parse-side remark plugins (`REMARK_BASE_PLUGINS`: depth bound, CJK-friendly emphasis, GFM, CJK-friendly strikethrough, in that order) that the renderer and the rich-text copy share |
 | `markdown/contexts.ts` | every context the pipeline's modules share, each created once; the facade re-exports the six public ones (`MediaApprovedCtx` stays private to `markdown/remoteMedia.tsx`, which both provides and reads it) |
 | `markdown/linkTargets.ts`, `markdown/pathReferences.ts` | what a link or code span points at: artifact routes, unfurl eligibility, open sessions, sidebar folder paths (folder-chip resolution); path candidates, `file:line` suffixes, probe resolution and activation |
 | `markdown/linkAddressTip.tsx` | a link's address bubble: which links show their address (`linkAddress`), the hover pause, and stepping aside for an app's link-preview card |
@@ -279,9 +280,10 @@ stub in every spec that mocks the renderer. Consumers keep importing from the
 facade for the same reason. The one exception is `markdown/typography.ts`, which
 `FileRenderers.tsx` imports directly: it is plain data with no imports of its
 own, and reading it through the facade would hand the Office preview the
-renderer's stub in every spec that mocks the renderer. Three things must stay in the facade's own text: the
-seven remark/rehype package imports (`test/test_source_providers.py` pins that
-set against the backend converter), `import '../utils/hljs'`
+renderer's stub in every spec that mocks the renderer. Three things must stay in the facade's own text, or
+beside it: the seven remark/rehype package imports, split between the facade and
+`markdown/remarkBase.ts` (`test/test_source_providers.py` reads both files and pins
+that set against the backend converter), `import '../utils/hljs'`
 (`hljsCoreOnly.test.ts`), and the two lines the i18n added-line gate counts, in
 `MdAnchor` and `stripStrayToolUseTags`.
 
@@ -597,7 +599,8 @@ A bypass is an XSS bug, so there is no "just this once" case.
 The markdown renderer sets no `dangerouslySetInnerHTML`. Raw HTML in markdown
 prose enters its tree only through `rehype-raw`. In the chain
 `MarkdownRenderer.tsx` composes (`rehypeBoundRawDepth`, `rehype-raw`,
-`rehypeMarkFencedCode`, `rehypeUnwrapBlocks`, `rehypeSanitize`, `rehype-katex`)
+`rehypeMarkFencedCode`, `rehypeUnwrapBlocks`, `rehypeSanitize`,
+`rehypeSessionRefPunctuation`, `rehype-katex`)
 the two passes between `rehype-raw` and `rehypeSanitize` only mark and restructure
 the tree; they add no attribute the sanitizer would not judge. Every pass that injects
 elements of its own (the streaming effects, the redaction markers, the stable
@@ -958,7 +961,7 @@ files own it:
   global `:focus-visible` ring, the reduced-motion cut, the scroll-only
   scrollbar)
   and, unlayered, the ambient backdrop and the app-icon tints; then the imports
-  of the other eight partials. Tailwind inlines each `@import` where it stands,
+  of the other ten partials. Tailwind inlines each `@import` where it stands,
   so the import order IS the cascade order: never reorder the imports, and put a
   new rule in the partial that owns its surface.
 - `src/styles/*.css` — the partials `index.css` imports, listed here in import
@@ -986,6 +989,10 @@ files own it:
   - `sidebar-and-side-panel.css` owns session and folder rows, the list dock,
     the side-panel tab strip and the file preview's print layout. Strays: the
     inline lucide icon size and the panel-icon pane morph.
+  - `crew-mode.css` owns conductor mode's marks: the accent token, the ghost
+    badge (`.crew-grad`), the text gradient on the welcome title and the pressed
+    composer chip, the current crew card, the progress track and the turn-on
+    effect.
   - `highlights-and-page-zoom.css` owns search, find and comment highlights and
     the coarse-pointer rules that stop page zoom. Strays: the artifact toolbar
     button heights and the mobile sessions-drawer width.
@@ -997,6 +1004,9 @@ files own it:
     compensation on the nav rail, the Hindi and Bengali letter-spacing reset,
     the crew-chip cut edge, image and spacer reservations, the pane-dim token
     and the markdown-table breakout.
+  - `layout-morph.css` owns the view-transition keyframes for the phone/desktop
+    form switch (`lib/layoutFormTransition.ts`), scoped to `[data-layout-morph]`
+    so nothing in it applies at rest.
 
   `cli-mode.css`, `message-font-size.css` and `crew-notes.css` in the same
   directory are imported by `main.tsx` instead. A test that measures the
