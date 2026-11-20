@@ -218,8 +218,7 @@ follow how the five streams' frames batch into dispatches.
 - **A test file a dead fork never started is run once, on its own, and must
   pass.** With `pool: 'forks'` and `isolate: true` every test file gets a fresh
   Node process. Rarely, on Linux CI, one exits after the pool handed it a file
-  but before the file was queued, with no output of its own
-  ([#23640](https://github.com/kirodotdev/KiroCrew/issues/23640)). The shard
+  but before the file was queued, with no output of its own. The shard
   then shows one unhandled error, `[vitest-pool]: Worker forks emitted error.`
   caused by `Worker exited unexpectedly`, every reported test passes, and the
   lost file is in no count (`1005 passed (1005)` for a 1006-file shard).
@@ -588,7 +587,7 @@ The remaining case was pure CPU (201 real sidebar rows in one synchronous render
 
 ### What eight dashboard suites found
 
-Six more CI reds (#17237) added two shapes to the ones above:
+Six more CI reds added two shapes to the ones above:
 
 - **A key sent before the listener exists.** A dialog's Escape handler, a focus
   trap's window `keydown`, or a tab's re-armed listener is installed in a PASSIVE

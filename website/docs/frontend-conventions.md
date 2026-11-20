@@ -233,8 +233,7 @@ replays for a tap are ignored, because a hint appearing mid-tap can cost the cli
 (a real mouse on a touch device still hovers). An anchor whose bubble outranks its
 click — one with no click action, or whose tip carries a warning the user must see
 before acting — opts in with `openOnTap`. Its hint then opens from the replayed
-hover/focus, before the click, exactly as it always has (FeedbackPill's usage
-warning, #13342).
+hover/focus, before the click (FeedbackPill's usage warning does this).
 
 An anchor with no click action at all can instead pass `openOnTouchRelease`,
 false by default, which opens the hint on the touch pointerup itself. It still
@@ -528,7 +527,7 @@ Both of those overlays portal to the body-level overlay root (see *Floating
 layers and Crew switches* below) and both paint above the dialog
 at the same `z-[9999]`. Only one of them is inside the boundary. **Sharing a
 stacking context is a paint-order fact and implies nothing about event
-routing** — conflating the two is what kept #6833 open, so do not reason about
+routing** — so do not reason about
 coverage from a z-index.
 
 A dialog rendered inside the App root rather than portalled to the body level
@@ -644,7 +643,7 @@ machine (`canPickFolderNatively`); a plain click is unchanged. A line number tak
 it only where every hunk header carries numbers, and never on a tool call's edit
 card, which counts the replaced text from 1.
 
-How a refused destination RENDERS is part of the contract (issue #9925): the
+How a refused destination RENDERS is part of the contract: the
 transform's rejection sentinel is `''`, and `MdAnchor`'s `!href` guard renders
 the label as inert text with **no anchor** — never `<a href="">`, whose empty
 href resolves to the current page — matching `md-notebook/Preview.tsx`'s
@@ -671,7 +670,7 @@ renderer and keeps the plain span.
 One deliberate, key-scoped exception exists: a Windows absolute path
 (`WINDOWS_ABS_PATH_RE` — a drive-letter path) is passed through **for image
 `src` only**, because `defaultUrlTransform` parses `C:` as an unknown scheme and
-would blank the sender's own uploaded image (issue #3497). The invariant that
+would blank the sender's own uploaded image. The invariant that
 makes it safe: `ImgWithFallback` (`components/markdown/ImgWithFallback.tsx`)
 routes every local path to the same-origin `/api/file-raw` endpoint, so the raw
 filesystem path never reaches the DOM, and
@@ -685,7 +684,7 @@ A root-relative image (`/images/a.png`) inside a previewed file (a
 directory above the file, nearest first, up to eight levels
 (`siteRootImageCandidates`). The leading `/` there usually names the root of the
 repository or site the markdown belongs to — GitHub, Zenn and Docusaurus all
-write images that way (issue #23623) — and nothing in the file says where that
+write images that way — and nothing in the file says where that
 root is. A same-named image in a nearer directory therefore wins over one at
 the real root. Every candidate still goes through `/api/file-raw`, so the fallback
 reads nothing the absolute path could not already ask for. When every candidate

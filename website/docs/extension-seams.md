@@ -734,8 +734,8 @@ Three surfaces send a user to the project's issue tracker, and the stock build
 points every one of them at the public GitHub repository: the top bar's **Request
 a Feature** (the hidden prompt it seeds, which tells the agent to search, label
 and file with `gh`; the copy/paste route that prompt offers; and the
-non-inference form link the `usage_limit` row shows when the plan is spent,
-#13342), the prerelease **report it** link in Settings › About, and the
+non-inference form link the `usage_limit` row shows when the plan is spent),
+the prerelease **report it** link in Settings › About, and the
 false-positive report a redaction card offers. On an edition where that
 repository is unreachable each of them dead-ends, and the agent, handed `gh`
 instructions it cannot follow, improvises a fallback nobody designed.
@@ -838,9 +838,10 @@ their wire types. That split is core-internal: the seam is still
 `apiTransport`, and an edition never imports a domain module.
 
 Two tests ratchet the split. A new method goes in its domain's `create*Endpoints`
-segment and joins `API_KEY_ORDER` in `ApiClient.refactor.surface.test.ts` where
-the facade spreads it; it joins `NO_SESSION_KEY` there only when it deliberately
-bypasses the request helpers. A method defined inline on the facade instead of in
+segment; `ApiClient.refactor.surface.test.ts` rebuilds the groups the facade
+spreads from the same factories and fails when a member comes from two groups or
+an inline member shadows one. The method joins `NO_SESSION_KEY` there only when it
+deliberately bypasses the request helpers. A method defined inline on the facade instead of in
 a segment joins `INLINE` in `ApiClient.refactor.facade.test.ts`.
 
 Trust boundary: the transport carries the session key. It is for the edition

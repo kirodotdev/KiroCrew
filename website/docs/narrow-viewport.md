@@ -271,7 +271,7 @@ therefore keep their authored size on touch, and the composer uses the message f
 setting on every device. One size for the composer's typed text and its placeholder
 is also what keeps an empty composer one line tall: its auto-size measures the
 placeholder at the field's font size, so a field held at 16px over a 14px hint
-measured the hint a line too tall on a 375px phone (#28843).
+measured the hint a line too tall on a 375px phone.
 
 **There is deliberately no app-wide 16px field rule either**, because CSS cannot
 express a floor at all: it can only SET a size, so the two available shapes are wrong
@@ -566,7 +566,7 @@ hamburger-opened drawer cannot be dragged shut.
 the main-thread path, framer's `stop()` COMPLETES an animation whose duration has already
 passed, and `animate()` delivers that `onComplete` a microtask later, after the new
 gesture has committed. A busy main thread is exactly when that happens, and the stale
-arrival slid the side panel back open over a closing drag (#29908). Both main-thread
+arrival slid the side panel back open over a closing drag. Both main-thread
 settles, `animateDrawer`'s and the trackpad's `settleTrackpadDrag`, therefore note
 framer's `onStop` (it runs inside `stop()`, before that late `onComplete`) and drop an
 arrival that comes after it.
