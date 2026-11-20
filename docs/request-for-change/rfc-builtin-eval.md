@@ -1,12 +1,12 @@
 ---
 title: A built-in eval tool -- tiered tasks across harnesses, a Crew headless CLI, a weekly run, and harvesting merged PRs into standing cases
-status: accepted
+status: partial
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-15
-last-audited: 2026-11-16
-audited-at: cb2f78b946
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 37669
-implementation-prs: []
+implementation-prs: [37768, 38187, 39317]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,8 @@ superseded-by: []
 
 # RFC: A built-in eval tool for Kiro Crew
 
-Status: accepted. The repository owner, a maintainer, asked for the
+Status: partial (accepted 2026-11-16; §12's `kirocrew chat --headless` and
+§14.1's `kirocrew eval run` v1 are on main). The repository owner, a maintainer, asked for the
 direction on 2026-11-15, widened it the same day from long tasks only to a
 weekly eval tool with three tiers, a Crew headless CLI and a case-harvest
 step, and accepted it on 2026-11-16 with the PR that ships §12's first part

@@ -865,6 +865,21 @@ async def test_a_refused_purge_keeps_the_kas_sign_in_its_surviving_mirror_reads(
 
 
 @pytest.mark.asyncio
+async def test_forgetting_a_sign_in_removes_the_path_client_registration_too():
+    from kiro_crew.connections import mint_kas
+
+    url = _notion()["mcp_url"]
+    digest = mcp_grant_kas.kas_connection_hash(url)
+    other = f"kiro.mcp.{'cd' * 32}.kiro-path-client"
+    vault = SecretVault(mcp_grant_kas.grant_store_root(data_home()))
+    for name in (f"kiro.mcp.{digest}.tokens", f"kiro.mcp.{digest}.kiro-path-client", other):
+        vault.set_sync(name, "{}")
+
+    assert await asyncio.to_thread(mint_kas.forget_kas_sign_in, url) is True
+    assert await _vault_names() == {other}
+
+
+@pytest.mark.asyncio
 async def test_disconnect_removes_the_kas_sign_in_of_an_owned_spelling_kiro_cli_folds(monkeypatch):
     # grant_key folds the explicit default port into notion's own pair, but the vault
     # keys the url as written, so that entry's KAS chats saved a sign-in of their own.

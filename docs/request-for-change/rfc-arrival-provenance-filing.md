@@ -3,8 +3,8 @@ title: Arrival provenance filing — file every arriving session under Imported 
 status: implemented
 author: chenmingwei23
 created: 2026-09-20
-last-audited: 2026-09-20
-audited-at: f31f25a8a2
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: [12196]
 tracking-issues: [11468]

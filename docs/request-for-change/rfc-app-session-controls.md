@@ -3,8 +3,8 @@ title: App Session Controls — a composer seam for per-chat app state
 status: implemented
 author: omerrubi
 created: 2026-08-31
-last-audited: 2026-09-22
-audited-at: 80bd0a81f
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: [7573]
 tracking-issues: []

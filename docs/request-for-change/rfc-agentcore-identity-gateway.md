@@ -3,8 +3,8 @@ title: AgentCore Identity and Gateway — Crew agent identity and token vending
 status: partial
 author: kyle
 created: 2026-08-27
-last-audited: 2026-10-05
-audited-at: e281ecaf33
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: []
 tracking-issues: []

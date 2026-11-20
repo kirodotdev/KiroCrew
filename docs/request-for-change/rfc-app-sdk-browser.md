@@ -3,8 +3,8 @@ title: "App SDK browser: let an app show, read and annotate the browser that its
 status: draft
 author: chenmingwei23
 created: 2026-11-17
-last-audited: 2026-11-17
-audited-at: 5d18d11c70
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: []
 tracking-issues: []

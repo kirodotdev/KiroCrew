@@ -952,12 +952,15 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     # app-agent-launch: the empty directory a launch copy's kiro-cli starts in
     # (``apps.agent_launch.launch_process_cwd``); a spec written into it is the spec
     # kiro-cli runs. Read-only in the sandbox for the same reason.
+    # session-tokens: the signed session records ``session_key_is_attested`` accepts;
+    # the gateway is the only writer, so a record made with a file tool is a forgery.
     for leaf in (
         "config.json",
         "config.local.json",
         "subagents",
         "app-agent-launch",
         "update_next_start.json",
+        "session-tokens",
     )
 ] + [
     # Ops Mission Control's on-call schedule. WRITE-protected, not read+write

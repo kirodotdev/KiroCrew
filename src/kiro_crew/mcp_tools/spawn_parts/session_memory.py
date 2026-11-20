@@ -77,6 +77,11 @@ def render_session_memory(view: Mapping[str, object]) -> list[str]:
         for row in workers:
             if isinstance(row, Mapping):
                 out.append(_worker_line(row))
+        if view.get("growth_wake") == "off":
+            out.append(
+                "  Worker growth wakes: off (session.watchdog_rss_max_mb = 0), "
+                "so no wake comes when a worker grows"
+            )
     return out
 
 

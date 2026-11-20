@@ -3,8 +3,8 @@ title: Agent Plugins standard support on every harness
 status: partial
 author: zezhexu
 created: 2026-11-02
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 27719
 implementation-prs: [28461, 28686, 33621]
 tracking-issues: [27710, 9212]

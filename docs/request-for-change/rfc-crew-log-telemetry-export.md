@@ -3,8 +3,8 @@ title: Crew log based telemetry export -- one counting fold per module, behind t
 status: draft
 author: chenmingwei23
 created: 2026-10-16
-last-audited: 2026-10-16
-audited-at: 1a2eb5435c
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: []
 tracking-issues: [21270, 21271]

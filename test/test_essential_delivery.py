@@ -26,7 +26,11 @@ from kiro_crew.acp.types import (
     AcpEvent,
 )
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.member_essential_context import MemberEssentialContextError, documents_for_member
+from kiro_crew.member_essential_context import (
+    ESSENTIAL_MAX_CHARS,
+    MemberEssentialContextError,
+    documents_for_member,
+)
 from kiro_crew.members import (
     member_briefing_path,
     member_briefing_supported,
@@ -527,7 +531,7 @@ async def test_budget_and_source_tails_remain_complete_before_wire_dedup(env):
     await send(target, build(env, target, model_window=32_000))
     assert body in target.client.messages[0]
     assert HEADER not in target.client.messages[1]
-    path.write_text("x" * 64_001, encoding="utf-8")
+    path.write_text("x" * (ESSENTIAL_MAX_CHARS + 1), encoding="utf-8")
     # The budget is still checked on the complete envelope before wire dedup;
     # an over-budget guide now drops out whole and is named, instead of
     # refusing the turn, and the changed snapshot is delivered again.
@@ -535,7 +539,7 @@ async def test_budget_and_source_tails_remain_complete_before_wire_dedup(env):
     assert len(target.client.messages) == 3
     assert "x" * 1_000 not in target.client.messages[2]
     assert "[Essential source: essential-context#omitted]" in target.client.messages[2]
-    assert f"{path} (64,001 characters)" in target.client.messages[2]
+    assert f"{path} ({ESSENTIAL_MAX_CHARS + 1:,} characters)" in target.client.messages[2]
 
 
 @pytest.mark.asyncio

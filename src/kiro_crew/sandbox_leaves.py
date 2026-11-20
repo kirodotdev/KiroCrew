@@ -501,6 +501,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # The second root holds the same authority for retained V1 runs only.
     "subagents",
     "member-memory-bindings",
+    # The signed per-session identity records (``session_token_sig``). The gateway is the
+    # only writer; an in-sandbox MCP server only reads one. A record a sandboxed process
+    # could create would name the session a later request is attested as.
+    "session-tokens",
     # Built-in named-store writes run in the gateway. Keep arbitrary sandboxed
     # code from rewriting that learning authority while allowing reads; this
     # ordinary sandbox rule is not a cross-member confidentiality boundary.
@@ -1118,6 +1122,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # Browser Harness prefix is NOT here: no sandboxed process runs it -- the
     # gateway does -- so a child needs no read of it; see ``_CREW_CHILD_WITHHELD_LEAVES``.)
     "engines",
+    # The signed session identity records. A foreign harness's MCP servers resolve their
+    # own session from one, so the child must keep reading the directory.
+    "session-tokens",
     # Authorization and lineage records an in-sandbox reader resolves. Read-only
     # sealed for the same reason: a forged entry decides a later grant.
     "apps/.dev-grants.json",

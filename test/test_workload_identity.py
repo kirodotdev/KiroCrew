@@ -638,6 +638,34 @@ async def test_a_fresh_pod_lets_teammates_in_when_chat_would_work(
     assert body["ready"] is ready
     assert body["authenticated"] is False
     assert body["setup_allowed"] is owner
+    # Only the owner learns how the host is deployed; the setup page reads it.
+    assert body["container_boundary_hint"] is owner
+
+
+def test_a_floor_over_the_opt_in_withholds_the_unsandboxed_hint(
+    workload: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A floor that requires a sandbox wins over the opt-in, so the page must not name it.
+    from kiro_crew import sandbox
+    from kiro_crew.dashboard.handlers import kiro_prerequisite
+    from kiro_crew.platform.governance import _ORDINAL_SCALES
+
+    scale = _ORDINAL_SCALES["sandbox"]
+    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: None)
+    assert kiro_prerequisite._container_boundary_hint() is True
+    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: scale[0])
+    assert kiro_prerequisite._container_boundary_hint() is True
+    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: scale[-1])
+    assert kiro_prerequisite._container_boundary_hint() is False
+    # An LTS build reads a declared opt-in as the platform default (false on Linux).
+    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: None)
+    monkeypatch.setattr(
+        "kiro_crew.edition_locks.unsandboxed_exec_floor", lambda allow, default: default
+    )
+    monkeypatch.setattr("kiro_crew.config.loader.unsandboxed_exec_platform_default", lambda: False)
+    assert kiro_prerequisite._container_boundary_hint() is False
+    monkeypatch.delenv(wi.ENV_MODE)
+    assert kiro_prerequisite._container_boundary_hint() is False
 
 
 @pytest.mark.asyncio

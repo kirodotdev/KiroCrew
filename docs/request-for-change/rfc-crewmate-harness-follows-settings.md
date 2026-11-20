@@ -3,8 +3,8 @@ title: A crewmate's harness follows Settings → Agent Harness when the person h
 status: partial
 author: iamwhatever, with kirocrew-worker
 created: 2026-11-04
-last-audited: 2026-11-09
-audited-at: 0cc173d74a
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 29442
 implementation-prs: [29509, 29498, 29490, 29495, 32849, 33540]
 tracking-issues: [21910]

@@ -1,10 +1,10 @@
 ---
 title: Work-ledger person-wait hold -- a conductor patrol rests while every open item waits on a person, and a worker can say why it is blocked
-status: partial
+status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-08
-last-audited: 2026-10-11
-audited-at: a84f616557
+last-audited: 2026-11-19
+audited-at: 1e4907e9f6
 doc-pr: null
 implementation-prs: [18109, 38307]
 tracking-issues: [18054]
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Work-ledger person-wait hold
 
-- Status: partial. Sections 3.1 to 3.5 are implemented; the ask-record amendment of 2026-11-18 (section 3.6) ships with [#38307](https://github.com/kirodotdev/KiroCrew/pull/38307) and is pending until it merges. The original decision was made by the operator who owns the conductor patrol (2026-10-08). This document landed on its own first, as GOVERNANCE.md asks of an RFC, and its implementation [#18109](https://github.com/kirodotdev/KiroCrew/pull/18109) (`c8da67c030`) has merged. [monitor-architecture](../system-specs/modules/monitor-architecture.md) owns the shipped behaviour.
+- Status: implemented. Sections 3.1 to 3.5 shipped in [#18109](https://github.com/kirodotdev/KiroCrew/pull/18109); the ask-record amendment of 2026-11-18 (section 3.6) shipped in [#38307](https://github.com/kirodotdev/KiroCrew/pull/38307). The original decision was made by the operator who owns the conductor patrol (2026-10-08). This document landed on its own first, as GOVERNANCE.md asks of an RFC, and its implementation [#18109](https://github.com/kirodotdev/KiroCrew/pull/18109) (`c8da67c030`) has merged. [monitor-architecture](../system-specs/modules/monitor-architecture.md) owns the shipped behaviour.
 - Amends [rfc-goal-loop-approval-hold.md](rfc-goal-loop-approval-hold.md) in one place, named in section 3.3: a `work-ledger` watch whose open items all wait on a person is no longer extended.
 - Related: [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) (the ledger and `work_report`), [rfc-crew-log-wake.md](rfc-crew-log-wake.md) (how a worker's report wakes the conductor).
 - An amendment proposed in [rfc-work-ledger-resource-pressure.md](rfc-work-ledger-resource-pressure.md) §12 (a host-pressure level change releases a held loop once) was withdrawn by the repository owner on 2026-11-14 and never built. Section 3.2 stands as written.

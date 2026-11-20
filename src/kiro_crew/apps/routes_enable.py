@@ -55,6 +55,7 @@ from kiro_crew.apps.teardown import teardown_app_runtime
 from kiro_crew.config.loader import ConfigReadError, config_path, update_config_locked
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sandbox import (
+    app_backend_secret_mask_targets,
     cgroup_scope_argv,
     create_subprocess_limited,
     scrub_env,
@@ -808,7 +809,10 @@ async def handle_open_app(request: web.Request) -> web.Response:
     try:
         base_cmd = ["/bin/sh", "-c", open_cmd]
         sandboxed_cmd, _cleanup = await wrap_argv_async(
-            base_cmd, mode="standard", _prepare=wrap_argv
+            base_cmd,
+            mode="standard",
+            _prepare=wrap_argv,
+            extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
         )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         # The manifest's own shell string runs here, and an installed app is

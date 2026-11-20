@@ -4,8 +4,8 @@ status: accepted
 revision: v1
 author: zejiangg (iamwhatever), with Kiro
 created: 2026-10-12
-last-audited: 2026-10-19
-audited-at: 207ed5ae4c
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 19611
 implementation-prs: [19627]
 tracking-issues: []

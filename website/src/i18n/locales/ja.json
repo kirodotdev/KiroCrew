@@ -8042,6 +8042,8 @@
       "agent_unverified_detail": "{{productName}} は {{name}} がインストールされていることを確認できませんでした。このエージェントを使用する前に、「再度確認」を押してインストールを確認します。選んだエージェントの準備ができるまで、セットアップは開いたままになります。エージェントはここで切り替えることも、後から「設定 > エージェントハーネス」で切り替えることもできます。",
       "agent_ready_to_use": "{{name}} はインストール済みで、すぐに使用できます。",
       "sandbox_blocked_agent_detail": "{{productName}} は {{name}} を、認証情報に手が届かないサンドボックス内で実行します。このホストは現在そのサンドボックスを用意できないため、用意できるまで {{name}} は利用できません。",
+      "workload_pod_no_sandbox": "このホストではサンドボックスを作れません（Kubernetes の Restricted Pod など）。コンテナを唯一の境界にするには、これを設定して {{productName}} を再起動してください。",
+      "container_boundary_guide": "チーム Crew の Pod: コンテナが境界",
       "sandbox_off_agent_detail": "{{productName}} は {{name}} を、認証情報に手が届かないサンドボックス内で実行しますが、{{productName}} の設定（agent.sandbox）でサンドボックスがオフになっています。{{name}} を使用するには、サンドボックスをオンに戻してください。",
       "use_agent": "{{name}} を使用",
       "switching_agent": "切り替え中…",

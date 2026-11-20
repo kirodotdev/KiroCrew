@@ -3,8 +3,8 @@ title: Central governance ceiling — time-boxed local override (break_glass) an
 status: draft
 author: kirocrew agent session, directed by maintainers of #7362
 created: 2026-09-08
-last-audited: 2026-10-06
-audited-at: ea7e91c8e6
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 9373
 implementation-prs: [7362]
 tracking-issues: [9106]

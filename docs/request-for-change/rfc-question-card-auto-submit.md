@@ -3,8 +3,8 @@ title: Question card submits on the pick that finishes it
 status: draft
 author: Pearcekieser
 created: 2026-10-07
-last-audited: 2026-10-07
-audited-at: 781294256f
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 17584
 implementation-prs: [17542]
 tracking-issues: [17522]

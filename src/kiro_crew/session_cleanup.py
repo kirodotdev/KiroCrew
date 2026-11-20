@@ -944,6 +944,7 @@ class SessionCleanup:
                 self._deps.logger.exception("RSS recycle failed for session %s", key)
 
         await _leftovers.report_busy_sessions(self, busy, measure, rss_by_pid, loop)
+        _spare.note_tick_sizes(candidates + busy, rss_by_pid)  # the conductor's growth wake
         # The warm-pool spare(s): same ceiling and discard action, on a runtime no session owns.
         if spare_providers and measure is not None:
             await _spare.recycle_over_ceiling_spares(self, spare_providers, measure, loop)

@@ -97,6 +97,7 @@ from kiro_crew.apps.registry_pipeline.sources import (
 from kiro_crew.apps.registry_pipeline.subprocess_env import _detect_probe_env, minimal_env
 from kiro_crew.platform import redact_log_via_context as _redact_log_via_context
 from kiro_crew.sandbox import (
+    app_backend_secret_mask_targets,
     cgroup_scope_argv,
     create_subprocess_limited,
     sandboxed_spawn_argv,
@@ -756,6 +757,9 @@ async def install_from_registry(
                 base_cmd,
                 mode="strict",
                 env=_detect_probe_env(),
+                # ``strict`` leaves run/ and .local_secret readable, and this shell string
+                # comes from a registry manifest.
+                extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
                 _prepare=sandboxed_spawn_argv,
             )
             proc = await create_subprocess_limited(
@@ -1059,7 +1063,10 @@ async def install_from_registry(
 
             base_cmd = ["/bin/bash", "-c", safe_script]
             sandboxed_cmd, _cleanup = await wrap_argv_async(
-                base_cmd, mode="standard", _prepare=wrap_argv
+                base_cmd,
+                mode="standard",
+                _prepare=wrap_argv,
+                extra_hidden_dirs=await asyncio.to_thread(app_backend_secret_mask_targets),
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
