@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -213,3 +214,64 @@ class TestARetiredLeafGuardsOnlyTheFoldersThatExist:
         for folder in (notebook, notebook.parent):
             assert f'(deny file-write* (literal "{folder}"))' in profile, folder
             assert str(folder) in pins, f"an agent can rename {folder}"
+
+
+# The child of the real-machine evidence below: it writes the record bytes it was handed at
+# the path it was handed, and reports only the errno name (or WROTE).
+_RECORD_CHILD = r"""
+import errno, json, sys
+
+try:
+    with open(sys.argv[1], "w", encoding="utf-8") as fh:
+        fh.write(sys.argv[2])
+    wrote = "WROTE"
+except OSError as exc:
+    wrote = errno.errorcode.get(exc.errno, str(exc.errno))
+print("REPORT " + json.dumps({"write": wrote}), flush=True)
+"""
+
+
+class TestASessionRecordCannotBeWrittenFromTheSandbox:
+    pytestmark = _NAMESPACE
+
+    def test_a_backend_cannot_write_a_record_and_a_gateway_record_verifies(self, home, monkeypatch):
+        from kiro_crew import session_token_sig as records
+
+        # Synthetic key, token and session: no real secret is read or printed.
+        key, token, session = b"k" * 32, "stub-token-for-the-test", "stub-session-key"
+        monkeypatch.setattr(records, "_load_hmac_key", lambda: key)
+        path = records._sig_path(token, home)
+        path.parent.mkdir(exist_ok=True)
+        body = f"{records._compute_sig(key, token, session)}\n{session}"
+
+        report = _run_record_child(home, path, body)
+        accepted = records.verify_session_token(token) == session
+        wrote = report["write"]
+
+        records.publish_session_token(token, session)
+        published = records.verify_session_token(token) == session
+        warnings.warn(
+            f"REALMACHINE-38288 wrote={wrote == 'WROTE'} errno={wrote} "
+            f"forged_record_accepted={accepted} gateway_record_verifies={published}",
+            stacklevel=1,
+        )
+
+        assert wrote == "EROFS", report
+        assert not accepted
+        assert published
+
+
+def _run_record_child(home: Path, path: Path, body: str) -> dict:
+    env = {k: v for k, v in os.environ.items() if k != "KIROCREW_SANDBOX_ACTIVE"}
+    proc = subprocess.run(
+        sandbox.namespace_argv([sys.executable, "-c", _RECORD_CHILD, str(path), body], "standard"),
+        cwd=home,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    (line,) = [ln for ln in proc.stdout.splitlines() if ln.startswith("REPORT ")]
+    return json.loads(line[len("REPORT ") :])
