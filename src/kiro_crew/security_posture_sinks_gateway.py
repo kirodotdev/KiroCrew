@@ -1073,4 +1073,15 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "call sent is replaced first (a bare token matches no secret pattern) and the "
         "credential scanner then runs over the text, cut to 300 characters.",
     ),
+    (
+        "A Bot's phone widgets",
+        "dashboard/handlers/member_widgets.py",
+        "The widget catalog and each widget's snapshot, on their way to the owner's "
+        "phone. Every widget title and Bot name is redacted, made plain text and "
+        "redacted again before the display cut, and the finished catalog passes the "
+        "page's own `page_safe_for`; a snapshot is the resolver's, which applies the "
+        "same passes to every value and string (`dashboard/widget_snapshot.py`). The "
+        "routes serve the machine owner alone and refuse every other caller before "
+        "anything is read.",
+    ),
 )

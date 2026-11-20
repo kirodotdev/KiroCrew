@@ -2560,6 +2560,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.phone-widgets",
+    "label": "Phone widgets",
+    "labelKey": "pages.developer.featurePreviewsTab.widgets",
+    "description": "Lets the Kiro Mobile app show your Bots' latest numbers in home-screen widgets.",
+    "hint": "The Kiro Mobile app can list each Bot's widgets and fetch their latest values from this Crew. Only you, the Crew's owner, can read them; teammates can't. While this is off, the Crew sends no widget data.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.quick-worker-check-before-a-hard-choice",
     "label": "Quick worker check before a hard choice",
     "labelKey": "pages.developer.featurePreviewsTab.worker_grill",

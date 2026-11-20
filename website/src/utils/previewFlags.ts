@@ -243,6 +243,15 @@ export const PREVIEW_WORKER_GRILL = `${PREVIEW_FLAG_PREFIX}worker-grill`
 export const PREVIEW_APP_BROWSER_SDK = `${PREVIEW_FLAG_PREFIX}app-browser-sdk`
 
 /**
+ * Phone widgets: the gateway serves the Kiro Mobile app the catalog of every
+ * Bot's home-screen widgets and each widget's latest values, to the Crew's
+ * owner only. Has SERVER behavior: off, both widget routes answer
+ * `404 widgets_off` (`dashboard/handlers/member_widgets.py`). Nothing in the
+ * dashboard reads this key. Default OFF.
+ */
+export const PREVIEW_WIDGETS = `${PREVIEW_FLAG_PREFIX}widgets`
+
+/**
  * Visual refresh: a restyle of the dashboard that lands on `main` in pieces.
  * Default OFF, and OFF is the dashboard as it is on `main`. Nothing reads it
  * yet; shipping the refresh to everyone (retiring the flag) is its own decision.
@@ -274,6 +283,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_WORKER_GRILL,
   PREVIEW_APP_BROWSER_SDK,
   PREVIEW_VISUAL_REFRESH,
+  PREVIEW_WIDGETS,
 ]
 
 /**

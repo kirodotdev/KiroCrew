@@ -1,0 +1,41 @@
+{
+  "v": 1,
+  "bots": [
+    {
+      "slug": "mem-0000",
+      "member": "pebble",
+      "name": "Pebble",
+      "widgets": [
+        {
+          "id": "build-health",
+          "title": "Build health",
+          "sizes": [
+            "small",
+            "medium"
+          ],
+          "default": false,
+          "layout_version": 12
+        },
+        {
+          "id": "prs",
+          "title": "PRs",
+          "sizes": [
+            "small"
+          ],
+          "default": false,
+          "layout_version": 12
+        },
+        {
+          "id": "status",
+          "title": "Status",
+          "sizes": [
+            "small",
+            "medium"
+          ],
+          "default": true,
+          "layout_version": 0
+        }
+      ]
+    }
+  ]
+}
