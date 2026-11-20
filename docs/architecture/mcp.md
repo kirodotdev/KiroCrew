@@ -579,19 +579,23 @@ an enabled app's tools vanish).
 
 A chat bound to a connected computer (feature preview; providers.md § Connected computers
 behaviors) can also use local MCP servers the user ticked in that computer's native
-consent. None of the merge above runs for them, and the gateway never starts them:
+consent. None of the merge above runs for them, and the gateway never starts them. The
+computer half (the connector that owns this consent and the filter below) is not in this
+repository (providers.md § Scope of this repository); the first two items state what the
+gateway expects of it, and the gateway itself only checks each exposed name
+(`connected_computers/protocol.valid_mcp_name`, at most `MAX_EXPOSED_MCP` = 16 per grant):
 
-- **What can be exposed** (`connected_computers/local_mcp.py`): a stdio server configured on
+- **What can be exposed**: a stdio server configured on
   that computer, snapshotted (command, arguments, environment) at consent, so a later edit
   of the local config cannot widen it. Refused, with the reason the consent shows: a remote
   (HTTP) server, a server whose env reads a `secret://` value, Kiro Crew's own servers, a
   disabled server, and a server whose `disabledTools` is unreadable or longer than 512.
   Nothing ticked means nothing exposed; a plain stdio server the user ticks IS exposed, so
   the feature is never met by refusing them all.
-- **Tools turned off locally** (`connected_computers/mcp_filter.py`): a server with
+- **Tools turned off locally**: a server with
   `disabledTools` is exposed with that list snapshotted, and the connector on the computer
   keeps those tools off whatever the gateway sends. Each entry is read as kiro-cli reads
-  it (`mcp_filter.tool_is_turned_off`, the rule of `cron_script_mcp._tool_is_switched_off`):
+  it (the rule of `cron_script_mcp._tool_is_switched_off` in this repository):
   exactly, and an entry with `*` or `?` also as an `fnmatchcase` glob, so `delete_*` keeps
   `delete_repo` off; a glob holding `{`, `}` or `\` covers every tool. It forwards each request line
   re-encoded (so a duplicate `name` key cannot smuggle a turned-off tool), answers a
