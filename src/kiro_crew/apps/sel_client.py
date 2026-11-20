@@ -10,7 +10,9 @@ the gateway's own writer keep working, and are dropped: the gateway sets the act
 from the token, so a backend cannot name one.
 
 Failure: ``critical=True`` is synchronous and raises :class:`SelClientError`, so the
-caller refuses the action it could not audit. Anything else is queued and sent from
+caller refuses the action it could not audit. It does network I/O, so it never runs on a
+thread that runs an event loop: there it raises at once, and an async caller moves the
+write to a worker thread (``asyncio.to_thread``). Anything else is queued and sent from
 one daemon thread, retried twice, then dropped with a warning; the backend never falls
 back to loading the key.
 
@@ -57,9 +59,6 @@ logger = logging.getLogger(__name__)
 #: An app token's link window is 300 s (``token_auth_tokens.py`` ``LINK_WINDOW_SECS``);
 #: renew before that.
 _TOKEN_MAX_AGE = 240.0
-#: The most a critical write may hold an event loop: its whole budget, token exchange and
-#: row together.
-_LOOP_CRITICAL_SECS = 2.0
 _RETRY_DELAYS = (0.2, 1.0)
 #: How long the exit drain waits for the queue before it gives up and counts the rest.
 _EXIT_DRAIN_SECS = 3.0
@@ -164,6 +163,7 @@ class SelClient:
         self._token = ""
         self._minted = 0.0
         self._lock = threading.Lock()
+        self._token_lock = threading.Lock()
         self._queue: queue.Queue[dict[str, object]] = queue.Queue(_QUEUE_MAX)
         self._worker: threading.Thread | None = None
         self._unsupported_seen: set[str] = set()
@@ -332,11 +332,10 @@ class SelClient:
             kwargs["critical"] = True
             body: dict[str, object] = {"method": method, "kwargs": kwargs}
             if _on_running_loop():
-                # The caller is an event loop, which this write stalls: no queue polling,
-                # and the whole write has a budget. A timeout fails the write, so the
-                # caller refuses the action it could not audit.
-                self._send(body, time.monotonic() + _LOOP_CRITICAL_SECS)
-                return
+                # The write is synchronous network I/O and would stall every task on this
+                # loop, so it is refused: the caller denies the action it could not audit.
+                # An async caller runs the write with ``asyncio.to_thread``.
+                raise SelClientError("a critical audit write must not run on an event loop")
             # Rows queued before this one land first (bounded, like the exit drain).
             self._wait_for_queue(_EXIT_DRAIN_SECS)
             self._send(body)
@@ -389,31 +388,37 @@ class SelClient:
                 else:
                     time.sleep(delay)
 
-    def _send(self, body: dict[str, object], deadline: float | None = None) -> None:
-        """Post one row; with a *deadline* (a ``time.monotonic()`` time) the write ends by it."""
+    def _send(self, body: dict[str, object]) -> None:
+        """Post one row. Any refusal raises, so a write is never skipped silently."""
         for attempt in (0, 1):
-            token = self._get_token(deadline)
-            status = self._post(
-                f"/_sel?token={urllib.parse.quote(token)}", body, {}, deadline=deadline
-            )
+            token = self._get_token()
+            status = self._post(f"/_sel?token={urllib.parse.quote(token)}", body, {})
             if status == 204:
                 return
             if status not in (401, 403) or attempt:
                 break
-            self._token = ""  # refused: the token may have expired or the app was restarted
+            # Refused: the token may have expired or the app was restarted. Drop it only
+            # if it is still the one that was refused; another thread may have renewed it.
+            with self._token_lock:
+                if self._token == token:
+                    self._token = ""
         raise SelClientError(f"gateway answered {status}")
 
-    def _get_token(self, deadline: float | None = None) -> str:
-        if self._token and time.monotonic() - self._minted < _TOKEN_MAX_AGE:
-            return self._token
-        raw = self._post(
-            "/token", {}, {"X-App-Secret": self._secret}, want_body=True, deadline=deadline
-        )
-        token = raw.get("token") if isinstance(raw, dict) else None
-        if not isinstance(token, str) or not token:
-            raise SelClientError("token exchange refused")
-        self._token, self._minted = token, time.monotonic()
-        return token
+    def _get_token(self) -> str:
+        # The sender thread and any number of worker threads (an async caller's
+        # ``asyncio.to_thread`` critical write) share one token. The lock makes the read,
+        # the mint and the store one step, so no thread sees a half-written token, and the
+        # value returned is the local one, never a re-read of an attribute another thread
+        # may clear. A stale token is refused by the gateway (401/403) and raises.
+        with self._token_lock:
+            if self._token and time.monotonic() - self._minted < _TOKEN_MAX_AGE:
+                return self._token
+            raw = self._post("/token", {}, {"X-App-Secret": self._secret}, want_body=True)
+            token = raw.get("token") if isinstance(raw, dict) else None
+            if not isinstance(token, str) or not token:
+                raise SelClientError("token exchange refused")
+            self._token, self._minted = token, time.monotonic()
+            return token
 
     def _post(
         self,
@@ -422,14 +427,8 @@ class SelClient:
         headers: dict[str, str],
         *,
         want_body: bool = False,
-        deadline: float | None = None,
     ) -> Any:
         timeout = self._timeout
-        if deadline is not None:
-            # The request gets what is left of the write's budget, never more than its own.
-            timeout = min(timeout, deadline - time.monotonic())
-            if timeout <= 0:
-                raise SelClientError("audit write timed out")
         # UTF-8, not ``\uXXXX`` escapes: an astral character is 12 escaped bytes but 4 in
         # UTF-8, so three 500-character fields stay under the route's 16 KiB cap. A lone
         # surrogate (a surrogateescape path) becomes ``?`` instead of raising here.

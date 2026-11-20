@@ -24,6 +24,7 @@ the original framework end-to-end.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import importlib as _importlib
 import json
@@ -1281,16 +1282,26 @@ class SessionAgentRunner:
         try:
             from kiro_crew.sel import sel
 
-            sel().log_tool_invocation(
-                session_key=session_key or "auto-improvement",
-                agent="auto-improvement",
-                source="auto_improvement_loop",
-                tool_name=tool or "tool",
-                tool_kind=tool,
-                outcome=OUTCOME_PENDING_APPROVAL,
-                request_id=rid,
-                metadata={"unattended": True, "containment": "worktree+allowlist+gate"},
-                critical=True,
+            # The write is synchronous (and, in a spawned backend, network I/O), so it runs
+            # on a worker thread; the approval still waits for it, and a failure still
+            # lands in the deny path below. If this task is cancelled while the write is in
+            # flight, ``CancelledError`` leaves here before ``approve_tool``: the tool is
+            # never approved (denied by omission). The thread may still finish its write,
+            # which then records an approval that never happened: an over-report, the safe
+            # direction.
+            await asyncio.to_thread(
+                functools.partial(
+                    sel().log_tool_invocation,
+                    session_key=session_key or "auto-improvement",
+                    agent="auto-improvement",
+                    source="auto_improvement_loop",
+                    tool_name=tool or "tool",
+                    tool_kind=tool,
+                    outcome=OUTCOME_PENDING_APPROVAL,
+                    request_id=rid,
+                    metadata={"unattended": True, "containment": "worktree+allowlist+gate"},
+                    critical=True,
+                )
             )
         except Exception as exc:  # noqa: BLE001 - audit failure must deny, not approve
             logger.warning("SEL audit failed for tool %r — rejecting instead of approving", tool)

@@ -1524,6 +1524,81 @@ async def test_approve_survives_a_failed_reject_after_a_failed_audit(broken_sel)
 
 
 @pytest.mark.asyncio
+async def test_approve_writes_its_audit_row_off_the_event_loop(monkeypatch):
+    """The critical write is synchronous (network I/O in a spawned backend): not on the loop."""
+    seen: list[bool] = []
+
+    class _Sel:
+        def log_tool_invocation(self, **_kw) -> None:
+            try:
+                asyncio.get_running_loop()
+                seen.append(True)
+            except RuntimeError:
+                seen.append(False)
+
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: _Sel())
+    provider = _FakeProvider()
+    await R.SessionAgentRunner._approve(provider, "r1", tool="fsWrite")
+
+    assert seen[0] is False  # the first row is the critical one
+    assert provider.approved == ["r1"]
+
+
+@pytest.mark.asyncio
+async def test_a_critical_write_left_on_the_loop_is_refused_and_the_tool_is_denied(monkeypatch):
+    """A caller that missed the offload is refused, never stalled and never allowed."""
+    from kiro_crew.apps import sel_client
+
+    def _no_network(*_a, **_kw):
+        raise AssertionError("a critical write on the loop reached the network")
+
+    monkeypatch.setattr(sel_client, "loopback_urlopen", _no_network)
+    client = sel_client.SelClient("deny-app", "http://127.0.0.1:1", "per-app-secret")
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: client)
+    with pytest.raises(sel_client.SelClientError, match="event loop"):
+        client.log_tool_invocation(session_key="s", tool_name="t", outcome="x", critical=True)
+
+    async def _inline(func, /, *args, **kwargs):  # the offload, missed
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(R.asyncio, "to_thread", _inline)
+    provider = _FakeProvider()
+    await R.SessionAgentRunner._approve(provider, "r1", tool="fsWrite")
+
+    assert provider.approved == []
+    assert provider.rejected == ["r1"]
+
+
+@pytest.mark.asyncio
+async def test_approve_cancelled_while_its_audit_write_is_in_flight_never_approves(monkeypatch):
+    """A cancel during the write leaves the tool denied; the write may still land (over-report)."""
+    import threading
+
+    from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
+
+    entered, release, landed = threading.Event(), threading.Event(), []
+
+    class _Sel:
+        def log_tool_invocation(self, **kw) -> None:
+            entered.set()
+            release.wait(FALLBACK_TIMEOUT_SECS)
+            landed.append(kw["request_id"])
+
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: _Sel())
+    provider = _FakeProvider()
+    task = asyncio.ensure_future(R.SessionAgentRunner._approve(provider, "r1", tool="fsWrite"))
+    await async_wait_until(entered.is_set)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+
+    assert provider.approved == []  # the tool is never approved: denied by omission
+    await async_wait_until(lambda: bool(landed))
+    assert landed == ["r1"]  # the write still landed: an over-report, the safe direction
+
+
+@pytest.mark.asyncio
 async def test_approve_tolerates_a_provider_that_cannot_be_told(fake_sel):
     class _Deaf(_FakeProvider):
         async def approve_tool(self, rid):
