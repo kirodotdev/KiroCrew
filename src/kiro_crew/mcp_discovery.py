@@ -931,6 +931,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _record_grant_presence,
         _redirect_error,
         _runtime_grant_present,
+        advertises_protected_resource,
     )
     from kiro_crew.mcp_discovery_server_info import (  # noqa: F401
         _CORE_SCOPE_ORDER,
