@@ -35,7 +35,6 @@ import fnmatch
 import importlib.util
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 
@@ -204,15 +203,14 @@ def _argv(entry):
 
 def run_entry(root, entry):
     """Run one generator. Returns (error message or None, files it rewrote)."""
-    argv = _argv(entry)
-    # Launch the path `which` found, not the bare name: with no shell, Windows only
-    # finds `npm.cmd` through the full path (`npm` alone is WinError 2).
-    tool = shutil.which(argv[0])
-    if tool is None and os.path.isfile(argv[0]):
-        tool = argv[0]
-    if tool is None:
+    # Launch the full path PATH's absolute entries give, not the bare name: with no
+    # shell, Windows only finds `npm.cmd` through the full path (`npm` alone is
+    # WinError 2), and a bare `shutil.which` would also search the current directory.
+    argv, refused = _tool_argv.resolve(_argv(entry))
+    if refused and refused[0] == _tool_argv.RC_NOT_FOUND:
         return "{}: tool `{}` not found on PATH".format(entry["name"], entry["argv"][0]), []
-    argv[0] = tool
+    if refused:
+        return "{}: {}".format(entry["name"], refused[2]), []
     before = untracked_or_modified(root)
     if before is None:
         return "git status failed in {}".format(root), []
