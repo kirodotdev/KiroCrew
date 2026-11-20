@@ -3320,7 +3320,7 @@ a new setting registers with, in the owning object's constructor:
 | Shape | When | What it does |
 |---|---|---|
 | `live.watch_section(owner, "wecom", "messaging", target="transport")` | a subsystem owns one top-level section and exposes `reconfigure(section_cfg)` | fires under `wecom` (or `messaging`); resolves `owner.transport` at dispatch time and calls its `reconfigure(change.new.wecom)`; a `None` target (transport not connected yet) is a no-op; **fails closed** on a section the loader marked degraded (`fail_closed=True` by default and mandatory for anything carrying authorization), so an allow-list is never rebuilt from an unparseable document |
-| `live.watch_object(owner, "memory", "skills.max_skills")` | an object's settings span sections or are normalized together, and it exposes `reconfigure(cfg)` | fires under any prefix and hands the whole `KiroCrewConfig` over |
+| `live.watch_object(owner, "memory", name="VectorMemoryStore")` | an object's settings span sections or are normalized together, and it exposes `reconfigure(cfg)` | fires under any prefix and hands the whole `KiroCrewConfig` over |
 | `live.bind("agent.max_channels", mgr.set_max_channels)` | one scalar with an existing setter | calls `setter(value at that path)` when that leaf changes |
 
 All three hold the owner weakly (through the setter's `__self__` for `bind`),
@@ -3537,8 +3537,7 @@ Consequences, and they are the point:
 
 - A request handler keeps **no list of boot-only keys**. The dashboard's PUT
   computes `restart_required` as
-  `_changed_paths_need_restart(changed)` over the schema, and the old
-  `_STARTUP_READ_AGENT_KEYS` ladder is gone.
+  `_changed_paths_need_restart(changed)` over the schema.
 - The hint is computed over paths whose value actually **moved**. The dashboard
   sends every setting on each save, so "was applied" is not "was changed" — an
   untouched `restart=True` field must not make a live edit claim a restart.
@@ -3581,25 +3580,32 @@ Consequences, and they are the point:
 
 The schema is the source of truth: a key needs a restart exactly when
 `requires_restart()` over `SCHEMA_REGISTRY` says so. Regenerated from that call:
-`agent.approval_mode`, `agent.jail`, `agent.dangerously_skip_permissions`,
+`agent.approval_mode`, `agent.kas_bundle`, `agent.kas_persist_mcp_sign_in`,
+`agent.native_skill_projection`, `agent.jail`, `agent.dangerously_skip_permissions`,
 `agent.task_dispatch_window`, `agent.task_store_journal_mode`,
 `agent.admit_wait_secs`, `agent.start_collect_timeout_secs`,
 `agent.recovery_backoff_base_secs`, `agent.recovery_backoff_max_secs`,
-`agent.session_start_concurrency`, `messaging.dm_scope` (it names the session-key
+`agent.session_start_concurrency`, `agent.cold_start_concurrency`,
+`agent.runtime_spawn_concurrency`, `taskrunner.test_command`,
+`taskrunner.require_verification`, `messaging.dm_scope` (it names the session-key
 namespace whose per-conversation generation counters are seeded at boot, so a live
 flip could resume a stale session persisted under the other namespace),
-`memory.embedding_dim`, `memory.embed_model_path`, `memory.embed_model_id`,
+`memory.embedding_provider`, `memory.embedding_dim`, `memory.ollama_url`,
+`memory.ollama_model`, `memory.ollama_allow_remote`, `memory.embed_model_path`,
+`memory.embed_model_id`,
 `knowledge.extraction_effort`, most of `mcp_gateway.*` (every field except
 `enabled`, `apps_enabled` and `resolve_once_refresh_hours`),
 `mcp.extra_path_dirs`, `mcp.honour_auto_approve`, `hooks.confirm_tools` (the gate
 follows it live, but the static grants it withholds are written when the agent
 spec is rebuilt), `instances.enabled`,
 `instances.tunnel_base_port`, `whatsapp.db_path`, `dashboard.url`,
-`dashboard.tailscale.*` except `keep_awake`, `dashboard.restore_sessions`,
+`dashboard.tailscale.*` except `keep_awake`, `dashboard.shared_crew` (the whole
+section), `dashboard.restore_sessions`,
 `dashboard.restore_window_minutes`, `dashboard.idle_slot_sweep_days`,
 `dashboard.surface_channel_sessions`,
 `dashboard.loop_stall_exit_after_secs` (read once at boot to build the loop-stall
-watchdog), `dashboard.cautious_boot`, `dashboard.auto_open_browser` and `tunnel.*`.
+watchdog), `dashboard.cautious_boot`, `dashboard.auto_open_browser` and `tunnel.*`
+except the `tunnel.relay_viewer_*` fields.
 When the two disagree, the schema wins.
 
 The broker's admission keys are in that `mcp_gateway.*` set and ride the
@@ -3611,7 +3617,7 @@ daemon-global spawn gate (a fixed count of backend spawn+initialize windows in
 flight, FIFO past it; the band is what the adaptive controller later moves the
 live value within); `spawn_queue_wait_secs` (600) is the CEILING on how long a
 queue-aware stub is held before a `capacity` refusal and matches the DEFAULT of
-the stub's own reconnect budget (`stub.py` `_RECONNECT_TOTAL_BUDGET_SECS`, a
+the stub's own reconnect budget (`stub_link.py` `_RECONNECT_TOTAL_BUDGET_SECS`, a
 constant the stub reads no config for, pinned equal by
 `test_stub_reconnect_budget.py`); the wait the daemon actually arms is
 `min(asked, key)` less `daemon/admission_protocol.py::_QUEUE_REFUSAL_MARGIN_SECS`
@@ -3706,7 +3712,7 @@ the owner modules (the `config/sections_*.py` owners, `service_sections.py`,
 ```python
 @dataclass
 class AgentConfig:
-    approval_mode: str = "auto"    # "auto" or "interactive"
+    approval_mode: str = "auto"    # "auto" or "interactive"; restart=True
     streaming: bool = True
     model: str = "auto"            # resolved from agent config
     spec_pins: dict[str, str] = {}  # which file an agent NAME runs when two or more specs in ~/.kiro/agents declare it, {"<agent name>": "<bare .json/.md file name>"}; coerce_spec_pins drops a path, `..`, a bad name or suffix with a warning; read at each session start (agent_spec_pins.spec_pins, load_memo); written by `kirocrew agent pin` and PUT /api/agent-spec-pins/{agent} (owner-only); both record SEL agent_spec_pin.write / .clear; see agent-host-contract.md "One name, several files"
@@ -3892,7 +3898,7 @@ class TelemetryConfig:
 
 @dataclass
 class DashboardConfig:
-    url: str = ""                  # public URL for the dashboard (used in Slack links)
+    url: str = ""                  # public URL for the dashboard (used in Slack links); restart=True
     # ... restore_sessions / bot_name / avatar / widget_density / auto_open_browser / etc.
     default_memory_mode: str = "persistent"  # persistent | incognito | temporary; default for user-created dashboard chats only
     verbosity: str = "answer_only" # "default" | "concise" | "answer_only" (retired "ultra" is read as "answer_only"); anything but "default" injects a [RESPONSE PREFERENCES] block into SESSION CONTEXT for every agent (see "Response verbosity reaches every agent" below). Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). A fresh install starts at "answer_only"; an existing config keeps the level it already stores, since every full save writes the key. An unrecognized value injects nothing.
