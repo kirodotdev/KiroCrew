@@ -89,9 +89,14 @@ STATE_CLOSE = " -->"
 
 
 def clean(text: str, limit: int) -> str:
-    """Printable ASCII, no backtick, runs of space collapsed, cut to ``limit``."""
+    """Printable ASCII, no backtick, runs of space collapsed, cut to ``limit``.
+
+    Cleaning the result again gives the same text. A value read back from an
+    issue's record is cleaned a second time and then compared with one read
+    fresh from a run, so a cut that lands on a space must not leave it at the end.
+    """
     text = "".join(ch if " " <= ch <= "~" else " " if ch in "\t\r\n" else "?" for ch in text)
-    return " ".join(text.replace("`", "'").split())[:limit]
+    return " ".join(text.replace("`", "'").split())[:limit].rstrip()
 
 
 def log_line(raw: str) -> str:
