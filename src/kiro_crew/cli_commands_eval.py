@@ -295,11 +295,18 @@ async def _run_eval(args: argparse.Namespace) -> None:
         # The gate judges each call as the agent the sessions run as, as chat does.
         gate_agent=str(provider_kwargs.get("crew_agent") or provider_kwargs.get("agent") or ""),
     )
+    from kiro_crew.eval.runner import ModelNotOffered
+
     rounds: list[list[ScenarioResult]] = []
-    for run_index in range(1, repeat + 1):
-        if repeat > 1:
-            print(f"Run {run_index}/{repeat}")
-        rounds.append(await runner.run_scenarios(scenarios))
+    try:
+        for run_index in range(1, repeat + 1):
+            if repeat > 1:
+                print(f"Run {run_index}/{repeat}")
+            rounds.append(await runner.run_scenarios(scenarios))
+    except ModelNotOffered as exc:
+        # Nothing is scored or saved: the results would name a model that never ran.
+        print(f"Error: {safe_terminal_line(str(exc))}", file=sys.stderr)
+        sys.exit(1)
 
     # LLM Judge scoring
     if getattr(args, "judge", False):
