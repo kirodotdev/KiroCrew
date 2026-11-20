@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,62 @@ class TestTheNamespaceChildCannotRenameAParent:
         report = _run(home, scratch, [tokens], extra_visible_dirs=lifted)
 
         assert report["renames"] == ["renamed"], report
+
+
+# The child's side for a caller-provided hidden file: each ``src dst`` pair is one rename.
+_PAIRS_CHILD = r"""
+import errno, json, os, sys
+
+def attempt(src, dst):
+    try:
+        os.rename(src, dst)
+        return ["renamed", ""]
+    except OSError as exc:
+        return [errno.errorcode.get(exc.errno, str(exc.errno)), exc.strerror or ""]
+
+args = sys.argv[1:]
+print("REPORT " + json.dumps([attempt(args[i], args[i + 1]) for i in range(0, len(args), 2)]))
+"""
+
+
+class TestACallerHiddenFilesParentStaysInPlace:
+    pytestmark = _NAMESPACE
+
+    def test_renaming_the_parent_folder_is_refused(self, home):
+        user_home = Path(os.environ["HOME"]).resolve()
+        secret = user_home / ".config" / "x" / "secret"
+        secret.parent.mkdir(parents=True)
+        secret.write_text("token", encoding="utf-8")
+        other = secret.parent / "other.txt"
+        other.write_text("x", encoding="utf-8")
+        (user_home / "elsewhere").mkdir()
+        pairs = [
+            (user_home / ".config", user_home / ".config.moved"),
+            (other, user_home / "elsewhere" / "other.txt"),
+        ]
+        argv = [sys.executable, "-c", _PAIRS_CHILD, *(str(p) for pair in pairs for p in pair)]
+        env = {k: v for k, v in os.environ.items() if k != "KIROCREW_SANDBOX_ACTIVE"}
+        proc = subprocess.run(
+            sandbox.namespace_argv(argv, "standard", extra_hidden_dirs=(str(secret),)),
+            cwd=home,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=FALLBACK_TIMEOUT_SECS,
+        )
+        output = proc.stdout + proc.stderr
+        assert proc.returncode == 0, output
+        (line,) = [ln for ln in proc.stdout.splitlines() if ln.startswith("REPORT ")]
+        (rename, cross) = json.loads(line[len("REPORT ") :])
+        warnings.warn(
+            f"REALMACHINE-39551 rename rc={rename[0]} err={rename[1]}; "
+            f"cross rc={cross[0]} err={cross[1]}",
+            stacklevel=1,
+        )
+        assert rename[0] == "EBUSY", rename
+        assert cross[0] == "EXDEV", cross
+        assert (user_home / ".config" / "x" / "secret").read_text(encoding="utf-8") == "token"
 
 
 class TestSeatbeltGuardsTheParentsOfACoreHiddenLeaf:
