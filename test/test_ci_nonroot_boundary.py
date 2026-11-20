@@ -131,9 +131,12 @@ def test_all_linux_shards_and_memory_heavy_jobs_use_large(jobs):
     )
     assert "if" not in lint
     assert "continue-on-error" not in lint
+    # flake8 and mypy share one step, so each is a line of a script, not the
+    # whole `run:`.
     for command in ("isort --check-only", "flake8 ", "mypy "):
         assert any(
-            s.get("run", "").startswith(command) and not s.get("continue-on-error")
+            any(line.strip().startswith(command) for line in s.get("run", "").splitlines())
+            and not s.get("continue-on-error")
             for s in jobs["backend-lint"]["steps"]
         )
     assert any(
