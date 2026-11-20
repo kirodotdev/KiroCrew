@@ -91,9 +91,32 @@ export interface PendingCall { command: string; input: string; tool?: { kind: st
  *  because the open menu covers the card. A menu row that chooses nothing, so a
  *  keyboard user can reach it and page through a call longer than its box, and
  *  the first Enter after opening the menu lands on it, not on a grant. */
+/** How a command, a payload or a tool ref wraps wherever an approval surface
+ *  prints it: at its spaces, like the words it is made of, and inside a token
+ *  only when that one token is longer than the line (a sha, a base64
+ *  argument, a long path). `break-all` split every word at the edge ("hea" /
+ *  "d"), so the reader had to reassemble the string they consent to. Spacing
+ *  (`whitespace-pre-wrap`) is set where each string is. */
+export const COMMAND_WRAP = 'break-normal wrap-anywhere'
+
+/** Longest string split into per-token boxes; past it the text renders as is.
+ *  shortcut: a payload this long is a file body, not a command; upgrade only if
+ *  long payloads turn out to wrap badly. */
+const TOKEN_BOX_LIMIT = 20_000
+
+/** *text* exactly as given, each run between whitespace in its own inline box.
+ *  `COMMAND_WRAP` alone still breaks after a hyphen ("-" / "maxdepth"), and a
+ *  flag cut from its dash misreads; a box keeps a token on one line unless the
+ *  token alone is wider than the line, where it wraps inside its box. The
+ *  whitespace stays text, so spacing, selection and copy are the string's own. */
+export function CommandText({ text }: { text: string }) {
+  if (text.length > TOKEN_BOX_LIMIT) return <>{text}</>
+  return <>{text.split(/(\s+)/).map((part, i) => (part === '' || /^\s/.test(part) ? part : <span key={i} data-token="" className="inline-block max-w-full">{part}</span>))}</>
+}
+
 export function PendingCallItem({ label, call, testId }: { label: string; call: PendingCall; testId: string }) {
   const tool = call.command ? undefined : call.tool
-  const box = 'max-h-[20vh] bg-bg-elevated px-1.5 py-0.5 rounded font-mono whitespace-break-spaces break-all border border-border'
+  const box = `max-h-[20vh] bg-bg-elevated px-1.5 py-0.5 rounded font-mono whitespace-pre-wrap ${COMMAND_WRAP} border border-border`
   return (
     <DropdownMenuItem
       data-testid={testId}
@@ -109,14 +132,14 @@ export function PendingCallItem({ label, call, testId }: { label: string; call: 
         {tool && (tool.kind || tool.name) && (
           <span className="flex items-center gap-1.5 flex-wrap min-w-0">
             {tool.kind && <span className="text-[11px] text-text">{tool.kind}</span>}
-            {tool.name && <span data-testid={`${testId}-tool`} className="min-w-0 bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border">{tool.name}</span>}
+            {tool.name && <span data-testid={`${testId}-tool`} className={`min-w-0 bg-bg-elevated px-1.5 py-0.5 rounded font-mono ${COMMAND_WRAP} border border-border`}>{tool.name}</span>}
           </span>
         )}
         {/* The command and the rest of the input in two blocks, as on the
             card, so a working directory or a timeout never reads as a second
             command line. */}
-        {call.command && <CuedScrollBox testId={`${testId}-command`} className={box}>{call.command}</CuedScrollBox>}
-        {call.input && <CuedScrollBox testId={`${testId}-text`} className={box}>{call.input}</CuedScrollBox>}
+        {call.command && <CuedScrollBox testId={`${testId}-command`} className={box}><CommandText text={call.command} /></CuedScrollBox>}
+        {call.input && <CuedScrollBox testId={`${testId}-text`} className={box}><CommandText text={call.input} /></CuedScrollBox>}
       </div>
     </DropdownMenuItem>
   )

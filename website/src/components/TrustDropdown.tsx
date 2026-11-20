@@ -1,4 +1,4 @@
-import { Fragment, useId, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react'
 import { Handshake, Shield, ShieldPlus, ShieldCheck, BookOpen, ChevronDown } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import {
@@ -10,7 +10,7 @@ import { fmtTime } from '../i18n/format'
 
 import { i18nT } from '../i18n/t'
 import { guideTrustRoot, GuideTrustRootProvider } from '../guide/trustRoot'
-import { CuedMenuContent, CuedScrollBox, PendingCallItem, pageScrollBox, type PendingCall } from './chat-input/CuedScrollBox'
+import { COMMAND_WRAP, CommandText, CuedMenuContent, CuedScrollBox, PendingCallItem, pageScrollBox, type PendingCall } from './chat-input/CuedScrollBox'
 interface TrustDropdownProps {
   fullCommand: string
   baseCommand: string
@@ -53,8 +53,10 @@ interface TrustDropdownProps {
       `<mono/>` slot, which this component fills, and take `labelValues`. */
   trustCommandLabelKey?: string
   trustBaseLabelKey?: string
-  /** The command tier's scope is a host name: its chip moves to the next line
-      whole and breaks only when it cannot fit one, instead of mid-word. */
+  /** The command tier's scope is a host name (#39990). Kept for its callers;
+      every command chip now wraps by `COMMAND_WRAP`, which already moves a host
+      to the next line whole and breaks it only when it cannot fit one, so the
+      chip no longer reads this. */
   scopeIsHost?: boolean
   /** Extra interpolation values for the tier labels (e.g. `role`). */
   labelValues?: Record<string, string>
@@ -129,16 +131,19 @@ const TIMED_ROWS = new Set(['trust_command', 'trust_base'])
 /** The rows whose grant always lasts the session, whatever the duration says. */
 const SESSION_ROWS = new Set(['trust_reads', 'trust'])
 
-const DURATION_KEYS: Record<Exclude<Lifetime, 'hour'>, string> = {
+const DURATION_KEYS: Record<Lifetime, string> = {
+  hour: 'components.trustDropdown.duration_hour',
   today: 'components.trustDropdown.duration_today',
   session: 'components.trustDropdown.duration_session',
 }
 
-/** One grant row, at the size both shapes of the menu share. */
+/** One grant row, at the size both shapes of the menu share. The icon sits
+ *  on the label's first line (12px icon in an 18px line), not centred on the
+ *  whole row, which on the exact-command row is mostly the command's box. */
 function TrustRow(props: ComponentPropsWithoutRef<typeof DropdownMenuItem>) {
   // PageUp / PageDown page through a row's own bounded box (the exact command)
   // before they move between rows.
-  return <DropdownMenuItem className="gap-2 text-[12px]" onKeyDown={pageScrollBox} {...props} />
+  return <DropdownMenuItem className="items-start gap-2 text-[12px] [&>svg]:mt-[3px]" onKeyDown={pageScrollBox} {...props} />
 }
 
 /** The always-allow row's body, in every shape: the `@server/tool` ref it grants
@@ -149,7 +154,7 @@ function AlwaysAllowBody({ tool, refusal }: { tool?: string; refusal?: string })
     <span className="min-w-0">
       {i18nT('components.trustDropdown.always_allow_this_tool')}
       {tool
-        ? <> <span data-testid="trust-always-ref" className="bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border">{tool}</span></>
+        ? <> <span data-testid="trust-always-ref" className={`bg-bg-elevated px-1.5 py-0.5 rounded font-mono ${COMMAND_WRAP} border border-border`}>{tool}</span></>
         : refusal ? <span className="block text-muted text-[11px]">{refusal}</span> : null}
     </span>
   )
@@ -161,7 +166,7 @@ export default function TrustDropdown(props: TrustDropdownProps) {
   return props.timedGrants ? <TimedTrustMenu {...props} /> : <PlainTrustMenu {...props} />
 }
 
-function PlainTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, scopeIsHost = false, labelValues, alwaysAllowTool, alwaysAllowRefusal, modal, onAction }: TrustDropdownProps) {
+function PlainTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, labelValues, alwaysAllowTool, alwaysAllowRefusal, modal, onAction }: TrustDropdownProps) {
   const [open, setOpen] = useState(false)
 
   // Pattern shaping lives in utils/trustPatterns so every surface that offers
@@ -199,8 +204,9 @@ function PlainTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
       // the rest: `title` needs a pointer, so on touch the elided label was the
       // entire basis for the grant (#4700). No `truncate` either -- a CSS
       // ellipsis would clip what the string kept. The label wraps instead, over
-      // as many lines as it needs: `break-all` breaks an unspaced run (a sha, a
-      // base64 argument), the menu's viewport-aware max-width bounds the width,
+      // as many lines as it needs: `COMMAND_WRAP` breaks at spaces and splits a
+      // token only when it alone is wider than the line (a sha, a base64
+      // argument), the menu's viewport-aware max-width bounds the width,
       // and DropdownMenuContent's own max-height + `overflow-y-auto` bound the
       // height, so even a pathological command scrolls inside the menu rather
       // than running off screen. `title` stays for the pointer user, who gets
@@ -209,14 +215,12 @@ function PlainTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
       // `whitespace-pre-wrap` because HTML's default `white-space: normal`
       // COLLAPSES runs of whitespace, which is the same defect as an elision:
       // `grep "a  b" f` would render as `grep "a b" f` and ask for consent to a
-      // string the user never saw. `break-all` governs where a word may break,
-      // not whether spaces survive, so it does not cover this.
+      // string the user never saw. `COMMAND_WRAP` governs where a word may
+      // break, not whether spaces survive, so it does not cover this.
       //
-      // `break-all` sits on the COMMAND span alone. The words around it are
-      // prose in the reader's language, and prose that may break between any
-      // two letters ("until Kiro Crew rest / arts") is prose the reader has to
-      // reassemble on the consent surface; those words wrap at spaces, and
-      // only the command -- which may have none -- breaks anywhere.
+      // `COMMAND_WRAP` sits on the COMMAND span alone. The words around it are
+      // prose in the reader's language and wrap at spaces only; the command,
+      // which may have no spaces, also splits a token too long for the line.
       // No `aria-label` beside the visible text: the row's accessible name is
       // its own content, which is now the whole command, so an added label
       // could only duplicate it -- and would silently stop matching the visible
@@ -229,7 +233,7 @@ function PlainTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
           <Trans
             i18nKey={commandKey}
             values={labelValues}
-            components={{ mono: <span className={`bg-bg-elevated px-1.5 py-0.5 rounded font-mono border border-border ${scopeIsHost ? 'break-words' : 'break-all'}`}>{fullCommand}</span> }}
+            components={{ mono: <span className={`bg-bg-elevated px-1.5 py-0.5 rounded font-mono ${COMMAND_WRAP} border border-border`}><CommandText text={fullCommand} /></span> }}
           />
         </span>
       ),
@@ -359,9 +363,20 @@ function TimedTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
   // The all-tools grant is the widest one here and names no command, so it
   // takes two clicks: the first arms the row, which then says what a second
   // click does. In the menu, choosing a duration or closing the menu disarms
-  // it; the lone all-tools control disarms when it loses focus or on Escape.
+  // it; the lone all-tools control disarms when it loses focus, on Escape, or
+  // on a press anywhere else (Safari and Firefox on macOS do not focus a
+  // clicked button, so it never loses focus there).
   const [armed, setArmed] = useState(false)
+  const loneAllRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    const button = loneAllRef.current
+    if (!armed || !button) return
+    const disarm = (e: PointerEvent) => { if (!(e.target instanceof Node && button.contains(e.target))) setArmed(false) }
+    document.addEventListener('pointerdown', disarm, true)
+    return () => document.removeEventListener('pointerdown', disarm, true)
+  }, [armed])
   const durationLabelId = useId()
+  const durationEndsId = useId()
   const basePattern = trustBasePattern(baseCommand)
   const baseLabel = baseCommandLabel(baseCommand)
   const showCommand = hasCommand
@@ -409,6 +424,7 @@ function TimedTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
     }
     return (
       <button
+        ref={loneAllRef}
         disabled={disabled}
         className={className}
         onClick={() => { if (armed) onAction('trust'); else setArmed(true) }}
@@ -444,7 +460,7 @@ function TimedTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
         <span className="min-w-0 whitespace-pre-wrap">
           <Trans
             i18nKey={CALL_SCOPE_KEYS[lifetime]}
-            components={{ mono: <span data-testid="trust-call-scope" className="bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border">{fullCommand}</span> }}
+            components={{ mono: <span data-testid="trust-call-scope" className={`bg-bg-elevated px-1.5 py-0.5 rounded font-mono ${COMMAND_WRAP} border border-border`}><CommandText text={fullCommand} /></span> }}
           />
         </span>
       ) : (
@@ -453,7 +469,7 @@ function TimedTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
           {/* The whole command, verbatim: the grant is an exact-string match,
               so the string must be readable where it is chosen. In its own
               bounded box with edge cues, so the rows below stay in view. */}
-          <CuedScrollBox testId="trust-command-full" className="mt-1 max-h-[30vh] bg-bg-elevated px-1.5 py-0.5 rounded font-mono whitespace-break-spaces break-all border border-border">{fullCommand}</CuedScrollBox>
+          <CuedScrollBox testId="trust-command-full" className={`mt-1 max-h-[30vh] bg-bg-elevated px-1.5 py-0.5 rounded font-mono whitespace-pre-wrap ${COMMAND_WRAP} border border-border`}><CommandText text={fullCommand} /></CuedScrollBox>
         </span>
       ),
       select: () => onAction('trust_command', fullCommand, ...ttl()),
@@ -527,9 +543,12 @@ function TimedTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
         <CuedMenuContent side="top" align="end" data-testid="trust-menu" {...guideTrustRoot}>
           {showCall && pendingCall && <PendingCallItem testId="trust-pending-call" label={i18nT('components.trustDropdown.pending_call_label')} call={pendingCall} />}
           {(showCommand || showBase) && (
-            <div className="flex items-center gap-2 px-2 pt-1 pb-1.5">
+            // The label sits beside the track, or above it where the menu is
+            // too narrow for both; the track itself is one line, every segment
+            // on it whole.
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pt-1 pb-1.5">
               <span id={durationLabelId} className="shrink-0 text-[12px] text-muted">{i18nT('components.trustDropdown.duration_label')}</span>
-              <DropdownMenuRadioSegments value={lifetime} aria-labelledby={durationLabelId}>
+              <DropdownMenuRadioSegments value={lifetime} aria-labelledby={durationLabelId} aria-describedby={lifetime === 'hour' ? durationEndsId : undefined}>
                 {LIFETIMES.map(choice => (
                   <DropdownMenuRadioItem
                     key={choice}
@@ -539,17 +558,17 @@ function TimedTrustMenu({ fullCommand, baseCommand, isShell, hasCommand = true, 
                     // grants nothing itself, so the menu stays open.
                     onSelect={e => { e.preventDefault(); setLifetime(choice); setArmed(false) }}
                   >
-                    {choice === 'hour' ? (
-                      <Trans
-                        i18nKey="components.trustDropdown.duration_hour"
-                        // The clock time the grant would end, as of this render.
-                        values={{ time: fmtTime(grantEndsAt('hour', new Date())) }}
-                        components={{ small: <span className="text-[11px] font-normal opacity-75" /> }}
-                      />
-                    ) : i18nT(DURATION_KEYS[choice])}
+                    {i18nT(DURATION_KEYS[choice])}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioSegments>
+              {/* The clock time an hour's grant would end, as of this render:
+                  a caption under the track, so no segment grows a second line. */}
+              {lifetime === 'hour' && (
+                <span id={durationEndsId} data-testid="trust-duration-ends" className="basis-full text-[11px] text-muted">
+                  {i18nT('components.trustDropdown.duration_hour_until', { time: fmtTime(grantEndsAt('hour', new Date())) })}
+                </span>
+              )}
             </div>
           )}
           {rows.map((row, i) => (
