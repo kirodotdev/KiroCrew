@@ -45,8 +45,10 @@ const TITLE_ROW = /absolute top-0 left-0 right-1\.5 \$\{editingTitle \? 'z-\[(\d
 const SCRIM = /key="sessions-backdrop"[\s\S]{0,240}?z-\[(\d+)\]/.exec(CHAT_PAGE)
 /** The wave chip's wrapper, lifted to clear ThemeExperienceLayer's ceiling. */
 const CHIP = /className="px-4 mx-auto w-full relative z-\[(\d+)\]"/.exec(SUBAGENT_BAR)
-/** The wrapper introduced around the bar stack. */
-const STACK = /<div ref=\{composerBandRef\} className="([^"]*)" data-testid="composer-status-stack">/.exec(CHAT_PAGE)
+/** The wrapper introduced around the bar stack: its className per layout
+ *  (`[1]` top-down, `[2]` bottom). Every pin below holds in both. */
+const STACK = /<div ref=\{composerBandRef\} className=\{topDown \? '([^']*)' : '([^']*)'\} data-testid="composer-status-stack">/.exec(CHAT_PAGE)
+const STACK_CLASSES = STACK ? [STACK[1], STACK[2]] : []
 /** QueueStack's fuse overhang — the seam that pulls its card into the composer. */
 const OVERLAP = /const OVERLAP = (\d+)/.exec(QUEUE_STACK)
 
@@ -67,29 +69,34 @@ describe('composer status chrome cannot occlude the header rename editor', () =>
     // overflow: measured scrollHeight-clientHeight == 11 with a collapsed queue
     // at any height, so a thumb showed and the card's bottom 11px clipped.
     const n = Number(OVERLAP![1])
-    expect(STACK![1]).toContain(`pb-[${n}px]`)
-    expect(STACK![1]).toContain(`mb-[-${n}px]`)
+    for (const cls of STACK_CLASSES) {
+      expect(cls).toContain(`pb-[${n}px]`)
+      expect(cls).toContain(`mb-[-${n}px]`)
+    }
   })
 
   it('keeps the padding and the negative margin equal, so the column is unchanged', () => {
     // Unequal values would silently move the composer up or down by the
     // difference — layout drift that no other case here would catch.
-    const pb = Number(/pb-\[(\d+)px\]/.exec(STACK![1])![1])
-    const mb = Number(/mb-\[-(\d+)px\]/.exec(STACK![1])![1])
-    expect(pb).toBe(mb)
+    for (const cls of STACK_CLASSES) {
+      const pb = Number(/pb-\[(\d+)px\]/.exec(cls)![1])
+      const mb = Number(/mb-\[-(\d+)px\]/.exec(cls)![1])
+      expect(pb).toBe(mb)
+    }
   })
 
   it('caps the bar stack and scrolls it internally, so it never climbs into the band', () => {
-    const cls = STACK![1]
-    expect(cls).toMatch(/max-h-\[\d+svh\]/)
-    expect(cls).toContain('overflow-y-auto')
+    for (const cls of STACK_CLASSES) {
+      expect(cls).toMatch(/max-h-\[\d+svh\]/)
+      expect(cls).toContain('overflow-y-auto')
+    }
   })
 
   it('states the cap as a fraction of the viewport, never a percentage', () => {
     // A percentage max-height resolves against the wrapper's own
     // content-derived height. That is circular, computes to `none`, and the cap
     // would silently do nothing — the failure mode this case exists to catch.
-    expect(STACK![1]).not.toMatch(/max-h-\[\d+%\]/)
+    for (const cls of STACK_CLASSES) expect(cls).not.toMatch(/max-h-\[\d+%\]/)
   })
 
   it('measures the cap against the SMALL viewport, not the large one', () => {
@@ -97,11 +104,11 @@ describe('composer status chrome cannot occlude the header rename editor', () =>
     // bar a `50vh` cap is more than half the pane the user can actually see —
     // the same over-measure SkillsTab documents. `dvh` would track it but
     // re-resolves while the bar animates.
-    expect(STACK![1]).not.toMatch(/max-h-\[\d+(vh|dvh|lvh)\]/)
+    for (const cls of STACK_CLASSES) expect(cls).not.toMatch(/max-h-\[\d+(vh|dvh|lvh)\]/)
   })
 
   it('keeps the cap under half the pane, so the band stays clear with the composer', () => {
-    expect(Number(/max-h-\[(\d+)svh\]/.exec(STACK![1])![1])).toBeLessThanOrEqual(50)
+    for (const cls of STACK_CLASSES) expect(Number(/max-h-\[(\d+)svh\]/.exec(cls)![1])).toBeLessThanOrEqual(50)
   })
 
   it('lifts the band above the bars while it hosts the editor', () => {

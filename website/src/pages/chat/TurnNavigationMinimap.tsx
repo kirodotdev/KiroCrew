@@ -6,6 +6,7 @@ import type { MinimapSide } from './ChatSettings'
 import { i18nT } from '../../i18n/t'
 import { fmtRelative } from '../../i18n/format'
 import { stripMd } from '../../components/notifications/notifMeta'
+import { turnNumber } from './useTurnStepper'
 
 const MIN_TURNS = 2
 const MIN_GUTTER_PX = 40
@@ -143,6 +144,9 @@ interface TurnNavigationMinimapProps {
   /** True while the server still holds rows above the loaded window: the rail
    *  maps loaded turns only, and the aria label and meta row say so. */
   windowed?: boolean
+  /** True when `items` is newest first (the top-down layout). The markers keep
+   *  screen order, and every number the rail shows still counts from the oldest turn. */
+  newestFirst?: boolean
   /** Hosting pane edge. The right-edge variant replaces the native scrollbar
    *  while the rail is shown. */
   side?: MinimapSide
@@ -153,6 +157,7 @@ export default function TurnNavigationMinimap({
   scrollerRef,
   onNavigate,
   windowed,
+  newestFirst = false,
   side = 'left',
 }: TurnNavigationMinimapProps) {
   const [hasGutter, setHasGutter] = useState(false)
@@ -397,12 +402,17 @@ export default function TurnNavigationMinimap({
   }, [])
 
   if (items.length < MIN_TURNS || !hasGutter || coarsePointer) return null
+  // The number the rail shows for the turn at screen index `index`.
+  const numberAt = (index: number) => turnNumber(index, items.length, newestFirst)
   const activeBucket = selected === null ? null : buckets[selected]
   const active = activeBucket ? items[activeBucket.first] : null
+  // A bucket's span, sorted to read oldest turn first. In a newest-first list
+  // the bucket's first turn is its newest one.
+  const spanEnds = activeBucket ? [numberAt(activeBucket.first), numberAt(activeBucket.first + activeBucket.size - 1)] : []
   const activeMeta = activeBucket
     ? activeBucket.size > 1
-      ? i18nT(windowed ? 'pages.chatPage.turn_minimap_meta_grouped_windowed' : 'pages.chatPage.turn_minimap_meta_grouped', { first: activeBucket.first + 1, last: activeBucket.first + activeBucket.size, count: items.length })
-      : i18nT(windowed ? 'pages.chatPage.turn_minimap_meta_position_windowed' : 'pages.chatPage.turn_minimap_meta_position', { n: activeBucket.first + 1, count: items.length })
+      ? i18nT(windowed ? 'pages.chatPage.turn_minimap_meta_grouped_windowed' : 'pages.chatPage.turn_minimap_meta_grouped', { first: Math.min(...spanEnds), last: Math.max(...spanEnds), count: items.length })
+      : i18nT(windowed ? 'pages.chatPage.turn_minimap_meta_position_windowed' : 'pages.chatPage.turn_minimap_meta_position', { n: numberAt(activeBucket.first), count: items.length })
     : null
   const label = active && activeMeta
     ? i18nT('pages.chatPage.turn_minimap_active', { position: activeMeta, prompt: active.label })
@@ -554,17 +564,17 @@ export default function TurnNavigationMinimap({
         >
           {prevItem && (
             <div data-testid="turn-navigation-preview-neighbor" className="truncate text-[10.5px] leading-[15px] text-text opacity-35">
-              <span className="inline-block w-[26px] text-[10px] text-muted">#{activeBucket.first}</span>
+              <span className="inline-block w-[26px] text-[10px] text-muted">#{numberAt(activeBucket.first - 1)}</span>
               {shortenTurnPreview(prevItem.prompt, TITLE_PREVIEW_MAX_CHARS)}
             </div>
           )}
           <div className="truncate text-[12.5px] leading-normal font-semibold text-text">
-            <span className="inline-block w-[26px] text-[10px] font-normal text-muted">#{activeBucket.first + 1}</span>
+            <span className="inline-block w-[26px] text-[10px] font-normal text-muted">#{numberAt(activeBucket.first)}</span>
             {shortenTurnPreview(active.prompt, TITLE_PREVIEW_MAX_CHARS)}
           </div>
           {nextItem && (
             <div data-testid="turn-navigation-preview-neighbor" className="truncate text-[10.5px] leading-[15px] text-text opacity-35">
-              <span className="inline-block w-[26px] text-[10px] text-muted">#{activeBucket.first + 2}</span>
+              <span className="inline-block w-[26px] text-[10px] text-muted">#{numberAt(activeBucket.first + 1)}</span>
               {shortenTurnPreview(nextItem.prompt, TITLE_PREVIEW_MAX_CHARS)}
             </div>
           )}

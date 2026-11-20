@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react'
+import { coveredTopInset } from '../../utils/searchScroll'
 
 /**
  * Scroll management hook for chat — provides scroller ref, isAtBottom
@@ -54,7 +55,10 @@ export function useScrollManager() {
     const elTop = el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
     const max = Math.max(0, container.scrollHeight - container.clientHeight)
     let top: number
-    if (align === 'center') top = elTop - container.clientHeight / 2 + el.offsetHeight / 2
+    // Centre in the band below the top-down dock, read at jump time because the
+    // dock grows with the composer. The inset is 0 in every other layout.
+    const inset = align === 'center' ? Math.min(coveredTopInset(container), container.clientHeight) : 0
+    if (align === 'center') top = elTop - (inset + container.clientHeight) / 2 + el.offsetHeight / 2
     else if (align === 'end') top = elTop - container.clientHeight + el.offsetHeight
     else top = elTop + offset // 'start' — offset is usually negative to clear the header
     top = Math.max(0, Math.min(max, top))

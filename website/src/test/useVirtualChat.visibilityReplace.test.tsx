@@ -156,6 +156,33 @@ describe('useVirtualChat: visibility return re-places a DISTURBED follower', () 
     expect(tail[tail.length - 1].index).toBe(49)
   })
 
+  it('mounts the head window at scrollTop 0 when a top-down follower returns', () => {
+    const { el, state, view } = mount(
+      'sess-vis-top',
+      { scrollTop: 0, scrollHeight: 5000, clientHeight: 400 },
+      mkItems(50),
+      { followEdge: 'top' },
+    )
+    expect(el.scrollTop).toBe(0)
+    expect(view.result.current.getFollow()).toBe(true)
+
+    act(() => { setHidden(true) })
+    act(() => {
+      state.scrollTop = 4600
+      view.result.current.mountIndex(45)
+    })
+    const tail = view.result.current.virtualItems
+    expect(tail[0].index).toBeGreaterThan(0)
+    expect(view.result.current.getFollow()).toBe(true)
+
+    act(() => { setHidden(false) })
+    expect(el.scrollTop).toBe(0)
+    const head = view.result.current.virtualItems
+    expect(head[0].index).toBe(0)
+    expect(head[head.length - 1].index).toBeLessThan(49)
+    expect(view.result.current.getFollow()).toBe(true)
+  })
+
   it('force-pins when the position was clamped while hidden, ignoring a stale persisted anchor', () => {
     // Contract change: a reader FOLLOWING at hide returns to the live end even
     // when a persisted anchor exists — that anchor predates the position they

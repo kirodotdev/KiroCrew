@@ -17,7 +17,7 @@
  *
  */
 import { useLayoutEffect, useRef } from 'react'
-import { ArrowDown } from 'lucide-react'
+import { ArrowDown, ArrowUp } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 import { Glass } from '../components/Glass'
 
@@ -39,16 +39,19 @@ export function EdgeFade({ side, anchor = 'overlay' }: {
   )
 }
 
-export function JumpToBottomButton({ visible, onClick, unreadCount = 0 }: {
+export function JumpToBottomButton({ visible, onClick, unreadCount = 0, direction = 'down' }: {
   visible: boolean
   onClick: () => void
   /** Messages below the reader they have not seen yet (the host's unread run).
    *  Above zero the pill widens to say so -- "N new · Jump to latest" -- and
    *  the same click still lands at the live end. Zero keeps the bare arrow. */
   unreadCount?: number
+  /** 'up': the top-down chat layout, where the live edge is ABOVE the reader.
+   *  The pill then hangs under the composer and points up. */
+  direction?: 'down' | 'up'
 }) {
   if (!visible) return null
-  return <JumpPill onClick={onClick} unreadCount={unreadCount} />
+  return <JumpPill onClick={onClick} unreadCount={unreadCount} up={direction === 'up'} />
 }
 
 /** The composer markers: the page and pane composers carry
@@ -79,7 +82,7 @@ function nearestComposerField(wrapper: Element | null): HTMLElement | null {
   return null
 }
 
-function JumpPill({ onClick, unreadCount }: { onClick: () => void; unreadCount: number }) {
+function JumpPill({ onClick, unreadCount, up }: { onClick: () => void; unreadCount: number; up: boolean }) {
   const holderRef = useRef<HTMLDivElement | null>(null)
   // Set by a pointer press on the pill, cleared by a key press on it or by
   // focus leaving it, so it names the current press only. A tap or click is
@@ -101,7 +104,7 @@ function JumpPill({ onClick, unreadCount }: { onClick: () => void; unreadCount: 
   }, [])
   const label = unreadCount > 0 ? i18nT('pages.chatPage.jump_to_new', { count: unreadCount }) : null
   return (
-    <div ref={holderRef} className="absolute -top-10 inset-x-0 z-10 pointer-events-none flex justify-center">
+    <div ref={holderRef} className={`absolute ${up ? 'top-full mt-2' : '-top-10'} inset-x-0 z-10 pointer-events-none flex justify-center`}>
       {/* A glass pill (components/Glass.tsx, chip variant) rendered as the
           button: the same material as the composer it floats above. One
           element in both states: the label joins the arrow, it does not
@@ -115,9 +118,9 @@ function JumpPill({ onClick, unreadCount }: { onClick: () => void; unreadCount: 
         onKeyDown={() => { pointerPressedRef.current = false }}
         onBlur={() => { pointerPressedRef.current = false }}
         onClick={onClick}
-        aria-label={label ?? i18nT('pages.chatPage.scroll_to_bottom')}
+        aria-label={label ?? (up ? i18nT('pages.chatPage.scroll_to_latest') : i18nT('pages.chatPage.scroll_to_bottom'))}
         data-testid="jump-to-bottom"
-      ><ArrowDown size={14} strokeWidth={2.5} />{label && <span>{label}</span>}</Glass>
+      >{up ? <ArrowUp size={14} strokeWidth={2.5} /> : <ArrowDown size={14} strokeWidth={2.5} />}{label && <span>{label}</span>}</Glass>
     </div>
   )
 }

@@ -275,8 +275,14 @@
    while it overflows, its own scrollbar has to be a hit target, and a
    scrollbar belongs to the box, not to a child, so the dock's measure marks
    the overflowing stack (`data-overflowing`, useChatPageTranscriptController.tsx) and it catches input
-   as a whole for exactly that stretch. */
+   as a whole for exactly that stretch. The top-down card box and the pane's
+   top-down stack scroll too, and `useDockOverflowMark` (composerDockMetrics.ts)
+   marks them the same way.
+   A `dock-inert` box nested in another (the top-down dock's scrolling card box
+   and pane composer row, inside the input area) stays inert: the second rule
+   is more specific than `.dock-inert>*`, and the overflow mark still follows it. */
 .dock-inert{pointer-events:none}.dock-inert>*{pointer-events:auto}
+.dock-inert>.dock-inert{pointer-events:none}
 .dock-inert[data-overflowing="true"]{pointer-events:auto}
 
 /* File-diff chips (FileChangeChips.tsx): flatter edge — no top highlight or

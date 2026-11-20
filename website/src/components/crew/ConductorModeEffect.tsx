@@ -29,7 +29,9 @@ function box(r: DOMRect): Box { return { left: r.left, top: r.top, width: r.widt
 
 function chatArea(): Box {
   const dock = document.querySelector('[data-testid="composer-dock-root"]')
-  const pane = dock?.parentElement
+  // The dock's host column. ComposerFocusOrder wraps the dock in a slot div,
+  // so step past that slot to keep measuring the same element as before.
+  const pane = (dock?.closest('[data-composer-focus-order-slot]') ?? dock)?.parentElement
   return pane ? box(pane.getBoundingClientRect()) : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
 }
 

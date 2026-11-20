@@ -50,7 +50,7 @@ describe('composer status stack re-anchors the transcript while it resizes', () 
     // stack wrapper — observing anything narrower (one child) goes blind when
     // a different band mounts.
     expect(CHAT_PAGE).toMatch(
-      /<div ref=\{composerBandRef\} className="[^"]*" data-testid="composer-status-stack">/,
+      /<div ref=\{composerBandRef\} className=\{topDown \? '[^']*' : '[^']*'\} data-testid="composer-status-stack">/,
     )
   })
 

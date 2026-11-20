@@ -1,5 +1,6 @@
 // Shared geometry + bottom-up ordering for the anchored input pickers
-// ($skill → SkillPickerMenu, @file → FilePickerMenu, /command → SlashCommandMenu).
+// ($skill → SkillPickerMenu, @file → FilePickerMenu, /command → SlashCommandMenu),
+// and anchoredPopupBox for the composer popups whose side the layout fixes.
 //
 // Centralizing the two drift-prone pieces here keeps the three menus in
 // lockstep — otherwise they diverge on above/below math, bottom-up population,
@@ -96,6 +97,35 @@ export function menuGeometry(
     width: rect.width,
     maxHeight: Math.max(minSensibleHeight, Math.min(MENU_MAX_HEIGHT, available)),
   }
+}
+
+/** Margin (px) a popup keeps from the viewport edge on its chosen side. */
+const VIEWPORT_MARGIN = 8
+
+/** A filter or header plus about two 48px picker rows remains usable. */
+const MIN_USABLE_POPUP_HEIGHT = 160
+
+/** The vertical half of a fixed popup's style: `top` plus a height cap when it
+ *  opens below its anchor, `bottom` when it opens above. */
+export type AnchoredPopupBox = { top: number; maxHeight: number } | { bottom: number }
+
+/**
+ * Place a fixed-position popup on its anchor's preferred side. `openBelow`
+ * makes the popup prefer the top-down layout's downward placement, capped to
+ * the room below. When that room is not usable and the room above is larger,
+ * the popup falls back above with the same `bottom` shape as the default
+ * layout. With `openBelow` off, each popup opens exactly where it does on main.
+ */
+export function anchoredPopupBox(rect: Pick<DOMRect, 'top' | 'bottom'>, openBelow: boolean, gap: number): AnchoredPopupBox {
+  if (openBelow) {
+    const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - gap - VIEWPORT_MARGIN)
+    const spaceAbove = Math.max(0, rect.top - gap - VIEWPORT_MARGIN)
+    if (spaceBelow < MIN_USABLE_POPUP_HEIGHT && spaceAbove > spaceBelow) {
+      return { bottom: window.innerHeight - rect.top + gap }
+    }
+    return { top: rect.bottom + gap, maxHeight: spaceBelow }
+  }
+  return { bottom: window.innerHeight - rect.top + gap }
 }
 
 /**

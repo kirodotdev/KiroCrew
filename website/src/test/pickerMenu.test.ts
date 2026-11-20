@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { menuGeometry, MENU_MAX_HEIGHT, bottomUpOrder } from '../lib/pickerMenu'
+import { menuGeometry, MENU_MAX_HEIGHT, bottomUpOrder, anchoredPopupBox } from '../lib/pickerMenu'
 
 /** Anchor stub at a fixed viewport position — geometry only reads the rect. */
 function anchorAt(top: number, left = 40, width = 600, height = 44): HTMLElement {
@@ -149,6 +149,33 @@ describe('menuGeometry', () => {
       const g = menuGeometry(anchorAt(40, 40, 600, 44), 3, 48)
       expect(g.above).toBe(true)
       expect(g.maxHeight).toBe(48 + 8)
+    })
+  })
+})
+
+describe('anchoredPopupBox', () => {
+  it('opens below with a cap when the room below can show usable content', () => {
+    withViewportHeight(700, () => {
+      const rect = { top: 100, bottom: 132 }
+      expect(anchoredPopupBox(rect, true, 6)).toEqual({ top: 138, maxHeight: 700 - 132 - 6 - 8 })
+    })
+  })
+
+  it('falls back above when a bottom-edge anchor leaves too little room below', () => {
+    withViewportHeight(700, () => {
+      expect(anchoredPopupBox({ top: 680, bottom: 698 }, true, 4)).toEqual({ bottom: 700 - 680 + 4 })
+    })
+  })
+
+  it('stays below when both sides are small but the room below is larger', () => {
+    withViewportHeight(240, () => {
+      expect(anchoredPopupBox({ top: 80, bottom: 112 }, true, 4)).toEqual({ top: 116, maxHeight: 240 - 112 - 4 - 8 })
+    })
+  })
+
+  it('keeps the default upward placement unchanged', () => {
+    withViewportHeight(700, () => {
+      expect(anchoredPopupBox({ top: 100, bottom: 132 }, false, 6)).toEqual({ bottom: 700 - 100 + 6 })
     })
   })
 })

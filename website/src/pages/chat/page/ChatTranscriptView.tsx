@@ -104,6 +104,19 @@ interface ChatTranscriptViewProps {
   renderFarmItem: (i: number) => React.ReactNode
   renderMessage: (i: number, m: ChatMessage) => ReactNode
   renderTurnItem: (it: TurnItem, _j: number) => JSX.Element | null
+  /** The top-down layout: rows are newest block first, the composer dock
+   *  floats over the TOP of the scroller, and history loads at the bottom. */
+  topDown?: boolean
+  /** Top-down layout only: the dock's top edge in this column (the overlay
+   *  title band it sits under, 0 or 64). The scroller pays it once, as part of
+   *  its top padding. */
+  dockTop?: number
+  /** The turns in screen order (`useTranscriptPins`), for the minimap: newest
+   *  first when `topDown`. Defaults to `chatNav.sections`. */
+  minimapSections?: ChatNavigationData['sections']
+  /** Index of the last row of the newest turn block: where the live reply
+   *  streams. `renderedDisplayItems.length - 1` in the chronological order. */
+  headBlockEnd?: number
 }
 
 /**
@@ -114,12 +127,90 @@ export default function ChatTranscriptView({
   slotLoading, slotRunning, slotState, environmentStart, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, crewModeOn, openTaskBoard, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
   onScrollPin, pinned, decideRow, currentSlot, projectDir = null, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, footerActivityKey, footerSentHere = false, footerToolsReturned = false, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
   spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, renderFarmItem, renderMessage, renderTurnItem,
+  topDown = false, dockTop = 0, minimapSections, headBlockEnd = renderedDisplayItems.length - 1,
 }: ChatTranscriptViewProps) {
   // This pane shows the chat's transcript once it has loaded rows; a bell note
   // for a cron run is read against that (#23564). Not while the restore gate
   // hides the rows behind the skeleton: loaded is not yet visible.
   // The scroller is what the on-screen backstop probes.
   useMarkTranscriptShown(activeSlot, !slotLoading && !virt.restoreGate && !isWelcomeState && renderedDisplayItems.length > 0, () => scrollerRef.current)
+
+  const historySlot = <>
+    {/* Mid-switch `slotHasMore` still describes the outgoing chat, so the cursor
+        key gates the bar to match the paging thunk's own precondition. */}
+    {slotHasMore && cursorIsForActiveSlot && (
+      <EarlierMessagesBar loading={loadingOlder} failed={olderFailed} onLoad={handleLoadEarlier} onFocusRelease={() => scrollerRef.current?.focus()} />
+    )}
+  </>
+  const liveSlot = <>
+    {/* Off-screen measurement farm. Kept first in the live slot, exactly where
+        it sat before the scroll shell was extracted: it renders into a
+        zero-height overflow-hidden box, so its position only has to be inside
+        the transcript's own column. Its width makes the measurements true. */}
+    <MeasureFarm
+      enabled={!!activeSlot && !slotLoading}
+      // NOT paused on slotRunning: a session with an agent working
+      // is "running" for minutes at a stretch (tool executions),
+      // and gating the farm on it disabled measured geometry on
+      // exactly the sessions people actively read — every row they
+      // scrolled to was estimate-priced and corrected under their
+      // finger. Streaming regroups are safe: farmRecord revalidates
+      // row identity at write time and drops stale writes.
+      paused={loadingOlder}
+      count={renderedDisplayItems.length}
+      // No visible row yet: start from the live end, the last row
+      // chronologically and row 0 in the top-down layout.
+      originIndex={visibleDisplayItems[0]?.index ?? (topDown ? 0 : Math.max(0, renderedDisplayItems.length - 1))}
+      isMeasured={virt.farmIsMeasured}
+      isMounted={virt.farmRowMounted}
+      keyAt={(i) => { const it = renderedDisplayItems[i]; return it ? virtualKey(it, i) : null }}
+      record={virt.farmRecord}
+      renderItem={renderFarmItem}
+      scrollerEl={() => scrollerRef.current}
+    />
+    {/* Footer */}
+    <ChatFooter statusLabel={environmentStart} running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} activityKey={footerActivityKey} sentHere={footerSentHere} toolsReturned={footerToolsReturned} waitingOnUser={!!currentSlot?.pending_approval || !!currentSlot?.needs_input} />
+    {/* The warm catch-up being prepared outside a turn: the gateway's
+        caption inside a reply bubble, where the welcome then lands. */}
+    <PreparingReplyBubble caption={preparingCaption(currentSlot)} shown={!!currentSlot?.preparing && !slotRunning} testId="chat-preparing-catch-up" />
+    {activeSlot && !slotLoading && !embedded && !popout && slotSwitchTarget !== activeSlot && (
+      <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+        <SessionPulseSurveyCard
+          // Remount on session switch: without this, React reuses
+          // the same component instance across sessions, so an
+          // in-progress rating/feedback/email from session A would
+          // still be sitting in state when the user switches to
+          // session B and hits Submit — attributing A's answers to
+          // B's sessionId prop, which had already updated.
+          //
+          // Gated on !slotLoading: the card captures its baseline
+          // turn count on FIRST MOUNT (see the component's own
+          // comment), so mounting before history finishes loading
+          // would baseline at 0 and then count every loaded
+          // historical turn as "live" once the fetch resolves —
+          // reintroducing the exact reopened-session bug the
+          // baseline exists to prevent, just via a race instead of
+          // a missing check.
+          key={activeSlot}
+          sessionId={activeSlot}
+          kiroCrewVersion={kiroCrewVersion}
+          turnCount={completedTurnCount}
+          slotOrigin={currentSlot?.origin}
+          onLayoutChange={handleSurveyLayoutChange}
+        />
+      </div>
+    )}
+    {/* Tail spacer, in px rather than vh. It plus the scroller's own
+        bottom padding is the clearance between the last line of the
+        transcript and the top of the floating composer dock, so
+        expressing it in `vh` made that clearance viewport-dependent: at
+        2vh + 8px it cleared by 1px at 844px tall and cut INTO the last
+        line on anything shorter (−1px at 740, −2px at 700, −5px at 560),
+        which is the sliced-glyph hairline reported from a phone and the
+        reason it looked mobile-only. */}
+    <div style={{ height: TRANSCRIPT_TAIL_SPACER_PX }} />
+  </>
+
   return (
     <RunInTerminalOriginSlot.Provider value={activeSlot}>
     <ChatProjectDirCtx.Provider value={projectDir}>
@@ -150,8 +241,10 @@ export default function ChatTranscriptView({
           // and a tap there is ambiguous (maintainer ruling on #15820). A
           // column taller than the box scrolls inside it, never under the
           // dock; the memory-mode chip is part of the dock and so sits
-          // below the box too.
-          style={{ marginBottom: dockH }}
+          // below the box too. Top-down: the dock floats over the top of the
+          // column at `dockTop`, so the box STARTS below it by the same
+          // measurement instead.
+          style={topDown ? { marginTop: dockTop + dockH } : { marginBottom: dockH }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -167,7 +260,10 @@ export default function ChatTranscriptView({
       {/* Speaks the turn an Alt+↑ / Alt+↓ step landed on. */}
       <span className="sr-only" aria-live="polite" aria-atomic="true">{turnStepAnnouncement}</span>
       <TurnNavigationMinimap
-        items={chatNav.sections}
+        // Rail top = transcript top: newest first in the top-down layout,
+        // which the rail is told so it still numbers turns from the oldest.
+        items={minimapSections ?? chatNav.sections}
+        newestFirst={topDown && minimapSections !== undefined}
         scrollerRef={scrollerRef}
         onNavigate={navigateToTurn}
         // The rail maps loaded turns only; while the server holds older
@@ -180,7 +276,11 @@ export default function ChatTranscriptView({
         // the shell's bar (phone) the transcript starts at the top of the
         // column and the spacer would be a blank band under the bar. A worker
         // breadcrumb still overlays the column there, so it keeps the spacer.
-        headerSpacer={!titleInTopbar || workerBreadcrumb}
+        // In the top-down layout the scroller's top padding pays that band.
+        // The page places live chrome before the newest row and the earlier
+        // bar after the oldest row.
+        headerSpacer={(!titleInTopbar || workerBreadcrumb) && !topDown}
+        liveEdgeAtTop={topDown}
         scrollerRef={scrollerRef}
         onScrollerElement={bindScroller}
         onScroll={onScrollPin}
@@ -197,82 +297,15 @@ export default function ChatTranscriptView({
         // than unmounting keeps the scroller's geometry and the height
         // cache intact -- the restore needs to WRITE scrollTop while this
         // is up, which a display:none element cannot do.
-        scrollerStyle={{ paddingBottom: dockH + DOCK_CLEARANCE_PX, ...(virt.restoreGate ? { visibility: 'hidden' as const } : null) }}
-        aboveRows={<>
-        {/* Mid-switch `slotHasMore` still describes the outgoing chat, so the cursor
-            key gates the bar to match the paging thunk's own precondition. */}
-        {slotHasMore && cursorIsForActiveSlot && (
-          <EarlierMessagesBar loading={loadingOlder} failed={olderFailed} onLoad={handleLoadEarlier} onFocusRelease={() => scrollerRef.current?.focus()} />
-        )}
-        </>}
-        belowRows={<>
-        {/* Off-screen measurement farm. Kept FIRST in `belowRows` — i.e.
-            after the rows and before the footer, exactly where it sat
-            before the scroll shell was extracted: it renders into a
-            zero-height overflow-hidden box, so its position only has to
-            be inside the transcript's own column (the width is what
-            makes the measurements true). */}
-        <MeasureFarm
-          enabled={!!activeSlot && !slotLoading}
-          // NOT paused on slotRunning: a session with an agent working
-          // is "running" for minutes at a stretch (tool executions),
-          // and gating the farm on it disabled measured geometry on
-          // exactly the sessions people actively read — every row they
-          // scrolled to was estimate-priced and corrected under their
-          // finger. Streaming regroups are safe: farmRecord revalidates
-          // row identity at write time and drops stale writes.
-          paused={loadingOlder}
-          count={renderedDisplayItems.length}
-          originIndex={visibleDisplayItems[0]?.index ?? Math.max(0, renderedDisplayItems.length - 1)}
-          isMeasured={virt.farmIsMeasured}
-          isMounted={virt.farmRowMounted}
-          keyAt={(i) => { const it = renderedDisplayItems[i]; return it ? virtualKey(it, i) : null }}
-          record={virt.farmRecord}
-          renderItem={renderFarmItem}
-          scrollerEl={() => scrollerRef.current}
-        />
-        {/* Footer */}
-        <ChatFooter statusLabel={environmentStart} running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} browserSessionKey={activeSlot} activityKey={footerActivityKey} sentHere={footerSentHere} toolsReturned={footerToolsReturned} waitingOnUser={!!currentSlot?.pending_approval || !!currentSlot?.needs_input} />
-        {/* The warm catch-up being prepared outside a turn: the gateway's
-            caption inside a reply bubble, where the welcome then lands. */}
-        <PreparingReplyBubble caption={preparingCaption(currentSlot)} shown={!!currentSlot?.preparing && !slotRunning} testId="chat-preparing-catch-up" />
-        {activeSlot && !slotLoading && !embedded && !popout && slotSwitchTarget !== activeSlot && (
-          <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-            <SessionPulseSurveyCard
-              // Remount on session switch: without this, React reuses
-              // the same component instance across sessions, so an
-              // in-progress rating/feedback/email from session A would
-              // still be sitting in state when the user switches to
-              // session B and hits Submit — attributing A's answers to
-              // B's sessionId prop, which had already updated.
-              //
-              // Gated on !slotLoading: the card captures its baseline
-              // turn count on FIRST MOUNT (see the component's own
-              // comment), so mounting before history finishes loading
-              // would baseline at 0 and then count every loaded
-              // historical turn as "live" once the fetch resolves —
-              // reintroducing the exact reopened-session bug the
-              // baseline exists to prevent, just via a race instead of
-              // a missing check.
-              key={activeSlot}
-              sessionId={activeSlot}
-              kiroCrewVersion={kiroCrewVersion}
-              turnCount={completedTurnCount}
-              slotOrigin={currentSlot?.origin}
-              onLayoutChange={handleSurveyLayoutChange}
-            />
-          </div>
-        )}
-        {/* Tail spacer, in px rather than vh. It plus the scroller's own
-            bottom padding is the clearance between the last line of the
-            transcript and the top of the floating composer dock, so
-            expressing it in `vh` made that clearance viewport-dependent: at
-            2vh + 8px it cleared by 1px at 844px tall and cut INTO the last
-            line on anything shorter (−1px at 740, −2px at 700, −5px at 560),
-            which is the sliced-glyph hairline reported from a phone and the
-            reason it looked mobile-only. */}
-        <div style={{ height: TRANSCRIPT_TAIL_SPACER_PX }} />
-        </>}
+        // Top-down: the dock floats over the scroller's TOP edge, so the
+        // same strip (plus the title band it sits under) is top padding,
+        // and the bottom keeps only the clearance. Scroll padding matches it,
+        // so a native centred `scrollIntoView` (TurnBlock) lands below the dock.
+        scrollerStyle={topDown
+          ? { paddingTop: dockTop + dockH + DOCK_CLEARANCE_PX, paddingBottom: DOCK_CLEARANCE_PX, scrollPaddingTop: dockTop + dockH + DOCK_CLEARANCE_PX, scrollPaddingBottom: DOCK_CLEARANCE_PX, ...(virt.restoreGate ? { visibility: 'hidden' as const } : null) }
+          : { paddingBottom: dockH + DOCK_CLEARANCE_PX, ...(virt.restoreGate ? { visibility: 'hidden' as const } : null) }}
+        aboveRows={topDown ? liveSlot : historySlot}
+        belowRows={topDown ? historySlot : liveSlot}
       >
         {/* Message items — only the mounted window renders; everything
             else is represented by the top/bottom spacers. */}
@@ -340,7 +373,7 @@ export default function ChatTranscriptView({
             count={item.msgs.filter(m => m.role !== 'permission').length}
             disclosureKey={`ctg-${vi.key}`}
             hasPermission={false}
-            isRunning={slotRunning && displayIdx === renderedDisplayItems.length - 1}
+            isRunning={slotRunning && displayIdx === headBlockEnd}
             permissionMeta={unresolvedGroupPerms.at(-1)?.meta as Record<string, unknown> | undefined}
             pendingPermCount={unresolvedGroupPerms.length}
             onApprove={(() => {

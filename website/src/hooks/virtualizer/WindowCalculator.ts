@@ -297,6 +297,52 @@ export function bottomPinWindow(
 }
 
 /**
+ * The window at the LIVE edge: the tail for a bottom follower, the head
+ * (`{0, overscan + 1}`) when the newest rows are at index 0. What an explicit
+ * live-edge placement mounts before it pins.
+ */
+export function liveWindow(itemCount: number, overscan: number, edge: 'top' | 'bottom'): WindowRange {
+  if (edge === 'top') return { start: 0, end: Math.min(itemCount, overscan + 1) }
+  return tailWindow(itemCount, overscan)
+}
+
+/**
+ * `bottomPinWindow` for a TOP live edge: the head rows that fill one viewport
+ * at their current prices, plus `overscan` below them, never fewer than the
+ * head `liveWindow`. The same flash applies mirrored: a bare head window of
+ * `overscan + 1` short rows is a fraction of the viewport.
+ */
+export function headPinWindow(
+  itemCount: number,
+  overscan: number,
+  getH: HeightGetter,
+  viewportHeight: number,
+): WindowRange {
+  const head = liveWindow(itemCount, overscan, 'top')
+  let end = 0
+  let covered = 0
+  while (end < itemCount && covered < viewportHeight) {
+    covered += getH(end)
+    end += 1
+  }
+  return { start: 0, end: Math.max(head.end, Math.min(itemCount, end + Math.max(0, Math.floor(overscan)))) }
+}
+
+/**
+ * Express `range` in HISTORY-EDGE coordinates: row indexes counted from the
+ * end the older pages load at, so the older-history crossing has one shape in
+ * both orientations ("the window's history-side bound travels toward the
+ * history edge past the lead"). With the history at the top this is the range
+ * itself. With it at the bottom the list is read backwards: row `i` becomes
+ * `itemCount - 1 - i`, so `start` is the distance from the END of the window to
+ * the end of the list. `followEdge` is the LIVE edge; history is opposite it.
+ */
+export function historyEdgeRange(range: WindowRange, itemCount: number, followEdge: 'top' | 'bottom'): WindowRange {
+  if (followEdge === 'bottom') return range
+  return { start: Math.max(0, itemCount - range.end), end: Math.max(0, itemCount - range.start) }
+}
+
+/**
  * Does a jump's window land within the near band of `range`? Near jumps union
  * with the current window; far ones replace it. One predicate for both the
  * caller-facing far/near answer and the state update that acts on it.

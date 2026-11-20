@@ -848,7 +848,7 @@
       "label": "Jump to the bottom when you send",
       "tab": "chat",
       "route": "/settings/chat/transcript?highlight=chat.jump-to-the-bottom-when-you-send",
-      "hint": "When off, sending a message leaves the transcript where it is."
+      "hint": "When off, sending a message leaves the transcript where it is. With Top-down chat (newest first) on, the jump goes to the top instead, where the newest turn is."
     },
     {
       "id": "chat.keep-side-panel-open",
@@ -1222,6 +1222,13 @@
       "tab": "chat",
       "route": "/settings/chat/transcript?highlight=chat.tool-calls-start-expanded",
       "hint": "Open tool call rows with their input and output showing, instead of collapsed. Rows you open or close by hand keep your choice."
+    },
+    {
+      "id": "chat.top-down-chat-newest-first",
+      "label": "Top-down chat (newest first)",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.top-down-chat-newest-first",
+      "hint": "Put the message box at the top and show the newest turn directly under it, so you read near the top of the screen. Each turn still reads prompt first, then reply. Turns off Pin the latest turn."
     },
     {
       "id": "chat.topic-tags",

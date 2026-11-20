@@ -18,6 +18,7 @@ const seen = vi.hoisted(() => ({
   pinnedPrompt: null as null | { onToggleExpanded: () => void; onJump: () => void },
   toolGroups: [] as Array<{ onApprove: (a: string) => Promise<void>; pendingPermCount: number; count: number }>,
   welcome: null as null | { agentWelcome?: string },
+  scrollerStyle: null as null | Record<string, unknown>,
 }))
 
 vi.mock('./chat/crew-window/CrewChatWindow', () => ({
@@ -48,7 +49,7 @@ vi.mock('./chat', async (orig) => ({
   PinnedPrompt: (p: { onToggleExpanded: () => void; onJump: () => void }) => { seen.pinnedPrompt = p; return null },
   ChatFooter: () => null,
 }))
-vi.mock('./chat/TranscriptScrollShell', () => ({ default: ({ children, belowRows }: { children: ReactNode; belowRows?: ReactNode }) => <div data-testid="shell">{children}{belowRows}</div> }))
+vi.mock('./chat/TranscriptScrollShell', () => ({ default: ({ children, belowRows, scrollerStyle }: { children: ReactNode; belowRows?: ReactNode; scrollerStyle?: Record<string, unknown> }) => { seen.scrollerStyle = scrollerStyle ?? null; return <div data-testid="shell">{children}{belowRows}</div> } }))
 vi.mock('./chat/CollapsibleToolGroup', () => ({
   default: (p: { onApprove: (a: string) => Promise<void>; pendingPermCount: number; count: number; children: ReactNode }) => {
     seen.toolGroups.push(p); return <div data-testid="tool-group">{p.children}</div>
@@ -68,6 +69,7 @@ import SessionsSidebarChrome from './chat/page/SessionsSidebarChrome'
 import ChatTitleOverlay from './chat/page/ChatTitleOverlay'
 import { registeredCopies } from '../uiLocations/targetRegistry'
 import ChatTranscriptView from './chat/page/ChatTranscriptView'
+import { DOCK_CLEARANCE_PX } from './chat/composerDockMetrics'
 import { requestSlotReveal } from '../store/chatSlice'
 import { transcriptShownFor } from '../hooks/useAckCronNotesInView'
 
@@ -97,6 +99,7 @@ beforeEach(() => {
   seen.pinnedPrompt = null
   seen.toolGroups = []
   seen.welcome = null
+  seen.scrollerStyle = null
 })
 
 describe('ChatPaneChrome', () => {
@@ -314,6 +317,18 @@ describe('ChatTranscriptView', () => {
   it('draws nothing for a permissions-only tool group', () => {
     render(<ChatTranscriptView {...base([{ kind: 'group', startIdx: 0, msgs: [msg('permission', 'p1')] }])} />)
     expect(seen.toolGroups).toHaveLength(0)
+  })
+
+  // TurnBlock's jump reveal calls the native `scrollIntoView({ block: 'center' })`,
+  // which centres in the scrollport minus scroll-padding, not minus padding.
+  it('in the top-down layout reserves the dock strip as scroll padding too, so a native centred scroll lands below the dock', () => {
+    render(<ChatTranscriptView {...base([], { topDown: true, dockTop: 64, dockH: 120 })} />)
+    expect(seen.scrollerStyle).toMatchObject({ paddingTop: 64 + 120 + DOCK_CLEARANCE_PX, scrollPaddingTop: 64 + 120 + DOCK_CLEARANCE_PX, paddingBottom: DOCK_CLEARANCE_PX, scrollPaddingBottom: DOCK_CLEARANCE_PX })
+  })
+
+  it('keeps the bottom layout scroller style as on main, with no scroll padding', () => {
+    render(<ChatTranscriptView {...base([], { dockH: 120 })} />)
+    expect(seen.scrollerStyle).toEqual({ paddingBottom: 120 + DOCK_CLEARANCE_PX })
   })
 
   it("names what the warm catch-up checks inside a reply bubble while the gateway prepares it, and nothing once it is done", async () => {

@@ -39,13 +39,17 @@ const CHAT_PAGE = [
     .map(f => SRC(`pages/${f}`)),
 ].join('\n')
 
-/** The dock root: the one positioned box that floats over the scroller. */
-const DOCK = /<div ref=\{dockRef\} className="([^"]*)" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root"[^>]*>/.exec(CHAT_PAGE)
-/** The composer's own layer. A bar at or above it would paint over the input box,
- *  and QueueStack's -OVERLAP fuse would surface ON TOP of the composer. */
-const COMPOSER_Z = /<div ref=\{inputAreaRef\} className="relative z-(\d+) dock-inert">/.exec(CHAT_PAGE)
-/** The stack wrapper's own className, and the JSX block it encloses. */
-const STACK = /<div ref=\{composerBandRef\} className="([^"]*)" data-testid="composer-status-stack">([\s\S]*?)\n {14}<\/div>/.exec(CHAT_PAGE)
+/** The dock root: the one positioned box that floats over the scroller. Its
+ *  className has two branches, the opt-in top-down layout (`[1]`, anchored to
+ *  the scroller's top edge) and the default bottom layout (`[2]`). */
+const DOCK = /<div ref=\{dockRef\} className=\{topDown \? '([^']*)' : '([^']*)'\} style=\{topDown \? \{ right: dockGutter, top: dockTop, maxHeight: topDownDockMaxHeight\(dockTop\) \} : \{ right: dockGutter \}\} data-testid="composer-dock-root"[^>]*>/.exec(CHAT_PAGE)
+/** The composer's own layer, per layout (`[1]` top-down, `[2]` bottom). A bar at
+ *  or above it would paint over the input box, and QueueStack's -OVERLAP fuse
+ *  would surface ON TOP of the composer. */
+const COMPOSER_Z = /<div ref=\{inputAreaRef\} className=\{topDown \? 'relative z-(\d+) dock-inert[^']*' : 'relative z-(\d+) dock-inert'\}>/.exec(CHAT_PAGE)
+/** The stack wrapper's className per layout (`[1]` top-down, `[2]` bottom), and
+ *  the JSX block it encloses (`[3]`). */
+const STACK = /<div ref=\{composerBandRef\} className=\{topDown \? '([^']*)' : '([^']*)'\} data-testid="composer-status-stack">([\s\S]*?)\n {14}<\/div>/.exec(CHAT_PAGE)
 
 /** Every component the stack renders, paired with the z-index its own outermost
  *  wrapper declares. Each value is read out of that component's real source. */
@@ -79,7 +83,7 @@ describe('composer dock layering', () => {
   })
 
   it('renders exactly the children this file has checked, and no others', () => {
-    const rendered = [...STACK![2].matchAll(/<([A-Z][A-Za-z]*)\b/g)].map(m => m[1])
+    const rendered = [...STACK![3].matchAll(/<([A-Z][A-Za-z]*)\b/g)].map(m => m[1])
     expect(new Set(rendered)).toEqual(new Set(Object.keys(CHILDREN)))
   })
 
@@ -97,31 +101,45 @@ describe('composer dock layering', () => {
     // SubagentProgressBar's is legitimately 46, above the composer, because it
     // has to clear theme-experience overlays.
     const m = CHILDREN.QueueStack.exec(SRC(FILES.QueueStack))
-    expect(Number(m![1])).toBeLessThan(Number(COMPOSER_Z![1]))
+    for (const z of [COMPOSER_Z![1], COMPOSER_Z![2]]) expect(Number(m![1])).toBeLessThan(Number(z))
   })
 
   it('leaves the stack wrapper without a z-index or position, so it forms no stacking context', () => {
-    expect(STACK![1]).not.toMatch(/\bz-\[?\d/)
-    expect(STACK![1]).not.toMatch(/\b(relative|absolute|fixed|sticky)\b/)
+    for (const cls of [STACK![1], STACK![2]]) {
+      expect(cls).not.toMatch(/\bz-\[?\d/)
+      expect(cls).not.toMatch(/\b(relative|absolute|fixed|sticky)\b/)
+    }
   })
 
   it('floats the dock root with z-index auto, so it forms no stacking context either', () => {
     // It MUST be positioned (that is what makes it float over the scroller), so
     // the only thing keeping it from becoming a context is the absent z-index.
-    expect(DOCK![1]).toMatch(/\babsolute\b/)
-    expect(DOCK![1]).toMatch(/\bbottom-0\b/)
-    expect(DOCK![1]).not.toMatch(/\bz-\[?\d/)
+    // Both layouts: the top-down branch only moves the anchor edge.
+    for (const cls of [DOCK![1], DOCK![2]]) {
+      expect(cls).toMatch(/\babsolute\b/)
+      expect(cls).not.toMatch(/\bz-\[?\d/)
+    }
+    expect(DOCK![2]).toMatch(/\bbottom-0\b/)
+    expect(DOCK![1]).not.toMatch(/\bbottom-0\b/)
   })
 
   it('lets input fall through the dock root and only the control boxes catch it', () => {
     // The root and both wrapper boxes span the pane's full width; only their
     // children — each its own content column — catch input, so the empty
     // width beside the column scrolls the transcript beneath.
-    expect(DOCK![1]).toMatch(/\bpointer-events-none\b/)
-    expect(STACK![1]).toMatch(/\bdock-inert\b/)
-    expect(STACK![1]).not.toMatch(/\bpointer-events-auto\b/)
-    expect(CHAT_PAGE).toMatch(/<div ref=\{inputAreaRef\} className="relative z-\d+ dock-inert">/)
+    for (const cls of [DOCK![1], DOCK![2]]) expect(cls).toMatch(/\bpointer-events-none\b/)
+    for (const cls of [STACK![1], STACK![2]]) {
+      expect(cls).toMatch(/\bdock-inert\b/)
+      expect(cls).not.toMatch(/\bpointer-events-auto\b/)
+    }
+    expect(CHAT_PAGE).toMatch(/<div ref=\{inputAreaRef\} className=\{topDown \? 'relative z-\d+ dock-inert[^']*' : 'relative z-\d+ dock-inert'\}>/)
     expect(readIndexCss()).toMatch(/\.dock-inert\{pointer-events:none\}\.dock-inert>\*\{pointer-events:auto\}/)
+    // The top-down card box and pane composer row are `dock-inert` boxes inside
+    // the input area: a more specific rule keeps them inert, and it comes before
+    // the overflow mark so an overflowing nested box still catches input.
+    const css = readIndexCss()
+    expect(css).toMatch(/\.dock-inert>\.dock-inert\{pointer-events:none\}/)
+    expect(css.indexOf('.dock-inert>.dock-inert{')).toBeLessThan(css.indexOf('.dock-inert[data-overflowing="true"]{'))
     // The stack is a scroll box: while it overflows its cap, its own scrollbar
     // must be a hit target, and a scrollbar belongs to the box, not a child. The
     // band observer marks the crossing and the stylesheet lifts the pass-through.
