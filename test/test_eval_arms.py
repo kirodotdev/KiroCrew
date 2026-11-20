@@ -7,6 +7,7 @@ canned output in the shapes the RFC names (rfc-builtin-eval.md §3.2, §12.4).
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import pytest
@@ -181,3 +182,89 @@ def test_claude_budget_stop_and_missing_result():
     )
     assert ARMS["claude-code"].parse(1, budget).status == "budget"
     assert ARMS["claude-code"].parse(1, "not json\n").status == "error"
+
+
+# ---------- --use-operator-credentials ----------
+def _script(path, code, line="no login"):
+    path.write_text(f"#!/bin/sh\necho '{line}' >&2\nexit {code}\n")
+    path.chmod(0o755)
+    return path
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fakes are POSIX scripts")
+def test_operator_checks_run_whoami_and_say_ok(monkeypatch, tmp_path):
+    from kiro_crew import kiro_cli
+
+    seen = tmp_path / "kiro_home"
+    good = tmp_path / "good-kiro-cli"
+    good.write_text(f'#!/bin/sh\nprintf %s "$KIRO_HOME" > {seen}\nexit 0\n')
+    good.chmod(0o755)
+    bad = _script(tmp_path / "bad-kiro-cli", 1, "Not logged in")
+    crew = ARMS["crew-chat"]
+    found = {"bin": str(good)}
+    monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda environ=None: found["bin"])
+    assert crew.operator_check({"PATH": "/bin", "KIRO_HOME": "/real"}) == ""
+    assert seen.read_text() not in ("", "/real")  # a fresh KIRO_HOME, as each run gets
+    found["bin"] = str(bad)
+    assert crew.operator_check({"PATH": "/bin"}) == (
+        "`bad-kiro-cli whoami` failed (exit 1): Not logged in"
+    )
+    found["bin"] = None
+    assert crew.operator_check({"PATH": "/bin"}) == "kiro-cli is not installed"
+    cc = arms.ClaudeCodeArm()
+    claude = {"bin": str(_script(tmp_path / "claude-ok", 0))}
+    monkeypatch.setattr(cc, "binary", lambda: claude["bin"])
+    assert cc.operator_check({"PATH": "/bin"}) == ""
+    claude["bin"] = str(_script(tmp_path / "claude-bad", 2, "auth"))
+    assert cc.operator_check({"PATH": "/bin"}) == '`claude-bad -p "say ok"` failed (exit 2): auth'
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privilege on Windows")
+def test_under_operator_credentials_a_claude_shim_is_kept_as_found(monkeypatch, tmp_path):
+    real = tmp_path / "real-claude"
+    real.write_text("")
+    shim = tmp_path / "claude"
+    shim.symlink_to(real)
+    monkeypatch.setattr(arms.shutil, "which", lambda name: str(shim))
+    cc = arms.ClaudeCodeArm()
+    assert cc.binary() == str(real.resolve())
+    cc.operator_credentials = True
+    assert cc.binary() == str(shim)
+    # A relative PATH entry (./node_modules/.bin) still names an absolute file: the
+    # arm starts in the task repo.
+    monkeypatch.setattr(arms.shutil, "which", lambda name: "node_modules/.bin/claude")
+    assert cc.binary() == os.path.abspath("node_modules/.bin/claude")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX here")
+def test_a_probe_that_hangs_is_killed_with_everything_it_started(monkeypatch, tmp_path):
+    import os
+    import time
+
+    pid_file = tmp_path / "child.pid"
+    wrapper = tmp_path / "claude"
+    wrapper.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {pid_file}\nwait\n")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(arms, "_PROBE_TIMEOUT_S", 1.0)  # flake-ok: the cap under test
+    assert arms._probe([str(wrapper)], ["-p", "say ok"], {"PATH": "/bin:/usr/bin"}) == (
+        '`claude -p "say ok"` did not answer within 1 s'
+    )
+    child = int(pid_file.read_text())
+
+    def running(pid: int) -> bool:
+        """Alive and not a zombie: a killed child no init has reaped yet counts as gone."""
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        stat = f"/proc/{pid}/stat"
+        try:
+            with open(stat, encoding="utf-8") as fh:
+                return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
+        except OSError:
+            return not os.path.isdir("/proc")  # no /proc (macOS): kill(0) is the answer
+
+    deadline = time.monotonic() + 5  # flake-ok: bounded wait for the kill to land
+    while running(child) and time.monotonic() < deadline:
+        time.sleep(0.05)  # flake-ok: polls a pid until it stops, bounded above
+    assert not running(child), "the forked child outlived the probe"
