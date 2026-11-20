@@ -319,7 +319,10 @@ def test_build_context_binds_the_live_hub_and_relay() -> None:
     hub.bind_target("held", "T1")
     hub.bind_target("held", "T-gone")
     assert ctx.agent_targets() == ["T1"]
-    assert ctx.helper == sup.call
+    # No caller key: each helper goes straight to the supervisor, unpinned until a
+    # navigation guard arms on a relay.
+    asyncio.run(ctx.helper("current_tab"))
+    assert sup.calls[-1] == ("current_tab", {})
     assert mod.build_context("free", sup, hub).in_control() is False
 
 

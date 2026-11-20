@@ -230,6 +230,11 @@ class OpContext:
     #: The app's approved ``browserSites`` when the session is an app's own, so an
     #: app browser recipe judges them again inside its click call; empty otherwise.
     sites: tuple[str, ...] = ()
+    #: The request-stage gate for one navigation (``browser_harness.nav_guard``):
+    #: called at the op, it returns a :class:`NavigationGuard` for the caller's tab,
+    #: or ``None`` where no relay is wired (tests): then only the post-commit check
+    #: applies.
+    nav_guard: Callable[[], Any] = lambda: None
     screenshot_dir: Path = field(default_factory=lambda: Path(os.getcwd()))
     sleep: _SleepFn = _no_sleep
     now: Callable[[], float] = time.monotonic
@@ -708,10 +713,14 @@ async def navigate_to(ctx: OpContext, url: str, *, label: str) -> dict[str, Any]
     except Exception:  # noqa: BLE001 - an unstampable old page still navigates
         logger.debug("navigate: could not stamp the old document", exc_info=True)
     start_href = await _href_now(ctx)
-    started = await ctx.helper("goto", url=url)
-    if isinstance(started, dict) and started.get("errorText"):
-        return refusal("nav_error", str(started["errorText"]))
-    committed = await _wait_for_commit(ctx, token, url, start_href)
+
+    async def _go() -> dict[str, Any]:
+        started = await ctx.helper("goto", url=url)
+        if isinstance(started, dict) and started.get("errorText"):
+            return refusal("nav_error", str(started["errorText"]))
+        return await _wait_for_commit(ctx, token, url, start_href)
+
+    committed = await _guarded_move(ctx, _go)
     if not committed["ok"]:
         return committed
     refused = await _refuse_committed_url(ctx, committed["url"])
@@ -721,7 +730,46 @@ async def navigate_to(ctx: OpContext, url: str, *, label: str) -> dict[str, Any]
     return {"ok": True, "url": committed["url"], "title": committed.get("title", "")}
 
 
-async def _refuse_committed_url(ctx: OpContext, url: str) -> dict[str, Any] | None:
+async def _guarded_move(
+    ctx: OpContext, move: Callable[[], Awaitable[dict[str, Any]]]
+) -> dict[str, Any]:
+    """Run one navigation *move* behind the request-stage gate (``nav_guard``).
+
+    Each document request on the way, every redirect hop included, is judged
+    BEFORE it is sent, so a public page that redirects to a loopback, private or
+    link-local address never reaches it. A refused hop answers ``redirect_refused``
+    whatever the move reported (the browser then reports a blocked load); the tab
+    is moved to ``about:blank``. A guard that cannot be armed refuses the move.
+    """
+    from kiro_crew.browser_harness.nav_guard import GuardUnavailable
+
+    guard = ctx.nav_guard()
+    if guard is None:
+        return await move()
+    try:
+        async with guard:
+            # A move that did not commit (a timeout, an error, a cancel) may leave a
+            # slow response pending: stop it while the guard is armed, so a redirect
+            # it sends later is never followed unjudged.
+            try:
+                result = await move()
+            except BaseException:
+                await guard.stop()
+                raise
+            if not result.get("ok"):
+                await guard.stop()
+    except GuardUnavailable as exc:
+        return refusal("nav_guard_unavailable", f"navigation not started: {exc}")
+    if guard.blocked:
+        refused = await _refuse_committed_url(ctx, guard.blocked[0], before_send=True)
+        if refused is not None:
+            return refused
+    return result
+
+
+async def _refuse_committed_url(
+    ctx: OpContext, url: str, *, before_send: bool = False
+) -> dict[str, Any] | None:
     """The gate, one hop past the request: judge where the navigation LANDED.
 
     The shim judged the URL the agent asked for; a public page that redirects to a
@@ -735,11 +783,12 @@ async def _refuse_committed_url(ctx: OpContext, url: str) -> dict[str, Any] | No
         await ctx.helper("goto", url="about:blank")
     except Exception:  # noqa: BLE001 - the refusal stands even if the blank page fails
         logger.debug("navigate: could not leave the refused page", exc_info=True)
+    sent = "; the request was not sent" if before_send else ""
     return refusal(
         "redirect_refused",
         f"the page redirected to {url[:120]}, which is not a public http(s) URL other "
         "than this dashboard or a loopback origin the user listed (or, for an app's own "
-        "session, not one of the pages the app may browse); the tab was moved to "
+        f"session, not one of the pages the app may browse){sent}; the tab was moved to "
         "about:blank",
     )
 
@@ -761,10 +810,14 @@ async def _back(ctx: OpContext, _args: dict[str, Any]) -> dict[str, Any]:
     token = _stamp_token(ctx)
     await _page(ctx, "stamp", token)
     start_href = await _href_now(ctx)
-    went = await _page(ctx, "back")
-    if not isinstance(went, dict) or not went.get("ok"):
-        return refusal("no_history", "no previous page in history")
-    committed = await _wait_for_commit(ctx, token, None, start_href)
+
+    async def _go() -> dict[str, Any]:
+        went = await _page(ctx, "back")
+        if not isinstance(went, dict) or not went.get("ok"):
+            return refusal("no_history", "no previous page in history")
+        return await _wait_for_commit(ctx, token, None, start_href)
+
+    committed = await _guarded_move(ctx, _go)
     if not committed["ok"]:
         return committed
     refused = await _refuse_committed_url(ctx, committed["url"])
