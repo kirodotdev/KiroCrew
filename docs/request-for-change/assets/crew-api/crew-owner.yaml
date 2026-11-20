@@ -252,7 +252,10 @@ paths:
       - None; new work.
       x-crew-coverage: done
       description: Takes effect locally first (status=revoked), then the issuer of the grant is told over the control
-        channel. Open streams receive grant.revoked and are closed.
+        channel. Open streams receive grant.revoked and are closed. For a grant made through local authorization
+        (amendment, proposed), the host owner's credential is required and Shared Crew teammates and app tokens receive
+        403 owner_only; every access and refresh token under the grant is refused from the next request; a second call
+        answers the same 200 until the grant's own expiry, then 404. Such a grant has no outside issuer to tell.
   /v1/crew/owner/grants/{grant_id}/resume:
     post:
       operationId: post_v1_crew_owner_grants_grant_id_resume
@@ -402,6 +405,56 @@ paths:
         Host-owner-only listing protects which local apps requested access; the RFC's rule that the Owner tier is for the
         owner only requires it.
         No consent page is required.
+  /v1/crew/owner/grant-requests/{request_id}:
+    get:
+      operationId: get_v1_crew_owner_grant_requests_request_id
+      summary: Read one grant request
+      tags:
+      - consent
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: request_id
+        in: path
+        required: true
+        description: greq_ id
+        schema:
+          type: string
+          pattern: ^greq_
+      responses:
+        '200':
+          description: The request
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantRequest'
+        '401':
+          $ref: ./components.yaml#/components/responses/OwnerUnauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/OwnerForbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-phase: 1a
+      x-crew-reuses:
+      - none, new
+      x-crew-coverage: done
+      description: Returns one grant request by its id, answered or not, so the owner can see how it was answered and
+        which grant it led to (amendment, proposed). The request stays readable until it and its authorization code
+        have expired, or for as long as the grant it led to exists; after that it is 404. The host owner's credential
+        is required; Shared Crew teammates and app tokens receive 403 owner_only.
   /v1/crew/owner/grant-requests/{request_id}/decision:
     post:
       operationId: post_v1_crew_owner_grant_requests_request_id_decision
@@ -839,6 +892,34 @@ components:
           $ref: ./components.yaml#/components/schemas/Timestamp
         expires_at:
           $ref: ./components.yaml#/components/schemas/Timestamp
+        decided_at:
+          type:
+          - integer
+          - 'null'
+          description: When the owner answered (amendment, proposed)
+        decided_by:
+          type:
+          - object
+          - 'null'
+          description: 'Who answered: the kind of caller, never a token (amendment, proposed)'
+          properties:
+            kind:
+              type: string
+              description: owner today. Open set.
+            via:
+              type: string
+              description: api today. Open set.
+        granted_scopes:
+          type: array
+          items:
+            type: string
+          description: Only when approved; what the owner gave, which may be fewer than requested (amendment, proposed)
+        grant_id:
+          type:
+          - string
+          - 'null'
+          pattern: ^grt_
+          description: The grant this request led to, set once the app redeemed its code (amendment, proposed)
     GrantRequestList:
       allOf:
       - $ref: ./components.yaml#/components/schemas/ListEnvelope

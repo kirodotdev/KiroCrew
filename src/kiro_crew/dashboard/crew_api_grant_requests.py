@@ -1,11 +1,14 @@
-"""The owner's side of local authorization: list the waiting grant requests, answer one.
+"""The owner's side of local authorization: list the waiting grant requests, read one,
+answer one, and revoke a grant.
 
-Handlers for ``GET /v1/crew/owner/grant-requests`` and
-``POST /v1/crew/owner/grant-requests/{request_id}/decision``. They are served only through
+Handlers for ``GET /v1/crew/owner/grant-requests``,
+``GET /v1/crew/owner/grant-requests/{request_id}``,
+``POST /v1/crew/owner/grant-requests/{request_id}/decision`` and
+``DELETE /v1/crew/owner/grants/{grant_id}``. They are served only through
 :func:`kiro_crew.dashboard.crew_api_owner.owner_route`, which supplies the Crew API
-error shape and the ordinary owner gate. Both handlers additionally require the host
-owner: a Shared Crew teammate may use the dashboard but cannot grant a local credential
-or read the machine's pending application requests.
+error shape and the ordinary owner gate. Every handler additionally requires the host
+owner: a Shared Crew teammate may use the dashboard but cannot grant or revoke a local
+credential, or read the machine's application requests.
 """
 
 from __future__ import annotations
@@ -38,6 +41,11 @@ def _grant_request(view: dict[str, Any]) -> dict[str, Any]:
         "requested_scopes": view["requested_scopes"],
         "created_at": view["created_at"],
         "expires_at": view["expires_at"],
+        "decided_at": view["decided_at"],
+        "decided_by": view["decided_by"],
+        "grant_id": view["grant_id"],
+        # Present only on an approved request: what the owner gave, which may be fewer.
+        **({"granted_scopes": view["granted_scopes"]} if "granted_scopes" in view else {}),
     }
 
 
@@ -92,6 +100,39 @@ async def list_grant_requests(request: web.Request) -> web.Response:
             "has_more": False,
         }
     )
+
+
+async def get_grant_request(request: web.Request) -> web.Response:
+    """One request, answered or not, for as long as the record keeps it."""
+    if (denied := await _host_owner_refusal(request, "crew_api.grant_requests.get")) is not None:
+        return denied
+    request_id = request.match_info["request_id"]
+    try:
+        view = await asyncio.to_thread(lambda: la.gateway_local_authorization().request(request_id))
+    except la.UnknownRequest:
+        return _error(404, "not_found", "no such grant request, or it has expired")
+    except (OSError, ValueError, KeyError, TypeError):
+        return _error(*_UNAVAILABLE)
+    return web.json_response(_grant_request(view))
+
+
+async def revoke_grant(request: web.Request) -> web.Response:
+    """Revoke one grant and every token under it. A second call answers the same."""
+    if (denied := await _host_owner_refusal(request, "crew_api.grants.revoke")) is not None:
+        return denied
+    grant_id = request.match_info["grant_id"]
+    # Token auth set this subject; _host_owner_refusal proved it is the host owner's.
+    subject = str(request["user"])
+    try:
+        revoked = await asyncio.to_thread(
+            lambda: la.gateway_local_authorization().revoke_grant(grant_id, caller=subject)
+        )
+    except Exception:
+        # The record cannot be read or written, or the audit row failed.
+        return _error(*_UNAVAILABLE)
+    if not revoked:
+        return _error(404, "not_found", "no such grant, or it has expired")
+    return web.json_response({"id": grant_id, "object": "grant", "deleted": True})
 
 
 async def decide_grant_request(request: web.Request) -> web.Response:
