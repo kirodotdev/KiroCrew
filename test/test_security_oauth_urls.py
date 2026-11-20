@@ -966,7 +966,7 @@ class TestOAuthRejectionIsEndpointExemptible:
         endpoint nobody actually approved."""
         looked_up: list[tuple[str, str]] = []
 
-        def spy(host: str, path: str) -> bool:
+        def spy(host: str, path: str, server_name: str | None = None) -> bool:
             looked_up.append((host, path))
             return False
 

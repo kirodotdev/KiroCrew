@@ -258,8 +258,6 @@ def test_an_iss_urlsplit_refuses_is_a_mismatch_not_a_logged_traceback(iss, caplo
 _PREREGISTERED_ISSUERS = {
     "google-drive": "https://accounts.google.com",
     "gmail": "https://accounts.google.com",
-    "slack": "https://mcp.slack.com",
-    "asana": "https://app.asana.com",
 }
 
 
@@ -299,11 +297,12 @@ def test_a_pre_registered_callback_from_its_own_issuer_or_with_no_iss_succeeds(s
     assert asyncio.run(_run()) == "the-code"
 
 
-def test_a_provider_with_no_verified_issuer_keeps_today_s_behaviour():
-    assert "issuer" not in crew_oauth._ENDPOINTS["github"]
+@pytest.mark.parametrize("slug", ["github", "asana", "slack"])
+def test_a_provider_with_no_verified_issuer_keeps_today_s_behaviour(slug):
+    assert "issuer" not in crew_oauth._ENDPOINTS[slug]
 
     async def _run():
-        sign_in = _pre_registered("github")
+        sign_in = _pre_registered(slug)
         resp = await _answer(
             sign_in, {"state": sign_in._state, "code": "c", "iss": "https://anything.example"}
         )

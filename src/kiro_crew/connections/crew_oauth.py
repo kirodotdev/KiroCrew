@@ -71,10 +71,12 @@ DCR_SLUGS = frozenset({"atlassian", "notion", "linear", "stripe", "vercel", "git
 #: DELETE. ``authorize_params`` are added to the consent URL. Slugs with the same
 #: ``grant_group``, client id and account share one upstream grant.
 #: ``extra_scopes`` are appended to the registry's scopes. ``issuer`` is the vendor's
-#: published RFC 8414 / OIDC ``issuer`` (RFC 9207): a callback whose ``iss`` names any
-#: other server is refused. An entry without one (GitHub publishes none) is not
-#: checked. shortcut: an ``iss`` the vendor leaves out is accepted, since no pre-registered
-#: vendor's behaviour is pinned here; require it per entry once one is confirmed to send it.
+#: published ``issuer`` (RFC 9207), set only where the vendor's public metadata also says its
+#: authorization response carries ``iss`` (Google: its metadata's
+#: ``authorization_response_iss_parameter_supported``): a callback whose ``iss`` names any
+#: other server is refused. An entry without one (GitHub,
+#: Asana, Slack: no documented ``iss`` in the response) is not checked.
+#: shortcut: an ``iss`` the vendor leaves out is accepted; require it per entry once confirmed.
 _ENDPOINTS: dict[str, dict[str, Any]] = {
     "github": {
         "authorize": "https://github.com/login/oauth/authorize",
@@ -88,8 +90,6 @@ _ENDPOINTS: dict[str, dict[str, Any]] = {
         "token": "https://app.asana.com/-/oauth_token",
         "revoke": "https://app.asana.com/-/oauth_revoke",
         "revoke_form": ("token", "client_id", "client_secret"),
-        # https://app.asana.com/.well-known/oauth-authorization-server
-        "issuer": "https://app.asana.com",
     },
     # Slack's MCP authorization server (https://mcp.slack.com/.well-known/
     # oauth-authorization-server): user-token consent and token endpoints,
@@ -99,8 +99,6 @@ _ENDPOINTS: dict[str, dict[str, Any]] = {
     "slack": {
         "authorize": "https://slack.com/oauth/v2_user/authorize",
         "token": "https://slack.com/api/oauth.v2.user.access",
-        # https://mcp.slack.com/.well-known/oauth-authorization-server
-        "issuer": "https://mcp.slack.com",
         # Revokes one token, the access token (docs.slack.dev/reference/methods/
         # auth.revoke); Slack answers 200 and reports the outcome in the body.
         # shortcut: no Slack endpoint revokes a refresh token, so the rotating
