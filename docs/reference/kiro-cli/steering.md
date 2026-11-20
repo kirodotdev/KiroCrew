@@ -39,7 +39,7 @@ array of them), `manual` (referenced from chat as `#<file-name>`), and `auto` +
 `manual` or `auto` document also appears as a slash command, so typing `/`
 followed by its name includes it explicitly.
 
-**Upstream now documents the CLI as not honoring any of this**: its steering page
+**Upstream documents the CLI as not honoring any of this**: its steering page
 states that inclusion modes are not currently supported on Kiro CLI and that
 every file in `.kiro/steering/` is loaded automatically. The measurement below
 disagrees on one row — `manual` — so treat both as claims about specific
