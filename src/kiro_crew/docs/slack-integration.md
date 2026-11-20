@@ -59,6 +59,7 @@ Available to all allowed users (no `!` prefix needed):
 | Command | Description |
 |---------|-------------|
 | `status` | Show runtime stats (uptime, sessions, crons, lessons) |
+| `ping` | Auto-reply with `pong` |
 | `cron list` | List all scheduled cron jobs |
 | `cron remove <id>` | Remove a cron job (`cron remove all` removes every job) |
 | `cron pause <id>` | Pause a cron job |

@@ -39,8 +39,10 @@ suggests.
 
 **Sends a file back to you** is what you receive from `file_send`. Slack has its
 own upload leg; Telegram, Discord and WeCom deliver through their `send_document`.
-On every other channel `file_send` skips the channel and the file reaches you as a
-dashboard card only. On WeCom the file arrives as native media.
+On every other channel `file_send` does not post into that chat: the file reaches
+the dashboard card and, when Slack is connected, the Slack leg too (the session's
+linked Slack thread, else your Slack DM with the bot). On WeCom the file arrives
+as native media.
 
 **Sends an image the reply references** is the inline path: when a reply names a
 local image, the renderer uploads it and sends the picture instead of printing the
