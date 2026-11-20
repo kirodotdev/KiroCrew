@@ -112,10 +112,14 @@ name: Main Red Watch
 # call as it would without the wrapper: the step ends red having written
 # nothing, or, when the reading of the failed jobs was cut short, files what it
 # read. Nothing marks such a run. Instead every red run that names a test reads
-# the run list and replays the red verdict runs directly before it that the open
-# issue's record does not hold (back to the first green run, the run the record
+# the run list and replays the red verdict runs directly before it that no
+# issue's record holds (back to the first green run, the last run a record
 # holds, or 5 runs): one job list and one annotation read per failed job
-# (first 20) for each. `.github/scripts/main_red_previous.py` applies the rules
+# (first 20, annotations only, as the look back reads them) for each. The
+# record is the open issue's; with none open it is the newest among the closed
+# main-red issues (one more read), because an issue closed while main was red
+# leaves no green run in the run list and its runs were recorded.
+# `.github/scripts/main_red_previous.py` applies the rules
 # above to each in order, so the issue names the first red commit and counts
 # the streak as if a watcher had finished every one. This also covers a watcher
 # run the queue dropped (see `concurrency` below). A replay that cannot read a
@@ -446,9 +450,34 @@ jobs:
               say notice "$looked; the red runs before this one are not replayed."
               return 0
             fi
-            if ! python3 "$previous" unfinished "$work/runs.json" --run-number "$RUN_NUMBER" \
-              --prev-body "$work/prev-body.md" --repo "$REPO" > "$work/unfinished.txt"; then
+            echo '[]' > "$work/closed.json"
+            list_unfinished() {
+              python3 "$previous" unfinished "$work/runs.json" --run-number "$RUN_NUMBER" \
+                --prev-body "$work/prev-body.md" --closed "$work/closed.json" --repo "$REPO" \
+                > "$work/unfinished.txt" && [ -s "$work/unfinished.txt" ]
+            }
+            if ! list_unfinished; then
               return 0
+            fi
+            # With no issue open, the runs a closed issue's record holds were
+            # finished too: an issue closed while main was red (by hand, or by a
+            # merged pull request that names it) leaves no green run to end the
+            # walk back. Closed issues are found by the label only, so without
+            # the label, or without this read, nothing is replayed.
+            if [ -z "$existing" ]; then
+              if [ "$have_label" != 1 ]; then
+                say notice "Without the main-red label the closed issues cannot be listed; the red runs before this one are not replayed."
+                return 0
+              fi
+              if ! gh issue list --repo "$REPO" --state closed --label main-red --limit 20 \
+                --json number,title,body,author > "$work/closed.json" 2> "$work/read-error.txt"; then
+                unread "the closed main-red issues"
+                say notice "$looked; the red runs before this one are not replayed."
+                return 0
+              fi
+              if ! list_unfinished; then
+                return 0
+              fi
             fi
             while IFS=$'\t' read -r past_id past_url; do
               if ! read_past_run "$past_id" "$past_url"; then
@@ -457,7 +486,8 @@ jobs:
               fi
             done < "$work/unfinished.txt"
             if caught="$(python3 "$previous" replay "$work/runs.json" "$work/past" --run-number "$RUN_NUMBER" \
-              --prev-body "$work/prev-body.md" --repo "$REPO" --out-body "$work/prev-body.md")"; then
+              --prev-body "$work/prev-body.md" --closed "$work/closed.json" --repo "$REPO" \
+              --out-body "$work/prev-body.md")"; then
               say notice "$caught"
             else
               caught=""

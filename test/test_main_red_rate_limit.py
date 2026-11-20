@@ -13,7 +13,7 @@ records and stands in for the reset; nothing sleeps):
   updated. A reset past the job's wait budget is not waited for: the run fails
   having written nothing, so it files no duplicate and closes nothing.
 * REPLAY -- the next red run that names a test counts the red runs before it
-  that no watcher run recorded, under the rules a live run is held to, so the
+  that no issue records, under the rules a live run is held to, so the
   issue names the first red commit and the whole streak.
 """
 
@@ -168,7 +168,7 @@ def test_a_reset_past_the_budget_is_not_waited_for_and_nothing_is_written(
     assert f"resets in {RESET_FAR + 5}s, past what is left of this job's" in out.stderr
 
 
-# ── Replay: the next red run counts the red runs no watcher run recorded ─────
+# ── Replay: the next red run counts the red runs no issue records ─────────
 
 
 def test_the_runs_to_replay_are_the_red_ones_back_to_a_green_run_or_the_record() -> None:
@@ -244,7 +244,7 @@ def test_a_red_run_no_watcher_recorded_is_named_first_red_by_the_next_red_run(
     assert out.returncode == 0, out.stderr
     assert len(_wrote(stub, "create")) == 1
     said = (
-        "::notice::1 earlier red run(s) of main that no watcher run recorded are counted now"
+        "::notice::1 earlier red run(s) of main that no main-red issue records are counted now"
         f" ({REPO_URL}/actions/runs/990); first red is {EARLIER_SHA[:12]}."
     )
     assert said in out.stdout
@@ -435,3 +435,104 @@ def test_a_green_run_replays_nothing(tmp_path: Path) -> None:
     assert not [c for c in _calls(stub) if "/actions/workflows/" in c]
     assert _read_runs(stub) == []
     assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+# ── Replay: runs a closed issue recorded are not unrecorded ──────────────────
+
+TWO_LEGS_BEFORE = _jobs(
+    (91, "Backend Tests (3.12, 3)", "failure"), (94, "Backend Tests (Windows) (3)", "failure")
+)
+
+
+def _closed_issue(run_id: int, number: int = 4) -> dict:
+    """An issue the watcher filed, closed while main was still red; its record ends at run_id."""
+    return {**_open_issue(number=number, run_id=run_id), "state": "CLOSED"}
+
+
+def test_the_newest_run_a_closed_watcher_issue_records_bounds_the_walk_back() -> None:
+    rows = [_earlier(49, 990), _earlier(48, 980), _earlier(47, 970)]
+    forged = {**_closed_issue(990), "author": {"login": "someone", "is_bot": False}}
+    assert prev_mod.last_recorded([_closed_issue(970), _closed_issue(980), forged]) == 980
+    assert prev_mod.last_recorded([forged, {"title": "x"}, 7]) == -1
+    assert prev_mod.last_recorded(None) == -1
+    found, _ = prev_mod.unfinished({"workflow_runs": rows}, 50, None, 980)
+    assert [row["id"] for row in found] == [990]
+
+
+@_needs_posix
+def test_runs_a_closed_issue_recorded_are_not_replayed_and_open_no_issue(tmp_path: Path) -> None:
+    """The issue was closed by a merged fix while main was red; the next run is red in one job.
+
+    The two runs before it are in the closed record, so they are not counted and
+    a failure seen in one job opens nothing, as with no earlier run.
+    """
+    out, stub = _run_step(
+        tmp_path,
+        jobs=ONE_JOB,
+        logs={},
+        annotations={11: _notes(OTHER), 91: _notes(BREAK), 94: _notes(BREAK)},
+        runs=[_run_row(50, "failure", 1000), _earlier(49, 990), _earlier(48, 980)],
+        past_jobs={980: TWO_LEGS_BEFORE, 990: TWO_LEGS_BEFORE},
+        closed_issues=[_closed_issue(990)],
+    )
+    assert out.returncode == 0, out.stderr
+    assert "are counted now" not in out.stdout
+    assert "not opening an issue for a failure seen in one job" in out.stdout
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+    # Run 990 is read for the look back alone; run 980 is not read at all.
+    assert _read_runs(stub) == ["990"]
+
+
+@_needs_posix
+def test_only_the_runs_after_a_closed_issues_record_are_replayed(tmp_path: Path) -> None:
+    out, stub = _run_step(
+        tmp_path,
+        jobs=TWO_JOBS,
+        logs={},
+        annotations={**TWO_NOTES, 91: _notes(BREAK), 94: _notes(BREAK)},
+        runs=[_run_row(50, "failure", 1000), _earlier(49, 990), _earlier(48, 980)],
+        past_jobs={980: TWO_LEGS_BEFORE, 990: TWO_LEGS_BEFORE},
+        closed_issues=[_closed_issue(980)],
+    )
+    assert out.returncode == 0, out.stderr
+    assert _read_runs(stub) == ["990"]
+    state = _state(stub, "edit-77.md")
+    assert (state["first_run_id"], state["streak"]) == (990, 2)
+
+
+@_needs_posix
+@pytest.mark.parametrize("why", ["closed-list-unreadable", "no-label"])
+def test_without_the_closed_issues_nothing_is_replayed_and_the_run_is_recorded(
+    tmp_path: Path, why: str
+) -> None:
+    """What a closed issue recorded cannot be told apart, so no earlier run is counted."""
+    out, stub = _run_step(
+        tmp_path,
+        jobs=TWO_JOBS,
+        logs={},
+        annotations={**TWO_NOTES, 91: _notes(BREAK), 94: _notes(BREAK)},
+        runs=[_run_row(50, "failure", 1000), _earlier(49, 990)],
+        past_jobs={990: TWO_LEGS_BEFORE},
+        closed_refused=why == "closed-list-unreadable",
+        label_refused=why == "no-label",
+    )
+    assert out.returncode == 0, out.stderr
+    said = "the red runs before this one are not replayed."
+    assert said in out.stdout and said in (stub / "summary.md").read_text(encoding="utf-8")
+    assert _read_runs(stub) == []
+    state = _state(stub, "edit-77.md")
+    assert (state["first_run_id"], state["streak"]) == (1000, 1)
+
+
+@_needs_posix
+def test_a_first_red_run_after_a_green_one_does_not_read_the_closed_issues(tmp_path: Path) -> None:
+    out, stub = _run_step(
+        tmp_path,
+        jobs=TWO_JOBS,
+        logs={},
+        annotations=TWO_NOTES,
+        runs=[_run_row(50, "failure", 1000), _earlier(49, 990, "success")],
+    )
+    assert out.returncode == 0, out.stderr
+    assert not [c for c in _calls(stub) if "--state closed" in c]
+    assert len(_wrote(stub, "create")) == 1

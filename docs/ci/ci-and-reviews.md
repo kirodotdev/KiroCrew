@@ -244,8 +244,10 @@ Three structural facts explain most of the rest:
   retried; a reset past the budget fails the call, and the run ends red having
   written nothing or files what it had read. Nothing marks such a run. Every
   red run that names a test reads the run list and replays the red verdict runs
-  directly before it that the open issue's record does not hold, back to the
-  first green run, the run the record holds, or 5 runs
+  directly before it that no issue's record holds (the open issue's, or with
+  none open the newest among the closed `main-red` issues, since an issue
+  closed while main was red leaves no green run), back to the first green run,
+  the last run a record holds, or 5 runs
   (`.github/scripts/main_red_previous.py`, one job list and one annotation read
   per failed job for each), under the same rules as a live run, so the issue
   names the first red commit and the whole streak even when a watcher run was

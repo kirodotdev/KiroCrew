@@ -25,13 +25,15 @@ the queue, records nothing. So every red run that names a test asks which red
 runs before it no watcher recorded, and replays them under the watcher's own
 rules:
 
-    unfinished RUNS.json --run-number N --prev-body BODY
+    unfinished RUNS.json --run-number N --prev-body BODY [--closed ISSUES.json]
                              print `<id> TAB <url>`, oldest first, of the red
-                             verdict runs directly before run number N that the
-                             record in BODY (the open issue's, or empty) does
-                             not hold: back to the first green run, to the run
-                             the record holds, or MAX_UNFINISHED runs
-    replay RUNS.json PASTDIR --run-number N --prev-body BODY --out-body OUT
+                             verdict runs directly before run number N that
+                             neither the record in BODY (the open issue's, or
+                             empty) nor the record of a closed issue in
+                             ISSUES.json holds: back to the first green run, to
+                             the last run a record holds, or MAX_UNFINISHED runs
+    replay RUNS.json PASTDIR --run-number N --prev-body BODY [--closed ISSUES.json]
+                             --out-body OUT
                              read `PASTDIR/<id>/` (per-job files) for each of
                              those runs and write to OUT the record the watcher
                              would have left; print what was counted. Exit 1,
@@ -102,16 +104,38 @@ def previous_verdict(listing: Any, run_number: int) -> dict[str, Any] | None:
     return earlier[0] if earlier else None
 
 
-def unfinished(
-    listing: Any, run_number: int, state: dict[str, Any] | None
-) -> tuple[list[dict[str, Any]], bool]:
-    """Red verdict runs directly before ``run_number`` that ``state`` does not hold.
+def last_recorded(issues: Any) -> int:
+    """The newest run id a record in ``issues`` holds, or -1.
 
-    Oldest first. The walk back ends at a green run (a streak starts after
-    it), at the last run the record holds, or after ``MAX_UNFINISHED`` runs; the
-    flag says the cap ended it.
+    ``issues`` are the closed main-red issues as `gh issue list` prints them. An
+    issue closed while main was still red (by hand, or by a merged pull request
+    that names it) leaves no green run in the run list, so its record is the
+    only sign that a watcher finished those runs. Only the watcher's own issues
+    are read, as for the open one.
     """
-    last = int(state["last_run_id"]) if state is not None else -1
+    newest = -1
+    for issue in issues if isinstance(issues, list) else []:
+        if not isinstance(issue, dict) or not watch.is_watcher_author(issue.get("author")):
+            continue
+        if not str(issue.get("title", "")).startswith(watch.TITLE_PREFIXES):
+            continue
+        state = watch.parse_state(str(issue.get("body") or ""))
+        if state is not None:
+            newest = max(newest, int(state["last_run_id"]))
+    return newest
+
+
+def unfinished(
+    listing: Any, run_number: int, state: dict[str, Any] | None, recorded: int = -1
+) -> tuple[list[dict[str, Any]], bool]:
+    """Red verdict runs directly before ``run_number`` that no record holds.
+
+    Oldest first. ``state`` is the open issue's record and ``recorded`` the
+    newest run id a closed issue's record holds. The walk back ends at a green
+    run (a streak starts after it), at the last run a record holds, or after
+    ``MAX_UNFINISHED`` runs; the flag says the cap ended it.
+    """
+    last = max(int(state["last_run_id"]) if state is not None else -1, recorded)
     found: list[dict[str, Any]] = []
     for row in verdict_runs(listing, run_number):
         if row["conclusion"] == "success" or int(row["id"]) <= last:
@@ -181,17 +205,18 @@ def cmd_previous_verdict(args: argparse.Namespace) -> int:
 
 
 def _unfinished(args: argparse.Namespace) -> tuple[Any, list[dict[str, Any]], bool]:
-    """The record in ``--prev-body`` and the runs before this one it does not hold."""
+    """The record in ``--prev-body`` and the runs before this one that no record holds."""
     listing = json.loads(Path(args.runs).read_text(encoding="utf-8", errors="replace"))
     state = watch.parse_state(watch._read_text(args.prev_body))
-    rows, capped = unfinished(listing, args.run_number, state)
+    closed = json.loads(watch._read_text(args.closed) or "[]")
+    rows, capped = unfinished(listing, args.run_number, state, last_recorded(closed))
     return state, rows, capped
 
 
 def cmd_unfinished(args: argparse.Namespace) -> int:
     try:
         _, rows, _ = _unfinished(args)
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError):
         return 1
     for row in rows:
         print(f"{row['id']}\t{run_url(args.repo, row)}")
@@ -216,7 +241,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
     urls = ", ".join(run_url(args.repo, row) for row in counted)
     cap = f" Only the {MAX_UNFINISHED} runs before this one were read." if capped else ""
     print(
-        f"{len(counted)} earlier red run(s) of main that no watcher run recorded"
+        f"{len(counted)} earlier red run(s) of main that no main-red issue records"
         f" are counted now ({urls}); first red is {state['first_sha']}.{cap}"
     )
     return 0
@@ -248,6 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
             past.add_argument("--out-body", required=True)
         past.add_argument("--run-number", type=int, required=True)
         past.add_argument("--prev-body", required=True)
+        past.add_argument("--closed")
         past.add_argument("--repo", required=True)
         past.set_defaults(run=run)
     same = sub.add_parser("same-files")
