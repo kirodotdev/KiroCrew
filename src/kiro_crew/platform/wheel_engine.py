@@ -348,14 +348,15 @@ def _verify_over_nofollow_files(
         raise WheelUpdateError("manifest signature verification failed — refusing to install")
 
 
-def wheel_filename(channel: str, version: str) -> str:
+def wheel_filename(channel: str, version: str, tag: str = "any") -> str:
     """The wheel a channel publishes: the LTS edition's own distribution on lts.
 
     publish-cli.yml, ``packaging/signing/cli-manifest.py`` and ``cli.sh`` pair
-    the same stem with the same channel.
+    the same stem with the same channel. *tag* is ``any`` for the pure wheel, or
+    a platform wheel's tag (:mod:`wheel_engine_platform`).
     """
     stem = "kirocrew_lts" if channel == "lts" else "kirocrew"
-    return f"{stem}-{version}-py3-none-any.whl"
+    return f"{stem}-{version}-py3-none-{tag}.whl"
 
 
 def parse_and_validate_manifest(
@@ -363,6 +364,7 @@ def parse_and_validate_manifest(
     *,
     channel: str,
     artifact_base: str,
+    platform_tag: str = "any",
 ) -> tuple[dict[str, str], bytes, bytes]:
     """Structural validation + canonicalization, PURE (no I/O).
 
@@ -372,7 +374,8 @@ def parse_and_validate_manifest(
     values, oversized payloads, and a wheel URL that is not the ONE canonical
     URL implied by the byte host + channel + signed version are all refused.
     Nothing in the payload is acted on until the signature over the canonical
-    bytes verifies.
+    bytes verifies. *platform_tag* names the wheel a platform manifest
+    (``latest-cli-<tag>.json``) must point at; ``any`` is ``latest-cli.json``'s.
     """
     if len(raw) > _MANIFEST_MAX_BYTES:
         raise WheelUpdateError("manifest exceeds the size ceiling")
@@ -409,7 +412,7 @@ def parse_and_validate_manifest(
     requires = manifest["python_requires"]
     if len(requires) > 128 or any(not (0x20 <= ord(c) <= 0x7E) for c in requires):
         raise WheelUpdateError("manifest python_requires fails validation")
-    wheel_name = wheel_filename(channel, version)
+    wheel_name = wheel_filename(channel, version, platform_tag)
     expected_url = f"{artifact_base}/cli/{channel}/{version}/{wheel_name}"
     if manifest["wheel_url"] != expected_url:
         raise WheelUpdateError("manifest wheel_url is not the canonical artifact URL")
@@ -438,15 +441,42 @@ def fetch_verified_manifest(
     workdir: Path,
     ctx: _BuildContext = _NO_CONTEXT,
 ) -> dict[str, str]:
-    """Fetch the channel manifest and return its AUTHENTICATED payload."""
-    url = f"{feed_base}/feed/{channel}/latest-cli.json"
-    raw = _fetch_bytes(url, _MANIFEST_MAX_BYTES, _FETCH_TIMEOUT_SECS, cancel=ctx.cancel)
-    payload, canonical, signature = parse_and_validate_manifest(
-        raw, channel=channel, artifact_base=artifact_base
-    )
-    _raise_if_cancelled(ctx.cancel)
-    _verify_signature(canonical, signature, workdir, ctx=ctx)
-    return payload
+    """Fetch the channel manifest and return its AUTHENTICATED payload.
+
+    ``latest-cli.json`` is read and verified first: it names the channel's
+    version. On a host a platform wheel is published for (``host_wheel_tag``),
+    that platform's ``latest-cli-<tag>.json`` is then read too, and its payload
+    is returned only when it names the same version, so the update installs the
+    wheel that carries the pinned KAS engine with the code. A platform manifest
+    that is absent (403 or 404) or names another version (a promoted stable or
+    a mirrored insider that published no platform wheels) leaves the pure
+    wheel's payload; one that fails validation or its signature is refused.
+    """
+    from kiro_crew.platform import wheel_engine_platform as plat
+
+    def _verified(url: str, tag: str) -> dict[str, str]:
+        raw = _fetch_bytes(url, _MANIFEST_MAX_BYTES, _FETCH_TIMEOUT_SECS, cancel=ctx.cancel)
+        payload, canonical, signature = parse_and_validate_manifest(
+            raw, channel=channel, artifact_base=artifact_base, platform_tag=tag
+        )
+        _raise_if_cancelled(ctx.cancel)
+        # One scratch directory per verification: the no-/dev/fd fallback creates
+        # its fixed input names O_EXCL, so a second check in the same one fails.
+        scratch = Path(tempfile.mkdtemp(prefix=f"verify-{tag}-", dir=str(workdir)))
+        _verify_signature(canonical, signature, scratch, ctx=ctx)
+        return payload
+
+    pure = _verified(f"{feed_base}/feed/{channel}/latest-cli.json", "any")
+    tag = plat.host_wheel_tag()
+    if tag is None:
+        return pure
+    try:
+        platform = _verified(plat.platform_manifest_url(feed_base, channel, tag), tag)
+    except WheelUpdateError as exc:
+        if plat.is_absent(exc):
+            return pure
+        raise
+    return platform if platform["version"] == pure["version"] else pure
 
 
 def download_verified_wheel(
@@ -455,7 +485,8 @@ def download_verified_wheel(
     """Download the wheel the SIGNED payload names and verify its SHA-256."""
     url = payload["wheel_url"]
     expected_sha = payload["sha256"]
-    wheel_path = dest_dir / wheel_filename(payload.get("channel", ""), payload["version"])
+    # The validated canonical URL ends in the wheel's own name, pure or platform.
+    wheel_path = dest_dir / url.rsplit("/", 1)[-1]
     _download_to_file(
         url,
         wheel_path,

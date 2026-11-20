@@ -60,7 +60,12 @@ later pass applies when it reads the ledger; a run whose rows fail it is
 recorded as excluded. The ledger is replaced through a temporary file, so an
 interrupted pass leaves the old ledger whole. A
 failing file a `select` verdict gave no tier cannot be fitted: the summary lists
-it first, no rates are written, and the exit code is 1.
+it first and no rates are written.
+
+Exit codes: 0 the proposal was written; 2 nothing was recorded (a ledger line of
+the wrong shape, or `gh` failed before the first row); 3 the rates are withheld.
+1 is left to the interpreter, so an error this script did not foresee is never
+read as one of those.
 
 Verdicts, logs and the ledger are data: parsed as JSON, checked field by field,
 size-capped, and every table cell is cut to a fixed character set.
@@ -99,6 +104,8 @@ NO_VERDICT = "no verdict artifact"
 BAD_VERDICT = "invalid verdict"
 NO_SOURCE = "its head repository no longer exists"
 BAD_ROW = "its rows would not read back from the ledger"
+EXIT_NOT_RECORDED = 2
+EXIT_WITHHELD = 3
 
 _TIER = re.compile(r"[A-Za-z0-9_-]{1,20}")
 _FILE = re.compile(r"[A-Za-z0-9_./-]{1,300}\.py")
@@ -501,8 +508,12 @@ def untiered(failures: list[Row]) -> list[Row]:
 
 
 def wilson_upper(failures: int, trials: int) -> float:
-    """The upper end of the two-sided 95% Wilson interval; 1.0 with no trial."""
-    if trials <= 0:
+    """The upper end of the two-sided 95% Wilson interval.
+
+    1.0 with no trial, and for a count the interval is not defined on: as many
+    failures as trials, or more, which only a ledger this script did not write holds.
+    """
+    if trials <= 0 or failures >= trials:
         return 1.0
     p = failures / trials
     centre = p + Z95 * Z95 / (2 * trials)
@@ -528,8 +539,8 @@ def fit(rows: list[Row], failures: list[Row]) -> dict[str, Row]:
         if row["tier"] is not None and not row["fork"]:
             entry(row["tier"])["failures" if row["diff_caused"] else "other"] += 1
     for counts in tiers.values():
-        measured = counts["trials"] > 0
-        counts["rate"] = round(counts["failures"] / counts["trials"], 8) if measured else 1.0
+        below = counts["failures"] < counts["trials"]
+        counts["rate"] = round(counts["failures"] / counts["trials"], 8) if below else 1.0
         counts["upper95"] = (
             math.ceil(wilson_upper(counts["failures"], counts["trials"]) * 1e8) / 1e8
         )
@@ -637,7 +648,7 @@ def main(argv: list[str] | None = None) -> int:
         new = collect(args, recorded_attempts(ledger), Path(args.root)) if args.limit > 0 else []
     except (ValueError, subprocess.CalledProcessError) as error:
         print(f"nothing recorded: {error}", file=sys.stderr)
-        return 2
+        return EXIT_NOT_RECORDED
     append_rows(ledger_path, new)
     rows = current(ledger + new, args.since)
     failures = classify(rows, args.window_days)
@@ -648,7 +659,7 @@ def main(argv: list[str] | None = None) -> int:
     print(text)
     if untiered(failures):
         print("no rates written: a failing file has no tier", file=sys.stderr)
-        return 1
+        return EXIT_WITHHELD
     Path(args.rates_out).write_text(
         json.dumps(proposed_rates(tiers), indent=2) + "\n", encoding="utf-8"
     )

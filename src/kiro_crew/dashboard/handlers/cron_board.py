@@ -238,6 +238,9 @@ async def _jobs_response(request: web.Request, job_id: str | None) -> web.Respon
                 "agent_sequence": [_r(a or "") for a in (j.agent_sequence or [])],
                 "model": _r(j.model or "") or None,
                 "channel": _r(j.channel or "") or None,
+                # The pinned destination on another channel; null when unpinned.
+                "channel_type": _r(j.channel_type) or None,
+                "target_id": _r(j.target_id) or None,
                 # "" not null: the stored default, and a value PATCH accepts.
                 "approval_mode": _r(j.approval_mode or ""),
                 # The chat session that owns this job. Ownership decides chat-side

@@ -347,6 +347,11 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     forget_home_bound_caches,
 )
 
+# Per-test resets of process-global kiro_crew.acp state.
+from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_kas_agent_config_error_reports,
+)
+
 # The in-memory Slack client and the Slack state resets.
 from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importers
     MockSlackClient,

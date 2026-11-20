@@ -3,10 +3,10 @@ title: MCP resource subscriptions -- wake a session when an MCP resource it subs
 status: draft
 author: unstablebrainiac
 created: 2026-10-13
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [24713, 34124]
 tracking-issues: [19694]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,10 @@ superseded-by: []
 
 # RFC: MCP resource subscriptions
 
-- Status: draft. Nothing is built. Code facts in §1 to §8 are measured at
+- Status: draft. No acceptance is recorded, but Phase 1's test (#24713) and
+  Phases 2 to 4 ([#34124](https://github.com/kirodotdev/KiroCrew/pull/34124), merged 2026-11-20: the holder,
+  `mcp_gateway/resource_subscription_store.py`, and `resource_subscribe` on
+  `kirocrew-core`) are on main (checked at `0c5d8bd5f3`). Code facts in §1 to §8 are measured at
   `de2d143dc`. The 2026-10-27 amendments (§4.9, §4.10) are measured at
   `8a518e121b`.
 - Author: unstablebrainiac

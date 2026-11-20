@@ -3,8 +3,8 @@ title: Where a crewmate's sessions live — the mate home folder, or lineage sta
 status: partial
 author: iamwhatever
 created: 2026-11-02
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: null
 implementation-prs: [26952, 28869, 28931, 29276, 30220, 37713]
 tracking-issues: []

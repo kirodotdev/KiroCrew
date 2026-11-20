@@ -31,6 +31,43 @@
       }
     },
     {
+      "name": "kirocrew.app.present",
+      "kind": "counter",
+      "unit": "1",
+      "scope": "kiro.crew",
+      "temporality": "delta",
+      "status": "active",
+      "attributes": {
+        "Activity": {
+          "values": [
+            "present"
+          ]
+        },
+        "Entity": {},
+        "Feature": {
+          "values": [
+            "app"
+          ]
+        },
+        "backend": {
+          "values": [
+            "none",
+            "other",
+            "running",
+            "stopped"
+          ]
+        },
+        "entity_version": {},
+        "status": {
+          "values": [
+            "disabled",
+            "enabled",
+            "other"
+          ]
+        }
+      }
+    },
+    {
       "name": "kirocrew.app.run_time",
       "kind": "counter",
       "unit": "s",
@@ -885,7 +922,8 @@
           "values": [
             "dashboard",
             "other",
-            "spawn"
+            "spawn",
+            "startup"
           ]
         },
         "outcome": {

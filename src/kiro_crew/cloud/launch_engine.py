@@ -238,6 +238,7 @@ class RealLaunchEngine:
         instance_type: str = "",
         on_network_fallback: Optional[Callable[[str], None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
+        cancelled: Optional[Callable[[], bool]] = None,
     ) -> str:
         # A custom type is checked against the Region's offerings again here: the
         # job may have waited, and its architecture picks the AMI.
@@ -260,6 +261,7 @@ class RealLaunchEngine:
                 region=region,
                 subnet_id=subnet_id,
                 on_network_fallback=on_network_fallback,
+                cancelled=cancelled,
             )
         finally:
             if halt is not None:

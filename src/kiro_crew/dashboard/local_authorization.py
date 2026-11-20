@@ -180,6 +180,35 @@ def _request_view(request_id: str, rec: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _kept(rec: Mapping[str, Any], grants: Mapping[str, Any], now: float) -> bool:
+    """Whether the record still holds *rec*: until it and its code expire, or while
+    the grant it led to has not expired."""
+    grant = grants.get(rec.get("grant_id", ""))
+    return max(rec["expires_at"], rec.get("code_expires_at", 0)) > now or (
+        grant is not None and grant["expires_at"] > now
+    )
+
+
+#: What the owner is shown for each status the record keeps. A request whose code
+#: was sent or redeemed is still an approved one to the owner.
+_OWNER_STATUS = {"code_issued": "approved", "exchanged": "approved"}
+
+
+def _request_for_owner(request_id: str, rec: Mapping[str, Any]) -> dict[str, Any]:
+    """A grant request as the owner sees it: the app's view and how it was answered."""
+    status = _OWNER_STATUS.get(rec["status"], rec["status"])
+    view = _request_view(request_id, rec)
+    view.update(
+        status=status,
+        decided_at=rec.get("decided_at"),
+        decided_by=rec.get("decided_by"),
+        grant_id=rec.get("grant_id"),
+    )
+    if status == "approved":
+        view["granted_scopes"] = list(rec["granted_scopes"])
+    return view
+
+
 class LocalAuthorization:
     """Grant requests, grants and tokens, kept in one record at *path*."""
 
@@ -211,10 +240,7 @@ class LocalAuthorization:
         """The record to write, without what has expired. Raises when it would not fit."""
         state["grants"] = {gid: g for gid, g in state["grants"].items() if g["expires_at"] > now}
         state["requests"] = {
-            rid: rec
-            for rid, rec in state["requests"].items()
-            if max(rec["expires_at"], rec.get("code_expires_at", 0)) > now
-            or rec.get("grant_id") in state["grants"]
+            rid: rec for rid, rec in state["requests"].items() if _kept(rec, state["grants"], now)
         }
         # Refuse growth rather than write a record the bounded reader cannot open. A
         # revocation only shrinks a grant, so it is never the write that is refused.
@@ -348,10 +374,21 @@ class LocalAuthorization:
         with _LOCK:
             requests = self._load()["requests"]
         return [
-            _request_view(rid, rec)
+            _request_for_owner(rid, rec)
             for rid, rec in requests.items()
             if rec["status"] == "pending" and rec["expires_at"] > now
         ]
+
+    def request(self, request_id: str) -> dict[str, Any]:
+        """One request as the owner sees it, answered or not, for as long as the record
+        keeps it. Raises :class:`UnknownRequest` otherwise."""
+        now = self._clock()
+        with _LOCK:
+            state = self._load()
+        rec = state["requests"].get(request_id)
+        if rec is None or not _kept(rec, state["grants"], now):
+            raise UnknownRequest(request_id)
+        return _request_for_owner(request_id, rec)
 
     def decide(
         self,
@@ -382,6 +419,9 @@ class LocalAuthorization:
                 raise ScopesNotRequested("scopes must be a non-empty subset of those requested")
             rec["status"] = "approved" if approve else "denied"
             rec["granted_scopes"] = granted if approve else []
+            rec["decided_at"] = int(now)
+            # The kind of caller, never a token. Only the Owner API answers today.
+            rec["decided_by"] = {"kind": "owner", "via": "api"}
             # Encoded first: a record too full to take the answer fails before the audit.
             serialized = self._encode(state, now)
             sel().log_api_access(
@@ -393,18 +433,20 @@ class LocalAuthorization:
                 critical=True,
             )
             self._write(serialized)
-            return _request_view(request_id, rec)
+            return _request_for_owner(request_id, rec)
 
     def revoke_grant(self, grant_id: str, *, caller: str) -> bool:
         """Revoke one grant and every token under it, audited under *caller*. ``False``
-        when there is none."""
+        when there is none. A grant already revoked stays so: nothing is written or audited."""
         _require_subject(caller)
         now = self._clock()
         with _LOCK:
             state = self._load()
             grant = state["grants"].get(grant_id)
-            if grant is None:
+            if grant is None or grant["expires_at"] <= now:
                 return False
+            if grant["status"] == "revoked":
+                return True
             _revoke(grant)
             serialized = self._encode(state, now)
             sel().log_api_access(

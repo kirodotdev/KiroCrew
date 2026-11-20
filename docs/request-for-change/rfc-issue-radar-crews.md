@@ -4,8 +4,8 @@ status: partial
 revision: v1
 author: kirocrew agent session, directed by diwm
 created: 2026-08-08
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 2300
 implementation-prs: [2300]
 tracking-issues: []

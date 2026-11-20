@@ -16,8 +16,8 @@ place precisely so that is a real choice rather than a downgrade; nothing about 
 while the bar is off. The labels on the controls that open the gesture follow the same switch
 (`quickSearchLauncher` in the shell), so a trigger never promises a search the launcher omits.
 
-It used to be the built-in app `command-bar`, whose enabled state was the switch. That record is
-now a migrated built-in (`apps/builtins._MIGRATED_BUILTINS`), and the boot cleanup that retires
+The retired built-in app `command-bar` carried the switch as its enabled state. That record is
+a migrated built-in (`apps/builtins._MIGRATED_BUILTINS`), and the boot cleanup that retires
 it (renames `installed.json` and `app.json` to `*.retired`) first writes its opt-out to the
 setting (`apps/builtin_fold.py`, through `_FOLDED_BUILTIN_SWITCHES`, which maps it to
 `dashboard.command_bar_enabled`): a record with the app off writes `command_bar_enabled: false`, a
@@ -265,7 +265,7 @@ that.
   it ranks up to `PER_GROUP_LIMIT` like any row and searching settings on their own name surfaces
   every one of them. The full settings corpus stays one `view` row away regardless.
   **Known gap:** rows past a root cap are dropped silently for the `commands`, `apps` and
-  `settings` groups. The `attention` group no longer shares it (#12622): a session waiting on
+  `settings` groups. The `attention` group does not share it: a session waiting on
   the reader has no `view` to recover it from, so past `PER_GROUP_LIMIT` `rankRootRows` counts
   the held-back rows and ends the group on a `+N more blocked` overflow row
   (`attentionOverflowRow`, id `attention:more`). That row is a selectable option, not a
@@ -468,8 +468,8 @@ debounced query already matches the new ones.
 | that cap still bounds one app's contributions | an app with twenty commands turns the first page into its index |
 | the product's own command list is uncapped | a builtin silently dropped from a page this repository reviews |
 | `aria-modal` and the focus trap travel together | a dialog that traps nothing while claiming modality |
-| a dismiss gives focus back to the opener, a row that closes the bar does not (`CommandBarOverlay.restoreFocus.test.tsx`) | Escape leaves the keyboard user on `<body>` (#29716); a split-view pick of the active session hands focus back to the other pane's composer, where the next Enter sends |
-| a session opened from the bar ends with the caret in its composer, same-key or not | a keyboard-first switch that ends in a mouse click on the composer (#15732) |
+| a dismiss gives focus back to the opener, a row that closes the bar does not (`CommandBarOverlay.restoreFocus.test.tsx`) | Escape leaves the keyboard user on `<body>`; a split-view pick of the active session hands focus back to the other pane's composer, where the next Enter sends |
+| a session opened from the bar ends with the caret in its composer, same-key or not | a keyboard-first switch that ends in a mouse click on the composer |
 | the caret moves only once the opened session's `switchSlot` has fulfilled; a refused switch gets none from the bar | keystrokes typed during the gateway round trip filed under a slot the 404 unwind then evicts |
 | an older same-key read landing first defers the caret to the newer claim | a stale fulfilment focusing while the live read is still out, then its 404 stranding the typed text |
 | the `apps` query is a pure cache consumer (`enabled: false`) | a second identical fetch per open |
@@ -528,17 +528,16 @@ pasted" is not an acceptable domain — but the check itself belongs to the host
 `kind` selects one of a fixed set (`url`, with an optional `hosts` allowlist, or
 `text`), and the host implements each one.
 
-An earlier revision of this contract let the manifest supply its own `pattern`. That
-was wrong in a way worth recording, because the shape of the mistake recurs: a regex
-is a small program, and this one ran against the field on every keystroke on the
-thread that draws the launcher. `^(a+)+$` and `^(a|aa)+$` are both under ten
+The manifest cannot supply its own `pattern`, and the reason recurs: a regex is a
+small program, and a manifest pattern would run against the field on every keystroke
+on the thread that draws the launcher. `^(a+)+$` and `^(a|aa)+$` are both under ten
 characters and both exponential, and neither runtime can interrupt a synchronous
-match, so no timeout was available. Screening the pattern syntactically was tried and
-abandoned — such a check recognizes shapes, so each version invites the next hostile
-pattern it does not cover, and the length cap bounded nothing (eight characters is
-enough). The fix was to delete the primitive rather than keep fencing it.
+match, so no timeout is available. Screening the pattern syntactically does not work —
+such a check recognizes shapes, so each version invites the next hostile pattern it
+does not cover, and a length cap bounds nothing (eight characters is enough). So the
+primitive does not exist rather than being fenced.
 
-So every matcher now runs in time proportional to the input no matter what a manifest
+Every matcher runs in time proportional to the input no matter what a manifest
 asks for: `url` uses the runtime's own URL parser, which is linear by construction.
 An `argument` carrying a `pattern` key is REFUSED rather than migrated, because
 silently dropping it would leave an app written against the old contract running on

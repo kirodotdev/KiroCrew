@@ -2301,6 +2301,17 @@ measures, never above.
   `test_slack_code_channel_board_diff.py` 104.6 s -> 40.4 s. The scan and both callers'
   use of it are tested in `test_git_config_hooks.py`.
 
+- **Count the git spawns of a parametrized case, and spend each one on a new answer.**
+  A case multiplied by its parameters multiplies its process starts, and on a loaded
+  Windows runner a git spawn is the cost. Run each case only from the directories that
+  can answer differently, and do not re-ask an answer that is a pure function of one the
+  case already asserted. MEASURED (#39930): the 51 cases of
+  `test_prepare_pr_pre_push_gate.py::test_one_hostile_config_key_changes_nothing_from_a_subdirectory`
+  took a median 525 worker-seconds of `Backend Tests (Windows) (4)` over 10 main runs.
+  From two directories instead of three, without re-asking the gate selection, they
+  start 19 gits instead of 34; four xdist workers, AWS c6i.2xlarge Windows, 5 rounds
+  each: 86.2 -> 57.5 worker-seconds.
+
 - **If you stub the only thing that releases a resource, the fixture owes the release.**
   A permit, an in-flight claim, a lock: when the green-path test replaces the runner
   whose `finally` gives it back, the resource is gone for the life of the worker. The
@@ -6040,7 +6051,10 @@ only knows those initializer spellings; a global bound to anything else still ne
 reviewer's eye.
 
 The reset goes in `test/conftest_resets.py` as an autouse fixture, re-bound in
-`test/conftest.py`'s `from conftest_resets import (...)` block. A reset in the new
+`test/conftest.py`'s `from conftest_resets import (...)` block. When that file is at its
+1,600-line target, the reset goes in a `test/conftest_resets_<topic>.py` sibling named for
+the package it resets (`conftest_resets_acp.py`), re-bound by its own import block there.
+A reset in the new
 cache's own test file does not count: the next file on the worker is the one that
 inherits it. `test/test_process_cache_floor_ratchet.py` refuses the common shape, but
 only in a CI run whose checkout contains it, so a PR whose last green run is older than

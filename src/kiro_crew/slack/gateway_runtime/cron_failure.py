@@ -142,6 +142,7 @@ async def _deliver_failure_alert(
     plain: str,
     actor_key: str,
     silent: bool = False,
+    pin: tuple[str, str] | None = None,
 ) -> tuple[bool, bool, bool]:
     """Deliver a failure alert on exactly ONE surface.
 
@@ -155,7 +156,8 @@ async def _deliver_failure_alert(
     still wins, so the channel leg is skipped for it -- without that guard the
     channel leg reports a delivery, stands the Slack leg down, and the alert
     lands on the origin conversation instead of the destination the user
-    named.
+    named. A non-empty launch *pin* outranks a Slack channel set while the
+    run ran: the run launched with none, so its Slack fallback is the owner DM.
 
     *mrkdwn* and *plain* are composed by the caller and are deliberately two
     strings: Slack's markup is not another transport's dialect, so a shared
@@ -169,10 +171,14 @@ async def _deliver_failure_alert(
     channel_delivered = False
     slack_delivered = False
     slack_failed = False
-    if not silent and not job.channel:
+    launched_pinned = pin is not None and all(pin)
+    if not silent and (launched_pinned or not job.channel):
         try:
             channel_delivered = await self._deliver_cron_to_channel(
-                job.session_key, plain, actor_key=actor_key
+                job.session_key,
+                plain,
+                actor_key=actor_key,
+                pin=pin if pin is not None else (job.channel_type, job.target_id),
             )
         except Exception:
             logger.error(
@@ -182,7 +188,7 @@ async def _deliver_failure_alert(
             )
     if self.slack and not silent and not channel_delivered:
         try:
-            channel = job.channel
+            channel = "" if launched_pinned else job.channel
             dm_user = self._cron_dm_user(job)
             if not channel and dm_user:
                 channel = await self._open_dm_with_retry(dm_user, job.name)
@@ -232,6 +238,7 @@ async def _alert_cron_failure(
     *,
     denied: bool = False,
     exit_code: int | None = None,
+    pin: tuple[str, str] | None = None,
 ) -> None:
     """Tell the user WHY a script/command cron run failed or was denied.
 
@@ -265,6 +272,9 @@ async def _alert_cron_failure(
       exception is the real story; an alert that failed must not replace
       it. Cancellation still propagates (``CancelledError`` is a
       ``BaseException``).
+
+    *pin* is a script run's launch ``(channel_type, target_id)``: its reason
+    carries that run's output, so it goes where the run's grant bound it.
     """
     try:
         if job.silent:
@@ -366,6 +376,7 @@ async def _alert_cron_failure(
             mrkdwn=msg,
             plain=plain,
             actor_key=f"cron:{job.id}",
+            pin=pin,
         )
         self._advance_failure_dedup(
             job, fh, channel_delivered=channel_delivered, slack_failed=slack_failed
@@ -375,7 +386,10 @@ async def _alert_cron_failure(
             # does not read "none" for a run answered on Discord.
             surfaces = ["slack"] if slack_delivered else []
             if channel_delivered:
-                surfaces.append(channel_namespace_of(job.session_key))
+                # A pinned job's channel leg sent to its pin (a script run's, when
+                # given), not its origin.
+                sent_to = pin[0] if pin is not None else job.channel_type
+                surfaces.append(sent_to or channel_namespace_of(job.session_key))
             sel().log_tool_invocation(
                 session_key=f"cron:{job.id}",
                 tool_name="cron_run_failure_alert",
@@ -476,7 +490,7 @@ async def _alert_cron_auto_paused(
         try:
             surfaces = ["slack"] if slack_delivered else []
             if channel_delivered:
-                surfaces.append(channel_namespace_of(job.session_key))
+                surfaces.append(job.channel_type or channel_namespace_of(job.session_key))
             sel().log_tool_invocation(
                 session_key=f"cron:{job.id}",
                 tool_name="cron_auto_pause_alert",
@@ -816,7 +830,8 @@ async def _cron_single_failure(
             # trail does not read "none" for a crash sent to Discord.
             surfaces = ["slack"] if slack_delivered else []
             if channel_delivered:
-                surfaces.append(channel_namespace_of(job.session_key))
+                # A pinned job's channel leg sent to its pin, not its origin.
+                surfaces.append(job.channel_type or channel_namespace_of(job.session_key))
             sel().log_tool_invocation(
                 session_key=f"cron:{job.id}",
                 tool_name="cron_failure_alert",

@@ -258,6 +258,7 @@ async def _deliver_cron_agent_result(
                 job.session_key,
                 f"Cron: {job.name}\n\n{result_text}",
                 actor_key=session_key,
+                pin=(job.channel_type, job.target_id),
             )
         except Exception:
             # The job SUCCEEDED. Letting a delivery error reach the

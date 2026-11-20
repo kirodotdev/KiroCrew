@@ -105,6 +105,7 @@ _FEATURES = frozenset(
         "kirocrew.app.session_started",
         # Adds a turn's seconds; duration is app_duration_bucket.
         "kirocrew.app.run_time",
+        "kirocrew.app.present",
         "kirocrew.channel.message.received",
         "kirocrew.ui.control.clicked",
     }

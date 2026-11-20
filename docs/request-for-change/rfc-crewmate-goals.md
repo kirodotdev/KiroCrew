@@ -4,7 +4,7 @@ status: implemented
 author: buluoray
 created: 2026-10-12
 last-audited: 2026-11-20
-audited-at: cdb601611f
+audited-at: 0c5d8bd5f3
 doc-pr:
 implementation-prs: [19539, 22962]
 tracking-issues: [19240]

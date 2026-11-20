@@ -105,11 +105,12 @@ sequenceDiagram
 
 Middleware chain, outermost first (the explicit list `start_dashboard` in `server.py`
 installs through `_install_dashboard_middlewares` in `server_runtime/middleware_chain.py`;
-the last two gates are appended by their lifecycle registrations):
+the gates after `spa_fallback` are appended by their lifecycle registrations, and
+`team_config` only when the shared Crew preview is on):
 
 ```mermaid
 graph LR
-    L[route_latency] --> K[card_turn_arrival] --> R[relay_ingress] --> H[relay_header_strip] --> Z[deny_audit] --> A[host_canonical_redirect] --> B[host_validation] --> X[reject_compressed_body] --> C[no_cache] --> D[csrf] --> E[token_auth] --> F[sel_audit] --> T[card_turn_delegation] --> S[slot_ownership] --> G[spa_fallback] --> W[_workflow_ready] --> P[_crewmate_prune_gate]
+    L[route_latency] --> K[card_turn_arrival] --> R[relay_ingress] --> H[relay_header_strip] --> Z[deny_audit] --> O[app_web_origin] --> V[relay_origin] --> A[host_canonical_redirect] --> B[host_validation] --> X[reject_compressed_body] --> C[no_cache] --> D[csrf] --> E[token_auth] --> Q[redaction_audience] --> F[sel_audit] --> T[card_turn_delegation] --> S[slot_ownership] --> G[spa_fallback] --> W[_workflow_ready] --> P[_crewmate_prune_gate] --> N[team_config] --> Y[_change_card_hook]
 ```
 
 1. Route latency is outermost, so it times the full in-gateway handling, and the
@@ -142,7 +143,19 @@ graph LR
    and any request under `/api/members` or its Crew API twin
    `/v1/crew/owner/bots`, until the Bot prune settles, 503
    past its timeout.
-   Both RETURN their refusal, inner to `sel_audit`.
+   Both RETURN their refusal, inner to `sel_audit`. With the shared Crew preview
+   on, `team_config_middleware` (`shared_crew/lifecycle.py`) answers 403 to a
+   shared teammate while the tailnet identity config cannot be read. Innermost,
+   `_change_card_hook` (`_register_change_card_hook`) runs
+   `change_card_middleware` (`dashboard/handlers/change_cards.py`) on the routes
+   in `change_card_catalog.HOOKED_ROUTES` only.
+
+Between `deny_audit` and the host barriers, a request for an app web origin
+(`<app>.apps.localhost`, `apps/app_web_origin.py`) or a relayed Crew's browser
+origin (`kcr-<sid>.localhost`, `relay_viewer/browser_origin.py`) is served or
+refused there and reaches no dashboard layer. Just inside token auth,
+`redaction_audience_middleware` (`dashboard/redaction_audience.py`) runs the
+handler of a request the owner does not alone read with every redaction pass on.
 
 `deny_audit` (`_make_deny_audit_middleware`, installed on both entrypoints) is
 outer to every barrier that can refuse, and `sel_audit` is inner to all of them —
@@ -159,7 +172,8 @@ generic reason. Four refusing layers sit inner to `sel_audit`, and each RETURNS
 rather than raises, so the boundary never sees them: the card-turn delegation
 check (a 403 it audits itself), the per-slot checkpoint (a
 404, plus its own `app_isolation` row for a slot that exists) and the two appended
-gates (`_workflow_ready`, `_crewmate_prune_gate`, each a 503).
+gates (`_workflow_ready`, `_crewmate_prune_gate`, each a 503). With the shared Crew
+preview on, `team_config` is one more (a 403 it audits itself).
 
 `relay_ingress` sits OUTER to `deny_audit`, on both entrypoints, so every layer
 inside it (the boundary's forwarded binding included) sees the request it hands
@@ -1274,7 +1288,7 @@ already names where to sign in.
 
 ## Security Properties
 
-1. Persistent HMAC secret (`token_signing.key`, owner-restricted) — signed access and refresh cookies survive a process restart; `token_secret` supplies an ephemeral fallback only when the key cannot be persisted. A persisted key that exists but is shorter than 32 bytes is never accepted and is not repaired in place: the gateway boot preflight (`slack.gateway.signing_key_preflight`, backed by `token_secret.signing_key_health` and, for the bytes actually loaded, `token_secret.load_boot_secret`) refuses to start, logs CRITICAL and prints manual repair steps (stop the gateway and any restore, check the length, delete the file by hand, restart), and `kirocrew doctor` reports the same state, so a truncated key is a loud operator action instead of an ephemeral secret that logs every session out at each restart (#13221).
+1. Persistent HMAC secret (`token_signing.key`, owner-restricted) — signed access and refresh cookies survive a process restart; `token_secret` supplies an ephemeral fallback only when the key cannot be persisted. A persisted key that exists but is shorter than 32 bytes is never accepted and is not repaired in place: the gateway boot preflight (`slack.gateway.signing_key_preflight`, backed by `token_secret.signing_key_health` and, for the bytes actually loaded, `token_secret.load_boot_secret`) refuses to start, logs CRITICAL and prints manual repair steps (stop the gateway and any restore, check the length, delete the file by hand, restart), and `kirocrew doctor` reports the same state, so a truncated key is a loud operator action instead of an ephemeral secret that logs every session out at each restart.
 2. Dual expiry: link click expiry plus configured cookie-session expiry, enforced by `validate_token()`
 3. Peer-keyed session pinning on first use — prevents token theft across networks. The pin binds to the client address (`ip:<addr>`), or — when the operator opted into `dashboard.tailscale.trust_identity`, the kernel proved the loopback client socket belongs to `tailscaled` (`tailnet_proxy_proof.loopback_client_is_daemon`: on Linux the `/proc/net/tcp{,6}` owner uid of the client end is root's and a `tailscaled` runs as root; every other platform proves nothing), and the local daemon verified the forwarded peer — to the tailnet identity (`ts:node:<login>|<node>` or `ts:login:<login>` per `pin_scope`, ACL-tagged nodes always node-scoped). A verified login outside `allowed_logins` is denied outright. Without the Shared Crew preview an unresolved peer falls through to the token+IP path (fail-closed on identity, fail-open on availability, `rfc-tailnet-dashboard-access`). Under the preview (`KIROCREW_SHARED_CREW_PREVIEW=1`) the allowlist fails closed when no peer resolves (`tailnet.forwarded_peer_refusal`): a forwarded tailnet request (loopback peer, a tailnet address in `X-Forwarded-For`) is admitted only when the daemon's `whois` of its single forwarded address names an allowlisted login and no `Tailscale-User-Login` header disagrees; a chain, an address the daemon cannot name, a disagreeing header or a login off the list is refused (`tailnet identity unverified` or `tailnet login not allowed`). A loopback client the kernel does not prove is the daemon (every platform but Linux, a same-user daemon, a proof that raised) is such a case: its forwarded address can only refuse the request or admit it as Unknown with the address pin, never name a person, so a local token holder cannot name a tailnet person (`test_shared_crew_identity_spoof.py`, `test_shared_crew_allowlist_fail_closed.py`). A request with no forwarding header is never refused here. A `require_peer` QR link instead fails closed, enrolls one verified allowed peer on its main exchange path, and carries that HMAC-signed original `peer_key` through access cookies, refresh rotation/grace replay, and child mints. A session pinned to a tailnet identity is denied (`tailnet identity unverified`) while the daemon cannot answer and denied on signed-key mismatch after restart — never satisfiable by an unverified proxied request or whichever allowed node presents a stolen cookie first. Transient daemon failures are cached briefly. Behind a non-Tailscale tunnel the pin binds to the tunnel's loopback address and is therefore shared (reported by Security Posture).
 4. Link re-exchange is allowed during the signed link window; each query-param use mints a distinct session cookie (`test_link_token_still_reusable_via_query_param_after_exchange`; `test_url_token_exchanged_for_distinct_session_cookie`)

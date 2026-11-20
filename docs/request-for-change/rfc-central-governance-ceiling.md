@@ -4,7 +4,7 @@ status: draft
 author: kirocrew agent session, directed by maintainers of #7362
 created: 2026-09-08
 last-audited: 2026-11-20
-audited-at: c157748343
+audited-at: 0c5d8bd5f3
 doc-pr: 9373
 implementation-prs: [7362]
 tracking-issues: [9106]

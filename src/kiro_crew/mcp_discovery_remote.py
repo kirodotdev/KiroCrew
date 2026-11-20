@@ -201,18 +201,27 @@ async def advertises_protected_resource(mcp_url: str) -> bool:
     probe sees. The fetch and the checks are the Connections discovery's own
     (``mcp_oauth_discovery._fetch_json``: vetted public HTTPS on 443, pinned, no
     redirects, size-bounded; ``l0_probe._read_resource_metadata``: the document
-    covers this url's origin and names an HTTPS authorization server). Nothing in
-    the document is followed. Any failure reads as "no".
+    covers this url's origin and names an HTTPS authorization server). The
+    document's ``resource`` must also be this endpoint itself
+    (``tool_aliases.normalized_endpoint``): a root document for a sibling path on
+    the same origin says nothing about this one.
+    Nothing in the document is followed. Any failure reads as "no".
     """
     from kiro_crew.connections.l0_probe import _read_resource_metadata, _resource_metadata_urls
+    from kiro_crew.connections.tool_aliases import normalized_endpoint
     from kiro_crew.mcp_oauth_discovery import _FETCH_ERRORS, _fetch_json
 
+    want = normalized_endpoint(mcp_url)
     for url in _resource_metadata_urls(mcp_url):
         try:
-            _read_resource_metadata(await _fetch_json(url), mcp_url)
+            document = await _fetch_json(url)
+            _read_resource_metadata(document, mcp_url)
         except _FETCH_ERRORS:
             continue
-        return True
+        resource = document.get("resource")
+        values = resource if isinstance(resource, list) else [resource]
+        if want is not None and any(normalized_endpoint(v) == want for v in values):
+            return True
     return False
 
 

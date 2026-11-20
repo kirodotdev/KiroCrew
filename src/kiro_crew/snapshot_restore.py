@@ -50,6 +50,7 @@ from kiro_crew.snapshot_components import (
     _DERIVED_INDEXES,
     _FLAT_DOCUMENT_VALIDATORS,
     _JSON_OBJECT_LISTS,
+    _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
@@ -884,6 +885,21 @@ def _do_replace(
     set known to be complete. The core-file swap must not run before phase one finishes.
     """
     facade = _facade()
+    # A tree whose root may be a supported link (`_LINKABLE_TREE_ROOTS`) and that this
+    # bundle does not carry is not restored by this run, so it is not this run's to vet or
+    # touch: a linked `members/` must not refuse a replace of everything else.
+    uncarried = [
+        c
+        for c in COMPONENTS
+        if _want(components, c)
+        and COMPONENTS[c].trees
+        and all(t in _LINKABLE_TREE_ROOTS for t in COMPONENTS[c].trees)
+        and not any((snap / t).is_dir() for t in COMPONENTS[c].trees)
+    ]
+    if uncarried:
+        components = [c for c in COMPONENTS if _want(components, c) and c not in uncarried]
+        for c in uncarried:
+            print(f"  {c}: not in this bundle, so the live folder is left as it is")
     # Before anything is created or copied: a destination tree root that does not resolve
     # inside the data home would have the restore write outside it.
     facade._refuse_unsafe_destination_roots(mc, components)

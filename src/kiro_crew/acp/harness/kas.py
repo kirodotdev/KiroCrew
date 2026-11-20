@@ -237,7 +237,8 @@ def _bundle_route_selected() -> bool:
 def _runs_crew_engine_bundle(spawned_binary: str | None) -> bool:
     """Is *spawned_binary* inside one of Crew's own engine roots (the bundle's Node)?
 
-    The roots are the two :func:`kiro_crew.acp.kas_bundle.installed_bundle` reads:
+    The roots are the ones :func:`kiro_crew.acp.kas_bundle.installed_bundle` reads
+    (:func:`kiro_crew.acp.kas_bundle.engine_roots`): the package's ``_kas_engine``,
     the data home's ``engines/kas`` and the desktop app's staged copy. Positive
     identity only: a missing path, a kiro-cli relay or any failure is False.
     Blocking (resolves paths); call off the loop.
@@ -246,7 +247,7 @@ def _runs_crew_engine_bundle(spawned_binary: str | None) -> bool:
         return False
     from kiro_crew.acp import kas_bundle as kas_bundle_mod
 
-    roots = [kas_bundle_mod.kas_engines_root(), kas_bundle_mod.bundled_kas_root()]
+    roots = kas_bundle_mod.engine_roots()
     try:
         binary = Path(spawned_binary).resolve()
         return any(binary.is_relative_to(root.resolve()) for root in roots if root)
@@ -783,6 +784,10 @@ class KasHarness(MembershipHarness):
     #: kiro-cli a relay spawn ran under, set at each spawn; "" on Crew's own bundle,
     #: whose engine is the pinned one (``acp/kas_pin.py``).
     untested_version_notice = ""
+    #: The route the process this harness last spawned took, set at each spawn.
+    #: The sign-in messages for THIS runtime read it, never the process-wide
+    #: ``kas_route.last_spawn_route``, which another chat's spawn may have moved.
+    spawn_route: kas_route_mod.KasRoute | None = None
 
     # ── Seam 1: spawn ──
 
@@ -951,6 +956,7 @@ class KasHarness(MembershipHarness):
                 crew_auth=bool(host_auth),
             )
         kas_route_mod.note_spawn_route(relay)
+        self.spawn_route = relay
         # From the floor release an omitted --auth-method means cli, so a
         # Crew-owned spawn names client there and when the version is unknown.
         # Only a version known to be below the floor keeps the flag off, which
@@ -1031,6 +1037,7 @@ class KasHarness(MembershipHarness):
         from kiro_crew.config.loader import KiroCrewConfig
 
         kas_route_mod.note_spawn_route(route)
+        self.spawn_route = route
         bundle = await asyncio.to_thread(kas_bundle_mod.installed_bundle)
         if bundle is None:
             base_url = await asyncio.to_thread(lambda: KiroCrewConfig.load().agent.kas_bundle_url)

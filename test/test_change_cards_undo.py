@@ -113,6 +113,14 @@ def test_a_schedule_fingerprint_sees_edits_not_runs():
     job.silent = False
     job.channel = "C123"
     assert cards._cron_job_revision(job) != first
+    job.channel = ""
+    unpinned = cards._cron_job_revision(job)
+    # An unpinned job keeps the digest a card stored before the pin existed.
+    assert unpinned == cards._revision_digest(
+        {k: getattr(job, k) for k in cards._CRON_CONFIG_FIELDS}
+    )
+    job.channel_type, job.target_id = "telegram", "topic:42:7"
+    assert cards._cron_job_revision(job) != unpinned
 
 
 def test_a_waiting_poll_resumes_its_own_step_and_an_undo_resumes_too(tmp_path):

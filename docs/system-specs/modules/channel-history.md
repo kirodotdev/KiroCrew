@@ -15,9 +15,8 @@ In a DM, the agent sees every message. In a group channel like #team-oncall,
 multiple people are talking. When someone @mentions Kiro Crew, the agent only
 sees that single message — zero context about the surrounding conversation.
 
-Additionally, when multiple threads are active in the same channel, messages
-from different threads were mixed together with no separation, causing the
-LLM to confuse context across threads.
+When several threads are active in the same channel, mixing their messages
+together would make the LLM confuse context across threads.
 
 ## Solution
 
@@ -45,6 +44,7 @@ When `thread_ts` is provided, output includes only messages from the current thr
 - **Thread-aware**: entries carry optional `thread_ts` and `msg_ts`; `context_for()` returns only the current thread when given `thread_ts`, or only top-level messages otherwise
 - **Normal-mode capacity**: 50 entries per channel
 - **Normal-mode TTL**: 5 minutes — stale messages from old topics are evicted
+- **Per-message cap**: `context_for()` shows at most 300 characters of each message and marks a cut one with `…`
 - **Observe mode**: defaults to 200 entries and one week, configured by `slack.observe_max_messages` and `slack.observe_ttl_hours`; entries are appended to owner-local JSONL under `<data-home>/history`, loaded on startup, and compacted lazily
 - **Push after gates**: unauthorized, intercepted, activation-off, and channel-governance-denied content is never recorded; observe mode records admitted messages before the mention/active-thread routing decision, while other modes record only messages accepted for processing
 - **Inject on every built message**: `ContextBuilder.build_message()` reads current channel history on both new and follow-up turns and neutralizes structural prompt markers

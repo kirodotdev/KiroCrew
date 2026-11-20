@@ -334,6 +334,7 @@ concurrency group, and their version derivation.
 | `release.yml` | trigger (`push` on `v*` tags) | Derives version + channel + wheel version from the tag. A prerelease tag builds, publishes to insider, and records the immutable promotion bundle. A bare tag verifies the same-commit successful prerelease run, then rebuilds under the bare version by default; `STABLE_PROMOTE_BYTES` opts one base into exact-byte reuse. Then it creates the GitHub Release. `concurrency: release-publish` with `cancel-in-progress: false` (queued). |
 | `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. On a release every build job needs it; on a nightly every **publish** job needs it and no build job does, so a slow registry delays publication rather than failing the build. Its own daily `schedule:` run at 22:00 UTC gates nothing: it is the early warning that files a `scheduled-failure` issue eight hours before the nightly. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
+| `build-platform-wheels.yml` | reusable build | Turns the `cli-wheel` pure wheel into one `py3-none-<tag>` wheel per host the pinned KAS engine runs on, each leg on its own host, and gates each (`scripts/kas_platform_wheel.py verify` + a clean install). Uploads `cli-wheel-<tag>`. Credential-free. |
 | `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. `nightly.yml` passes `soft_fail_arm64: true`, which marks the arm64 leg alone `continue-on-error` so a failed arm64 build cannot skip the x64 publishers; the smoke never carries it, so a package that will not install still holds both arches. A second macOS job, `build-desktop-mac-single-arch`, builds arm64-only and x86_64-only DMGs behind the `mac_single_arch` input (`nightly.yml` and `release.yml` both pass true). It is `continue-on-error` only under `soft_fail_mac_single_arch: true`, which `nightly.yml` passes and `release.yml` does not: on release both DMGs are required promotion-bundle roles, so a failed single-arch build fails the aggregate before any publisher writes an immutable key. Each DMG is then signed and fed by its own `sign-and-notarize.yml` call (`mac_variant`), and the universal call excludes both artifact names when flattening, so the universal DMG stays the only mac bytes the universal leg signs and feeds. |
 | `build-windows.yml` | reusable build | `kirocrew-windows-4-core` on this repository and `windows-latest` on a fork, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
 | `publish-windows.yml` | reusable publish | Publishes the signed x64 installer and blockmap, then `feed/<channel>/latest.yml` and the `latest/` installer alias. It probes the soft-failed build artifact and skips when none exists; stable uses the fresh build by default or the optional candidate pair in byte-reuse mode. |
@@ -620,6 +621,52 @@ tag runs the workflow from its own commit. A release branch whose merge still ke
 only bare links would publish a page holding just its own link and drop the
 channel's whole version history. So a release branch cut before links carried
 attributes takes the attribute-keeping merge pattern before its next tag.
+
+### Platform wheels carry the KAS engine
+
+Beside the pure `kirocrew-<v>-py3-none-any.whl`, every fresh build publishes one
+wheel per host the KAS engine runs on (#39623): `kirocrew-<v>-py3-none-<tag>.whl`
+for `manylinux_2_28_x86_64`, `manylinux_2_28_aarch64`, `macosx_11_0_arm64` and
+`macosx_11_0_x86_64`. Each is the pure wheel plus the pinned engine and its Node
+at `kiro_crew/_kas_engine/<pin>/`, so install and update need no engine download
+and code and engine switch together. Windows and every other host keep the pure
+wheel and `kirocrew kas install`, which stays the fallback and migration path.
+
+- **Build.** `build-platform-wheels.yml` (after `build-wheel.yml` in the same run), one leg per tag on the host
+  it is for: `scripts/kas_platform_wheel.py build` stages the engine with the
+  backend's own installer (every byte against the pinned manifest, the staged Node
+  run once) and `trim_for_shipping`, then writes the wheel. Each leg is also its
+  wheel's gate: `verify` fails unless the wheel holds the pinned engine with the
+  manifest's digests and a Node for its tag, and a clean install must report
+  `(built into the wheel)` with nothing downloaded. A failed leg fails the
+  reusable workflow, so the release publishes nothing.
+- **Publish.** `publish-cli.yml` re-runs `verify` over all four (a missing tag
+  fails the job), attests them, and for each writes `<prefix>/<wheel>`,
+  `<prefix>/cli-manifest-<tag>.json` and, when the pure feed advanced,
+  `feed/<channel>/latest-cli-<tag>.json`: the same signed schema as
+  `latest-cli.json`, naming that tag's wheel. `latest-cli.json` itself is never
+  changed, because released clients refuse any field they do not know. The
+  checksums go to `<prefix>/SHA256SUMS-platform`, and the channel's PEP 503 page
+  lists the platform wheels too, so `pip install kirocrew --extra-index-url ...`
+  takes the platform wheel by tag on its own.
+- **Clients.** `wheel_engine.fetch_verified_manifest` and `cli.sh` read
+  `latest-cli.json` first: it names the channel's version. On a host with a tag
+  (`wheel_engine_platform.host_wheel_tag`; Linux needs glibc 2.28) they then read
+  `latest-cli-<tag>.json` and use it only when it names that same version; absent
+  (403/404) or another version leaves the pure wheel. A pinned `cli.sh --version`
+  installs the pure wheel.
+- **Promotion.** A stable promotion republishes the RC's bytes from the promotion
+  bundle, which carries no platform wheels yet, so a promoted stable publishes the
+  pure wheel alone. Its platform manifests keep naming the previous version, which
+  the same-version rule above ignores, and its clients get the engine from
+  `kirocrew kas install`. The stable-to-insider mirror is the same case.
+- **Engine guarantee.** No supported install runs without its engine: the platform
+  wheels are gated above, a desktop build in CI refuses `BUNDLE_KAS=0`
+  (`packaging/build-desktop.sh`), an update refuses to switch when the new
+  release's `kas install --if-in-use` fails whatever `agent.kas_bundle` says
+  (`platform/release_apply.py`), and a pure-wheel install that has no engine gets
+  it at the first gateway start (`acp/kas_engine_startup.py`), which reports a
+  failure loudly (`kirocrew kas status` and `kirocrew doctor` fail).
 
 ## The macOS trust chain
 

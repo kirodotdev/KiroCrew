@@ -1022,6 +1022,10 @@ sdk.useBrowserMedia(sessionKey, {
 })
 ```
 
+`pollMs` is the read interval in milliseconds: anything below 500 is raised to 500,
+because every read takes the browser lock your agent's ops wait on. A value that is not
+a finite number above 0 (`0`, `-1`, `NaN`, `Infinity`) reads once.
+
 The signal is derived from the state your page reads, so it only exists while your page is
 mounted and polling. Your backend learns of it when your page posts to one of your own
 routes; with the page closed nothing reads the tab, so nothing fires.

@@ -47,11 +47,18 @@
 > 2026-10-30 prompt clause): on kiro-cli's relay they show kiro-cli's commands and,
 > after "or", Kiro Crew's sign-in; on the bundle, the Sign in button. The route stays
 > in Settings, `kirocrew doctor` and the log. The message text itself: the declaration's
-> `sign_in_remedy` and `signed_out_message` name that card alone, led by the route
-> of the last spawn once one ran (`host_auth._with_kas_route`). The chat row for
-> that sentence carries the `meta.notice` token `kas_signed_out`, and the route it
+> `sign_in_remedy` and `signed_out_message` name that card alone, led by a route
+> once a spawn ran (`host_auth._with_kas_route`). A caller holding the failing
+> runtime passes that runtime's own route (`AcpRuntime.kas_spawn_route`, which
+> `KasHarness.spawn_route` records at each spawn), so a second chat spawning on
+> another route cannot change what this one's prompt says; only a
+> caller with no runtime in hand falls back to the last spawn in the process.
+> The row reads the route back from that sentence (`host_auth.kas_sentence_route`),
+> never from the last spawn: its kind (the kiro-cli sign-in row, with or without
+> Crew's Sign in) and its `meta.notice` token `kas_signed_out` with the route it
 > names in `notice_args.route` (both set when `host_auth.kas_signed_out_route`
-> recognises it), so the dashboard draws it in the user's language, led by the
+> recognises it). Only a row whose text is no KAS signed-out sentence takes its
+> kind from the last spawn. The dashboard draws the sentence in the user's language, led by the
 > route in plain words; beside the card's sign-in button the copy points at that button.
 > The sentence counts when it leads the row, alone or followed by more text after a
 > space: the ACP error formatter appends its model-switch note and a request id. The
@@ -143,7 +150,7 @@ segment is the region source). Social device-flow uses a shared default profile 
 returned by the poll. The engine accepting a reply without one does NOT make it
 optional: the Kiro runtime refuses every request that names no profile with HTTP 400
 `ValidationException` "profileArn is required for this request" (model list, chat,
-remote tools; #26109). Builder ID has no profile of its own (`ListAvailableProfiles`
+remote tools). Builder ID has no profile of its own (`ListAvailableProfiles`
 answers it `AccessDeniedException`), so the vault stores none for it, and
 `auth/provider.kas_profile_arn` gives the engine kiro-cli's fixed Builder ID ARN
 (`BUILDER_ID_PROFILE_ARN`, the value kiro-cli's `builder_id_callback_token` sends) on
@@ -367,7 +374,7 @@ browser last submitted still comes first (`website/src/utils/companySignIn.ts`).
 An approved IdC token carries no profile ARN, so `_poll_oidc` resolves it with the
 control plane's `ListAvailableProfiles` (`auth/login/control_plane.py`). The Identity
 Center region does not name the control plane that serves the profile (a `us-east-1`
-instance can hold an `eu-central-1` profile, #28904), so the call asks every host in
+instance can hold an `eu-central-1` profile), so the call asks every host in
 `_CPS_ENDPOINTS`, the login region's own first, and keeps the first answer that lists
 a profile. A host that refuses or sends an unreadable answer is logged and skipped.
 The poll ends as `error`, with nothing stored, when every host refused or none lists
@@ -761,9 +768,9 @@ engine instead ([aws-control.md](aws-control.md)).
   card, and the agent's "not signed in" error row with its sign-in deep link),
   never silently handed back to whatever `kiro-cli login` holds. Automatic
   demotion to cli-owned after a persistent refresh failure is therefore not a
-  gap to close but a behaviour deliberately not built (see #9772). The spawn
+  gap to close but a behaviour deliberately not built. The spawn
   owner is the shared sign-in resolver's pick (RFC crew-lts-edition D4,
-  `oss` order, amended 2026-10-30; delivered by #26841): any stored vault entry, including one whose access token has
+  `oss` order): any stored vault entry, including one whose access token has
   expired with no refresh token, and a vault that cannot be read, keeps the spawn
   Crew-owned and reports "not signed in"; only an empty vault hands it to
   kiro-cli. Removing the Crew sign-in (`kirocrew kas logout`) is how a user goes

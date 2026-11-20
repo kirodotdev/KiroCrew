@@ -798,6 +798,60 @@ def test_kas_messages_name_the_route_the_last_spawn_took(monkeypatch):
     assert "start a new chat" not in kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY
 
 
+def test_a_kas_message_for_a_runtime_names_that_runtimes_route(monkeypatch):
+    """The route a caller passes is the failing runtime's own, so another
+    chat's later spawn on a different route does not change the message."""
+    from kiro_crew.acp import kas_route
+
+    base = host_auth.declaration_for("kas").signed_out_message
+    bundle = kas_route.KasRoute(bundle=True, reason=kas_route.REASON_NO_KIRO_CLI)
+    launcher = kas_route.KasRoute(bundle=False, reason=kas_route.REASON_KIRO_CLI_LAUNCHER)
+    # The last spawn in the process went to the launcher relay...
+    monkeypatch.setattr(kas_route, "_LAST_SPAWN_ROUTE", launcher)
+    # ...but this runtime runs Crew's own engine: its message says so.
+    assert host_auth.signed_out_message("kas", route=bundle) == f"{bundle.describe()}. {base}"
+    # And the reverse: a launcher runtime names kiro-cli's sign-in while the last
+    # spawn was the bundle.
+    monkeypatch.setattr(kas_route, "_LAST_SPAWN_ROUTE", bundle)
+    assert host_auth.signed_out_message("kas", route=launcher).endswith(
+        "Run `kiro-cli login` in your terminal, then send your message again."
+    )
+    # ``None`` is a runtime that recorded no route: the bare sentence.
+    assert host_auth.signed_out_message("kas", route=None) == base
+    # Unset keeps the process-wide reading for a caller holding no runtime.
+    assert host_auth.signed_out_message("kas") == f"{bundle.describe()}. {base}"
+    # Another harness never takes a KAS route, passed or not.
+    assert host_auth.signed_out_message("", route=bundle) == host_auth.signed_out_message("")
+
+
+def test_every_route_reason_reads_back_from_its_own_sentence():
+    """``kas_sentence_route`` rebuilds the sentence for a listed set of routes, so
+    a ``REASON_*`` added to ``kas_route`` and missed there would quietly keep the
+    English and lose its row kind. Every reason, on the arm a spawn records it on,
+    reads back as the route that wrote it."""
+    from kiro_crew.acp import kas_route
+
+    reasons = [
+        value
+        for name, value in vars(kas_route).items()
+        if name.startswith("REASON_") and isinstance(value, str)
+    ]
+    assert reasons
+    routes = [kas_route.RELAY, kas_route.KasRoute(bundle=True)]
+    for reason in reasons:
+        if reason == kas_route.REASON_KIRO_CLI_LAUNCHER:
+            # The launcher reason is only ever recorded on the relay arm.
+            routes += [
+                kas_route.KasRoute(bundle=False, reason=reason, crew_auth=crew_auth)
+                for crew_auth in (False, True)
+            ]
+        else:
+            routes.append(kas_route.KasRoute(bundle=True, reason=reason))
+    for route in routes:
+        text = host_auth.signed_out_message("kas", route=route)
+        assert host_auth.kas_sentence_route(text) == route, route
+
+
 # The kiro-cli command named is the one this host's spawn runs
 
 _BUNDLED_POSIX_DIR = "/Applications/Kiro Crew.app/Contents/Resources/kiro-cli"

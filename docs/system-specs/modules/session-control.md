@@ -279,7 +279,7 @@ edge came from a process recycle (`reset`) or a `destroy`, or whose fold could
 not be read -- the state a patrol re-dispatches. A history-only row is `unknown`:
 its metadata proves the session was created, but does not claim whether it
 finished or was lost. Splitting `closed` from `lost` is what resolves the
-completed-versus-lost conflation #14213 named; the split reads the lifecycle the
+completed-versus-lost conflation; the split reads the lifecycle the
 status fold already projects, adding no new crew-log vocabulary. The persisted
 field is already read by the member ownership boundary in
 session-control authorization, so using it for an informational roster row asks
@@ -307,7 +307,7 @@ write the line), so the candidate is kept on the creation-record terms
 (`_creation_parent`) names the caller. A record naming another creator drops it;
 no record to check it against (the crew log off or unseeded, or a session it does
 not cover) drops it and makes `history` `incomplete`, because the caller may have
-created it (#14843). The person's own tab is not fenced and lists the claim as
+created it. The person's own tab is not fenced and lists the claim as
 before.
 
 **Delivery has two authorization moments, and both are enforced.** An idle target
@@ -330,7 +330,7 @@ never saw — a retargeted mirror, a thread bound beside it — drops, while a r
 that has since gone away (the thread unlinked, the mirror cleared) is a narrowing
 that admits, because every room the delivery can still reach was admitted. The re-check is not specific to this module — a human-typed message into a
 busy session drains through the same path — which is why it lives at the drain
-rather than in each caller (#5911).
+rather than in each caller.
 
 **A dropped queued delivery is reported to its SENDER, not only its target.**
 `session_send` answers `started: false` when a busy target queues the message,
@@ -636,7 +636,7 @@ carries that line.
 `session_create` also takes an optional `folder` — a folder id or `/`-separated
 human path, resolved with `chat_folder_create`'s `parent` semantics (missing
 segments created, behind the same tree-shaping gate) — and files the slot as
-part of creation (#6118). No dispatcher spec grants a folder verb or passes
+part of creation. No dispatcher spec grants a folder verb or passes
 `folder`: conductor and Bot guidance creates workers without it
 (rfc-crewmate-workers-under-the-crewmate.md, Design 6). Filing is
 part of creation rather than a second call (`chat_folder_move_session`), because a
@@ -739,7 +739,7 @@ member's folder list adds that home folder and its ancestors, the path its own
 `[FOLDER]` line already shows, so the walk resolves `Ops` instead of missing it.
 
 A Bot is the exception, and keeps everything it creates in ONE folder of its
-own (`dashboard/mate_folders.py`, #25935). Its home folder is a top-level folder
+own (`dashboard/mate_folders.py`). Its home folder is a top-level folder
 owned by `member:<store>` and marked `mate_home`; it is created on first use under
 the folder-store lock (one per store, however many creates race), named with the
 Bot's display name, and renamed when that changes: by the agent-update route on
@@ -774,8 +774,7 @@ The home is also closed to everyone else, the person included, refused
 the Bot may create a folder or chat in its subtree, file a chat into it or out of it, move a
 folder into it, or edit or delete a folder inside it (`home_owner_of`,
 `refuses_write_into`). The one exception is the person's delete of an EMPTY
-folder inside the home, never the home itself (`delete_empty_bot_subfolder`,
-#37434), from the person's browser only: no child folder, no live session and
+folder inside the home, never the home itself (`delete_empty_bot_subfolder`), from the person's browser only: no child folder, no live session and
 no saved cron job filing into it, checked inside the folder-store callback that
 removes the row, and no archived session, counted first; anything else is
 `folder_not_empty` (409). An app or member caller, and any internal request (an
@@ -1234,7 +1233,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Caller is channel-linked (`linked_session_key` set) | 403 | The exfiltration direction: a linked caller's conversation IS a channel thread, so a read would hand a private dashboard transcript to that channel's readers. `CHANNEL_AGENT_BLOCKED_TOOLS` keys on the agent identity; a linked slot is a second route to the same surface. **Two exceptions:** a `cron:<job_id>` link, which names the job's own run transcript and republishes to nobody; and a 1:1 DM whose only human is the configured owner (`owner_dm_refusal` answering `""`) — see "Owner-DM channel callers" below |
 | Caller's own session is no longer open | 403 | Nothing to attribute the operation to |
 | Caller changed workspace while a creation was in flight | 403 | Creation resolves the workspace's project directory off-loop, so it suspends between authorizing the caller and allocating the slot. Both decisions that read the caller's workspace -- the memory boundary the child inherits, and whether the answering agent is bound to that workspace -- are invalidated by a move, and re-deciding the binding here is not available: it needs a config load, which must not run on the event loop |
-| Agent that would answer is bound to another workspace | 403 | `agent_workspace_mismatch`. The child runs in the caller's workspace, so an agent whose own binding names a different one would carry that workspace's memory into it. Checked on whatever answers, an omitted agent included (it resolves to the default template). **One inheritance:** an explicitly named TEMPLATE (`ResolvedBindings.selection_kind == "template"`, a passthrough or the default template, never a `config.agents` row) passes when the caller has an execution record and is the crew member whose own declared workspace (`config.workspaces`) is the caller slot's workspace (`_caller_member_workspace`), or whose own store the caller runs on: a Bot's worker, a template record that keeps the Bot's id and store (`_store_s_crewmate`), so its own child runs where it does. A template has no workspace binding -- `resolve_agent_bindings` files every template session under `default_workspace` -- and the template arm already binds the child to the caller's own store, so the child runs on the caller's workspace, project directory and store, under the template persona. Without it every crew member created on its own `member-<slug>` workspace (#19230) was refused `agent_workspace_mismatch` for `agent="kirocrew-worker"`, while members created before #19230 (workspace `default`) were not. Still refused: a crew MEMBER bound elsewhere (its store would cross), a caller with no record (the child would fall to the default store), and any non-member caller, whose template child has no store of its own in that workspace |
+| Agent that would answer is bound to another workspace | 403 | `agent_workspace_mismatch`. The child runs in the caller's workspace, so an agent whose own binding names a different one would carry that workspace's memory into it. Checked on whatever answers, an omitted agent included (it resolves to the default template). **One inheritance:** an explicitly named TEMPLATE (`ResolvedBindings.selection_kind == "template"`, a passthrough or the default template, never a `config.agents` row) passes when the caller has an execution record and is the crew member whose own declared workspace (`config.workspaces`) is the caller slot's workspace (`_caller_member_workspace`), or whose own store the caller runs on: a Bot's worker, a template record that keeps the Bot's id and store (`_store_s_crewmate`), so its own child runs where it does. A template has no workspace binding -- `resolve_agent_bindings` files every template session under `default_workspace` -- and the template arm already binds the child to the caller's own store, so the child runs on the caller's workspace, project directory and store, under the template persona. Without it every crew member created on its own `member-<slug>` workspace would be refused `agent_workspace_mismatch` for `agent="kirocrew-worker"`, while members on workspace `default` would not. Still refused: a crew MEMBER bound elsewhere (its store would cross), a caller with no record (the child would fall to the default store), and any non-member caller, whose template child has no store of its own in that workspace |
 | Named agent does not resolve to a configured one | 403 | The resolver falls back to the default agent, which passes the workspace check because it is the caller's own default -- so no boundary is crossed, but the created session would store and advertise a name that is not what answers. `ResolvedBindings.requested_resolved` states that contract for callers that store the requested name. Refused rather than rewritten to the effective agent: nothing exists yet, so a corrected name costs one retry, whereas an existing slot keeps its stored name verbatim so a momentarily stale resolution cannot permanently rebind it |
 | Caller may not bind a child to the selected member's private store | 403 | `memory_delegation_denied`; one check, on the route every branch of agent resolution has already produced, before slot allocation. Two admissions: the store is the caller's OWN, which requires this process's vouched identity and the caller's durable record to agree, or the caller's delegation lineage is not fenced (`_delegation_lineage_fenced`: an owner-rooted chain is admitted; a cron-, channel- or member-rooted chain, or a broken one, is fenced). Same-store workers remain allowed; unfenced global callers retain member assignment. See "A created worker receives one execution identity" |
 | Caller changes history key, agent or memory store during creation | 400 | `caller_memory_changed`; the live caller must still match the identity checked before awaited preparation |
@@ -1243,7 +1242,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Target is incognito or temporary | 403 | Never addressable, matching `list_sessions` |
 | Target is app-scoped | 403 | App sessions are the app's, not a peer's. **Exception:** see "App sessions the owner's chats may reach" below |
 | Target is channel-linked (`linked_session_key` set) | 403 | Its conversation is mirrored to Slack/Telegram, so reaching it crosses a surface boundary both ways — and its stop cannot be honoured, because the stop path addresses `dashboard:<slot>` while a linked slot's turns run under its linked key |
-| Target or caller has an outbound channel mirror (`get_mirror_link`) | 403 | The same boundary reached by the other mechanism. `linked_session_key` marks a channel-BORN slot; a dashboard-born slot given a mirror link republishes its turns to a channel just as surely, and the link lives in the session store rather than on the slot, so the slot-side check reads empty on exactly the session that mirrors. **Caller-side exception, two shapes:** an owner DM whose mirror IS its own conversation, and a dashboard-born caller whose outbound mirror IS the owner's own 1:1 DM (the conductor tab the operator linked to their phone) — the same audience either way, established by `owner_dm_refusal` before either caller-side channel refusal runs; the threadless Slack row every unlinked channel session carries reads as no mirror from the store itself (`SessionMap.get_mirror_link` never synthesizes a Slack mirror without a thread), and a Slack thread bound beside the mirror row (`get_slack_link`) counts as a second audience. **A paused mirror refuses exactly like a live one.** `_has_channel_mirror` reads the binding, never `mirror_paused`: the dashboard's Disconnect row mutes outbound delivery and keeps the binding, inbound from that conversation still routes into the session (`SessionBinder.resolve_inbound` does not read the flag either), and one click on the same row resumes delivery — so a paused binding is a latent audience that returns without any further authorization, and admitting the session while it stands would let a session control peers between two clicks of the same toggle. Fail-closed here means the way back into session control is to **sever** the binding: the menu's `Unlink from X` item (`mirror-unlink` / `slack-unlink`) or an in-channel `/unlink`, both of which drop the row and the pause flag with it (#14068; pinned in `test_session_control_boundaries.py::test_a_paused_mirror_still_refuses`). The exemption reads the binding the same way, so a paused mirror to the owner's own DM is admitted exactly as a live one is — the audience did not change. Whether a dashboard-born session mirroring to the owner's OWN DM is that contained audience was left open by #14084 and is decided by #15288: it is, on the same clauses, with the peer read off the transport's own record of the DM (see "Owner-DM channel callers" below) |
+| Target or caller has an outbound channel mirror (`get_mirror_link`) | 403 | The same boundary reached by the other mechanism. `linked_session_key` marks a channel-BORN slot; a dashboard-born slot given a mirror link republishes its turns to a channel just as surely, and the link lives in the session store rather than on the slot, so the slot-side check reads empty on exactly the session that mirrors. **Caller-side exception, two shapes:** an owner DM whose mirror IS its own conversation, and a dashboard-born caller whose outbound mirror IS the owner's own 1:1 DM (the conductor tab the operator linked to their phone) — the same audience either way, established by `owner_dm_refusal` before either caller-side channel refusal runs; the threadless Slack row every unlinked channel session carries reads as no mirror from the store itself (`SessionMap.get_mirror_link` never synthesizes a Slack mirror without a thread), and a Slack thread bound beside the mirror row (`get_slack_link`) counts as a second audience. **A paused mirror refuses exactly like a live one.** `_has_channel_mirror` reads the binding, never `mirror_paused`: the dashboard's Disconnect row mutes outbound delivery and keeps the binding, inbound from that conversation still routes into the session (`SessionBinder.resolve_inbound` does not read the flag either), and one click on the same row resumes delivery — so a paused binding is a latent audience that returns without any further authorization, and admitting the session while it stands would let a session control peers between two clicks of the same toggle. Fail-closed here means the way back into session control is to **sever** the binding: the menu's `Unlink from X` item (`mirror-unlink` / `slack-unlink`) or an in-channel `/unlink`, both of which drop the row and the pause flag with it (pinned in `test_session_control_boundaries.py::test_a_paused_mirror_still_refuses`). The exemption reads the binding the same way, so a paused mirror to the owner's own DM is admitted exactly as a live one is — the audience did not change. A dashboard-born session mirroring to the owner's OWN DM is that contained audience, on the same clauses, with the peer read off the transport's own record of the DM (see "Owner-DM channel callers" below) |
 | Target is in another workspace | 403 | Workspaces are the memory boundary |
 | Target names no open session | 404 | A mistake, not an authorization failure |
 | Title matches more than one session | 409 | Guessing means acting on the wrong conversation |
@@ -1482,7 +1481,7 @@ dispatching callers as well.
 
 #### The strict-internal surface admits a crew member in either spelling, not every scoped caller
 
-The five routes sit behind `_require_internal`, which first refuses anything
+Every session-control route sits behind `_require_internal`, which first refuses anything
 without a valid `X-Internal-Secret`. On the authenticated branch,
 `_private_caller_refusal` captures the caller's canonical execution scope once
 off-loop through `internal_memory_scope`, without opening learned memory:
@@ -1510,8 +1509,8 @@ or replace the creator-ownership checks in `session_control.py`.
 #### The owner's own tab keeps the owner's reach
 
 A scopeless (owner / Global-V1) caller gets no verdict from the gate above, and
-`_caller_is_ownership_fenced` deliberately leaves a tab the person opened unfenced
-(#14342). From that tab, `session_send`, `session_read_message`, `session_stop` and
+`_caller_is_ownership_fenced` deliberately leaves a tab the person opened unfenced.
+From that tab, `session_send`, `session_read_message`, `session_stop` and
 `session_close` reach a same-workspace session it did not create; every refusal in
 the table above still applies. The fence follows authority, and that tab's
 authority is the person's own dashboard session: working across the tabs they
@@ -1944,7 +1943,7 @@ per-agent server assignment).
 A cron job's own slot (`cron-<job_id>`, minted at run start by
 `ensure_cron_slot` so identity exists while the turn runs — with
 `inject_cron_result_to_dashboard` as the idempotent delivery-time fallback
-creator, #8336) is admitted to the surface even though nobody
+creator) is admitted to the surface even though nobody
 is watching it, so a scheduled run can enumerate work and dispatch a session per
 item. Three refusals had to move for that, and one deliberately did not:
 
@@ -2002,12 +2001,12 @@ owner", and nothing legitimate is refused by it because a cron whose job is gone
 not running.
 
 A job whose `session_key` names a session that is no longer open also refuses with
-`cron_owner_unverifiable` (#8335). Its `_app` lived only on that slot, because
+`cron_owner_unverifiable`. Its `_app` lived only on that slot, because
 `cron_add` records the caller in `session_key` and never writes `created_by`, so
 allowing it would let an app create a cron, close its session, and have the job
 dispatch a persistent non-app session this gate can no longer recognise.
 
-**A person's job outlives its tab** (#8449). When a managed `cron_add` runs,
+**A person's job outlives its tab.** When a managed `cron_add` runs,
 `POST /api/crons/tools` has already verified the caller and holds the live slots, so
 it asks `is_person_tab`: is the caller's slot live, `SlotOrigin.USER` and without
 `_app`? The check is positive on purpose: a cron's own tab and every session
@@ -2147,7 +2146,7 @@ that could dispatch nothing. Two shapes reach that audience: the channel-born DM
 session itself, and a **dashboard-born session whose outbound mirror is that DM**
 — a conductor tab the operator linked to their own phone, whose words come from the
 dashboard and whose readers are exactly the mirror's. Refusing the second while
-admitting the first (#15288, the question #14084 left open) cut a dashboard
+admitting the first would cut a dashboard
 conductor off from every worker it had dispatched the moment it was mirrored:
 `session_send`, `session_read_message`, `session_create` and every `work_ledger_*`
 call refused, with the fleet's workers still running and nothing able to seed,
@@ -2682,7 +2681,7 @@ the cooperative stop fail to take. It is wrong for an RPC, where a client that g
 no response inside its 30s request timeout re-sends the same request — so on the
 button's semantics a timeout retry would silently get the destructive variant of a
 verb the caller asked for once, and the queued work would be gone with nothing
-saying a retry rather than a decision caused it (issue #5074).
+saying a retry rather than a decision caused it.
 
 `session_stop` therefore withholds the escalation for a call it cannot tell apart
 from a retry. `stop_retry.allow_escalation` records the first stop a caller makes
@@ -2805,7 +2804,7 @@ awaited re-check, by contrast, reopens exactly those windows. Any refusal aborts
 the close, rolls back the retired nudge loop, and surfaces as the guard's own
 status. This is the same "re-gate adjacent to the mutation, comparing identity not
 presence" discipline `create_session` uses for its slot allocation, and the same
-theme as the queued-drain re-check (#5911). The human ✕ path passes no check — the
+theme as the queued-drain re-check. The human ✕ path passes no check — the
 person owns the tab and closes it unconditionally.
 
 ## Reviving is the mirror of closing, authorized from the metadata line
@@ -2948,7 +2947,7 @@ Each call is checked in this order, and each refusal has its own code:
 1. **Switch.** `work_ledger.remote_dispatch` (default `false`, read per call) off refuses `remote_dispatch_disabled` before anything else. `agent.session_control` off then refuses `session_control_disabled`, as it does for every local verb. Off, the dashboard MCP server's `tools/list` is byte-for-byte the table's own; on, it adds a `crew` property to exactly these five schemas. The validator schemas accept `crew` either way, so the gateway, not an unknown-field error, answers a call that carries it.
 2. **Owner-only caller.** The declared key is owner-minted (`is_owner_minted_session_key`, the `dashboard` namespace; `owner_only`); the shared agent-caller resolver (`handlers/guide.py` `_resolve_agent_caller`) admits it with its own codes; the slot was not opened on another caller's behalf (`_created_by` / `_lineage_minted`) and is not a crew member's thread (`owner_only`); the session is a conductor mode chat, judged by the predicate the conductor mode agent lock uses (`crew_mode.slot_is_crew_mode_root`), so a plain chat on any other agent is refused (`conductor_mode_only`); the session is not bound to a private member store (`private_memory`); the session is not the bound worker of any work-ledger item here, read through the same binding `work_brief` resolves and refused when it cannot be read (`crew_caller_is_worker`), which keeps dispatch one level deep: a session another gateway's conductor opens here is bound to its mailbox item once the peer side binds at create (RFC wave 2), and a nested conductor is a bound worker too; and finally the running turn must be one the owner sent (`crew_owner_unverifiable`). That last arm, `owner_unverifiable_reason`, is the crew-read gate's slot check (`handlers_instances_crew_reads._slot_refusal`): the turn carries `_turn_owner_sent` and the slot was not opened on another caller's behalf. A dashboard login a messaging channel minted for someone else fails it, and so does a turn the person did not send (a loop wake, a `session_send`, a sub-agent completion). The earlier arms refuse first, so each refusal still names the rule a caller fails.
 
-   **The patrol-wake exception (wave 4, maintainer decision by buluoray on #26651).** Two wave 4 paths are NOT held to the owner-sent arm: the pull `work_ledger_read` runs for a remote item, and the decide forward a recorded `decide` on a remote item sends. Both may run on a turn the owner did not send, such as a patrol wake, because the conductor's own patrol is what drives them. Their reach is the one remote item bound on the caller's own ledger: the pull reads only that item's crew and slot, and the forward PATCHes only that slot's `work-item`. Both run only with `work_ledger.remote_dispatch` on, which defaults to off. This is a deliberate exception, not a precedent: any later crew-scoped read still applies the owner-sent arm above.
+   **The patrol-wake exception (wave 4, maintainer decision).** Two wave 4 paths are NOT held to the owner-sent arm: the pull `work_ledger_read` runs for a remote item, and the decide forward a recorded `decide` on a remote item sends. Both may run on a turn the owner did not send, such as a patrol wake, because the conductor's own patrol is what drives them. Their reach is the one remote item bound on the caller's own ledger: the pull reads only that item's crew and slot, and the forward PATCHes only that slot's `work-item`. Both run only with `work_ledger.remote_dispatch` on, which defaults to off. This is a deliberate exception, not a precedent: any later crew-scoped read still applies the owner-sent arm above.
 3. **Crew.** An exact id wins over any name; a name resolves only when one crew carries it (`crew_unknown`, `crew_ambiguous`, `crew_invalid`).
 4. **Target fence.** send/read/stop/close reach only a peer slot this caller's slot created with `session_create(crew=)` on that same crew (`crew_target_not_dispatched`). The record lives in gateway memory, at most 64 slots per caller (`crew_dispatch_limit`), and a close forgets the slot. It does not survive a hub restart. An open item on the caller's own ledger bound to that slot on that crew (`worker_session_key` + `worker_instance_id`, wave 4) also admits the slot, and that pair does survive a restart.
 5. **Version.** The crew's `major.minor` must match this hub's (`crew_version_mismatch`); a disconnected crew answers `proxy_peer_not_connected`.

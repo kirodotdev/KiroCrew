@@ -1214,6 +1214,31 @@ class TestAcpSessionProviderRuntimeDeadTranslation:
         with pytest.raises(AcpAuthRequired):
             await provider.ensure_ready()
 
+    @pytest.mark.asyncio
+    async def test_a_kas_sign_in_prompt_names_this_runtimes_route(self, monkeypatch):
+        """The prompt names the route THIS runtime was spawned on, even
+        when another chat's spawn has since moved the process-wide one."""
+        from kiro_crew.acp import kas_route
+        from kiro_crew.acp.client import AcpAuthRequired
+        from kiro_crew.agent_sdk import host_auth
+
+        own = kas_route.KasRoute(bundle=True, reason=kas_route.REASON_NO_KIRO_CLI)
+        monkeypatch.setattr(
+            kas_route,
+            "_LAST_SPAWN_ROUTE",
+            kas_route.KasRoute(bundle=False, reason=kas_route.REASON_KIRO_CLI_LAUNCHER),
+        )
+        handle = _make_handle()
+        handle.approve_tool = AsyncMock(side_effect=AcpRuntimeDead("dead"))
+        runtime = _make_runtime(acp_backend="kas")
+        runtime.saw_not_logged_in = lambda: True
+        runtime.kas_spawn_route = own
+        provider = AcpSessionProvider(handle, runtime)
+        with pytest.raises(AcpAuthRequired) as caught:
+            await provider.approve_tool("req-1")
+        assert str(caught.value) == host_auth.signed_out_message("kas", route=own)
+        assert "kiro-cli login" not in str(caught.value)
+
 
 class TestAcpSessionProviderContractParity:
     """Contract-parity deep-dive fixes: base-AcpRuntimeError translation, steer

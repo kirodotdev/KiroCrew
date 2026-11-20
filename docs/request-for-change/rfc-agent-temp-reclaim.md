@@ -4,7 +4,7 @@ status: draft
 author: pearcekieser
 created: 2026-10-28
 last-audited: 2026-11-20
-audited-at: c157748343
+audited-at: 0c5d8bd5f3
 doc-pr: 25401
 implementation-prs: [29396, 32853]
 tracking-issues: [25400]

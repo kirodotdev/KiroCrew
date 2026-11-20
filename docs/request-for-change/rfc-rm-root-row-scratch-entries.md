@@ -3,8 +3,8 @@ title: "The rm root row stops refusing a plain rm of named /tmp entries"
 status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
-last-audited: 2026-11-19
-audited-at: fc89562d69
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 36542
 implementation-prs: [36536]
 tracking-issues: [19473, 35629]

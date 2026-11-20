@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import crewmate_prompts
+from kiro_crew.agent_capabilities_resources import resource_row_key
 from kiro_crew.agent_files import (
     MATE_CONDUCTOR_AGENT_FILENAME,
     MATE_WORKER_AGENT_FILENAME,
@@ -349,6 +350,21 @@ def _strings(value: Any) -> list[str]:
     return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
 
 
+def resource_entries(value: Any) -> dict[str, Any]:
+    """*value*'s ``resources`` entries by row key, first one of each key kept.
+
+    A string is its own key and an object (a knowledge base) is keyed
+    ``<type>:<name>`` (``agent_capabilities_resources.resource_row_key``), so an
+    object is carried as written and a list never gains two entries sharing a key.
+    """
+    out: dict[str, Any] = {}
+    for entry in value if isinstance(value, list) else []:
+        key = resource_row_key(entry)
+        if key is not None and key not in out:
+            out[key] = copy_json_document(entry)
+    return out
+
+
 def _servers(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -420,9 +436,16 @@ def worker_additions(base: dict[str, Any], mate_spec: dict[str, Any]) -> dict[st
         *server_selectors(mate_spec, added_servers),
         *base_server_selections(base, mate_spec, "tools"),
     ]
-    for key in ("resources", "skills"):
-        have = set(_strings(base.get(key)))
-        additions[key] = [s for s in dict.fromkeys(_strings(mate_spec.get(key))) if s not in have]
+    have = set(_strings(base.get("skills")))
+    additions["skills"] = [
+        s for s in dict.fromkeys(_strings(mate_spec.get("skills"))) if s not in have
+    ]
+    held = resource_entries(base.get("resources"))
+    additions["resources"] = [
+        entry
+        for key, entry in resource_entries(mate_spec.get("resources")).items()
+        if key not in held
+    ]
     additions["allowedTools"] = [
         *(
             ref
@@ -520,10 +543,15 @@ def merge_worker_spec(base: dict[str, Any], additions: dict[str, Any]) -> dict[s
     for name in muted:
         servers[name] = {**servers[name], "disabled": True}
     spec["mcpServers"] = servers
-    for key in ("resources", "skills"):
-        extra_items = _strings(additions.get(key))
-        if extra_items:
-            spec[key] = list(dict.fromkeys([*_strings(spec.get(key)), *extra_items]))
+    extra_skills = _strings(additions.get("skills"))
+    if extra_skills:
+        spec["skills"] = list(dict.fromkeys([*_strings(spec.get("skills")), *extra_skills]))
+    extra_resources = resource_entries(additions.get("resources"))
+    if extra_resources:
+        merged = resource_entries(spec.get("resources"))
+        for key, entry in extra_resources.items():
+            merged.setdefault(key, entry)
+        spec["resources"] = list(merged.values())
     # Selectors reach a server the file adds, and one the base declares
     # (``base_server_selections`` already chose which of those count).
     selectable = set(servers) - set(muted)

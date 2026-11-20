@@ -10229,11 +10229,11 @@ runs in the dashboard document with the owner's cookie, so telling one app's pag
 another's needs an app-scoped credential, which this route does not have. A slot held to
 `NO_PAGES` answers with `browser_ops.SITES_REVOKED_TEXT`, which says the sites were
 withdrawn and that approving them again on the app's page ends the hold. It never starts the browser (`no_tab`), touches
-nothing while the person has taken the tab over (`user_in_control`), takes the op lock and
+nothing while the person has taken the tab over (`user_in_control`), takes the op lock (queueing for it through `_MEDIA_GATE`, one gateway-wide gate, so at most one media request of any session waits ahead of an agent op, under one `LOCK_WAIT_S` deadline from arrival, else 409 `browser_busy`) and
 the takeover fence (`LiveHub.op_fence`), points the daemon at the session's own tab without raising it, and runs the
 walker's `media` method in the isolated world (`browser_harness/media.py`), after the same
 page check. A play the browser refuses gets one click on the element, after the page is judged again, and a `state` read writes no audit row (a player polls it). The SDK's
-`useBrowserMedia` (`website/src/app-sdk/browserMedia.ts`) is the page's handle; it sends
+`useBrowserMedia` (`website/src/app-sdk/browserMedia.ts`) is the page's handle (its `pollMs` is raised to at least 500 ms; a non-finite or non-positive value reads once); it sends
 through the scoped client, so the app declares `/api/browser/media`. Its `onEnded` option
 is the continuous-play cue: called once per ending, derived in the page from the `ended`
 field of the state it already polls, so it adds no route, no event and nothing the agent
