@@ -574,3 +574,47 @@ async def test_session_init_banner_without_a_match_is_still_refused(configured, 
     client = _FakeProviderClient([{"serverName": "idp", "oauthUrl": _consent_url()}])
     await _drain_session_init_oauth_requests(MagicMock(), slot, client)
     assert slot.messages[0]["meta"]["rejected_url"] is True
+
+
+# ── The approval belongs to the server that was verified ──────────────────────
+# Each test below drives a production caller of the gate. Server ``idp`` is
+# configured and verified; server ``other`` is not, and sends the same consent URL.
+
+
+async def _verified_idp(configured, served) -> dict[str, Any]:
+    configured(registry={"idp": {"url": MCP_URL}})
+    served(_documents())
+    slot = _ChatSlot("s1")
+    client = _FakeProviderClient([{"serverName": "idp", "oauthUrl": _consent_url()}])
+    await _drain_session_init_oauth_requests(MagicMock(), slot, client)
+    meta = slot.messages[0]["meta"]
+    assert meta["oauth_url"] == _consent_url()
+    return dict(meta)
+
+
+@pytest.mark.asyncio
+async def test_another_server_sending_the_verified_url_is_refused_at_the_banner(configured, served):
+    await _verified_idp(configured, served)
+    slot = _ChatSlot("s2")
+    client = _FakeProviderClient([{"serverName": "other", "oauthUrl": _consent_url()}])
+    await _drain_session_init_oauth_requests(MagicMock(), slot, client)
+    assert slot.messages[0]["meta"]["rejected_url"] is True
+
+
+@pytest.mark.asyncio
+async def test_another_server_name_on_a_stored_banner_is_withheld_on_every_render(
+    configured, served
+):
+    meta = await _verified_idp(configured, served)
+    assert _redact_meta_for_role("mcp_oauth", dict(meta))["oauth_url"] == _consent_url()
+    forged = {**meta, "server_name": "other"}
+    assert _redact_meta_for_role("mcp_oauth", forged)["oauth_url"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_warm_premint_for_another_slug_is_screened_out(configured, served):
+    from kiro_crew.connections import warm
+
+    await _verified_idp(configured, served)
+    assert warm._credential_bearing_slugs({"idp": _consent_url()}) == set()
+    assert warm._credential_bearing_slugs({"other": _consent_url()}) == {"other"}

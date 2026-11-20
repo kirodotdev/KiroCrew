@@ -251,3 +251,63 @@ def test_an_iss_urlsplit_refuses_is_a_mismatch_not_a_logged_traceback(iss, caplo
     with caplog.at_level(logging.DEBUG):
         assert asyncio.run(_run()) == "issuer_mismatch"
     assert "TEXT" not in _emitted(caplog) and "vendor-text" not in _emitted(caplog)
+
+
+# RFC 9207 ``iss`` for the pre-registered providers. The values are the
+# ``issuer`` each vendor publishes in its public OAuth/OIDC metadata.
+_PREREGISTERED_ISSUERS = {
+    "google-drive": "https://accounts.google.com",
+    "gmail": "https://accounts.google.com",
+    "slack": "https://mcp.slack.com",
+    "asana": "https://app.asana.com",
+}
+
+
+def _pre_registered(slug: str) -> crew_oauth.SignIn:
+    sign_in = crew_oauth.SignIn(slug)
+    sign_in._state = "s" * 43
+    return sign_in
+
+
+@pytest.mark.parametrize("slug", sorted(_PREREGISTERED_ISSUERS))
+def test_a_pre_registered_callback_from_another_issuer_is_refused(slug):
+    async def _run():
+        sign_in = _pre_registered(slug)
+        resp = await _answer(
+            sign_in, {"state": sign_in._state, "code": "c", "iss": "https://evil.example"}
+        )
+        assert resp.status == 400 and "evil" not in resp.text
+        with pytest.raises(CrewOAuthError) as err:
+            await sign_in._done
+        return err.value.code
+
+    assert asyncio.run(_run()) == "issuer_mismatch"
+
+
+@pytest.mark.parametrize("slug", sorted(_PREREGISTERED_ISSUERS))
+@pytest.mark.parametrize("with_iss", [True, False])
+def test_a_pre_registered_callback_from_its_own_issuer_or_with_no_iss_succeeds(slug, with_iss):
+    async def _run():
+        sign_in = _pre_registered(slug)
+        query = {"state": sign_in._state, "code": "the-code"}
+        if with_iss:
+            query["iss"] = _PREREGISTERED_ISSUERS[slug]
+        resp = await _answer(sign_in, query)
+        assert resp.status == 200
+        return await sign_in._done
+
+    assert asyncio.run(_run()) == "the-code"
+
+
+def test_a_provider_with_no_verified_issuer_keeps_today_s_behaviour():
+    assert "issuer" not in crew_oauth._ENDPOINTS["github"]
+
+    async def _run():
+        sign_in = _pre_registered("github")
+        resp = await _answer(
+            sign_in, {"state": sign_in._state, "code": "c", "iss": "https://anything.example"}
+        )
+        assert resp.status == 200
+        return await sign_in._done
+
+    assert asyncio.run(_run()) == "c"
