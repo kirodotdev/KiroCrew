@@ -78,7 +78,10 @@ workflows) cost 1,828 calls and 2,786 points. So:
 - it stops after spending ``--max-points`` (1,500 by default, about half a
   day of runs here and under a third of one hour's bucket).
 
-A census stopped either way spends nothing more. It still writes its files,
+A census stopped either way spends nothing more. A check suite is counted whole
+or not at all: one the stop left part read, and any other run of the same
+workflow and head SHA, is left out and counted in ``suites_unread``, so no job
+is reported with a cause a complete read could have changed. It still writes its files,
 says ``Partial`` at the top of the summary with the reason and the span of the
 runs it did read, sets ``partial`` in the JSON and exits 3 (1 is a failed
 read): its counts cover only what was read. A whole day or more belongs in a
@@ -300,6 +303,7 @@ class Census:
         self.partial: str | None = None
         self.workflows = 0
         self.log_unread = 0
+        self.suites_unread = 0
         self.logs_read = 0
 
 
@@ -810,55 +814,63 @@ def _merge(passed: Passed, more: Passed) -> None:
 
 def _read_suites(
     api: Api, by_suite: dict[str, Run], ids: list[str], first: int
-) -> tuple[list[Job], Passed]:
-    """One call for ``ids``; a batch GitHub cannot answer in time is read as two halves.
+) -> tuple[list[Job], Passed, list[str]]:
+    """``(jobs, passes, suites left unread)`` from one call for ``ids``.
 
-    ``first`` is the red jobs to ask each suite for; 0 asks for its cancelled jobs only.
+    ``first`` is the red jobs to ask each suite for; 0 asks for its cancelled
+    jobs only. A batch GitHub cannot answer in time is read as two halves.
+
+    A suite is added whole or not at all: its red jobs, its cancelled jobs and
+    its passes are gathered first and added together. The classifier reads
+    them together (a red job is `flaky` only by a pass), so a suite the budget
+    stopped part way through is left out and named unread rather than
+    reported with half its facts. A suite whose first pages already hold
+    everything needs no further call and is still added after a stop.
     """
     jobs: list[Job] = []
     passed: Passed = {}
+    unread: list[str] = []
     try:
         data = api.graphql(suites_query(first) if first else CANCELLED_SUITES_QUERY, {"ids": ids})
     except BudgetStop:
-        return jobs, passed
+        return jobs, passed, list(ids)
     except CensusError:
         if len(ids) < 2:
             raise
         for half in (ids[: len(ids) // 2], ids[len(ids) // 2 :]):
-            found, passes = _read_suites(api, by_suite, half, first)
+            found, passes, missed = _read_suites(api, by_suite, half, first)
             jobs += found
             _merge(passed, passes)
-        return jobs, passed
+            unread += missed
+        return jobs, passed, unread
+    answered = set()
     for suite in data.get("nodes") or []:
         if not isinstance(suite, dict) or suite.get("id") not in by_suite:
             continue
         run = by_suite[suite["id"]]
+        answered.add(run.suite_id)
         pulls = (suite.get("matchingPullRequests") or {}).get("nodes") or []
         number = pulls[0].get("number") if pulls and isinstance(pulls[0], dict) else None
         if run.event == "pull_request" and isinstance(number, int):
             run = run._replace(pr=number)
         try:
             red = _all_pages(api, run.suite_id, "red", suite.get("red")) if first else []
+            green = _all_pages(api, run.suite_id, "passed", suite.get("passed")) if red else []
         except BudgetStop:
-            return jobs, passed
+            unread.append(run.suite_id)
+            continue
         jobs += [_job(run, node) for node in red]
         cancelled = suite.get("cancelled") or {}
         if int(cancelled.get("totalCount") or 0) <= CANCELLED_READ_MAX:
             jobs += [_job(run, node) for node in cancelled.get("nodes") or []]
-        if not red:
-            continue
-        try:
-            green = _all_pages(api, run.suite_id, "passed", suite.get("passed"))
-        except BudgetStop:
-            return jobs, passed
         for node in green:
             stamp = (str(node.get("completedAt") or ""), int(node.get("databaseId") or 0))
             passed.setdefault(passed_key(run, str(node.get("name") or "")), []).append(stamp)
-    return jobs, passed
+    return jobs, passed, unread + [suite for suite in ids if suite not in answered]
 
 
-def read_jobs(api: Api, runs: list[Run], workers: int = 1) -> tuple[list[Job], Passed]:
-    """The red-or-cancelled jobs of the runs that may have one, and every pass beside them.
+def read_jobs(api: Api, runs: list[Run], workers: int = 1) -> tuple[list[Job], Passed, int]:
+    """``(jobs, passes, check suites left unread)`` for the runs that may have a red job.
 
     A run is read when a job of it, in any attempt, ended red, or when the run
     ended cancelled. The passes are keyed by workflow, job name and head SHA. A
@@ -866,6 +878,11 @@ def read_jobs(api: Api, runs: list[Run], workers: int = 1) -> tuple[list[Job], P
     shows both there. The pull request of a `pull_request` run is read here,
     for these runs only: asked of every run in the window it triples the time a
     page of runs takes.
+
+    A pass can also sit in another run of the same workflow on the same head
+    SHA. So when a suite with red jobs is left unread, every suite of that
+    workflow and SHA is left out with it: none of their jobs is reported with a
+    cause a complete read could have changed.
     """
     by_suite = {
         run.suite_id: run for run in runs if (run.red_jobs or run.cancelled) and run.suite_id
@@ -883,12 +900,25 @@ def read_jobs(api: Api, runs: list[Run], workers: int = 1) -> tuple[list[Job], P
         below = tier
     jobs: list[Job] = []
     passed: Passed = {}
-    for found, passes in _each(
+    unread: set[str] = set()
+    for found, passes, missed in _each(
         workers, lambda batch: _read_suites(api, by_suite, batch[1], batch[0]), batches
     ):
         jobs += found
         _merge(passed, passes)
-    return jobs, passed
+        unread.update(missed)
+    open_pushes = {
+        (by_suite[suite].workflow, by_suite[suite].head_sha)
+        for suite in unread
+        if by_suite[suite].red_jobs
+    }
+    kept: list[Job] = []
+    for job in jobs:
+        if (job.run.workflow, job.run.head_sha) in open_pushes:
+            unread.add(job.run.suite_id)
+        else:
+            kept.append(job)
+    return kept, passed, len(unread)
 
 
 def read_main_red(api: Api, repo: str, start: str, end: str) -> list[MainRed]:
@@ -951,7 +981,7 @@ def take_census(api: Api, repo: str, start: str, end: str, logs: str, workers: i
     for runs in _each(workers, lambda row: read_runs(api, row[0], row[1], start, end), workflows):
         census.runs += runs
     _progress(f"{len(census.runs)} run(s) of {len(workflows)} workflow(s) read")
-    jobs, passed = read_jobs(api, census.runs, workers)
+    jobs, passed, census.suites_unread = read_jobs(api, census.runs, workers)
     _progress(f"{len(jobs)} red or cancelled job(s) and {len(main_red)} main-red issue(s) read")
     census.partial = api.stopped
     for job in jobs:
@@ -1018,6 +1048,7 @@ def summarize(census: Census, days: float) -> dict[str, Any]:
         "partial": census.partial,
         "runs_read_from": min((run.created_at for run in census.runs), default=None),
         "runs_read_to": max((run.created_at for run in census.runs), default=None),
+        "suites_unread": census.suites_unread,
         "workflows": census.workflows,
         "runs": len(census.runs),
         "red_jobs": len(rows),
@@ -1062,7 +1093,8 @@ def render_markdown(summary: dict[str, Any], repo: str, since: str, until: str) 
         lines += [
             f"**Partial: stopped early ({summary['partial']}). Runs read: {summary['runs']}, "
             f"created {summary['runs_read_from'] or 'n/a'} to {summary['runs_read_to'] or 'n/a'}; "
-            "their check suites may not all have been read. The counts below cover only "
+            f"{summary['suites_unread']} of their check suites with a red or cancelled job "
+            "were left unread and none of their jobs is counted. The counts below cover only "
             "what was read; they are not a census of the window.**",
             "",
         ]

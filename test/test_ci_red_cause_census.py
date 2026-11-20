@@ -576,7 +576,7 @@ def test_the_pr_number_is_read_for_a_pull_request_run_and_never_for_a_push() -> 
     red = (connection([check_run(1)]), connection([]))
     gh = FakeGh(suites=suites_of({"CS_1": red, "CS_2": red}, pulls={"CS_1": 7, "CS_2": 9}))
     runs = [run_of(run_id=1, pr=None), run_of(run_id=2, event="push", pr=None)]
-    jobs, _passed = CENSUS.read_jobs(api_for(gh), runs)
+    jobs, _passed, _unread = CENSUS.read_jobs(api_for(gh), runs)
     assert [(job.run.event, job.run.pr) for job in jobs] == [("pull_request", 7), ("push", None)]
     assert "matchingPullRequests" not in CENSUS.RUNS_QUERY
 
@@ -587,7 +587,7 @@ def test_check_runs_past_the_first_100_of_a_suite_are_read_by_cursor() -> None:
         suites=suites_of({"CS_1": (connection(first, "RED1"), connection([]))}),
         suite_page=lambda fields: {"node": {"page": connection([check_run(100, name="Job 100")])}},
     )
-    jobs, _passed = CENSUS.read_jobs(api_for(gh), [run_of(run_id=1)])
+    jobs, _passed, _unread = CENSUS.read_jobs(api_for(gh), [run_of(run_id=1)])
     assert [job.job_id for job in jobs] == list(range(101))
     assert gh.calls[1][1]["suite"] == "CS_1"
     assert gh.calls[1][1]["after"] == "RED1"
@@ -609,7 +609,7 @@ def test_a_job_the_runner_cancelled_is_read_without_its_steps_and_counted() -> N
     suite = (connection([]), connection([], "PASSED1"), cancelled_jobs(timed_out, superseded))
     gh = FakeGh(suites=suites_of({"CS_1": suite}))
 
-    jobs, passed = CENSUS.read_jobs(api_for(gh), [cancelled_run(1)])
+    jobs, passed, _unread = CENSUS.read_jobs(api_for(gh), [cancelled_run(1)])
 
     assert [(job.job_id, CENSUS.is_red(job)) for job in jobs] == [(7, True), (8, False)]
     assert CENSUS.classify(jobs[0], None, [], {})[0] == "infrastructure"
@@ -631,7 +631,7 @@ def test_a_run_with_more_cancelled_jobs_than_the_cap_is_a_cancelled_run() -> Non
     shown = [check_run(at, conclusion="CANCELLED", notes=[SHUTDOWN_NOTE]) for at in range(5)]
     suite = (connection([]), connection([]), cancelled_jobs(*shown, total=60))
     gh = FakeGh(suites=suites_of({"CS_1": suite}))
-    jobs, _passed = CENSUS.read_jobs(api_for(gh), [cancelled_run(1)])
+    jobs, _passed, _unread = CENSUS.read_jobs(api_for(gh), [cancelled_run(1)])
     assert jobs == []
     assert CENSUS.CANCELLED_READ_MAX == 5
 
@@ -662,7 +662,7 @@ def test_a_check_suite_is_asked_for_no_more_red_jobs_than_its_run_counted() -> N
 def test_cancelled_runs_with_no_red_job_are_read_fifty_to_a_call() -> None:
     nothing = (connection([]), connection([]))
     gh = FakeGh(suites=suites_of({f"CS_{at}": nothing for at in range(120)}))
-    jobs, _passed = CENSUS.read_jobs(api_for(gh), [cancelled_run(at) for at in range(120)])
+    jobs, _passed, _unread = CENSUS.read_jobs(api_for(gh), [cancelled_run(at) for at in range(120)])
     assert jobs == []
     assert [len(fields["ids"]) for _kind, fields in gh.calls] == [50, 50, 20]
 
@@ -672,7 +672,7 @@ def test_a_batch_github_cannot_answer_is_read_as_two_halves() -> None:
     by_id = {f"CS_{at}": empty for at in range(4)}
     answer = suites_of(by_id)
     gh = FakeGh(suites=lambda fields: None if len(fields["ids"]) > 2 else answer(fields))
-    jobs, _passed = CENSUS.read_jobs(api_for(gh), [run_of(run_id=at) for at in range(4)])
+    jobs, _passed, _unread = CENSUS.read_jobs(api_for(gh), [run_of(run_id=at) for at in range(4)])
     assert [job.run.run_id for job in jobs] == [0, 1, 2, 3]
     sizes = [len(fields["ids"]) for _kind, fields in gh.calls]
     assert sizes == [4] * CENSUS.ATTEMPTS + [2, 2]
@@ -1135,13 +1135,151 @@ def test_max_points_stops_the_census_with_partial_results(
     assert "GraphQL calls: 3 (6 points)\n" in capsys.readouterr().out
 
 
-def test_a_budget_stop_while_reading_check_suites_keeps_the_jobs_already_read() -> None:
+# A partial census is consistent: a check suite is in the output whole or not at all.
+
+SHARD = "Backend Tests (3.12, 1)"
+
+
+def sha_of(run_id: int) -> str:
+    return f"{run_id:040x}"
+
+
+def own_push(run_id: int) -> Any:
+    """A red run on a head SHA no other run shares."""
+    return run_of(run_id=run_id, sha=sha_of(run_id))
+
+
+def rerun_passed(job_id: int, cursor: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A suite whose red job passed on a re-run; with ``cursor`` the pass is on a second page."""
+    red = connection([check_run(job_id, SHARD, notes=[failing()])])
+    later = {"databaseId": job_id + 5000, "name": SHARD, "completedAt": f"{DAY}T11:00:00Z"}
+    if cursor is None:
+        return red, connection([later])
+    return red, connection([], cursor)
+
+
+def passes_page(fields: dict[str, Any]) -> dict[str, Any]:
+    job_id = int(fields["suite"].removeprefix("CS_"))
+    later = {"databaseId": job_id + 5000, "name": SHARD, "completedAt": f"{DAY}T11:00:00Z"}
+    return {"node": {"page": connection([later])}}
+
+
+def causes(jobs: list[Any], passed: Any) -> dict[int, str]:
+    return {job.job_id: CENSUS.classify(job, None, [], passed)[0] for job in jobs}
+
+
+def test_a_stop_on_the_second_page_of_passes_leaves_the_suite_out_not_misfiled() -> None:
+    suites = suites_of({"CS_1": rerun_passed(1, cursor="PASSED1")})
+    whole = FakeGh(suites=suites, suite_page=passes_page)
+    jobs, passed, unread = CENSUS.read_jobs(api_for(whole), [own_push(1)])
+    assert (causes(jobs, passed), unread) == ({1: "flaky"}, 0)
+
+    stopped = FakeGh(suites=suites, suite_page=passes_page)
+    api = CENSUS.Api(run=stopped, sleep=lambda seconds: None, max_points=2)
+    jobs, passed, unread = CENSUS.read_jobs(api, [own_push(1)])
+    # Read to the end the job is `flaky`; its red half alone would say `diff`.
+    assert (jobs, unread) == ([], 1)
+    assert stopped.kinds() == ["suites"]
+
+
+def test_a_stop_between_suites_keeps_the_ones_the_first_page_holds_whole() -> None:
+    by_id = {
+        "CS_1": rerun_passed(1),
+        "CS_2": rerun_passed(2, cursor="PASSED2"),
+        "CS_3": rerun_passed(3),
+    }
+    gh = FakeGh(suites=suites_of(by_id), suite_page=passes_page)
+    api = CENSUS.Api(run=gh, sleep=lambda seconds: None, max_points=2)
+
+    jobs, passed, unread = CENSUS.read_jobs(api, [own_push(at) for at in (1, 2, 3)])
+
+    assert (causes(jobs, passed), unread) == ({1: "flaky", 3: "flaky"}, 1)
+    assert gh.kinds() == ["suites"]
+
+
+def test_an_unread_suite_takes_the_other_runs_of_its_push_out_with_it() -> None:
+    # Runs 1 and 2 are the same workflow on the same head SHA: a pass of run 2,
+    # left unread, could have made run 1's red job `flaky`.
+    by_id = {"CS_1": rerun_passed(1), "CS_2": rerun_passed(2, cursor="PASSED2")}
+    by_id["CS_3"] = rerun_passed(3)
+    gh = FakeGh(suites=suites_of(by_id), suite_page=passes_page)
+    api = CENSUS.Api(run=gh, sleep=lambda seconds: None, max_points=2)
+    runs = [run_of(run_id=1), run_of(run_id=2), own_push(3)]
+
+    jobs, passed, unread = CENSUS.read_jobs(api, runs)
+
+    assert (causes(jobs, passed), unread) == ({3: "flaky"}, 2)
+
+
+def test_a_stop_in_one_worker_while_others_are_mid_batch_misfiles_no_job() -> None:
+    count = 80
+    by_id = {f"CS_{at}": rerun_passed(at, cursor="MORE" if at % 2 else None) for at in range(count)}
+    runs = [own_push(at) for at in range(count)]
+    whole = FakeGh(suites=suites_of(by_id), suite_page=passes_page)
+    jobs, passed, unread = CENSUS.read_jobs(api_for(whole), runs, workers=8)
+    complete = causes(jobs, passed)
+    assert (set(complete.values()), len(complete), unread) == ({"flaky"}, count, 0)
+
+    gh = FakeGh(suites=suites_of(by_id), suite_page=passes_page)
+    api = CENSUS.Api(run=gh, sleep=lambda seconds: None, max_points=6)
+    jobs, passed, unread = CENSUS.read_jobs(api, runs, workers=8)
+
+    partial = causes(jobs, passed)
+    assert 0 < len(partial) < count
+    assert len(partial) + unread == count
+    # Every job that is reported has the cause the complete read gave it.
+    assert all(complete[job_id] == cause for job_id, cause in partial.items())
+
+
+def test_a_refused_batch_names_every_suite_in_it_unread() -> None:
     red = (connection([check_run(1)]), connection([]))
     gh = FakeGh(suites=suites_of({f"CS_{at}": red for at in range(25)}))
     api = CENSUS.Api(run=gh, sleep=lambda seconds: None, max_points=4)
-    jobs, _passed = CENSUS.read_jobs(api, [run_of(run_id=at) for at in range(25)])
-    assert [job.run.run_id for job in jobs] == list(range(20))
+    jobs, _passed, unread = CENSUS.read_jobs(api, [own_push(at) for at in range(25)])
+    assert ([job.run.run_id for job in jobs], unread) == (list(range(20)), 5)
     assert api.stopped == "4 GraphQL points spent, the --max-points of 4"
+
+
+def test_the_summary_counts_the_suites_a_stop_left_unread(tmp_path: Path) -> None:
+    gh = FakeGh(
+        workflows=workflows_page("CI"),
+        runs=runs_pages(
+            {
+                None: connection(
+                    [
+                        run_node(1, f"{DAY}T10:00:00Z", red=1, sha=sha_of(1)),
+                        run_node(2, f"{DAY}T09:00:00Z", red=1, sha=sha_of(2)),
+                    ]
+                )
+            }
+        ),
+        suites=suites_of({"CS_1": rerun_passed(1), "CS_2": rerun_passed(2, cursor="PASSED2")}),
+        suite_page=passes_page,
+    )
+    args = census_args(tmp_path, "--max-points", "8")
+
+    assert CENSUS.main(args, api=api_for(gh), clock=ticks(0.0, 1.0)) == CENSUS.PARTIAL_EXIT
+
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert (summary["suites_unread"], summary["red_jobs"]) == (1, 1)
+    assert summary["by_cause"]["flaky"] == 1
+    assert summary["by_cause"]["diff"] == 0
+    assert [row["job_id"] for row in read_csv(tmp_path)] == ["1"]
+    assert "1 of their check suites with a red or cancelled job were left unread" in (
+        tmp_path / "summary.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_a_stop_while_reading_the_main_red_issues_reads_no_run(tmp_path: Path) -> None:
+    gh = FakeGh(
+        issues=lambda fields: {"repository": {"issues": connection([], "ISSUES2")}},
+        workflows=workflows_page("CI"),
+    )
+    args = census_args(tmp_path, "--max-points", "4")
+    assert CENSUS.main(args, api=api_for(gh), clock=ticks(0.0, 1.0)) == CENSUS.PARTIAL_EXIT
+    # Without every issue a broken-main job would read as `diff`, so no run is read at all.
+    assert gh.kinds() == ["budget", "issues"]
+    assert read_csv(tmp_path) == []
 
 
 def test_nothing_is_spent_after_the_stop() -> None:
