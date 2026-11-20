@@ -20,7 +20,7 @@ from slack_gateway_helpers import _make_orchestrator
 
 from kiro_crew import cli_restart_idle as idle_cli
 from kiro_crew import quiescence, restart_admission
-from kiro_crew.dashboard import chat_utils, run_clock, slot_retention
+from kiro_crew.dashboard import chat_utils, slot_retention, stale_wake
 from kiro_crew.slack import gateway as gw
 from kiro_crew.testing import synthetic_credentials
 
@@ -198,6 +198,18 @@ def test_a_running_script_the_cron_service_cannot_describe_still_counts(orch, cr
     assert _said(census) == "script x2"
 
 
+def test_a_job_the_schedule_list_leaves_out_is_counted_unnamed(orch, clock):
+    _script_running(orch, clock, "job-7f3a", "zebra-cron-name")
+    orch.cron_svc.get_job = lambda _id: SimpleNamespace(
+        name="zebra-cron-name", managed_by=stale_wake.MANAGED_KEY
+    )
+
+    census = quiescence.assess(orch, quiet_window_secs=0.0, now=0.0)
+
+    assert census.background == 1
+    assert _said(census) == "script"
+
+
 def test_a_run_whose_claim_was_taken_is_named_without_an_age(orch, clock):
     _script_running(orch, clock, "job-7f3a", "nightly-sync")
     del orch.cron_svc.started["job-7f3a"]
@@ -220,8 +232,7 @@ def _chat_state(provider, slot, *, queued: int = 0) -> SimpleNamespace:
     return SimpleNamespace(_slots={slot.key: slot}, sessions=sessions, workflow_service=None)
 
 
-def test_a_running_chat_turn_is_one_entry_with_its_slot_key_and_age(orch, monkeypatch):
-    monkeypatch.setattr(run_clock, "now", lambda: 340.0)
+def test_a_running_chat_turn_is_one_entry_under_its_slot_key(orch, monkeypatch):
     monkeypatch.setattr(slot_retention, "has_pending_approval", lambda _state, _slot: False)
     provider = SimpleNamespace(has_active_turn=lambda: True)
     slot = SimpleNamespace(key="chat-95", task=_Task(), _task_started_at=100.0, _queue=[])
@@ -235,10 +246,10 @@ def test_a_running_chat_turn_is_one_entry_with_its_slot_key_and_age(orch, monkey
     # The census counts a chat turn at its provider and at its task, as before.
     assert census.turns == 2
     assert _named(census) == [
-        {"kind": "turn", "name": "chat-95", "since_secs": 240, "count": 2},
+        {"kind": "turn", "name": "chat-95", "since_secs": None, "count": 2},
         {"kind": "queued", "name": "chat-95", "since_secs": None, "count": 2},
     ]
-    assert _said(census) == "chat-95 turn (4 min), chat-95 queued"
+    assert _said(census) == "chat-95 turn, chat-95 queued"
 
 
 def test_a_channel_born_slot_and_its_channel_turn_are_one_entry(orch, monkeypatch):
@@ -259,7 +270,7 @@ def test_a_channel_born_slot_and_its_channel_turn_are_one_entry(orch, monkeypatc
     assert _said(census) == "slack-1700 turn"
 
 
-def test_a_channel_turn_with_no_slot_is_one_entry_under_its_session_key(orch):
+def test_a_channel_turn_with_no_slot_is_counted_unnamed(orch):
     provider = SimpleNamespace(has_active_turn=lambda: True)
     table = {"slack:1700.5": SimpleNamespace(provider=provider, queue=[])}
     orch.sessions = SimpleNamespace(
@@ -273,7 +284,8 @@ def test_a_channel_turn_with_no_slot_is_one_entry_under_its_session_key(orch):
     census = quiescence.assess(orch, quiet_window_secs=0.0, now=0.0)
 
     assert census.turns == 2
-    assert _said(census) == "slack:1700.5 turn"
+    # No list shows this caller a session with no slot, so it has no name here.
+    assert _said(census) == "turn x2"
 
 
 def test_work_of_different_kinds_stays_separate(orch):
@@ -291,19 +303,27 @@ def test_work_of_different_kinds_stays_separate(orch):
     census = quiescence.assess(orch, quiet_window_secs=0.0, now=0.0)
 
     assert (census.turns, census.background) == (1, 3)
-    assert _said(census) == "wf-12 workflow, slack:1700.5 turn, subagent, task runner"
+    assert _said(census) == "workflow, turn, subagent, task runner"
 
 
-def test_eight_holders_list_five_and_say_how_many_more(orch):
-    orch._session_tasks = {f"session-{i}": _Task() for i in range(8)}
+def test_eight_holders_list_five_and_say_how_many_more(orch, monkeypatch):
+    monkeypatch.setattr(slot_retention, "has_pending_approval", lambda _state, _slot: False)
+    slots = {
+        f"chat-{i}": SimpleNamespace(key=f"chat-{i}", task=_Task(), _queue=[]) for i in range(8)
+    }
+    orch.dashboard_state = SimpleNamespace(
+        _slots=slots,
+        sessions=SimpleNamespace(active_providers=lambda: []),
+        workflow_service=None,
+    )
 
     census = quiescence.assess(orch, quiet_window_secs=0.0, now=0.0)
     entries, more = census.named_holders()
 
     assert census.turns == 8
-    assert [h["name"] for h in entries] == [f"session-{i}" for i in range(5)]
+    assert [h["name"] for h in entries] == [f"chat-{i}" for i in range(5)]
     assert more == 3
-    assert _said(census).endswith("session-4 turn, +3 more")
+    assert _said(census).endswith("chat-4 turn, +3 more")
 
 
 def test_holders_are_listed_longest_running_first_and_unnamed_work_is_one_count(orch, clock):
@@ -341,11 +361,11 @@ def test_no_entry_carries_message_text_a_title_or_a_path(orch, monkeypatch):
 
     assert {(h["kind"], h["name"]) for h in _named(census)} == {
         ("turn", "chat-95"),
-        ("workflow", "wf-12"),
+        ("workflow", ""),
         ("queued", "chat-95"),
         ("approval", "chat-95"),
     }
-    for private in ("launch date", "Quarterly", "private-project", "board memo"):
+    for private in ("launch date", "Quarterly", "private-project", "board memo", "wf-12"):
         assert private not in said
 
 
@@ -424,7 +444,7 @@ def test_a_hostile_job_name_is_harmless_in_the_answer_and_on_the_terminal(
     line = _cli_line(answered)
 
     names = [h["name"] for h in answered]
-    assert names == ["nightly 31m sync fake: restarted gnp.exe", "slack:1700"]
+    assert names == ["nightly 31m sync fake: restarted gnp.exe", ""]
     assert "nightly 31m sync fake: restarted gnp.exe script" in line
     for text in (line, *names):
         assert _live_controls(text) == []
@@ -500,7 +520,7 @@ def test_what_every_client_is_sent_carries_no_name(orch, clock):
 
     census = quiescence.assess(orch, quiet_window_secs=0.0, now=clock.now)
 
-    assert {h["name"] for h in _named(census)} == {"zebra-cron-name", "slack:quokka.123"}
+    assert {h["name"] for h in _named(census)} == {"zebra-cron-name", ""}
     assert set(census.payload()) == {
         "turns",
         "background",

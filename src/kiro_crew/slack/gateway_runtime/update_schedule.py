@@ -106,14 +106,7 @@ def _in_flight_work_census(self: GatewayOrchestrator) -> list[work_holders.Holde
                     seen_slot_tasks.add(marker)
                     try:
                         if not task.done():
-                            held.append(
-                                Holder(
-                                    work_holders.TURN,
-                                    str(slot_key),
-                                    work_holders.slot_age(slot),
-                                    turn=True,
-                                )
-                            )
+                            held.append(Holder(work_holders.TURN, str(slot_key), turn=True))
                     except Exception:
                         logger.warning("in-flight count: dashboard slot task failed", exc_info=True)
                         unreadable("slot task")
@@ -122,7 +115,7 @@ def _in_flight_work_census(self: GatewayOrchestrator) -> list[work_holders.Holde
         if workflows is not None:
             try:
                 held.extend(
-                    Holder(work_holders.WORKFLOW, str(run.get("run_id") or ""))
+                    Holder(work_holders.WORKFLOW)
                     for run in workflows.list_runs()
                     if isinstance(run, dict) and run.get("status") == "running"
                 )
@@ -161,16 +154,16 @@ def _in_flight_work_census(self: GatewayOrchestrator) -> list[work_holders.Holde
             held.append(Holder(work_holders.UPDATE_BUILD, count=builds))
 
     seen_handler_tasks: set[int] = set()
-    handler_owners: list[tuple[str, object]] = [
-        ("", self),
-        *getattr(self, "_channel_handles", {}).items(),
+    handler_owners: list[object] = [
+        self,
+        *getattr(self, "_channel_handles", {}).values(),
     ]
     handler_owners.extend(
-        (channel, peer)
-        for channel, owner in list(handler_owners)
+        peer
+        for owner in list(handler_owners)
         if (peer := getattr(owner, "_peer", None)) is not None
     )
-    for channel, owner in handler_owners:
+    for owner in handler_owners:
         tasks = getattr(owner, "_handler_tasks", None)
         if not isinstance(tasks, (set, list, tuple)):
             continue
@@ -181,7 +174,7 @@ def _in_flight_work_census(self: GatewayOrchestrator) -> list[work_holders.Holde
             seen_handler_tasks.add(marker)
             try:
                 if not task.done():
-                    held.append(Holder(work_holders.CHANNEL_HANDLER, str(channel)))
+                    held.append(Holder(work_holders.CHANNEL_HANDLER))
             except Exception:
                 logger.warning("in-flight count: channel handler state failed", exc_info=True)
                 unreadable("channel handler")

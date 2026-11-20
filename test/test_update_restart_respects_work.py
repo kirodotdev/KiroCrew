@@ -169,7 +169,7 @@ async def test_a_refused_restart_broadcasts_no_name_of_the_work_it_waits_on(gate
     )
     # The names exist: the host-only reader sees them.
     named = quiescence.assess(gateway.orch, quiet_window_secs=0.0).named_holders()[0]
-    assert {h["name"] for h in named} == {"slack:quokka.123", "zebra-cron-name"}
+    assert {h["name"] for h in named} == {"", "zebra-cron-name"}
 
     assert await gateway.restart() is False
 

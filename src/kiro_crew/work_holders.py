@@ -5,9 +5,9 @@ queue and approval probes of :mod:`kiro_crew.quiescence` describe every item
 they count as a :class:`Holder`; the counts a restart is judged on are sums over
 those same holders, so a number and the names behind it cannot disagree.
 
-A holder's ``name`` is an identifier the gateway already keys work by: a
-dashboard slot key, a channel session key, a cron job name, a workflow run id,
-a channel name. It is never message text, a session title or a path, and it is
+A holder's ``name`` is one of two identifiers its one reader is already listed:
+a dashboard slot key (``GET /api/chat/slots``) or a cron job name
+(``GET /api/crons``). Every other kind of work is counted unnamed. It is never message text, a session title or a path, and it is
 cleaned for a terminal and redacted where it is made (:func:`clean_name`). Names
 identify other sessions' work, so they are for the host only: see
 ``Quiescence.named_holders``. Work that is
@@ -194,32 +194,34 @@ def script_holder(cron_svc: Any, job_id: str) -> Holder:
     """The holder for running script or command job *job_id*.
 
     Its name and start are the cron service's own (``get_job``, cache-only, and
-    ``running_since``). A run the service cannot describe (no service, a job
-    removed mid-run, a claim already taken) is still a holder, by kind only.
+    ``running_since``), the ``name`` and ``running_since`` ``GET /api/crons``
+    lists. A run the service cannot describe (no service, a job removed mid-run,
+    a claim already taken) and a job that list leaves out are still holders, by
+    kind only.
     """
     name = ""
     age: float | None = None
     try:
-        job_name = getattr(cron_svc.get_job(job_id), "name", "")
-        name = job_name if isinstance(job_name, str) else ""
-        started = cron_svc.running_since(job_id)
-        if isinstance(started, (int, float)) and not isinstance(started, bool):
-            age = max(0.0, _now() - started)
+        job = cron_svc.get_job(job_id)
+        if job is not None and not _unlisted_job(job):
+            job_name = getattr(job, "name", "")
+            name = job_name if isinstance(job_name, str) else ""
+            started = cron_svc.running_since(job_id)
+            if isinstance(started, (int, float)) and not isinstance(started, bool):
+                age = max(0.0, _now() - started)
     except Exception:
         # No cron service, or one that cannot answer: the run still counts.
         pass
     return Holder(SCRIPT, name, age)
 
 
-def slot_age(slot: Any) -> float | None:
-    """Seconds the dashboard slot's current task has run, if it was stamped."""
-    started = getattr(slot, "_task_started_at", None)
-    if isinstance(started, bool) or not isinstance(started, (int, float)):
-        return None
+def _unlisted_job(job: Any) -> bool:
+    """Whether the schedule list leaves *job* out (a goal check-in, the stale-wake job)."""
     # circular import: the dashboard package imports the gateway at load.
-    from kiro_crew.dashboard import run_clock
+    from kiro_crew.dashboard.goal_reminder import is_reminder_job
+    from kiro_crew.dashboard.stale_wake import is_stale_wake_job
 
-    return max(0.0, run_clock.now() - started)
+    return bool(is_reminder_job(job) or is_stale_wake_job(job))
 
 
 def slot_names(state: Any) -> dict[str, str]:
@@ -247,9 +249,12 @@ def slot_names(state: Any) -> dict[str, str]:
 
 
 def session_name(session_key: object, slots: dict[str, str]) -> str:
-    """The name a session's work is listed under: its slot's, else its own key."""
-    key = str(session_key)
-    return slots.get(key, key)
+    """The slot a session's work is listed under, or ``""`` for a session with no slot.
+
+    A session with no dashboard slot (a channel thread nobody opened) has no
+    name any list already shows this caller, so its work is counted unnamed.
+    """
+    return slots.get(str(session_key), "")
 
 
 def provider_names(sessions: Any, slots: dict[str, str]) -> dict[int, str]:
