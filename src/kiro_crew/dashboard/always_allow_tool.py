@@ -37,12 +37,16 @@ ACTION = "always_allow_tool"
 
 #: The ``hooks`` list these grants live in.
 GRANT_KEY = "auto_approve_tool_identities"
+#: The ``hooks`` map of the launch ids each grant was given for, written with it.
+LAUNCHES_KEY = "auto_approve_tool_identity_launches"
 
 #: Card fields (all strings, as every pending-card field is).
 FIELD_GRANTABLE = "always_allow_tool_grantable"
 FIELD_REF = "always_allow_tool_ref"
 FIELD_REFUSAL = "always_allow_tool_refusal"
-CARD_FIELDS = (FIELD_GRANTABLE, FIELD_REF, FIELD_REFUSAL)
+#: The launch ids of the card's server the session could see, comma-separated.
+FIELD_LAUNCHES = "always_allow_tool_launches"
+CARD_FIELDS = (FIELD_GRANTABLE, FIELD_REF, FIELD_REFUSAL, FIELD_LAUNCHES)
 
 #: Why a tool's grant is not offered, shown beside the control as a short reason.
 #: ``asks_every_time``: an operator ``hooks.confirm_tools`` pattern covers it.
@@ -146,7 +150,7 @@ def server_refusal(server: str) -> str:
         return REFUSAL_CREW_OWNED
     if _operator_requires_confirmation(f"@{server}/"):
         return REFUSAL_ASKS_EVERY_TIME
-    if overlay_pins("hooks", GRANT_KEY):
+    if overlay_pins("hooks", GRANT_KEY) or overlay_pins("hooks", LAUNCHES_KEY):
         return REFUSAL_SET_ELSEWHERE
     return ""
 
@@ -164,10 +168,23 @@ def refusal_for(ref: str) -> str:
     return ""
 
 
-def card_fields(event: Any) -> dict[str, str]:
+def grant_launches(server: str, *, agent: str, work_dir: str = "") -> tuple[str, ...]:
+    """The launch ids a grant for *server* binds: every definition the session sees (blocking I/O)."""
+    from kiro_crew.tool_grant_launch_audit import session_launch_ids
+
+    try:
+        return tuple(sorted(session_launch_ids(server, agent=agent, work_dir=work_dir)))
+    except Exception:
+        logger.debug("could not read the launches of %s for a grant", server, exc_info=True)
+        return ()
+
+
+def card_fields(event: Any, *, agent: str = "") -> dict[str, str]:
     """The pending card's grant fields for *event* (blocking I/O: run off the loop).
 
     Empty when the call has no grantable identity, so the option is not shown.
+    The launches the grant would bind are read now, for the session *agent* runs
+    in, and stamped on the card, so the grant binds what that session mounted.
     """
     ref = event_tool_ref(event)
     if not ref:
@@ -175,7 +192,23 @@ def card_fields(event: Any) -> dict[str, str]:
     refusal = refusal_for(ref)
     if refusal:
         return {FIELD_REFUSAL: refusal}
-    return {FIELD_GRANTABLE: "1", FIELD_REF: ref}
+    fields = {FIELD_GRANTABLE: "1", FIELD_REF: ref}
+    launches = grant_launches(
+        str(getattr(event, "mcp_server_name", "") or ""),
+        agent=agent,
+        work_dir=str(getattr(event, "spec_write_cwd", "") or ""),
+    )
+    if launches:
+        fields[FIELD_LAUNCHES] = ",".join(launches)
+    return fields
+
+
+def _card_launches(text: str) -> tuple[str, ...]:
+    """The launch ids a card carries; anything but hex ids reads as none."""
+    ids = tuple(i for i in (text if isinstance(text, str) else "").split(",") if i)
+    if all(len(i) == 64 and all(c in "0123456789abcdef" for c in i) for i in ids):
+        return ids
+    return ()
 
 
 class GrantRefused(Exception):
@@ -186,20 +219,36 @@ class GrantRefused(Exception):
         self.code = code
 
 
-def _grant_list(data: dict) -> list:
+def _hooks(data: dict) -> dict:
     hooks = data.get("hooks")
     if hooks is None:
         hooks = data["hooks"] = {}
     if not isinstance(hooks, dict):
         raise GrantRefused("config_unreadable", "the hooks section of config.json is not an object")
-    entries = hooks.setdefault(GRANT_KEY, [])
+    return hooks
+
+
+def _grant_list(data: dict) -> list:
+    entries = _hooks(data).setdefault(GRANT_KEY, [])
     if not isinstance(entries, list):
         raise GrantRefused("config_unreadable", f"hooks.{GRANT_KEY} is not a list")
     return entries
 
 
-def write_grant(ref: str, *, add: bool) -> None:
+def _launch_map(data: dict) -> dict:
+    bindings = _hooks(data).get(LAUNCHES_KEY, {})
+    if not isinstance(bindings, dict):
+        raise GrantRefused("config_unreadable", f"hooks.{LAUNCHES_KEY} is not an object")
+    return bindings
+
+
+def write_grant(ref: str, *, add: bool, launches: tuple[str, ...] = ()) -> None:
     """Add or remove the exact entry *ref* in ``config.json`` (blocking I/O).
+
+    An added grant is bound to *launches* (the launch ids its server had when it
+    was granted) in the same write; granting an exact entry again adds the new
+    launches to its binding, and with no launches the grant is written unbound.
+    A removal drops every case variant and its binding.
 
     Under the config file's lock, through ``update_config_locked``, which endorses
     the bytes it publishes; a file with a pending outside edit is refused by that
@@ -211,15 +260,32 @@ def write_grant(ref: str, *, add: bool) -> None:
 
     def _mutate(data: dict) -> dict | None:
         entries = _grant_list(data)
+        bindings = _launch_map(data)
+        folded = ref.lower()
         if add:
-            if any(isinstance(e, str) and e.lower() == ref.lower() for e in entries):
+            exact = ref in entries
+            if not exact and any(isinstance(e, str) and e.lower() == folded for e in entries):
                 return None
-            entries.append(ref)
+            old = bindings.get(ref)
+            old_ids = [i for i in old if isinstance(i, str)] if isinstance(old, list) else []
+            merged = sorted(set(old_ids) | set(launches))
+            if exact and (not launches or merged == old):
+                return None
+            if not exact:
+                entries.append(ref)
+            if launches:
+                bindings[ref] = merged
+                _hooks(data)[LAUNCHES_KEY] = bindings
         else:
-            kept = [e for e in entries if not (isinstance(e, str) and e.lower() == ref.lower())]
-            if len(kept) == len(entries):
+            kept = [e for e in entries if not (isinstance(e, str) and e.lower() == folded)]
+            stale = [k for k in bindings if isinstance(k, str) and k.lower() == folded]
+            if len(kept) == len(entries) and not stale:
                 return None
             entries[:] = kept
+            for k in stale:
+                del bindings[k]
+            if not bindings:
+                _hooks(data).pop(LAUNCHES_KEY, None)
         return data
 
     update_config_locked(config_path(), mutate=_mutate)
@@ -267,7 +333,9 @@ def refuse(
     return web.json_response({"error": message, "code": code}, status=status)
 
 
-async def save_grant(request: Any, ref: str, *, add: bool, operation: str) -> Any:
+async def save_grant(
+    request: Any, ref: str, *, add: bool, operation: str, launches: tuple[str, ...] = ()
+) -> Any:
     """Write or drop *ref*, apply it to the running gate, and audit it.
 
     Returns ``None`` on success, else the refusal response. Shared by the card's
@@ -283,7 +351,7 @@ async def save_grant(request: Any, ref: str, *, add: bool, operation: str) -> An
 
     async with _get_config_lock():
         try:
-            await asyncio.to_thread(write_grant, ref, add=add)
+            await asyncio.to_thread(write_grant, ref, add=add, launches=launches)
         except PendingEditBlocksSave as exc:
             return refuse(request, operation, exc.code, str(exc), 409, ref=ref)
         except GrantRefused as exc:
@@ -350,4 +418,10 @@ async def grant_from_card(
         return refuse(
             request, op, refusal, "this tool cannot be always allowed now", 409, ref=card_ref
         )
-    return await save_grant(request, card_ref, add=True, operation="security.tool_grants.add")
+    return await save_grant(
+        request,
+        card_ref,
+        add=True,
+        operation="security.tool_grants.add",
+        launches=_card_launches(card(FIELD_LAUNCHES)),
+    )

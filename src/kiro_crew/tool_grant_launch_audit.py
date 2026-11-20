@@ -1,26 +1,35 @@
-"""Observe-only check of which launch a standing MCP tool grant approves (stage 1).
+"""Which launch a standing MCP tool grant approves: bound grants (stage 2), observed ones (stage 1).
 
 A grant in ``hooks.auto_approve_tool_identities`` or an ``auto_approve_tools``
 pattern names a server by NAME (``@server/tool``). Any server mounted under that
-name gets the grant. This module measures how often that matters before anything
-enforces it: when a grant approves a call, it computes the launch ids of every
-definition the session can see under that server name and compares them with the
-first set seen for the name in this process. A new id is logged and SEL-audited
-once, by count and grant kind only (no server or tool names, the way
-``hook_manager`` audits grant-set changes).
+name used to get the grant.
 
-It NEVER changes a verdict and never touches the filesystem on the gate's own
-path: the gate only queues the call (``observe_granted_call``), and one daemon
-thread does the reads. A full queue drops the observation; a read that hangs
-stalls only that thread, never a permission decision. Stage 2 (asking again on a changed launch) is a separate change, and
-it needs a persisted, agent-proof binding record that this stage deliberately
-does not add.
+Stage 2 (bound grants). The approval card's "Always allow this tool" and the MCP
+tool list's toggle record, in the same locked write as the grant, the launch ids
+of every definition of that server the granting session could see
+(``hooks.auto_approve_tool_identity_launches``, :func:`session_launch_ids`). A
+grant with that record approves a call only when the session's launch ids for
+the server are all in it (:func:`bound_launch_holds`); otherwise the gate gives
+no verdict and the call asks. The record lives in ``config.json``, whose
+security keys an agent cannot change without the owner applying it
+(``config.loosening_provenance``). That check runs on the gate's path, for a
+bound grant only: the reads are the bounded, non-blocking, stat-cached settings
+reads below and the agent-spec reader's own directory-revision memo.
 
-shortcut: the binding is the first launch set seen per server name in this
-process, not the launch the owner granted; a restart starts over. The project
-folder is known only where the session stamps it (``spec_write_cwd``: KAS and
-claude); elsewhere project-level files are not read. Upgrade with stage 2's
-persisted record and a session-recorded mount.
+Stage 1 (unbound grants, observe only). A grant with no record -- every grant
+written before stage 2, and every ``auto_approve_tools`` pattern -- approves as
+before. When it approves a call, the launch ids are compared with the first set
+seen for the name in this process; a new id is logged and SEL-audited once, by
+count and grant kind only (no server or tool names, the way ``hook_manager``
+audits grant-set changes). That path NEVER changes a verdict and never touches
+the filesystem on the gate's own path: the gate only queues the call
+(``observe_granted_call``), and one daemon thread does the reads. A full queue
+drops the observation; a read that hangs stalls only that thread.
+
+shortcut: the session's launch is read from the definitions it can see, not
+recorded from the mount it made, and the project folder is known only where the
+session stamps it (``spec_write_cwd``: KAS and claude); elsewhere project-level
+files are not read. Upgrade with a session-recorded mount.
 """
 
 from __future__ import annotations
@@ -218,6 +227,64 @@ def session_launch_ids(server: str, *, agent: str, work_dir: str) -> frozenset[s
                 if found:
                     ids.add(found)
     return frozenset(ids)
+
+
+def bound_launch_holds(server: str, bound: frozenset[str], *, agent: str, work_dir: str) -> bool:
+    """Whether a grant bound to *bound* may approve a call to *server* (stage 2).
+
+    True only when the session can see at least one definition of *server* and
+    every launch id it sees is in *bound*. No definition, an unreadable one, or a
+    failed read answers False, so the call asks. Never raises.
+    """
+    try:
+        wanted = server.lower()
+        seen = False
+        for servers in _definition_sources(agent, work_dir):
+            for name, entry in servers.items():
+                if not (isinstance(name, str) and name.lower() == wanted):
+                    continue
+                found = launch_id(entry, work_dir) if isinstance(entry, dict) else None
+                # A definition with no id (a relative launch with no known folder)
+                # cannot be shown to be one the grant was given for.
+                if found is None or found not in bound:
+                    return False
+                seen = True
+        return seen
+    except Exception:
+        logger.debug("bound tool grant launch check failed", exc_info=True)
+        return False
+
+
+def identity_grant_approves(config: Any, call: Any, agent: str, identity_ref: str) -> bool:
+    """Whether an ``auto_approve_tool_identities`` grant in *config* approves *identity_ref*.
+
+    Called by the gate's ``operator-grants`` tier for a VERIFIED identity only. A
+    BOUND grant (an exact entry with an ``auto_approve_tool_identity_launches``
+    record) approves only when :func:`bound_launch_holds`; on a mismatch nothing
+    approves and the call asks. An UNBOUND grant keeps the stage-1 rule:
+    case-insensitive equality, observed off the gate's path. While any spelling
+    of the identity is bound, no unbound spelling approves it, so a hand-written
+    case variant cannot step around a binding.
+    """
+    bindings = config.auto_approve_tool_identity_launches
+    grants = config.auto_approve_tool_identities
+    bound = bindings.get(identity_ref)
+    if bound is not None and identity_ref in grants:
+        work_dir = str(getattr(call, "spec_write_cwd", "") or "")
+        if bound_launch_holds(call.mcp_server, bound, agent=agent, work_dir=work_dir):
+            return True
+        logger.info(
+            "a bound tool grant did not approve a call: the server's launch is not one "
+            "the grant was given for, so the call asks"
+        )
+        return False
+    folded = identity_ref.lower()
+    if any(ref.lower() == folded for ref in bindings):
+        return False
+    if any(grant.lower() == folded for grant in grants):
+        observe_granted_call(call, agent, "identity")
+        return True
+    return False
 
 
 def observe(server: str, *, agent: str, work_dir: str, grant: str) -> None:

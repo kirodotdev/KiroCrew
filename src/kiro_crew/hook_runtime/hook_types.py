@@ -253,6 +253,12 @@ class HooksConfig:
     #: against a VERIFIED MCP identity, never a title, and ``confirm_tools``
     #: outranks them as it outranks ``auto_approve_tools``.
     auto_approve_tool_identities: list[str] = field(default_factory=list)
+    #: The launch ids (``tool_grant_launch_audit.launch_id``) each exact
+    #: ``@server/tool`` grant was given for, written with the grant. A grant with
+    #: an entry here approves only a call whose server launches are all in it
+    #: (matched case-sensitively); a grant without one keeps the stage-1 match.
+    #: A malformed entry reads as bound to nothing, so it never approves.
+    auto_approve_tool_identity_launches: dict[str, frozenset[str]] = field(default_factory=dict)
     auto_approve_sources: list[str] = field(default_factory=list)
     auto_approve_subagent_spawn: bool = False
     auto_approve_subagent_tools: bool = False
@@ -318,6 +324,28 @@ class HooksConfig:
             if not isinstance(value, list):
                 return []
             return [s for s in value if isinstance(s, str)]
+
+        def _launch_bindings(value) -> dict[str, frozenset[str]]:
+            """``{ref: launch ids}``; a value that is not a list of strings binds nothing.
+
+            A map that is present but not an object binds every identity grant to
+            nothing: which grants it bound cannot be read, so none falls back to
+            the unbound match.
+            """
+            if value is None:
+                return {}
+            if not isinstance(value, dict):
+                refs = _str_list(data.get("auto_approve_tool_identities", []))
+                return {ref: frozenset() for ref in refs}
+            out: dict[str, frozenset[str]] = {}
+            for ref, ids in value.items():
+                if not isinstance(ref, str):
+                    continue
+                ok = isinstance(ids, list) and all(isinstance(i, str) for i in ids)
+                # Fail closed: an unreadable binding must not turn the grant
+                # back into an unbound one.
+                out[ref] = frozenset(ids) if ok else frozenset()
+            return out
 
         # ``on_message`` lowercases every pattern and trigger on each message, so
         # what it cannot read is skipped here, with a warning, rather than raising
@@ -403,6 +431,9 @@ class HooksConfig:
         return cls(
             auto_approve_tools=merged_approve,
             auto_approve_tool_identities=_str_list(data.get("auto_approve_tool_identities", [])),
+            auto_approve_tool_identity_launches=_launch_bindings(
+                data.get("auto_approve_tool_identity_launches")
+            ),
             auto_approve_sources=_str_list(data.get("auto_approve_sources", [])),
             # Fail safe: malformed auto-approve flags must NOT silently widen
             # approval (a string "false" is truthy under plain bool()) — default
@@ -447,6 +478,9 @@ class HooksConfig:
                 t for t in self.auto_approve_tools if t not in _BUNDLED_AUTO_APPROVE_TOOLS
             ],
             "auto_approve_tool_identities": list(self.auto_approve_tool_identities),
+            "auto_approve_tool_identity_launches": {
+                k: sorted(v) for k, v in self.auto_approve_tool_identity_launches.items()
+            },
             "auto_approve_sources": list(self.auto_approve_sources),
             "auto_approve_subagent_spawn": self.auto_approve_subagent_spawn,
             "auto_approve_subagent_tools": self.auto_approve_subagent_tools,
