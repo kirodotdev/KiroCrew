@@ -495,10 +495,11 @@ every attribute value on it comes from a closed set. Histograms,
 | Inventory (gauges) | `inventory.crons.active`, `inventory.monitor_loops.active`, `inventory.skills.installed`, `inventory.memory.migrated`, `inventory.knowledge.documents`, `inventory.lessons`, `inventory.mcp.servers`, `inventory.config.toggle`, `inventory.probe.failures`, `inventory.members`, `inventory.voice.provider` |
 | Voice | `voice.stt.started`, `voice.stt.ended`, `voice.stt.errors`, `voice.unavailable`, `voice.tts.replies` |
 | Recommendations | `tips.feedback`, `feature_video.status`, `milestone.panel_opened`, `milestone.starter_clicked`, `milestone.reached`, `milestone.skipped`, `milestone.mark_all_done`, `milestone.notice_shown`, `milestone.features_completed` |
+| Chat runtime sharing | `chat_runtime_share.toggled`, `chat_runtime_share.placed`, `chat_runtime_share.processes`, `chat_runtime_share.tenants`, `chat_runtime_share.rss_sampled`, `chat_runtime_share.reclaimed`, `chat_runtime_share.process_died`, `chat_runtime_share.turn_started`, `chat_runtime_share.turn_ended`, `chat_runtime_share.kas_queued`, `kas.engine_install` |
 
-Retired: `app.task.completed` (Papyrus compiles) is no longer sent. Its manifest
-row stays, marked `deprecated`, and the name is not reused. Older builds may
-still send it until they upgrade.
+Retired: `app.task.completed` (Papyrus compiles) is not sent. Its manifest row
+stays, marked `deprecated`, and the name is not reused; a collector can still
+receive it from an older build.
 
 `PRODUCT_METRICS` groups its names by the question they answer. One group covers
 in-product recommendations (feature tips, the Explore panel, feature videos):

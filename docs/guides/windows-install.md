@@ -764,8 +764,7 @@ Sub-agents that share the chat's own kiro-cli process, the default while
 `agent.session_sharing` is on, are not marked: the chat runs in that process,
 and a process-level hint cannot tell the two apart. Not covered yet: dedicated
 sub-agent processes (session sharing off, `keep`, a remote workspace), the
-`_bg` helper runtime, MCP gateway backends and cron scripts
-([#35537](https://github.com/kirodotdev/KiroCrew/issues/35537)).
+`_bg` helper runtime, MCP gateway backends and cron scripts.
 
 Windows pod teardown does not infer a clean stop from the gateway PID record
 vanishing. Before `/End`, it opens an exact handle to the recorded gateway and
@@ -897,9 +896,7 @@ anything.
 What this does **not** give you is supervision. `kirocrew service install` has
 no Windows backend: it prints that service management is supported only on
 systemd and launchd. A gateway started this way stops when you sign out or close
-its window, does not start at boot, and is not restarted if it exits. Windows
-supervision is a separate piece of work, proposed in
-[#11289](https://github.com/kirodotdev/KiroCrew/pull/11289).
+its window, does not start at boot, and is not restarted if it exits.
 
 ## Troubleshooting
 

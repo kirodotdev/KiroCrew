@@ -820,8 +820,7 @@ bugs:
   on iOS it needs iOS 18.4 or later and the app added to the Home Screen. With
   the toggle off, notifications need the app open. In page banners go through
   `ServiceWorkerRegistration.showNotification()`, which an installed iOS PWA
-  and Android Chrome require
-  ([issue #1828](https://github.com/kirodotdev/KiroCrew/issues/1828)).
+  and Android Chrome require.
 - **Pinch zoom is off.** The installed app behaves like an application, not a
   web page: two-finger pinch and double-tap do not scale the shell. **To
   magnify, use the OS display-zoom setting** (iOS: Settings → Display &
