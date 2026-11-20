@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import pytest
-from test_relay_client_lease import CREDENTIAL, FakeLeaseService, StepClock, make_source
+from test_relay_client_lease import CREDENTIAL, FakeLeaseService, StepClock, answer, make_source
 
 from kiro_crew.relay_client import lease as lease_module
 from kiro_crew.relay_client.token_source import HostTokenRetryLater, HostTokenUnavailable
@@ -107,6 +107,68 @@ async def test_an_access_refusal_names_the_message_in_the_status_and_the_log(
 
 
 @pytest.mark.asyncio
+async def test_a_repeated_access_refusal_warns_once_per_refusal_text(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="kiro_crew.relay_client.lease")
+    off = {"__type": "AccessDeniedException", "reason": "REMOTE_ACCESS_DISABLED"}
+    other = {"__type": "AccessDeniedException", "reason": "CREW_ACCESS_NOT_GRANTED"}
+    clock = StepClock()
+    async with FakeLeaseService() as lease:
+        for body in (off, off, other):
+            lease.queue(403, body)
+        source = make_source(lease, tmp_path, clock)
+        try:
+            with pytest.raises(HostTokenRetryLater):
+                await source.current()
+            # Each retry comes on its own after the 15-minute hold, status unchanged.
+            for _ in range(2):
+                assert await clock.next_sleep() == lease_module.RETRY_AFTER_MAX_SECONDS
+                clock.elapse()
+            assert await clock.next_sleep() == lease_module.RETRY_AFTER_MAX_SECONDS
+            assert len(lease.requests) == 3
+        finally:
+            await source.aclose()
+    refusals = [r for r in caplog.records if "refused this Crew" in r.getMessage()]
+    # The same refusal again is INFO; a different refusal text warns once more.
+    assert [r.levelno for r in refusals] == [logging.WARNING, logging.INFO, logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_a_renewal_or_a_stop_lets_the_same_refusal_warn_again(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="kiro_crew.relay_client.lease")
+    off = {"__type": "AccessDeniedException", "reason": "REMOTE_ACCESS_DISABLED"}
+    clock = StepClock()
+    async with FakeLeaseService() as lease:
+        lease.queue(403, off)
+        lease.queue(200, answer(0))
+        lease.queue(403, off)
+        lease.queue(403, off)
+        source = make_source(lease, tmp_path, clock)
+        try:
+            with pytest.raises(HostTokenRetryLater):
+                await source.current()
+            assert await clock.next_sleep() == lease_module.RETRY_AFTER_MAX_SECONDS
+            clock.elapse()
+            # Access came back: the lease renewed, then the next renewal is refused.
+            assert await clock.next_sleep() == answer(0)["renewInSeconds"]
+            clock.elapse()
+            assert await clock.next_sleep() == lease_module.RETRY_AFTER_MAX_SECONDS
+        finally:
+            await source.aclose()
+        # A stop forgets it too: the next start says it again.
+        try:
+            with pytest.raises(HostTokenRetryLater):
+                await source.current()
+        finally:
+            await source.aclose()
+    refusals = [r for r in caplog.records if "refused this Crew" in r.getMessage()]
+    assert [r.levelno for r in refusals] == [logging.WARNING] * 3
+
+
+@pytest.mark.asyncio
 async def test_a_stop_names_the_message_and_an_unshown_one_keeps_todays_text(
     tmp_path: Path,
 ) -> None:
@@ -176,3 +238,69 @@ def test_an_arn_an_account_id_or_a_key_id_in_any_spelling_hides_the_message(
 )
 def test_plain_text_with_a_few_digits_is_still_shown(message: str) -> None:
     assert lease_module.refusal_message({"message": message}) == message
+
+
+@pytest.mark.asyncio
+async def test_an_access_refusal_is_a_wait_on_the_crew_also_inside_its_hold(
+    tmp_path: Path,
+) -> None:
+    async with FakeLeaseService() as lease:
+        lease.queue(403, {"__type": "AccessDeniedException", "reason": "REMOTE_ACCESS_DISABLED"})
+        source = make_source(lease, tmp_path, StepClock())
+        try:
+            with pytest.raises(HostTokenRetryLater) as later:
+                await source.current()
+            assert later.value.cannot_host_yet is True
+            # Asked again inside the 15-minute hold: still the Crew's own wait.
+            with pytest.raises(HostTokenRetryLater, match="next try in") as again:
+                await source.renew(host_token_requested=True)
+            assert again.value.cannot_host_yet is True
+            assert len(lease.requests) == 1
+        finally:
+            await source.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_service_it_cannot_reach_is_a_fault_not_a_wait_on_the_crew(
+    tmp_path: Path,
+) -> None:
+    async with FakeLeaseService() as lease:
+        lease.reachable = False
+        source = make_source(lease, tmp_path, StepClock())
+        try:
+            with pytest.raises(HostTokenRetryLater, match="could not be reached") as later:
+                await source.current()
+            assert later.value.cannot_host_yet is False
+            # Asked again inside the back-off: still a fault on the way.
+            with pytest.raises(HostTokenRetryLater, match="next try in") as again:
+                await source.renew(host_token_requested=True)
+            assert again.value.cannot_host_yet is False
+        finally:
+            await source.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (503, {}),
+        (400, {"__type": "ThrottlingException"}),
+        (409, {"__type": "IdentityInUseException"}),
+    ],
+    ids=["5xx", "throttling", "identity-in-use"],
+)
+async def test_other_refusals_are_faults_not_a_wait_on_the_crew(
+    tmp_path: Path, status: int, body: dict
+) -> None:
+    async with FakeLeaseService() as lease:
+        lease.queue(status, body)
+        source = make_source(lease, tmp_path, StepClock())
+        try:
+            with pytest.raises(HostTokenRetryLater) as later:
+                await source.current()
+            assert later.value.cannot_host_yet is False
+            with pytest.raises(HostTokenRetryLater, match="next try in") as again:
+                await source.renew(host_token_requested=True)
+            assert again.value.cannot_host_yet is False
+        finally:
+            await source.aclose()

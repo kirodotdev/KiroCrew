@@ -115,7 +115,14 @@ class HostTokenRetryLater(Exception):
     """No host token right now, for a reason that can pass (the backend is down).
 
     The client backs off with the same steps as a reconnect and asks again.
+    *cannot_host_yet* says the wait is on this Crew's own eligibility (its sign-in,
+    or remote access refused for its account or organization), not a fault on the
+    way to the service.
     """
+
+    def __init__(self, message: str = "", *, cannot_host_yet: bool = False) -> None:
+        super().__init__(message)
+        self.cannot_host_yet = cannot_host_yet
 
 
 class HostTokenSource(Protocol):

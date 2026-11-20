@@ -824,11 +824,11 @@ disk, including fields the operator never set -- and each field is resolved as
 default, so **changing a shipped default reaches only installs created after the
 change**; a pre-existing install keeps whatever value was materialized last.
 `tunnel.relay_enabled` relies on that on purpose: its default moved from `false`
-to unset (`null`, where a team key or a workload identity hosts,
-`remote_control/hosting.py`), and an install that stores `false` keeps it, since a
-stored `false` cannot be told apart from a deliberate off. `config set` writes only
-the keys it names, so an older install may store nothing there; with a team key it
-hosts after the upgrade, the key being its choice. It has no registry row.
+to unset (`null`, where a personal sign-in, a team key or a workload identity
+hosts, `remote_control/hosting.py`), and an install that stores `false` keeps it,
+since a stored `false` cannot be told apart from a deliberate off. `config set`
+writes only the keys it names, so an older install may store nothing there; on a
+personal sign-in or a team key it hosts after the upgrade. It has no registry row.
 
 `config/superseded_defaults.py` holds an append-only registry
 (`SUPERSEDED_DEFAULTS`) of default changes existing installs should be told about,
