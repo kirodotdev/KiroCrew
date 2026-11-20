@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         _HOOK_STREAM_CAP_BYTES,
         _HOOK_TRUNCATION_MARKER,
         _HOOKS_FILE,
+        _WINDOWS_CMD_LINE_MAX,
         HOOK_EVENT_AGENT_SPAWN,
         HOOK_EVENT_POST_TOOL_USE,
         HOOK_EVENT_PRE_TOOL_USE,
@@ -157,6 +158,12 @@ class ScriptHookResult:
     #: the hook's in-memory ``spec_origin``, never from its id, which a
     #: hand-written ``hooks.json`` controls.
     from_spec: bool = False
+    #: The hook's command never ran because its line is over cmd.exe's limit
+    #: (Windows): too long to spawn, or refused by cmd.exe after ``%VAR%``
+    #: expansion (exit 1). A PreToolUse guard that never ran gave no verdict,
+    #: so a spec hook blocks on it as on a refusal, rather than warning as on
+    #: a crash.
+    not_started: bool = False
 
     @property
     def blocked(self) -> bool:
@@ -178,11 +185,12 @@ class ScriptHookResult:
         tool call. A spec hook a policy refused to run (governance or the shell
         deny list) blocks too: it carries exit 2, and the guard its author wrote
         never gave a verdict, so letting the tool run would skip it unseen. The
-        refusal is the block's reason (:attr:`failure_detail`).
+        refusal is the block's reason (:attr:`failure_detail`). So does one that
+        never started (:attr:`not_started`), for the same reason.
         """
         if not self.from_spec:
             return self.exit_code != 0
-        return self.exit_code == 2
+        return self.exit_code == 2 or self.not_started
 
     @property
     def failure_detail(self) -> str:
@@ -192,6 +200,19 @@ class ScriptHookResult:
         if self.stderr:
             return self.stderr[-200:]
         return f"exited with code {self.exit_code}"
+
+
+def _windows_command_limit() -> int | None:
+    """The longest hook command cmd.exe runs, or ``None`` off Windows.
+
+    cmd.exe's line limit less the ``%ComSpec% /c ""`` wrapper
+    ``create_subprocess_shell`` puts around the command.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return None
+    # The name ``subprocess`` reads for the shell; unset, the longer default path.
+    comspec = os.environ.get("COMSPEC") or r"C:\Windows\System32\cmd.exe"
+    return _WINDOWS_CMD_LINE_MAX - len(f'{comspec} /c ""')
 
 
 async def run_script_hook(
@@ -319,6 +340,29 @@ async def run_script_hook(
                 refused=True,
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
+    # After governance and the deny list, so a policy refusal still blocks as
+    # it does on every platform: on Windows a line over cmd.exe's limit would
+    # be refused unrun, so it is not spawned and reads as not started.
+    limit = _windows_command_limit()
+    if limit is not None and len(hook.command or "") > limit:
+        detail = (
+            f"command is {len(hook.command):,} characters, over cmd.exe's "
+            f"{limit:,}-character line limit on Windows; move it into a script "
+            "file and call that from the hook"
+        )
+        hook.last_run = time.time()
+        hook.last_status = "error"
+        hook.last_error = detail
+        hook.run_count += 1
+        return ScriptHookResult(
+            hook_id=hook.id,
+            hook_name=hook.name,
+            event=hook.event,
+            error=f"hook command did not start: {detail}",
+            exit_code=1,
+            duration_ms=int((time.monotonic() - start) * 1000),
+            not_started=True,
+        )
     # Build hook event JSON for STDIN
     if hook_event is None:
         hook_event = {"hook_event_name": firing_event, "cwd": os.getcwd()}
@@ -476,6 +520,22 @@ async def run_script_hook(
             hook.last_status = "error"
             hook.last_error = stderr_safe or f"Exited with code {exit_code}"
         hook.run_count += 1
+        # cmd.exe refused the line as too long (exit 1): "The command line is
+        # too long." for the line it was given, "The input line is too long."
+        # once a ``%VAR%`` expands past its limit. The command never ran. Only
+        # these: any other exit is the command's own and keeps the
+        # warn-and-allow rule.
+        # shortcut: matched on cmd.exe's English message only; on a localized
+        # Windows such a hook warns and the tool runs. A literal line over the
+        # limit is caught before the spawn in every language.
+        not_started = (
+            platform_compat.IS_WINDOWS
+            and exit_code == 1
+            and any(
+                refusal in stderr_text.lower()
+                for refusal in ("the command line is too long", "the input line is too long")
+            )
+        )
         return ScriptHookResult(
             hook_id=hook.id,
             hook_name=hook.name,
@@ -483,7 +543,13 @@ async def run_script_hook(
             stdout=stdout_safe,
             stderr=stderr_safe_full,
             exit_code=exit_code,
+            error=(
+                f"hook command did not start (exit {exit_code}): {stderr_safe}"
+                if not_started
+                else ""
+            ),
             duration_ms=elapsed,
+            not_started=not_started,
         )
     except asyncio.CancelledError:
         # A cancelled caller (a torn-down session, a cancelled turn) must not leave
