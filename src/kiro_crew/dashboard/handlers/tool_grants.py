@@ -16,6 +16,9 @@ from aiohttp import web
 
 from kiro_crew.dashboard import always_allow_tool
 
+#: The agent a dashboard chat runs when its slot names none (the gate's default too).
+_DEFAULT_AGENT = "kirocrew"
+
 
 def _list_refusal(server: str) -> str:
     """Overlay ownership blocks removal even when another rule blocks additions."""
@@ -85,10 +88,18 @@ async def api_tool_grant_add(request: web.Request) -> web.Response:
         return always_allow_tool.refuse(
             request, op, refusal, "this tool cannot be always allowed", 409, ref=ref
         )
-    refused = await always_allow_tool.save_grant(request, ref, add=True, operation=op)
+    server = ref[1:].partition("/")[0]
+    # No session asks here: bind the launches the default agent's session would
+    # see for the server (its spec and the user's mcp.json files).
+    launches = await asyncio.to_thread(
+        always_allow_tool.grant_launches, server, agent=_DEFAULT_AGENT
+    )
+    refused = await always_allow_tool.save_grant(
+        request, ref, add=True, operation=op, launches=launches
+    )
     if refused is not None:
         return refused
-    return await _grants_response(ref[1:].partition("/")[0])
+    return await _grants_response(server)
 
 
 async def api_tool_grant_remove(request: web.Request) -> web.Response:

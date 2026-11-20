@@ -1063,6 +1063,9 @@ _CONFIG_SECURITY_KEYS = (
     "hooks.auto_approve_tools",
     # The per-tool "Always allow" grants, which widen what runs the same way.
     "hooks.auto_approve_tool_identities",
+    # The launches each of those grants is bound to: dropping or widening one lets
+    # its grant approve a server it was not given for.
+    "hooks.auto_approve_tool_identity_launches",
     # The standing approve-every-tool grant, in each spelling the loader reads.
     "agent.dangerously_skip_permissions",
     "agent.dangerouslySkipPermissions",

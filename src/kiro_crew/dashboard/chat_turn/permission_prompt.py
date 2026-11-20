@@ -331,7 +331,11 @@ async def _on_permission_prompt(
         # Imported here: this body runs on the chat runner module's globals.
         from kiro_crew.dashboard import always_allow_tool
 
-        perm_meta.update(await asyncio.to_thread(always_allow_tool.card_fields, event))
+        perm_meta.update(
+            await asyncio.to_thread(
+                always_allow_tool.card_fields, event, agent=slot.agent or "kirocrew"
+            )
+        )
     if event.takes_rejection_reason and _override_offer is None:
         # The card may ask why: this backend hands a rejection's reason to the
         # model. Not on a deny-rule override card, whose rejection is the rule's

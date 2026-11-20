@@ -1198,10 +1198,13 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
     unproven falls back to the title, exactly as before.
 
     ``auto_approve_tool_identities`` (the grants the approval card's "Always
-    allow this tool" and the MCP tool list write) uses case-insensitive literal
-    equality against a verified identity, never glob or path normalization and
-    never the title: a shell call's title can be the model's
-    own ``description``, so one reading ``@ops/list`` must not win that grant.
+    allow this tool" and the MCP tool list write) uses literal equality against
+    a verified identity, never glob or path normalization and never the title: a
+    shell call's title can be the model's own ``description``, so one reading
+    ``@ops/list`` must not win that grant. A grant bound to the server launches it
+    was given for is matched case-sensitively and approves only those launches;
+    an unbound one keeps case-insensitive equality
+    (``tool_grant_launch_audit.identity_grant_approves``).
     ``confirm_tools`` outranks it exactly as it outranks ``auto_approve_tools``.
 
     ``classifier_only`` skips this tier (see the app-own-server tier for why).
@@ -1223,18 +1226,15 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
         identity_grant = False
     if _operator_confirms(facts, grant_targets):
         return None
-    # Observe-only launch check; imported here so the tool list stays light.
-    from kiro_crew.tool_grant_launch_audit import observe_granted_call
+    # Launch checks; imported here so the tool list stays light.
+    from kiro_crew.tool_grant_launch_audit import identity_grant_approves, observe_granted_call
 
     for pattern in facts.config.auto_approve_tools:
         if any(_tool_matches(pattern, target) for target in grant_targets):
             if identity_grant:
                 observe_granted_call(facts.call, facts.agent, "pattern")
             return ToolHookResult.auto_approve(identity_grant=identity_grant)
-    if identity_ref and any(
-        grant.lower() == identity_ref.lower() for grant in facts.config.auto_approve_tool_identities
-    ):
-        observe_granted_call(facts.call, facts.agent, "identity")
+    if identity_ref and identity_grant_approves(facts.config, call, facts.agent, identity_ref):
         return ToolHookResult.auto_approve(identity_grant=True)
     if identity_ref:
         # Runtime breadcrumb for the deliberate title-match exclusion: a pattern
