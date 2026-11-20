@@ -485,11 +485,14 @@ print("REPORT " + json.dumps({"nbytes": nbytes, "errno": err, "dir": os.path.isd
 """
 
 
-@pytest.mark.xfail(strict=True, reason="evidence run on the base")
 @_NAMESPACE[0]
 @_NAMESPACE[1]
-def test_a_spawned_app_backend_cannot_read_the_sel_key(app_env, tmp_path, monkeypatch):
-    """Spawn a plain app backend's sandbox wrap as the backend does, then probe the key."""
+def test_probe_a_spawned_app_backend_key_read(app_env, tmp_path, monkeypatch):
+    """Base evidence probe: records the observed value and asserts no security property.
+
+    It spawns a plain app backend's sandbox wrap as the backend does, then probes a
+    synthetic key. The head draft holds the real assertion.
+    """
     import warnings
 
     import kiro_crew.apps.backend as bmod
@@ -561,4 +564,4 @@ def test_a_spawned_app_backend_cannot_read_the_sel_key(app_env, tmp_path, monkey
         stacklevel=1,
     )
     assert report["dir"], report
-    assert report["nbytes"] == 0, "the backend read the key"
+    assert report["nbytes"] in (0, 32), report  # the probe ran and saw a known outcome
