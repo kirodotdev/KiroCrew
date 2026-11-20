@@ -17,7 +17,8 @@ The record is ``project_hooks_consent.json`` on the keystone floor
 (``config.loader_locations.project_hooks_consent_path``): neither the agent's file
 tools nor its sandboxed shell can write it. The writers are the owner-gated
 ``/api/project-hooks/consent`` handler (:func:`set_choice`) and the gateway's
-once-per-folder notice mark (:func:`mark_kiro_cli_notice_shown`). Every read
+once-per-folder notice mark (:func:`mark_kiro_cli_notice_shown`), plus the
+gateway's one-time fingerprint of a saved ``on`` (:func:`crew_choice`). Every read
 fails soft to "no choice".
 """
 
@@ -128,9 +129,12 @@ def _scan(folder: str) -> list[_Scanned]:
     """Every spec file of *folder*'s ``.kiro/agents``, read ONCE, in the order and by
     the name rule the firing path resolves an agent with (``project_agent_files``,
     ``project_agent_name``)."""
-    from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files
-    from kiro_crew.agent_discovery_parts.project_agents import _project_agent_fallback_name
-    from kiro_crew.agent_discovery_parts.spec_fields import spec_str
+    from kiro_crew.agent_discovery import (
+        _project_agent_fallback_name,
+        _read_agent_spec,
+        project_agent_files,
+        spec_str,
+    )
 
     scanned: list[_Scanned] = []
     for path in project_agent_files(
@@ -256,7 +260,8 @@ def hooks_enabled(folder: str | os.PathLike[str] | None) -> tuple[bool, str]:
     ``(True, "crew")``, ``(True, "kiro_cli")``, ``(False, "crew")`` for an owner
     turn-off, an ``on`` whose hooks have changed since (:data:`STALE`), or a Crew
     record that cannot be read (kiro-cli is not consulted then),
-    or ``(False, "")`` when nobody turned them on. Read-only.
+    or ``(False, "")`` when nobody turned them on. Writes only to record the
+    fingerprint a saved ``on`` without one adopts (:func:`crew_choice`).
     """
     return _enabled(folder, None)
 
