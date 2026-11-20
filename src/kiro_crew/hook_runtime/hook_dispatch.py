@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -289,6 +289,7 @@ async def permission_pre_tool_block(
     acp_session_id: str | None = None,
     session_key: str | None = None,
     raw_tool_params: dict | None = None,
+    on_policy_refused: Callable[[], None] | None = None,
 ) -> str | None:
     """Run the PreToolUse hooks on a subagent, task-runner or channel permission request.
 
@@ -327,6 +328,11 @@ async def permission_pre_tool_block(
     session.
     The payload's ``tool_input`` is built from *raw_tool_params*, the call's
     structured params, when given (:func:`hook_tool_input`).
+
+    *on_policy_refused*, when given, is called once, just before a block is
+    returned, when the hook that blocks is one a policy refused to run
+    (:attr:`ScriptHookResult.refused`). The returned reason cannot say so, and a
+    cron run's verdict tells that setup fault apart from a hook's own verdict.
     """
     if hook_store is None:
         # No store registered in this process: the saved hooks still apply.
@@ -381,6 +387,8 @@ async def permission_pre_tool_block(
             from kiro_crew.constants import HOOK_DENY_REASON_MAX_CHARS
 
             return f"{r.hook_name}: {r.stderr[:HOOK_DENY_REASON_MAX_CHARS] if r.stderr else 'hook denied'}"
+        if r.refused and on_policy_refused is not None:
+            on_policy_refused()
         return f"{r.hook_name}: {r.failure_detail}"
     return None
 

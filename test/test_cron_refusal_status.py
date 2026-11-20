@@ -21,8 +21,11 @@ import pytest
 
 from kiro_crew.cron import _AUTO_PAUSE_THRESHOLD, CronJob, CronSchedule
 
-# (title, approved, security_blocked[, reason]) entries a turn's tool gate reports.
-GateScript = list[tuple[str, bool, bool] | tuple[str, bool, bool, str]]
+# (title, approved, security_blocked[, reason[, hook_refused]]) entries a turn's
+# tool gate reports.
+GateScript = list[
+    tuple[str, bool, bool] | tuple[str, bool, bool, str] | tuple[str, bool, bool, str, bool]
+]
 
 # The two refusal classes the verdict must treat differently.
 BLOCKED = ("rm -rf /", False, True)
@@ -494,6 +497,8 @@ class TestPartialBlock:
             [UNAPPROVED, BLOCKED],
             # More refusals than the summary names; the head still carries the count.
             [APPROVED, *[(f"Write /vault/note-{i}.md", False, True) for i in range(6)]],
+            # Calls a refused hook blocked are named after the security part.
+            [APPROVED, BLOCKED, HOOK_NOT_RUN],
         )
         for gate in partial_runs:
             job = _run_cron_runs(gate)
@@ -615,6 +620,189 @@ class TestUnapprovedRun:
 
         assert job.last_status != "error"
         assert job.last_error is None
+
+
+# A call blocked because a policy refused to run the spec hook that guards it,
+# with the reason the spec floor records for it.
+HOOK_NOT_RUN = (
+    "Read File",
+    False,
+    False,
+    "a1 spec hook (PreToolUse #2): Blocked by governance policy: profile denies: capability disabled",
+    True,
+)
+HOOK_NOT_RUN_NAMED = (
+    "Read File (a1 spec hook (PreToolUse #2): Blocked by governance policy: "
+    "profile denies: capability disabled)"
+)
+HOOK_NOT_RUN_HEAD = "blocked because policy refused to run a hook: "
+
+
+class TestRefusedHookBesideAnApprovedCall:
+    """A run that lost calls because a policy refused to run their spec hook is
+    not ``ok``, even when another call ran: the hook never gave a verdict, so
+    the same calls are lost on every run. A policy state says nothing about the
+    job, so the failure budget does not move either."""
+
+    def test_the_run_records_error(self) -> None:
+        job = _run_cron_runs([HOOK_NOT_RUN, APPROVED, HOOK_NOT_RUN])
+
+        assert job.last_status == "error", "a run that lost its reads recorded ok"
+        assert job.consecutive_failures == 0
+
+    def test_the_reason_names_those_calls_with_the_hook(self) -> None:
+        job = _run_cron_runs([HOOK_NOT_RUN, APPROVED, HOOK_NOT_RUN])
+
+        assert job.last_error == (
+            f"2 of 3 tool call(s) {HOOK_NOT_RUN_HEAD}{HOOK_NOT_RUN_NAMED}, {HOOK_NOT_RUN_NAMED}"
+        )
+
+    def test_another_unresolved_call_is_counted_but_not_named(self) -> None:
+        job = _run_cron_runs([APPROVED, HOOK_NOT_RUN, POLICY_DENIED, TIMED_OUT])
+
+        assert job.last_error == f"1 of 4 tool call(s) {HOOK_NOT_RUN_HEAD}{HOOK_NOT_RUN_NAMED}"
+
+    def test_it_spends_no_failure_budget(self) -> None:
+        job = _run_cron_runs([APPROVED, HOOK_NOT_RUN], runs=_AUTO_PAUSE_THRESHOLD)
+
+        assert job.consecutive_failures == 0
+        assert job.auto_paused is False
+        assert job.enabled is True
+
+    def test_it_does_not_reset_a_failure_streak(self) -> None:
+        job = _run_cron_runs([BLOCKED], runs=2)
+        assert job.consecutive_failures == 2
+
+        _run_cron_runs([APPROVED, HOOK_NOT_RUN], job=job)
+
+        assert job.consecutive_failures == 2
+        assert job.last_status == "error"
+
+    def test_the_notification_names_the_lost_calls(self) -> None:
+        ds = _slotless_dashboard()
+        job = _run_cron_runs([APPROVED, HOOK_NOT_RUN], dashboard=ds)
+
+        assert ds.notify.call_count == 1
+        body = ds.notify.call_args.args[2]
+        assert job.last_error is not None
+        assert body.startswith(f"Blocked: {job.last_error}"), "the banner and last_error disagree"
+        assert "I was unable to complete" in body, "the model's own prose was dropped"
+
+    def test_the_schedule_page_shows_it_as_error_not_partial(self) -> None:
+        phrases = json.loads(
+            (Path(__file__).resolve().parents[1] / "website/src/lib/backendPhrases.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        pattern = re.compile(phrases["cronPartialGateBlockPattern"])
+
+        job = _run_cron_runs([APPROVED, HOOK_NOT_RUN])
+
+        assert job.last_error is not None
+        assert not pattern.match(job.last_error), job.last_error
+
+    def test_it_reaches_the_sequential_path(self) -> None:
+        job = _run_cron_runs(
+            [],
+            agent_sequence=["researcher", "writer"],
+            per_agent={"researcher": [APPROVED], "writer": [HOOK_NOT_RUN]},
+        )
+
+        assert job.last_status == "error"
+        assert job.consecutive_failures == 0
+        assert job.last_error is not None and HOOK_NOT_RUN_HEAD in job.last_error
+        assert job.last_result is not None and job.last_result.startswith("Blocked: ")
+
+    def test_the_reason_names_at_most_three(self) -> None:
+        many = [(f"Read /vault/note-{i}.md", False, False, "hook refused", True) for i in range(6)]
+        job = _run_cron_runs([APPROVED, *many])
+
+        assert job.last_error is not None
+        assert job.last_error.startswith(f"6 of 7 tool call(s) {HOOK_NOT_RUN_HEAD}")
+        assert "note-2.md" in job.last_error
+        assert "note-3.md" not in job.last_error
+        assert job.last_error.endswith(", and 3 more")
+        assert len(job.last_error) <= 500
+
+    @pytest.mark.parametrize(
+        "gate",
+        [[APPROVED, HOOK_REFUSED], [APPROVED, POLICY_DENIED], [APPROVED, TIMED_OUT]],
+        ids=["hook-exited-2", "policy-deny", "timed-out"],
+    )
+    def test_any_other_refusal_beside_an_approved_call_stays_ok(self, gate: GateScript) -> None:
+        job = _run_cron_runs(gate)
+
+        assert job.last_status != "error"
+        assert job.last_error is None
+
+    def test_with_no_approved_call_the_no_approved_arm_is_unchanged(self) -> None:
+        job = _run_cron_runs([HOOK_NOT_RUN])
+
+        assert job.last_status == "error"
+        assert (
+            job.last_error
+            == f"none of 1 tool call(s) ran, all refused or not approved: {HOOK_NOT_RUN_NAMED}"
+        )
+
+    def test_a_security_block_keeps_the_partial_arm(self) -> None:
+        job = _run_cron_runs([BLOCKED, APPROVED, HOOK_NOT_RUN])
+
+        assert job.last_error is not None
+        assert job.last_error.startswith("1 of 3 tool call(s) blocked by the security gate: ")
+        assert job.consecutive_failures == 0
+
+    @pytest.mark.parametrize("approved", [True, False], ids=["one-ran", "none-ran"])
+    def test_a_security_block_names_the_hook_blocked_calls_after_it(self, approved: bool) -> None:
+        """The calls a refused hook blocked are often what stopped the job, so
+        the some-blocked arm names them after its security-gate part."""
+        ds = _slotless_dashboard()
+        gate: GateScript = [BLOCKED, HOOK_NOT_RUN, HOOK_NOT_RUN]
+        job = _run_cron_runs([*gate, APPROVED] if approved else gate, dashboard=ds)
+
+        total = 4 if approved else 3
+        assert job.last_error == (
+            f"1 of {total} tool call(s) blocked by the security gate: rm -rf /. "
+            f"2 tool call(s) {HOOK_NOT_RUN_HEAD}{HOOK_NOT_RUN_NAMED}, {HOOK_NOT_RUN_NAMED}"
+        )
+        assert job.last_status == "error"
+        assert job.consecutive_failures == 0
+        assert ds.notify.call_args.args[2].startswith(f"Blocked: {job.last_error}")
+
+    def test_both_parts_of_a_long_partial_reason_keep_their_heads(self) -> None:
+        from kiro_crew.slack.gateway import _CRON_FAILURE_DETAIL_CAP, _GateTally
+
+        tally = _GateTally()
+        tally.note(*APPROVED)
+        for i in range(5):
+            tally.note(f"Write /vault/{i}-" + "x" * 100_000, False, True, "rule " + "y" * 100_000)
+            tally.note(f"Read /vault/{i}-" + "z" * 100_000, False, False, "hook refused", True)
+
+        summary = tally.refusal_summary()
+        assert summary.startswith("5 of 11 tool call(s) blocked by the security gate: ")
+        assert f", and 2 more. 5 tool call(s) {HOOK_NOT_RUN_HEAD}Read /vault/0-" in summary
+        assert summary.endswith(", and 2 more")
+        assert len(summary) <= _CRON_FAILURE_DETAIL_CAP
+
+    def test_a_hook_part_that_fits_is_not_cut_beside_a_long_gate_part(self) -> None:
+        """A long security-gate part takes only the room the hook part leaves,
+        so a hook part that fits is shown whole, its rules included."""
+        from kiro_crew.slack.gateway import _CRON_FAILURE_DETAIL_CAP, _GateTally
+
+        tally = _GateTally()
+        tally.note(*APPROVED)
+        tally.note("G" + "g" * 2000, False, True, "rule " + "y" * 2000)
+        long_rule = "rule " + "z" * 60
+        tally.note("H0#" + "h" * 40, False, False, long_rule, True)
+        tally.note("H1#", False, False, "r", True)
+        tally.note("H2#", False, False, "r", True)
+
+        summary = tally.refusal_summary()
+        hooks = summary[summary.index(". 3 tool call(s) ") + len(". ") :]
+        assert hooks == (
+            f"3 tool call(s) {HOOK_NOT_RUN_HEAD}H0#{'h' * 40} ({long_rule}), H1# (r), H2# (r)"
+        )
+        assert summary.startswith("1 of 5 tool call(s) blocked by the security gate: G")
+        assert len(summary) <= _CRON_FAILURE_DETAIL_CAP
 
 
 @pytest.mark.parametrize("security_blocked", [True, False], ids=["security-blocked", "unresolved"])
@@ -816,4 +1004,32 @@ class TestSchedulerContract:
         assert kept.last_status == "error"
         assert kept.auto_paused is True
         assert kept.enabled is False
+        assert kept.consecutive_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_a_one_shot_whose_hook_policy_refused_to_run_is_kept(self, tmp_path) -> None:
+        """A ``delete_after_run`` one-shot that lost calls to a hook a policy
+        refused to run is kept and auto-paused, so someone looks at it."""
+        from kiro_crew.cron import CronService
+        from kiro_crew.slack.gateway import _apply_gate_verdict, _GateTally
+
+        svc = CronService(base_dir=tmp_path)
+        svc._history.append = AsyncMock()
+
+        async def hook_refused_cb(job):
+            tally = _GateTally()
+            tally.note(*APPROVED)
+            tally.note(*HOOK_NOT_RUN)
+            _apply_gate_verdict(job, tally)
+            return "prose"
+
+        svc._on_job = hook_refused_cb
+        job = svc.add_job("once", "go", at_ts=time.time() - 1, delete_after_run=True)
+        await svc._run_job_isolated(job, svc._claim_run(job.id, "scheduled"))
+
+        kept = svc.get_job(job.id)
+        assert kept is not None, "a one-shot that lost its reads was consumed"
+        assert kept.last_status == "error"
+        assert kept.last_error == f"1 of 2 tool call(s) {HOOK_NOT_RUN_HEAD}{HOOK_NOT_RUN_NAMED}"
+        assert kept.auto_paused is True
         assert kept.consecutive_failures == 0

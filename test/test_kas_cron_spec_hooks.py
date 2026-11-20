@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import kiro_crew.hooks as hooks_mod
+import kiro_crew.sel as sel_mod
 from kiro_crew import llm_helpers
 from kiro_crew.acp.types import AcpEvent
 from kiro_crew.agent_sdk import spec_hooks
@@ -63,11 +65,22 @@ class _Provider:
 
 @pytest.fixture
 def ran(monkeypatch) -> dict:
-    """Every hook that ran (event, command, session_key), and the exit each gives."""
-    record: dict = {"runs": [], "exit": {}}
+    """Every hook that ran (event, command, session_key), the exit each gives, and
+    the hooks a policy refuses to run (``refused``)."""
+    record: dict = {"runs": [], "exit": {}, "refused": set()}
 
     async def fake_run(hook, context="", hook_event=None, cwd=None, **_kw):
         record["runs"].append((hook.event, hook.command, (hook_event or {}).get("session_key")))
+        if hook.command in record["refused"]:
+            # What run_script_hook returns when governance refuses the hook.
+            return ScriptHookResult(
+                hook_id=hook.id,
+                hook_name=hook.name,
+                event=hook.event,
+                error="Blocked by governance policy: profile denies: capability disabled",
+                exit_code=2,
+                refused=True,
+            )
         stdout = f"from {hook.command}" if hook.event != HOOK_EVENT_PRE_TOOL_USE else ""
         return ScriptHookResult(
             hook_id=hook.id,
@@ -107,7 +120,9 @@ def _collect(provider, hooks: CronTurnHooks) -> list:
             provider,
             "hello",
             approval_policy=llm_helpers.ToolApprovalPolicy.AUTO_APPROVE,
-            on_tool_gate=lambda title, ok, security, why: gate.append((ok, security)),
+            on_tool_gate=lambda title, ok, security, why, refused: gate.append(
+                (ok, security, refused)
+            ),
             spec_hooks=hooks,
         )
     )
@@ -125,9 +140,36 @@ def test_a_cron_turn_gates_its_permission_requests_on_the_specs_pre_tool_hooks(
     # Exit 2 blocks, as under kiro-cli; a hook that crashed lets the call run.
     assert (provider.rejected, provider.approved) == ((["rq1"], []) if blocked else ([], ["rq1"]))
     # A spec-hook refusal says nothing about the job: it does not move auto-pause.
-    assert gate == [(not blocked, False)]
+    assert gate == [(not blocked, False, False)]
     # The run is governed under the cron session's own key.
     assert (HOOK_EVENT_PRE_TOOL_USE, "guard.sh", "cron:j1") in ran["runs"]
+
+
+@pytest.mark.parametrize(
+    ("policy_refused", "mechanism"),
+    [(True, "spec_hook_refused"), (False, "spec_hook")],
+    ids=["policy-refused-the-hook", "hook-exited-2"],
+)
+def test_a_hook_a_policy_refused_to_run_is_told_apart_from_its_own_verdict(
+    monkeypatch, ran, policy_refused, mechanism
+):
+    """Both block the call. Only the policy's refusal reaches the gate as
+    ``hook_refused``, and the audit row names it under its own mechanism."""
+    if policy_refused:
+        ran["refused"].add("guard.sh")
+    else:
+        ran["exit"]["guard.sh"] = 2
+    _spec(monkeypatch, [_hook(HOOK_EVENT_PRE_TOOL_USE, "guard.sh", "*")])
+    provider = _Provider()
+    rows: list[dict] = []
+    stub = MagicMock()
+    stub.log_tool_invocation.side_effect = lambda **kw: rows.append(kw)
+    with patch.object(sel_mod, "sel", lambda: stub):
+        gate = _collect(provider, _prepare(provider))
+    assert provider.rejected == ["rq1"] and provider.approved == []
+    assert gate == [(False, False, policy_refused)]
+    denied = [r for r in rows if r.get("outcome") == "denied"]
+    assert [r["metadata"]["mechanism"] for r in denied] == [mechanism]
 
 
 def test_an_unreadable_spec_blocks_a_cron_turns_tools_as_in_a_dashboard_chat(monkeypatch, ran):
@@ -136,8 +178,10 @@ def test_an_unreadable_spec_blocks_a_cron_turns_tools_as_in_a_dashboard_chat(mon
 
     monkeypatch.setattr(spec_hooks, "turn_spec_hooks", unreadable)
     provider = _Provider()
-    _collect(provider, _prepare(provider))
+    gate = _collect(provider, _prepare(provider))
     assert provider.rejected == ["rq1"] and provider.approved == []
+    # No policy refused a hook here: the spec could not be read.
+    assert gate == [(False, False, False)]
 
 
 def test_the_specs_prompt_and_stop_hooks_fire_on_a_cron_turn(monkeypatch, ran):
