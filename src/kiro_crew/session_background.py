@@ -1030,11 +1030,14 @@ class BackgroundSessionRuntime:
 
                     # LTS (RFC D6): a background runtime on a KAS that boot
                     # proved cannot start is refused before any process, as every
-                    # factory-built session is. A no-op in an oss build.
+                    # factory-built session is. A no-op in an oss build. In every
+                    # edition, KAS reached only because no harness was chosen is
+                    # refused too, as in the provider factory.
                     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
-                    from kiro_crew.lts_boot import refuse_unstartable_kas
+                    from kiro_crew.lts_boot import refuse_unset_acp_backend, refuse_unstartable_kas
 
                     if configured_backend == ACP_BACKEND_KAS:
+                        refuse_unset_acp_backend()
                         refuse_unstartable_kas()
                     replacement = build_runtime(self.state.inherited_scratch)
                     # Bracket the spawn with identity reads so the runtime

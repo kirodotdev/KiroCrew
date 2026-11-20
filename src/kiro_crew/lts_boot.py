@@ -272,6 +272,26 @@ def require_kas_harness(cfg: object, *, test_mode: bool = False) -> None:
         )
 
 
+def refuse_unset_acp_backend() -> None:
+    """Raise :class:`~kiro_crew.crewmate_harness.AcpBackendUnset` when no harness was chosen.
+
+    Called at session start, for a session whose selected backend is KAS, by the
+    provider factory and the background runtime, before any process exists. Absent
+    or ``""`` ``agent.acp_backend`` (:func:`acp_backend_declared`) refuses the
+    session instead of starting the default silently. Config load is unchanged: the
+    selection gate still answers "no choice" with the default and never raises (H3),
+    so the dashboard and the CLI keep working and the operator can pick a harness.
+    Every edition.
+    """
+    from kiro_crew.config import loader_document
+
+    if loader_document.acp_backend_declared():
+        return
+    from kiro_crew.crewmate_harness import AcpBackendUnset
+
+    raise AcpBackendUnset()
+
+
 def refuse_unstartable_kas() -> None:
     """Raise :class:`~kiro_crew.crewmate_harness.KasUnavailable` when boot recorded that
     KAS cannot start on this host (:func:`kas_refusal`).

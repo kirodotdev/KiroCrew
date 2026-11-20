@@ -1595,8 +1595,9 @@ class KiroCrewConfig:
             # exists, when boot proved KAS cannot start on this host. KAS sessions only:
             # the Kiro CLI path gains nothing (H13), and the gate above never raises (H3).
             if _backend == ACP_BACKEND_KAS:
-                from kiro_crew.lts_boot import refuse_unstartable_kas
+                from kiro_crew.lts_boot import refuse_unset_acp_backend, refuse_unstartable_kas
 
+                refuse_unset_acp_backend()
                 refuse_unstartable_kas()
             # Resolved BEFORE the model, and threaded into the resolution: the
             # model's namespace translation and its pin-scope check both have to

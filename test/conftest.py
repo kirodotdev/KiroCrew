@@ -611,6 +611,21 @@ def _fresh_update_ownership(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _acp_backend_chosen(_floor_monkeypatch):
+    """Let every test start KAS sessions without first writing a harness choice.
+
+    ``lts_boot.refuse_unset_acp_backend`` refuses a KAS session when the config
+    documents hold no ``agent.acp_backend``, which is what most tests' fixture homes
+    look like. Tests of the refusal itself re-arm it through their own
+    ``monkeypatch``.
+    """
+    from kiro_crew import lts_boot
+
+    # raising=False: a tree without the refusal (a revert proof) still collects.
+    _floor_monkeypatch.setattr(lts_boot, "refuse_unset_acp_backend", lambda: None, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _krb5_keyring_check_done(_floor_monkeypatch):
     """Mark the once-per-process KEYRING ccache check as already run, for every test.
 
