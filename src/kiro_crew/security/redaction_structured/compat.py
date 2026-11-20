@@ -153,20 +153,23 @@ def _load() -> None:
             raise
 
 
-#: ``(context, window)`` a stream sets while it redacts one committed window.
-_LOOK_BEHIND: ContextVar[tuple[str, str] | None] = ContextVar(
+#: ``(context, window, armour_from)`` a stream sets while it redacts one committed window.
+_LOOK_BEHIND: ContextVar[tuple[str, str, int] | None] = ContextVar(
     "kirocrew_structured_look_behind", default=None
 )
 
 
 @contextlib.contextmanager
-def look_behind(context: str, window: str) -> Iterator[None]:
+def look_behind(context: str, window: str, armour_from: int = 0) -> Iterator[None]:
     """Read ``window`` after ``context`` (raw text already emitted) while inside.
 
     Only a plan over exactly ``window`` uses it; a plan over any other text (a
     URL the outbound check reads, a rewritten copy) reads that text alone.
+    ``armour_from`` (an offset in ``window``, negative inside ``context``) is where
+    the last committed private-key block's END line ends: the scan for private-key
+    blocks starts there, as whole text resumes it.
     """
-    token = _LOOK_BEHIND.set((context, window) if context else None)
+    token = _LOOK_BEHIND.set((context, window, armour_from) if context else None)
     try:
         yield
     finally:
@@ -183,18 +186,27 @@ class _Read:
     open_from: int | None
     base: int
     replace_open_from: int | None = None
+    armour_blocks: tuple[tuple[int, int], ...] = ()
 
 
 def _read(text: str, final: bool = True) -> _Read:
     from kiro_crew.security.redaction_structured.engine import resolve, scan
 
-    pair = _LOOK_BEHIND.get()
-    context = pair[0] if pair is not None and pair[1] == text else ""
+    look = _LOOK_BEHIND.get()
+    context, armour_from = (look[0], look[2]) if look is not None and look[1] == text else ("", 0)
     base = len(context)
     window = context + text
-    result = scan(window, final=final, origin=base)
+    result = scan(window, final=final, origin=base, armour_from=max(0, base + armour_from))
     hits = [h for h in result.hits if h.start >= base]
-    return _Read(window, hits, resolve(hits), result.open_from, base, result.replace_open_from)
+    return _Read(
+        window,
+        hits,
+        resolve(hits),
+        result.open_from,
+        base,
+        result.replace_open_from,
+        result.armour_blocks,
+    )
 
 
 def _secrets_of(read: _Read) -> list[Hit]:
@@ -364,6 +376,9 @@ class StreamRead:
     tail: str = ""
     undecided: bool = False
     tag: str = redaction.REDACTED_CREDENTIAL_TAG
+    #: ``(BEGIN, END line end)`` of each private-key block that ended, in buffer
+    #: offsets: once a BEGIN is committed, its end is the stream's next ``armour_from``.
+    armour_blocks: tuple[tuple[int, int], ...] = ()
 
 
 #: How every credential placeholder starts (``[REDACTED: credential]`` and the rest).
@@ -389,7 +404,9 @@ def _tail_cut(buf: str, base: int, cut: int) -> int:
     return max(cut, base + blank + 1)
 
 
-def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead | None:
+def stream_read(
+    context: str, buf: str, *, boundary: bool = False, armour_from: int = 0
+) -> StreamRead | None:
     """The detectors' hold on ``buf`` read after ``context``.
 
     None when the detectors cannot load: the batch plan fails closed on the same
@@ -409,11 +426,12 @@ def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead
         from kiro_crew.security.redaction_structured.model import IDENTIFIER, SECRET
         from kiro_crew.security.redaction_structured.stream import TAIL
 
-        with look_behind(context, buf):
+        with look_behind(context, buf, armour_from):
             read = _read(buf, final=False)
     except Exception:
         return None
     base, open_from = read.base, read.replace_open_from
+    blocks = tuple((begin - base, end - base) for begin, end in read.armour_blocks)
     # An Identifier-value hit (a structure reading that is not structural).
     resolved = [
         h
@@ -423,7 +441,12 @@ def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead
     n = base + len(buf)
     tail_hit = next((h for h in resolved if h.tier == SECRET and h.tail and h.end == n), None)
     if tail_hit is not None and (open_from is None or open_from >= tail_hit.start):
-        return StreamRead(tail_hit.start - base, tail_hit.tail, tag=_tag(tail_hit.rule_id))
+        return StreamRead(
+            tail_hit.start - base,
+            tail_hit.tail,
+            tag=_tag(tail_hit.rule_id),
+            armour_blocks=blocks,
+        )
     cut = n if boundary else _tail_cut(buf, base, n - TAIL)
     undecided = open_from is not None
     if open_from is not None:
@@ -439,7 +462,7 @@ def stream_read(context: str, buf: str, *, boundary: bool = False) -> StreamRead
             if first < cut < h.end:
                 cut = max(base, first)
                 moved = undecided = True
-    return StreamRead(cut - base, undecided=undecided)
+    return StreamRead(cut - base, undecided=undecided, armour_blocks=blocks)
 
 
 def discard_run(tail: str, pad: int, buf: str) -> tuple[int, int, bool]:

@@ -9,8 +9,10 @@ import pytest
 from redaction_structured_cases import (
     B64,
     PEM_BEGIN,
+    PEM_BEGIN_PLAIN,
     PEM_BODY,
     PGP_BEGIN,
+    PGP_END,
     assert_linear_work,
     aws_key_id,
     aws_secret,
@@ -183,3 +185,37 @@ def test_an_open_unit_that_started_before_the_origin_still_holds(window: str) ->
     from kiro_crew.security.redaction_structured.engine import scan
 
     assert scan(window, final=False, origin=1).open_from == 1
+
+
+def _glued_armour_headers() -> str:
+    """A PGP block whose END line starts inside its BEGIN header runs to
+    the next glued pair, past the look-behind; whole text then reads the EC header
+    after it as unterminated and masks the tail."""
+    pgp = PGP_BEGIN + PGP_END[5:]
+    ec_begin = "-----BEGIN EC " "PRIVATE KEY-----"
+    rows = "\\n".join(f"M{k:05d}Q" + synth(56, B64, 800 + k) for k in range(40))
+    return (
+        f"Cookie: theme={'a' * 9100}{pgp}\\n{rows}\\n{pgp}{ec_begin}"
+        f"-----END {'X' * 58} "
+        "PRIVATE KEY-----" + PEM_BEGIN_PLAIN + "\nTAIL M32702Z visible\n"
+    )
+
+
+@pytest.mark.parametrize("entry", ["structured", "production"])
+@pytest.mark.parametrize(
+    "first,size", [(0, 1), (0, 7), (0, 256), (0, 1024), (8200, 48), (8156, 1024), (8171, 4097)]
+)
+def test_a_block_past_the_look_behind_keeps_the_scan_where_whole_text_resumes_it(
+    entry: str, first: int, size: int
+) -> None:
+    import kiro_crew.security as production
+
+    text = _glued_armour_headers()
+    whole = redact(text)[0]
+    assert "M32702Z" not in whole
+    s = StreamRedactor() if entry == "structured" else production.StreamRedactor()
+    out = s.feed(text[:first]) if first else ""
+    out += "".join(s.feed(text[i : i + size]) for i in range(first, len(text), size)) + s.flush()
+    assert "M32702Z" not in out
+    if entry == "structured":
+        assert out == whole
