@@ -398,6 +398,10 @@ describe('phone chat page: one top bar', () => {
     // It hangs over the top of <main>: a readout must not swallow the taps
     // and scroll starts that land there.
     expect(strip).toHaveClass('pointer-events-none')
+    // Above the Crewmates identity stack (fixed, z-30, same stacking context),
+    // whose hanging name chip would otherwise hide the centred message.
+    expect(strip).toHaveClass('z-40')
+    expect(strip).not.toHaveClass('z-[1]')
     await act(async () => { store.dispatch(sseConnected()) })
     expect(screen.queryByTestId('mobile-offline-strip')).toBeNull()
   })

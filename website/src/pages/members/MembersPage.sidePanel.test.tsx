@@ -405,14 +405,17 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getByTestId('member-roster')).toHaveClass('hidden')
     expect(screen.getByTestId('crewmate-switcher')).toBeInTheDocument()
     // No count on the chip (issue #19045): the open list says how many. The
-    // unread column hangs from the header's bottom edge, absolutely, so it adds
-    // nothing to the header's measured height: the thread is never pushed down.
+    // unread column hangs from the switcher chip's bottom edge (the header's
+    // py-2 plus the 42px chip), absolutely, so it adds nothing to the header's
+    // measured height: the thread is never pushed down. Not from the header's
+    // bottom: the identity stack makes the header far taller than the chip.
     expect(screen.queryByTestId('crewmate-switcher-count')).toBeNull()
     const header = screen.getByTestId('member-thread-header')
     const slot = screen.getByTestId('crewmate-unread-column-slot')
     expect(header.contains(slot)).toBe(true)
-    expect(slot.className).toContain('absolute')
-    expect(slot.className).toContain('top-full')
+    expect(slot).toHaveClass('absolute', 'top-[calc(0.5rem+42px)]')
+    expect(slot).not.toHaveClass('top-full')
+    expect(screen.getByTestId('crewmate-switcher').className).toContain('h-[42px]')
   })
 
   it('the panel opener names itself in an instant tip on hover, not a delayed native title (issue #27335)', async () => {
@@ -1375,12 +1378,21 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByTestId('crew-profile-workspace')).toHaveTextContent('default')
   })
 
-  it('the identity pill carries a chevron, so it reads as a door and not as a second switcher chip', async () => {
+  it('the identity pill carries a chevron, revealed on hover or focus, so it reads as a door', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     const pill = await screen.findByTestId('member-identity-pill')
     const chevron = within(pill).getByTestId('member-identity-pill-chevron')
     expect(chevron).toHaveAttribute('aria-hidden', 'true')
+    // Hidden at rest; the stack's hover or keyboard focus reveals it.
+    expect(chevron.getAttribute('class')).toContain('opacity-0')
+    expect(chevron.getAttribute('class')).toContain('group-hover:opacity-100')
+    expect(chevron.getAttribute('class')).toContain('group-focus-visible:opacity-100')
+    // Pinned to the chip's right edge, centred on its height, out of the
+    // name row, so it never takes width from the name.
+    expect(chevron).toHaveClass('absolute', 'top-1/2', '-translate-y-1/2')
+    expect(within(pill).getByTestId('member-title-row')).not.toContainElement(chevron)
+    expect(chevron).not.toHaveClass('lucide-inline')
     // Decorative: the pill's name stays the crewmate's.
     expect(pill).toHaveAccessibleName(/oncall/)
   })
