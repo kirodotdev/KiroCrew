@@ -19615,7 +19615,7 @@
         "max_fps_desc": "60 ist das Maximum dieses Rechners. Solange die Karte nicht sichtbar ist, wird nichts gesendet.",
         "fps_value": "{{fps}} fps",
         "origins_label": "Lokale Adressen, die der Vorschau-Tab öffnen darf",
-        "origins_desc": "Nur für die Vorschau deines eigenen Dev-Servers. Kiro steuert diesen Tab nie.",
+        "origins_desc": "Für die Vorschau deines eigenen Dev-Servers. Der Browser von Kiro kann diese Adressen auch öffnen, aber Kiro steuert diesen Tab nie.",
         "origins_empty": "Noch keine",
         "add_origin": "Adresse hinzufügen",
         "remove_origin": "{{origin}} entfernen",
