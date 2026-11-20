@@ -26,7 +26,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from kiro_crew.security import redact
+from kiro_crew.platform import redact_via_context
 from kiro_crew.terminal_safe import safe_terminal_line
 
 TURN = "turn"
@@ -67,31 +67,50 @@ class Holder:
     turn: bool = False
 
     def __post_init__(self) -> None:
-        # The one place a holder's text is made: every census site, and so the
-        # log, the refusal sentence and the HTTP answers, gets it cleaned.
-        object.__setattr__(self, "kind", clean_name(self.kind))
+        # The one place a holder's text is made: every census site gets it
+        # cleaned. A kind is one of this module's constants, so it is only made
+        # printable; a name is also redacted.
+        object.__setattr__(self, "kind", _cut(_printable(self.kind)))
         object.__setattr__(self, "name", clean_name(self.name))
 
 
-def clean_name(value: object) -> str:
-    """*value* as one printable line of at most :data:`NAME_MAX_CHARS` characters.
-
-    A name can be text an agent or a remote party chose (a cron job name, a
-    session key), and it is printed to a terminal and written to the log: escape
-    sequences, control characters and format characters (the bidi overrides
-    among them) are dropped, any run of whitespace is one space, and a credential
-    or a credential inside a URL is masked as in any other surfaced text.
-    """
+def _printable(value: object) -> str:
+    """*value* as one line with no terminal control or format character."""
     if value is None:
         return ""
     text = safe_terminal_line(" ".join(str(value).split()))
     if not text.isascii():
         text = "".join(c for c in text if unicodedata.category(c) != "Cf")
-    # Before the cut, so a credential is judged whole and never shown in part.
-    text = " ".join(redact(text).split())
+    return " ".join(text.split())
+
+
+def _cut(text: str) -> str:
     if len(text) > NAME_MAX_CHARS:
         text = text[: NAME_MAX_CHARS - 3] + "..."
     return text
+
+
+def clean_name(value: object) -> str:
+    """*value* as one printable line of at most :data:`NAME_MAX_CHARS` characters.
+
+    A name can be text an agent or a remote party chose (a cron job name), and
+    it is sent to the host's CLI and printed to a terminal: escape sequences,
+    control characters and format characters (the bidi overrides among them)
+    are dropped, any run of whitespace is one space, and a credential or a
+    credential inside a URL is masked by the active credential policy, as in
+    any other text that leaves the gateway. A host whose policy cannot be
+    composed gets no name at all: the work stays counted, by kind only.
+    """
+    text = _printable(value)
+    if not text:
+        return ""
+    try:
+        # Before the cut, so a credential is judged whole and never shown in part.
+        text = redact_via_context(text)
+    except Exception:
+        # The census this runs in decides a restart: it must still count.
+        return ""
+    return _cut(" ".join(text.split()))
 
 
 def total(holders: Iterable[Holder]) -> int:
@@ -175,7 +194,7 @@ def describe(entries: object, more: object = 0) -> str:
     for entry in entries if isinstance(entries, (list, tuple)) else ():
         if not isinstance(entry, dict) or not isinstance(entry.get("kind"), str):
             continue
-        label = clean_name(entry["kind"]).replace("_", " ")
+        label = _cut(_printable(entry["kind"])).replace("_", " ")
         name = clean_name(entry.get("name"))
         count = entry.get("count")
         text = f"{name} {label}" if name else label

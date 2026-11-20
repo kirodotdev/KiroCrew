@@ -21,6 +21,7 @@ from slack_gateway_helpers import _make_orchestrator
 from kiro_crew import cli_restart_idle as idle_cli
 from kiro_crew import quiescence, restart_admission
 from kiro_crew.dashboard import chat_utils, slot_retention, stale_wake
+from kiro_crew.platform import context as platform_context
 from kiro_crew.slack import gateway as gw
 from kiro_crew.testing import synthetic_credentials
 
@@ -541,3 +542,92 @@ def test_a_long_name_is_cut_to_one_short_line():
     name = quiescence.Holder("script", "j" * 200).name
 
     assert len(name) == quiescence.work_holders.NAME_MAX_CHARS and name.endswith("...")
+
+
+# -- the active credential policy decides what a name may show ---------------------------
+
+_COMPANION_TOKEN = "ZTOK-7f3a9c1e5b2d4f60"
+
+
+class _CompanionPolicy:
+    """A companion's policy: it knows one credential shape the baseline does not."""
+
+    def redact(self, text: str) -> str:
+        return text.replace(_COMPANION_TOKEN, "[REDACTED: companion credential]")
+
+
+class _RaisingPolicy:
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    def redact(self, text: str) -> str:
+        raise self._error
+
+
+def _active_policy(monkeypatch, policy: object) -> None:
+    """Make *policy* the one the real ``redact_via_context`` asks."""
+    monkeypatch.setattr(
+        platform_context, "current_context", lambda: SimpleNamespace(credentials=policy)
+    )
+
+
+def test_the_baseline_redactor_does_not_know_the_companion_token():
+    # Guards the tests below: were this ever masked by default, they would pass
+    # without proving the active policy is the one asked.
+    assert _COMPANION_TOKEN in quiescence.Holder("script", f"sync {_COMPANION_TOKEN}").name
+
+
+def test_a_credential_only_the_active_policy_knows_is_masked_everywhere_it_is_shown(
+    orch, clock, monkeypatch
+):
+    _active_policy(monkeypatch, _CompanionPolicy())
+    _script_running(orch, clock, "job-7f3a", f"sync {_COMPANION_TOKEN}")
+    census = quiescence.assess(orch, quiet_window_secs=0.0, now=clock.now)
+
+    answered = json.loads(json.dumps(census.named_holders()))[0]
+    monkeypatch.setattr(idle_cli, "_stdout_is_terminal", lambda: True)
+    at_terminal = _cli_line(answered)
+    monkeypatch.setattr(idle_cli, "_stdout_is_terminal", lambda: False)
+    captured = _cli_line(answered)
+
+    assert [h["name"] for h in answered] == ["sync [REDACTED: companion credential]"]
+    assert "sync [REDACTED: companion credential] script" in at_terminal
+    for text in (json.dumps(answered), at_terminal, captured):
+        assert _COMPANION_TOKEN not in text
+
+
+def test_the_cli_asks_the_active_policy_about_entries_a_gateway_did_not_mask(monkeypatch):
+    _active_policy(monkeypatch, _CompanionPolicy())
+    monkeypatch.setattr(idle_cli, "_stdout_is_terminal", lambda: True)
+    entries = [{"kind": "script", "name": f"sync {_COMPANION_TOKEN}", "count": 1}]
+
+    assert _COMPANION_TOKEN not in _cli_line(entries)
+
+
+def test_a_host_that_cannot_compose_its_policy_lists_no_name_and_still_counts(
+    orch, clock, monkeypatch
+):
+    _active_policy(monkeypatch, _RaisingPolicy(platform_context.PlatformCompositionError("x")))
+    _script_running(orch, clock, "job-7f3a", f"sync {_COMPANION_TOKEN}")
+
+    census = quiescence.assess(orch, quiet_window_secs=0.0, now=clock.now)
+
+    assert orch._in_flight_work_counts() == (0, 1)
+    assert (census.background, census.busy) == (1, 1)
+    assert _named(census) == [
+        {"kind": "script", "name": "", "since_secs": 0, "count": 1},
+    ]
+    assert _said(census) == "script (0 s)"
+
+
+def test_a_policy_that_fails_falls_back_to_the_baseline_not_to_the_raw_name(
+    orch, clock, monkeypatch
+):
+    token = synthetic_credentials.github_classic()
+    _active_policy(monkeypatch, _RaisingPolicy(RuntimeError("adapter down")))
+    _script_running(orch, clock, "job-7f3a", f"sync TOKEN={token}")
+
+    census = quiescence.assess(orch, quiet_window_secs=0.0, now=clock.now)
+
+    assert census.background == 1
+    assert [h["name"] for h in _named(census)] == ["sync TOKEN=[REDACTED: credential]"]

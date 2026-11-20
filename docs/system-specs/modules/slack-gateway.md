@@ -810,8 +810,10 @@ take the hold in `cli.main` after argument parsing.
     chose (a cron job name, a session key). `Holder.__post_init__` cleans every
     one where it is made (`work_holders.clean_name`:
     `terminal_safe.safe_terminal_line`, format characters such as the bidi
-    overrides dropped, whitespace runs folded, `security.redact` for credentials
-    and credentials inside URLs, then at most 64 characters), and
+    overrides dropped, whitespace runs folded, the active credential policy
+    through `platform.redact_via_context` for credentials and credentials
+    inside URLs, then at most 64 characters; a host whose policy cannot be
+    composed gets an empty name and the work stays counted), and
     `work_holders.describe` cleans the kind and name of each entry it is handed
     again, since the CLI reads them from another process.
   - **One piece of work, one entry.** Work a session runs is named by its
