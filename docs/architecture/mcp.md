@@ -817,7 +817,9 @@ the sharing rows and the gateway rewriter use; otherwise it is stdio.
   metadata at the server's well-known path (RFC 9728, path-inserted then root)
   with the Connections discovery fetch (`mcp_oauth_discovery._fetch_json`:
   vetted public HTTPS on 443, pinned, no redirects, size-bounded), and a document
-  that covers the server (`l0_probe._read_resource_metadata`) sets
+  that names an HTTPS authorization server (`l0_probe._read_resource_metadata`)
+  and whose `resource` is this endpoint, not just its origin (`tool_aliases.normalized_endpoint`:
+  a root document for a sibling path says nothing about this one), sets
   `authChallenge` too. A gateway in front of a server can rename its
   `WWW-Authenticate` header, and without this such a server reads **Not
   verified** with no sign-in. It asks both
