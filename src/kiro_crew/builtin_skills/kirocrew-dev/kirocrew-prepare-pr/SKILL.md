@@ -484,7 +484,7 @@ comes after a record, never instead of one:
 
    **SHA-pinned force-with-lease.** Record `LEASE_SHA=$(git rev-parse origin/<branch>)` at iteration start, BEFORE Phase 1's fetch. **First push (no `origin/<branch>`): skip the clobber check and `git push -u origin <branch>`.** Otherwise check the pre-squash HEAD: `git merge-base --is-ancestor origin/<branch> HEAD` — if it fails, a maintainer commit is on the remote that local history never had; STOP, re-sync, re-include it. Do not re-run that check after the squash. Then `git push --force-with-lease=<branch>:$LEASE_SHA origin <branch>`.
 
-2. **Create/update the PR** from Phase 1 step 5's body. Run `diff_signals.py --check-body` on the finished file **before** `gh` reads it. `<body>` below is the checked file, `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — never a second copy. New → `gh pr create --base <base> --head <branch> --title "<CC title>" --body-file <body>`, plus one `--attach <path>` per evidence file (see *Screenshots*). Existing → **regenerate the whole body from the current diff**, then `gh pr edit --body-file <body>` — **BEFORE step 1's push**, and **only when it differs from the published body**. Read that back byte-exact with `gh pr view <n> --json body --template '{{.body}}'`: `--jq .body` appends a newline of its own, so comparing its output raw reports a difference every round and leaves the condition doing nothing. Why both conditions, and which lanes each one is about: `references/rationale.md`. If `gh` fails (a GraphQL error or rate limit), use the REST fallback in `references/ci.md`. Verify the body landed.
+2. **Create/update the PR** from Phase 1 step 5's body. Run `diff_signals.py --check-body` on the finished file **before** `gh` reads it. `<body>` below is the checked file, `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — never a second copy. New → `gh pr create --base <base> --head <branch> --title "<CC title>" --body-file <body>`, plus one `--attach <path>` per evidence file (see *Screenshots*). Existing → **regenerate the whole body from the current diff**, then `gh pr edit --body-file <body>` — **BEFORE step 1's push**, and **only when it differs from the published body**. Read that back byte-exact with `gh pr view <n> --json body --template '{{.body}}'`, never `--jq .body`. Why both conditions, and which lanes each one is about: `references/rationale.md`. If `gh` fails (a GraphQL error or rate limit), use the REST fallback in `references/ci.md`. Verify the body landed.
 
    **Then report the PR's full `https://.../pull/<n>` URL in your chat message.**
    **Prepare-only stops here** after one `pr_status.py` snapshot.
@@ -567,9 +567,10 @@ outside author asks a maintainer to merge.
 
 **Keep the same loop running until the PR merges** (24-hour budget):
 
-- **Conflict or behind base** → Phase 1 rebase, related tests, push with the
-  lease, then re-arm auto-merge — a push clears it and may dismiss approvals;
-  check the approval names the new head and say so when it does not.
+- **Conflict** → Phase 1 rebase, related tests, push with the lease, then
+  re-arm auto-merge — a push clears it and may dismiss approvals; check the
+  approval names the new head and say so when it does not.
+- **Behind base, no conflict** → the exit-30 rule: a green re-check pushes nothing.
 - **A new red** after the base moved → triage it as Phase 3 exit 20.
 - **Merge queue ejection** (once the queue is on) → read the group's failing run,
   fix it, or rerun it once after *Before you rerun a red test*, then re-arm.

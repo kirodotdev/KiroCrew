@@ -591,6 +591,28 @@ def test_a_clean_re_check_keeps_the_rebase_local() -> None:
     assert "still reads 30" in thirty
 
 
+def test_phase_four_pushes_a_rebase_only_on_a_conflict() -> None:
+    """Landing keeps the exit-30 rule: being behind base alone earns no push.
+
+    A push in Phase 4 clears auto-merge, may dismiss approvals and re-runs CI on
+    an unchanged patch, which is what the exit-30 rule exists to stop. So the
+    Phase 4 loop, in the skill and in the arming template's ``Exit 0`` clause,
+    rebases and pushes only on a conflict and sends a clean behind-base rebase
+    through the exit-30 re-check.
+    """
+    skill = " ".join((_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+    phase4 = skill.split("### Phase 4", 1)[1].split("### When main is red", 1)[0]
+    exit0 = " ".join(_template_text().split()).split("Exit 0:", 1)[1].split("Merged,", 1)[0]
+
+    assert "Conflict or behind base" not in phase4
+    assert "**Conflict** → Phase 1 rebase" in phase4
+    behind = phase4.split("**Behind base, no conflict**", 1)[1].split("- **", 1)[0]
+    assert "exit-30 rule" in behind
+    assert "green re-check pushes nothing" in behind
+    assert "on a conflict rebase, push" in exit0
+    assert "behind" not in exit0.lower()
+
+
 # --- the helpers the classes are built from ----------------------------------
 
 

@@ -567,7 +567,10 @@ The other condition stands on its own, and does not depend on the order. When th
 regenerated body is byte-identical there is nothing to publish, so the call is skipped.
 Publishing it anyway wastes a request for certain, and a whole fan-out if GitHub raises
 `edited` for a PATCH that changes nothing. Which of those it is has not been measured
-here, so skip the call but do not quote a saving for it.
+here, so skip the call but do not quote a saving for it. Compare against
+`gh pr view <n> --json body --template '{{.body}}'`: `--jq .body` appends a newline
+of its own, so a raw comparison with it reports a difference every round and the
+condition skips nothing.
 
 Which lanes sit in which group is a property of the workflows and changes with them,
 so read it from the `on:` blocks in `.github/workflows/` and the reviewer table in
