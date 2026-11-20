@@ -7485,6 +7485,21 @@ undeclared key resolves to allow, so a script hook runs unconfined by default
 `sandbox.min_level` floor is pinned, the hook's `SandboxUnavailableError`
 surfaces as the result's `error`, naming the setting.
 
+A slow fire logs one WARNING (`hook_fire_timing.py`). When one hook's fire in
+`ScriptHookStore.fire`, from its matcher to its verdict, takes 1 s or more
+(`SLOW_FIRE_WARN_MS`), the line `Slow hook fire: <hook> (<event>) took <n>ms: ...`
+names every phase in order: `matcher`, `gov_capability`, `gov_event`, `gov_hook`,
+`deny_list`, `prepare`, `spawn`, `communicate`. Each thread-pool hop is split into
+`wait` (until a pool worker started it), `run` (in the worker) and `resume` (until
+the event loop resumed the fire), so a busy pool or a stalled loop shows apart from
+slow work. `other` is the fire's time outside every phase, and `gc runs` counts the
+collector's runs per generation (`0/1/2`) during the fire. A matcher that does not
+match ends that hook's fire and logs the same way when it was slow. The `hooks.json`
+status write after the fire's hooks is timed the same way and logs its own line,
+`hook status write`, when it alone takes 1 s. A faster fire logs nothing, and a
+direct `run_script_hook` call (the dashboard's hook test) is not a fire and never
+logs one. `test_hook_fire_timing.py` pins both sides.
+
 ### `safe_read_file(path: str, *, canonical_gate: bool = False) -> str`
 
 Central guarded file read. Resolves the path via `expanduser().resolve()`, checks against
