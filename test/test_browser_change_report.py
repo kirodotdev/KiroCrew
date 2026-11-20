@@ -677,7 +677,8 @@ def test_glance_is_a_walker_method_read_in_the_isolated_world() -> None:
 
 
 def _glance_source() -> str:
-    return ops.WALKER_SOURCE[ops.WALKER_SOURCE.index("glance: function") :]
+    source = ops.WALKER_PATH.read_text(encoding="utf-8")
+    return source[source.index("glance: function") :]
 
 
 def test_glance_leaves_a_secret_field_out_of_the_invalid_list_whole() -> None:

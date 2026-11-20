@@ -131,6 +131,40 @@ def test_walker_source_is_one_iife_the_ops_call_methods_on() -> None:
         assert f"{method}: function" in ops.WALKER_SOURCE, method
 
 
+#: The Browser Harness daemon reads each request as one line, with asyncio's default
+#: stream limit; a longer line fails every page call.
+_DAEMON_LINE_LIMIT = 64 * 1024
+#: Room left on that line for the call's own arguments and the request envelope.
+_ARGS_HEADROOM = 8 * 1024
+
+
+def test_a_walker_call_fits_on_one_daemon_line_with_room_for_its_arguments() -> None:
+    # The daemon gets the expression JSON-encoded inside a CDP request, so measure
+    # it the way it travels: escaped, as bytes.
+    request = {
+        "method": "Runtime.evaluate",
+        "params": {
+            "expression": ops.WALKER_SOURCE + ".snapshot()",
+            "contextId": 1,
+            "returnByValue": True,
+        },
+        "session_id": "S" * 64,
+    }
+    line = (json.dumps(request) + "\n").encode()
+    assert len(line) + _ARGS_HEADROOM <= _DAEMON_LINE_LIMIT, len(line)
+
+
+def test_the_sent_walker_keeps_every_line_of_code_and_drops_only_comments() -> None:
+    raw = ops.WALKER_PATH.read_text(encoding="utf-8").splitlines()
+    code = [ln.strip() for ln in raw if ln.strip() and not ln.strip().startswith("//")]
+    assert ops.WALKER_SOURCE.splitlines() == code
+    assert "\n//" not in "\n" + ops.WALKER_SOURCE
+    # Dropping whole comment lines and indentation is only safe while no literal
+    # spans lines: no template literal, and no line continued with a backslash.
+    assert "`" not in ops.WALKER_SOURCE
+    assert not any(ln.endswith("\\") for ln in code)
+
+
 def test_every_page_side_call_goes_through_the_walker(fake: FakeBrowser) -> None:
     fake.page["snapshot"] = {"url": "u", "title": "t", "nodes": []}
     run(ops.run_op("snapshot", {}, fake.ctx()))
