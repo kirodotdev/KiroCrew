@@ -240,7 +240,8 @@ def test_shadow_red_row_reads_only_failed_linux_backend_jobs(
     ]
     fetched: list[list[str]] = []
     listed: list[list[str]] = []
-    monkeypatch.setattr(shadow, "_gh_json", lambda args, root: listed.append(args) or jobs)
+    page = {"total_count": len(jobs), "jobs": jobs}
+    monkeypatch.setattr(shadow, "_gh_json", lambda args, root: listed.append(args) or page)
 
     def fake_run(argv: list[str], root: Path) -> str:
         fetched.append(argv)
@@ -252,7 +253,7 @@ def test_shadow_red_row_reads_only_failed_linux_backend_jobs(
     assert row == {"run": 9, "pr": 7, "head": "f" * 40, "failing": ["test/test_a.py"]}
     assert [argv[-1] for argv in fetched] == [f"repos/{shadow.REPO}/actions/jobs/1/logs"]
     # The jobs of THIS attempt: a rerun keeps the run id.
-    assert listed[0][1] == f"repos/{shadow.REPO}/actions/runs/9/attempts/2/jobs?per_page=100"
+    assert listed[0][1] == f"repos/{shadow.REPO}/actions/runs/9/attempts/2/jobs?per_page=100&page=1"
 
     def unreadable(argv: list[str], root: Path) -> str:
         raise subprocess.CalledProcessError(1, argv)
