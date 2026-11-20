@@ -3202,8 +3202,13 @@ spec the same way kiro-cli v2 does where the wire allows it:
   path is checked first. A relative ref is anchored to the agents directory and
   may use `..` (`file://../prompts/x.md` loads, as on kiro-cli); relative or
   absolute, the resolved path (symlinks followed) is refused when it is a
-  sensitive location, `~/.config/gh`, the data home's `app_receipt_secret` or `session_token_*.sig`,
-  or a pseudo-filesystem (`acp/kas_prompt_paths.py`). A spec from
+  sensitive location, gh's config folder wherever gh looks (`GH_CONFIG_DIR`,
+  `$XDG_CONFIG_HOME/gh`, `%APPDATA%\GitHub CLI`, `~/.config/gh`; a relative
+  value is fenced by its tail and under the gateway's cwd), the data home's
+  `app_receipt_secret` or `session_token_*.sig`, or a pseudo-filesystem, or a
+  share or device-namespace path that can name a file on this host (a share on
+  this host, a drive-letter or `admin$` share, the Windows device namespace)
+  (`acp/kas_prompt_paths.py`). A spec from
   a project checkout is untrusted, and its relative ref must stay inside that
   checkout's `.kiro/agents` (`acp.harness.kas.resolve_projected_spec`); a leading
   `$` counts as rooted there. A relative ref expands `$VAR` and `~` first
