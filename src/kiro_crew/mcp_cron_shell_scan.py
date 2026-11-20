@@ -35,10 +35,14 @@ from kiro_crew.security.readonly_bash import _EXTGLOB_RE
 # a capturing group, then a separator/quote/end. The one search both detects the
 # match and reports WHICH name it hit (``match.group(1)``), so no second per-name
 # pass is needed to name the path.
+# A lone backslash (one not next to another) also separates, so the native
+# Windows spelling `<profile>\.aws\credentials` is refused like the `/` one.
+# shortcut: a doubled backslash (a non-raw literal, or a regex scrubber) stays
+# allowed; the pinned benign scrubber bodies use it. Revisit with a separate ruling.
 _CRON_CRED_PATH_RE = re.compile(
-    r"(?:^|[\s'\"=@/~`]|\$\{?HOME\}?)"
+    r"(?:^|[\s'\"=@/~`]|(?<!\\)\\|\$\{?HOME\}?)"
     r"(" + "|".join(re.escape(d) for d in _SENSITIVE_HOME_DIRS) + r")"
-    r"(?:/|\s|['\"]|$)",
+    r"(?:/|\s|['\"]|\\(?!\\)|$)",
     re.IGNORECASE,
 )
 # The COMMAND form of the same matcher. A shell command line reaches the
