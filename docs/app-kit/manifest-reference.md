@@ -168,8 +168,7 @@ A stdio entry's `env` values are passed through as declared. A
 `secret://<name>` value is **not** resolved for app servers when kiro-cli
 spawns them: the server receives the literal reference text. Registration logs
 a warning naming the app, server and env key when it sees one. How an app may
-receive a vault secret is undecided
-([#10641](https://github.com/kirodotdev/KiroCrew/issues/10641)).
+receive a vault secret is not defined: no path resolves one for it.
 
 ### Host paths in an agent file
 
@@ -2547,8 +2546,7 @@ The two user-bus locators, `XDG_RUNTIME_DIR` (from the allowlist) and
 `DBUS_SESSION_BUS_ADDRESS` (from the desktop hints), **reach the child** on this
 path. The sandbox's restore-then-drop of those two variables applies to spawns
 that go through `sandbox.sandboxed_spawn_argv`; `openCommand` does not. Keeping
-them is the stated policy, decided in
-[#16520](https://github.com/kirodotdev/KiroCrew/issues/16520): the standard tier
+them is the stated policy: the standard tier
 does not keep an app's children off the user session bus. The launcher reaches
 it, and so do the app's backend and its lifecycle and install commands, which is
 the same documented residual the agent's own shell has (see

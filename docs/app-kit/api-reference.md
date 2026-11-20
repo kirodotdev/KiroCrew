@@ -1228,7 +1228,7 @@ const renderers = [{
 collapsible "worked through N steps" group **before** rows are resolved. An entry claiming either is
 still consulted, but it renders **inside** that group, and the group keeps its own summary and
 approval affordance — so you cannot yet use the registry to replace the built-in approval UI with
-your own. Substituting the group itself is not an extension point today — tracked in #2940.
+your own. Substituting the group itself is not an extension point.
 
 ### Replacing a built-in row
 
@@ -1745,7 +1745,7 @@ older than this option raises `TypeError` on the unknown keyword.
 
 ### Bot proposals (`ctx.crewmate`)
 
-> **Preview, switched off.** `ctx.crewmate` is `None` for every app, even one that declares the permission, until the dashboard view that lists an app's cards lands (#21718). The calls below describe the contract that view will switch on (`apps/crewmate_sdk.py::PREVIEW_ENABLED`).
+> **Preview, switched off.** `ctx.crewmate` is `None` for every app, even one that declares the permission, until the dashboard view that lists an app's cards ships. The calls below describe the contract that view will switch on (`apps/crewmate_sdk.py::PREVIEW_ENABLED`).
 
 Once switched on, present when the manifest declares `permissions.proposeCrewmate: true`, and `None` otherwise. The app hands core one parsed `.crewmate` bundle ([rfc-crewmate-share.md](../request-for-change/rfc-crewmate-share.md) §5.2). Core checks it and raises one `crewmate.import` change card for the owner. The app creates nothing: only the owner's press creates the crewmate.
 
