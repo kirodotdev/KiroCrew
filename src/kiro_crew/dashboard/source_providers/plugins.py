@@ -74,6 +74,7 @@ _BUILTIN_PROVIDER_IDS = frozenset(
         "gitlab",
         "jira",
         "linear",
+        "servicenow",
         contract.BITBUCKET_SERVER_PROVIDER,
         contract.GERRIT_PROVIDER,
     }

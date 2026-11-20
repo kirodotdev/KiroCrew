@@ -870,11 +870,12 @@ composer and source strip, which an app page does not have.
 ## Issue Search
 
 `POST /api/source/issues` lists or searches the issues of one GitHub repository
-(`owner/repo`), GitLab project (`group/sub/project`), Jira project (`PROJ`) or Linear
-team (`ENG`), through the gateway's own `gh`/`glab` sign-in, the Jira API token in
-`dashboard.jira_auth` (the one the Issues panel reads Jira with), or a Linear personal
-API key stored in Settings > Secrets as `LINEAR_API_KEY` (without one, the answer is a
-503 `provider_error` that says to add it). It answers the owner's dashboard session only: an app token is
+(`owner/repo`), GitLab project (`group/sub/project`), Jira project (`PROJ`), Linear
+team (`ENG`) or ServiceNow table (`incident`), through the gateway's own `gh`/`glab`
+sign-in, the Jira API token in `dashboard.jira_auth` (the one the Issues panel reads
+Jira with), a Linear personal API key stored in Settings > Secrets as `LINEAR_API_KEY`,
+or a ServiceNow API key (see [ServiceNow](#servicenow); without a stored key, either
+answer is a 503 `provider_error` that says to add it). It answers the owner's dashboard session only: an app token is
 refused (403) whatever its manifest declares, as for `/api/source/pull-request`. On an
 app page, `useAppApi()` allows the path only when the manifest declares
 `/api/source/issues` in `permissions.api`. The grant is separate from
@@ -887,10 +888,10 @@ The request and response types are `IssueSearchRequest` and `IssueSearchResponse
 
 | Field | Meaning |
 |---|---|
-| `provider`, `scope` | Required. `github`, `gitlab`, `jira` or `linear` |
-| `host` | A GitHub Enterprise or self-managed GitLab host on the gateway's allowlist (`dashboard.github_hosts`, `dashboard.gitlab_hosts`); defaults to github.com / gitlab.com. Required for Jira: a `*.atlassian.net` site or a `dashboard.jira_hosts` entry, with credentials in `dashboard.jira_auth` (a Jira served under a context path such as `/jira` is not searchable yet). Omitted for Linear |
-| `state`, `assignee`, `author`, `labels`, `text` | Structured filters; `assignee: 'me'` is the signed-in user. A Jira `assignee`/`author` is an account ID on Cloud and a username on Server/Data Center. A Linear person is `me`, an email address or a display name |
-| `raw` | GitHub search qualifiers, a GitLab filter string (`labels=bug&milestone=v1`), Jira JQL or a Linear `IssueFilter` JSON object (`{"priority":{"eq":1}}`). Replaces the structured filters. GitHub's cannot name another repo, org, user or owner, or use `OR`/`AND`/`NOT` or parentheses; GitLab's cannot set paging, ordering or `scope`; JQL is ANDed, in parentheses, with `project = <scope>`, so its parentheses must balance, and it cannot use `ORDER BY`. A Linear filter may use `or`/`and`, and is ANDed under the team, so nothing in it can reach another team |
+| `provider`, `scope` | Required. `github`, `gitlab`, `jira`, `linear` or `servicenow` |
+| `host` | A GitHub Enterprise or self-managed GitLab host on the gateway's allowlist (`dashboard.github_hosts`, `dashboard.gitlab_hosts`); defaults to github.com / gitlab.com. Required for Jira: a `*.atlassian.net` site or a `dashboard.jira_hosts` entry, with credentials in `dashboard.jira_auth` (a Jira served under a context path such as `/jira` is not searchable yet). Omitted for Linear. Required for ServiceNow: the instance its stored key belongs to |
+| `state`, `assignee`, `author`, `labels`, `text` | Structured filters; `assignee: 'me'` is the signed-in user. A Jira `assignee`/`author` is an account ID on Cloud and a username on Server/Data Center. A Linear person is `me`, an email address or a display name, and a ServiceNow one `me` (the user the stored API key runs as), a user name or an email address. ServiceNow refuses `labels` (400): its records have none |
+| `raw` | GitHub search qualifiers, a GitLab filter string (`labels=bug&milestone=v1`), Jira JQL or a Linear `IssueFilter` JSON object (`{"priority":{"eq":1}}`). Replaces the structured filters. GitHub's cannot name another repo, org, user or owner, or use `OR`/`AND`/`NOT` or parentheses; GitLab's cannot set paging, ordering or `scope`; JQL is ANDed, in parentheses, with `project = <scope>`, so its parentheses must balance, and it cannot use `ORDER BY`. A Linear filter may use `or`/`and`, and is ANDed under the team, so nothing in it can reach another team. A ServiceNow encoded query is ANDed after the structured filters instead of replacing them (see [ServiceNow](#servicenow)) |
 | `sort`, `order`, `limit`, `cursor`, `refresh` | `updated`/`created`, `desc`/`asc`, 1 to 100 (25), the previous page's `nextCursor`, and a cache bypass (results are kept 30 seconds) |
 
 Each `IssueSummary` carries a url built from the validated scope, a display `key`,
@@ -901,12 +902,52 @@ report one (Jira Cloud and Linear never do); GitHub search and Linear stop at a
 search API returns no count, and a Linear `commentCount` is `0` because its list API
 reports none.
 
+### ServiceNow
+
+The gateway reads ServiceNow's Table API itself, read-only, with an inbound REST API
+key (ServiceNow's Washington DC release and later) sent as the `x-sn-apikey` header.
+The owner stores the key in Settings > Secrets as `SERVICENOW_API_KEY` and the
+instance it belongs to as `SERVICENOW_INSTANCE` (`acme.service-now.com`, or that host
+after `https://`). Both are vault-only: never read from `.env` or the environment,
+never logged or returned. No other sign-in is supported. An access policy on the
+instance can limit the key to the Table API and `GET`.
+
+- **One instance.** `host` must be a `<name>.service-now.com` host (no port, path or
+  userinfo; letter case and a trailing dot are ignored), and exactly the stored
+  `SERVICENOW_INSTANCE`. Any other host is refused (400) before any call, so an app
+  cannot send the key to another instance, and a redirect is never followed. A
+  custom domain in front of an instance is not supported.
+- **One table.** `scope` is `incident`, `problem`, `change_request`, `sc_req_item` or
+  `sc_task`; anything else is refused. The gateway fixes the field list, ordering
+  (`sort`, `order`) and paging.
+- **`raw`** is an encoded query, ANDed after the structured filters (including the
+  default `state: 'open'`; send `state: 'all'` for closed records too). Each term is
+  `<field><operator><value>` with a lower-case column of the table itself (no
+  dot-walking, which would filter on another table's records) and one of
+  `=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE` (or `NOTLIKE`), `STARTSWITH`, `ENDSWITH`, `IN`,
+  `NOT IN`, `ISEMPTY`, `ISNOTEMPTY`, `BETWEEN`. It cannot use `^OR` (use `IN`),
+  `^NQ`, `^EQ`, `ORDERBY`, `GROUPBY`, related-list or sub-queries, `DYNAMIC`, a
+  `javascript:` value, `%`, or an empty term; a field starting with `or`, `nq`,
+  `eq`, `ir_` or `goto` (such as `order`) is refused for the same reason.
+- **Rows.** `key` is the record number (`INC0010001`) and `number` its digits;
+  `title` is `short_description`; open or closed is `active`, which means the same
+  on all five tables, and `statusLabel` is the `state` display value; `priority`
+  is its display value; `assignees` is `assigned_to`, `author` is `opened_by`;
+  `excerpt` is from `description`. `labels` is always `[]`, `commentCount` is `0`
+  (the Table API reports none) and `total` comes from `X-Total-Count`. The `url` is
+  `https://<instance>/<table>.do?sys_id=<sys_id>`, built by the gateway.
+- **One record.** `POST /api/source/issue` reads that same URL form. Other forms
+  (`nav_to.do?uri=...`, `/now/nav/ui/classic/...`, Workspace and Service Portal
+  links, extra query parameters) are not supported. Its comments section is empty
+  and listed in `partialSections`: comments and work notes are not read.
+- **Errors** are the gateway's own text, never ServiceNow's.
+
 ## Issue List
 
 `useIssues`, `IssueList` and `IssueCard` show the issues [Issue Search](#issue-search)
 returns, through one query (`IssueSearchRequest`) and one result shape
-(`IssueSummary`). The views draw all four providers the route serves (GitHub, GitLab,
-Jira and Linear) from that shape. They need
+(`IssueSummary`). The views draw all five providers the route serves (GitHub, GitLab,
+Jira, Linear and ServiceNow) from that shape. They need
 `APP_SDK_LEVEL >= 6` and `/api/source/issues` in your manifest's `permissions.api`.
 Without the declaration, or outside an app, the components render a refusal naming
 the path and send nothing; the hook reports an `AppApiPermissionError`. Declaring
@@ -940,15 +981,16 @@ page.
 |---|---|---|---|
 | `query` | `IssueSearchRequest` | yes | What to list; a new query replaces the filter bar's edits |
 | `view` | `'condensed' \| 'expanded'` | no | One row per issue (default) or one card |
-| `showFilters` | `boolean` | no | State, assignee (`me` included), labels and search text; hidden while `query.raw` is set, since a raw query replaces those filters |
+| `showFilters` | `boolean` | no | State, assignee (`me` included), labels and search text; hidden while `query.raw` is set, since a raw query replaces those filters, except on ServiceNow, where `raw` is ANDed with them; the labels box is left out for ServiceNow |
 | `onSelect` | `(issue: IssueSummary) => void` | no | Makes each row a button; without it a row links out |
 | `emptyText` | `string` | no | Replaces the empty-state text |
 
 `IssueCard` takes `issue`, `view` and `onSelect` and renders one issue on its own.
-The condensed row shows the provider mark, the key (`#4821`, `CREW-142`), the title,
+The condensed row shows the provider mark (a neutral link mark for ServiceNow, which
+has no bundled logo), the key (`#4821`, `CREW-142`), the title,
 up to two labels (hidden when narrow), the provider's `statusLabel` and the updated
 time. The expanded card adds the project, a three-line excerpt, priority, every
-label, the first assignee, the author, the comment count (left out for Jira and Linear, whose searches return none) and linked-change count, and an
+label, the first assignee, the author, the comment count (left out for Jira, Linear and ServiceNow, whose searches return none) and linked-change count, and an
 **Open in &lt;provider&gt;** link. Every provider string is rendered as text, links
 open only `http(s)` urls in a new tab with `rel="noopener noreferrer"`, and an avatar
 loads only from an `http(s)` url.

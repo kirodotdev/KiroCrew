@@ -421,6 +421,7 @@
       "provider_gitlab": "GitLab",
       "provider_jira": "Jira",
       "provider_linear": "Linear",
+      "provider_servicenow": "ServiceNow",
       "retry": "Повторить",
       "row_label": "{{provider}} {{key}}: {{title}} ({{status}})",
       "state_all": "Все",

@@ -23,7 +23,8 @@ here rather than imported, because the gateway core must not depend on a
 built-in app's backend.
 
 Providers are entries in :data:`_PROVIDERS`: one ``validate`` and one ``search``
-function each; Linear's are installed by its own module (``linear``). A provider
+function each; Linear's and ServiceNow's are installed by their own modules
+(``linear``, ``servicenow``). A provider
 named in :data:`_PLANNED_PROVIDERS` gets ``provider_not_supported`` instead of
 ``invalid_request``.
 """
@@ -226,7 +227,7 @@ def parse_issue_query(body: Any) -> tuple[IssueProvider, IssueQuery]:
         )
     provider = _PROVIDERS.get(provider_id)
     if provider is None:
-        raise IssueQueryError("provider must be one of: github, gitlab, jira, linear.")
+        raise IssueQueryError("provider must be one of: github, gitlab, jira, linear, servicenow.")
     scope = _text_field(body, "scope", _MAX_SCOPE_CHARS)
     if not scope:
         raise IssueQueryError("scope is required.")
@@ -1395,7 +1396,7 @@ _PLANNED_PROVIDERS: frozenset[str] = frozenset()
 
 def install_provider(provider_id: str, provider: IssueProvider) -> None:
     """Serve *provider_id* with *provider*: for an owner listed after this module
-    (``linear``), which installs itself on import. Idempotent per id."""
+    (``linear``, ``servicenow``), which installs itself on import. Idempotent per id."""
     _PROVIDERS[provider_id] = provider
 
 

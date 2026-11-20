@@ -2,7 +2,7 @@
 
 `@kirocrew/app-sdk` draws issue lists with one API. Your app passes a query; the
 gateway reads the provider with the user's own sign-in and answers in one shape.
-The route serves GitHub, GitLab, Jira and Linear. The full reference is
+The route serves GitHub, GitLab, Jira, Linear and ServiceNow. The full reference is
 [api-reference.md § Issue List](api-reference.md#issue-list).
 
 ## 1. Declare the endpoint
@@ -34,10 +34,12 @@ function MyIssues() {
 }
 ```
 
-- `scope` is a GitHub `owner/repo`, a GitLab project path, a Jira project key or a
-  Linear team key. `host` selects a GitHub Enterprise or self-managed GitLab host on
-  the gateway's allowlist, and is required for Jira (the site the gateway has
-  credentials for).
+- `scope` is a GitHub `owner/repo`, a GitLab project path, a Jira project key, a
+  Linear team key or a ServiceNow table (`incident`, `problem`, `change_request`,
+  `sc_req_item` or `sc_task`). `host` selects a GitHub Enterprise or self-managed
+  GitLab host on the gateway's allowlist, and is required for Jira (the site the
+  gateway has credentials for) and ServiceNow (the instance its stored API key
+  belongs to).
 - `view="condensed"` draws one row per issue. `view="expanded"` draws a card
   with the excerpt, people, counts and an **Open in** link.
 - `showFilters` adds a bar for state, assignee (`me` included), labels and search
@@ -47,6 +49,19 @@ function MyIssues() {
 
 Import the SDK as a namespace when you support hosts older than level 6: a named
 import of an export the host lacks fails your whole bundle at load time.
+
+ServiceNow lists one table on one instance, read-only:
+
+```tsx
+<sdk.IssueList query={{ provider: 'servicenow', scope: 'incident', host: 'acme.service-now.com', assignee: 'me' }} />
+```
+
+The owner stores an inbound REST API key in Settings > Secrets as
+`SERVICENOW_API_KEY`, and its instance host as `SERVICENOW_INSTANCE`. A request for
+any other host is refused before the gateway calls anything. The filter bar leaves
+out the labels box, since ServiceNow records have no labels. A host older than this
+release answers `provider` `servicenow` with a 400, so show that error rather than
+an empty list.
 
 ## 3. Build your own layout
 
