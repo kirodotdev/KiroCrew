@@ -64,6 +64,7 @@ def test_a_file_that_joins_the_tier_is_a_notice_not_a_failure(
         "the job summary lists them."
     ]
     assert "| `test/test_new.py` | joined |" in summary
+    assert "| `test/test_new.py` | joined |" in log
     assert "\r" not in summary
 
 

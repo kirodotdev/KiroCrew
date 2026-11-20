@@ -232,11 +232,11 @@ def main(argv: list[str] | None = None) -> int:
     for line in workflow_commands(verdict):
         print(line)
     text = summary(verdict, len(base), len(head), label)
+    # Printed as well as appended: the run log is what an API reader can fetch.
+    print(text)
     if args.summary:
         with open(args.summary, "a", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
-    else:
-        print(text)
     return 1 if verdict.failed else 0
 
 
