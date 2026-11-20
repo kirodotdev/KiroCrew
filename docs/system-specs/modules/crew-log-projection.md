@@ -6,8 +6,9 @@ A session's crew log is an append-only file (`crew-log-core.md`). Every view of 
 is a FOLD: `status`, `usage`, `timeline`, `tools`, `approvals`, `subagents` and
 `class` -- the session side panel of the RFC's section 5 table, plus the one fold a
 READER of another unit's log consults rather than a panel. This module is those six
-advertised folds, the internal `class` fold, the slot-keyed `ledger`, `radar`,
-`work`, `panel`, `agentic`, `mistakes`, `workstreams`, `goal`, `waiting`, `custom` and `workers` folds, the two read routes that serve them, and the frame that pushes a fold
+advertised folds, the internal session folds `class`, `outline`, `otel_usage` and
+`otel_session_tree`, the slot-keyed `ledger`, `radar`,
+`work`, `panel`, `agentic`, `mistakes`, `workstreams`, `goal`, `waiting`, `custom`, `objects` and `workers` folds (with `worker`, the internal part `workers` merges), the tree-keyed `worktree` fold, the two read routes that serve them, and the frame that pushes a fold
 when the file grows.
 
 The split it implements is RFC NFR-2: the backend folds and cuts pages, the
@@ -19,11 +20,13 @@ sends, so `PROJECTION_NAMES` holds those six. A fold in `SLOT_PROJECTION_NAMES` 
 keyed by a SLOT rather than by one unit: a slot owns one ACP session id at a time,
 so the state it accrues over its life is spread across a unit per id it ran under,
 and answering for it means joining them. `SLOT_PROJECTION_NAMES` holds `ledger`,
-`radar`, `work`, `panel`, `agentic`, `mistakes`, `workstreams`, `goal`, `waiting`, `custom` and `workers`, and those names are kept OUT of
+`radar`, `work`, `panel`, `agentic`, `mistakes`, `workstreams`, `goal`, `waiting`, `custom`, `objects` and `workers`, and those names are kept OUT of
 `PROJECTION_NAMES` for that reason -- the growth push and the side panel address a
 session, and pushing a slot-wide value under one session's id would report a partial
-answer as the whole one. `FOLD_NAMES` is the union of the two, and the import-time
-registry check compares a requested name against it.
+answer as the whole one. `FOLD_NAMES` is the union of those two with
+`INTERNAL_PROJECTION_NAMES`, `INTERNAL_SLOT_PROJECTION_NAMES` and
+`TREE_PROJECTION_NAMES`, in registry order; an import-time check refuses a registry
+(`_FOLDS`) that disagrees with it, and `require_name` refuses a requested name outside it.
 
 Scope: the SESSION kind. The crew-kind projections (`roster`, `activity`,
 `board`, `budget`, ...) are out of scope here because no crew-kind fold exists yet;
@@ -47,9 +50,13 @@ only its registry entry (`_FOLDS`, in `crew_log/projection_registry.py`) beside 
 | `crew_log/projection_values.py` | the bounded coercions every fold applies to entry data (`_as_str`, `_as_id`, `_keyable`, `TEXT_LIMIT`, `ID_LIMIT`) and `_rows_in` |
 | `crew_log/projection_side_panel.py` | the `status`, `timeline`, `tools` and `approvals` folds and their caps |
 | `crew_log/projection_usage.py` | the `usage` fold, its caps, and the credit table (`CREDIT_SOURCES`) every billing fold charges by |
+| `crew_log/projection_usage_measured.py` | the context part of the `usage` fold: one fixed-size state and its `context_render` |
 | `crew_log/projection_subagents.py` | the `subagents` fold |
 | `crew_log/projection_ledger.py` | the `ledger` slot fold |
 | `crew_log/projection_internal.py` | the internal `class` and `outline` folds |
+| `crew_log/projection_otel_usage.py` | the internal `otel_usage` fold the OTel export reads |
+| `crew_log/projection_otel_session_tree.py` | the internal `otel_session_tree` fold the OTel export reads |
+| `crew_log/projection_objects.py` | the `objects` slot fold: the newest `object/observed` record per subject and producer |
 | `crew_log/projection_radar.py` | the `radar` slot fold |
 | `crew_log/projection_dashboard.py` | the `panel`, `agentic`, `mistakes` and `custom` slot folds |
 | `crew_log/projection_crewmate.py` | the `goal` and `waiting` slot folds, a Bot's own record |
@@ -94,9 +101,8 @@ and two declarations about itself:
 **Eager is the default, and lazy is the exception a fold has to justify.** `mode`
 defaults to `"eager"`, and `_Fold.__post_init__` refuses a lazy fold that declares no
 `lazy_reason` -- so a fold added without anyone deciding its posture is eager, and one
-that stays lazy has said why in its own declaration. The earlier default was the other
-way round, which is how four slot folds a dashboard polls on a timer stayed lazy with
-nobody having chosen that: an omission read as a decision.
+that stays lazy has said why in its own declaration, so an omission is never read as a
+decision. `__post_init__` also refuses a `lazy_reason` on an eager fold.
 
 `mode = "eager"` requires `affects`, and `_Fold.__post_init__` refuses that pair at
 import too, spelled out even when it is every type: the kernel skips the copy and the
@@ -165,9 +171,9 @@ writer omits an unbilled charge instead.
 
 **A session's bill is not only its turns.** Three entry types carry a `credits`
 charge -- `turn/completed`, the two subagent closers, and `background/completed` --
-and `usage.credits` is the sum of all three. Billing turns alone made a session
-that spent most of its budget on a wave of children read as cheap, and left the
-credits `background/completed` already carried unfolded. The split beside the total,
+and `usage.credits` is the sum of all three. Billing turns alone would make a session
+that spent most of its budget on a wave of children read as cheap, and would leave the
+credits `background/completed` carries unfolded. The split beside the total,
 `credits_by_source`, keeps it readable: buckets `turn`, `subagent` and `background`,
 each with its own `credits` and the `reported` count of charges it covers. The set
 of buckets is CLOSED and every bucket is present from the start, so a source that
@@ -259,10 +265,10 @@ and its one caller asks the registry for it by name.
 | projection | what it answers |
 |---|---|
 | `status` | Is this session open, and what is it doing: lifecycle, the open turn and its attempt, agent/owner/slot/cwd, current model and provider, turns completed and refused, the last stop reason, dropped writes. |
-| `usage` | What it spent: credits from all three spenders, split by which spent what in `credits_by_source`; the four token dimensions, per model; the context bill summed from `context/composed` (`context.tokens`, `chars`, `blocks`, `estimated_turns`), plus the context part, one fixed-size state that does not grow with the session (`projection_usage_measured`): Crew's five running sums since the engine's context last restarted (a new unit or an engine compaction restarts them, and a `compaction/applied` keeps only what was composed after the newest turn closed with an occupancy reading), the newest `context/measured` breakdown and time to first output (last-wins), the newest occupancy reading from `turn/completed` (reset by a new unit), a 30-row trend ring whose rows each hold one turn whole (its ordinal, its Kiro Crew blocks by name up to 64, its own engine measurement and occupancy reading), the newest session-start row kept apart, and the newest 200 dated occupancy readings plus the configured window, for the fullest-turn peak the context trace reports. It renders slim, so a push stays a few KB: `context.latest` (the newest turn whole), `trend` (each row its ordinal, five sums, `loop` and its own reading `used` only), `start` (the same plus `figure`), `earlier` (the turns before the ring, exact), `turns` (the turn counter) and `chars_per_token`; a kept row's whole turn is read from the state on demand (`context_turn`, `GET /api/telemetry/context-trace?turn=`); the turn number the composer stamped behind an ordinal, for the newest unit only, is `context_turn_number`, read by `GET /api/telemetry/prompt-as-sent`; compaction count and the context they freed; step count and time. The usage route also reads it per SLOT (`read_slot_projection(slot, "usage")`), with the slot's units ordered by `previous` succession (`units_in_succession`) rather than by `createdAt`. |
+| `usage` | What it spent: credits from all three spenders, split by which spent what in `credits_by_source`; the four token dimensions, per model; the context bill summed from `context/composed` (`context.tokens`, `chars`, `blocks`, `estimated_turns`), plus the context part, one fixed-size state that does not grow with the session (`projection_usage_measured`): Crew's five running sums since the engine's context last restarted (a new unit or an engine compaction restarts them, and a `compaction/applied` keeps only what was composed after the newest turn closed with an occupancy reading), the newest `context/measured` breakdown and time to first output (last-wins), the newest occupancy reading from `turn/completed` (reset by a new unit), a 30-row trend ring whose rows each hold one turn whole (its ordinal, its Kiro Crew blocks by name up to 64, its own engine measurement and occupancy reading), the newest session-start row kept apart, and the newest 200 dated occupancy readings plus the configured window, for the fullest-turn peak the context trace reports. It renders slim, so a push stays a few KB: `context.latest` (the newest turn whole), `trend` (each row its ordinal, five sums, `loop` and its own reading `used` only), `start` (the same plus `figure`), `earlier` (the turns before the ring, exact), `turns` (the turn counter) and `chars_per_token`; a kept row's whole turn is read from the state on demand (`context_turn`, `GET /api/telemetry/context-trace?turn=`); the turn number the composer stamped behind an ordinal, for the newest unit only, is `context_turn_number`, read by `GET /api/telemetry/prompt-as-sent`; compaction count and the context they freed; step count and time. The context-trace routes also read it per SLOT (`read_slot_state(slot, "usage")` in `dashboard/handlers/usage_context.py`), with the slot's units ordered by `previous` succession (`units_in_succession`) rather than by `createdAt`. |
 | `timeline` | The newest turn, lifecycle and cost MOMENTS, oldest first. Message, step and tool entries are deliberately absent: they are the bulk of a log, the page route and `tools` already serve them, and including them would make the timeline a second copy of the file. |
 | `tools` | Calls matched to completions by `call_id`: totals, per name, open calls, unmatched completions. An error is `status` in `refused`/`error`/`failed` OR `is_error` true -- two independent signals, and an absent `is_error` is not a claim that the call worked. |
-| `approvals` | Requests matched to decisions by `approval_id`: pending, decided, the decision tally, the last decision. The native permission path writes both types (`on_approval_requested` / `on_approval_decided` in the chat runner); coordinator approvals and question cards are not recorded. |
+| `approvals` | Requests matched to decisions by `approval_id`: pending, decided, the decision tally, the last decision. The native permission path writes both types (`on_approval_requested` / `on_approval_decided`, called from `dashboard/chat_turn/permission_prompt.py`), and so do a child's tool approvals and a spawn's admission approval, filed in the dispatching session's log (`subagent_manager/run.py`, `subagent_manager/admission/gate_reporting.py`, `subagent_manager/_component.py`); coordinator approvals and question cards are not recorded. |
 | `subagents` | The children this session dispatched, matched to their closers by `agent_id`: per child its agent, model, the task it was asked to do, outcome, duration, credits and a failure reason; plus whole-session totals, how many are still running, and how many dispatches were not retained. See below for the rules a reader has to know. |
 | `class` (INTERNAL -- not advertised, not pushed) | What KIND of session this log belongs to, over the log's WHOLE LIFE: the memory mode, the owning app, and whether the conversation was ever published to a channel. Each of those three is held at the most RESTRICTIVE value the log ever recorded, from the `class` object on the log's first `session/opened` plus every later `session/class` move, so a session published to a channel for one turn keeps reading as channel-published after the link is dropped -- that turn's content is still in this log. It also carries `workspace`, which folds differently because it is an IDENTITY rather than a restriction: there is no more-restrictive workspace to keep, so the FIRST one stated is held and a later different one sets `workspace_moved`, which is itself the restrictive fact -- a log whose content spans two workspaces is owned by neither. `recorded` says a class was stated at all and `complete` says the history has a beginning, and a reader deciding an authorization question refuses on either being false. The only fold whose consumer is a READER of another unit rather than a panel, which is why it is held restrictive rather than current: a fold that reported the present value would answer a question nobody asks of a log. |
 
@@ -405,6 +411,7 @@ reopened.
 | `mistakes` | The Bot's mistake book: refused dashboard writes grouped by `(code, field)` from `dashboard/agentic_refused` entries, worst group first, carrying the correction a later accepted write recorded. It keeps up to `MISTAKE_GROUP_LIMIT` groups. |
 | `custom` | The latest record per type a script cron bound to the Bot, or an installed app holding the `/api/member-records/*` grant, appended through the record door (`dashboard/handlers/agent_panel_record.py` for the cron's `ctx.crew_log_append`, `agent_panel_record_app.py` for the app's `POST /api/member-records/{slug}`; both call `record_through_door`), from `dashboard/custom_value` entries: `latest` keyed by the record `type` the writer named (an app's is stored as `<app id with - as _>__<type>`, one bindable path segment that splits one way, so two apps never share a key and `__` is refused in every caller's type), each row `{data, at, seq, writer, member, crew_key}` where `data` is the writer's object (at most `CUSTOM_RECORD_BYTES` serialized, `CUSTOM_RECORD_DEPTH` deep) and `writer` (`cron:<job id>` or `app:<app id>`) and `member` are what the gateway stamped, never the body; `types_omitted` (types evicted past `CUSTOM_TYPE_LIMIT`, least recently written first) and `wrote` (accepted records over the slot's life). Every cap is re-applied on read, and a line naming no type or no writer is skipped, so a planted line is never keyed. Read over the slot's units in succession, like `agentic`, because the latest record per type is what it keeps. A row also carries `max_age_s` and `stale_after` (the entry's own `time` plus the writer's declared `max_age_s`, never a body-supplied time) when the writer declared one, and `failed_at` / `last_error` once a `dashboard/custom_failed` entry for the same writer folds after it; `failures` lists each writer's latest failed run (at most `CUSTOM_FAILURE_LIMIT`, evictions counted in `failures_omitted`), newest first, so a cron that never landed a record is still visible. Lives in `crew_log/projection_dashboard.py` beside `agentic`. |
 | `goal` | A Bot's goal record, from the newest `dashboard/goal_recorded` snapshot: `goal` (the first goal's text), `goals`, `goals_total`, `goals_omitted`, `milestones` (each with its target and the reading the Bot last recorded, as text, and its time; whether a milestone is reached is the Bot's own word in that reading, never judged here), `milestones_total`, `milestones_omitted` and `changes`. It keeps up to `CREWMATE_ROW_LIMIT` rows per list and `CREWMATE_TEXT_LIMIT` characters per cell; every count covers the whole snapshot, and `*_omitted` says how many rows a list cut. |
+| `objects` | The newest `object/observed` record per subject and producer, so the conductor Board draws a pull request's state with its read time and no network read: `latest` (`{target: {producer: {kind, facts, observed_at}}}`) and `omitted` (subjects evicted). It keeps up to `OBJECTS_TARGET_LIMIT` subjects, the least recently observed evicted first, re-clamps every cell, and drops facts wider than `OBJECTS_FACTS_BYTES` whole (`crew_log/projection_objects.py`). Read over the slot's units in succession, like `goal`. |
 | `worker` | INTERNAL, bound by no page and served by no route: one worker's `row` and the `parent` its first opener named, folded over that worker's own units (`worker_units`); the per-worker part `workers` merges. Lazy. |
 | `waiting` | What a Bot waits on the person for, from the newest `dashboard/waiting_changed` snapshot: `items` (newest first), `count` (how many wait in all, from the snapshot's `total`), `omitted` (how many the list cut; each item's `options_omitted` likewise for its choices), `newest` (the newest item's text, `""` when nothing waits) and `changes`. It keeps up to `CREWMATE_WAITING_LIMIT` items, the same bound the producer cuts at, and `CREWMATE_OPTION_LIMIT` choices each. |
 | `workers` | The worker sessions a Bot created with `session_create`, newest first: `items` (each with `slot`, `task` -- from the FIRST user message only, `""` when that message carries `chunks` instead of `text`; the line of what it was given that names the ask: a `TASK:` or `GOAL:` heading, else the first line past the relay's provenance line and a leading `You are ...` role preamble --, `state`, `agent`, `started_at`, `last_activity_at`, `last_said` -- the last line of its newest reply, `""` when that reply was too long for one entry and carries `chunks` instead of `text` --, `report` and `report_status` from its own work report, `turns`, `stop_reason`, `closed_reason`), `counts` per state, `total` and `omitted`. Two folds merged at read (`read_slot_projection` → `_read_workers` → `merge_render`): `workers` reads `session/spawned` in the Bot's OWN units (its creates, under the cap), and the internal `worker`, one slot-memo cell per child, reads that child's own units in `previous_sid` succession order (`units_in_succession`), its first unit (which holds the task) and its newest `WORKERS_UNITS_PER_CHILD` while its creator still holds it and every unit once the session tree's current parent is not its creator -- released, or released and then adopted (`worker_units`, `_let_go`) -- so one worker writing continues its own cell, the others answer warm, and a released worker stays `released`. The merged revision is minted fresh whenever any part's moves, and one Bot's whole merged read, parts and revision, runs under its own lock (`_WORKERS_READ_LOCKS`), so a read that captured older parts never gets the higher revision. Until the session tree is seeded for the current store (`tree_seeded`), it names no children and no creator, and the read is served at revision 0, so the provisional value never outranks the one read after the seed. A worker's own `progress` report after a `done` or `blocked` one puts the row back to what its turns say. The children are the newest `2 * WORKERS_LIMIT` the session tree's creation records name, and a worker is drawn when the Bot's log holds its create or its own `session/opened` names the Bot as `parent`. From the worker's log: `turn/started`, `turn/completed`, `message/received`, `message/sent`, `work/recorded` (actor `worker`), `session/closed`, `session/released` and `session/adopted` (one naming a parent other than the worker's creator reads `released`, released first or not). Task, reply, report and close lines keep up to `WORKERS_TEXT_LIMIT` characters and end in "…" when cut. States: `starting`, `running`, `idle` (between turns), `done` and `blocked` (only from the worker's own report), `failed` (a `stop_reason` that `metrics.turns.turn_outcome` classifies as anything but `ok`, `cancelled`, `tool_stall` or `stale_recover` -- a timeout, an error, an interrupt; those four leave it `idle`), `closed`, `released`. Whether a worker FINISHED its task is not in the log without a `done` report, so such a worker reads `idle`. The eager path routes a worker's entry to its creator's cell (`eager._creator_slot`). It keeps up to `WORKERS_LIMIT` rows and `WORKERS_TEXT_LIMIT` characters per cell. |
@@ -451,7 +458,8 @@ units a permanent delete excluded before folding, because a backward clock step
 would otherwise apply a retired session's goal over a later one's
 (`session-work-ledger.md`); the radar fold's owner keeps the order the crew RECORDED
 into its units and pins the crew's LIVE unit last, for the same reason. `read_slot_projection`
-is the slot-keyed read the `ledger`, `work` and per-slot `usage` routes use, and `slot_of_session` resolves a
+is the slot-keyed read the `ledger` and `work` routes use (the per-slot `usage` read takes
+the state beneath it, `read_slot_state`), and `slot_of_session` resolves a
 session-addressed request to the slot recorded in that session's header: the header
 rather than a session mapping, because it is written once inside the fenced tree and
 cannot be made to name another conversation's slot. The radar fold takes no generic
@@ -534,13 +542,13 @@ gateway, the one writer of every log:
   too; it stops when a round queues nothing new, and answers False with a WARNING naming
   what is left when its budget or its 16 rounds run out. With no consumer thread to start
   (interpreter exit), a wake is decided on the caller. The queue is
-  in memory, like the follow-on a relay was before: a crash between an entry's commit
+  in memory: a crash between an entry's commit
   and its copy landing loses the copy.
 
 There is no migration: a bound open item whose report has not reached the conductor's
 log renders `summary: "waiting for next report"` (`WORK_AWAITING_REPORT`) until the
 worker reports again, and a closed item renders its own state with no worker summary.
-`_work_step` still filters every entry by the bound board slot, so a relayed
+`_work_step` filters every entry by the bound board slot, so a relayed
 sub-board entry folds only into the sub-board's own row of the project report. The
 `worktree` tree fold reads the same units (`tree_fold_units` returns
 `_own_board_units(root)`): each nested board reaches it as the copies relayed into
@@ -572,8 +580,8 @@ overwrite that slot's own file. On the request path (`cold=False`) such a read a
 | route | answers |
 |---|---|
 | `GET /api/sessions/{id}/crew-log?from=&to=` | The entries in a seq range, oldest first, with every `ref` on the page resolved (FR-4). |
-| `GET /api/sessions/{id}/crew-log/projection/{name}` | One fold's `value` and the `seq` it folded through. A slot-keyed name this route serves (`ledger`, `work`, `panel`) is resolved to the slot recorded in that session's own header first, and the fold then joins every unit the slot ran under; a session whose slot cannot be proved gets the empty fold, never another slot's. A slot-keyed fold served by its OWNER (`radar`) is refused here (400 `unknown_projection`, the answer an unregistered name gets): folding the one unit this route addresses would serve a part of the record as the whole. |
-| `GET /api/sessions/{id}/crew-log/projections` | Every fold, keyed by name, from ONE resolution and ONE pass over the unit, so a caller showing them together cannot be handed a mix from two units. Each fold keeps its own `seq`, which differs by design: an entry advances the folds it belongs to and leaves the rest. |
+| `GET /api/sessions/{id}/crew-log/projection/{name}` | One fold's `value` and the `seq` it folded through. A slot-keyed name (any of `SLOT_PROJECTION_NAMES` but `radar`) is resolved to the slot recorded in that session's own header first, and the fold then joins every unit the slot ran under; a session whose slot cannot be proved gets the empty fold, never another slot's. A slot-keyed fold served by its OWNER (`radar`, `OWNER_SERVED_SLOT_PROJECTION`) and a tree-keyed fold (`worktree`) are refused here (400 `unknown_projection`, the answer an unregistered name gets): folding the one unit this route addresses would serve a part of the record as the whole. |
+| `GET /api/sessions/{id}/crew-log/projections` | Every ADVERTISED fold (`PROJECTION_NAMES`), keyed by name, from ONE resolution and ONE warm read of the unit (`fold_session_warm`), so a caller showing them together cannot be handed a mix from two units; `unit` names the unit they came from. Each fold keeps its own `seq`, which differs by design: an entry advances the folds it belongs to and leaves the rest. |
 
 **The BATCH read answers two things the folds cannot.** A fold says what it holds;
 it cannot say why it holds nothing, nor whether it was read mid-write. Both fields
@@ -596,13 +604,13 @@ retired id. `SessionMap.get` repairs or removes an entry it judges stale, so
 consulting it would make a panel READ mutate session state, which is the reason
 `crew_log/resolve.py` documents for never touching it. And a retired unit belongs
 to a session this slot no longer is: presenting its totals here would imply a
-whole-life figure. Both halves a whole-life figure needs now exist -- the lineage
+whole-life figure. Both halves a whole-life figure needs exist -- the lineage
 pointer `session/opened.data.previous`, and `session_tree.fold_slot_chain`, which
 walks it newest unit first, bounded, cycle-guarded and held to one slot -- but this
 route calls neither, so what it reports is still what is addressable. Joining the
 folds those ids name is the remaining step, and it must read the walk's own `ended`
 reason: only `first` means the chain reached the slot's first unit, so any other
-reason totals PART of a life and must not be presented as the whole of one (§8).
+reason totals PART of a life and must not be presented as the whole of one (section 6.1).
 
 `recording` -- false when `KIROCREW_CREW_LOG` has switched the crew log off. Only then
 does the read add `flag_value`: that one variable's value, stripped, printable
@@ -981,7 +989,7 @@ off the installer builds no publisher and registers no listener.
 
 ### 5.1 Eager folds
 
-A fold marked `eager` -- every fold, today -- is folded when its entry lands, not when a
+A fold marked `eager` -- every fold but `worker` and `worktree` (`LAZY_FOLD_REASONS`) -- is folded when its entry lands, not when a
 reader asks. The two families get there differently. A SLOT fold interprets one entry
 type, and its reader has to walk every line of every unit the slot ran under to find it,
 so a cell with no savepoint behind it is O(the slot's whole history) for a value that is a
@@ -1012,17 +1020,21 @@ instead, replaying at most `MIN_ADVANCE_ENTRIES` entries and writing it back.
 
 **What the append path pays is one `queue.Queue.put_nowait`.** Not the slot lookup,
 not the fold, and not the frame. `emit`'s append job calls
-`crew_log.eager.note_commit(unit_id, entry_type, seq, board)` after the append
+`crew_log.eager.note_commit(unit_id, entry_type, seq, board)` (through
+`emit_state._note_eager`) after the append
 returns, and EVERY committed type wakes: `status` and `class` read the whole
 vocabulary, so a type filter would pass everything and cost a lookup to say so. One
 daemon thread drains the queue and coalesces a burst to one fold per (unit, fold).
-`_WAKE_TYPES` survives as the set of the slot folds' types plus the closer, and
+`_WAKE_TYPES` is the set of the slot folds' types plus the closer, and
 `test_the_slot_wake_types_cover_every_eager_slot_folds_types` derives it from the
 registry so a slot fold's type is named where a reader finds it.
 
 The hook sits in the emitter's generic `_write` job, which every ordinary entry type
-takes, so a fold marked eager later needs no second edit; the two emitters that build
-their own append job (`work/recorded`, `panel/published`) call it themselves.
+takes, so a fold marked eager later needs no second edit; the emitters that build
+their own append job (`work/recorded`, `panel/published` and the other surface writers in
+`emit_surfaces.py`, `session/spawned`, `session/released` and `session/adopted` in
+`emit_session.py`, `turn/started` and `message/received` in `emit_turn.py`) call
+`_note_eager` themselves.
 
 **The wake carries the BOARD, and that is a correctness requirement.** A unit's header
 names the slot that unit ran under, which is the board for a conductor's own entry. A
@@ -1042,7 +1054,7 @@ it would serve a retired session's panel as the current one.
 emitter takes about its own buffer: a slow consumer must cost currency, not turn
 latency. Dropping is safe because the fold is not the record -- the log is -- so a
 dropped wake leaves the memo behind the file and the next READ carries it forward,
-which is exactly the lazy behaviour that was there before.
+which is the lazy behaviour.
 
 **The worker runs the read path, not a second folding path.** It calls
 `read_slot_projection`, which is what the dashboard route calls: the rules about
@@ -1058,7 +1070,7 @@ followed by a `panel/published` would otherwise keep only the panel's wake and l
 ledger fold stale. A unit writes a fixed vocabulary, so the batch stays bounded.
 
 **One pass per (slot, fold) at a time.** `fold_slot_warm` holds a per-key lock for its
-whole body, and the reason is a defect eager folding created rather than a tidiness rule.
+whole body, and the reason is a race eager folding makes possible rather than a tidiness rule.
 Two warm passes on one key SHARE the cell: the continuation drives `memo.registry`, and
 `_slot_checkpoint` then reads that live cell and pairs it with the CALLER's own `reached`.
 So a pass whose stream ended earlier could return the other pass's newer state labelled
@@ -1093,8 +1105,7 @@ A cell is charged `(rows + 1) x` its fold's ROW cost, where `rows` is the fold's
 `count_rows` over the state -- every container it keeps, INCLUDING a list nested inside
 each item -- and the `+ 1` covers the flat header fields. Per row and not per cell,
 because three of the four folds nest a capped list inside each capped item, so a cell's
-cap-state is the PRODUCT of two caps and no figure measured once per cell bounds it. A
-static per-cell charge was the earlier design and was not an upper bound at all.
+cap-state is the PRODUCT of two caps and no figure measured once per cell bounds it.
 
 The row cost is the marginal bytes of one more row of the fold's WIDEST kind, with every
 free-text field at the clamp the fold applies, weighed as
@@ -1112,6 +1123,13 @@ non-ASCII character in more bytes than the state does.
 | `radar` | 163,500 | a work item, every field it keeps at its clamp (163,464 measured) | `RADAR_ITEM_LIMIT` x `RADAR_TRIED_LIMIT` + one `phase_lines` list per item x `RADAR_PHASE_LINE_LIMIT` + skips: about 156,500 | 24,402 MiB |
 | `ledger` | 16,100 | a tried row, two fields at `LEDGER_TEXT_LIMIT` (16,065 measured) | flat | 2.8 MiB |
 | `work` | 2,705 | an item with title, summary and decision at their clamps | `WORK_ITEM_LIMIT` x `WORK_EVENT_LIMIT`, plus each item's `acceptance` and `artifacts` at 64 KiB | 165.6 MiB |
+
+The other slot folds carry measured row costs in the same table
+(`_SLOT_FOLD_ROW_BYTES`, `crew_log/projection_budget.py`): `agentic` 8,400, `mistakes`
+1,100, `workstreams` 1,150, `goal` 1,700, `waiting` 11,000, `objects` 9,200, `custom`
+8,900, `workers` 2,100 and `worker` 2,400 bytes per row. A fold with no figure is charged
+`_UNMEASURED_ROW_BYTES` (64 KiB, `MAX_ENTRY_BYTES`) a row, and the tree fold's figure
+lives apart in `_TREE_FOLD_ROW_BYTES` because it has no warm cell.
 
 The `work` row is the fold's own ceiling, not what a board the store admits reaches. The
 fold forgets a closed item once `WORK_CLOSED_WINDOW` (32) newer closed items sit behind
@@ -1136,12 +1154,10 @@ without re-measuring fails CI.
 
 A count ceiling cannot bound the resident total. A ceiling of 64 cells treats cells as
 comparable, and they are not: a `panel` cell is a few hundred KiB and a `radar` cell at
-its caps about 24 GiB (24,402 MiB), so one ceiling of 64 priced a resident total across four orders of
-magnitude with no number in the code moving. Eager folding makes the high end reachable,
-because the worker stores a cell for every board this process WRITES. And the first byte
-budget charged each fold one figure measured at its caps -- 26,473,153 bytes for
-`radar`, itself a correction of an earlier 995,342 that measured the items half at
-200-character fields -- which missed the nested lists and so understated the same cell
+its caps about 24 GiB (24,402 MiB), so a cell-count ceiling would price a resident total
+across four orders of magnitude. Eager folding makes the high end reachable,
+because the worker stores a cell for every board this process WRITES. A single figure
+per fold measured at its caps would miss the nested lists and understate a `radar` cell
 by about 90x.
 
 Counting is affordable where weighing is not: the count is a handful of `len` calls and
@@ -1199,9 +1215,9 @@ from the back, and the next wake for the evicted board folds it cold. The worker
 to bounded churn -- one cold fold per wake, on one thread, at the cap -- and the queue's own
 limit absorbs the rest by dropping wakes and counting them, which costs a reader a cold
 fold and never an answer. So passing the budget makes eager folding stop paying without
-making anything slower than the lazy path it replaced.
+making anything slower than the lazy path.
 
-How many boards that is now depends on what each board holds, which is the behaviour a
+How many boards that is depends on what each board holds, which is the behaviour a
 count ceiling could not express. A deployment whose boards are larger than the default
 leaves room for raises `KIROCREW_SLOT_FOLD_CACHE_BYTES`, which is why the ceiling is a
 variable rather than a constant.
@@ -1221,8 +1237,8 @@ either fold walks no entry.
 Which half dominates is measured, not assumed. On a board with four bound workers -- each
 with its own message-heavy log -- and a message-heavy conductor log, 1,813 entries total:
 a cold `read_slot_projection(slot, "work")` parses 2,422 entries, 609 of them discovery and
-1,813 the fold. The warm read parses 609. So this change removes 74% of a cold read's parse
-work, and what remains is discovery, on every read, unchanged.
+1,813 the fold. The warm read parses 609. So a warm cell saves 74% of a cold read's parse
+work, and what remains is discovery, on every read.
 
 The fold measurement is therefore taken at `fold_slot_warm` with the unit list handed in:
 `test_a_fold_after_an_eager_fold_parses_no_entries` reads 0 entries parsed warm against 41
@@ -1254,7 +1270,7 @@ registration order, logs and skips a subscriber that raises, and retains nothing
 event with no subscriber is dropped, which is safe for the same reason a dropped wake is.
 The dashboard's `CrewLogPublisher` subscribes once per process, at the one place the
 dashboard state exists, so the crew log names no dashboard symbol. The conductor
-pull-forward (`conductor_wake`) is the second subscriber: it holds one keyed
+pull-forward (`conductor_wake`) is a second subscriber: it holds one keyed
 `(slot, <board>, work)` `FOLD_ADVANCED` subscription per board with an active work-ledger
 loop, joined with `baseline=True`, kept in step with the loop table (`install`,
 `sync_subscriptions`) and disposed when the loop ends or the service stops. On a board's event it diffs each item's `last_report_at` against the
@@ -1269,9 +1285,11 @@ second report can join it. Which items those are is read off the same rendered b
 (`state`, `worker_session_key`), so the subscriber still reads no store. It is the only wake: a worker's slot closing and a worker's turn
 ending reach none, and a crashed worker is surfaced by the item's `stale` / `orphaned`
 flags on the loop's scheduled tick.
-Further consumers -- a summary fold over a session's events, the automatic-card sentence
-trigger, channel notifications -- are expected to subscribe the same way and are not
-built here.
+Other subscribers take the same door: the dynamic dashboard's data channel
+(`dashboard_feed.DashboardFeed`, one `baseline=True` subscription per manifest cell), the
+crew page's followed `work` boards (`dashboard/crew_work.py`), the code channel's board
+watcher (`slack/code_channels/board`), and the OTel export
+(`metrics/crew_log_export.py`, every `session`-scoped `FOLD_ADVANCED`).
 
 **Subscribing: keys, disposers and a baseline.** `subscribe(kind, callback, *, scope=,
 key=, fold=, baseline=False)` returns a disposer. Calling it removes the subscription; a
@@ -1281,7 +1299,7 @@ after it was collected. The filters are the index: subscribers are stored by
 (kind, scope, key, fold) with `None` as a wildcard, so a publish looks up the at most
 eight buckets its event can match and never walks a subscriber keyed to another cell.
 An unfiltered subscription receives every event of its kind, which is how the WS
-exporter subscribes.
+exporter takes `TREE_ADVANCED`.
 
 `baseline=True` (with all three filters set) is for a consumer that joins after a fold
 already advanced. The subscription is registered FIRST, then the current value is read
@@ -1294,7 +1312,7 @@ worker, so a caller on an event loop calls it through `asyncio.to_thread`. A rea
 raises removes the subscription and propagates.
 
 A slot baseline NEVER folds cold. It reads with `read_slot_projection(..., cold=False)`,
-which continues a warm cell or resumes a savepoint as before (O(entries since the
+which continues a warm cell or resumes a savepoint (O(entries since the
 savepoint)) and raises `SlotFoldNotReady` where it would otherwise stream every unit of
 the slot. The subscriber then gets no baseline -- the same shape as a fold with no
 revision yet -- and `crew_log/slot_prime.py` schedules one background prime for that
@@ -1319,10 +1337,12 @@ raises, nothing is installed and each cell folds alone. While the backfill child
 usable (the gateway default), only the resumed cells share; the cold cells are left to
 the child, which still folds one cell per run.
 
-The dashboard's `CrewLogPublisher` holds three subscriptions -- `FOLD_ADVANCED` scoped to
-`slot`, `FOLD_ADVANCED` scoped to `session`, and an unfiltered `TREE_ADVANCED` -- and keeps
-their disposers so a second install in one process swaps all three instead of doubling
-them. The conductor wake subscribes the same way, keyed to its board with a
+The dashboard's `CrewLogPublisher` holds `FOLD_ADVANCED` scoped to `session`, an
+unfiltered `TREE_ADVANCED`, and its slot subscriptions (`sync_slot_subscriptions`): one
+`FOLD_ADVANCED` scoped to `slot` with no key while any open owner tab does not route by
+watch set, otherwise one keyed `(board, work)` subscription per watched board, added
+before the old ones are removed. It keeps their disposers so a second install in one
+process swaps them instead of doubling them. The conductor wake subscribes the same way, keyed to its board with a
 baseline: [`rfc-crew-log-wake`, amendment 2026-10-02](../../request-for-change/rfc-crew-log-wake.md)
 records the decision that the eager folder only folds and publishes, and consumers
 subscribe.
@@ -1358,9 +1378,8 @@ not built; eager still renders the board once per publish to diff it.
 the NEWEST unit's own seq by contract, and conductor units are folded before worker units.
 So a conductor-side change on a board with any worker bound leaves that number unmoved, and
 adding a unit to a board can move the folded value while moving the seq DOWN -- a fresh unit
-starts at 1. A client ordering frames by seq discards the newer value in both cases. That
-is why the first version of eager folding pushed nothing at all: the obstacle was real, and
-the missing piece was a number the read path and the frame share.
+starts at 1. A client ordering frames by seq discards the newer value in both cases, so
+a push needs a number the read path and the frame share.
 
 **The contract.** For a session fold it is `fold_session_warm(unit)`, which returns the
 bundle, each fold's revision and the folds it minted for, inside the session's own lock.
@@ -1394,8 +1413,8 @@ every (re)connect re-bases the tab. It clears its own ledger when the socket ope
 folds' cached revisions come from the process now serving. The counter is not
 persisted, because nothing outside one process orders by it.
 
-**The slot frame.** One kind, `slot_projection`, in two shapes. `{slot}` alone is the original
-growth signal and still means "re-read this slot". `{slot, fold, revision, value}` is what
+**The slot frame.** One kind, `slot_projection`, in two shapes. `{slot}` alone is the
+growth signal and means "re-read this slot". `{slot, fold, revision, value}` is what
 an eager advance of the `work` fold sends. Every other slot fold's advance is sent as
 `{slot, fold, revision}` with no value: the client caches only `work` by fold, so it
 would drop any other value and re-read the board either way, and a frame with no value
@@ -1448,7 +1467,7 @@ fold) once per batch. A session value is, for the reason section 5 gives.
 
 Every fold above reads its own unit's file and nothing else (FR-4). Two readers
 look across logs for the PARENT edge, and they read the SAME recorded edge for
-different questions: the session tree here, and the dispatch fence in section 5.
+different questions: the session tree here, and the dispatch fence in section 4.
 The `session_create` edge is recorded on the CHILD (`crew-log-core.md` section 5),
 so "which session opened which" is not in any one log. A SECOND edge, on a
 different axis, is recorded on the same entry and walked by the same module --
@@ -1476,11 +1495,11 @@ nothing past the cap, no open decision or spawn re-read fault in `_fault_sids`;
 a later clean re-read of the unit clears its fault and a forgotten or evicted unit
 takes its fault with it); and only when every unit the request names is held, or
 has no log on disk (one by-name probe each), and no held named unit's creator chain
-cites a slot the projection holds no log for. Anything else takes the old
+cites a slot the projection holds no log for. Anything else takes the
 `SessionTree.reading` scan, so the scan's own answer and `incomplete` flag decide.
 The scoped listing (`list_session_units`) always takes the scan: it walks the root
 anyway, and the projection may lack a child log another process wrote. So the two readers share one fold and cannot disagree
-about who dispatched whom -- an earlier sid-keyed walk here could not, since a
+about who dispatched whom -- a sid-keyed walk could not, since a
 restart gives a tab a new session id and the recorded `parent.sid` then named a
 unit the re-attached creator no longer writes to. `sid` stays on the entry as the
 audit citation for which log held the creating call, which is what the module
@@ -1520,11 +1539,11 @@ without a `parent` folds to the parent its earlier log recorded. Only
 `session/released` retracts an edge. A `session/spawned` on a CREATOR's log fills a
 child's creating edge only when none of the child's own records names a parent, and
 gives a child with no log yet a node of its own, so a restart between `session_create`
-and the child's first turn keeps the child under its creator (#18341). The tree is keyed by slot and reads `parent.slot` only:
+and the child's first turn keeps the child under its creator. The tree is keyed by slot and reads `parent.slot` only:
 `parent.sid` on the entry is the creator's ACP session id at the moment of
 creation, an audit citation for a reader of the logs themselves (`crew-log-core.md`
 section 5), and a slot outlives its ACP session, so it is not what a live row
-nests on. Nothing reads it today; a reader that shows a session's own log would.
+nests on. No reader keys on it.
 
 **The cache, and its bound.** `SessionTree` keeps one head per unit directory,
 validated per scan against the segment path and its `(st_dev, st_ino)`. No mtime:
@@ -1645,7 +1664,7 @@ parameter is `self` is bound as the `SessionTreeProjection` attribute of the sam
 its `__module__` and `__qualname__` name the owner. Their annotations resolve for type
 checkers only: both owners import `SessionTreeProjection`, and the seed owner
 `ScanIdentity` and `_ReplayResult`, under `TYPE_CHECKING`, so `typing.get_type_hints` or
-`inspect.signature(..., eval_str=True)` on any of the 15 bound members raises `NameError`
+`inspect.signature(..., eval_str=True)` on any of the 14 bound members raises `NameError`
 at run time. A moved name the facade's own code reads (`_current_root`, `_within_bounds`,
 `_edge_within_bounds`, `ScanIdentity`) is bound in the facade by import, and every other
 one is served by the owner that binds it; a patch through the facade reaches every owner
@@ -1737,7 +1756,7 @@ SUCCESSION between two logs of ONE slot: a slot owns one ACP session id at a tim
 rather than for its whole life, so a supersede -- a restart whose `session/load`
 does not re-attach, a reset, an agent, model or effort switch, a compaction, a
 provider swap -- gives that slot a new log under a new id, and the new log names the
-one it replaced (`crew-log-emitter.md`, `session-types.md`).
+one it replaced (`crew-log-emitter.md`, `docs/reference/crew-log/session-types.md`).
 
 Parenthood is keyed by slot and folded over the whole collection. Succession is
 keyed by ACP session id and WALKED from one log backwards, because what it answers
@@ -1745,8 +1764,9 @@ is the ORDER a slot's logs came in, which a slot-keyed fold cannot express: ever
 log of one slot folds to the same key.
 
 `session_tree.fold_slot_chain(records, head_sid)` is that walk, pure over the same
-`OpenedRecord`s the tree folds, and `SessionTree.chain` is the scanner entry point.
-It answers a `SlotChain`: the slot, its logs newest first starting with `head_sid`,
+`OpenedRecord`s the tree folds, and `SessionTree.chain` is the scanner entry point
+(a `ChainReading`: the `SlotChain` plus whether a predecessor's bytes faulted,
+`incomplete`). The walk answers a `SlotChain`: the slot, its logs newest first starting with `head_sid`,
 the reason it stopped, and the id it could not follow.
 
 **Three constraints, each of which can end the walk.** It visits at most
@@ -1788,11 +1808,10 @@ why it was recorded.
 **The head the walk starts from comes from the edges too.** `fold_slot_head` answers a
 slot's newest log as the log no other log of that slot cites as `previous`, and
 `slot_chain_head` reads that from the units on disk for a caller holding only the slot
-key. That is the DURABLE half of what the emitter's `previous` edge is taken from, and it
-is what closes the gap this section used to record: the id was held only in the process
-that wrote it, so a restart inside a replay-pending allocation was left with the
-mapping's behind-by-one answer, two successive logs cited one predecessor, and the log
-between them was cited by nobody. The slot's own record still sits AHEAD of this read and
+key. That is the DURABLE half of what the emitter's `previous` edge is taken from: an id
+held only in the process that wrote it would leave a restart inside a replay-pending
+allocation with the mapping's behind-by-one answer, two successive logs citing one
+predecessor, and the log between them cited by nobody. The slot's own record still sits AHEAD of this read and
 is not replaced by it -- a create is queued to the writer thread, so a log whose unit has
 not landed yet is nameable only there.
 
@@ -1879,7 +1898,10 @@ short, and that is the ordinary launch -- a crew log switched off, or one whose 
 has yet to be created. Answering UNDECIDED there would leave the mapping, the only source
 such a launch has, unreachable for every slot for good.
 
-No shipped route calls this walk yet. Closing a superseded log's own interrupted turn
+One reader calls this walk: the card lifecycle's `tools` read
+(`dashboard/card_lifecycle.py`, through `crew_log.read.slot_chain`) folds `tools` over
+the chain oldest first, so a resumed slot's earlier unit is included and a reset's is
+not. Closing a superseded log's own interrupted turn
 and tool calls is a WRITE into another log; that supersede tail repair is specified in
 [crew-log-emitter.md](crew-log-emitter.md).
 
@@ -1896,15 +1918,15 @@ run, best of five runs on one host:
 184.4 ms to fold cold, 44.8 ms to resume with nothing new to fold, 105.5 ms to
 resume with a short tail, 197.1 ms on the read that also earns a new savepoint,
 and 24 KB of files. Read those as ratios on one host rather than as portable
-constants. They predate the `subagents` fold and were not re-run for
-it: a sixth fold adds its own savepoint file, so the 24 KB total and the cold-fold time
-are both floors under what six now cost. Re-measuring on a different host would replace a
+constants. They do not cover the `subagents` fold or the internal session folds: each
+adds its own savepoint file, so the 24 KB total and the cold-fold time are both floors
+under what the ten session folds cost. Re-measuring on a different host would replace a
 self-consistent set of ratios with two hosts' numbers mixed together, which is the reading
 this paragraph warns against.
 
 The resume cost is dominated by the prefix digest: it is verified on the way in
 and rechecked after the pass, and those two hashes are essentially the whole of
-the 44.8 ms. Section 6 gives the attribution.
+the 44.8 ms. The prefix-digest paragraphs below give the attribution.
 
 One file per fold, inside the unit's own directory, which the RFC's section 3
 already names:
@@ -1920,7 +1942,7 @@ already names:
 
 **What a resume costs.** A unit with a cut counter is written with a `prefix_cuts`
 witness, settled by one small read; a unit without one gets the digest. Every witness
-written now also carries two ADDITIVE keys: `resume`, the byte position
+also carries two ADDITIVE keys: `resume`, the byte position
 (segment, offset, seq, cuts) of the record at the savepoint's seq, which the tail read
 seeks to instead of decoding every record below it (`CrewLog.iter_from(resume=)`
 re-checks it against the live file first); and `prefix_extent`
@@ -1963,11 +1985,11 @@ one, and the payload is DISCARDED and cold-folded rather than migrated -- and si
 the file name did not change, the cold fold's own write replaces it instead of leaving
 it for a collector that does not exist.
 
-One file per fold rather than one for all six, so a payload this build cannot
+One file per fold rather than one for all of them, so a payload this build cannot
 read costs that fold its savepoint instead of costing all of them, and so a caller
 asking for one projection writes one file. The name is a fold name that passed
-`require_name`, so it can only ever be one of the six words this package
-declares. The store reads its segments by name (`log.jsonl`, `log.<first_seq>.jsonl`)
+`require_name`, so it can only ever be one of the session fold names this package
+declares (`SESSION_FOLD_NAMES`). The store reads its segments by name (`log.jsonl`, `log.<first_seq>.jsonl`)
 and ignores every other neighbour, and removal deletes the unit's whole directory,
 so the files need no registration on either side.
 
@@ -2090,7 +2112,7 @@ pay a pass over the whole file.
 **A savepoint is allowed to LAG, and that is what keeps the write off the hot
 path.** One is written only once the bundle has advanced `MIN_ADVANCE_ENTRIES`
 past what is on disk; resuming from an older one replays the tail and reaches the
-same value. Without the threshold the push would rewrite six files each time a
+same value. Without the threshold the push would rewrite every session fold's file each time a
 session grew by one entry, which is the cost this removes rather than relocates.
 It also means a short session leaves no file at all: folding it from the start is
 already cheap. `SessionProjections.saved_seq` carries what is on disk, so a caller
@@ -2150,23 +2172,19 @@ the failure.
 
 There is ONE number per fold and no module-wide one beside it. A savepoint is written
 with, and demanded back at, `fold_state_version(name)`, which is the only spelling either
-side of the round trip uses. A maximum over the folds was kept for a while on the grounds
-that `checkpoint.py` published it as `CHECKPOINT_VERSION` for its store's payload table;
-that was wrong -- `session_tree_projection_checkpoint.py` declares its own `CHECKPOINT_VERSION` and
-imports neither name -- so both are gone, and a fold's version is unreachable except
-through its own fold.
+side of the round trip uses; `checkpoint.py` publishes no `CHECKPOINT_VERSION` (the one
+in `session_tree_projection_checkpoint.py` versions the session tree's own file), so a
+fold's version is unreachable except through its own fold.
 
 A single shared version number is the rejected alternative, and the reason it is
 tempting is worth keeping. One shared number OVER-retires, and
 over-retiring costs a refold while under-retiring serves a wrong number. That
-argument held while nothing proved the bump had happened for the fold that needed
-it: a per-fold number with a global pin can be forgotten for one fold, and the
-forgotten one is the one that serves stale state. What changed is the enforcement,
-not the appetite for risk -- the digest pin is now per fold and names the fold whose
-version it wants moved, so under-retiring fails CI rather than shipping. With that in
-place the shared number's only remaining effect was its cost: a counting fix in one
-fold retired all six, and the units that paid the six refolds were the long-lived
-ones savepoints exist for.
+argument holds only while nothing proves the bump happened for the fold that needed
+it: a per-fold number with a global pin can be forgotten for one fold. The digest pin
+is per fold and names the fold whose version it wants moved, so under-retiring fails
+CI rather than shipping, and a shared number's only remaining effect would be its
+cost: a counting fix in one fold would retire every fold's savepoints, and the units
+paying those refolds are the long-lived ones savepoints exist for.
 
 ### 7.1 The SLOT fold's savepoint
 
@@ -2328,9 +2346,9 @@ refuses, so it is retired to one cold fold rather than misread. The escaping cos
 file over `MAX_PAYLOAD_BYTES` (2 MiB) on write and on read, and the two must stay one
 number: a file written under a larger cap is ignored by a build with the smaller one, and
 the slot then resumes from an older, staler savepoint. A bounded state can still encode
-past it (a busy board's `work` state is about 2.4 MB of JSON), and such a cell then had
-no loadable savepoint at all, so every restart re-read its unit's tail since the last file
-that fit. So once the encoded state passes half the cap, `save_slot` stores it
+past it (a busy board's `work` state is about 2.4 MB of JSON), and such a cell would
+have no loadable savepoint at all, so every restart would re-read its unit's tail since
+the last file that fit. So once the encoded state passes half the cap, `save_slot` stores it
 zlib-compressed and base64-encoded under `state_zlib` instead of `state_json`
 (`crew_log/slot_state_codec.py`). The same JSON string is compressed, so its key order is
 kept. A read inflates at most `MAX_DECODED_BYTES` and refuses a stream that goes past it.
@@ -2474,7 +2492,7 @@ question was whether a cut had happened and fail the whole fold.
 **Upgrade story.** Nothing migrates and nothing is rewritten. A log from before the counter
 carries none, which reads as not proven, so it keeps being settled by the digest exactly as
 section 7 describes; its first cut creates the counter and every read after that is cheap. A
-log created from now on is cheap from its first entry.
+log created by a build with the counter is cheap from its first entry.
 
 **What it narrows, accepted.** For a unit with a counter the proof is "nothing the store does
 changed these records", not "these records hash the same". So a same-length in-place rewrite
@@ -2487,11 +2505,11 @@ an optimisation token and a write fault costs only speed -- `_seed_cuts` at `cre
 for that reason, since there is nothing to protect yet and a create that refused over it would
 refuse a good log.
 
-**What it does not fix on the cold path.** A warm continuation now carries a resume point
+**What it does not fix on the cold path.** A warm continuation carries a resume point
 (`ResumePoint`, held as `_SlotMemo.resume`) naming the byte offset in the newest unit's
 segment where its fold stopped, vouched by that unit's cut count and the seq at that
 offset. `CrewLog.iter_from`, given a point it can confirm, opens the segment at that
-record and decodes only what follows, so a warm continuation no longer walks the prefix
+record and decodes only what follows, so a warm continuation does not walk the prefix
 below its resume seq. The point is dropped and the full walk restored when the cut count
 moved, the segment was retention-dropped, the offset no longer frames the expected seq, or
 the point's seq disagrees with the one reached. So `CrewLog.iter_from` decodes every
@@ -2817,7 +2835,7 @@ to share one instance between callers.
   resolved on the page like any other citation. The session tree (section 6)
   folds the `session_create` edge only: a `spawn_run` subagent has no session
   log of its own to record a parent on, and a fork stamps no creator.
-- **SPA rendering.** The frame shape is specified here so the client can follow.
+- **SPA rendering.** The client lives under `website/src` (`hooks/websocket/sessionProjection.ts`, `slotProjection.ts`); this module specifies only the frame shape it reads.
 - **`turn/completed` carrying `attempt`.** It does not, so a fold cannot pair a
   completion with its start by field. The pairing is positional: a `turn/started`
   opens the current attempt at that ordinal and the next `turn/completed` for it
