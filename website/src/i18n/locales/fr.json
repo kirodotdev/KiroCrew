@@ -20137,7 +20137,7 @@
         "max_fps_desc": "60 est le maximum diffusé par cette machine. Rien n’est envoyé tant que la carte est hors écran.",
         "fps_value": "{{fps}} i/s",
         "origins_label": "Adresses locales que l’onglet Aperçu peut ouvrir",
-        "origins_desc": "Uniquement pour afficher ton propre serveur de développement. Kiro ne pilote jamais cet onglet.",
+        "origins_desc": "Pour afficher ton propre serveur de développement. Le navigateur de Kiro peut aussi ouvrir ces adresses, mais Kiro ne pilote jamais cet onglet.",
         "origins_empty": "Aucune pour l’instant",
         "add_origin": "Ajouter l’adresse",
         "remove_origin": "Retirer {{origin}}",

@@ -19089,7 +19089,7 @@
         "no_browser_desc": "채팅에서 처음 브라우저가 필요할 때 Kiro가 연결합니다. 연결을 누르면 지금 연결합니다.",
         "no_browser_yet": "아직 브라우저 없음",
         "origin_invalid": "host:port 형식으로, host는 localhost, 127.0.0.1 또는 [::1]이어야 합니다. 예: localhost:5173.",
-        "origins_desc": "내 개발 서버를 미리 보는 용도입니다. Kiro는 이 탭을 조작하지 않습니다.",
+        "origins_desc": "내 개발 서버를 미리 보는 용도입니다. Kiro의 브라우저도 이 주소를 열 수 있지만, Kiro는 이 탭을 조작하지 않습니다.",
         "origins_empty": "아직 없음",
         "origins_full": "최대 {{count}}개 주소입니다. 하나를 제거하면 추가할 수 있습니다.",
         "origins_label": "미리보기 탭이 열 수 있는 로컬 주소",
