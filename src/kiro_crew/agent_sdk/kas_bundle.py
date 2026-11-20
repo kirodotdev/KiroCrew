@@ -329,7 +329,6 @@ def relay_runs_on_kiro_cli_sign_in() -> bool:
     ``acp.kas_route.relay_runs_on_kiro_cli_sign_in`` on this process's environment,
     for the dashboard. Blocking (config and kiro-cli reads); never raises.
     """
-    import os
     from pathlib import Path
 
     from kiro_crew.acp.kas_route import relay_runs_on_kiro_cli_sign_in as runs
