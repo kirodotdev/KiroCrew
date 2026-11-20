@@ -349,9 +349,8 @@ export function useTranscriptRendering({
   // they replace, plus a few page-only shape entries. Order inside this array
   // is the page's precedence order, unchanged from the if-chain it replaces:
   // the shared dashboard set (sub-agent completion, launch cards, tool,
-  // thinking, file, nudge, recovery inject, workflow completion, error), then
-  // permission, undrawn, hidden invisible assistant, and the conversational
-  // bubble. Roles none of these claim fall to the registry defaults (`undrawn`
+  // thinking, file, nudge, workflow completion, error), then permission,
+  // undrawn, hidden invisible assistant, and the conversational bubble. Roles none of these claim fall to the registry defaults (`undrawn`
   // for queued/system/done and the reasoning roles; `tool_lifecycle` for raw
   // wire shapes the store normalizes away; the stop-event card, the notice
   // card and the MCP OAuth banner -- P5-c deleted the page's copies of those
@@ -469,8 +468,8 @@ export function useTranscriptRendering({
       },
     }
     // The dashboard's shared row set (pages/chat/transcriptRenderers.tsx --
-    // tool lines and launch cards, thinking block, nudge, recovery inject, the
-    // two completion cards, the error card with Continue), wired with this
+    // tool lines and launch cards, thinking block, nudge, the two completion
+    // cards, the error card with Continue), wired with this
     // page's behaviours through its options; ChatPane calls the same factory
     // with fewer. Only rows that are genuinely page-specific follow it. The
     // stop-event card, the notice card and the MCP OAuth banner are NOT among

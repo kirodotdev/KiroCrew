@@ -1268,9 +1268,11 @@ Three rules the registry relies on:
   or any other row change, except one change: a streaming row's text growing, which redraws that row
   alone. Every built-in rule that looks ahead (the reply footer, the steer chip, a retry notice's
   tense) reads a streaming row by its role.
-- **Shape beats role.** Resolution is first-match, and your entries sit between the two built-ins
-  recognised by message *shape* — a stop event and a sub-agent completion, which claim `'*'` and gate
-  on a `match` predicate — and the role-keyed ones. This matters because a stop event reaches the
+- **Shape beats role.** Resolution is first-match, and your entries sit between the built-ins
+  recognised by message *shape* — a stop event, a sub-agent completion, and a gateway-authored
+  `inject` row (`recovery_inject`, `automation_notice_inject`), which claim `'*'` and gate on a
+  `match` predicate — and the role-keyed ones. So an entry of yours that claims `inject` draws only
+  the rows those two leave, such as a cron delivery. This matters because a stop event reaches the
   transcript as role `system`, which is also a role you are invited to claim: were a role claim
   allowed to outrank a `kind` check, claiming `system` would swallow the stop card and pressing Stop
   would draw your row instead. A role claim cannot know about `kind`, so it does not outrank one.

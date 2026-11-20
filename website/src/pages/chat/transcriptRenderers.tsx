@@ -18,8 +18,8 @@
  * default registry is deliberately store-free and therefore renders a WEAKER
  * transcript: a static pill instead of the live tool line, and nothing at all
  * for a thinking trace, a sent file, an auto-nudge turn, a workflow launch, a
- * sub-agent launch, a recovery inject or a workflow completion. This module
- * carries ChatPage's row set as registry entries so a second surface reads the
+ * sub-agent launch or a workflow completion. This module carries ChatPage's
+ * row set as registry entries so a second surface reads the
  * SAME transcript rather than a reduced one.
  *
  * It lives under pages/chat rather than in app-sdk on purpose: the registry's
@@ -37,7 +37,7 @@ import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import ConversationCard, { CARD_ROLE, changeCardShownAgainBelow } from '../../cards/ConversationCard'
-import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
+import { opensTurn } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
 import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAgentRefused, isAuthRequired, isKiroCliSignIn, kiroCliRowOffersCrewSignIn, isContextOverflow, isImageRepair, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type CapabilityFix, type FreshSessionState, type RepairImagesState } from './ErrorCard'
@@ -701,38 +701,6 @@ export function createTranscriptRenderers(
             }
           />,
         ),
-    },
-    {
-      // Refines `inject`: a gateway-authored injection is a one-line card, not
-      // the cron-notification bubble the default draws.
-      //
-      // Matched via the SHARED resolver rather than the recovery parser alone, so
-      // this registry (ChatPane, SideChat, ChatEmbed) makes the same decision
-      // ChatPage does. Gating only on a recognised recovery marker left every
-      // other injected shape — the sub-agent synthesis prompt included — falling
-      // through to the SDK default, which paints raw machine prose as a bubble.
-      id: 'recovery_inject',
-      roles: ['inject'],
-      match: m => resolveInjectCard(m) !== null,
-      render: (m, ctx) => {
-        const parsed = resolveInjectCard(m)
-        if (!parsed) return null
-        return ctx.row(<RecoveryCard parsed={parsed} disclosureKey={ctx.key} />)
-      },
-    },
-    {
-      // A re-routed automation refusal (`injectKind: 'automation_notice'`,
-      // session_directive_apply._deliver_refusal_to_crewmate) exists ONLY to
-      // carry the refusal into the crewmate's next turn for the model; the
-      // person-facing surface is the `notice` bar the same refusal already
-      // wrote. The crewmate DM hides this inject row via MACHINERY_ROLES; every
-      // other surface (the Sessions page) suppresses it here too, so the raw
-      // `[Automation notice] …` text never draws as a second row beside the
-      // notice bar. Must precede the generic inject bubble.
-      id: 'automation_notice_inject',
-      roles: ['inject'],
-      match: m => (m.meta as { injectKind?: unknown } | undefined)?.injectKind === 'automation_notice',
-      render: () => null,
     },
     {
       // Refines `assistant`: a gateway system notice (kind=compaction or

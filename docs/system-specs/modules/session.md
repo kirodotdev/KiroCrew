@@ -1813,7 +1813,7 @@ against sweep completeness, and are torn down at `close_all`.
   bubble) the turn carries, and the Bot can stop and re-arm the loop
   itself. That inject row is model-only machinery: the Bot chat hides it
   via `MACHINERY_ROLES` and every other surface suppresses it too
-  (`transcriptRenderers` `automation_notice_inject` draws nothing), so the raw
+  (the app-sdk registry's `automation_notice_inject` draws nothing), so the raw
   `[Automation notice] …` text never appears as a row beside the refusal's own
   `notice` bar. Regenerate on the answer to that turn refuses
   (`automated_turn_reply`) and removes nothing. The Sessions page keeps drawing
