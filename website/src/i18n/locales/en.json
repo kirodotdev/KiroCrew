@@ -67,6 +67,9 @@
     "pullRequestPanel": {
       "not_declared": "This app can't show pull requests: its permissions don't declare {{path}}."
     },
+    "fileTree": {
+      "not_declared": "This app can't show the project's files: its permissions don't declare {{path}}."
+    },
     "projectPicker": {
       "not_declared": "This app can't show the project picker: its permissions don't declare {{path}}."
     },
