@@ -493,10 +493,9 @@ refuses it with 409 `kas_sign_in_test_unsupported`.
 
 ### The handoff: how a premint reaches the click it was minted for
 
-The table and the per-caller Connect flow shared a row store and nothing else, so the slice
-that gave premint a frontend caller made three defects reachable at once. All three came from
-one conflation -- `shared` was being read as if it answered both *who owns this row* and *what
-judges its liveness* -- and the fix separates the two axes:
+The table and the per-caller Connect flow share a row store and nothing else. Reading `shared`
+as if it answered both *who owns this row* and *what judges its liveness* makes three defects
+reachable, so the row keeps the two axes apart:
 
 | axis | mark | meaning |
 |---|---|---|
@@ -902,8 +901,7 @@ connection); the census reads the per-project `.kiro/agents` dirs of every OPEN
 chat slot as well as the user-level one, so a project with no open slot is still
 invisible (slot state is what the dashboard actually knows about the checkouts
 kiro-cli runs in); and the transaction lock serializes
-the gateway's own writers (the mcp.json writers and, as of this change, the
-agent-config PUT) but cannot serialize *external* writers — kiro-cli and hand
+the gateway's own writers (the mcp.json writers and the agent-config PUT) but cannot serialize *external* writers — kiro-cli and hand
 edits mutate the same census sources from outside the process, and a write of
 theirs landing between the census read and the unlink is judged by a snapshot
 that never saw it. No gateway-side lock can close that; it is inherent to
@@ -1138,7 +1136,10 @@ governed, audited agent path.
 
 `python3 -m kiro_crew.connections.l1_smoke --report connections-l1-report.json` (under a
 pipx/venv install, use that environment's interpreter). `--min-exercised 1`
-reproduces the lane's gate; `--concurrency`/`--timeout` are in `--help`.
+reproduces the lane's gate; `--concurrency`/`--timeout` are in `--help`. Both
+`l0_probe` and `l1_smoke` send each request through the proxy
+`http_proxy.resolve_proxy` picks for its URL (HTTPS, then HTTP, honouring the
+host's bypass list), so a probe behind a corporate proxy reaches the provider.
 
 ## The registry roster
 
@@ -1279,7 +1280,7 @@ header beside the name toggle. Its copy is `google_entry_step_set_up` while no
 Google client is set, else `google_entry_step_connect`. The Google product rows
 show no triangle for their `prerequisite_copy`: six identical amber triangles
 beside six Connects read as a warning on every product, next to an OAuth app
-part that says Configured (#34353 UX review). A Google row still shows a
+part that says Configured. A Google row still shows a
 triangle for a state-level caveat (the backend caveat, a stored sign-in) that
 applies to that row alone.
 
@@ -1293,14 +1294,14 @@ heading with the `prerequisites_for_provider` accessible name — a new state
 reuses them rather than adding a second tooltip component or heading. The one
 exception is the connected card's shared-grant tip beside **Disconnect**: it
 uses the `before_you_disconnect` heading and the `shared_signin_for_provider`
-name, because the card is already connected (#26890). Its copy is unchanged:
+name, because the card is already connected. Its copy says
 who shares the grant, and that Disconnect keeps the shared token (revoke at the
 provider to force a new sign-in).
 
 A card whose provider has a grant but no entry the card manages (the slug at
 the registry endpoint) stays **Not connected**, for example when the endpoint is
 configured only in a user's own agent spec, which `/api/mcp` does not list: the
-card has no entry for Disconnect or Test to act on (#30393). The status feed
+card has no entry for Disconnect or Test to act on. The status feed
 still reports `grantPresent: true`, so the tip beside **Connect** says the user is
 already signed in but Kiro Crew is not set up to use it yet, and that Connect sets
 it up, using the saved sign-in when it can, so it may still ask to sign in again
@@ -1404,7 +1405,7 @@ the remote MCP entry's `oauth` block, and only kiro-cli reads that block
 schema with no slot for it (#27711). A pre-registered provider's Connect
 therefore keeps the kiro-cli mint on every backend (the KAS route above excludes
 it), so Connect stays available and the grant it writes is real for kiro-cli
-chats; whether a KAS chat can use that grant is #24677's question. So while the resolved `agent.acp_backend`
+chats; whether a KAS chat can use that grant is not established. So while the resolved `agent.acp_backend`
 lacks the capability (Bot threads are not read: that field resolves to KAS on every install),
 `/api/connections/status` marks every pre-registered row `backendLacksOauth`,
 connected or not. The card states it without adding a tip or heading key
@@ -1486,8 +1487,8 @@ Its Connect (`crew_oauth.start_mint_row`) runs the consent link through the
 banner gate (`security.oauth_url_contains_credential`) before the row shows it,
 and fails the row `mint_url_rejected` when the gate refuses. The gate reads the
 link with `state` and the PKCE challenge held at one fixed value: both are the
-process's own random draws, and a credential pattern matched one by chance,
-failing an ordinary Connect (#32217). The operator's client ID and the
+process's own random draws, and read as drawn a credential pattern could match
+one by chance and fail an ordinary Connect. The operator's client ID and the
 registry's redirect are read as they are, so a credential in the client ID still
 fails the row.
 
@@ -1560,8 +1561,8 @@ Reconnect, and shows the matching setup line in their place; a held grant keeps
 Connected and Disconnect. The MCP Servers row offers no Sign in for a `slack`
 row that sends headers of its own, because the mint refuses that entry too; it
 links to the card instead. A Kiro CLI
-session signs in to Slack with the client in its own `slack` entry, as it did
-before the card existed; the card serving Kiro CLI is #35949.
+session signs in to Slack with the client in its own `slack` entry; the card
+serving Kiro CLI is tracked in #35949.
 
 While no OAuth Apps record
 resolves for a provider that keeps the user's client (Slack), the MCP table marks its row `connectionUnconfigured`
