@@ -3179,6 +3179,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.touch-screen-layout",
+    "label": "Touch screen layout",
+    "labelKey": "pages.settings.displayPanel.touch_layout",
+    "hint": "Use this if your browser has no Request desktop site option. Automatic follows the browser's mobile or desktop site mode. The desktop layout applies from 768px up; below that the phone layout stays. Saved on this browser only.",
+    "tab": "display",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
+  },
+  {
     "id": "display.translucent-panels",
     "label": "Translucent panels",
     "labelKey": "pages.settings.displayPanel.translucent_panels",
