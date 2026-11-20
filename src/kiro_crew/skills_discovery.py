@@ -26,9 +26,9 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterable, Iterator
+from typing import Callable, Iterable, Iterator, NamedTuple
 
-from kiro_crew import skill_trust
+from kiro_crew import pinned_fs_primitives, skill_trust
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dep_sync import normalize as normalize_distribution_name
@@ -703,6 +703,75 @@ def _skippable_skill_dir(name: str) -> bool:
     return name.startswith(".") or name in _VENDORED_DIR_NAMES
 
 
+def _descriptor_walk_supported() -> bool:
+    return pinned_fs_primitives.supports_pinned_tree_walk() and os.scandir in os.supports_fd
+
+
+def _open_resolved_dir(real: str) -> int:
+    parts = Path(real).parts
+    fd = os.open(parts[0], _PROJECT_DIR_OPEN_FLAGS)
+    try:
+        for part in parts[1:]:
+            next_fd = os.open(part, _PROJECT_DIR_OPEN_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+class _HeldDirs:
+    __slots__ = ("count", "lock")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.lock = threading.Lock()
+
+    def add(self, delta: int) -> int:
+        with self.lock:
+            self.count += delta
+            return self.count
+
+
+class _OpenDir:
+    __slots__ = ("fd", "real", "pending", "held")
+
+    def __init__(self, fd: int, real: str, held: _HeldDirs) -> None:
+        self.fd = fd
+        self.real = real
+        self.pending = 0
+        self.held = held
+        held.add(1)
+
+    def release(self) -> bool:
+        self.pending -= 1
+        if self.pending > 0:
+            return False
+        self.close()
+        return True
+
+    def close(self) -> None:
+        if self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+            self.held.add(-1)
+
+
+class _WalkItem(NamedTuple):
+    path: Path
+    parent: _OpenDir | None
+    linked: bool
+
+
+_HELD_DIRS_MAX = 64
+_DESCRIPTOR_EXHAUSTION_ERRNOS = frozenset({errno.EMFILE, errno.ENFILE})
+_BY_NAME_FALLBACK_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP})
+
+
+_WalkProbe = tuple[str | None, list[_WalkItem], Path | None, _OpenDir | None]
+
+
 def _iter_skill_files(
     base: Path,
     *,
@@ -753,13 +822,9 @@ def _iter_skill_files(
     base_real = os.path.realpath(base)
     allowed_roots = (base_real,) + _trusted_skill_roots()
 
-    def probe(directory: Path) -> tuple[str | None, list[Path], Path | None]:
-        lexical = os.path.abspath(directory)
-        if exclude_roots and _within_any(lexical, exclude_roots):
-            return lexical, [], None
-        real = os.path.realpath(directory)
+    def admits_dir(directory: Path, real: str, direct_child_link: Callable[[], bool]) -> bool:
         if exclude_roots and _within_any(real, exclude_roots):
-            return real, [], None
+            return False
         if not _within_any(real, allowed_roots):
             # The containment gate is a security boundary, so the link is
             # refused. When this walk is the catalog base walk
@@ -776,9 +841,7 @@ def _iter_skill_files(
             warned = False
             if warn_outside_links:
                 try:
-                    is_direct_child_link = os.path.realpath(
-                        directory.parent
-                    ) == base_real and is_link_or_junction(directory)
+                    is_direct_child_link = direct_child_link()
                 except OSError:
                     is_direct_child_link = False
                 if is_direct_child_link and not _within_any(real, extra_path_roots):
@@ -797,16 +860,34 @@ def _iter_skill_files(
                     real,
                     allowed_roots,
                 )
-            return real, [], None
-        if is_sensitive_resolved_path(real):
-            return real, [], None
+            return False
+        return not is_sensitive_resolved_path(real)
+
+    def admits_file(real_file: str) -> bool:
+        if exclude_roots and _within_any(real_file, exclude_roots):
+            return False
+        return _within_any(real_file, allowed_roots) and not is_sensitive_resolved_path(real_file)
+
+    def probe(item: _WalkItem) -> _WalkProbe:
+        directory = item.path
+        lexical = os.path.abspath(directory)
+        if exclude_roots and _within_any(lexical, exclude_roots):
+            return lexical, [], None, None
+        real = os.path.realpath(directory)
+        if not admits_dir(
+            directory,
+            real,
+            lambda: os.path.realpath(directory.parent) == base_real
+            and is_link_or_junction(directory),
+        ):
+            return real, [], None, None
         try:
             with os.scandir(directory) as scan:
                 entries = list(scan)
         except OSError:
             # A failed alias has not visited its target. Another spelling may
             # still enumerate it successfully, as with os.walk's error handling.
-            return None, [], None
+            return None, [], None, None
         children = []
         has_skill = False
         for entry in entries:
@@ -817,46 +898,156 @@ def _iter_skill_files(
             except OSError:
                 is_dir = False
             if is_dir and not _skippable_skill_dir(entry.name):
-                children.append(directory / entry.name)
-            elif not is_dir and entry.name == "SKILL.md":
+                children.append(_WalkItem(directory / entry.name, None, False))
+            elif not is_dir and entry.name == _SKILL_FILE:
                 has_skill = True
-        children.sort(key=lambda path: path.name)
-        skill_file = directory / "SKILL.md"
-        if not has_skill:
-            return real, children, None
-        real_file = os.path.realpath(skill_file)
-        if exclude_roots and _within_any(real_file, exclude_roots):
-            return real, children, None
-        if not _within_any(real_file, allowed_roots) or is_sensitive_resolved_path(real_file):
-            return real, children, None
-        return real, children, skill_file
+        children.sort(key=lambda child: child.path.name)
+        skill_file = directory / _SKILL_FILE
+        if not has_skill or not admits_file(os.path.realpath(skill_file)):
+            return real, children, None, None
+        return real, children, skill_file, None
 
-    results = []
-    seen_real: set[str] = set()
-    # Commit probes in sorted depth-first order, irrespective of completion
-    # order, so links sharing a target keep the same canonical skill key.
-    stack = [base]
-    pending: dict[Path, Future[tuple[str | None, list[Path], Path | None]]] = {}
-    with ThreadPoolExecutor(
-        max_workers=_CATALOG_READ_WORKERS, thread_name_prefix="skill-walk"
-    ) as pool:
-        while stack:
-            for directory in reversed(stack):
-                if len(pending) >= _CATALOG_READ_BATCH:
-                    break
-                if directory not in pending:
-                    pending[directory] = pool.submit(copy_context().run, probe, directory)
-            directory = stack.pop()
-            future = pending.pop(directory, None)
-            real, children, discovered_file = future.result() if future else probe(directory)
-            if real is None or real in seen_real:
+    def probe_at(item: _WalkItem) -> _WalkProbe:
+        directory, parent, linked = item
+        lexical = os.path.abspath(directory)
+        if exclude_roots and _within_any(lexical, exclude_roots):
+            return lexical, [], None, None
+        if parent is None:
+            real = base_real
+        elif linked:
+            real = os.path.realpath(os.path.join(parent.real, directory.name))
+        else:
+            real = os.path.join(parent.real, directory.name)
+        if not admits_dir(
+            directory, real, lambda: parent is not None and linked and parent.real == base_real
+        ):
+            return real, [], None, None
+        try:
+            if parent is None or linked:
+                fd = _open_resolved_dir(real)
+            else:
+                fd = os.open(directory.name, _PROJECT_DIR_OPEN_FLAGS, dir_fd=parent.fd)
+        except OSError as exc:
+            if exc.errno in _DESCRIPTOR_EXHAUSTION_ERRNOS:
+                raise
+            if exc.errno in _BY_NAME_FALLBACK_ERRNOS:
+                return probe(item)
+            return None, [], None, None
+        handle = _OpenDir(fd, real, held)
+        try:
+            return list_at(item, handle)
+        except BaseException:
+            handle.close()
+            raise
+
+    def list_at(item: _WalkItem, handle: _OpenDir) -> _WalkProbe:
+        directory = item.path
+        real = handle.real
+        try:
+            with os.scandir(handle.fd) as scan:
+                entries = list(scan)
+        except OSError as exc:
+            handle.close()
+            if exc.errno in _DESCRIPTOR_EXHAUSTION_ERRNOS:
+                raise
+            if exc.errno in _BY_NAME_FALLBACK_ERRNOS:
+                return probe(item)
+            return None, [], None, None
+        children = []
+        has_skill = False
+        for entry in entries:
+            child = directory / entry.name
+            if exclude_roots and _within_any(os.path.abspath(child), exclude_roots):
                 continue
-            seen_real.add(real)
-            if discovered_file is not None:
-                name = str(directory.relative_to(base)).replace("\\", "/")
-                results.append((name, discovered_file))
-            stack.extend(reversed(children))
-    return sorted(results, key=lambda item: item[0])
+            try:
+                is_link = entry.is_symlink()
+                is_dir = entry.is_dir()
+            except OSError:
+                is_link = is_dir = False
+            if is_dir and not _skippable_skill_dir(entry.name):
+                children.append(_WalkItem(child, handle, is_link))
+            elif not is_dir and entry.name == _SKILL_FILE:
+                has_skill = True
+        children.sort(key=lambda child: child.path.name)
+        try:
+            same = os.path.samestat(os.stat(directory), os.fstat(handle.fd))
+        except OSError:
+            same = False
+        if not same:
+            handle.close()
+            return probe(item)
+        skill_file: Path | None = directory / _SKILL_FILE
+        if not has_skill or not admits_file(os.path.realpath(directory / _SKILL_FILE)):
+            skill_file = None
+        by_name = held.add(0) > _HELD_DIRS_MAX
+        if by_name:
+            children = [child._replace(parent=None) for child in children]
+        if not children or by_name:
+            handle.close()
+            return real, children, skill_file, None
+        handle.pending = len(children)
+        return real, children, skill_file, handle
+
+    held = _HeldDirs()
+
+    def walk(by_descriptor: bool) -> list[tuple[str, Path]]:
+        def run(item: _WalkItem) -> _WalkProbe:
+            if by_descriptor and (item.parent is not None or item.path == base):
+                return probe_at(item)
+            return probe(item)
+
+        results = []
+        seen_real: set[str] = set()
+        live: set[_OpenDir] = set()
+        # Commit probes in sorted depth-first order, irrespective of completion
+        # order, so links sharing a target keep the same canonical skill key.
+        stack = [_WalkItem(base, None, False)]
+        pending: dict[Path, Future[_WalkProbe]] = {}
+        try:
+            with ThreadPoolExecutor(
+                max_workers=_CATALOG_READ_WORKERS, thread_name_prefix="skill-walk"
+            ) as pool:
+                while stack:
+                    for queued in reversed(stack):
+                        if len(pending) >= _CATALOG_READ_BATCH:
+                            break
+                        if queued.path not in pending:
+                            pending[queued.path] = pool.submit(copy_context().run, run, queued)
+                    item = stack.pop()
+                    future = pending.pop(item.path, None)
+                    real, children, discovered_file, handle = (
+                        future.result() if future else run(item)
+                    )
+                    if item.parent is not None and item.parent.release():
+                        live.discard(item.parent)
+                    if real is None or real in seen_real:
+                        if handle is not None:
+                            handle.close()
+                        continue
+                    seen_real.add(real)
+                    if handle is not None:
+                        live.add(handle)
+                    if discovered_file is not None:
+                        name = str(item.path.relative_to(base)).replace("\\", "/")
+                        results.append((name, discovered_file))
+                    stack.extend(reversed(children))
+        finally:
+            for future in pending.values():
+                if not future.cancelled() and future.exception() is None:
+                    leftover = future.result()[3]
+                    if leftover is not None:
+                        leftover.close()
+            for handle in live:
+                handle.close()
+        return sorted(results, key=lambda item: item[0])
+
+    if _descriptor_walk_supported():
+        try:
+            return walk(True)
+        except OSError as exc:
+            if exc.errno not in _DESCRIPTOR_EXHAUSTION_ERRNOS:
+                raise
+    return walk(False)
 
 
 def skills_dir() -> Path:

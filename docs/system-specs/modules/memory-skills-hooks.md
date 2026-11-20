@@ -6307,8 +6307,11 @@ exclude). To keep it off the per-message filesystem/config hot path:
   immediately by `create_auto_skill`;
 - the walk that rebuilds it (`_iter_skill_files`, on a worker thread) asks the
   sensitive-path fence through `is_sensitive_resolved_path` against the
-  `realpath` it has already computed for loop detection and containment, with
-  the fence's anchors resolved on that same thread, and `_iter_uncached`
+  canonical path it has already computed for loop detection and containment
+  (where descriptor-relative opens are supported, a real child directory's path
+  is its parent's canonical path plus its name, opened `O_NOFOLLOW` relative to
+  the parent's descriptor, and only a linked folder or a `SKILL.md` is
+  `realpath`ed), with the fence's anchors resolved on that same thread, and `_iter_uncached`
   judges each row it keeps (the skills dir's dedupe set and every extra-path
   row) with `validate_file_path(..., canonical_gate=True)`, which answers
   inline off the event loop and keeps the bounded gate on it, so the ~1.4k
