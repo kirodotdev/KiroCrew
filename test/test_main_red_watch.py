@@ -553,6 +553,8 @@ def test_nothing_from_the_event_is_interpolated_into_the_script() -> None:
     assert "${{" not in step["run"]
     assert step["env"]["HEAD_SHA"] == "${{ github.event.workflow_run.head_sha }}"
     assert step["env"]["RUN_URL"] == "${{ github.event.workflow_run.html_url }}"
+    assert step["env"]["RUN_NUMBER"] == "${{ github.event.workflow_run.run_number }}"
+    assert step["env"]["WORKFLOW_ID"] == "${{ github.event.workflow_run.workflow_id }}"
 
 
 def test_a_running_watcher_is_never_killed_and_skipped_runs_do_not_share_its_group() -> None:
@@ -616,6 +618,13 @@ esac
 if [ "$1" = "api" ]; then
   case "$2" in
     */actions/runs/1000/jobs*) jq -r "$(filter "$@")" < "$d/jobs.json" ;;
+    */actions/workflows/7/runs*)
+      [ -f "$d/runs-rate-limited" ] && { echo "gh: API rate limit exceeded for installation. (HTTP 403)" >&2; exit 1; }
+      [ -f "$d/runs.json" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+      cat "$d/runs.json" ;;
+    */actions/runs/900/jobs*)
+      [ -f "$d/prev-jobs.json" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+      jq -r "$(filter "$@")" < "$d/prev-jobs.json" ;;
     rate_limit) echo 1795040400 ;;
     */check-runs/*/annotations*)
       id="${2#*/check-runs/}"; id="${id%%/*}"; id="${id%%\?*}"
@@ -718,9 +727,19 @@ def _run_step(
     labelled_create_refused: bool = False,
     timeline_refused: bool = False,
     labelled_issues: list[dict] | None = None,
+    runs: list[dict] | None = None,
+    prev_jobs: str | None = None,
+    runs_rate_limited: bool = False,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     stub = tmp_path / "stub"
     stub.mkdir(parents=True)
+    # No runs file is a run list that cannot be read; no previous jobs file likewise.
+    if runs is not None:
+        (stub / "runs.json").write_text(json.dumps({"workflow_runs": runs}), encoding="utf-8")
+    if prev_jobs is not None:
+        (stub / "prev-jobs.json").write_text(prev_jobs, encoding="utf-8")
+    if runs_rate_limited:
+        (stub / "runs-rate-limited").write_text("", encoding="utf-8")
     runner_temp = tmp_path / "runner"
     runner_temp.mkdir()
     (stub / "jobs.json").write_text(jobs, encoding="utf-8")
@@ -761,6 +780,8 @@ def _run_step(
             "REPO": "example/repo",
             "RUN_ID": "1000",
             "RUN_URL": RUN_URL,
+            "RUN_NUMBER": "50",
+            "WORKFLOW_ID": "7",
             "HEAD_SHA": SHA,
             "CONCLUSION": conclusion,
             "PROOF_JOB_PREFIX": "Backend Tests",
@@ -1280,3 +1301,204 @@ def test_a_fix_line_that_cannot_be_built_still_writes_the_issue_and_warns(
     body = (tmp_path / "b.md").read_text(encoding="utf-8")
     assert "Fix in progress: unknown." in body and mod.parse_state(body) is not None
     assert "::warning::The fix line could not be built" in capsys.readouterr().out
+
+
+# ── A failure in one job, seen again: the look back at the previous verdict run ──
+
+PREVIOUS = ROOT / ".github" / "scripts" / "main_red_previous.py"
+prev_mod = load_skill_script("main_red_previous_under_test", PREVIOUS)
+PREV_URL = "https://github.com/example/repo/actions/runs/900"
+ONE_FILE = "test/test_source_link_case.py"
+
+
+def _run_row(number: int, conclusion: str | None, run_id: int | None = None, **over: Any) -> dict:
+    row = {"id": run_id or number + 850, "run_number": number, "conclusion": conclusion}
+    return {**row, "event": "push", "head_branch": "main", **over}
+
+
+def _notes(*nodeids: str) -> str:
+    """Check-run annotations that name each node id as a failing test."""
+    rows = [
+        {
+            "path": nodeid.split("::", 1)[0],
+            "start_line": 7,
+            "end_line": 7,
+            "annotation_level": "failure",
+            "title": nodeid,
+            "message": f"{nodeid} - assert 1 == 2",
+        }
+        for nodeid in nodeids
+    ]
+    return json.dumps(rows)
+
+
+def test_the_previous_verdict_is_the_newest_earlier_run_that_was_not_cancelled() -> None:
+    rows = [
+        _run_row(52, "failure"),
+        _run_row(50, "failure"),
+        _run_row(49, "cancelled"),
+        _run_row(48, None),
+        _run_row(47, "failure", event="pull_request"),
+        _run_row(46, "failure", head_branch="release"),
+        _run_row(44, "success"),
+        _run_row(45, "timed_out"),
+        _run_row(43, "failure"),
+    ]
+    assert prev_mod.previous_verdict({"workflow_runs": rows}, 50)["run_number"] == 45
+    assert prev_mod.previous_verdict({"workflow_runs": rows[:4]}, 50) is None
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [None, [], {}, {"workflow_runs": "x"}, {"workflow_runs": [7, {"id": "9", "run_number": 1}]}],
+)
+def test_a_run_list_of_an_odd_shape_has_no_previous_verdict(listing: Any) -> None:
+    assert prev_mod.previous_verdict(listing, 50) is None
+
+
+def test_two_runs_share_a_test_file_whatever_the_test_or_its_parameter() -> None:
+    current = [{f"{ONE_FILE}::TestChip::test_a[1]": "x"}, {"test/other.py::t": "y"}]
+    previous = [{f"{ONE_FILE}::TestChip::test_b": "z", "test/third.py::t": ""}]
+    assert prev_mod.same_files(current, previous) == [ONE_FILE]
+    assert prev_mod.same_files(current, [{"test/third.py::t": ""}]) == []
+    assert prev_mod.same_files(current, []) == [] and prev_mod.same_files([], previous) == []
+
+
+ONE_JOB = _jobs((11, "Backend Tests (3.12, 7)", "failure"), (15, "Coverage Gate", "failure"))
+ONE_JOB_NOTES = {11: _notes(f"{ONE_FILE}::TestOneChip::test_a_link[upper]"), 15: "[]"}
+PREV_ONE_JOB = _jobs((91, "Backend Tests (3.12, 7)", "failure"), (92, "Lint", "success"))
+PREV_RUNS = [_run_row(50, "failure"), _run_row(49, "cancelled"), _run_row(48, "failure", 900)]
+
+
+def _look_back_calls(stub: Path) -> list[str]:
+    marks = ("/actions/workflows/", "/actions/runs/900/", "/check-runs/91/", "/check-runs/93/")
+    return [c for c in _calls(stub) if any(mark in c for mark in marks)]
+
+
+@_needs_posix
+def test_a_test_file_red_in_one_job_on_two_verdict_runs_in_a_row_opens_the_issue(
+    tmp_path: Path,
+) -> None:
+    """A break on one leg only is red in one job of every run; the second run files it."""
+    notes = {**ONE_JOB_NOTES, 91: _notes(f"{ONE_FILE}::TestOneChip::test_a_link[lower]")}
+    out, stub = _run_step(
+        tmp_path, jobs=ONE_JOB, logs={}, annotations=notes, runs=PREV_RUNS, prev_jobs=PREV_ONE_JOB
+    )
+    assert out.returncode == 0, out.stderr
+    said = f"was red on the same test file ({ONE_FILE}), so an issue is opened."
+    assert f"The previous run of main that reached a verdict ({PREV_URL}) {said}" in out.stdout
+    assert "1 test(s) red in one job only" in out.stdout
+    assert len(_wrote(stub, "create")) == 1
+    title = (stub / "created-title.txt").read_text(encoding="utf-8")
+    assert title == f"ci: Main is red: {ONE_FILE}::TestOneChip::test_a_link[upper]"
+    assert len(_look_back_calls(stub)) == 3
+    assert said in (stub / "summary.md").read_text(encoding="utf-8")
+
+
+@_needs_posix
+def test_a_different_test_file_red_in_the_previous_run_opens_nothing(tmp_path: Path) -> None:
+    notes = {**ONE_JOB_NOTES, 91: _notes("test/test_elsewhere.py::test_flaky")}
+    out, stub = _run_step(
+        tmp_path, jobs=ONE_JOB, logs={}, annotations=notes, runs=PREV_RUNS, prev_jobs=PREV_ONE_JOB
+    )
+    assert out.returncode == 0, out.stderr
+    assert "not opening an issue for a failure seen in one job." in out.stdout
+    assert f"({PREV_URL}) was not red on the same test file." in out.stdout
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+@_needs_posix
+def test_a_green_previous_run_opens_nothing_and_costs_one_read(tmp_path: Path) -> None:
+    runs = [_run_row(49, "cancelled"), _run_row(48, "success", 900), _run_row(47, "failure")]
+    out, stub = _run_step(
+        tmp_path, jobs=ONE_JOB, logs={}, annotations=ONE_JOB_NOTES, runs=runs, prev_jobs="{}"
+    )
+    assert out.returncode == 0, out.stderr
+    assert f"The previous run of main that reached a verdict ({PREV_URL}) was green." in out.stdout
+    assert len(_look_back_calls(stub)) == 1
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+@_needs_posix
+def test_with_no_earlier_verdict_in_the_run_list_nothing_opens(tmp_path: Path) -> None:
+    runs = [_run_row(50, "failure"), _run_row(49, "cancelled"), _run_row(48, "cancelled")]
+    out, stub = _run_step(tmp_path, jobs=ONE_JOB, logs={}, annotations=ONE_JOB_NOTES, runs=runs)
+    assert out.returncode == 0, out.stderr
+    assert "None of the 100 finished push runs before this one reached a verdict." in out.stdout
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+@_needs_posix
+def test_an_unreadable_run_list_opens_nothing_and_says_why(tmp_path: Path) -> None:
+    out, stub = _run_step(tmp_path, jobs=ONE_JOB, logs={}, annotations=ONE_JOB_NOTES)
+    assert out.returncode == 0, out.stderr
+    assert "not opening an issue for a failure seen in one job." in out.stdout
+    assert "Could not read the earlier runs of main (gh: Not Found (HTTP 404)" in out.stdout
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+@_needs_posix
+def test_a_rate_limited_run_list_opens_nothing_and_is_named(tmp_path: Path) -> None:
+    out, stub = _run_step(
+        tmp_path, jobs=ONE_JOB, logs={}, annotations=ONE_JOB_NOTES, runs_rate_limited=True
+    )
+    assert out.returncode == 0, out.stderr
+    limited = "The API rate limit of this token is used up, so the earlier runs of main could not"
+    assert limited in out.stdout and limited in (stub / "summary.md").read_text(encoding="utf-8")
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+@_needs_posix
+def test_unreadable_jobs_of_the_previous_run_open_nothing(tmp_path: Path) -> None:
+    out, stub = _run_step(
+        tmp_path, jobs=ONE_JOB, logs={}, annotations=ONE_JOB_NOTES, runs=PREV_RUNS
+    )
+    assert out.returncode == 0, out.stderr
+    assert f"Could not read the jobs of {PREV_URL} (gh: Not Found (HTTP 404)" in out.stdout
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+@_needs_posix
+def test_a_rate_limit_on_the_previous_runs_tests_stops_the_look_back(tmp_path: Path) -> None:
+    prev_jobs = _jobs(
+        (91, "Backend Tests (3.12, 7)", "failure"), (93, "Backend Tests (3.12, 8)", "failure")
+    )
+    notes = {**ONE_JOB_NOTES, 93: _notes(f"{ONE_FILE}::TestOneChip::test_b")}
+    out, stub = _run_step(
+        tmp_path,
+        jobs=ONE_JOB,
+        logs={},
+        annotations=notes,
+        rate_limited=(91,),
+        runs=PREV_RUNS,
+        prev_jobs=prev_jobs,
+    )
+    assert out.returncode == 0, out.stderr
+    assert f"so the failing tests of {PREV_URL} could not be read." in out.stdout
+    assert not [c for c in _calls(stub) if "/check-runs/93/" in c]
+    assert _wrote(stub, "create", "edit", "comment", "close") == []
+
+
+@_needs_posix
+def test_one_unreadable_job_of_the_previous_run_does_not_hide_the_others(tmp_path: Path) -> None:
+    prev_jobs = _jobs(
+        (91, "Backend Tests (3.12, 7)", "failure"), (93, "Backend Tests (3.12, 8)", "failure")
+    )
+    notes = {**ONE_JOB_NOTES, 93: _notes(f"{ONE_FILE}::TestOneChip::test_b")}
+    out, stub = _run_step(
+        tmp_path, jobs=ONE_JOB, logs={}, annotations=notes, runs=PREV_RUNS, prev_jobs=prev_jobs
+    )
+    assert out.returncode == 0, out.stderr
+    assert len(_wrote(stub, "create")) == 1
+
+
+@_needs_posix
+def test_an_open_issue_or_a_test_red_in_two_jobs_never_looks_back(tmp_path: Path) -> None:
+    out, stub = _run_step(
+        tmp_path, jobs=ONE_JOB, logs={}, annotations=ONE_JOB_NOTES, issues=[_open_issue()]
+    )
+    assert out.returncode == 0, out.stderr
+    assert _wrote(stub, "edit") and _look_back_calls(stub) == []
+    out, stub = _run_step(tmp_path / "two")
+    assert out.returncode == 0, out.stderr
+    assert len(_wrote(stub, "create")) == 1 and _look_back_calls(stub) == []

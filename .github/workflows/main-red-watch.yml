@@ -46,11 +46,22 @@ name: Main Red Watch
 # both carry it. MEASURED on the same two weeks against 30 verified breaks of
 # main: opening on any named test files 39 issues, 17 of them for a test that
 # was not a break (mostly known flaky tests), and shows 29 of the 30; this rule
-# files 22, none of them for a non-break, and shows 28, at the same delay. It
-# needs no extra read and no memory of earlier runs. A break that only ever
-# fails on one leg (a test that runs on one OS) opens nothing; that run ends
-# with a warning, in the log and in the job summary, that names the tests it
-# saw red in one job. Once an issue is open every red run updates it.
+# files 22, none of them for a non-break, and shows 28, at the same delay.
+#
+# A break that only ever fails on one leg (one operating system, one shard) is
+# red in one job of every run, so that rule alone never files it. A run that is
+# red in one job only therefore looks back once: if the previous push run of
+# `CI` on main that reached a verdict was red on the same test file, it opens
+# the issue. MEASURED on the same two weeks: 27 of the 87 runs that named a
+# test were red in one job only; 6 of those had a test file also red in the
+# previous verdict run, each while the two-jobs rule already had an issue open,
+# so the look back files the same 22 issues and no other. The file and not the
+# node id, because a break often fails another test of the file on each run.
+# Nothing is stored: the look back reads the run list, the previous run's jobs
+# and the annotations of its failed jobs, and a read that fails opens nothing.
+# A run that opens nothing ends with a warning, in the log and in the job
+# summary, that names the tests it saw red in one job and what the look back
+# found. Once an issue is open every red run updates it.
 #
 # LIMITS OF AN ANNOTATION: `conftest.py` annotates the first 10 failing tests of
 # a job and counts the rest in a notice, so a job with more names 10 here. 1 of
@@ -162,6 +173,8 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           # A green run closes the issue only if every job with this name prefix
@@ -173,6 +186,7 @@ jobs:
         run: |
           set -euo pipefail
           script=.github/scripts/main_red_nodeids.py
+          previous=.github/scripts/main_red_previous.py
           work="$RUNNER_TEMP/main-red"
           mkdir -p "$work/logs"
           short_sha="${HEAD_SHA:0:12}"
@@ -354,12 +368,81 @@ jobs:
             echo "Updated #$existing."
           else
             # No issue is open. A test red in one job only is as often a flake as a
-            # break, so the issue opens only when a test is red in two jobs of this
-            # run (a Linux and a Windows leg). The run that does not open says which
-            # tests it saw. An open issue is updated either way.
+            # break, so the issue opens when a test is red in two jobs of this run
+            # (a Linux and a Windows leg), or when this run is red in one job and
+            # the previous run of main that reached a verdict was red on the same
+            # test file: a break that shows on one leg only is red in one job of
+            # every run. The run that does not open says which tests it saw and
+            # what the look back found. An open issue is updated either way.
+            #
+            # look_back sets `again` to the shared test files (empty for none) and
+            # `looked` to what it found. It reads the run list (one call), the
+            # previous run's jobs (one call) and the annotations of its failed jobs
+            # (one each, first 20), and only when that run was red. A read that
+            # fails, rate limit included, opens nothing: the look back only ever
+            # adds an issue, and without it the run does what it did before.
+            look_back() {
+              again=""
+              case "$RUN_NUMBER" in ''|*[!0-9]*) looked="This run has no run number to look back from"; return 0 ;; esac
+              case "$WORKFLOW_ID" in ''|*[!0-9]*) looked="This run has no workflow id to look back with"; return 0 ;; esac
+              unread() {
+                if rate_limited; then
+                  looked="The API rate limit of this token is used up, so $1 could not be read"
+                else
+                  looked="Could not read $1 ($(why))"
+                fi
+              }
+              if ! gh api "repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?branch=main&event=push&status=completed&per_page=100" \
+                > "$work/runs.json" 2> "$work/read-error.txt"; then
+                unread "the earlier runs of main"
+                return 0
+              fi
+              if ! prev="$(python3 "$previous" previous-verdict "$work/runs.json" --run-number "$RUN_NUMBER" --repo "$REPO")"; then
+                looked="None of the 100 finished push runs before this one reached a verdict"
+                return 0
+              fi
+              IFS=$'\t' read -r prev_id prev_conclusion prev_url <<< "$prev"
+              if [ "$prev_conclusion" = success ]; then
+                looked="The previous run of main that reached a verdict ($prev_url) was green"
+                return 0
+              fi
+              if ! gh api "repos/$REPO/actions/runs/$prev_id/jobs?per_page=100" --paginate \
+                --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | [.id, .name] | @tsv' \
+                > "$work/prev-failed-jobs.txt" 2> "$work/read-error.txt"; then
+                unread "the jobs of $prev_url"
+                return 0
+              fi
+              mkdir -p "$work/prev-logs"
+              prev_read=0
+              while IFS=$'\t' read -r job_id _; do
+                case "$job_id" in ''|*[!0-9]*) continue ;; esac
+                if [ "$prev_read" -ge 20 ]; then
+                  break
+                fi
+                prev_read=$((prev_read + 1))
+                if ! gh api "repos/$REPO/check-runs/$job_id/annotations?per_page=100" \
+                  > "$work/prev-logs/$job_id.json" 2> "$work/read-error.txt"; then
+                  rm -f "$work/prev-logs/$job_id.json"
+                  if rate_limited; then
+                    unread "the failing tests of $prev_url"
+                    return 0
+                  fi
+                fi
+              done < "$work/prev-failed-jobs.txt"
+              if again="$(python3 "$previous" same-files "$work/logs" "$work/prev-logs")"; then
+                looked="The previous run of main that reached a verdict ($prev_url) was red on the same test file ($again)"
+              else
+                again=""
+                looked="The previous run of main that reached a verdict ($prev_url) was not red on the same test file"
+              fi
+            }
             if ! once="$(python3 "$script" confirmed "$work/logs")"; then
-              say warning "$RUN_URL: $once and no main-red issue is open; not opening an issue for a failure seen in one job."
-              exit 0
+              look_back
+              if [ -z "$again" ]; then
+                say warning "$RUN_URL: $once and no main-red issue is open; not opening an issue for a failure seen in one job. $looked."
+                exit 0
+              fi
+              say notice "$RUN_URL: $once. $looked, so an issue is opened."
             fi
             : > "$work/prev-body.md"
             render ""

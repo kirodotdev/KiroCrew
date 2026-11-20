@@ -243,7 +243,13 @@ Three structural facts explain most of the rest:
   in two failed jobs of the run (the Linux and the Windows shard that both carry
   it), so a test that fails once on one leg, which is as often a flake as a
   break, opens nothing; that run ends with a warning naming the tests it saw red
-  in one job. An open issue is updated by every red run that names a test. It
+  in one job. A run that is red in one job only still opens the issue when the
+  previous push run of `CI` on `main` that reached a verdict was red on the same
+  test file (`.github/scripts/main_red_previous.py`): a break that shows on one
+  operating system or one shard is red in one job of every run. That look back
+  stores nothing; it reads the run list, the previous run's jobs and the
+  annotations of its failed jobs, only on such a run, and a read that fails
+  opens nothing. An open issue is updated by every red run that names a test. It
   opens or updates one issue,
   `ci: Main is red: <first node id>`, in the shape of the CI failure issue form
   (`.github/ISSUE_TEMPLATE/ci_failure.yml`: its `ci: ` title prefix, its `bug`
