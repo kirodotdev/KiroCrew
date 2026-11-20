@@ -15473,7 +15473,12 @@
       "hide_sessions_count_one": "{{n}}টি সেশন লুকাও",
       "hide_sessions_count_other": "{{n}}টি সেশন লুকাও",
       "reclick_toggles_side_panel": "সাইড প্যানেল দেখাতে বা লুকাতে আবার ক্লিক করো",
-      "reclick_toggles_side_panel_shortcut": "সাইড প্যানেল দেখাতে বা লুকাতে আবার ক্লিক করো ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "সাইড প্যানেল দেখাতে বা লুকাতে আবার ক্লিক করো ({{shortcut}})",
+      "show_linked_items_one": "{{count}}টি সংযুক্ত আইটেম দেখাও",
+      "show_linked_items_other": "{{count}}টি সংযুক্ত আইটেম দেখাও",
+      "hide_linked_items": "সংযুক্ত আইটেম লুকাও",
+      "show_linked_items_failed_one": "{{count}}টি সংযুক্ত আইটেম দেখাও, একটি যাচাই ব্যর্থ হয়েছে",
+      "show_linked_items_failed_other": "{{count}}টি সংযুক্ত আইটেম দেখাও, একটি যাচাই ব্যর্থ হয়েছে"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

@@ -7297,7 +7297,12 @@
       "kind_section_mate": "From bots",
       "filter_crew_description": "Show only conductor mode chats",
       "reclick_toggles_side_panel": "Click again to show or hide the side panel",
-      "reclick_toggles_side_panel_shortcut": "Click again to show or hide the side panel ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "Click again to show or hide the side panel ({{shortcut}})",
+      "show_linked_items_one": "Show {{count}} linked item",
+      "show_linked_items_other": "Show {{count}} linked items",
+      "hide_linked_items": "Hide linked items",
+      "show_linked_items_failed_one": "Show {{count}} linked item, a check failed",
+      "show_linked_items_failed_other": "Show {{count}} linked items, a check failed"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

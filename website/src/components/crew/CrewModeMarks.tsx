@@ -134,23 +134,19 @@ function ReadOnlyBoltMark({ label, testId, size, className, motionProps, placeme
   )
 }
 
-/** One coloured bolt before a Conductor mode session title, read-only.
+/** One coloured bolt on a Conductor mode session row's first line, read-only.
  *
- *  The Sessions row places it OUT of the title's line box: `absolute` with no
- *  insets keeps its static position, the start of the title line, and the
- *  title reserves the box's width with a matching `indent-6`. So the 24px
- *  touch box never makes the 20px title line taller. The positioned content
- *  column uses `overflow-x-clip`, leaving vertical overflow visible so the
- *  box and its focus ring stay whole even without meta or status height.
- *  `-mt-0.5` centres the box on the line.
- *  The bubble opens below: above, it would cover the Sessions search field. */
+ *  It sits in the slot where every other row names its agent, so the row's
+ *  title starts at the same x as its neighbours'. The box is the 12px of that
+ *  line, so it never makes the line taller; the bubble opens below, since
+ *  above it would cover the Sessions search field. */
 export function ConductorModeTitleMark() {
   return (
     <ReadOnlyBoltMark
       label={i18nT('components.crewMode.chip_off')}
       testId="conductor-mode-title-mark"
-      size={14}
-      className="absolute -mt-0.5 grid h-6 w-6 place-items-center bg-transparent border-none focus-visible:-outline-offset-2"
+      size={12}
+      className="inline-grid h-3 w-3 place-items-center p-0 bg-transparent border-none focus-visible:-outline-offset-2"
       placement="below"
       quietAncestorTitle
       expandTouchTarget={false}

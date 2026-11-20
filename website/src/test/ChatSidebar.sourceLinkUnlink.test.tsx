@@ -36,6 +36,7 @@ vi.mock('../api/client', async importOriginal => {
 })
 import ChatSidebar from '../pages/ChatSidebar'
 import { sameSlotPlaceholder } from '../components/SourceLinksSubmenu'
+import { expandSessionLinks } from './SessionLinksTestUtils'
 
 const PR_URL = 'https://github.com/acme/widgets/pull/634'
 const ISSUE_URL = 'https://github.com/acme/widgets/issues/701'
@@ -64,6 +65,7 @@ function renderSidebar(list = rows(), connected = true) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   for (const key of ['chat-folders', 'chat-tags', 'tag-columns', 'channel-targets']) qc.setQueryData([key], [])
   render(<QueryClientProvider client={qc}><Provider store={store}><ThemeProvider><MemoryRouter><ConnectedSidebar /></MemoryRouter></ThemeProvider></Provider></QueryClientProvider>)
+  expandSessionLinks()
   return { store, qc }
 }
 async function openMenu(context = false) {

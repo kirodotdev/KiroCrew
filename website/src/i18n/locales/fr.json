@@ -15874,7 +15874,14 @@
       "hide_sessions_count_many": "Masquer {{n}} sessions",
       "hide_sessions_count_other": "Masquer {{n}} sessions",
       "reclick_toggles_side_panel": "Clique à nouveau pour afficher ou masquer le panneau latéral",
-      "reclick_toggles_side_panel_shortcut": "Clique à nouveau pour afficher ou masquer le panneau latéral ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "Clique à nouveau pour afficher ou masquer le panneau latéral ({{shortcut}})",
+      "show_linked_items_one": "Afficher {{count}} élément lié",
+      "show_linked_items_many": "Afficher {{count}} éléments liés",
+      "show_linked_items_other": "Afficher {{count}} éléments liés",
+      "hide_linked_items": "Masquer les éléments liés",
+      "show_linked_items_failed_one": "Afficher {{count}} élément lié, une vérification a échoué",
+      "show_linked_items_failed_many": "Afficher {{count}} éléments liés, une vérification a échoué",
+      "show_linked_items_failed_other": "Afficher {{count}} éléments liés, une vérification a échoué"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

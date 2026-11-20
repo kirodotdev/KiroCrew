@@ -15473,7 +15473,12 @@
       "hide_sessions_count_one": "{{n}} Sitzung ausblenden",
       "hide_sessions_count_other": "{{n}} Sitzungen ausblenden",
       "reclick_toggles_side_panel": "Erneut klicken, um das Seitenpanel ein- oder auszublenden",
-      "reclick_toggles_side_panel_shortcut": "Erneut klicken, um das Seitenpanel ein- oder auszublenden ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "Erneut klicken, um das Seitenpanel ein- oder auszublenden ({{shortcut}})",
+      "show_linked_items_one": "{{count}} verknüpftes Element anzeigen",
+      "show_linked_items_other": "{{count}} verknüpfte Elemente anzeigen",
+      "hide_linked_items": "Verknüpfte Elemente ausblenden",
+      "show_linked_items_failed_one": "{{count}} verknüpftes Element anzeigen, eine Prüfung ist fehlgeschlagen",
+      "show_linked_items_failed_other": "{{count}} verknüpfte Elemente anzeigen, eine Prüfung ist fehlgeschlagen"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

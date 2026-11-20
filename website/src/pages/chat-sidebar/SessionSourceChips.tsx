@@ -37,7 +37,7 @@ const TERMINAL_SOURCE_LINK_STATES: ReadonlySet<SourceLinkState> = new Set<Source
  * means the provider status has not been read yet (or the payload predates the
  * field), which is not terminal — such a chip keeps rendering CI exactly as it
  * always did. */
-function showsChipCi(state: SourceLinkState | undefined): boolean {
+export function showsChipCi(state: SourceLinkState | undefined): boolean {
   return state === undefined || !TERMINAL_SOURCE_LINK_STATES.has(state)
 }
 

@@ -16275,7 +16275,16 @@
       "hide_sessions_count_many": "Скрыть {{n}} сессий",
       "hide_sessions_count_other": "Скрыть {{n}} сессии",
       "reclick_toggles_side_panel": "Нажми ещё раз, чтобы показать или скрыть боковую панель",
-      "reclick_toggles_side_panel_shortcut": "Нажми ещё раз, чтобы показать или скрыть боковую панель ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "Нажми ещё раз, чтобы показать или скрыть боковую панель ({{shortcut}})",
+      "show_linked_items_one": "Показать {{count}} связанный элемент",
+      "show_linked_items_few": "Показать {{count}} связанных элемента",
+      "show_linked_items_many": "Показать {{count}} связанных элементов",
+      "show_linked_items_other": "Показать {{count}} связанного элемента",
+      "hide_linked_items": "Скрыть связанные элементы",
+      "show_linked_items_failed_one": "Показать {{count}} связанный элемент, проверка не пройдена",
+      "show_linked_items_failed_few": "Показать {{count}} связанных элемента, проверка не пройдена",
+      "show_linked_items_failed_many": "Показать {{count}} связанных элементов, проверка не пройдена",
+      "show_linked_items_failed_other": "Показать {{count}} связанного элемента, проверка не пройдена"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

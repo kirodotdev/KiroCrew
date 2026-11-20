@@ -15874,7 +15874,14 @@
       "hide_sessions_count_many": "Nascondi {{n}} sessioni",
       "hide_sessions_count_other": "Nascondi {{n}} sessioni",
       "reclick_toggles_side_panel": "Fai di nuovo clic per mostrare o nascondere il pannello laterale",
-      "reclick_toggles_side_panel_shortcut": "Fai di nuovo clic per mostrare o nascondere il pannello laterale ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "Fai di nuovo clic per mostrare o nascondere il pannello laterale ({{shortcut}})",
+      "show_linked_items_one": "Mostra {{count}} elemento collegato",
+      "show_linked_items_many": "Mostra {{count}} elementi collegati",
+      "show_linked_items_other": "Mostra {{count}} elementi collegati",
+      "hide_linked_items": "Nascondi elementi collegati",
+      "show_linked_items_failed_one": "Mostra {{count}} elemento collegato, un controllo non è riuscito",
+      "show_linked_items_failed_many": "Mostra {{count}} elementi collegati, un controllo non è riuscito",
+      "show_linked_items_failed_other": "Mostra {{count}} elementi collegati, un controllo non è riuscito"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

@@ -15072,7 +15072,10 @@
       "show_sessions_count_other": "显示 {{n}} 个会话",
       "hide_sessions_count_other": "隐藏 {{n}} 个会话",
       "reclick_toggles_side_panel": "再次点击可显示或隐藏侧边面板",
-      "reclick_toggles_side_panel_shortcut": "再次点击可显示或隐藏侧边面板（{{shortcut}}）"
+      "reclick_toggles_side_panel_shortcut": "再次点击可显示或隐藏侧边面板（{{shortcut}}）",
+      "show_linked_items_other": "显示 {{count}} 个关联项",
+      "hide_linked_items": "隐藏关联项",
+      "show_linked_items_failed_other": "显示 {{count}} 个关联项，有检查失败"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

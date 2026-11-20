@@ -15473,7 +15473,12 @@
       "hide_sessions_count_one": "{{n}} सत्र छिपाएँ",
       "hide_sessions_count_other": "{{n}} सत्र छिपाएँ",
       "reclick_toggles_side_panel": "साइड पैनल दिखाने या छिपाने के लिए फिर से क्लिक करो",
-      "reclick_toggles_side_panel_shortcut": "साइड पैनल दिखाने या छिपाने के लिए फिर से क्लिक करो ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "साइड पैनल दिखाने या छिपाने के लिए फिर से क्लिक करो ({{shortcut}})",
+      "show_linked_items_one": "{{count}} जुड़ा हुआ आइटम दिखाएँ",
+      "show_linked_items_other": "{{count}} जुड़े हुए आइटम दिखाएँ",
+      "hide_linked_items": "जुड़े हुए आइटम छिपाएँ",
+      "show_linked_items_failed_one": "{{count}} जुड़ा हुआ आइटम दिखाएँ, एक जाँच विफल हुई",
+      "show_linked_items_failed_other": "{{count}} जुड़े हुए आइटम दिखाएँ, एक जाँच विफल हुई"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
