@@ -688,8 +688,19 @@ the same revisions an edit writes.
   the last run, plus the existing rows they are compared with.
 - The first run over the existing backlog is capped per night and resumable: it
   keeps its own cursor and finishes over several nights.
-- Per run: at most 200 rows considered and 10 minutes of wall clock. The run
-  stops at the next batch boundary when any chat starts.
+- Row budget per run, split from the cost cap: at most 2,500 rows past the
+  cursor. On a store of about 17,000 rows that gains about 200 a day, this row
+  budget alone covers the backlog in about a week of runs; the approval list
+  (below) can hold it back longer. A caught-up store reads only the rows written
+  since. Scanning rows spends no model tokens; the model step keeps its own
+  20,000 input-token cap per run (7.5), and a pair that does not fit the tokens
+  left stops the run before its batch, so the next run reads it again.
+- Every run: at most 10 minutes of wall clock. The run stops at the next batch
+  boundary when any chat starts.
+- When the approval list is full (500 entries), the cursor stops before the batch
+  whose proposal did not fit and later runs read nothing until a person makes
+  room: the scan pauses rather than skip a candidate. A proposal too large for
+  an empty list is refused instead.
 - Rows that lack a vector are embedded on the bulk queue.
 
 ### 7.5 Candidates, found by code
