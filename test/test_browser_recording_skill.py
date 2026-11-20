@@ -9,6 +9,7 @@ contract (nothing auto-installed, ffmpeg optional) survives edits.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -187,6 +188,13 @@ class TestEndToEnd:
             ),
         )
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        # Playwright makes its profile and artifacts dirs under the child's temp dir
+        # before it looks for the browser, and leaves both behind when the browser
+        # build is missing. Pointing the child at this test's tmp_path keeps them out
+        # of the run's temp root on the skip path too.
+        child_tmp = tmp_path / "child-tmp"
+        child_tmp.mkdir()
+        env = {**os.environ, **dict.fromkeys(("TMPDIR", "TEMP", "TMP"), str(child_tmp))}
         try:
             out = tmp_path / "out"
             p = subprocess.run(
@@ -197,7 +205,7 @@ class TestEndToEnd:
                     "--out", str(out), "--name", "e2e", "--size", "640x480",
                     "--settle-ms", "200", "--tail-ms", "200",
                 ],
-                capture_output=True, text=True, encoding="utf-8", timeout=300,
+                capture_output=True, text=True, encoding="utf-8", timeout=300, env=env,
             )
             if p.returncode != 0 and "Executable doesn't exist" in p.stderr:
                 pytest.skip("playwright package present but chromium binaries not installed")
