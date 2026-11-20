@@ -101,6 +101,9 @@ PREDICATE_SITES = {
     # has marked what it admits, so the predicate refuses an SSM request here. The
     # router that serves the recorded port still refuses by listener first.
     "apps/pane_ports.py": 1,
+    # The connected-computer consent route: owner, then this predicate, so a
+    # tunnelled or SSM-forwarded page cannot start a share of this computer.
+    "connected_computers/local_routes.py": 1,
     "dashboard/file_api/desktop.py": 1,
     "dashboard/handlers/core.py": 2,
     "dashboard/handlers/external_terminal.py": 1,
@@ -137,6 +140,8 @@ RAW_LOOPBACK_SITES = {
     # Each of these also requires the internal secret, X-Local-Secret or
     # ``internal_auth``, none of which an SSM guest holds.
     "apps/builtins/dev_fleet/agent_pod_api.py": 1,
+    # Native consent requires internal_auth AND loopback and rejects agent IPC grants.
+    "connected_computers/local_routes.py": 1,
     "dashboard/handlers/core.py": 2,
     "dashboard/handlers/core_local_token.py": 1,
     "dashboard/handlers/external_terminal.py": 1,
@@ -194,6 +199,7 @@ def test_the_raw_sites_that_grant_something_read_the_marker_or_a_secret() -> Non
     """The secret-or-marker claim above is checked, not just stated."""
     needs_secret_or_marker = {
         "apps/builtins/dev_fleet/agent_pod_api.py",
+        "connected_computers/local_routes.py",
         "dashboard/handlers/core.py",
         "dashboard/handlers/core_local_token.py",
         "dashboard/handlers/external_terminal.py",

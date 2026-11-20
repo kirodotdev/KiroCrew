@@ -53,6 +53,7 @@ def shared_active(request, computer_config, monkeypatch):
             raise RuntimeError("Shared Crew state unavailable")
 
         monkeypatch.setattr(preview, "preview_enabled", unreadable)
+    computer_config.shared_state_unreadable = request.param == "unreadable"
     return computer_config
 
 
@@ -66,7 +67,7 @@ def test_shared_crew_closes_every_switch_reader(shared_active, monkeypatch, sour
     assert flag.remote_enabled(passed) is False
     assert flag.remote_refusal(passed) == flag.SHARED_CREW_REASON
     assert flag.local_enabled(passed) is False
-    assert flag.local_switch(passed) is False
+    assert flag.local_switch(passed) is (None if cfg.shared_state_unreadable else False)
     assert flag.live_preview_on() is False
     with pytest.raises(flag.ConnectedComputersDisabled) as refusal:
         flag.require_remote(passed)

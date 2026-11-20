@@ -327,6 +327,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _release_stt_engine,
     _reset_channel_turn_ceiling,
     _reset_cjk_segmenter,
+    _reset_connected_computers_state,
     _reset_create_rate_limit_buckets,
     _reset_crewmate_worker_slots,
     _reset_degraded_config_observations,

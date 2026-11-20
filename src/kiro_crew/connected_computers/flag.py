@@ -55,24 +55,6 @@ class ConnectedComputersDisabled(SessionEnvironmentUnavailable):
         super().__init__(message)
 
 
-def _config(cfg: Any) -> Any:
-    if cfg is not None:
-        return cfg
-    try:
-        from kiro_crew.config import live
-
-        snap = live.snapshot()
-        if snap is not None:
-            return snap
-        # A CLI process (enrollment over SSH) has no watcher: read the file.
-        from kiro_crew.config.loader import KiroCrewConfig
-
-        return KiroCrewConfig.load()
-    except Exception:  # noqa: BLE001 -- unread means off
-        logger.debug("connected computers: config unreadable; treating as off", exc_info=True)
-        return None
-
-
 def _shared_crew_active() -> bool:
     """Treat an unreadable Shared Crew state as shared, so no computer is exposed."""
     try:
@@ -87,15 +69,8 @@ def _shared_crew_active() -> bool:
 
 
 def preview_on(cfg: Any = None) -> bool:
-    """Whether a non-shared Crew's edition permits its exact ``True`` stored switch."""
-    if _shared_crew_active():
-        return False
-    from kiro_crew.edition_locks import feature_previews
-
-    previews = feature_previews(
-        getattr(getattr(_config(cfg), "dashboard", None), "feature_previews", None)
-    )
-    return isinstance(previews, Mapping) and previews.get(PREVIEW_NAME) is True
+    """New work is admitted only by an authoritative enabled switch."""
+    return local_switch(cfg) is True
 
 
 def live_preview_on() -> bool:
@@ -155,7 +130,27 @@ def local_switch(cfg: Any = None) -> Optional[bool]:
         except Exception:  # noqa: BLE001 -- unknown, not off
             logger.debug("connected computers: config unreadable; switch unknown", exc_info=True)
             return None
-    return preview_on(cfg)
+    degraded = getattr(cfg, "_read_degraded_sections", None)
+    if degraded is None:
+        degraded = getattr(cfg, "degraded_sections", ())
+    if (
+        cfg is None
+        or bool({"dashboard", "dashboard.feature_previews"} & set(degraded or ()))
+        or (getattr(cfg, "_base_unreadable", False) or getattr(cfg, "_overlay_unreadable", False))
+    ):
+        return None
+    try:
+        from kiro_crew.edition_locks import feature_previews
+        from kiro_crew.shared_crew.preview import preview_enabled
+
+        shared = preview_enabled()
+        previews = feature_previews(
+            getattr(getattr(cfg, "dashboard", None), "feature_previews", None)
+        )
+        return not shared and isinstance(previews, Mapping) and previews.get(PREVIEW_NAME) is True
+    except Exception:  # noqa: BLE001 -- unknown must not revoke saved grants
+        logger.debug("connected computers: switch authority unavailable", exc_info=True)
+        return None
 
 
 def local_enabled(cfg: Any = None) -> bool:

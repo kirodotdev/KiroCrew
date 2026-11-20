@@ -4068,6 +4068,55 @@ re-parsed into GUI sub-effects; and the **web terminal PTY**
 `is_sensitive_bash_command` / governance call at all, so it is an operator-only,
 ungoverned plane.
 
+### Connected computers: a second, local OS fence
+
+Feature preview `connected_computers` (owner: `connected_computers/`, spec:
+[providers.md](providers.md)). A chat on a remote gateway can run its workspace tools
+and the user's explicitly exposed local MCP servers on the user's own computer. That
+computer runs them under its OWN fence, separate from `sandbox.py`, which this
+feature does not widen or change:
+
+- **An allow-list, not a mask** (`confinement.py`): a child may write only the
+  granted root and a private scratch, and read only those plus its runtime.
+  TLS trust reads mount only `/etc/ssl/certs`, `/etc/ssl/cert.pem`,
+  `/etc/ca-certificates`, `/etc/pki/tls/certs` and `/etc/pki/ca-trust` when
+  present, never the enclosing SSL/PKI trees or their private-key directories. Linux
+  uses `bwrap` with new user, PID, IPC and UTS namespaces and a seccomp filter
+  (`seccomp.py`) that refuses AF_UNIX sockets (abstract X11 and session-bus
+  sockets), io_uring, and `keyctl`/`add_key`/`request_key` (the user's session
+  keyring). Sharing is Linux-only for now: macOS, Windows and any processor
+  without a seccomp table refuse; nothing falls back to an unconfined run.
+- **Proved before each connect** (`self_test`): one probe runs unconfined and then
+  confined against fresh witnesses outside the root; any witness the confined run
+  reaches fails the connect.
+- **Consent is native only**: a desktop dialog and folder picker; no CLI verb, page
+  or agent tool can share a folder. Both native approval paths bind the connection
+  coordinates at consent creation and refuse a different target at redemption.
+  Saved grants and queued revokes keep those coordinates across restarts; renewal,
+  reconnect and queued remote cleanup refuse changed or missing approvals before
+  sending to a destination. A changed target needs fresh native consent.
+  Remote forgets also carry the retired enrollment's saved generation. The remote
+  registry compares device, fingerprint and generation in its existing atomic
+  update; delayed or legacy unscoped cleanup cannot revoke a newer enrollment.
+  Probe writes use fresh private subdirectories and exclusive no-follow opens;
+  neither the unconfined control nor the confined probe follows planted links.
+  The connector credential is per device and
+  gateway, sealed under an OS keyring key (`protected_store.py`, tools resolved
+  with `trusted_system_bin_quiet`), and sent only after the gateway proved itself.
+- **Shared local permission audits:** local grant operations emit once after their
+  committed mutation with the entry point's HTTP subject, `cli` or `desktop-host`
+  when known. Remote HTTP Disconnect/Remove keeps its request-aware audit;
+  remote CLI mutations emit at their entry point, not in the registry. Local
+  HTTP success duplicates are removed.
+- **Every narrowing is immediate**: a revoke or Off from any local process stops
+  new input at the next frame and the process tree within a bound.
+- **Auth surface**: `GET /api/connected-computers/connect` bypasses the dashboard
+  token and checks its own credential; three consent paths are STRICT internal
+  ([dashboard-token-auth](dashboard-token-auth.md)). `@connected-computer-*` and
+  `@workspace` tools are never pre-authorized past Kiro Crew's own gate
+  (`platform.governance.may_skip_gate` answers False for both; for `@connected-computer-*`
+  while the preview is on, the only time such a server is mounted).
+
 ### Suspicious Bash Patterns (`security/`)
 
 Patterns in `SUSPICIOUS_BASH_PATTERNS` are checked by the advisory

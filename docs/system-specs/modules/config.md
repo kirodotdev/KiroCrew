@@ -1787,7 +1787,9 @@ The shared `preview_on` reader first refuses a running Shared Crew preview
 also keeps connected computers off, and `remote_refusal` names the shared-Crew
 restriction before the ordinary disabled reason. It then passes the stored switches through
 `edition_locks.feature_previews`: an LTS build reads this preview as off even
-when its saved value is `true`. This applies to the connector token-auth
+when its saved value is `true`. Shared Crews also read it as off, through the
+same `flag.preview_on` authority, until remote-person ownership is checked.
+This applies to the connector token-auth
 exemption and route, admission checks, picker, local helpers and the config
 watcher's old/new values. The stored configuration is unchanged. Each gateway
 reads its OWN copy, so the remote gateway's switch can never turn the local machine's on, or
@@ -1818,10 +1820,31 @@ the other way round:
 The live watcher applies a change with no restart (`dashboard/server_runtime/config_watch.py`
 calls `connected_computers.disable.apply` whenever `dashboard.feature_previews` is touched):
 turning it off closes every connector socket this gateway serves (the tool server
-stops; nothing is retried or fabricated). The gateway's shutdown closes sockets but keeps records. While the
-switch stays off neither does anything: the hook returns before scheduling work, and
-shutdown finds no broker.
+stops; nothing is retried or fabricated) and revokes every active grant this machine holds (one remote revoke
+queued per pair) and stops each connector with a bound. Turning it back on revokes any
+share still saved (one an Off made while no gateway ran here left behind), then starts the
+local controller; no revoked grant comes back. The gateway's shutdown stops connectors and
+closes sockets but keeps grants and records. While the switch stays off none of this runs:
+the hook returns before scheduling work, startup (`disable.start_if_enabled`) reads only the
+live snapshot and creates no controller, and shutdown finds nothing to stop.
 The frontend key is `mc-preview-connected-computers` (`website/src/utils/previewFlags.ts`).
+For revocation, `flag.local_switch` returns unknown (`None`) if the loaded
+configuration reports a degraded `dashboard` or `dashboard.feature_previews`
+section in `_read_degraded_sections` (this load only), this read's unreadable base
+or overlay flags, or the Shared Crew authority raises. The loader preserves the
+existing sticky `degraded_sections` contract separately; manually constructed
+snapshots without per-read metadata fall back to its relevant section names.
+The live watcher carries per-read metadata when keeping last-valid values during
+a torn read. Unrelated sticky section errors and historical whole-file markers do not
+turn the preview off. The desktop watcher keeps watching and the config
+hook schedules no revoke from an unknown new value. When the new value becomes
+authoritative Off, the hook revokes even if the previous value was unknown.
+An unchanged known-Off snapshot remains a no-op. Unknown-to-On recovery starts
+reconciliation of the saved grants without the revoking off-to-on sweep.
+`preview_on` and
+`local_enabled` still read unknown as off for new work. The full preview decision
+lives only in `local_switch`; `preview_on` is the exact `local_switch(cfg) is True`
+projection, shared by every admission reader.
 Feature Previews reuses the disabled Settings toggle with a short shared-Crew badge
 in `descriptionBadge`, preserving the literal description for settings search,
 reading the owner's running `active` state or the existing `shared_crew_preview`

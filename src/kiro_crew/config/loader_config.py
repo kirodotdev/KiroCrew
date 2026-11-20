@@ -559,6 +559,10 @@ class KiroCrewConfig:
         compare=False,
     )
 
+    #: Sections discarded by this load alone, without process-wide sticky observations.
+    #: None denotes a manually constructed snapshot without read provenance.
+    _read_degraded_sections: frozenset[str] | None = field(default=None, repr=False, compare=False)
+
     #: True when the load that built this instance found ``config.json`` present
     #: but unparseable, so every base setting here is a DEFAULT, not the user's.
     #: Describes this read, like ``_degraded_sections``; never serialized.

@@ -261,7 +261,8 @@ def _register_config_watch(
         if change.touched("dashboard.feature_previews"):
             state.push_refresh("config")
             # Connected computers has server behavior: switching it off ends its
-            # live sockets (scheduled off this cycle). A no-op while it stays off.
+            # live sockets and local grants (scheduled off this cycle). A no-op
+            # while it stays off.
             from kiro_crew.connected_computers import disable as connected_computers
 
             connected_computers.apply(change)
@@ -425,8 +426,9 @@ def _register_config_watch(
             await live.watch().stop()
         except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
             logger.warning("Config watcher stop failed during shutdown", exc_info=True)
-        # Connected computers: close remote connector sockets; records are kept.
-        # Nothing to close (a no-op) unless the preview was on.
+        # Connected computers: stop local connectors (and their process trees)
+        # and close remote connector sockets. Grants and records are kept.
+        # Nothing to stop (a no-op) unless the preview was on.
         from kiro_crew.connected_computers.disable import shutdown as connected_shutdown
 
         try:
@@ -481,6 +483,11 @@ def _kick_config_watch(app: web.Application, state: DashboardState) -> None:
             await live.watch().start(initial=initial)
         except Exception:  # noqa: BLE001 — a dead watcher must not take the gateway down
             logger.warning("Live config watcher failed to start", exc_info=True)
+        # Post-bind, in this background task: the local controller of connected
+        # computers, only when this machine opted in. Off starts and reads nothing.
+        from kiro_crew.connected_computers.disable import start_if_enabled
+
+        start_if_enabled()
 
     task = asyncio.create_task(_start())
     state._background_tasks.add(task)

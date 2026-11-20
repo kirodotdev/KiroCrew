@@ -10,7 +10,7 @@
 
 Owner only. Revoke and remove narrow access, so they work with the switch off.
 Nothing here can enroll a computer or widen a grant: that happens only from the
-computer itself.
+computer itself (:mod:`.local_routes`).
 
 Every gateway registers these routes, preview on or off, so this module stays
 import-light: at module level it imports only :mod:`.flag`. The broker, the
@@ -181,8 +181,10 @@ async def api_connector_connect(request: web.Request) -> web.StreamResponse:
 
 
 def register_all(app: web.Application) -> None:
-    """Every connected-computers route: the connector socket and the device list."""
+    """Every connected-computers route: remote socket, remote list, local consent."""
+    from kiro_crew.connected_computers import local_routes
     from kiro_crew.dashboard.token_auth_paths import CONNECTOR_CONNECT_PATH
 
     app.router.add_route("*", CONNECTOR_CONNECT_PATH, api_connector_connect)
     register_routes(app)
+    local_routes.register_routes(app)

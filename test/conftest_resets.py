@@ -1601,3 +1601,43 @@ def _published_redaction_verdict_on():
     seams = sys.modules.get("kiro_crew.redaction_seams")
     if seams is not None:
         seams.publish(False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_connected_computers_state():
+    """No controller, consent or task registry survives its test's data home.
+
+    Only inspect loaded modules. The root task-drain floor owns awaiting live
+    tasks before the loop closes; these resets discard their retained handles.
+    Static protocol/syscall tables are not runtime caches and stay unchanged.
+    """
+    from contextvars import ContextVar
+    from threading import Lock
+
+    def clear():
+        for name, attribute, factory in (
+            ("broker", "_BROKER", lambda: None),
+            ("controller", "_CONTROLLER", lambda: None),
+            ("disable", "_STARTUP_TASK", lambda: None),
+            ("disable", "_TASKS", set),
+            ("connector", "_LATE_STOPS", set),
+            ("launch", "_WATCHERS", set),
+            ("local_routes", "_consents", dict),
+            ("local_routes", "_consents_lock", Lock),
+            (
+                "permission_audit",
+                "_caller",
+                lambda: ContextVar(
+                    "connected_computer_permission_caller", default="connected_computers"
+                ),
+            ),
+        ):
+            module = sys.modules.get("kiro_crew.connected_computers." + name)
+            if module is not None:
+                setattr(module, attribute, factory())
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
