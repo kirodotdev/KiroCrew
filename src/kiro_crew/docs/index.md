@@ -1,8 +1,9 @@
 # Kiro Crew Documentation
 
 Kiro Crew is a personal, autonomous AI agent that runs locally on your own
-machine. It is powered by kiro-cli (KiroACP) and reaches tools over the Model
-Context Protocol (MCP). Everything below is the reference for the features you
+machine. It drives a Kiro agent engine over the Agent Client Protocol (by
+default KAS, kiro-cli's v3 engine, reached through kiro-cli) and reaches tools
+over the Model Context Protocol (MCP). Everything below is the reference for the features you
 can reach from the dashboard, the CLI, or a connected messaging channel.
 
 ## Quick Start
@@ -19,7 +20,9 @@ Then start the gateway and open the dashboard:
 kirocrew gateway     # → http://localhost:5476
 ```
 
-`kiro-cli` must be installed, on your `PATH`, and logged in. See
+`kiro-cli` must be installed, on your `PATH`, and logged in, unless you run
+Kiro Crew's own engine bundle (`kirocrew kas install`, see `agent.kas_bundle` in
+[Configuration](configuration.md#agent)). See
 [Getting Started](getting-started.md) for the source install, the pip channel
 index, first-time setup, and connecting messaging channels. Already using
 kiro-cli? [Coming from kiro-cli](coming-from-kiro-cli.md) explains what carries
@@ -83,6 +86,7 @@ documented by their own in-panel help.
 | Tab | Covers | Guide |
 |---|---|---|
 | Overview | Gateway status and the settings you change most | — |
+| Kiro account | Signing in to Kiro and your plan's credit reading; shown when the build offers Kiro sign-in or has a credit reading | [Coming from kiro-cli](coming-from-kiro-cli.md) |
 | Import / Export | Bringing data in from another AI agent, and backing up or restoring Kiro Crew configuration | [Snapshot and restore](snapshot-and-restore.md) |
 | Agent Harness | Which agent new sessions start | — |
 | Chat | Composer behaviour, queued messages, feature tips | [Feature Tips](feature-tips.md) |
@@ -92,14 +96,16 @@ documented by their own in-panel help.
 | Shortcuts | Keyboard bindings | — |
 | Skills | Whether sessions auto-generate skills, and whether a generated one needs your approval; installed skills live under Customize | [Skills](skills.md) |
 | Messaging Channels | Per-channel setup and access control | [Channel capabilities](channel-capabilities.md) |
-| Browser | Installing the browser engine and the attach token | [Browser control](browser-control.md) |
+| Browser | Which browser Kiro drives, how it connects, and the live view in chat | [Browser control](browser-control.md) |
 | Computer Use | Driving native desktop apps; off by default | [Computer use](computer-use.md) |
 | Webhooks | Inbound tokens and request signing — hidden unless you enable it under Feature Previews | [Inbound webhooks](inbound-webhooks.md) |
 | Remote Crew | Additional gateways this dashboard can reach | [Remote crew](remote-crew.md) |
+| People | Who else may use this Crew; shown only while the gateway runs with the Shared Crew preview (`KIROCREW_SHARED_CREW_PREVIEW=1`) | — |
 | Privacy | What leaves the host | [Snapshot and restore](snapshot-and-restore.md) |
 | Security | The sandbox, denied commands, and the audit log | [Blocked commands](blocked-commands.md) |
 | Connections | Provider cards, each with its OAuth app when the provider needs a registered client; MCP servers have their own MCP Servers page | [Connections](connections.md) |
 | Secrets | The encrypted credential vault | [Secrets vault](secrets-vault.md) |
+| Session Environments | Remote workspaces a session can start in; hidden unless you enable it under Feature Previews | — |
 | Developer | A list of pages: Feature Previews (with an optional local-gateway toggle), then logs, metrics, storage and the other developer views | [Dashboard](dashboard.md) |
 | About | Version, update channel, check for updates, release notes, and license | [Getting Started](getting-started.md) |
 
