@@ -34,6 +34,8 @@ import ErrorNotice from '../components/ErrorNotice'
 import ErrorBoundary from '../components/ErrorBoundary'
 import { AGENT_HARNESS_SETTINGS_TAB, isKiroSignInHighlight, KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
 import { useKiroSignInOffered } from './developer/useKiroSignInOffered'
+import { KiroCreditsCard } from './developer/KiroCreditsCard'
+import { useKiroAccountReading } from '../hooks/useKiroAccountReading'
 
 const AgentBackendTab = lazy(() =>
   import('./developer/AgentBackendTab').then(m => ({ default: m.AgentBackendTab })),
@@ -285,12 +287,14 @@ export default function SettingsPage() {
   // (`KIROCREW_SHARED_CREW_PREVIEW=1`); a browser setting cannot turn it on.
   const sharedCrew = useSharedCrewCapabilities()
   const sharedCrewPreview = sharedCrewPreviewOn(sharedCrew.capabilities)
-  // The Kiro account tab exists while the build offers Kiro sign-in; an
-  // unanswered schema hides nothing, so a deep link never lands on a missing tab.
+  // The Kiro account tab exists while the build offers Kiro sign-in or there is
+  // a credit reading to show (the phone's only place for it); an unanswered
+  // schema hides nothing, so a deep link never lands on a missing tab.
   const kiroSignInOffered = useKiroSignInOffered() !== false
+  const { kiroUsageState, kiroAccountEntry } = useKiroAccountReading()
   const allTabs = buildTabs().filter(t =>
     (t.key !== 'webhooks' || webhooksPreview)
-    && (t.key !== 'kiro-account' || kiroSignInOffered)
+    && (t.key !== 'kiro-account' || kiroSignInOffered || kiroAccountEntry)
     && (t.key !== 'session-environments' || sessionEnvironmentsPreview)
     && (t.key !== 'people' || sharedCrewPreview),
   )
@@ -336,7 +340,7 @@ export default function SettingsPage() {
 
   return (
     <SidePanelLayout
-      title={i18nT('pages.settingsPage.settings')}
+      title={i18nT('nav.account_and_settings')}
       tabs={tabs}
       paneOwnsHeader={memberMemoryView}
       basePath={SETTINGS_BASE_PATH}
@@ -366,16 +370,24 @@ export default function SettingsPage() {
           </div>
         )}
         {tab === 'overview' && <OverviewPanel />}
-        {tab === 'kiro-account' && (kiroSignInOffered && (
-          // Isolated so a throwing card cannot take the Settings page down with
-          // it. The default fallback, not `null`: the card is the whole tab, so
-          // a failure must show its error and Try Again rather than a blank pane.
-          <ErrorBoundary scope="settings-kiro-sign-in">
-            <Suspense fallback={<ContentSkeleton rows={6} />}>
-              <KiroSignInCard />
-            </Suspense>
-          </ErrorBoundary>
-        ))}
+        {tab === 'kiro-account' && (<>
+          {kiroAccountEntry && (
+            <ErrorBoundary scope="settings-kiro-credits">
+              {/* No hand-off beside the sign-in card, which can hold an unsaved draft. */}
+              <KiroCreditsCard usage={kiroUsageState} handoff={!kiroSignInOffered} />
+            </ErrorBoundary>
+          )}
+          {kiroSignInOffered && (
+            // Isolated so a throwing card cannot take the Settings page down with
+            // it. The default fallback, not `null`: a failure must show its error
+            // and Try Again rather than a blank pane.
+            <ErrorBoundary scope="settings-kiro-sign-in">
+              <Suspense fallback={<ContentSkeleton rows={6} />}>
+                <KiroSignInCard />
+              </Suspense>
+            </ErrorBoundary>
+          )}
+        </>)}
         {tab === 'imports' && <ImportPanel />}
         {tab === 'agent' && (
           <Suspense fallback={<ContentSkeleton rows={6} />}>

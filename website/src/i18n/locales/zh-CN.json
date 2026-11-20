@@ -11775,7 +11775,8 @@
     "badge_unread_conversations": "未读对话",
     "badge_unread_member_threads": "未读成员会话",
     "badge_notifications": "通知",
-    "badge_approvals_needed": "待审批"
+    "badge_approvals_needed": "待审批",
+    "account_and_settings": "账号与设置"
   },
   "pages": {
     "mcpPage": {
@@ -16006,6 +16007,9 @@
         "save_failed": "无法保存此值，请重试。",
         "title": "模型提供商",
         "value_missing": "此处引用的值已不在密钥中，因此新的 Strands 会话会被拒绝。请保存新值，或将其移除。"
+      },
+      "kiroAccountCredits": {
+        "title": "额度"
       }
     },
     "developerPage": {
@@ -21693,8 +21697,7 @@
         "aria_label": "搜索设置",
         "no_results": "无匹配的设置",
         "placeholder": "搜索设置…"
-      },
-      "settings": "设置"
+      }
     },
     "systemPage": {
       "live_system_metrics": "实时系统指标",

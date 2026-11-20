@@ -114,7 +114,7 @@ describe('rail chat row while a navigation is pending', () => {
   it('navigates back to chat when the address has already left it', async () => {
     renderDashboard()
     await chatOnScreen()
-    const settings = navRow(/^Settings$/)
+    const settings = navRow(/^Account & Settings$/)
     const sessions = navRow(/^Sessions$/)
     act(() => {
       settings.click()

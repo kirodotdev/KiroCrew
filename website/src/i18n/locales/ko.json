@@ -11775,7 +11775,8 @@
     "badge_unread_conversations": "읽지 않은 대화",
     "badge_unread_member_threads": "읽지 않은 멤버 스레드",
     "badge_notifications": "알림",
-    "badge_approvals_needed": "승인 대기"
+    "badge_approvals_needed": "승인 대기",
+    "account_and_settings": "계정 및 설정"
   },
   "pages": {
     "mcpPage": {
@@ -16006,6 +16007,9 @@
         "save_failed": "이 값을 저장하지 못했습니다. 다시 시도하세요.",
         "title": "모델 제공자",
         "value_missing": "가리키는 값이 시크릿에 더 이상 없어 새 Strands 세션이 거부됩니다. 새 값을 저장하거나 제거하세요."
+      },
+      "kiroAccountCredits": {
+        "title": "크레딧"
       }
     },
     "developerPage": {
@@ -21693,8 +21697,7 @@
         "aria_label": "설정 검색",
         "no_results": "일치하는 설정 없음",
         "placeholder": "설정 검색…"
-      },
-      "settings": "설정"
+      }
     },
     "systemPage": {
       "live_system_metrics": "실시간 시스템 지표",

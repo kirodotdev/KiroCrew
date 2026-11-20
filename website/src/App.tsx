@@ -15,7 +15,7 @@ import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, registe
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
-import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Coins, Compass, KeyRound, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
+import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Compass, KeyRound, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
 import { MobileConnectDialog } from './components/mobileConnect'
@@ -94,6 +94,7 @@ import QuickSearchSurface from './components/QuickSearchSurface'
 import GlobalChatSearchDialog from './components/globalChatSearch/GlobalChatSearchDialog'
 import ReportProblemModal from './components/ReportProblemModal'
 import KiroAccountModal from './components/KiroAccountModal'
+import { AccountAvatar, ACCOUNT_AVATAR_TOUCH_PX } from './components/AccountAvatar'
 
 import { i18nT } from './i18n/t'
 import { KIRO_SIGN_IN_PATH } from './pages/developer/kiroSignInLink'
@@ -422,7 +423,7 @@ export default function App() {
     localHeaderDragGaps, shellEntered, setShellEntered, shellRef, setMembersBar, advertisedNavItems,
     sortedAppGroup, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, kiroAccountEntry, kiroSignInPrompt, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
+    kiroUsageState, kiroSignInPrompt, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
     updateFlow, updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, updateError,
     setUpdateError, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
@@ -589,23 +590,6 @@ export default function App() {
               />
             )}
             {railRow(capabilitiesSurface)}
-            {/* The account modal (balance, sign-in state): the desktop opens it
-                from the readout capsule, which the phone does not render, so the
-                rail carries it -- on exactly the readings the desktop segment
-                shows (`kiroAccountEntry`). Toggles a surface, so `pressed`. */}
-            {kiroAccountEntry && (
-              <NavItem
-                navId="account"
-                path="#"
-                label={i18nT('components.kiroAccountModal.kiro_account')}
-                icon={<Coins size={16} />}
-                active={kiroUsageOpen}
-                pressed={kiroUsageOpen}
-                collapsed
-                touch
-                onClickOverride={() => { onActivate(); setKiroUsageOpen(true) }}
-              />
-            )}
             {/* The capsule's quiet "Sign in to Kiro" segment, for the phone. A
                 plain guarded route with `replace`, like Settings below: closing
                 the drawer first would pop history after this push lands. */}
@@ -625,8 +609,8 @@ export default function App() {
           bottom={<>
             <NavItem
               path={settingsSurface.path}
-              label={surfaceLabel(settingsSurface)}
-              icon={settingsSurface.icon}
+              label={i18nT('nav.account_and_settings')}
+              icon={<AccountAvatar usage={kiroUsageState} size={ACCOUNT_AVATAR_TOUCH_PX} />}
               active={navRowActive(settingsSurface.path)}
               collapsed
               touch

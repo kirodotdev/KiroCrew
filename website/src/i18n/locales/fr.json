@@ -12319,7 +12319,8 @@
     "badge_unread_conversations": "conversations non lues",
     "badge_unread_member_threads": "fils de membres non lus",
     "badge_notifications": "notifications",
-    "badge_approvals_needed": "approbations requises"
+    "badge_approvals_needed": "approbations requises",
+    "account_and_settings": "Compte et paramètres"
   },
   "pages": {
     "mcpPage": {
@@ -16848,6 +16849,9 @@
         "save_failed": "Impossible d'enregistrer cette valeur. Réessaie.",
         "title": "Fournisseur de modèles",
         "value_missing": "La valeur qu'il désigne n'est plus dans les Secrets, donc les nouvelles sessions Strands sont refusées. Enregistre une nouvelle valeur ou retire-la."
+      },
+      "kiroAccountCredits": {
+        "title": "Crédits"
       }
     },
     "developerPage": {
@@ -22789,8 +22793,7 @@
         "aria_label": "Rechercher dans les paramètres",
         "no_results": "Aucun paramètre correspondant",
         "placeholder": "Rechercher dans les paramètres…"
-      },
-      "settings": "Paramètres"
+      }
     },
     "systemPage": {
       "live_system_metrics": "Métriques système en direct",

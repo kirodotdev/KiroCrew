@@ -5365,7 +5365,8 @@
     "badge_unread_conversations": "unread conversations",
     "badge_unread_member_threads": "unread member threads",
     "badge_notifications": "notifications",
-    "badge_approvals_needed": "approvals needed"
+    "badge_approvals_needed": "approvals needed",
+    "account_and_settings": "Account & Settings"
   },
   "pages": {
     "mcpPage": {

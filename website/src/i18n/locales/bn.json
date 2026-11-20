@@ -12047,7 +12047,8 @@
     "badge_unread_conversations": "অপঠিত কথোপকথন",
     "badge_unread_member_threads": "অপঠিত সদস্য থ্রেড",
     "badge_notifications": "বিজ্ঞপ্তি",
-    "badge_approvals_needed": "বাকি অনুমোদন"
+    "badge_approvals_needed": "বাকি অনুমোদন",
+    "account_and_settings": "অ্যাকাউন্ট ও সেটিংস"
   },
   "pages": {
     "mcpPage": {
@@ -16427,6 +16428,9 @@
         "save_failed": "এই মানটি সংরক্ষণ করা যায়নি। আবার চেষ্টা করো।",
         "title": "মডেল প্রদানকারী",
         "value_missing": "এটি যে মানের নাম দেয় তা আর সিক্রেটস-এ নেই, তাই নতুন Strands সেশন প্রত্যাখ্যাত হবে। নতুন মান সংরক্ষণ করো, অথবা এটি সরাও।"
+      },
+      "kiroAccountCredits": {
+        "title": "ক্রেডিট"
       }
     },
     "developerPage": {
@@ -22241,8 +22245,7 @@
         "aria_label": "সেটিংস খুঁজুন",
         "no_results": "মিলে যাওয়া কোনো সেটিংস নেই",
         "placeholder": "সেটিংস খুঁজুন…"
-      },
-      "settings": "সেটিংস"
+      }
     },
     "systemPage": {
       "live_system_metrics": "লাইভ সিস্টেম মেট্রিক",
