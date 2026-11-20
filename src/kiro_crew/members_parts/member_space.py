@@ -24,7 +24,6 @@ from kiro_crew import platform_compat
 from kiro_crew.artifacts import slugify
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.config.paths import data_home
-from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.external_text import external_text_requires_redaction
 from kiro_crew.slugs import slug_hash_fallback
 from kiro_crew.validation import (
@@ -421,19 +420,7 @@ def validate_slug(slug: str) -> str:
     """
     if not isinstance(slug, str) or not _SLUG_RE.match(slug):
         raise MemberSlugError(f"invalid member slug {slug!r}: must match {_SLUG_RE.pattern}")
-    if _is_device_slug(slug):
-        raise MemberSlugError(f"invalid member slug {slug!r}: a Windows device name")
     return slug
-
-
-def _is_device_slug(slug: str) -> bool:
-    """True for a slug Windows treats as a device (``con``, ``nul``, ``com1``...).
-
-    The ONE device-name guard for every member path: each writer of
-    ``members/<slug>`` or ``member-records/<kind>/<slug>.json`` validates its slug
-    first. A slug has no ``.`` so only the bare stem needs testing.
-    """
-    return slug in WINDOWS_DEVICE_STEMS
 
 
 def slug_for_name(name: str) -> str:
@@ -452,10 +439,6 @@ def slug_for_name(name: str) -> str:
     # hash (which would also strand data recorded under "member").
     if base == slug_hash_fallback(name, "artifact"):
         base = "member"
-    if _is_device_slug(base):
-        # A Bot cannot be named exactly for a device on any platform: the slug
-        # gets a suffix so the same name maps to the same slug everywhere.
-        base = f"{base}-bot"
     return validate_slug(base)
 
 
