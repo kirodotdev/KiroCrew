@@ -344,6 +344,7 @@
     },
     "sessionChanges": {
       "not_declared": "此应用无法显示此聊天的改动：其权限未声明 {{path}}。",
+      "diff_not_declared": "此应用无法显示此文件的差异：其权限未声明 {{path}}。",
       "pick_a_file": "选择一个文件以查看其改动。",
       "diff_unavailable": "此聊天没有记录这次改动前后的完整文件，因此没有可显示的差异。"
     },

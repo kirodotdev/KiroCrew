@@ -6257,10 +6257,10 @@ the way §18g chooses the pull-request client:
 - **external**: a client over the app's scoped transport (`scopedSessionFilesClient`),
   each member sending the query the dashboard client sends. The list mounts once
   `apiPathAllowed` admits `/api/project/session-files`; without it the export renders an
-  `ErrorNotice` naming the path, with the agent hand-off on, and mounts nothing, so no
-  request is sent. The diff of a picked file needs `/api/project/session-file-diff`;
-  without it the diff's place shows the same refusal naming that path and the diff is
-  never mounted. The two paths are siblings at a slash boundary, so neither declaration
+  `ErrorNotice` naming the path, centred in the component's area, with the agent hand-off
+  on, and mounts nothing, so no request is sent. The diff of a picked file needs
+  `/api/project/session-file-diff`; without it the diff's place shows its own refusal,
+  worded as that file's diff and naming the path, and the diff is never mounted. The two paths are siblings at a slash boundary, so neither declaration
   admits the other, and the scoped transport still checks each request.
 - **builtin**: the dashboard's client, as §18g keeps it for a builtin page.
 - **none**: the external answer with nothing declared, the refusal.

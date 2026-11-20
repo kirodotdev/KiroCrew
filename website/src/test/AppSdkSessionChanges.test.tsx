@@ -150,7 +150,10 @@ describe('the App SDK SessionChanges', () => {
   it('shows the list with only its read declared, and refuses the diff without asking for it', async () => {
     render(externalApp([SESSION_CHANGES_PATHS.sessionFiles], changes))
     await showChanges()
-    expect(await screen.findByTestId('app-session-changes-diff-not-declared')).toHaveTextContent(SESSION_CHANGES_PATHS.sessionFileDiff)
+    const diffRefusal = await screen.findByTestId('app-session-changes-diff-not-declared')
+    expect(diffRefusal).toHaveTextContent(SESSION_CHANGES_PATHS.sessionFileDiff)
+    // Said as the one file's diff: the list of changes beside it does show.
+    expect(diffRefusal).toHaveTextContent("can't show this file's diff")
     expect(screen.queryByTestId('pierre-pair')).toBeNull()
     const paths = fetchMock.mock.calls.map(pathOf)
     expect(paths).toContain(SESSION_CHANGES_PATHS.sessionFiles)
