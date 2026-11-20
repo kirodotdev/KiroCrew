@@ -283,13 +283,23 @@ def test_a_pre_registered_callback_from_another_issuer_is_refused(slug):
 
 
 @pytest.mark.parametrize("slug", sorted(_PREREGISTERED_ISSUERS))
-@pytest.mark.parametrize("with_iss", [True, False])
-def test_a_pre_registered_callback_from_its_own_issuer_or_with_no_iss_succeeds(slug, with_iss):
+def test_a_pre_registered_callback_with_no_iss_is_refused(slug):
     async def _run():
         sign_in = _pre_registered(slug)
-        query = {"state": sign_in._state, "code": "the-code"}
-        if with_iss:
-            query["iss"] = _PREREGISTERED_ISSUERS[slug]
+        resp = await _answer(sign_in, {"state": sign_in._state, "code": "c"})
+        assert resp.status == 400
+        with pytest.raises(CrewOAuthError) as err:
+            await sign_in._done
+        return err.value.code
+
+    assert asyncio.run(_run()) == "issuer_mismatch"
+
+
+@pytest.mark.parametrize("slug", sorted(_PREREGISTERED_ISSUERS))
+def test_a_pre_registered_callback_from_its_own_issuer_succeeds(slug):
+    async def _run():
+        sign_in = _pre_registered(slug)
+        query = {"state": sign_in._state, "code": "the-code", "iss": _PREREGISTERED_ISSUERS[slug]}
         resp = await _answer(sign_in, query)
         assert resp.status == 200
         return await sign_in._done
