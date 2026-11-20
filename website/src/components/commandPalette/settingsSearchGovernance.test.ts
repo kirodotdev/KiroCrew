@@ -203,6 +203,16 @@ describe('settingEntryOffered', () => {
     expect(settingEntryOffered(otherEntry(), { ...ON, slackToolsShown: false })).toBe(true)
   })
 
+  it('offers Remote Control only while Remote Crew draws its card (Bug Bash row 60)', () => {
+    // The card is drawn only while the setting is on or the relay runs; a hit
+    // that opens the page without it lands on nothing to highlight.
+    const card = entryById('instances.remote-control')
+    expect(settingEntryOffered(card, ON)).toBe(false)
+    expect(settingEntryOffered(card, { ...ON, remoteControlShown: false })).toBe(false)
+    expect(settingEntryOffered(card, { ...ON, remoteControlShown: true })).toBe(true)
+    expect(settingEntryOffered(otherEntry(), { ...ON, remoteControlShown: false })).toBe(true)
+  })
+
   it('offers Display > Explore only while the Explore preview is on', () => {
     const explore = SETTINGS_REGISTRY.find(e => e.configKey === 'dashboard.milestones_enabled')!
     expect(explore).toBeDefined()

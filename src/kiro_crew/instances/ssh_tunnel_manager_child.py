@@ -39,6 +39,7 @@ from kiro_crew.instances.ssh_tunnel_manager_child_text import (
     _SSH_TRANSPORT_DROP_SIGNALS,
     _SSM_BIND_SIGNALS,
     _SSM_CREDENTIAL_SIGNALS,
+    _SSM_DENIAL_DETAIL_MAX_CHARS,
     _SSM_DENIAL_SIGNALS,
     _SSM_PLUGIN_SIGNALS,
     _SSM_TARGET_SIGNALS,
@@ -772,7 +773,7 @@ class _SshTunnel:
             )
         hit = _first_hit(low, _SSM_DENIAL_SIGNALS)
         if hit is not None:
-            detail = _sanitize_banner(tail, anchor=hit)
+            detail = _sanitize_banner(tail, anchor=hit, limit=_SSM_DENIAL_DETAIL_MAX_CHARS)
             return f"IAM denied ssm:StartSession for this target: {detail}"
         hit = _first_hit(low, _SSM_PLUGIN_SIGNALS)
         if hit is not None:

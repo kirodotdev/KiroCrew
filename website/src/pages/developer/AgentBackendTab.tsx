@@ -34,6 +34,8 @@ const CONFIG_KEY = 'agent.acp_backend'
 
 /** Backend ids in the config vocabulary the schema, probe rows and PATCH share. */
 const KIRO = ACP_BACKEND_KIRO
+/** Kiro CLI's install guide: the same page as `OFFICIAL_INSTALL_DOCS_URL` (kiro_prerequisite_status.py). */
+const KIRO_CLI_INSTALL_DOCS_URL = 'https://kiro.dev/cli/'
 const CLAUDE = 'claude'
 const KAS = ACP_BACKEND_KAS
 const STRANDS = 'strands'
@@ -1254,7 +1256,7 @@ export function AgentBackendTab() {
       )
     if (row?.sandbox_refusal)
       return <p className="text-[13px] leading-relaxed text-text">{sandboxRefusalLine(value)}</p>
-    if (row?.installed === 'missing') return <AgentInstallDetail name={name} probe={row} />
+    if (row?.installed === 'missing') return <AgentInstallDetail name={name} probe={row} installGuideUrl={value === KIRO ? KIRO_CLI_INSTALL_DOCS_URL : undefined} />
     // A failed probe, so `ErrorNotice`.
     if (row?.installed === 'unknown')
       return (

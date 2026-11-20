@@ -24,11 +24,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Check, ExternalLink, Lock, Users, X } from 'lucide-react'
 import type { RelayCrewEntry } from '../api/client'
 import {
-  clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText,
+  clearRelayCrewsUnseen, isRelayCrewOnline, isSignedOutRefusal, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText,
   relayRefusalText, useRelayViewerCrews,
 } from '../hooks/useRelayViewerCrews'
 import { useAppDispatch, useAppSelector } from '../store'
@@ -39,6 +39,8 @@ import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { joinSentences } from '../i18n/format'
 import { accountProviderLabel } from './kasProviderLabel'
+import { useGuardedLeave } from './NavigationLeaveGuard'
+import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
 
 /** One Team Crew. A failed Open keeps the menu open and shows why under the row.
  *  The agent hand-off is a sibling menu item, so the keyboard reaches it. While the
@@ -64,9 +66,25 @@ export const ROW: Record<RelayRowState, { dimmed: boolean; end: 'check' | 'conne
   unavailable: { dimmed: true, end: null, action: 'none' },
 }
 
+/** The way from a signed-out refusal to the Kiro account tab. A menu item, not a
+ *  link inside one: the item's own click would replace the link's guarded one,
+ *  and the leave guard must still ask before unsaved work is left. */
+function KiroSignInMenuItem() {
+  const navigate = useNavigate()
+  const guardedLeave = useGuardedLeave()
+  return (
+    <DropdownMenuItem
+      data-testid="relay-crew-sign-in"
+      onSelect={() => guardedLeave(() => navigate(KIRO_SIGN_IN_PATH), KIRO_SIGN_IN_PATH)}
+    >
+      {i18nT('settings.tabs.kiroAccount.go_to')}
+    </DropdownMenuItem>
+  )
+}
+
 function TeamCrewItem({ crew, refusal, onOpen, onClose, onShow, current = false }: {
   crew: RelayCrewEntry
-  refusal: string | undefined
+  refusal: { text: string; code?: string } | undefined
   onOpen: (endpointId: string) => void
   onClose?: () => void
   /** Brings this Crew's open tab forward; set while it is open. */
@@ -165,14 +183,21 @@ function TeamCrewItem({ crew, refusal, onOpen, onClose, onShow, current = false 
         </DropdownMenuItem>
       )}
       </div>
-      {refusal && (
+      {refusal && (isSignedOutRefusal(refusal.code) ? (
+        // Signed out is a state with a way forward, not a failure: no alert, no
+        // hand-off, and the way forward is a menu item to the Kiro account tab.
+        <>
+          <p role="status" className="m-0 px-3 pb-1 text-[12px] text-muted" data-testid="relay-crew-refusal">{refusal.text}</p>
+          <KiroSignInMenuItem />
+        </>
+      ) : (
         <>
           <div className="px-3 pb-1">
-            <ErrorNotice id={`relay-crew-refusal-${crew.endpointId}`} variant="inline" message={refusal} testId="relay-crew-refusal" />
+            <ErrorNotice id={`relay-crew-refusal-${crew.endpointId}`} variant="inline" message={refusal.text} testId="relay-crew-refusal" />
           </div>
-          <ErrorNoticeMenuItem Item={DropdownMenuItem} message={refusal} describedBy={`relay-crew-refusal-${crew.endpointId}`} />
+          <ErrorNoticeMenuItem Item={DropdownMenuItem} message={refusal.text} describedBy={`relay-crew-refusal-${crew.endpointId}`} />
         </>
-      )}
+      ))}
     </>
   )
 }
@@ -193,7 +218,7 @@ export function TeamCrewsGroup({ crews, failed = false, refreshOnOpen, close }: 
   // With rows kept, say they are the last list rather than that nothing loaded.
   const failedText = t(crews.length > 0 ? 'components.relayCrews.refresh_failed' : 'components.relayCrews.refusal_list_generic')
   const dispatch = useAppDispatch()
-  const [refusals, setRefusals] = useState<Record<string, string>>({})
+  const [refusals, setRefusals] = useState<Record<string, { text: string; code?: string }>>({})
   // The group renders only while the menu is open, so showing it is seeing its
   // new Crews: the gateway is told now, and the marks stay until the menu closes
   // so the person can still tell which rows are new. Only IDs the gateway saved
@@ -235,7 +260,7 @@ export function TeamCrewsGroup({ crews, failed = false, refreshOnOpen, close }: 
     const name = crews.find(c => c.endpointId === endpointId)?.name ?? ''
     void openRelayCrewTab(endpointId, name, dispatch).then(res => {
       if (res.ok) close()
-      else setRefusals(prev => ({ ...prev, [endpointId]: relayRefusalText(res.error) }))
+      else setRefusals(prev => ({ ...prev, [endpointId]: { text: relayRefusalText(res.error), code: res.error } }))
     })
   }, [close, crews, dispatch])
   return (

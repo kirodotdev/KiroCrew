@@ -7,10 +7,12 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import * as React from 'react'
 import { act, render, screen, waitFor, cleanup, within } from '@testing-library/react'
+import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
+import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from './NavigationLeaveGuard'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
-import { Router, UNSAFE_createMemoryHistory as createMemoryHistory } from 'react-router-dom'
+import { Router, UNSAFE_createMemoryHistory as createMemoryHistory, useLocation } from 'react-router-dom'
 import { ThemeProvider } from '../hooks/useTheme'
 import { api, ApiError, type InstanceView, type RelayCrewEntry, type SsoStatus } from '../api/client'
 import TeamCrewsSwitcher, { relayRowState } from './TeamCrewsGroup'
@@ -613,7 +615,7 @@ describe('TeamCrewsGroup', () => {
     ['REMOTE_ACCESS_DISABLED', 'Remote access is turned off for this account.'],
     ['CREW_OFFLINE', 'This Crew is offline.'],
     ['THROTTLED', 'Too many requests. Try again in a minute.'],
-    ['SIGNED_OUT', 'Sign in to Kiro to see your Shared Crews.'],
+    ['SIGNED_OUT', 'Sign in to Kiro to open this Crew.'],
     ['NOT_SET_UP', "Shared Crews over the relay aren't set up."],
     ['INVALID_REQUEST', "Couldn't open this Crew."],
     ['SERVICE_ERROR', "Couldn't open this Crew."],
@@ -630,6 +632,45 @@ describe('TeamCrewsGroup', () => {
     await u.click(row('Build box'))
     expect((await screen.findByTestId('relay-crew-refusal')).textContent).toContain(text)
     expect(screen.getByTestId('team-crews-group')).toBeTruthy()
+  })
+
+  it('tells a signed-out Open as a status with no alert or hand-off (Bug Bash row 62)', async () => {
+    withBridge(vi.fn(async () => ({ ok: false, error: 'SIGNED_OUT' })))
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
+    mount()
+    const u = userEvent.setup()
+    const group = await openGroup(u)
+    await u.click(row('Build box'))
+    expect(await within(group).findByTestId('relay-crew-refusal')).toHaveAttribute('role', 'status')
+    expect(within(group).queryByRole('alert')).toBeNull()
+    expect(within(group).queryByRole('menuitem', { name: 'Ask the agent' })).toBeNull()
+    // The way forward is in the menu itself (UX review): the Kiro account tab.
+    expect(within(group).getByRole('menuitem', { name: /Go to Kiro account/ })).toBeInTheDocument()
+  })
+
+  it('asks the leave guard before the signed-out sign-in item navigates away', async () => {
+    withBridge(vi.fn(async () => ({ ok: false, error: 'SIGNED_OUT' })))
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
+    const guard = vi.fn(() => false)
+    function Guarded() {
+      useRegisterNavigationLeaveGuard(guard)
+      return null
+    }
+    function Where() {
+      return <span data-testid="where">{useLocation().pathname}</span>
+    }
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {} } })
+    vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><Guarded /><TeamCrewsSwitcher variant="inline" /><Where /></NavigationLeaveGuardProvider>,
+      { store },
+    )
+    const u = userEvent.setup()
+    const group = await openGroup(u)
+    await u.click(row('Build box'))
+    await u.click(await within(group).findByRole('menuitem', { name: /Go to Kiro account/ }))
+    expect(guard).toHaveBeenCalled()
+    expect(screen.getByTestId('where').textContent).not.toBe(KIRO_SIGN_IN_PATH.split('?')[0])
   })
 
   it('offers Ask the agent as a menu item tied to a row refusal, one per refused row', async () => {

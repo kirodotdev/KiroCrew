@@ -1053,3 +1053,19 @@ class TestSilentStallWindow:
         window = c.DEFAULT_PROBE_INTERVAL_SECS * c.DEFAULT_PROBE_FAILURE_THRESHOLD
         assert window <= 30
         assert c.DEFAULT_PROBE_HEALTH_TIMEOUT_SECS < c.DEFAULT_PROBE_INTERVAL_SECS
+
+
+def test_an_ssm_denial_keeps_its_whole_sentence():
+    # Bug Bash row 52: the 200-character cut dropped the resource to grant.
+    tunnel = _tunnel(transport="ssm", ssm_target="i-0123456789abcdef0")
+    tunnel._stderr_buf = (
+        "aws: [ERROR]: An error occurred (AccessDeniedException) when calling the "
+        "StartSession operation: User: arn:aws:sts::111122223333:assumed-role/"
+        "example-role/example-session is not authorized to perform: ssm:StartSession "
+        "on resource: arn:aws:ec2:us-east-1:111122223333:instance/i-0123456789abcdef0 "
+        "because no identity-based policy allows the ssm:StartSession action"
+    )
+    error = tunnel._ssm_exit_error(255)
+    assert error.startswith("IAM denied ssm:StartSession for this target: ")
+    assert "instance/i-0123456789abcdef0" in error
+    assert error.endswith("because no identity-based policy allows the ssm:StartSession action")

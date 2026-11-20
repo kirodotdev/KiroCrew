@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api, type SlackConfigData } from '../../api/client'
+import { api, type RemoteControlState, type SlackConfigData } from '../../api/client'
+import { REMOTE_CONTROL_QUERY_KEY } from '../../api/client/remoteAccess'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import { useUpdateSwitchesShown } from '../../utils/updateSwitches'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
@@ -84,8 +85,16 @@ export function useSettingsSearchGovernance(
   const remoteCrewsEnabled = instancesQ.isSuccess
     ? true
     : isInstancesDisabledError(instancesQ.error) ? false : undefined
+  // The `['remote-control']` read RemoteControlCard is drawn by. Owner-only, so a
+  // teammate's read is refused and the entry is not offered to them either.
+  const remoteControlQ = useQuery<RemoteControlState>({
+    queryKey: REMOTE_CONTROL_QUERY_KEY,
+    queryFn: () => api.remoteControl(),
+    ...(fetch ? FRESH_ENOUGH : CACHED_ONLY),
+  })
+  const remoteControlShown = remoteControlQ.isSuccess && (remoteControlQ.data.requested || remoteControlQ.data.running)
   return useMemo(
-    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered, remoteCrewsEnabled, channelsOn, slackToolsShown }),
-    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered, remoteCrewsEnabled, channelsOn, slackToolsShown],
+    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered, remoteCrewsEnabled, channelsOn, slackToolsShown, remoteControlShown }),
+    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered, remoteCrewsEnabled, channelsOn, slackToolsShown, remoteControlShown],
   )
 }

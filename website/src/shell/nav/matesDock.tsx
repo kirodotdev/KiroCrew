@@ -8,6 +8,7 @@
  * sensors, so the two lists reorder with one gesture.
  */
 import { isRelayHostOffline } from '../../utils/relayHostOffline'
+import { useOutageFailure } from '../../hooks/useOutageFailure'
 import { useQuery, useQueryClient, useMutation, type QueryClient } from '@tanstack/react-query'
 import { DndContext, DragOverlay, closestCenter, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
@@ -57,7 +58,9 @@ function useOpenMember(): string | null {
  * Mates page row never has to stand in for it (`openIsDocked`).
  */
 export function useDockMates() {
-  const { data, isError, error, errorUpdatedAt, dataUpdatedAt } = useQuery(membersRosterQuery)
+  const { data, isError, error, errorUpdatedAt, dataUpdatedAt, refetch } = useQuery(membersRosterQuery)
+  // A read the gateway's outage failed is the offline status's to say.
+  const outage = useOutageFailure(isError, errorUpdatedAt, refetch)
   // A guest session (Shared Crew, a presigned link) is refused the owner's roster.
   // That is "no mates to dock", not a failure: no rows, no notice. The client does
   // not journal it either (`jMembers`). A session-expiry 403 still shows the notice.
@@ -66,7 +69,7 @@ export function useDockMates() {
   const open = useOpenMember()
   const top = ordered.slice(0, DOCK_MATES_LIMIT)
   const pulledIn = open && !top.some(m => m.name === open) ? ordered.filter(m => m.name === open) : []
-  return { ordered, top, pulledIn, open, openIsDocked: !!open && ordered.some(m => m.name === open), loadFailed: isError && !notOwner && !isRelayHostOffline(error), loadError: error, errorUpdatedAt, dataUpdatedAt }
+  return { ordered, top, pulledIn, open, openIsDocked: !!open && ordered.some(m => m.name === open), loadFailed: isError && !outage && !notOwner && !isRelayHostOffline(error), loadError: error, errorUpdatedAt, dataUpdatedAt }
 }
 
 function isNotOwnerRefusal(error: unknown): boolean {
