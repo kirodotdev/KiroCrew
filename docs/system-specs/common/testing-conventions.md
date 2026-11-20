@@ -6039,6 +6039,40 @@ path other tests drive gets its entry in `test/conftest_resets.py` in the same P
 only knows those initializer spellings; a global bound to anything else still needs a
 reviewer's eye.
 
+The reset goes in `test/conftest_resets.py` as an autouse fixture, re-bound in
+`test/conftest.py`'s `from conftest_resets import (...)` block. A reset in the new
+cache's own test file does not count: the next file on the worker is the one that
+inherits it. `test/test_process_cache_floor_ratchet.py` refuses the common shape, but
+only in a CI run whose checkout contains it, so a PR whose last green run is older than
+the ratchet can still merge the leak. The AUTOSDE rule
+`a-module-level-cache-ships-its-per-test-reset` asks for the same reset at review time,
+for every shape (an `lru_cache`, a `global` flag, a name the ratchet's pattern misses).
+
+```python
+# WRONG: src/kiro_crew/subagent_persistence.py fills a module-level memo and no floor
+# clears it, so a verdict one test left lets the next test's sweep skip a run.
+_NOT_DUE_MEMO: dict[str, tuple[tuple[int, int, int], int | float, bool]] = {}
+
+# RIGHT: the same PR adds the floor entry (test/conftest_resets.py).
+@pytest.fixture(autouse=True)
+def _reset_subagent_not_due_memo():
+    def clear():
+        module = sys.modules.get("kiro_crew.subagent_persistence")
+        if module is not None:
+            module._NOT_DUE_MEMO.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+```
+
+No reset is needed for a constant nothing writes after import, a registry filled only at
+import time, or a memo of a pure function of its arguments. A cache-named empty
+container of that kind still trips the ratchet, so its line says
+`# process-cache-ok: <reason>`.
+
 **A switch or allowlist snapshot that a handler test publishes is the same leak, and the
 grep above does not see it.** `dashboard.source_providers.hosts` holds the session-card
 chip switch as `_session_card_chips_snapshot: bool = True` and the host allowlists as
