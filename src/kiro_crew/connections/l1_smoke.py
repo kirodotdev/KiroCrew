@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import ipaddress
 import json
 import os
 import sys
@@ -39,6 +38,7 @@ from yarl import URL
 
 from kiro_crew.connections.registry import Provider, get_all_registry_providers
 from kiro_crew.connections.tool_aliases import normalized_endpoint
+from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.mcp_discovery import (
     MCP_CLIENT_PROTOCOL_VERSION,
@@ -196,14 +196,8 @@ async def _read_capped(response: aiohttp.ClientResponse) -> dict[str, Any]:
 
 def _smoke_proxy(url: str) -> URL | None:
     """Keep local endpoints direct and omit proxy credentials from configuration errors."""
-    host = (URL(url).host or "").lower().rstrip(".")
-    if host == "localhost" or host.endswith(".localhost"):
+    if is_loopback(URL(url).host or ""):
         return None
-    try:
-        if ipaddress.ip_address(host).is_loopback:
-            return None
-    except ValueError:
-        pass
     proxy = resolve_proxy(url)
     if proxy is None:
         return None
