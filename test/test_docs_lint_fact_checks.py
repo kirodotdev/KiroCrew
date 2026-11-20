@@ -482,6 +482,16 @@ class TestDeadIdentifier:
         _write(tree, "docs/ok.md", "# Ok\n\nCalls `vendor_only_call` and `vanished_handler`.\n")
         assert _tokens(tree, gate.CHECK_DEAD_IDENTIFIER) == {"vanished_handler"}
 
+    def test_a_listed_name_the_code_defines_fails_the_run(self, tree: Path) -> None:
+        # Left listed, it would hide that name's next rename.
+        _write(tree, "src/kiro_crew/real.py", "def vendor_only_call():\n    return 1\n")
+        _write(tree, gate.EXTERNAL_IDENTIFIERS_FILE, "vendor_only_call\nother_vendor_call\n")
+        findings = gate.run(tree)
+        assert [(f.path, f.token) for f in findings.facts_for(gate.CHECK_DEAD_IDENTIFIER)] == [
+            (gate.EXTERNAL_IDENTIFIERS_FILE, "vendor_only_call")
+        ]
+        assert findings.total() == 1
+
     def test_the_external_list_file_is_not_itself_a_code_tree(self, tree: Path) -> None:
         # The list lives under .github/, which is scanned for code; a .txt there
         # must not turn a commented-out entry into a live name.

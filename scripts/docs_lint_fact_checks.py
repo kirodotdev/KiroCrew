@@ -595,7 +595,21 @@ def check_dead_identifiers(root: Path, docs: list[Path], findings: Findings) -> 
     (``MyPage``) are meant to be absent, and a name in the curated external list
     is defined somewhere this repo cannot see.
     """
-    live = _identifier_index(root) | _external_identifiers(root)
+    code = _identifier_index(root)
+    external = _external_identifiers(root)
+    # A listed name the code now defines is no longer external, and left listed it
+    # would hide that name's next rename. Failing here is what holds the list to
+    # its own rule; the fix is deleting the line.
+    for token in sorted(external & code):
+        findings.facts.append(
+            FactFinding(
+                CHECK_DEAD_IDENTIFIER,
+                EXTERNAL_IDENTIFIERS_FILE,
+                token,
+                "is defined in this repo's code; delete it from the external list",
+            )
+        )
+    live = code | external
     for doc in docs:
         rel_doc = _rel(doc, root)
         if _is_forward_looking(rel_doc):
