@@ -1,0 +1,6 @@
++44
+On Windows the rm floor reads PowerShell Remove-Item and its aliases with -Recurse, and
+cmd rd/rmdir/del/erase with /s, as recursive deletes, and reads a drive root (C:, C:/,
+C:\, C:\*) as the root target. A view with each \ read as / lets C:\ followed by a
+parameter stay its own word. Linux and macOS verdicts are unchanged; the views only add
+refusals.

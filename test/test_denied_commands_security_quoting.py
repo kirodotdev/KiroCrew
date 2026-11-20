@@ -1367,6 +1367,47 @@ class TestWindowsRespellings:
     def test_ordinary_commands_stay_allowed(self, cmd):
         assert is_denied(cmd) is None, cmd
 
+    _WINDOWS_ROOT_WIPES = (
+        r"Remove-Item -Recurse -Force C:\ ",
+        r"Remove-Item -Path C:\ -Recurse -Force",
+        r"Remove-Item -Path:D:/ -Recurse",
+        r"remove-item -r -fo c:",
+        r"ri -Recurse -Force C:\* ",
+        r"Remove-Item -Recurse -Force D:\work,C:\ ",
+        r"Remove-Item -Recurse -Force ~",
+        r"rmdir /s /q C:\ ",
+        r"rd /S/Q C:\ ",
+        r"del /s /q C:\* ",
+        r"rm -rf C:/",
+        r"rm -rf 'C:\'",
+    )
+    _WINDOWS_ORDINARY_DELETES = (
+        r"Remove-Item -Recurse -Force D:\work\repo\build",
+        r"Remove-Item -Recurse -Force .\build",
+        r"Remove-Item -Force C:\ ",
+        r"Get-ChildItem -Recurse C:\ ",
+        r"rd /s /q D:\work\repo\build",
+        r"rd /q C:\ ",
+        r"del /s /q C:\temp\*.log",
+        r"rm -rf C:/Users/me/work/build",
+        r"echo rd /s /q C:\ ",
+    )
+
+    def test_windows_drive_root_and_home_wipes_are_refused_only_on_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """PowerShell and cmd deletes, and rm against a drive root, reach the rm floor."""
+        from kiro_crew import platform_compat
+
+        posix = {cmd: is_denied(cmd.rstrip()) for cmd in self._WINDOWS_ORDINARY_DELETES}
+        assert all(verdict is None for verdict in posix.values()), posix
+        assert is_denied("rd /s /q C:\\") is None  # not a root on Linux or macOS
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        for cmd in self._WINDOWS_ROOT_WIPES:
+            assert is_denied(cmd.rstrip()) is not None, cmd
+        for cmd in self._WINDOWS_ORDINARY_DELETES:
+            assert is_denied(cmd.rstrip()) is None, cmd
+
     def test_suffixed_download_matches_the_plain_verdict(self):
         # The s3 download reader is POSIX-only, so compare with ``aws`` on this host.
         cmd = "s3 cp --recursive s3://bucket/x ./local"
