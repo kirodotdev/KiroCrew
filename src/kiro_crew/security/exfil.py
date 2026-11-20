@@ -1320,9 +1320,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _BASH_EXFIL_RULE_BY_PATTERN,
         _CARVEOUT_VERBS,
         _DATA_EXFIL_FILE_BODY_RULE,
+        _READ_ONLY_GH,
+        _backslashes_are_quoted_literals,
         _data_at_carveout_allows,
         _exfil_rule_id_for_match,
         _inert_line_allows,
+        _is_read_only_gh,
         audit_bash_exfiltration,
     )
     from kiro_crew.security.exfil_git_object import (  # noqa: F401
