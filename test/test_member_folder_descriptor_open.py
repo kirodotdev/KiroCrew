@@ -56,9 +56,7 @@ def _outside(tmp_path: Path) -> Path:
 
 @requires_symlinks
 @needs_pinned_walk
-def test_no_name_is_used_after_the_screen(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_no_name_is_used_after_the_screen(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     outside = _outside(tmp_path)
     named = _members()
     named.parent.mkdir(parents=True, exist_ok=True)
