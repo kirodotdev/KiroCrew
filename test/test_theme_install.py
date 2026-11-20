@@ -103,6 +103,7 @@ _PNG_1PX = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
     "0000000a49444154789c6360000002000154a24f9b0000000049454e44ae426082"
 )
+_SVG = "<svg xmlns='http://www.w3.org/2000/svg'></svg>"
 
 
 # Recognized L1 asset payload (branding + a font + a clean overrides.css).
@@ -1067,6 +1068,44 @@ class TestValidateThemeDirL1:
         manifest = json.loads((d / "theme.json").read_text("utf-8"))
         descriptor = _theme_asset_descriptor(d, manifest, 1)
         assert descriptor["branding"] == {"splash": f"branding/splash.{ext}"}
+
+    @staticmethod
+    def _with_branding(d: Path, branding: dict) -> dict:
+        manifest = json.loads((d / "theme.json").read_text("utf-8"))
+        manifest["branding"] = branding
+        _write(d / "theme.json", manifest)
+        return manifest
+
+    @pytest.mark.parametrize("fit", ["contain", "cover"])
+    def test_splash_fit_accepted_and_described(self, tmp_path: Path, fit: str) -> None:
+        d = _make_tiered(tmp_path, level=1, extra={"branding/splash.png": _PNG_1PX})
+        manifest = self._with_branding(d, {"splashFit": fit})
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert err is None, err
+        descriptor = _theme_asset_descriptor(d, manifest, 1)
+        assert descriptor["branding"] == {"splash": "branding/splash.png", "splashFit": fit}
+
+    @pytest.mark.parametrize("fit", ["fill", "Cover", "", None, 1, ["cover"]])
+    def test_unknown_splash_fit_refused_at_install_and_dropped_on_read(
+        self, tmp_path: Path, fit: object
+    ) -> None:
+        d = _make_tiered(tmp_path, level=1, extra={"branding/splash.svg": _SVG})
+        manifest = self._with_branding(d, {"splashFit": fit})
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert summary is None
+        assert err is not None and "branding.splashFit" in err
+        # An already-installed pack is re-read, not refused: the splash keeps its box.
+        summary, err = _validate_theme_dir(d)
+        assert err is None, err
+        descriptor = _theme_asset_descriptor(d, manifest, 1)
+        assert descriptor["branding"] == {"splash": "branding/splash.svg"}
+
+    def test_splash_fit_without_splash_art_is_not_described(self, tmp_path: Path) -> None:
+        d = _make_tiered(tmp_path, level=1, extra={"branding/logo.svg": _SVG})
+        manifest = self._with_branding(d, {"splashFit": "cover"})
+        assert _validate_theme_dir(d, installing=True)[1] is None
+        descriptor = _theme_asset_descriptor(d, manifest, 1)
+        assert descriptor["branding"] == {"logo": "branding/logo.svg"}
 
 
 class TestValidateThemeDirL2:

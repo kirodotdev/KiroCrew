@@ -73,6 +73,15 @@ describe("the desktop boot splash follows the active pack's splash art", () => {
     expect(fetchMock).toHaveBeenCalledWith(`/api/theme/${SLUG}/assets/branding/splash.png`)
   })
 
+  it.each([
+    ['cover', { type: 'image/png', bytes: PNG, fit: 'cover' }],
+    ['contain', { type: 'image/png', bytes: PNG }],
+  ])('carries splashFit %s to the shell with the art', async (fit, image) => {
+    installPack({ splash: 'branding/splash.png', splashFit: fit })
+    renderWithProviders(<div />)
+    await waitFor(() => expect(setThemeSplash).toHaveBeenLastCalledWith(image), SPLASH_BRANDING_PASS)
+  })
+
   it('clears the shell copy for a pack that ships no splash image', async () => {
     installPack({ logo: 'branding/logo.svg' })
     renderWithProviders(<div />)
