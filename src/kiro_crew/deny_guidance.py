@@ -133,6 +133,7 @@ _CLASS_ANCHORS: tuple[tuple[str, tuple[str, ...]], ...] = (
         DENY_CLASS_AWS_CREDENTIAL,
         (
             ".aws",
+            # The full variable names are in _NAMED_PATTERN_ANCHORS below.
             "aws_secret",
             "aws_access",
             "aws_session",
@@ -177,6 +178,27 @@ _CLASS_ANCHORS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
+#: Anchors matched against the pattern a refusal names (:func:`_named_identity`)
+#: only, never the rest of its text or the subject. Each one is checked at its
+#: class's place in :data:`_CLASS_ANCHORS`, so the precedence order is the same.
+#:
+#: The AWS credential variables are spelled in full because the end boundary
+#: refuses a following "_": a short form such as "aws_secret" can never match
+#: AWS_SECRET_ACCESS_KEY. Only the named pattern is read because other refusal
+#: text often quotes a command that names a variable without reading it. A SigV4
+#: upload (``curl --aws-sigv4 ... --user "$AWS_ACCESS_KEY_ID:..." -d @body.json``)
+#: names them in its title, and a governance refusal quotes the command it
+#: refused, under a rule that may deny ``aws`` itself; credential-read prose is
+#: false for both. A glob-tier or operator-pattern refusal names the variable as
+#: its pattern, and is classified.
+_NAMED_PATTERN_ANCHORS: Mapping[str, tuple[str, ...]] = {
+    DENY_CLASS_AWS_CREDENTIAL: (
+        "aws_secret_access_key",
+        "aws_access_key_id",
+        "aws_session_token",
+    ),
+}
+
 
 def _anchor_matcher(anchor: str, *, allow_plural: bool = False) -> re.Pattern[str]:
     """An anchor matcher whose edges cannot land in the middle of a word.
@@ -210,6 +232,12 @@ _CLASS_MATCHERS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = tuple(
     (deny_class, tuple(_anchor_matcher(anchor) for anchor in anchors))
     for deny_class, anchors in _CLASS_ANCHORS
 )
+
+#: Precompiled form of :data:`_NAMED_PATTERN_ANCHORS`.
+_NAMED_PATTERN_MATCHERS: Mapping[str, tuple[re.Pattern[str], ...]] = {
+    deny_class: tuple(_anchor_matcher(anchor) for anchor in anchors)
+    for deny_class, anchors in _NAMED_PATTERN_ANCHORS.items()
+}
 
 
 #: Built-in rule CATEGORY → the class its rules fall back to. Only the
@@ -765,7 +793,10 @@ def classify_deny(reason: str, subject: str = "") -> str:
     by the anchor scan alone, so a subject cannot pull a refusal off the class its
     own rule declares: ``aws s3 cp ./report.aws s3://bucket`` is an outbound
     transfer whose subject carries an AWS-credential anchor, and weighing that
-    subject would answer it with credential-read prose.
+    subject would answer it with credential-read prose. The full AWS credential
+    variable names are read only from the pattern *reason* names (see
+    :data:`_NAMED_PATTERN_ANCHORS`), because a transfer's title and a governance
+    refusal quote commands that name them without reading them.
 
     The one place the subject refines a NAMED rule's class is the three
     ``aws s3`` transfer rows: when the subject reads as a download the direction
@@ -798,8 +829,11 @@ def classify_deny(reason: str, subject: str = "") -> str:
     text = f"{reason or ''} {subject or ''}".lower().strip()
     if not text:
         return ""
+    named = (_named_identity(reason) or "").lower()
     for deny_class, matchers in _CLASS_MATCHERS:
         if any(matcher.search(text) for matcher in matchers):
+            return deny_class
+        if any(matcher.search(named) for matcher in _NAMED_PATTERN_MATCHERS.get(deny_class, ())):
             return deny_class
     return ""
 
