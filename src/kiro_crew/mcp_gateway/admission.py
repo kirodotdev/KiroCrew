@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import time
 from collections import deque
@@ -116,6 +117,21 @@ SLOW_INIT_FRACTION = 0.8
 #: Longest first-``initialize`` deadline a pool key gets after its spawns were
 #: reaped at the deadline (``Admission.initialize_timeout_for``).
 INIT_DEADLINE_STRETCH_CAP_SECS = 120.0
+
+#: Most pool keys whose deadline reaps ``Admission`` remembers at once. A key
+#: that is reaped and never comes back ready would otherwise stay forever; past
+#: this many, the key reaped longest ago is forgotten first.
+INIT_DEADLINE_REAP_KEYS_MAX = 256
+
+
+def _reap_slot(key: Hashable) -> str:
+    """A fixed-size name for *key* in ``Admission._deadline_reaps``.
+
+    The key comes from the caller's register frame, so its size is theirs to
+    choose; the dict holds this SHA-256 hex digest of its ``repr`` instead.
+    """
+    return hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
+
 
 #: Window over which slow inits are counted for the snapshot's ``slow_inits``,
 #: the gate's own latency evidence for the adaptive controller.
@@ -571,9 +587,11 @@ class Admission:
         self.initialize_timeout_secs = float(initialize_timeout_secs)
         self.spawn_queue_wait_secs = float(spawn_queue_wait_secs)
         self._reapers: set[asyncio.Task[None]] = set()
-        # Pool key -> first-``initialize`` deadline reaps in a row, cleared by the
-        # key's next handshake that completes (see ``initialize_timeout_for``).
-        self._deadline_reaps: dict[Hashable, int] = {}
+        # Pool key digest -> first-``initialize`` deadline reaps in a row, cleared
+        # by the key's next handshake that completes (see ``initialize_timeout_for``).
+        # Insertion order is reap order, so the oldest entry goes first once the
+        # dict holds ``INIT_DEADLINE_REAP_KEYS_MAX`` keys.
+        self._deadline_reaps: dict[str, int] = {}
 
     def initialize_timeout_for(self, key: Hashable) -> float:
         """The first-``initialize`` deadline the next spawn for *key* gets.
@@ -588,7 +606,7 @@ class Admission:
         never lowered, and a backend that never answers still fails, only later.
         """
         base = _effective_initialize_timeout_secs(self.initialize_timeout_secs)
-        reaps = self._deadline_reaps.get(key, 0)
+        reaps = self._deadline_reaps.get(_reap_slot(key), 0)
         if reaps <= 0:
             return self.initialize_timeout_secs
         return max(base, min(base * (2**reaps), INIT_DEADLINE_STRETCH_CAP_SECS))
@@ -618,10 +636,14 @@ class Admission:
                 if not init_done.is_set():
                     return
                 state, reason = outcome()
+                slot = _reap_slot(key)
                 if state == "ready":
-                    self._deadline_reaps.pop(key, None)
+                    self._deadline_reaps.pop(slot, None)
                 elif state == "failed" and (reason or "").startswith(INITIALIZE_DEADLINE_REASON):
-                    self._deadline_reaps[key] = min(self._deadline_reaps.get(key, 0) + 1, 8)
+                    reaps = self._deadline_reaps.pop(slot, 0)
+                    self._deadline_reaps[slot] = min(reaps + 1, 8)
+                    while len(self._deadline_reaps) > INIT_DEADLINE_REAP_KEYS_MAX:
+                        del self._deadline_reaps[next(iter(self._deadline_reaps))]
             finally:
                 exited.cancel()
                 done.cancel()

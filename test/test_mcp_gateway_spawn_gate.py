@@ -1379,6 +1379,38 @@ class TestAcquireBackendOrder:
         assert admission.initialize_timeout_for(other) == 10.0
         await admission.close()
 
+    @pytest.mark.asyncio
+    async def test_reaped_keys_that_never_come_back_ready_are_capped(self) -> None:
+        """Keys that are reaped and never ready again do not pile up forever.
+
+        Each one is stored as a fixed-size digest, and past the cap the key
+        reaped longest ago is forgotten first.
+        """
+        from kiro_crew.mcp_gateway.backend_handshake import INITIALIZE_DEADLINE_REASON
+
+        admission = _admission(initialize_timeout_secs=10.0)  # flake-ok: only compared
+        cap = adm.INIT_DEADLINE_REAP_KEYS_MAX
+        never = asyncio.Event()
+        keys = [("server-" + "x" * 4096, i) for i in range(cap + 5)]
+        for key in keys:
+            done = asyncio.Event()
+            done.set()
+            admission.track_initialize(
+                key,
+                init_done=done,
+                outcome=lambda: ("failed", INITIALIZE_DEADLINE_REASON),
+                process_exited=never.wait,
+            )
+            await _settle()
+
+        assert len(admission._deadline_reaps) == cap
+        assert all(len(slot) == 64 for slot in admission._deadline_reaps)
+        assert admission.initialize_timeout_for(keys[0]) == 10.0, "oldest forgotten"
+        assert admission.initialize_timeout_for(keys[4]) == 10.0
+        assert admission.initialize_timeout_for(keys[5]) > 10.0, "newer kept"
+        assert admission.initialize_timeout_for(keys[-1]) > 10.0
+        await admission.close()
+
 
 class TestSetSpawnCapacityFrame:
     """The gate's capacity seam over the wire: every value earns an ANSWER."""
