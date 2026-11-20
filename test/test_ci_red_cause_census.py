@@ -11,6 +11,7 @@ The main-red issue body is built by the watcher's own renderer
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import importlib.util
 import json
 from pathlib import Path
@@ -1395,3 +1396,156 @@ def test_the_workflow_list_follows_rest_pages() -> None:
     assert found[-1] == ("W_last", "last")
     assert api.rest_calls == 2
     assert gh.calls[0][1]["path"] == f"repos/{REPO}/actions/workflows?per_page=100&page=1"
+
+
+# -- the window as a count of days, and what a day keeps for the week ---------
+
+THE_20TH = dt.datetime(2026, 11, 20, 7, 17, tzinfo=dt.timezone.utc)
+
+
+def api_on_the_20th(gh: FakeGh) -> Any:
+    return CENSUS.Api(run=gh, sleep=lambda seconds: None, now=lambda: THE_20TH)
+
+
+def test_last_days_is_that_many_whole_utc_days_ending_yesterday(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGh(
+        workflows=workflows_page("CI"),
+        runs=runs_pages(
+            {
+                None: connection(
+                    [
+                        run_node(4, "2026-11-20T00:00:00Z"),
+                        run_node(3, "2026-11-19T23:59:59Z"),
+                        run_node(2, "2026-11-19T00:00:00Z"),
+                        run_node(1, "2026-11-18T23:59:59Z"),
+                    ]
+                )
+            }
+        ),
+    )
+    args = ["--last-days", "1", "--repo", REPO, "--out-dir", str(tmp_path)]
+
+    status = CENSUS.main(args, api=api_on_the_20th(gh), clock=ticks(0.0, 1.0))
+
+    # The clock reads the 20th: the window is the 19th, whole, and nothing else.
+    assert status == 0
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert (summary["days"], summary["runs"]) == (1, 2)
+    assert (summary["since"], summary["until"]) == ("2026-11-19T00:00:00Z", "2026-11-20T00:00:00Z")
+    assert (summary["runs_read_from"], summary["runs_read_to"]) == (
+        "2026-11-19T00:00:00Z",
+        "2026-11-19T23:59:59Z",
+    )
+    assert "2026-11-19 to 2026-11-19 UTC (1 day(s))" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "window",
+    [
+        [],
+        ["--since", DAY],
+        ["--until", DAY],
+        ["--last-days", "1", "--since", DAY, "--until", DAY],
+        ["--last-days", "0"],
+        ["--last-days", "many"],
+    ],
+)
+def test_the_window_is_two_bounds_or_a_count_of_days(window: list[str]) -> None:
+    gh = FakeGh()
+    with pytest.raises(SystemExit):
+        CENSUS.main([*window, "--repo", REPO, "--out-dir", "out"], api=api_on_the_20th(gh))
+    assert gh.calls == []
+
+
+def test_a_census_keeps_each_push_ci_ran_for_once(tmp_path: Path) -> None:
+    other = "c" * 40
+    gh = FakeGh(
+        workflows=workflows_page("CI", "PR Hygiene"),
+        runs=lambda fields: {
+            "node": {
+                "runs": connection(
+                    [
+                        run_node(1, f"{DAY}T01:00:00Z"),
+                        run_node(2, f"{DAY}T02:00:00Z"),
+                        run_node(3, f"{DAY}T03:00:00Z", event="push", sha=other),
+                        run_node(4, f"{DAY}T04:00:00Z", event="schedule", sha=other),
+                    ]
+                    if fields["workflow"] == "W_CI"
+                    else [run_node(5, f"{DAY}T05:00:00Z", sha="d" * 40)]
+                )
+            }
+        },
+    )
+
+    assert CENSUS.main(census_args(tmp_path), api=api_for(gh), clock=ticks(0.0, 1.0)) == 0
+
+    # Two runs of one pull-request push are one push; a scheduled run and
+    # another workflow's run are none.
+    assert (tmp_path / "ci-pushes.csv").read_bytes() == (
+        b"event,head_sha\npull_request," + SHA.encode() + b"\npush," + other.encode() + b"\n"
+    )
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["backend_shard_flaky_or_infrastructure_reds"]["pushes"] == 2
+    assert summary["runs"] == 5
+
+
+def test_a_census_added_up_from_days_is_summed_from_its_stats_not_its_runs() -> None:
+    census = CENSUS.Census()
+    census.stats = CENSUS.RunStats(
+        runs=7,
+        read_from="2026-11-13T00:00:01Z",
+        read_to="2026-11-19T23:59:58Z",
+        ci_pushes=frozenset({("push", SHA), ("pull_request", SHA)}),
+    )
+
+    summary = CENSUS.summarize(census, 7)
+
+    assert (summary["runs"], summary["runs_read_from"], summary["runs_read_to"]) == (
+        7,
+        "2026-11-13T00:00:01Z",
+        "2026-11-19T23:59:58Z",
+    )
+    assert summary["backend_shard_flaky_or_infrastructure_reds"]["pushes"] == 2
+
+
+# -- how long one gh call may take --------------------------------------------
+
+
+class _Finished:
+    returncode, stdout, stderr = 0, "{}", ""
+
+
+def test_one_gh_call_may_take_as_long_as_it_was_told(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[list[str], float]] = []
+
+    def fake_run(argv: list[str], **options: Any) -> _Finished:
+        seen.append((argv, options["timeout"]))
+        return _Finished()
+
+    monkeypatch.setattr(CENSUS.subprocess, "run", fake_run)
+
+    assert CENSUS.run_gh(["api", "rate_limit"]) == (0, "{}", "")
+    assert CENSUS.run_gh(["api", "rate_limit"], 900) == (0, "{}", "")
+    assert seen == [(["gh", "api", "rate_limit"], 300), (["gh", "api", "rate_limit"], 900)]
+
+
+def test_the_census_runs_gh_with_the_timeout_it_was_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built: list[Any] = []
+    real_api = CENSUS.Api
+
+    def api_with_fake_gh(run: Any) -> Any:
+        built.append(run)
+        return real_api(run=FakeGh(budget=lambda fields: bucket(1)), sleep=lambda seconds: None)
+
+    monkeypatch.setattr(CENSUS, "Api", api_with_fake_gh)
+    args = census_args(tmp_path, "--gh-timeout-seconds", "900")
+
+    assert CENSUS.main(args, clock=ticks(0.0, 1.0)) == CENSUS.PARTIAL_EXIT
+    (run,) = built
+    assert (run.func, run.keywords) == (CENSUS.run_gh, {"timeout": 900})
+    default = CENSUS.build_parser().parse_args(census_args(tmp_path))
+    assert default.gh_timeout_seconds == CENSUS.GH_TIMEOUT_SECONDS == 300

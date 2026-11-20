@@ -571,53 +571,90 @@ action is not waited for. Neither job can pass, skip or report success without
 the action having run.
 `test/test_gh_rate_limit_wait.py` runs the command and both jobs' steps.
 
-### Scheduled workflows: the weekly red-cause census
+### Scheduled workflows: the red-cause census
 
 A red check should mean the pull request's own change broke something.
-`ci-red-census.yml` re-reads the three numbers for that goal every Sunday at
-09:00 UTC (and on a manual dispatch with optional `since` and `until` days):
-the share of red PR pushes with a job red from a broken main, the share of red
-jobs caused by the API rate limit, and backend shard reds from flaky tests or
-infrastructure per day. It runs `scripts/ci_red_cause_census.py --last-days 7`,
-writes the summary and the script's call counts to the job summary, and uploads
-`red-jobs.csv`, `summary.md`, `summary.json` and the printed output as the
-`ci-red-census` artifact, kept 90 days. Every permission is `read`; it opens no
-issue and posts no comment.
+`ci-red-census.yml` keeps the three numbers for that goal readable: the share of
+red PR pushes with a job red from a broken main, the share of red jobs caused
+by the API rate limit, and backend shard reds from flaky tests or
+infrastructure per day. It has two jobs, both on a standard hosted runner and
+both with `read` permissions only; it opens no issue and posts no comment.
 
-The census reads by GraphQL with the job's `GITHUB_TOKEN`. That token has a
-GraphQL primary limit of its own, apart from the REST limit the section above
-is about: 15,000 points an hour per repository for a repository of a GitHub
-Enterprise Cloud account, 1,000 otherwise
+- **`day`, every night at 07:17 UTC**: runs
+  `scripts/ci_red_cause_census.py --last-days 1`, which gives every red job of
+  yesterday (UTC) one cause, writes the day's summary and the script's call
+  counts to the job summary, and uploads `red-jobs.csv`, `ci-pushes.csv`,
+  `summary.md`, `summary.json` and the printed output as the artifact
+  `ci-red-census-day`, kept 90 days.
+- **`week`, on Sunday after that night's read**: runs
+  `scripts/ci_red_census_week.py`, which downloads the last seven days'
+  artifacts, adds them up, writes the week's summary to the job summary and
+  uploads the same four files as `ci-red-census-week`, kept 90 days. It reads
+  no run, so it spends no GraphQL point.
+
+A dispatch takes `day` (a UTC day to read in place of yesterday) and `week`
+(also add up the seven days ending there).
+
+**Why a day a night.** GitHub lists a workflow's runs newest first, with no
+date filter in GraphQL, so reading a window pages through every run created
+since. Read the next morning, a weekday costs its own runs: about 3,000 points
+and 25 minutes. Read at the end of the week, the same seven days are about
+21,000 points in one sitting, which either takes most of a bucket or keeps a
+runner asleep between hours. REST can filter runs by date, but it draws on the
+shared 15,000 requests an hour the section above is about, returns at most
+1,000 runs a search, and carries no count of a run's red jobs.
+
+**The budget.** The census reads by GraphQL with the job's `GITHUB_TOKEN`. That
+token has a GraphQL primary limit of its own, apart from the REST one: 15,000
+points an hour per repository for a repository of a GitHub Enterprise Cloud
+account, 1,000 otherwise
 ([GitHub's GraphQL rate limits](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#primary-rate-limit)).
-Every workflow of the repository shares it, and a week of this repository costs
-about 21,000 points, so the run is paced by the script's own guard:
+Every workflow of the repository shares it.
 
 | Flag | Value | What it bounds |
 |---|---|---|
-| `--points-per-hour` | 5,000 | After spending this many points the census sleeps until the bucket's reset, so no hour of the bucket gives up more than a third of it, plus at most one call for each of the 4 workers already in flight |
-| `--reserve-points` | 7,500 | It never starts a call with less than half the bucket left; when other jobs have spent it, it sleeps until the reset |
-| `--max-wait-seconds` | 9,000 | All sleeps together. A reset further away than what is left ends the census with what it read |
-| `--max-points` | 30,000 | The most one run spends, whatever window a dispatch asks for |
+| `--max-points` | 7,500 | The most one run spends: half the bucket. A weekday is about 3,000, and a day up to about five days back still fits |
+| `--reserve-points` | 7,500 | It never starts a call with less than half the bucket left; it stops instead |
 | `--gh-timeout-seconds` | 900 | One `gh` call: the 600 seconds the `gh` wrapper may sleep inside it on a spent limit, and 300 for the call itself. The wrapper charges a sleep before it starts, so a call ended mid-sleep would have spent the wait budget and read nothing |
 
 A step before the census reads the bucket's size from `/rate_limit`, which
-costs nothing, and fails the job when it is under 12,500 points (the reserve
-and one hour's points): nothing is read from a bucket that cannot hold a
-census. The week is one paced read, not one read a day, because GitHub lists a
-workflow's runs newest first with no date filter: seven one-day reads would
-page through every newer run once per day and cost about half as much again.
+costs nothing, and fails the job when it is under 10,500 points (the reserve
+and a weekday). The census never waits for a bucket: a job that sleeps holds a
+runner.
 
-The census exits 0 for a whole read and 3 when the budget ended it early. On 3
-the job stays green with a warning, and the summary starts with `Partial`, the
-reason, the span of runs read and the number of check suites left out; its
-counts cover only what was read. Any other exit fails the job, and
-`scheduled-failure-watch.yml` files it. The Actions token cannot read a job log
-here, so the weekly numbers are from annotations alone and the summary's
-`log_unread` says how many red jobs that affects. A job's name is whatever a
-pull request's workflow called it: names reach the CSV only, with control
-characters replaced, never the job summary. `test/test_ci_red_census_workflow.py`
-pins the triggers, the permissions, the budget flags against the job timeout
-and the step's handling of each exit code.
+**The hour.** Counted by the hour on one weekday, runs created were under 2,500
+an hour only from 05:00 to 09:00 UTC and fewest at 07:00. Seven hours after
+midnight also lets a job re-run to green that night count as flaky. The minute
+is off the top of the hour, when GitHub delays scheduled runs most.
+
+**Exit codes.** Both scripts exit 0 when everything asked for was read and 3
+when it was not: a census the budget ended early, or a week with a day missing
+or partial. On 3 the job stays green with a warning and the summary says what
+is missing in its first lines; a week divides its per-day number by the days it
+has. Any other exit fails the job, and `scheduled-failure-watch.yml` files it.
+GitHub may delay or drop a scheduled run: dispatch the workflow with `day` to
+read a missed night, and with `week` to add the week up again.
+
+**What adding days up does and does not do.** A run belongs to the day it was
+created, so no run is in two days. A push that was red on two days is one red
+push (rows are added up by head SHA), and a push `CI` ran for on two days is
+one push (each day keeps its pushes in `ci-pushes.csv`, not a count). A job
+re-run to green after its day was read stays under the cause it had then. The
+Actions token cannot read a job log here, so the numbers are from annotations
+alone and `log_unread` says how many red jobs that affects.
+
+**Untrusted input.** A job's name is whatever a pull request's workflow called
+it: names reach the CSV only, with control characters replaced, never a job
+summary. Any run, a pull request's included, can upload an artifact named like
+a day's, so `week` opens only artifacts of this workflow's own scheduled or
+dispatched runs on the default branch of this repository, reads the day from
+the window in the artifact's own `summary.json`, and treats a file that is not
+what the census writes as a missing day.
+
+`test/test_ci_red_census_workflow.py` pins the triggers, the permissions, the
+budget against the bucket, each deadline against the wait inside it and each
+step's handling of every exit code; `test/test_ci_red_census_week.py` holds the
+sum to what one census of all seven days gives.
 
 ### A red that is not your diff: external, or self-inflicted?
 
@@ -1964,7 +2001,7 @@ inside its `matrix.os` test), so a fork's own copy stays on `ubuntu-latest`. By
 what starts them:
 
 - a schedule or a manual dispatch: `add-contributor.yml`'s `add`,
-  `connections-l0.yml`'s `probe`, `ci-red-census.yml`'s `census`, `deferred-findings-audit.yml`'s `audit`,
+  `connections-l0.yml`'s `probe`, `deferred-findings-audit.yml`'s `audit`,
   `fix-loop-analysis.yml`'s `metrics` and `analyze`, `memory-benchmark.yml`'s
   `accept`, `pr-readiness-sweep.yml`'s `sweep`, `ship-report.yml`'s `report`,
   `test-durations.yml`'s `refresh`, `gui-user-test.yml`'s one job,
