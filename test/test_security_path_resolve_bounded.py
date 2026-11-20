@@ -552,6 +552,35 @@ def test_unc_paths_are_never_probed_on_windows(monkeypatch) -> None:
         stalled.release.set()
 
 
+@pytest.mark.parametrize(
+    "token",
+    [
+        "\\\\\\server\\share\\f.txt",
+        "\\\\\\\\server\\share\\f.txt",
+        "///server/share/f.txt",
+        "\\/\\server\\share\\f.txt",
+    ],
+)
+def test_extra_leading_separators_are_unc_and_never_probed_on_windows(monkeypatch, token) -> None:
+    # ``is_unc_shape`` calls any text with two or more leading separators a share, so the
+    # resolver must skip it too rather than hand it to ``realpath``.
+    monkeypatch.setattr(security, "_ON_WINDOWS", True)
+    stalled = _StalledResolver()
+    monkeypatch.setattr(security, "_resolved_spellings", stalled)
+    try:
+        assert security._is_unc_path(token)
+        assert security._candidate_forms(token) == {os.path.normpath(token), token}
+        assert stalled.calls == []
+    finally:
+        stalled.release.set()
+
+
+def test_drive_and_separator_only_paths_are_not_unc() -> None:
+    assert not security._is_unc_path("C:\\x")
+    assert not security._is_unc_path("\\x")
+    assert not security._is_unc_path("\\\\\\")
+
+
 def test_repeated_stalls_back_off_exponentially_and_recovery_resets(monkeypatch) -> None:
     # A mount that stays dead is probed rarely, not every 30s: each re-probe
     # that stalls doubles the refusal window up to the cap.  Once the mount

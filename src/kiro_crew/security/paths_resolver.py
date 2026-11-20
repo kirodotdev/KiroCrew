@@ -695,7 +695,7 @@ def _mark_stalled(prefix: str, budget: float) -> None:
     )
 
 
-_UNC_PREFIX_RE = re.compile(r"^[\\/]{2}[^\\/]")
+_UNC_PREFIX_RE = re.compile(r"^[\\/]{2,}[^\\/]")
 
 
 _ON_WINDOWS = os.name == "nt"
@@ -721,7 +721,7 @@ def _fold_windows_alias(path: str) -> str:
 
 
 def _is_unc_path(expanded: str) -> bool:
-    """``\\\\server\\share\\...`` in either separator spelling.
+    """``\\\\server\\share\\...``: two or more leading separators, either style (as ``is_unc_shape``).
 
     On Windows ``os.path.realpath`` on a UNC path opens it
     (``GetFinalPathNameByHandle``), which is a network round-trip to the named
