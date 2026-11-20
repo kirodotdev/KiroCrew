@@ -1058,4 +1058,13 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "the credential redactor (`redact_via_context`) and is cut to 200 "
         "characters; anything else leaves the text the gateway wrote itself.",
     ),
+    (
+        "The work a restart is waiting on",
+        "work_holders.py",
+        "The names of the sessions and jobs a busy restart idle check lists to "
+        "the CLI on the gateway host (slot and session keys, cron job names, "
+        "workflow run ids). Terminal control sequences and format characters "
+        "are dropped, then credentials, inside URLs too, are redacted before "
+        "the name is cut to 64 characters; the CLI repeats it on what it prints.",
+    ),
 )

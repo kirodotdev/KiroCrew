@@ -767,7 +767,15 @@ take the hold in `cli.main` after argument parsing.
     ONE reader: `Quiescence.named_holders()`, called only by the host-only
     `POST /api/restart/when-idle` (the local secret's `internal_auth` mark and a
     loopback peer), whose busy answer carries the first five as `holders` and
-    the rest as the number `holders_more`. Everything a dashboard client or an
+    the rest as the number `holders_more`. The secret proves the call came from
+    inside, not who made it, so the handler adds them only for a caller that
+    declares no session and carries no app claim
+    (`restart_gate._may_read_names`): the CLI on the host. A caller acting for a
+    session (an app's or the person's script cron, an agent's or sub-agent's
+    tool call, with `X-Session-Key`) gets the counts alone. This is the caller
+    `GET /api/crons` already lists every job to; a process that holds the raw
+    secret and omits its session key is that caller on every internal route,
+    and this one tells it nothing those do not. Everything a dashboard client or an
     app can receive carries the counts alone: `Quiescence.payload()`,
     `RestartAdmission.detail()` (the `update_progress` error step, a tier-0
     event delivered to every app token, and the "Restart refused" log line) and
