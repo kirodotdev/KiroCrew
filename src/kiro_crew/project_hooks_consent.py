@@ -160,8 +160,8 @@ def hooks_fingerprint(folder: str) -> str:
     """sha256 of every hook definition *folder*'s ``.kiro/agents`` specs declare.
 
     An ``on`` is bound to this, not to the path alone: a folder deleted and
-    re-created (or re-cloned) at the same path with other hooks no longer matches,
-    so its hooks wait for a new ``on``. Covers each spec that reads and sets
+    re-created (or re-cloned) at the same path with other hooks gives another
+    value, so its hooks wait for a new ``on``. Covers each spec that reads and sets
     ``hooks``; that is a superset of the hooks that can run, so a change can only
     re-ask, never skip one. Only ``hooks`` is hashed: an edit to a prompt or tools
     list does not re-ask.
@@ -181,8 +181,9 @@ STALE = "stale"
 
 
 def _crew_choice(key: str, seen: list[_Scanned] | None) -> str | None:
-    """:func:`crew_choice` for a resolved *key*; an ``on`` that matches leaves the
-    scan it was checked against in *seen*, so a caller fires exactly those hooks."""
+    """:func:`crew_choice` for a resolved *key*. A saved ``on`` leaves the scan it was
+    checked against in *seen*, whether it matched or not, so a caller fires exactly
+    those hooks and can still tell an unreadable spec from changed hooks."""
     try:
         # Under the writers' lock: an in-place save passes through bytes that are
         # not a whole record, which an unlocked read would take as UNREADABLE.
@@ -208,11 +209,11 @@ def _crew_choice(key: str, seen: list[_Scanned] | None) -> str | None:
     except StoreUnreadable:
         logger.warning("project-hooks consent store is unreadable; project hooks stay off")
         return UNREADABLE
+    if seen is not None:
+        seen[:] = scanned
     if stored != current:
         logger.info("project hooks changed since they were turned on; they wait for a new yes")
         return STALE
-    if seen is not None:
-        seen[:] = scanned
     return ON
 
 
@@ -270,13 +271,16 @@ def consented_project_hooks(folder: str, agent_id: str) -> dict[str, Any] | None
     PreToolUse fails closed.
     """
     seen: list[_Scanned] = []
-    if not _enabled(folder, seen)[0]:
-        return None
+    enabled = _enabled(folder, seen)[0]
     for _file, name, spec in seen:  # first by file stem wins, as the firing resolver
         if name != agent_id:
             continue
         if spec is None:
+            # Raised for a saved "on" even when the unread file made it STALE: an
+            # unreadable spec under a yes fails closed, it is not read as "off".
             raise ValueError(f"the project spec for agent {agent_id!r} could not be read")
+        if not enabled:
+            return None
         return {"hooks": spec["hooks"]} if "hooks" in spec else {}
     return None
 

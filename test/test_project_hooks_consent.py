@@ -411,6 +411,19 @@ def test_the_hooks_that_fire_are_the_ones_the_consent_was_checked_against(layout
     assert _hooks(checkout) == {"hooks": _HOOKS}
 
 
+def test_an_unreadable_spec_under_a_yes_still_fails_closed(layout):
+    # A malformed edit changes the fingerprint, but it must raise (PreToolUse fails
+    # closed, a person's cron-tab turn re-projects), not read as plain "off".
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    (checkout / ".kiro" / "agents" / "proj.json").write_text("{not json", encoding="utf-8")
+    assert consent.crew_choice(checkout) == consent.STALE
+    with pytest.raises(ValueError):
+        consent.consented_project_hooks(str(checkout), "proj")
+    consent.set_choice(checkout, False)
+    assert consent.consented_project_hooks(str(checkout), "proj") is None
+
+
 def test_an_edit_outside_hooks_does_not_ask_again(layout):
     _home, _user, checkout = layout
     consent.set_choice(checkout, True)
