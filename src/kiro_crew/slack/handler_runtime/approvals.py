@@ -92,9 +92,13 @@ class _LinkedApproval:
     :func:`_linked_trust_grantable`). It defaults to False so an entry built
     without it -- and therefore every path that never established the proof --
     cannot grant Trust.
+
+    ``requester`` is the shared user whose Slack message opened the turn that asked
+    (:mod:`kiro_crew.slack.turn_requester`); they may answer this prompt too, never
+    with Trust. Empty: only the owner may answer it.
     """
 
-    __slots__ = ("request_id", "session_key", "trust_grantable", "slot_key", "future")
+    __slots__ = ("request_id", "session_key", "trust_grantable", "slot_key", "future", "requester")
 
     def __init__(
         self,
@@ -103,12 +107,14 @@ class _LinkedApproval:
         trust_grantable: bool = False,
         slot_key: str = "",
         future: asyncio.Future[str] | None = None,
+        requester: str = "",
     ) -> None:
         self.request_id = request_id
         self.session_key = session_key
         self.trust_grantable = trust_grantable
         self.slot_key = slot_key
         self.future = future
+        self.requester = requester
 
 
 class _LinkedApprovalEvent:
@@ -274,6 +280,7 @@ async def post_linked_approval(
     slot_key: str = "",
     future: asyncio.Future[str] | None = None,
     channel_trust: bool = False,
+    requester: str = "",
 ) -> str | None:
     """Mirror a dashboard tool-approval prompt into a linked Slack thread.
 
@@ -281,7 +288,8 @@ async def post_linked_approval(
     :class:`_LinkedApproval` keyed by ``channel:ts`` so a button click resolves
     the dashboard slot's approval future (see :func:`handle_interaction`).
     *slot_key* and *future* are the slot that asked and the future it parked on:
-    the click settles that future and no other.
+    the click settles that future and no other. *requester* is the shared user who
+    may answer it besides the owner (``""``: the owner alone).
     ``thread_ts=None`` posts top-level: a Slack Code channel's own session
     replies in the channel itself, so its prompts go there too.
 
@@ -350,7 +358,7 @@ async def post_linked_approval(
         )
         return None
     _linked_approvals[f"{channel}:{approval_ts}"] = _LinkedApproval(
-        request_id, session_key, trust_grantable, slot_key, future
+        request_id, session_key, trust_grantable, slot_key, future, requester
     )
     return approval_ts
 
