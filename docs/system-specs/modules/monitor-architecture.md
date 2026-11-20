@@ -242,6 +242,13 @@ set in the
 gate's terminal recheck cannot spend the loop's own wake), bounded by
 `_MAX_REMEMBERED_TOKENS` and `_MAX_WATCHERS_PER_ITEM`, and dropped when the item
 closes. A newer stall token replaces older ones, since only the newest can recur.
+The probe also raises host wakes that belong to no report
+(`_posture_observations`): a change of the host's memory-and-disk posture, a
+further fall at the same `tight` or `critical` level
+(`resource_pressure.worsened()`), and a growth step of an open item's worker tree
+(`resource_pressure.worker_growth()`). Each is a token in the same seen set, the
+first two charged to the posture rate entry and a growth step to its item's own
+budget; the thresholds and wake texts are in `src/kiro_crew/docs/work-ledger.md`.
 So a worker that reports `progress` and stops, again and again, is one stall, not
 one per report; the item's `stale` flag still shows on every read and on the
 patrol's floor turn. The stall's observation key carries the episode too, so the
