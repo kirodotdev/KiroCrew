@@ -19,10 +19,12 @@ Instance fields read: ``_native_skill_projection``, ``_session_key``,
 from __future__ import annotations
 
 import asyncio
+import glob
 import logging
 import os
 import shutil
 import signal
+import stat
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping, NamedTuple
@@ -30,7 +32,9 @@ from typing import TYPE_CHECKING, Mapping, NamedTuple
 from kiro_crew import agent_scratch, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.agent_env import agent_env_overlay
+from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
 from kiro_crew.acp.launch import LaunchTools
+from kiro_crew.acp.node_compile_cache import apply_node_compile_cache
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
@@ -46,7 +50,7 @@ from kiro_crew.agent_sdk.backends import (
     NODE_ADAPTER_ENTRY_SEGMENTS,
 )
 from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
-from kiro_crew.env import augmented_path, describe_search_path
+from kiro_crew.env import augmented_path, describe_search_path, resolve_krb5_ccname
 from kiro_crew.identity_stores import IDENTITY_STORE_ROOTS
 from kiro_crew.kiro_cli import known_kiro_cli_dirs, resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
@@ -994,3 +998,86 @@ def _resolve_spawn_agent_argv(self: AcpClient) -> str:
         return self._native_skill_projection.spawn_agent(self._agent)
     except ValueError as exc:
         raise AcpError(str(exc)) from exc
+
+
+def _resolve_ssh_auth_sock(env: dict[str, str]) -> None:
+    """Ensure SSH_AUTH_SOCK points to a live agent socket.
+
+    The gateway's inherited value may be stale after an ssh-agent restart.
+    Re-discovers the current agent socket without spawning a login shell.
+
+    - macOS: launchd listener path changes on reboot
+    - Linux: ssh-agent sockets live under /tmp/ssh-*/agent.*
+    - Windows: no-op — there is no ``SSH_AUTH_SOCK`` (Win32 OpenSSH agent uses a
+      named pipe, which needs no repair). Bare ``os.getuid()`` below would also
+      ``AttributeError`` on win32, so return early; this function runs in the
+      spawn prelude for BOTH ACP backends.
+    """
+    if platform_compat.IS_WINDOWS:
+        return
+
+    current = env.get("SSH_AUTH_SOCK", "")
+    if current and os.path.exists(current):
+        return  # already valid
+
+    if sys.platform == "darwin":
+        patterns = [
+            "/tmp/com.apple.launchd.*/Listeners",
+            "/var/run/com.apple.launchd.*/Listeners",
+        ]
+    else:
+        uid = os.getuid()
+        patterns = [
+            "/tmp/ssh-*/agent.*",
+            f"/run/user/{uid}/ssh-agent.socket",
+            f"/run/user/{uid}/keyring/ssh",
+        ]
+
+    for pattern in patterns:
+        candidates = [p for p in glob.glob(pattern) if stat.S_ISSOCK(os.stat(p).st_mode)]
+        if candidates:
+            best = max(candidates, key=lambda p: os.path.getmtime(p))
+            env["SSH_AUTH_SOCK"] = best
+            logger.debug("Resolved SSH_AUTH_SOCK → %s", best)
+            return
+
+
+def _resolve_spawn_env(env: dict[str, str], *, kiro_api_key: bool = False) -> dict[str, str]:
+    """Repair stale credential pointers in *env* before an agent spawn.
+
+    Bundles :func:`_resolve_ssh_auth_sock` (glob + stat over ``/tmp``) and
+    :func:`resolve_krb5_ccname` (lstat/stat of ``/tmp/krb5cc_<uid>``) so the
+    spawn path pays ONE thread hop for both. Both resolvers issue synchronous
+    filesystem syscalls whose latency scales with the ``/tmp`` entry count, so
+    they must never run on the event loop — call this via
+    ``asyncio.to_thread``. Mutates *env* in place and returns it for
+    convenience.
+
+    With ``kiro_api_key=True`` (the kiro-cli backend), also re-injects the
+    CLI's own model credential from the data home's ``.env`` when the Docker
+    entrypoint scrubbed it out of the parent environ — the child authenticates
+    from its environment, so without this an API-key container loses model
+    auth. With ``kiro_api_key=False`` (a foreign backend) the credential is
+    actively STRIPPED instead: it is kiro-cli's alone, and the deny scrub
+    deliberately exempts it, so an inherited copy would otherwise ride into a
+    foreign agent process. The file read is IO, which is why both branches
+    ride this same off-loop hop.
+
+    A kiro-cli child (``kiro_api_key=True``) also gets
+    ``agent.child_env_defaults`` for keys *env* does not already carry -- a
+    config read, so it rides this hop too. The ``AcpRuntime`` spawn applies the
+    same helper through the kiro-family harness hook instead.
+    """
+    _resolve_ssh_auth_sock(env)
+    resolve_krb5_ccname(env)
+    # Deferred import: this module keeps config.loader off its import graph
+    # (in-file convention; see the _prompt_timeout lazy-import note).
+    from kiro_crew.config.loader import inject_kiro_cli_api_key, strip_kiro_cli_api_key
+
+    if kiro_api_key:
+        inject_kiro_cli_api_key(env)
+        apply_child_env_defaults(env)
+        apply_node_compile_cache(env)
+    else:
+        strip_kiro_cli_api_key(env)
+    return env
