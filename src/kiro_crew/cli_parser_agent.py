@@ -1013,6 +1013,7 @@ def register_memory_parser(sub: _Commands) -> None:
             "kind_routing",
             "lesson_origin_gate",
             "lesson_tier_policy",
+            "fact_origin_gate",
             "member_lesson_dedup",
             "dream",
         ],

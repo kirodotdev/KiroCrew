@@ -1059,6 +1059,14 @@ async def _consolidate(
             result, _prompt_rows(chunk), _origin_mode(), session_key=key
         )
         result = origin.result
+        # The fact origin gate: pref.* / user.* facts and the preferences file, over
+        # the same rows, on the same shared result.
+        from kiro_crew import memory_fact_origin_gate as _fact_gate
+
+        fact_origin = _fact_gate.gate_consolidation_facts(
+            result, _prompt_rows(chunk), _fact_gate.configured_mode(), session_key=key
+        )
+        result = fact_origin.result
         # The lesson tier policy, on the answer the origin gate returned, over the
         # same rows.
         tier = _tier_policy.apply_tier_policy(
@@ -1335,6 +1343,16 @@ async def _consolidate(
                         publication.mark_committed()
 
             await _run_in_memory_background_pool(_record_origin)
+
+        if fact_origin.loggable and vector_store is not None:
+            fact_store = vector_store
+
+            def _record_fact_origin() -> None:
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    if _fact_gate.record_fact_origin_gate(fact_store, fact_origin, session_key=key):
+                        publication.mark_committed()
+
+            await _run_in_memory_background_pool(_record_fact_origin)
 
         if tier.loggable and vector_store is not None and not _lesson_extraction_disabled():
             tier_store = vector_store
