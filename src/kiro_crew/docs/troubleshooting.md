@@ -486,7 +486,7 @@ start. If it keeps failing:
   verifies whatever is downloaded
 - To run a different model entirely, set `memory.embed_model_path` (see below).
   The default model is then never downloaded at all
-- Retry from the dashboard Overview → Memory card, or do nothing: it retries on
+- Retry from the Memory card on **Settings → Overview**, or do nothing: it retries on
   the next gateway start
 - Coming from an install that used Ollama for embeddings? The download is
   usually skipped: Kiro Crew finds the identical model in the local Ollama blob
