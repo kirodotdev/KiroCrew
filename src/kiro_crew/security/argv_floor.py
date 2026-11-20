@@ -270,9 +270,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _unmask_separators,
     )
     from kiro_crew.security.argv_floor_ssh_bodies import (  # noqa: F401
+        _COMPOUND_HEADS,
+        _NONSHELL_CONSUMER_HEADS,
+        _PROCSUB_CONTINUATION_RE,
+        _fold_outside_quoted_heredocs,
+        _folded_scanner_reaches_self,
+        _is_nonshell_consumer,
         _line_may_name_ssh_verb,
         _live_substitutions,
         _reaches_self_over_ssh,
+        _scanner_cut_nonshell_literals,
+        _steps_expand_nothing,
         _substitution_reaches_self,
     )
     from kiro_crew.security.argv_floor_ssh_gate import (  # noqa: F401
@@ -333,6 +341,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _decode_shell_quoted_literals,
         _dequote_token,
         _ends_argv,
+        _fold_line_continuations,
         _glob_could_expand_to,
         _is_mint_verb,
         _is_self_program,
@@ -351,6 +360,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _shell_join_continuations,
         _shell_payload_walk,
         _shell_quote_walk,
+        _shell_tokens,
         _split_push_command_segments,
         _split_shell_words,
         _strip_redirect,
