@@ -1266,7 +1266,14 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         _cache_target = str(policy_cache_dir())
         if not carveout_shadowed_by_foreign_mask(_cache_target):
             _visible = _visible + (_cache_target,)
-    sandboxed_cmd, cleanup_path = wrap_argv(cmd, mode="standard", extra_visible_dirs=_visible)
+    # The gateway's internal-API secret files are hidden from every app backend: the
+    # value is the only credential of the internal routes, and app code is third-party.
+    sandboxed_cmd, cleanup_path = wrap_argv(
+        cmd,
+        mode="standard",
+        extra_visible_dirs=_visible,
+        extra_hidden_dirs=app_backend_secret_mask_targets(),
+    )
     # On Linux a non-null cleanup path is the namespace launcher script this process
     # generated, whose main() forks once: the Popen root waits for the server child.
     # IS_LINUX excludes the macOS seatbelt profile. A no-op wrap returns None, so an
