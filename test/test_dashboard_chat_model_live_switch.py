@@ -312,6 +312,37 @@ class TestSlotModelLiveSwitch:
         state.sessions.reset.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "models,live", [(("claude-haiku-5.5",), True), (("claude-haiku-5.5", "qwen3"), False)]
+    )
+    async def test_auto_on_a_reloaded_kas_session_goes_live(self, tmp_path, models, live):
+        # A KAS session/load select names only the session's current model, so
+        # a reopened chat lists no ``auto``; the reset fallback would reload the
+        # same session on that model while the picker shows Auto.
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(models=models)
+        provider.capabilities = capabilities_for(ACP_BACKEND_KAS)
+        provider.is_kas_backend = True
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-haiku-5.5")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": ""})
+
+        assert resp.status == 200
+        assert state._slots["a"].model == ""
+        if live:
+            provider.client.set_model.assert_awaited_once_with("auto")
+            state.sessions.reset.assert_not_awaited()
+        else:
+            provider.client.set_model.assert_not_awaited()
+            state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_claude_backend_default_falls_back_to_reset(self, tmp_path):
         # The claude backend has no "let the server choose" id.
         state = _make_state(tmp_path)
