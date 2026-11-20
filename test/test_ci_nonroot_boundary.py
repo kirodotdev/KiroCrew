@@ -111,8 +111,10 @@ def test_all_linux_shards_and_memory_heavy_jobs_use_large(jobs):
     assert backend["strategy"] == {
         "max-parallel": "${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 8 || 4 }}",
         "fail-fast": False,
-        "matrix": {"python-version": ["3.12"], "group": list(range(1, 9))},
+        "matrix": {"python-version": ["3.14"], "group": list(range(1, 9))},
     }
+    run_tests = next(s for s in backend["steps"] if s.get("name", "").startswith("Run tests"))
+    assert run_tests["env"]["COVERAGE_CORE"] == "sysmon"
     assert backend["env"]["SHARD_COUNT"] == 8
     # 60 on CodeBuild (admitted eight-shard runs finish in ~20 min); 70 on any
     # non-fleet runner, where a run shards four-wide and a single shard needs

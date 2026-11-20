@@ -1583,7 +1583,11 @@ jobs:
       # picture across the suite, not just the first shard to break.
       fail-fast: false
       matrix:
-        python-version: ["3.12"]
+        # Not the Python the product ships on (3.12, which the Windows shards
+        # and every other job here keep): on 3.14 coverage.py can measure
+        # branches through sys.monitoring, which costs less than its C tracer
+        # (COVERAGE_CORE on the test step below).
+        python-version: ["3.14"]
         # Eight runners reduce per-shard work at the cost of more runner slots.
         # Whole files are assigned before import; -n auto parallelizes within
         # each shard. To change the count, update this list and SHARD_COUNT.
@@ -1728,6 +1732,9 @@ jobs:
           # Node ids red on main, deselected by scripts.ci_main_red_skip (see the
           # `changes` job). Read by the plugin from the environment only.
           CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+          # coverage.py's sys.monitoring core, named so that a core it cannot
+          # use is a warning in the log, not a silent return to the C tracer.
+          COVERAGE_CORE: sysmon
         run: |
           # Reuse payload-free progress on full, reduced and repeated leaf runs.
           # A worker crash stays red; do not replace it and lose its failure report.
@@ -3634,7 +3641,7 @@ jobs:
   # entire backend + frontend suites (which duplicated ~30 min of work the
   # test jobs already did on a single serial runner), this job CONSUMES the
   # coverage artifacts those jobs already produced in this same run:
-  #   * backend-test (3.12 shards) -> coverage-combine -> coverage.xml
+  #   * backend-test (3.14 shards) -> coverage-combine -> coverage.xml
   #     (artifact: coverage-backend)
   #   * frontend-test -> build/coverage/cobertura-coverage.xml
   #     (artifact: coverage-frontend)
