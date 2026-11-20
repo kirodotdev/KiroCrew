@@ -43,14 +43,15 @@ model runs**. It is a deliberate, occasional move. If unsure it's worth it, ask 
    user-supplied roster verbatim. `--list-models` is a CATALOG, not an entitlement:
    a listed model can still be unavailable to this session, so keep a fallback pick
    for each slot. `reasoning_effort` ('low' | 'medium' | 'high' | 'xhigh' | 'max') is
-   batch-wide and wins over the configured role pin — setting it forces one dedicated
+   batch-wide unless a `tasks[]` entry sets its own, and wins over the configured role
+   pin — setting it forces one dedicated
    process per subagent (~3-5s start, ~0.55 GB each, against ~200ms and near-zero for
    session sharing), which is worth it for `adversarial` on a high-stakes artifact and
    wasteful for a cheap `vote`.
-2. **Fan out — one `spawn_run` PER member.** ⚠️ `spawn_run`'s `model` applies to the
-   whole call, so a multi-model panel is N separate calls, each a single `task` with a
-   distinct `model` — NOT one call with a `tasks` array. (`agents` varies per task;
-   `model` does not.) Use the mode's member prompt (below) as the `task`. Keep a
+2. **Fan out — one `spawn_run` with one `tasks` entry PER member.** Each entry is an
+   object `{task, model}` with a distinct `model`: a `tasks[]` object's `model`
+   overrides the call's batch-wide `model` for that task only. (`agents` sets a
+   per-task agent.) Use the mode's member prompt (below) as the `task`. Keep a
    private map of `subagent id → model`. Pass `include_memory=false` on every member
    spawn: the member prompt is self-contained, and inherited memory re-imports the
    Chairman's framing into every supposedly independent answer, which is the shared

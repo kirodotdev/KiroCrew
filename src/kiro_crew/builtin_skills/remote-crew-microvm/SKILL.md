@@ -127,12 +127,16 @@ enrolls the crew refuses to run without a role; the next most common are a missi
 image also requires.
 
 **The recipe is the Fargate lane's recipe, not a second one.** If asked what goes
-in the zip: `Dockerfile.crew` read from disk, plus the bundle's own files at the
-zip's root -- byte-for-byte the build context `docker build` gets on that lane.
-Same Dockerfile, same required members (`manifest.json`, `agent.json`, `mcp.json`,
-`skills/`), same bundle digest from `packaging.build`'s own function. Do not
-suggest writing a MicroVM-specific Dockerfile or bundle layout: two answers to
-"what is in a crew image" drift, and the looser one ships the wrong content.
+in the zip: one generated `Dockerfile` that concatenates the base recipe,
+`Dockerfile.crew` (read from disk, minus its base reference) and the shipped
+`Dockerfile.microvm` layer; the bundle's own files at the zip's root, as
+`Dockerfile.crew`'s build context expects; and what the platform needs to start
+the guest (the serving code, the Kiro Crew wheel, the guest's SSM agent config).
+Same crew layer, same required members (`manifest.json`, `agent.json`,
+`mcp.json`, `skills/`), same bundle digest from `packaging.build`'s own function.
+Do not suggest writing a MicroVM-specific Dockerfile or bundle layout: two
+answers to "what is in a crew image" drift, and the looser one ships the wrong
+content.
 
 A bundle short a member is refused at preflight, by name, rather than minutes into
 a build whose log the operator does not hold.

@@ -555,6 +555,7 @@ over a normal link.
 | Setting | Default | What it does |
 |---|---|---|
 | `instances.enabled` | `true` | The main switch; `false` turns Remote Crew off. Read at startup, so changing it needs a restart. |
+| `instances.crew_reads_enabled` | `false` | Lets the agent read a connected crew's sessions through the `crew` argument of `search_chat_history`, `list_sessions` and `get_chat_session`. Off by default, because a peer's transcripts enter the agent's context as untrusted text. Read per call, so no restart. |
 | `instances.warm_set_cap` | `0` | How many panes stay warm at once. `0` tracks how many machines you have registered, so up to an internal ceiling nothing is evicted. A number you set is honoured exactly. |
 | `instances.default_destination` | `""` | The crew **Send a copy to** lists first, marked as the default. Empty means no default. A folder's own **Default destination crew** (Folder settings) overrides it for sessions in that folder. Nothing is sent until you click. |
 | `instances.tunnel_base_port` | `7778` | The first local loopback port handed out for a tunnel. |

@@ -13,7 +13,7 @@ How maintainers are added, how they step down, and how decisions get made are co
 | Ray Xu | [@buluoray](https://github.com/buluoray) |
 | Zezhen Xu | [@CrysisDeu](https://github.com/CrysisDeu) |
 
-Every path in this repository is owned by `@kirodotdev/kirocrew-pr-review` and the `@KiroCrewCaptain` automation account in [CODEOWNERS](.github/CODEOWNERS), so reviewers are requested automatically and you do not need to pick one by hand.
+Every path in this repository, except the prose docs that [CODEOWNERS](.github/CODEOWNERS) leaves unowned, is owned by `@kirodotdev/kirocrew-pr-review` and the `@KiroCrewCaptain` automation account there, so reviewers are requested automatically and you do not need to pick one by hand.
 
 ## Emeritus
 
