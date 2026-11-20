@@ -319,7 +319,7 @@ class TestLocalToken:
         row = fake_sel.log_api_access.call_args.kwargs
         assert row["operation"] == "token.local"
         assert row["outcome"] == "success"
-        assert row["resources"] == "token-issued"
+        assert row["resources"].startswith("token-issued basis=")
 
     @pytest.mark.asyncio
     async def test_an_app_backend_mint_is_refused_and_attributed_to_the_app(
