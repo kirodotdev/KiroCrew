@@ -529,12 +529,19 @@ def ensure_utf8_console() -> None:
     with backslashreplace so a stray un-encodable char degrades to an escape
     instead of crashing. On POSIX, an ASCII-only stream (``LANG=C`` with UTF-8
     mode off) keeps its encoding but replaces un-encodable glyphs with ``?``.
-    Idempotent and safe to call once at startup.
+    On Windows it also sets ``NoDefaultCurrentDirectoryInExePath`` so a bare
+    program name or a ``shutil.which`` result resolves from PATH, not from the
+    current directory. Every entry point calls this first, which is why it lives
+    here. Idempotent and safe to call once at startup.
     """
     _ensure_utf8_process_environment()
     if not IS_WINDOWS:
         _soften_non_unicode_posix_streams()
         return
+    # Windows looks in the current directory before PATH, both in CreateProcess
+    # for a bare program name and in shutil.which, unless this variable is
+    # present. This process and every child that inherits its environment get it.
+    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
     # Repair the current streams below, and separately make the invariant
     # inheritable by MCP/session children and any later re-exec.  Environment
     # variables affect the next interpreter at construction time; setting them

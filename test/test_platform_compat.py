@@ -24,6 +24,7 @@ import io
 import json
 import mmap
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -1232,6 +1233,53 @@ class TestUtf8Console:
 
         assert os.environ["PYTHONUTF8"] == "1"
         assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
+
+    def test_windows_call_turns_off_current_directory_program_lookup(self, monkeypatch):
+        # A bare program name, or a shutil.which result, must not resolve to a
+        # same-named file in the current directory on Windows.
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc.sys, "stdout", None)
+        monkeypatch.setattr(pc.sys, "stderr", None)
+        monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+
+        pc.ensure_utf8_console()
+
+        assert os.environ["NoDefaultCurrentDirectoryInExePath"] == "1"
+
+    def test_posix_call_leaves_current_directory_lookup_variable_unset(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+
+        pc.ensure_utf8_console()
+
+        assert "NoDefaultCurrentDirectoryInExePath" not in os.environ
+
+    def test_current_directory_lookup_variable_survives_child_env_scrubs(self, monkeypatch):
+        from kiro_crew.sandbox_spawn import (
+            scrub_agent_subprocess_env,
+            scrub_env,
+            without_python_env,
+        )
+
+        env = {"NoDefaultCurrentDirectoryInExePath": "1", "PATH": "/usr/bin"}
+        assert scrub_env(env)["NoDefaultCurrentDirectoryInExePath"] == "1"
+        assert without_python_env(env)["NoDefaultCurrentDirectoryInExePath"] == "1"
+        assert scrub_agent_subprocess_env(env)["NoDefaultCurrentDirectoryInExePath"] == "1"
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows program lookup only")
+    def test_windows_which_skips_current_directory_after_call(self, monkeypatch, tmp_path):
+        probe = tmp_path / "kc_probe_39483.exe"
+        probe.write_bytes(b"MZ")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+        monkeypatch.setattr(pc.sys, "stdout", None)
+        monkeypatch.setattr(pc.sys, "stderr", None)
+
+        pc.ensure_utf8_console()
+
+        assert shutil.which("kc_probe_39483") is None
+        # A program on PATH still resolves by bare name.
+        assert shutil.which("cmd") is not None
 
     def test_ensure_utf8_console_is_safe_to_call(self, monkeypatch):
         # Publishes the child environment on every OS and reconfigures the
