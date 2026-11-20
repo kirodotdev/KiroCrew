@@ -597,6 +597,9 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
     One whose crewmate file excludes a native tool gets ``tools`` limited to the
     built-ins of the native tools it keeps (``SessionProjection.builtin_tools``).
 
+    A ``spawn_run`` sub-agent (session key ``subagent:<id>``) gets ``strictMcpConfig``
+    too, for the same reason.
+
     A Side Chat session (``side_read_only``) also gets the read-only shape:
     ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
     and inline settings that add an ``ask`` rule per read built-in, deny the host's
@@ -678,6 +681,12 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
         # wire array already carries. Without this the harness also starts every
         # server in the user's own config, the project's ``.mcp.json`` and
         # plugins, once per worker.
+        options["strictMcpConfig"] = True
+    if str(getattr(self, "_session_key", None) or "").startswith("subagent:"):
+        # A ``spawn_run`` sub-agent runs the servers its spec's ``tools``
+        # allowlist grants, which the wire array already carries. Without this
+        # the harness also adds the user's, the project's and plugins' servers,
+        # including ones the spec leaves out.
         options["strictMcpConfig"] = True
     if getattr(self, "_claude_held_mcp", False):
         # The held ``mcp__<server>`` asks name only the servers Crew sends: a

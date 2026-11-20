@@ -188,7 +188,11 @@ def test_a_memory_withholding_subagent_turns_auto_memory_off(tmp_path):
     provider = _claude_factory(tmp_path)("subagent:s1", cwd=str(tmp_path), include_memory=False)
     assert provider._client.backend == ACP_BACKEND_CLAUDE
     assert provider._client.memory_mode == "persistent"
-    assert _options(provider._client) == {"env": _OFF, "settings": {"env": _OFF}}
+    assert _options(provider._client) == {
+        "env": _OFF,
+        "settings": {"env": _OFF},
+        "strictMcpConfig": True,
+    }
 
 
 def _run_kwargs(include_memory: bool) -> dict:
