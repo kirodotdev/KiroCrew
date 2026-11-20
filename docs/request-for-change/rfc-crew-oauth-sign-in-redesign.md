@@ -3,8 +3,8 @@ title: Crew-owned MCP sign-in, redesigned for first use, remote gateways and cha
 status: draft
 author: buluoray, with kirocrew agent session
 created: 2026-11-16
-last-audited: 2026-11-18
-audited-at: 224959b4ade
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: []
 tracking-issues: []
