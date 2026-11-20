@@ -427,7 +427,10 @@ Request flow:
    which `apps.manifest.app_name_error` holds to kebab-case, so it can carry
    neither a space nor `=` and cannot forge a second field in the row. A host
    process gets an owner token with no `app` claim and a success record whose
-   `resources` is `token-issued`. A registry that raises names no app and leaves
+   `resources` is `token-issued basis=<leg>`, where `<leg>` names the host-process
+   leg that admitted it: `linux-namespace-match`, `darwin-unsandboxed` or
+   `win32-unverified` (Windows has no positive host-process check). The basis is
+   recorded, never minted into the token. A registry that raises names no app and leaves
    the host-process leg to decide as before. `/api/relay-viewer/token` refuses the
    same callers by the same `is not None` test. Its browser twin,
    `POST /api/relay-viewer/browser-open`, is an ordinary owner-only dashboard route

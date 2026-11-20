@@ -149,7 +149,7 @@ async def test_a_host_process_still_gets_an_owner_token_without_an_app_claim(
     assert [c["owner"] for c in signed] == [_OWNER]
     assert "app" not in signed[0]
     assert row["outcome"] == "success"
-    assert row["resources"] == "token-issued"
+    assert row["resources"].startswith("token-issued basis=")
 
 
 @pytest.mark.asyncio
