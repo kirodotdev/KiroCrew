@@ -200,6 +200,66 @@ class TestSessionSlotRecovery:
             assert data["error"] == "unknown session"
 
     @pytest.mark.asyncio
+    async def test_learn_add_allowed_for_stateless_cron_run(self, tmp_path, monkeypatch):
+        """A stateless cron run keys ``cron:{job}:{run}`` and persists as
+        ``cron_{job}_{run}.jsonl``. The gate folds the inner colon for the probe,
+        so the run is recognised instead of answered ``unknown_session``."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.cron._get_memory",
+            MagicMock(return_value=MagicMock(vector_store=None)),
+        )
+        state = _make_state(tmp_path)
+        self._write_sessions_jsonl(tmp_path, "cron_4a93946d_24e36125")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/lessons",
+                json={"rule": "remember this", "category": "knowledge"},
+                headers={"X-Session-Key": "cron:4a93946d:24e36125"},
+            )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_learn_add_rejects_stateless_cron_key_without_jsonl(self, tmp_path, monkeypatch):
+        """The fold only lets the probe find a transcript that exists: a
+        stateless-shaped key whose run left no transcript is still unknown, even
+        beside another run's transcript of the same job."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        self._write_sessions_jsonl(tmp_path, "cron_4a93946d_24e36125")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/lessons",
+                json={"rule": "remember this", "category": "knowledge"},
+                headers={"X-Session-Key": "cron:4a93946d:forged"},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["code"] == "unknown_session"
+
+    @pytest.mark.asyncio
+    async def test_folded_cron_key_does_not_match_a_dashboard_slot(self, tmp_path, monkeypatch):
+        """The fold is applied to the transcript probe only. A live dashboard slot
+        named ``{job}_{run}`` must not vouch for ``cron:{job}:{run}``."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state._slots["4a93946d_24e36125"] = MagicMock()
+        (tmp_path / ".kirocrew" / "sessions").mkdir(parents=True, exist_ok=True)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/lessons",
+                json={"rule": "remember this", "category": "knowledge"},
+                headers={"X-Session-Key": "cron:4a93946d:24e36125"},
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
     async def test_learn_add_rejects_path_traversal_in_cron_slot_name(self, tmp_path, monkeypatch):
         """AC #4: the path-traversal guard still runs first on the slot_name
         even for a ``cron:``-prefixed key, so a traversal attempt is rejected
