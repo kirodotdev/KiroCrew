@@ -4,8 +4,8 @@ status: draft
 kind: change
 author: iamwhatever
 created: 2026-10-01
-last-audited: 2026-10-02
-audited-at: 6bf7a81920
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 15748
 implementation-prs: [15755, 15764]
 tracking-issues: [11899, 11789, 8133, 13324, 11991]

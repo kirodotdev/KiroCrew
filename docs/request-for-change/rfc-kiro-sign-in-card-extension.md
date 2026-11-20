@@ -3,8 +3,8 @@ title: An edition extension point on the Kiro CLI first-run sign-in card
 status: draft
 author: RohanK6
 created: 2026-11-09
-last-audited: 2026-11-18
-audited-at: 9268b103b0
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: null
 implementation-prs: []
 tracking-issues: [15346]
