@@ -23,6 +23,7 @@ import { isNotFoundError } from '../api/apiError'
 import { PageHeader, Card, CardTitle, Badge, Btn } from '../components/ui'
 import { uiLocation } from '../uiLocations/uiLocation'
 import SessionApprovalModes from '../components/appstore/SessionApprovalModes'
+import AppAutoUpdateCard from '../components/appstore/AppAutoUpdateCard'
 import AppIcon from '../components/AppIcon'
 import TrustAppModal, {
   APP_EXECUTION_DENIED, DESKTOP_BUILD_STEP_UNSUPPORTED, isSessionApprovalConsentRequiredError,
@@ -58,6 +59,7 @@ import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
 import { messageActionGrantLabel } from '../messageActions/messageActionRegistry'
 import AppDetailAdoptionNotice from './AppDetailAdoptionNotice'
 import AppDetailLinks from './AppDetailLinks'
+import AppDetailTags from './AppDetailTags'
 import AppDetailPageLocalOnlyNotice from './AppDetailPageLocalOnlyNotice'
 import AppDetailPageMcpServers from './AppDetailPageMcpServers'
 import { openLocalSourceSwitch } from './appDetailPageLocalSwitch'
@@ -531,13 +533,16 @@ export default function AppDetailPage() {
   // an absent app) would run third-party setup code with gateway privileges
   // without user intent. Router state can only be produced by an in-app
   // navigate() call, so it cannot be forged from outside the app.
-  const autoActionTriggered = useRef(false)
+  // The route stays mounted across detail-to-detail navigation, so it fires only for the
+  // routed app, at most once per navigation (``location.key``).
+  const autoActionConsumedFor = useRef<string | null>(null)
   useEffect(() => {
-    if (!app || autoActionTriggered.current) return
+    if (!app || app.name !== name) return
+    if (autoActionConsumedFor.current === location.key) return
     const stateAction = (location.state as { autoAction?: string } | null)?.autoAction
     if (stateAction !== 'install' && stateAction !== 'update') return
     if (stateAction === 'install' && app.installed) return
-    autoActionTriggered.current = true
+    autoActionConsumedFor.current = location.key
     // Clear the state so a refresh or Back/Forward doesn't re-fire it.
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
     // A directory install with no registry update pending is this page's Sync (a
@@ -548,7 +553,7 @@ export default function AppDetailPage() {
       return
     }
     handleInstall()
-  }, [app, location]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [app, name, location]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * The registry install itself. Resolves `'trust-required'` when the gateway
@@ -1846,17 +1851,10 @@ export default function AppDetailPage() {
 
           <AppDetailPageMcpServers servers={app.manifest?.mcpServers} />
 
-          {/* Tags */}
-          {(app.tags || []).length > 0 && (
-            <Card>
-              <CardTitle>{i18nT('pages.appDetailPage.tags')}</CardTitle>
-              <div className="flex items-center gap-1.5 flex-wrap mt-2">
-                {app.tags!.map(t => (
-                  <span key={t} className="bg-bg-elevated border border-border px-2 py-0.5 rounded text-[11px] text-muted">{t}</span>
-                ))}
-              </div>
-            </Card>
-          )}
+          {/* Automatic updates: only where the gateway could update this app itself. */}
+          {app.installed && canUpdate && isRegistrySourced(app) && <AppAutoUpdateCard name={app.name} />}
+          <AppDetailTags tags={app.tags} />
+
 
           {/* Resources (installed only) */}
           {app.installed && (agents.length > 0 || skills.length > 0 || crons.length > 0) && (

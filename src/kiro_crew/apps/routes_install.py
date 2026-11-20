@@ -1,6 +1,7 @@
 """Installing an app from a local path, updating one in place, and registering an external app.
 
-``handle_install_app``, ``handle_update_app`` with the cron resync an update drives, and
+``handle_install_app``, ``handle_update_app`` and the :func:`apply_app_update` sequence it
+shares with the automatic updater (with the cron resync an update drives), and
 ``handle_register_external``.
 
 Part of the ``kiro_crew.apps.routes`` family: callers and tests reach every name here
@@ -15,7 +16,7 @@ import json
 import logging
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -44,7 +45,7 @@ from kiro_crew.apps.routes_lifecycle import (
     _refuse_while_startup_hook_runs,
     _register_app_off_loop,
     _reinstall_from_registry,
-    _rerun_on_enable_after_update,
+    _rerun_on_enable_after_update_to,
     _restore_app_after_failed_update,
     _start_backend_after_install,
     _suspend_app_for_session_approval_reconsent,
@@ -53,6 +54,9 @@ from kiro_crew.apps.routes_proxy import invalidate_app_secret_cache
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
 from kiro_crew.user_json import loads_user_json
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger("kiro_crew.apps.routes")
 
@@ -66,9 +70,6 @@ async def handle_update_app(request: web.Request) -> web.Response:
     the app's local-only grant is switched to that repository for the update and
     put back if the update fails (:mod:`kiro_crew.apps.local_trust_switch`).
     """
-    # Deferred like the gate below: the switch reaches the trust writer in the
-    # dashboard handlers package, which imports this route family.
-    from kiro_crew.apps import local_trust_switch
     from kiro_crew.dashboard.handlers._shared import (
         body_not_object_error,
         require_owner_dashboard_request,
@@ -78,21 +79,6 @@ async def handle_update_app(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "app_update")
     if denied is not None:
         return denied
-    name = request.match_info["name"]
-    info = get_app(name)
-    if not info:
-        return web.json_response({"error": f"app {name!r} not installed"}, status=404)
-
-    # Apps with lifecycle != "gateway" handle their own updates
-    lifecycle = info.get("lifecycle", "gateway")
-    if lifecycle != "gateway":
-        return web.json_response(
-            {
-                "error": f"app {name!r} has lifecycle={lifecycle!r} — cannot be updated via this endpoint"
-            },
-            status=400,
-        )
-
     try:
         body = await request.json()
     except (LookupError, RecursionError, ValueError):
@@ -100,33 +86,135 @@ async def handle_update_app(request: web.Request) -> web.Response:
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
-
-    source = body.get("source", info.get("source", ""))
-    if (wrong_type := string_field_error("source", source)) is not None:
+    source = body.get("source")
+    if "source" in body and (wrong_type := string_field_error("source", source)) is not None:
         return wrong_type
+    state = request.app.get("state")
 
-    # Consent to the repository a registry update installs, sent when the app's
-    # grant covers its local folder only (the ``app_trust_local_only`` refusal
-    # carries this value). Valid only with a registry source for this same app:
-    # the grant it records names this app and the row this update installs.
-    consent = body.get("trustRepository")
-    if consent is not None and (
-        not isinstance(consent, str)
-        or not consent
-        or not isinstance(source, str)
+    async def _reach_open_chats() -> None:
+        # Deferred: the dashboard handlers package imports this route family.
+        from kiro_crew.dashboard.handlers.template_server_request import _reach_sessions
+
+        await _reach_sessions(request)
+
+    status, payload = await apply_app_update(
+        request.match_info["name"],
+        source=source if isinstance(source, str) else None,
+        cron_service=getattr(state, "crons", None) if state else None,
+        state=state,
+        trust_repository=body.get("trustRepository"),
+        trust_caller=request.get("user", "dashboard"),
+        reach_sessions=_reach_open_chats,
+    )
+    if status < 400:
+        _announce_app_ui_changed(request, request.match_info["name"])
+        return web.json_response(payload)
+    # Every refusal carries a machine-readable ``code``; a manager error with
+    # none of its own gets the generic one.
+    return web.json_response(
+        {**payload, "code": payload.get("code") or "app_update_failed"}, status=status
+    )
+
+
+async def _startup_refusal_body(name: str) -> tuple[int, dict[str, Any]] | None:
+    """:func:`_refuse_while_startup_hook_runs` as a status and body, or ``None``."""
+    refusal = await _refuse_while_startup_hook_runs(name, action="update")
+    if refusal is None:
+        return None
+    return refusal.status, json.loads(refusal.text or "{}")
+
+
+async def apply_app_update(
+    name: str,
+    *,
+    source: str | None = None,
+    cron_service: Any = None,
+    state: Any = None,
+    caller: str = "dashboard",
+    refuse_permission_widening: bool = False,
+    still_idle: Callable[[], Awaitable[str]] | None = None,
+    trust_repository: Any = None,
+    trust_caller: str = "dashboard",
+    reach_sessions: Callable[[], Awaitable[None]] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Update the installed app *name* and answer ``(http status, body)``.
+
+    The one update sequence, shared by the Update button
+    (:func:`handle_update_app`) and the automatic updater
+    (``kiro_crew.apps.auto_update``), so an update nobody pressed takes the same
+    steps a pressed one does: under the app lifecycle lock, the admission
+    re-check, the backend stop and deregistration (for a registry app only right
+    before its files are replaced), the copy that keeps ``data/``,
+    re-registration including the running scheduler's crons, backend start, and
+    restoring the old version when the copy fails.
+
+    *source* overrides the recorded source (the route's request body). *state* is
+    the gateway state, which the re-run ``setup.onEnable`` reports a failure
+    through. With
+    *refuse_permission_widening*, an update whose new version declares a
+    permission the installed one does not is refused with
+    ``app_update_needs_consent`` before any file moves.
+
+    *still_idle*, when given, is awaited under the lifecycle lock before anything
+    changes, and for a registry app again as the take-down starts, after the clone
+    and build; a non-empty answer (why the app is busy) puts the update off with a
+    retryable 409 and changes nothing. The automatic updater passes its
+    idle check here so work that started after its first look is not cut off.
+
+    The installed record is read again under the lock: an uninstall or a source
+    change that won the lock first ends the update there, so a queued update
+    can never reinstall an app the owner just removed.
+
+    *trust_repository* is the route's ``trustRepository``, the consent proof from an
+    ``app_trust_local_only`` refusal: the app's local-only grant is switched to that
+    repository for a registry update of this same app and put back if the update
+    fails (:mod:`kiro_crew.apps.local_trust_switch`). *trust_caller* is who the
+    switch is audited as. The automatic updater passes neither.
+
+    *reach_sessions*, when given, runs once a completed update registered MCP
+    servers or took an enabled app's away, as an MCP page write ends, so a chat
+    already open sees the change (app-kit-platform §1). The Update route passes
+    it. The automatic updater does not: where the live sessions cannot apply the
+    change in place that reach resets every open chat, which an update nobody
+    pressed must not do.
+    """
+    info = await asyncio.to_thread(get_app, name)
+    if not info:
+        return 404, {"error": f"app {name!r} not installed", "code": "app_not_installed"}
+
+    # Apps with lifecycle != "gateway" handle their own updates
+    lifecycle = info.get("lifecycle", "gateway")
+    if lifecycle != "gateway":
+        return 400, {
+            "error": f"app {name!r} has lifecycle={lifecycle!r} — cannot be updated via this endpoint",
+            "code": "app_lifecycle_self_managed",
+        }
+
+    # Local: these three would otherwise become names the routes facade serves.
+    from contextlib import nullcontext
+
+    from kiro_crew.apps.update_consent import refusing_permission_widening
+
+    recorded = info.get("source", "")
+    recorded = recorded if isinstance(recorded, str) else ""
+    source = source or recorded
+
+    # Consent to the repository a registry update installs. Valid only with a
+    # registry source for this same app: the grant it records names this app and
+    # the row this update installs.
+    if trust_repository is not None and (
+        not isinstance(trust_repository, str)
+        or not trust_repository
         or not is_registry_source(source)
         or registry_name_from_source(source) != name
     ):
-        return web.json_response(
-            {
-                "error": (
-                    "trustRepository must be a repository string and is accepted only "
-                    "with source registry:<this app>"
-                ),
-                "code": "invalid_repository_consent",
-            },
-            status=400,
-        )
+        return 400, {
+            "error": (
+                "trustRepository must be a repository string and is accepted only "
+                "with source registry:<this app>"
+            ),
+            "code": "invalid_repository_consent",
+        }
 
     # A marketplace app is never updated from a folder, whether the request names
     # its recorded source (``market:<ref>@<n>``, what the Update button and
@@ -134,172 +222,259 @@ async def handle_update_app(request: web.Request) -> web.Response:
     # is stopped or deregistered. ``update_app`` refuses the same way.
     from kiro_crew.apps.market_source import MARKET_OVERWRITE_HINT, is_market_source
 
-    if is_market_source(source) or is_market_source(info.get("source")):
+    if is_market_source(source) or is_market_source(recorded):
         error = f"{name!r} cannot be updated from a folder. {MARKET_OVERWRITE_HINT}"
         sel().log_api_access(
-            caller="dashboard",
-            operation="provenance",
-            outcome="rejected",
-            resources=name,
-            error=error,
+            caller=caller, operation="provenance", outcome="rejected", resources=name, error=error
         )
-        return web.json_response(
-            {"ok": False, "name": name, "error": error, "code": "app_update_market_source"},
-            status=400,
-        )
+        return 400, {"ok": False, "name": name, "error": error, "code": "app_update_market_source"}
 
-    # Registry-installed apps: re-clone from registry.
-    if is_registry_source(source):
-        registry_name = registry_name_from_source(source)
-        async with app_lifecycle_lock(name):
-            # Preflight so a retryable refusal is the local branch's 409, leaving app
-            # state untouched (app-kit-platform: refusal "without mutating app state").
-            # ``install_from_registry`` re-checks at its own replacement boundary.
-            startup_refusal = await _refuse_while_startup_hook_runs(name, action="update")
-            if startup_refusal is not None:
-                return startup_refusal
-            # A host without git keeps the app running and reads the missing tool.
-            git_refusal = git_unavailable_refusal(name)
-            if git_refusal is not None:
-                return web.json_response(
-                    {
-                        "ok": False,
-                        "name": name,
-                        "code": git_refusal["code"],
-                        "error": git_refusal["error"],
-                    },
-                    status=400,
+    scope = refusing_permission_widening() if refuse_permission_widening else nullcontext()
+    with scope:
+        if is_registry_source(source):
+            status, body = await _update_from_registry(
+                name,
+                source,
+                cron_service,
+                caller,
+                still_idle,
+                state=state,
+                recorded_source=recorded,
+                trust_repository=trust_repository,
+                trust_caller=trust_caller,
+            )
+        elif not source:
+            return 400, {
+                "error": "source path required (not found in installed metadata)",
+                "code": "app_source_missing",
+            }
+        else:
+            status, body = await _update_from_path(
+                name, source, cron_service, caller, still_idle, state=state
+            )
+
+    # The take-down removed an enabled app's MCP servers from the agent spec and the
+    # registration wrote the new version's.
+    registration = body.get("registration")
+    registered = registration.get("mcp_servers") if isinstance(registration, dict) else None
+    manifest = info.get("manifest")
+    held = info.get("enabled") and isinstance(manifest, dict) and manifest.get("mcpServers")
+    if status == 200 and reach_sessions is not None and (registered or held):
+        try:
+            await reach_sessions()
+        except Exception:  # noqa: BLE001 - the update has committed
+            logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
+    return status, body
+
+
+async def _locked_preflight(
+    name: str, still_idle: Callable[[], Awaitable[str]] | None
+) -> tuple[int, dict[str, Any]] | None:
+    """The checks an update makes once it holds the lifecycle lock, before it stops anything.
+
+    The app must still be installed, no retained startup hook may be running,
+    and *still_idle* (when given) must answer ``""``.
+    """
+    if await asyncio.to_thread(get_app, name) is None:
+        return 404, {"error": f"app {name!r} not installed", "code": "app_not_installed"}
+    startup_refusal = await _startup_refusal_body(name)
+    if startup_refusal is not None:
+        return startup_refusal
+    if still_idle is not None:
+        busy = await still_idle()
+        if busy:
+            return 409, {
+                "error": f"cannot update {name!r} now: {busy}",
+                "code": "app_busy",
+                "retryable": True,
+                "app": name,
+            }
+    return None
+
+
+async def _update_from_registry(
+    name: str,
+    source: str,
+    cron_service: Any,
+    caller: str,
+    still_idle: Callable[[], Awaitable[str]] | None = None,
+    *,
+    state: Any = None,
+    recorded_source: str | None = None,
+    trust_repository: str | None = None,
+    trust_caller: str = "dashboard",
+) -> tuple[int, dict[str, Any]]:
+    """Re-clone a registry-installed app and swap it in.
+
+    *recorded_source* is the installed record's source as read before the lock,
+    which the locked re-read is compared with. It differs from *source* when the
+    request names a source override; ``None`` means *source* is the recorded one.
+
+    ``_reinstall_from_registry`` takes the app down only right before the new
+    files are copied in, so a refusal or a failed clone, build or ``onInstall``
+    leaves it running, and it restores the app when the copy fails. The consent
+    scope of :func:`apply_app_update` refuses at admission, before the take-down;
+    ``update_app`` checks again after it, and the restore undoes the take-down.
+    *still_idle* runs at the preflight and again as the take-down starts, since
+    the clone and build in between can take minutes.
+    """
+    registry_name = registry_name_from_source(source)
+    async with app_lifecycle_lock(name):
+        # Preflight so a retryable refusal leaves app state untouched
+        # (app-kit-platform: refusal "without mutating app state").
+        # ``install_from_registry`` re-checks at its own replacement boundary.
+        refusal = await _locked_preflight(name, still_idle)
+        if refusal is not None:
+            return refusal
+        # Re-read under the lock: an earlier holder may have moved the app to a
+        # different source, and this update must not act on the stale one.
+        current = await asyncio.to_thread(get_app, name)
+        expected = source if recorded_source is None else recorded_source
+        now_source = current.get("source", "") if current else ""
+        # Coerced as ``recorded_source`` was, so a non-string field compares equal.
+        now_source = now_source if isinstance(now_source, str) else ""
+        if not current or now_source != expected:
+            return 409, {
+                "error": f"app {name!r} changed while this update waited; nothing was updated",
+                "code": "app_changed",
+                "retryable": True,
+            }
+        # A host without git keeps the app running and reads the missing tool.
+        git_refusal = git_unavailable_refusal(name)
+        if git_refusal is not None:
+            return 400, {
+                "ok": False,
+                "name": name,
+                "code": git_refusal["code"],
+                "error": git_refusal["error"],
+            }
+
+        # The local-to-repository trust switch is checked and written BEFORE the
+        # install, so a refused consent leaves the app untouched, and the grant is
+        # in place before ``install_from_registry`` fetches or runs any repository
+        # code.
+        switched_to = None
+        if trust_repository is not None:
+            # Deferred: the switch reaches the trust writer in the dashboard
+            # handlers package, which imports this route family.
+            from kiro_crew.apps import local_trust_switch
+
+            switched = await local_trust_switch.switch_cancel_safe(
+                name, trust_repository, caller=trust_caller
+            )
+            if isinstance(switched, local_trust_switch.SwitchRefusal):
+                return switched.status, {
+                    "ok": False,
+                    "name": name,
+                    "error": switched.error,
+                    "code": switched.code,
+                }
+            switched_to = switched
+        revert_task: asyncio.Future[None] | None = None
+
+        async def _revert_switch() -> None:
+            # One revert per request, shielded so a cancellation cannot stop it
+            # halfway. A later call awaits the same revert, so the lifecycle
+            # lock is not released while it is still writing.
+            nonlocal revert_task
+            if switched_to is None:
+                return
+            if revert_task is None:
+                from kiro_crew.apps import local_trust_switch
+
+                revert_task = asyncio.ensure_future(
+                    local_trust_switch.revert_switch(name, switched_to, caller=trust_caller)
                 )
+            await asyncio.shield(revert_task)
 
-            # The local-to-repository trust switch is checked and written BEFORE
-            # the install, so a refused consent leaves the app untouched, and the
-            # grant is in place before ``install_from_registry`` fetches or runs
-            # any repository code.
-            switched_to: local_trust_switch.SwitchedGrant | None = None
-            if consent is not None:
-                switched = await local_trust_switch.switch_cancel_safe(
-                    name, consent, caller=request.get("user", "dashboard")
-                )
-                if isinstance(switched, local_trust_switch.SwitchRefusal):
-                    return web.json_response(
-                        {"ok": False, "name": name, "error": switched.error, "code": switched.code},
-                        status=switched.status,
-                    )
-                switched_to = switched
-            revert_task: asyncio.Future[None] | None = None
+        failed_before_take_down = False
 
-            async def _revert_switch() -> None:
-                # One revert per request, shielded so a cancellation cannot stop it
-                # halfway. A later call awaits the same revert, so the lifecycle
-                # lock is not released while it is still writing.
-                nonlocal revert_task
-                if switched_to is None:
-                    return
-                if revert_task is None:
-                    revert_task = asyncio.ensure_future(
-                        local_trust_switch.revert_switch(
-                            name, switched_to, caller=request.get("user", "dashboard")
-                        )
-                    )
-                await asyncio.shield(revert_task)
+        async def _after_failure(taken_down: bool) -> None:
+            nonlocal failed_before_take_down
+            failed_before_take_down = not taken_down
+            await _revert_switch()
 
-            failed_before_take_down = False
+        # The whole install is one rollback scope: a failed result, a step that
+        # raises, or a cancelled request must not leave the repository grant over
+        # the local code that is still there. A failed install reverts through
+        # ``after_failure`` BEFORE the restore starts the old local code again,
+        # so it starts under the grant that covered it.
+        try:
+            reg_install = await _reinstall_from_registry(
+                name, registry_name, after_failure=_after_failure, still_idle=still_idle
+            )
+        except BaseException:
+            await _revert_switch()
+            raise
+        if not reg_install.get("ok"):
+            await _revert_switch()
+            if (
+                switched_to is not None
+                and failed_before_take_down
+                and await _app_may_run_after_install(name)
+            ):
+                # The old app kept running through the clone and build under the
+                # repository grant, which does not cover its local code, so the
+                # health watch can have stopped it. Start it again under the
+                # restored grant. This does nothing while it still runs.
+                restart_refused = await _start_backend_after_install(name)
+                if restart_refused and not reg_install.get("backend_refused"):
+                    reg_install["backend_refused"] = restart_refused
+        if reg_install.get("code") == "app_busy":
+            # Put off at the take-down: nothing was taken down or replaced.
+            return 409, reg_install
+        if not reg_install.get("ok"):
+            sel().log_api_access(
+                caller=caller,
+                operation="app_update",
+                outcome="failed",
+                resources=name,
+                error=reg_install.get("error", ""),
+            )
+            return 400, reg_install
+        # Live read, not a pre-update snapshot: ``update_app`` drops ``enabled``
+        # when the new version adds ``permissions.sessionApproval``, and a
+        # backend started here would run an app the UI shows as disabled.
+        if not await _app_may_run_after_install(name):
+            # The take-down kept the agent specs for the re-registration; an app
+            # that may not run gets none (as on the registry install routes).
+            await _suspend_app_for_session_approval_reconsent(name)
+        else:
+            reg_result = await _register_app_off_loop(name)
+            # Same promotion as the local-source branch: the re-install
+            # rewrote app-crons.json, and only this call carries a changed
+            # cron field into the RUNNING scheduler before the next start.
+            await _resync_app_crons_after_update(cron_service, name, caller)
+            backend = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), start_app_backend, name
+            )
+            reg_install["registration"] = reg_result.to_dict()
+            backend_refused = await _backend_platform_refusal(name, backend)
+            if backend_refused:
+                reg_install["backend_refused"] = backend_refused
+            reg_install.update(await _rerun_on_enable_after_update_to(state, name))
+    sel().log_api_access(caller=caller, operation="app_update", outcome="completed", resources=name)
+    return 200, reg_install
 
-            async def _after_failure(taken_down: bool) -> None:
-                nonlocal failed_before_take_down
-                failed_before_take_down = not taken_down
-                await _revert_switch()
 
-            # The whole install is one rollback scope: a failed result, a step that
-            # raises, or a cancelled request must not leave the repository grant
-            # over the local code that is still there. A failed install reverts
-            # through ``after_failure`` BEFORE the restore starts the old local code
-            # again, so it starts under the grant that covered it.
-            try:
-                reg_install = await _reinstall_from_registry(
-                    name, registry_name, after_failure=_after_failure
-                )
-            except BaseException:
-                await _revert_switch()
-                raise
-            if not reg_install.get("ok"):
-                await _revert_switch()
-                if (
-                    switched_to is not None
-                    and failed_before_take_down
-                    and await _app_may_run_after_install(name)
-                ):
-                    # The old app kept running through the clone and build under the
-                    # repository grant, which does not cover its local code, so the
-                    # health watch can have stopped it. Start it again under the
-                    # restored grant. This does nothing while it still runs.
-                    restart_refused = await _start_backend_after_install(name)
-                    if restart_refused and not reg_install.get("backend_refused"):
-                        reg_install["backend_refused"] = restart_refused
-                sel().log_api_access(
-                    caller="dashboard",
-                    operation="app_update",
-                    outcome="failed",
-                    resources=name,
-                    error=reg_install.get("error", ""),
-                )
-                return web.json_response(reg_install, status=400)
-            # Live read, not the pre-update ``info`` snapshot: ``update_app`` drops
-            # ``enabled`` when the new version adds ``permissions.sessionApproval``,
-            # and a backend started here would run an app the UI shows as disabled.
-            still_enabled = await _app_may_run_after_install(name)
-            registered_mcp_servers: list[str] = []
-            if not still_enabled:
-                # The take-down kept the agent specs for the re-registration; an app
-                # that may not run gets none (as on the registry install routes).
-                await _suspend_app_for_session_approval_reconsent(name)
-            else:
-                reg_result = await _register_app_off_loop(name)
-                registered_mcp_servers = reg_result.mcp_servers
-                # Same promotion as the local-source branch: the re-install
-                # rewrote app-crons.json, and only this call carries a changed
-                # cron field into the RUNNING scheduler before the next start.
-                await _resync_app_crons_after_update(request, name)
-                backend = await asyncio.get_running_loop().run_in_executor(
-                    subprocess_executor(), start_app_backend, name
-                )
-                reg_install["registration"] = reg_result.to_dict()
-                backend_refused = await _backend_platform_refusal(name, backend)
-                if backend_refused:
-                    reg_install["backend_refused"] = backend_refused
-                reg_install.update(await _rerun_on_enable_after_update(request, name))
-        # The take-down removed an enabled app's MCP servers from the agent spec and
-        # the registration wrote the new version's: end as an MCP page write does, so
-        # a chat already open sees the change (app-kit-platform §1).
-        held = info.get("enabled") and (info.get("manifest") or {}).get("mcpServers")
-        if registered_mcp_servers or held:
-            from kiro_crew.dashboard.handlers.template_server_request import _reach_sessions
-
-            try:
-                await _reach_sessions(request)
-            except Exception:  # noqa: BLE001 - the update has committed
-                logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
-        sel().log_api_access(
-            caller="dashboard", operation="app_update", outcome="completed", resources=name
-        )
-        _announce_app_ui_changed(request, name)
-        return web.json_response(reg_install)
-
-    if not source:
-        return web.json_response(
-            {"error": "source path required (not found in installed metadata)"},
-            status=400,
-        )
-
+async def _update_from_path(
+    name: str,
+    source: str,
+    cron_service: Any,
+    caller: str,
+    still_idle: Callable[[], Awaitable[str]] | None = None,
+    *,
+    state: Any = None,
+) -> tuple[int, dict[str, Any]]:
+    """Copy a local source directory over the installed app."""
     # Per-app lifecycle lock: the stop → deregister → copy → re-register
     # sequence must not interleave with another update/install/uninstall of
     # the same app — update_app moves user data through a shared
     # ``.{name}-data-tmp`` path, so an interleaving can destroy it.
-    # (The registry branch above holds the same lock around the same sequence.)
     async with app_lifecycle_lock(name):
-        startup_refusal = await _refuse_while_startup_hook_runs(name, action="update")
-        if startup_refusal is not None:
-            return startup_refusal
+        refusal = await _locked_preflight(name, still_idle)
+        if refusal is not None:
+            return refusal
 
         # Stop the backend, then deregister old resources — same order as uninstall and
         # the disable rollback. Stopping pops the tracking record, so the health watch
@@ -315,13 +490,18 @@ async def handle_update_app(request: web.Request) -> web.Response:
         # Off-loop: blocking filesystem copy (see handle_install_app).
         # expected_name makes update_app itself reject a source whose
         # manifest names a different app than the one this lock guards.
+        # ``copy_context`` carries the permission-widening scope into the
+        # executor thread, which ``run_in_executor`` alone would not.
+        import contextvars
+
+        ctx = contextvars.copy_context()
         up_result = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), lambda: update_app(source, expected_name=name)
+            subprocess_executor(), lambda: ctx.run(update_app, source, expected_name=name)
         )
         if not up_result.ok:
             restore_refused = await _restore_app_after_failed_update(name)
             sel().log_api_access(
-                caller="dashboard",
+                caller=caller,
                 operation="app_update",
                 outcome="failed",
                 resources=name,
@@ -330,7 +510,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
             failed_body = up_result.to_dict()
             if restore_refused:
                 failed_body["backend_refused"] = restore_refused
-            return web.json_response(failed_body, status=400)
+            return 400, failed_body
 
         # Re-register with the new manifest only if the app is STILL enabled.
         # ``update_app`` drops ``enabled`` when the new version adds
@@ -356,42 +536,29 @@ async def handle_update_app(request: web.Request) -> web.Response:
             # failure is logged and audited, never a failed update: the files
             # and registry are already current, and the next registration
             # pass applies the same definitions.
-            await _resync_app_crons_after_update(request, name)
+            await _resync_app_crons_after_update(cron_service, name, caller)
             backend = await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
             )
             backend_refused = await _backend_platform_refusal(name, backend)
-            on_enable = await _rerun_on_enable_after_update(request, name)
+            on_enable = await _rerun_on_enable_after_update_to(state, name)
 
-    # As on the registry branch: the old MCP servers are out of the agent spec and the
-    # new ones in, so end as an MCP page write does (app-kit-platform §1).
-    held = info.get("enabled") and (info.get("manifest") or {}).get("mcpServers")
-    if (up_reg and up_reg.mcp_servers) or held:
-        from kiro_crew.dashboard.handlers.template_server_request import _reach_sessions
-
-        try:
-            await _reach_sessions(request)
-        except Exception:  # noqa: BLE001 - the update has committed
-            logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
-    sel().log_api_access(
-        caller="dashboard", operation="app_update", outcome="completed", resources=name
-    )
+    sel().log_api_access(caller=caller, operation="app_update", outcome="completed", resources=name)
     resp: dict[str, Any] = up_result.to_dict()
     if up_reg:
         resp["registration"] = up_reg.to_dict()
     if backend_refused:
         resp["backend_refused"] = backend_refused
     resp.update(on_enable)
-    _announce_app_ui_changed(request, name)
-    return web.json_response(resp)
+    return 200, resp
 
 
-async def _resync_app_crons_after_update(request: web.Request, name: str) -> None:
-    """Register the updated app's crons with the running scheduler, if there is one.
+async def _resync_app_crons_after_update(cron_service: Any, name: str, caller: str) -> None:
+    """Bring the running scheduler's jobs for *name* in line with its updated manifest.
 
     Every path that replaces an installed, still-enabled app's files calls it
-    after re-registering: both branches of :func:`handle_update_app`, and a
-    registry install or install-stream over an app already installed
+    after re-registering: both update branches of :func:`apply_app_update`, and
+    a registry install or install-stream over an app already installed
     (``routes_registry``). A fresh install does not: it leaves the app disabled,
     and enabling it registers the crons. Split out so the no-service case (a
     test app with no ``state.crons``, a gateway booting without a scheduler) and
@@ -399,14 +566,12 @@ async def _resync_app_crons_after_update(request: web.Request, name: str) -> Non
     ``hooks_integration.on_app_enable``: the same bridge call, the same
     ``app_crons_register`` SEL rows.
     """
-    state = request.app.get("state")
-    cron_service = getattr(state, "crons", None) if state else None
     if cron_service is None:
         return
     try:
         registered = await register_app_crons_with_service(name, cron_service)
         sel().log_api_access(
-            caller="dashboard",
+            caller=caller,
             operation="app_crons_register",
             outcome="completed",
             resources=f"app={name} crons={registered}",
@@ -414,7 +579,7 @@ async def _resync_app_crons_after_update(request: web.Request, name: str) -> Non
     except Exception as exc:
         logger.warning("Cron registration after updating %s failed: %s", name, exc)
         sel().log_api_access(
-            caller="dashboard",
+            caller=caller,
             operation="app_crons_register",
             outcome="failed",
             resources=name,

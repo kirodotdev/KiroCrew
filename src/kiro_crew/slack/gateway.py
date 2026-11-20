@@ -820,6 +820,7 @@ class GatewayOrchestrator:
     _feature_video_task: "asyncio.Task[bool] | None"
     _auto_migrate_task: "asyncio.Task[None] | None"
     _update_check_task: "asyncio.Task[None] | None"
+    _app_update_task: "asyncio.Task[None] | None"
     _profile_watch_task: "asyncio.Task[None] | None"
     _update_apply_deferred: bool
     _update_pause_holder: str | None

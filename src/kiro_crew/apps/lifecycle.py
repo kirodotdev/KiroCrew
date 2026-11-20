@@ -300,6 +300,19 @@ class LifecycleDispatcher:
         ctx = await self._prepare_context(app_info, phase="shutdown")
         return await self._invoke(name, hook_path, ctx, phase="shutdown")
 
+    @staticmethod
+    def startup_hooks_running(app_name: str) -> bool:
+        """Whether a retained startup hook of *app_name* may still be executing.
+
+        A read, never a wait: the automatic app updater asks it to put an update
+        off, where :meth:`stop_detached_startup_hooks` would hold the update
+        until the hook settles. A residual marker counts as running, the same
+        fail-closed reading that method gives it.
+        """
+        if app_name in _DETACHED_HOOK_RESIDUALS:
+            return True
+        return any(not task.done() for task in _DETACHED_HOOK_TASKS.get(app_name, ()))
+
     async def stop_detached_startup_hooks(
         self,
         app_name: str,

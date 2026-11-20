@@ -48,8 +48,9 @@
       "opaque_body": 2
     },
     "apps/routes_install.py": {
-      "missing_code": 5,
-      "opaque_body": 4
+      "dynamic_status": 1,
+      "missing_code": 2,
+      "opaque_body": 2
     },
     "apps/routes_listing.py": {
       "missing_code": 5
