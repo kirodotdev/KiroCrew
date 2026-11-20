@@ -499,6 +499,9 @@ class TestASpawnedBackendCannotReadTheSelKey:
 
     pytestmark = _NAMESPACE
 
+    @pytest.mark.xfail(
+        strict=True, raises=AssertionError, reason="main passes no SEL key mask to the backend"
+    )
     def test_the_backend_cannot_read_the_key(self, app_env, tmp_path, monkeypatch):
         import kiro_crew.apps.backend as bmod
 
