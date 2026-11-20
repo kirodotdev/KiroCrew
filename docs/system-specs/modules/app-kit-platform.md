@@ -1508,7 +1508,7 @@ the first source that holds the name:
 |---|---|
 | the agent's own `mcpServers`: its template, the app's own `<app>:<server>` entries, a materialized managed ref | the app declared it |
 | `managed_mcp_spec_entry(name, include_opt_in=True)` | no scope may overwrite a managed name, on the default agent either |
-| a built-in app only: the default agent's spec (`<kiro agents dir>/kirocrew.json`, read by `_mounted_mcp_servers`), minus every installed app's own servers (`_app_owned_mcp_keys`) | what `agent.rebuild_agent_config` wrote: the MCP Management store, registry installs, edition servers and provider globals merged over the Kiro global `mcp.json`, the store winning a tie. Another app's server is that app's, never a grant's to copy |
+| a built-in app only: the default agent's spec (`<kiro agents dir>/kirocrew.json`, read by `_mounted_mcp_servers`), minus every installed app's own servers (`_app_owned_mcp_keys`) | what `agent.rebuild_agent_config` wrote: the MCP Management store, registry installs, edition servers and provider globals merged over the Kiro global `mcp.json`, the store winning a tie, except that an edition server keeps the edition's `command` and `args`. Another app's server is that app's, never a grant's to copy |
 | the Kiro global `~/.kiro/settings/mcp.json` | a server the default agent's spec does not hold: no rebuild has run yet, or its command did not resolve here |
 
 A copied entry that is muted is withheld: turned off in MCP Management, a registry
