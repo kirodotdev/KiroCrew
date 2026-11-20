@@ -1445,6 +1445,7 @@ class AcpClient:
     ensure_ready = _client_start.ensure_ready
     _harness_read_back = _client_start._harness_read_back
     _adapter_session_mcp_servers = _client_start._adapter_session_mcp_servers
+    start_new_session = _client_start.start_new_session
     # Run an ``AcpClient`` prompt turn and dispatch the frames it reads: ``kiro_crew.acp.client_turn``.
     _process_message = _client_turn._process_message
     _defer_mimocode_shell_permission = _client_turn._defer_mimocode_shell_permission
