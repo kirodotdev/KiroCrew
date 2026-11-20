@@ -1136,11 +1136,11 @@ async def _start_next_queued_turn(
         # names its sender as the stored row and a `chat_message` echo do.
         # Without it a teammate's queued send shows no byline on an open tab
         # until a reload.
-        from kiro_crew.shared_crew.attribution import message_author
+        from kiro_crew.shared_crew.attribution import author_stamp, message_author
         from kiro_crew.shared_crew.contracts import MESSAGE_AUTHOR_META_KEY
 
         if isinstance((item.get("meta") or {}).get(MESSAGE_AUTHOR_META_KEY), dict):
-            _pop_meta[MESSAGE_AUTHOR_META_KEY] = message_author(item["meta"]).to_public_dict()
+            _pop_meta[MESSAGE_AUTHOR_META_KEY] = author_stamp(message_author(item["meta"]))
         # A peer's queued ``session_send`` names its sender (``meta.relay``, set
         # only by the gateway's delivery path; an edit drops it). The rebuilt row
         # is that one entry's text, so its own sender rides its own pop, and the

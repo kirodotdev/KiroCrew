@@ -149,7 +149,7 @@ async def api_shared_crew_sessions(request: web.Request) -> web.Response:
             query,
             viewer,
             exclude=_machine_only,
-            viewer_ids=owner_label.viewer_ids(viewer, _owner_id(request)),
+            viewer_ids=owner_label.writes_as_ids(viewer, _owner_id(request)),
             local_owner_ids=owner_label.local_owner_principal_ids(_owner_id(request)),
         )
     except ContractError as exc:
@@ -265,6 +265,9 @@ async def api_shared_crew_mode(request: web.Request) -> web.Response:
         owner_label=owner_label.owner_name(),
         relay_team=_relay_team_crew(request),
     )
+    from kiro_crew.shared_crew.edit_rule import edit_rule_view
+
+    body["edit_rule"] = edit_rule_view(request)
     return web.json_response(body)
 
 

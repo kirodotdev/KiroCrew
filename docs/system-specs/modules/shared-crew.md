@@ -473,12 +473,15 @@ never falls back to personal mode, and the browser treats an unreadable mode rou
 as an error, not as personal.
 
 The mode body: `mode`, `crew_id` (the gateway id; it keys the browser's remembered
-list filter), `viewer`, `viewer_ids` (every principal id that names the viewer:
-the owner's are `owner.owner_principal_ids`, anyone else's is their own), `team_config` (`state` `not_configured` | `invalid`, with
+list filter), `viewer`, `viewer_ids` (every principal id the viewer writes as, `owner.writes_as_ids`:
+the owner's are `owner.owner_principal_ids`, anyone else's is their own, an Unknown
+viewer's only Unknown), `team_config` (`state` `not_configured` | `invalid`, with
 `reason`, `capability`, `cause`), `console` (always `not_offered`), `adapters` (the
 setup paths), `sources` (above) and `workload_identity_ref` (always `unavailable`). It also carries
 `viewer_via` (the viewer's path, `crew_mode.viewer_via`: `kiro_login`,
-`tailscale`, `ssm`, `local` or `unknown`) and `owner_label` (`owner.owner_name`). Display only: none of them
+`tailscale`, `ssm`, `local` or `unknown`), `owner_label` (`owner.owner_name`) and
+`edit_rule` (`{preview, is_owner, relay_teammate}`, `edit_rule.edit_rule_view`: the
+viewer's side of the edit rule below, read whatever the preview is). Display only: none of them
 grants or refuses anything.
 The Tailscale link
 is a fixed public documentation page.
@@ -994,7 +997,7 @@ persisted filename-stem spelling, the pre-migration bare Slack `thread_ts` stem,
 a `linked_session_key` in any of those shapes), which a teammate may have started
 on Slack or Discord. The session
 list's `mine` filter includes legacy sessions for the owner (under any of the
-owner's ids, `owner.viewer_ids`), `unattributed` excludes them, and People counts
+owner's ids, `owner.writes_as_ids`), `unattributed` excludes them, and People counts
 them to the owner.
 It stays legacy: the codec never writes a legacy value back, no stamp replaces it,
 and nothing back-fills it, least of all from the current viewer. Attribution was on
@@ -1014,8 +1017,10 @@ The slot payload (`slot_projection`) and every session catalog row
 `attribution`.
 
 A message's author rides in the message `meta` under `MESSAGE_AUTHOR_META_KEY`
-(`author`), in the public principal shape, stamped by the server when it accepts
-the message (`attribution.stamp_message_author`). A client-supplied `author` key is
+(`author`), in the public principal shape plus the principal's `provider`
+(`attribution.author_stamp`; no issuer or subject), stamped by the server when it accepts
+the message (`attribution.stamp_message_author`). Rows stamped before the provider
+was recorded have none. A client-supplied `author` key is
 discarded at ingress and overwritten at the stamp. Every other live user row an
 authorized request's handler appends (regenerate, rewind, task-runner hand-offs, the
 OpenAI shim) names that request's actor (`attribution.with_request_author`, bound by
@@ -1023,6 +1028,25 @@ OpenAI shim) names that request's actor (`attribution.with_request_author`, boun
 inherits it). Channel rows name the bounded Unknown principal and automation rows the
 automation principal (`stamp_principal_author`). A message written before authors
 reads as Unknown (`attribution.message_author`).
+
+Who may edit a message. Edit & Resend (`POST /api/chat/slots/{slot}/edit-resend`)
+and rewind (`/rewind`) rewrite the session for everyone in it, so only the message's
+author may do either (`edit_rule.may_edit`, called by both handlers under the slot
+lock after the app 404s and before any mutation; a refusal is 403 `{error, code:
+not_message_author}`). The editor writes as `owner.writes_as_ids`. A row by a person
+(`human` or `machine`) is that person's. A row with no author, an Unknown or damaged
+author (a channel row, a merged queue row) or an automation author is the owner's,
+and an app may also edit a row its own principal wrote. With the preview off only a
+pair where the editor or the author is a relay teammate (`routes_identity._relay_teammate`;
+an author stamp whose `provider` is `kiro`) is judged, so the owner's own paths are never
+refused there, and a row stamped before the provider was recorded never reads as a
+teammate's. This is the one decision that reads a stored author, and it reads it ONLY
+to refuse: every outcome is one this build allowed before the rule, so a forged stamp
+can at most give the edit back to someone it was already allowed to. The dashboard
+hides the pencil, double-click and Cmd/Ctrl+Up on a row the viewer may not edit by the
+same rule (`website/src/api/editRule.ts`, fed by the mode route's `viewer_ids` and
+`edit_rule`; until that read answers every row stays offered). One table,
+`test/fixtures/shared_crew_edit_rule.json`, drives both sides' tests.
 
 Sender in the prompt. The agent is told who sent a message with one line before
 its text, `[from: <display name> (<login>)]` (`attribution.sender_line`, added in
@@ -2232,7 +2256,8 @@ every admission and runtime start until it is fixed.
 Migration. Nothing is rewritten. Sessions created before Shared Crew read as
 `legacy_missing` (shown as the owner's, storage unchanged); their messages have no author. New sessions
 and messages carry `attribution` and `author` stamps. No creator is backfilled and no
-access is inferred from an author.
+access is granted from an author: the one decision that reads an author is the edit
+rule, which can only refuse (see Who may edit a message).
 
 Rollback. Drain first: list `GET /api/shared-crew/work`, cancel what should not run
 (`POST /api/shared-crew/work/{id}/cancel`), and wait until `capacity` shows nothing
