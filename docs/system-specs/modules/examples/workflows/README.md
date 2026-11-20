@@ -41,6 +41,3 @@ Caveats worth knowing before you copy one:
 - The two `ctx.budget.remaining()` early stops read a counter nothing currently
   increments (see the Budget open question in the module spec), so on today's
   engine that branch never fires.
-
-All three module docstrings say the DSL "is not implemented yet". That is out of
-date: `src/kiro_crew/workflows/` implements it.

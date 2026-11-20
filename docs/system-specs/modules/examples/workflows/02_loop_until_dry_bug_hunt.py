@@ -5,7 +5,8 @@ Demonstrates two relevant to Kiro Crew patterns at once:
   - loop-until-budget: stop early if the token budget runs low
 
 Dedup is against EVERYTHING seen (not just confirmed) so judge-rejected bugs
-don't reappear every round. Illustrative only — DSL not implemented yet.
+don't reappear every round. Illustrative; see this folder's README for the
+caveats on the shipped host.
 """
 
 META = {
