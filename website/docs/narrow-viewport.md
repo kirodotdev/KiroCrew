@@ -598,11 +598,15 @@ around a dozen such widget families in `src/` today (`ResizeHandle`, `ColumnSpli
 `components/ui.tsx`, …); asking each to remember an attribute means the next one
 silently fights the nav drawer instead.
 
-**Count the panels before believing the rule holds.** Four are driven by
-`registerDrawerTargets` today: the nav drawer, the chat page's sessions drawer and
-activity panel (all three with gestures), and the notification sheet (no gesture,
-portaled). Only the chat page declares a claim, because it is the only one that binds
-its own gesture inside the shell.
+**Count the panels before believing the rule holds.** Six are driven by
+`registerDrawerTargets` today: the nav drawer (`shell/appShell.tsx`), the chat page's
+sessions drawer and side panel (`pages/chat/page/sessionsDrawer.ts`), the Bots page's
+roster drawer and side panel (`pages/members/useMembersPageDrawers.ts`), all five with
+gestures, and the notification sheet (no gesture, portaled). The two pages that bind
+their own gesture inside the shell declare a claim (`ChatPageFrame.tsx`, and
+`MembersPage.tsx` while its roster drawer or side-panel swipe is available), and so does
+the session tab strip (`SessionTabStrip.tsx`), whose long-press reorder needs the touch
+before the shell drawer sees it.
 
 **Two sibling instances exclude each other on INTENT, not on arrival.** The chat page
 binds `useDrawerSwipe` twice on one element — sessions drawer on the left, side panel on
@@ -758,7 +762,7 @@ does this, correctly.
 like a feel problem rather than a bug: a MotionValue deliberately does not re-render
 React, so the drag writes the value every frame while the DOM moves only on whatever
 re-render happens to occur — the panel comes out a little, freezes, and completes on
-release when the settle takes over. Bind it instead, as all three gesture-driven
+release when the settle takes over. Bind it instead, as every gesture-driven
 panels do:
 
 ```tsx

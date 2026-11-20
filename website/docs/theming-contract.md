@@ -210,7 +210,7 @@ read directly. `--info` has no stored companion in the 61 — `bg-info-subtle` i
 derived in `src/tailwind-theme.css` as
 `color-mix(in srgb, var(--info) 12%, transparent)` — so `COLOR_TOKEN_MAP` derives
 `--color-background-info` the same way, from `INFO_WASH` of the resolved
-`--info`, rather than adding a 57th variable to the customization surface. One
+`--info`, rather than adding a 62nd variable to the customization surface. One
 wash, one definition: an app's info fill and the dashboard's own
 `bg-info-subtle` surfaces cannot drift into two visibly different washes of one
 hue, and `mcpAppTheme.test.ts` parses `src/tailwind-theme.css` to keep the two

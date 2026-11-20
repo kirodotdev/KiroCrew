@@ -585,7 +585,8 @@ mutation are served by a backend plugin the edition registers with
 `src/kiro_crew/dashboard/source_providers/plugins.py` (still importable from
 `dashboard/handlers/source_providers.py`), under the same id. The
 two registries validate the same id grammar (`/^[a-z][a-z0-9_-]{0,31}$/`) and
-both refuse the built-in ids (`github`, `gitlab`, `jira`), so a descriptor can
+both refuse the built-in ids (`github`, `gitlab`, `jira`, `bitbucket_server`,
+`gerrit`; the backend also refuses `linear`), so a descriptor can
 never restyle a core provider and a payload provider id round-trips through both
 layers. A descriptor missing `parse`/`chipLabel`/`refLabel`/`capabilities`
 routes through `reportSeamCollision`.
@@ -822,13 +823,14 @@ the shared `X-Session-Key` header, the session-expiry hooks a
 method that reads its own response calls, and `withJournaledDeadline` (a
 deadline that also records a timed-out read in the error journal). The
 route-specific parsers (`jInstancesDisabled`, `jCrewBoard`, `jSlotEnvironment`,
-`jSharedCrewPreview`, `jMembers`, `jApps` and `jConfigPending`)
+`jSharedCrewPreview`, `jMembers`, `jApps`, `jRelayViewer` and `jConfigPending`)
 are core-only and deliberately absent from `ApiTransport` above: each opts one
 specific benign denial on one core route out of the error journal (a disabled
 instances control plane's 403, a conductor with no ledger's 404 `no_ledger`, and
 the slot-environment, Shared Crew preview, members roster and config-pending reads' 403 `owner_only`
-for a caller that is not the dashboard owner, and the app list's 403
-`relay_apps_teammate` for a teammate reaching the Crew through the relay), which is not an edition's decision to make. None of them imports a
+for a caller that is not the dashboard owner, the app list's 403
+`relay_apps_teammate` for a teammate reaching the Crew through the relay, and the
+relay viewer's routine refusals of `GET /api/relay-viewer/crews`), which is not an edition's decision to make. None of them imports a
 runtime value
 from `client.ts` (the telemetry module takes the Kiro usage types defined there
 as types only), so the transport and its recovery keep one definition.
