@@ -23,6 +23,7 @@ import enum
 import os
 import socket
 import time
+import urllib.error
 import urllib.request
 
 from kiro_crew import platform_compat
@@ -276,9 +277,22 @@ def _owner_verified_secret_urlopen(
                 )
             _audit_peer_allowed(operation, port)
 
-        return unix_socket_urlopen(req, timeout, socket_path=socket_path, verify_peer=_verify_peer)
-    # No owner-only socket here (TCP-only gateway, a supported config): fall
-    # through to the connection-bound TCP proof below rather than hard-fail.
+        try:
+            return unix_socket_urlopen(
+                req, timeout, socket_path=socket_path, verify_peer=_verify_peer
+            )
+        except urllib.error.URLError as exc:
+            # A socket file a crashed gateway left behind refuses (or has vanished)
+            # at connect(), before verify_peer runs and before any byte, so the
+            # credential was never written. Only that case falls through to the TCP
+            # proof, which writes the credential solely after a positive peer MATCH.
+            if not isinstance(exc.reason, (FileNotFoundError, ConnectionRefusedError)):
+                raise
+            stale_socket = socket_path
+    else:
+        stale_socket = ""
+    # No usable owner-only socket (TCP-only gateway, a supported config, or a stale
+    # socket file): use the connection-bound TCP proof below rather than hard-fail.
 
     def _verify_tcp_peer(sock) -> None:
         # Bind the proof to the connected TCP socket and FAIL CLOSED: the
@@ -301,7 +315,15 @@ def _owner_verified_secret_urlopen(
             )
         _audit_peer_allowed(operation, port)
 
-    return tcp_verified_urlopen(req, timeout, verify_peer=_verify_tcp_peer)
+    try:
+        return tcp_verified_urlopen(req, timeout, verify_peer=_verify_tcp_peer)
+    except urllib.error.URLError as exc:
+        if stale_socket and isinstance(exc.reason, ConnectionRefusedError):
+            raise urllib.error.URLError(
+                f"stale gateway socket at {stale_socket} refuses connections and "
+                f"nothing is listening on TCP port {port}"
+            ) from exc
+        raise
 
 
 class _ConnectedPeerVerdict(enum.Enum):
