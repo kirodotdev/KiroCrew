@@ -194,6 +194,22 @@ describe('the Touch screen layout choice on a touch-first device', () => {
     expect(narrow.result.current).toBe(true)
   })
 
+  it('a choice the browser refuses to save still applies to this page', async () => {
+    const { saveTouchLayoutChoice, readTouchLayoutChoice } = await import('../lib/touchLayoutForm')
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError') })
+    setUA(PHONE_UA, true)
+    const { result } = renderHook(() => useIsMobile())
+    expect(result.current).toBe(true)
+    act(() => { saveTouchLayoutChoice('desktop') })
+    expect(localStorage.getItem(KEY)).toBeNull()
+    expect(result.current).toBe(false)
+    vi.restoreAllMocks()
+    act(() => { saveTouchLayoutChoice('auto') })
+    expect(readTouchLayoutChoice()).toBe('auto')
+    expect(result.current).toBe(true)
+  })
+
   it('changing the choice re-lays-out at once, with no reload', async () => {
     const { saveTouchLayoutChoice } = await import('../lib/touchLayoutForm')
     setUA(DESKTOP_UA, false)
