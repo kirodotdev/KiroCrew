@@ -575,8 +575,8 @@ One pass runs at a time per gateway process, across every session and every
 incognito and persistence checks and before it takes the session's lease. A queued
 pass holds no lease and its key stays in `_running`, so a duplicate trigger for it
 stays a no-op. The gate is released first in the pass's `finally`. Without it each
-idle or ending session started its own multi-minute pass, and several at once in
-the process serving HTTP and the websocket starved the event loop.
+idle or ending session would start its own multi-minute pass, and several at once in
+the process serving HTTP and the websocket would starve the event loop.
 
 For V2, `VectorMemoryStore.apply_consolidation` is the publication boundary.
 The original transcript snapshot determines a stable source span; the caller
@@ -607,10 +607,10 @@ maintenance and cannot hold the write lock during provider inference. Before a
 retry calls a provider, a committed receipt recovers a lost transcript progress
 acknowledgement and leaves later appended messages pending.
 
-Display-only rows (`history_projection.DISPLAY_ONLY_ROLES`, the `notice` role)
-never reach a consolidation or skill-detection prompt: they are drawn for the
-person reading the transcript, and the Slack thread-parent notice carries
-untrusted text. They stay in the snapshot, and a span holding nothing else
+Display-only rows (`history_projection.DISPLAY_ONLY_ROLES`, the `notice` and
+`card` roles) never reach a consolidation or skill-detection prompt: they are
+drawn for the person reading the transcript, the Slack thread-parent notice
+carries untrusted text, and a `card` row's state belongs to the card store. They stay in the snapshot, and a span holding nothing else
 costs no model call: a history pass marks it consolidated, while a
 skill-detection pass leaves the offset alone.
 
@@ -959,10 +959,10 @@ existing transcript's header probed on a worker thread and the mode copied in
 where it is missing or weaker (tighten-only, never creating a transcript).
 Serialized because the snapshot goes stale under live traffic: a reservation
 released after the snapshot restores the header and clears the row, and a stamp
-from the snapshot alone re-wrote the released mode into that header over a row
-that was gone -- which nothing loosens again (the sweep only tightens, from
+from the snapshot alone would re-write the released mode into that header over a
+row that is gone -- which nothing loosens again (the sweep only tightens, from
 rows; a later release of the same mode reads the stale stamp as its own
-`header_before`), so the thread's consolidation stayed refused for good. A flag
+`header_before`), so the thread's consolidation would stay refused for good. A flag
 tightened during the probe is re-stamped by the next pass, and a header that
 already records the mode costs no write (`needs_tightening`). The rows are
 capped at the module constant `session_map.PRIVACY_ROW_CAP` (the trackers' `PRIVACY_LRU_MAX`), held
@@ -985,8 +985,8 @@ through `run_in_memory_background_pool` (the `mc-membg` pool, which admits two
 consolidation passes at a time) because
 `_consolidate` runs on the gateway event loop, and a slow or hung embed inline
 would stall heartbeats, Slack, and the dashboard. It is not `mc-embed`: turn
-context (`build_message`) runs there, and a backlog of consolidation passes once
-held seven of its eight workers. The gateway's embedding backfill and member
+context (`build_message`) runs there, and a backlog of consolidation passes could
+hold most of its eight workers. The gateway's embedding backfill and member
 repair loops run on `mc-membg` too, on two threads of their own outside that
 admission, so a backfill that runs for hours never takes a consolidation worker
 and background memory work waits only for itself. An app's batch embed
@@ -4281,8 +4281,8 @@ route reports them as `superseded`, the same as a vector-store supersede.
 The distinction matters because two outcomes mean "your lesson did not land"
 (`refused`, `deduped`) while two mean "your lesson is fine, there was nothing to do"
 (`unchanged`, and the kept-clause variant) — a caller reading only a bool cannot tell
-them apart, and the `learn add` CLI guessed wrong, writing a second `lessons.jsonl`
-record on every one of them.
+them apart, and a `learn add` CLI that branched on the bool would write a second
+`lessons.jsonl` record on every one of them.
 
 `superseded` exists because every other field describes what happened to the SUBMITTED
 lesson, so without it a write that tombstoned a stored rule would report a bare
@@ -4312,12 +4312,12 @@ verbatim; with a string selector the replace path names `learn_remove` with that
 the `learn_list` wording. The `semantic_similarity` reply still never suggests
 removing the protected lesson.
 
-**The result's truth value is the old bool, deliberately.** `bool(result)` is `wrote`,
-byte-for-byte the predicate the previous `-> bool` return answered, so the three callers
-that only branch on success (`history.py` consolidation counting, the
+**The result's truth value is `wrote`, deliberately.** `bool(result)` is `wrote`,
+the predicate a bare `if` on the result asks, so the three callers
+that only branch on success (`history_consolidation_memory.py` consolidation counting, the
 `vector_memory` migration loop, the task runner discarding it) and the bare
-`assert store.write_lesson(...)` assertions in the tests are semantically unchanged. That is what
-allowed the bool to be REPLACED rather than kept beside a second reporting method:
+`assert store.write_lesson(...)` assertions in the tests keep their meaning. That is what
+lets one result type carry the detail rather than a second reporting method beside a bool:
 without `__bool__`, an ordinary return object is truthy by default, so every positive
 bare assertion would keep passing while asserting nothing — a silent hazard mypy cannot
 flag, since a bare `if` on any object is legal. `stored` is the separate property for
@@ -4337,7 +4337,7 @@ dashboard request, else the author of the latest user turn in the calling sessio
 turn whose agent called `learn_add`), else no one. A known writer is stored on the row as
 `written_by` (`{id, kind, name}`, no issuer, subject or login) by both stores; an
 exact-rule enrichment names the person who changed it last. A row with no writer, which
-every lesson written before this field carries, keeps its old shape and reads as before.
+includes every lesson written before this field existed, carries no `written_by` key.
 The field is a label; no read path gates on it. The size gate measures it at its
 serialized size, so it never shrinks the rule capacity. A write that superseded lessons
 is audited and, in a shared Crew, announced (see Shared Crew,
@@ -4428,13 +4428,13 @@ Crossing a startup budget trims only complete lesson entries, never a partial ru
 
 **`applies` is AUTHORED, never derived, and that is the whole reason it is stored.** No property of a stored row separates "a rule the user wants enforced in every session" from "something we worked out once". `source` does not: the consolidator can extract a real safety correction, and a human can type a note about last week's outage. `category` does not: its three values describe subject matter. Keyword shape does not: "always" appears in both classes and reliably in neither. A reader that guessed from any of those would re-decide the user's intent on every turn, and would fail silently in the direction that costs most. So `normalize_lesson_applies` accepts only the two literals, RAISES on a misspelling at the write path (there is no safe clamp — one choice injects a note into every session, the other demotes a standing rule, and both are silent), and treats an omitted value as the supported choice to leave the row unstated. The read path never raises: a hand-edited or future-schema value reads as unstated so one bad row cannot abort prompt assembly for every other lesson. The field is additive and absent when unset in BOTH stores -- the vector writer omits the key, and the JSONL writer drops a `None` through `_serializable` rather than emitting `"applies": null`, which would rewrite every legacy line on the next save and make the two stores disagree about what absence means -- so an unstated row is byte-identical to what the writer produced before the field existed; on the enrich path it is WRITE-ONCE like `category` and `repo_scope`, so enrichment cannot silently demote a rule. Re-tiering is its own call, `update_lesson_applies` (`PATCH /api/lessons`, the `learn_update` tool): it rewrites only that field on the one row the exact delete would select, under the row's own key, so its source, confidence, `created_at` and vector stay, and it writes nothing when the caller's `current` tier (`always` also standing for an unstated row) no longer matches or the body changed before the write. Setting `always` on an unstated row writes the authored tier, which `learn_list` renders the same and the rule tier then orders among the authored rules. On the JSONL fallback re-tiering stays a delete + re-add.
 
-**The compatibility limit is real and is not papered over.** A store whose lessons all predate `applies` gets its reduction from the budget alone, not from classification: every row is unstated, so they all compete for the rule budget and the overflow notice is what tells the user which ones did not fit. Classification only starts helping as new lessons are written with a stated value. "Retain an unbounded number of unstated rules" and "a small fixed startup budget" cannot both hold; this is the side that was chosen, and the notice is the mechanism that keeps the trade visible instead of silent. No existing row is rewritten, reclassified or deleted by this change.
+**The compatibility limit is real and is not papered over.** A store whose lessons all predate `applies` gets its reduction from the budget alone, not from classification: every row is unstated, so they all compete for the rule budget and the overflow notice is what tells the user which ones did not fit. Classification only starts helping as new lessons are written with a stated value. "Retain an unbounded number of unstated rules" and "a small fixed startup budget" cannot both hold; this is the side that was chosen, and the notice is the mechanism that keeps the trade visible instead of silent. No stored row is rewritten, reclassified or deleted to assign a tier.
 
 Vector scoring builds one scorer per query (`_stored_similarity_scorer`) so the query vector and its norm are derived once instead of once per lesson — the same hoisting `_sqlite_vector_search` does for episodic rows. There is a numpy path and a stdlib fallback, because numpy is guarded by `_HAS_NUMPY`; both produce the same ranking. Stored lesson vectors are un-normalized (unlike episodic vectors, which are L2-normalized for FAISS inner-product scoring), so both norms are divided out per row rather than assuming unit length. A row whose vector has a different dimensionality than the query — a row written under a previous embedding model — is incomparable and scores 0.0, matching `_sqlite_vector_search` and `HybridRetriever._cosine_similarity`, rather than being truncated against the query's leading elements.
 
 ### Recurring tool failures (`failure_recurrence.py`)
 
-A source of CANDIDATE lessons, not a writer of them (#35330). `scan(log, now=, window=)`
+A source of CANDIDATE lessons, not a writer of them. `scan(log, now=, window=)`
 reads `tool_invocation` rows from the security event log with one bounded `recent()`
 call covering the current window and the one before it, and `find_recurring()` groups
 the failed ones (`denied`, `rejected`, `blocked`, `failed`, `failure`, `error`,
@@ -5046,7 +5046,7 @@ revalidation (a new list object), not on the very next read. The owner roots are
 resolved once per catalog TTL (`_owner_roots`), and until a walk vets the stored rows a
 flat row's saved metadata answers its `app:` line while its stat fingerprint matches,
 as `list_skills` already caches it (`_prime_gate_frontmatter`): a restarted process
-reads and vets only the files the index holds no current row for (#29801).
+reads and vets only the files the index holds no current row for.
 
 **Trust verbs.** `GET/POST/DELETE /api/skills/-/trust`, registered before the
 `/api/skills/{name}` catch-all. All three require the configured dashboard owner: the
@@ -5138,8 +5138,8 @@ dot-link, never a skill, stays quiet. A symlink deeper inside a loaded skill is 
 skill's own structure and is not named, and a nested skill directory whose own
 `SKILL.md` is a symlink is skipped silently — only a top-level linked child is named.
 
-**One enforcement point for every enumerated read.** Enumeration is cached, and now
-also PERSISTED across processes (see *The catalog snapshot*), so a path vetted while
+**One enforcement point for every enumerated read.** Enumeration is cached and
+PERSISTED across processes (see *The catalog snapshot*), so a path vetted while
 genuine can be replaced by a link out of the granted directory before anything reads
 it — over a longer window than an in-memory TTL alone implied — and the root that made
 it acceptable is only known at enumeration
@@ -5149,8 +5149,8 @@ read: it re-checks that root on the *descriptor it opened* (`O_NOFOLLOW` + `fsta
 on the path string. Both the body read and the frontmatter/metadata read go through it,
 and a guard test fails if either stops doing so.
 
-That guard exists because the two drifted apart once: the body read was hardened while
-the metadata read of the same cached paths stayed unchecked, which is not a cosmetic gap
+That guard keeps the two together: a hardened body read beside an unchecked metadata
+read of the same cached paths is not a cosmetic gap
 — frontmatter `description` is rendered verbatim into the injected skills index, and
 `triggers` / `always` / `inject_on_trigger` decide what loads on every turn. A path with
 no recorded root (the global skills dir, `extra_paths`, edition roots) is read
@@ -5183,8 +5183,8 @@ prompt; that warning is bounded by an `lru_cache` on the path (`_warn_html_skill
 entries) rather than by a stat fingerprint. Left to propagate,
 one UTF-16
 file (PowerShell's default `Out-File` encoding, which opens with `0xFF`) would take the whole
-index with it: `GET /api/skills` answered 500 and every chat turn's context build
-failed. The warning is bounded once per (file, stat fingerprint, problem) — because the listing runs on every turn and a failed read
+index with it: `GET /api/skills` would answer 500 and every chat turn's context build
+would fail. The warning is bounded once per (file, stat fingerprint, problem) — because the listing runs on every turn and a failed read
 is never cached, so an unchanged bad file does not repeat while a re-saved one earns a
 fresh line. The fingerprint is a stat taken when the read fails, in every reader, not
 the one the catalog walk cached: between walks that one is stale, and keyed on it the
@@ -5195,11 +5195,11 @@ same failure at its own call site. Every SKILL.md byte read decodes as `utf-8-si
 UTF-8 file saved with a byte-order mark is valid UTF-8 whose leading U+FEFF is not
 content, and left in it sits before the `---` fence so the column-0 grammar finds no
 block and the mark lands in the injected body; the codec strips one leading mark and
-is otherwise plain UTF-8, so a file without one decodes exactly as before and a file
+is otherwise plain UTF-8, so a file without one decodes as plain UTF-8 and a file
 that is not UTF-8 still raises under the strict read. Stored metadata rows are derived
 from that decode, and the index reuses a row while the file's stat fingerprint is
-unchanged, so the decoder change moves the index schema version: an index written by
-the previous decoder is dropped and rebuilt once, instead of serving a byte-order-marked
+unchanged, so the decoder is part of the index schema version: an index written under
+another decoder is dropped and rebuilt once, instead of serving a byte-order-marked
 file's frontmatter-less row across restarts.
 
 Confined metadata is byte-limited by `PROJECT_SKILL_BODY_CAP` before decoding or
@@ -5332,7 +5332,7 @@ question-and-answer chain.
 `.github/ISSUE_TEMPLATE/feature_request.yml` asks for the same chain in a
 required "Why does this matter? (5 Whys)" field, whose description names first
 principles so an agent filing through the form questions the request rather than
-restating it (#33078). Bug reports skip the chain.
+restating it. Bug reports skip the chain.
 
 Both copies draft the issue body in the shape GitHub gives a form issue: one
 `###` heading per field of `feature_request.yml` or `bug_report.yml`, spelt as
@@ -5344,12 +5344,12 @@ sends its issue-first step through this skill's draft step.
 
 **`GET /api/skills` coalesces concurrent readers onto one scan, and stores nothing.**
 The catalog assembly is filesystem-heavy (`os.walk` plus per-file frontmatter reads, package
-path globs, per-skill resolve/read, agent annotation), and the defect this addresses is that
-N simultaneous skill-menu opens each paid for their own scan. `_assemble_skills_catalog` in
-`dashboard/handlers/prompts_skill_catalog.py` fixes that with single-flight coalescing: the first reader
+path globs, per-skill resolve/read, agent annotation), so N simultaneous skill-menu opens
+must not each pay for their own scan. `_assemble_skills_catalog` in
+`dashboard/handlers/prompts_skill_catalog.py` applies single-flight coalescing: the first reader
 assembles, readers queued alongside it take those rows instead of scanning again. Measured
-against a counting assembler, 8-way concurrency goes from 0% to 87.5% redundant-scan
-elimination — eight opens cost one scan.
+against a counting assembler, eight concurrent opens cost one scan (87.5% of the
+scans are eliminated).
 
 **There is no stored result and no TTL, and that is what makes the invariant cheap.** The
 leader's rows are offered only while another reader for the same key is still inside
@@ -5383,7 +5383,7 @@ A builtin skill that moves (`_RELOCATED_SKILLS`) has its old copy quarantined by
 the sync, and `agent.migrate_relocated_skill_uris` points every agent spec that
 mapped the old path at the new one, so the move needs no manual re-map
 ([agent-spec-fields](../../../src/kiro_crew/docs/agent-spec-fields.md#resources)). A `$<old-name>` reference (a saved hook's, an AGENTS.md line's) keeps resolving to the new skill through `_RELOCATED_SKILLS`, but only when no installed skill holds that name, so an ambiguous leaf stays unresolved. An old directory reached through a link or junction is never quarantined; the linked copy is left untouched with a warning.
-A builtin dropped from the package (`kirocrew-codebase-refactor`) is listed with
+A builtin dropped from the package (`kirocrew-dev/kirocrew-codebase-refactor`) is listed with
 the sync's stale builtins, so an unchanged installed copy is parked beside itself
 in its family directory; a link anywhere on a nested name's path is left alone.
 
@@ -5470,8 +5470,8 @@ against `repo_scope`. Bounded global reads use
 sensitive-path, descriptor identity and hardlink checks while allowing validated
 provider links. One hardlink is admitted, on content: a hardlinking installer (uv's
 default on Linux and Windows) gives every installed package file `st_nlink > 1`, so
-a built-in app skill symlinked into the tree by `apps.bridges._register_skills`
-listed but never loaded, and an `always: true` one raised
+without this a built-in app skill symlinked into the tree by `apps.bridges._register_skills`
+would list but never load, and an `always: true` one would raise
 `SkillContextCapacityError` on every session start. `_read_global_skill_text`
 therefore passes `admit_hardlinked=_installed_package_bytes_match`: a hardlinked
 file loads only when it is a `SKILL.md` the owning distribution's `RECORD` lists
@@ -5522,7 +5522,7 @@ for native view and inherited steering behavior.
 inheritance switch above does nothing there: KAS offers every skill under
 `~/.kiro/skills` and the workspace's `.kiro/skills` on top of the injected
 agent's `resources`. Measured on kiro-cli 2.35.1 with a spec that maps 3 skills,
-42 of them global: 45 on KAS before this rule, 3 through Crew's kiro-cli path
+42 of them global: 45 on KAS without this rule, 3 through Crew's kiro-cli path
 (`chat.disableInheritingDefaultResources` on), 45 on a bare `kiro-cli acp --agent`
 with inheritance left on. The `customAgents` wire has no inheritance field, but
 KAS removes a skill its policy denies under the `skill` capability from what its
@@ -5598,8 +5598,8 @@ spec Kiro Crew generates for itself counts as a custom template under that rule,
 each generated agent whose prompt names a skill carries a `skill://` entry for it,
 written by `agent_materialization/skill_resources.py` from `skills_dir()` at
 install time and merged into whatever `resources` already hold. Without it those
-agents searched an empty scope and could not find the operating procedure their own
-prompt told them to read. An
+agents would search an empty scope and could not find the operating procedure their own
+prompt tells them to read. An
 unsigned caller searches the global installed catalog, without borrowing a session.
 Search combines metadata and body term matches: query coverage first, then inverse
 term frequency, metadata coverage, usage and stable full key. This prevents common
@@ -5669,8 +5669,8 @@ skills are not scanned again for every explicit mapping.
 **Term index (`skill_search_index.py`, `SkillSearchIndex`):** metadata and body
 queries answer from a SQLite term index at `skill_search_index.sqlite3`
 (`SKILL_SEARCH_INDEX_FILENAME`, beside the usage ledger), not by reading files. Read
-from disk, the fallback cost one file read per skill on every call, so the query that
-needs the body most — one matching no metadata — was the one that read every
+from disk, a search would cost one file read per skill on every call, so the query that
+needs the body most — one matching no metadata — would be the one that reads every
 `SKILL.md` present, at a cost following total body bytes rather than the number of
 matches. Global metadata is persisted beside body terms with the same file identity
 fingerprint; a new loader can reuse both without reading unchanged skill files.
@@ -5705,10 +5705,10 @@ size, while keeping the warm path metadata-only. These properties are load-beari
   replaces the corpus-sized read. The exclusive upper bound is the term with its
   last code point incremented (skipping the surrogate block, `None` above the
   maximum), not a high sentinel: `\uffff` encodes as `EF BF BF` while an astral
-  character starts at `F0`, so a sentinel bound sorted BELOW the astral terms it
-  was meant to include. A query term strictly INSIDE a body word stops matching:
+  character starts at `F0`, so a sentinel bound would sort BELOW the astral terms it
+  is meant to include. A query term strictly INSIDE a body word stops matching:
   the query is tokenized the same way, so that case is a near-miss rather than a
-  hit — `rollback` no longer matches a body whose only occurrence is inside
+  hit — `rollback` does not match a body whose only occurrence is inside
   `scrollback`.
 - **One lock-guarded connection.** The connection is opened with
   `check_same_thread=False` and every public method takes an `RLock`. A skill
@@ -5721,7 +5721,7 @@ size, while keeping the warm path metadata-only. These properties are load-beari
   carrying the keys it declined and the subset its budget left pending, and
   `search_skills_report` returns the matches with that call's `incomplete` flag.
   The dashboard route and the MCP tool read the flag from the result. Kept on the
-  shared object, the flag was whatever the search that finished last wrote, so a
+  shared object, the flag would be whatever the search that finished last wrote, so a
   search with bodies still pending could report a complete answer.
 - **The tokenizer is part of the key.** Stored terms are `recall_terms` output, so a
   change in how it splits or normalizes leaves rows a new query can no longer match —
@@ -5790,8 +5790,8 @@ in the MCP process and credits nothing: that process's tally and the gateway's
 would overwrite each other in the one ledger file.
 
 **Direct reads.** The model reaches most skills by reading `SKILL.md` itself — a
-file-read tool, or `cat` in a shell — which bypasses the loader and so recorded
-nothing. Unrecorded, the ledger described one access route only, pushing
+file-read tool, or `cat` in a shell — which bypasses the loader. Left
+unrecorded, the ledger would describe one access route only, pushing
 search-discovered skills permanently down the ranking and making them harder to
 find still: a self-reinforcing bias, not a flat undercount.
 
@@ -5830,7 +5830,7 @@ partial one. A session reaches that layer by one of two transports — `AcpClien
 (one process per session) or `AcpSessionHandle` on the shared `AcpRuntime`
 process (kiro-cli, KAS, codex) — and both own one `acp/skill_reads.py`
 `SkillReadTracker` fed from their dispatch loops, so the credit a backend earns
-does not depend on the transport that serves it. Wiring only the client left
+does not depend on the transport that serves it. Wiring only the client would leave
 every shared-runtime read uncounted: the same route-dependent bias, by
 transport instead of surface. The per-surface permission gate
 (`HookManager.on_tool_call`) is NOT usable here: file reads are auto-approved and
@@ -5849,8 +5849,8 @@ whether it installed one so that path can log a miss instead of silently
 recording nothing.
 
 The read-intent allowlists (`_CONTENT_READ_TOOLS`, `_SHELL_READ_VERBS`) encode
-the provider's current tool spellings, so a rename would silently restore the
-pre-existing undercount. A call whose arguments clearly name a `SKILL.md` yet
+the provider's current tool spellings, so a rename would silently undercount
+those reads. A call whose arguments clearly name a `SKILL.md` yet
 yields no candidate is therefore logged at debug — the one signal that separates
 tool-name drift from a legitimately non-reading call.
 
@@ -5902,8 +5902,7 @@ puzzle. Paths go through ONE allowlist -- a segment matches
 writer's own `".." in rel_path` guard. The anchor is `\Z`, not `$`, because `$`
 also matches just before a trailing newline;
 `test_regex_anchor_contract.py` holds this package to that anchor. An allowlist rather than a refusal list
-because a refusal list is something review can keep extending: successive rounds
-named Windows-illegal characters, control characters, trailing dots and spaces,
+because a refusal list keeps growing: Windows-illegal characters, control characters, trailing dots and spaces,
 byte-versus-character limits, Unicode normalisation, reserved device names and
 component length, each a separate clause. Stating what is permitted ends that.
 Three rules survive beside it, for the cases the shape permits: `..` anywhere, a
@@ -5918,8 +5917,7 @@ the audit log and the error-code contract; the user reads `message`, which the d
 scrubs with `_redact_external` and caps at 300 characters. Search puts it on the provider's
 `provider_outcomes` entry as `message` (beside an optional `display_name`), install answers 502
 with `{error, code}`, and preview adds `error` to its empty shape. GitHub's rate limit names a
-relative wait from `Retry-After` or `X-RateLimit-Reset`. Branch tracking / re-sync is deliberately out of scope (#746 covers the
-adjacent design). Requests are unauthenticated (60/hour/IP), so private
+relative wait from `Retry-After` or `X-RateLimit-Reset`. Branch tracking / re-sync is deliberately out of scope. Requests are unauthenticated (60/hour/IP), so private
 repositories are not reachable. An installed skill's key comes from the provider, not from its id:
 `_slugify` lowercases and folds `/`, `@` and `:` all onto `-`, so it is not
 injective over these ids and `foo-bar` would share a key with `foo/bar`. The
