@@ -42,6 +42,12 @@ from typing import Any
 import pytest
 import yaml
 from main_red_jq_stand_in import JQ_MODES, install_jq
+from main_red_rate_limit_harness import (
+    RATE_LIMIT_ACTION,
+    RESET_FAR,
+    install_clock,
+    install_wrapper,
+)
 from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -541,13 +547,15 @@ def test_it_writes_issues_only_and_never_a_pull_request() -> None:
 
 
 def test_actions_are_pinned_to_a_commit_and_the_checkout_keeps_no_credentials() -> None:
-    uses = [s for s in _job()["steps"] if "uses" in s]
+    # The one action that is not pinned is this repository's own, read from that checkout.
+    uses = [s for s in _job()["steps"] if "uses" in s and s["uses"] != RATE_LIMIT_ACTION]
     assert uses, "the script is read from a sparse checkout of main"
     for step in uses:
         assert step["uses"].split("@")[1].isalnum() and len(step["uses"].split("@")[1]) == 40
         assert step["with"]["persist-credentials"] is False
         assert step["with"]["sparse-checkout"].split() == [
             ".github/scripts",
+            RATE_LIMIT_ACTION.removeprefix("./"),
             "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts",
         ]
 
@@ -599,6 +607,16 @@ def _needs_posix(test: Any) -> Any:
 
 _GH_STUB = r"""#!/usr/bin/env bash
 d="$STUB_DIR"
+# Each line of `spent` is the start of a call the rate limit refuses until the
+# reset; an empty line is every call. `/rate_limit` itself is never refused.
+if [ -f "$d/spent" ] && [ "$1 $2" != "api rate_limit" ]; then
+  while IFS= read -r refused; do
+    case "$*" in "$refused"*)
+      printf '%s\n' "$*" >> "$d/refused.log"
+      echo "gh: API rate limit exceeded for installation. (HTTP 403)" >&2; exit 1 ;;
+    esac
+  done < "$d/spent"
+fi
 printf '%s\n' "$*" >> "$d/gh.log"
 filter() { while [ "$#" -gt 0 ]; do [ "$1" = "--jq" ] && { printf '%s' "$2"; return; }; shift; done; }
 arg_after() { local k="$1"; shift; while [ "$#" -gt 0 ]; do [ "$1" = "$k" ] && { printf '%s' "$2"; return; }; shift; done; }
@@ -629,6 +647,10 @@ if [ "$1" = "api" ]; then
     */actions/runs/900/jobs*)
       [ -f "$d/prev-jobs.json" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
       jq -r "$(filter "$@")" < "$d/prev-jobs.json" ;;
+    */actions/runs/*/jobs*)
+      id="${2#*/actions/runs/}"; id="${id%%/*}"
+      [ -f "$d/jobs-$id.json" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+      jq -r "$(filter "$@")" < "$d/jobs-$id.json" ;;
     rate_limit) echo 1795040400 ;;
     */check-runs/*/annotations*)
       id="${2#*/check-runs/}"; id="${id%%/*}"; id="${id%%\?*}"
@@ -734,9 +756,22 @@ def _run_step(
     runs: list[dict] | None = None,
     prev_jobs: str | None = None,
     runs_rate_limited: bool = False,
+    spent: tuple[str, ...] = (),
+    reset_in: int = RESET_FAR,
+    past_jobs: dict[int, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
+    """Run the step as the job does, behind the rate-limit wrapper when the job installs it.
+
+    ``spent`` names the calls (by how they start) that the rate limit refuses
+    until the reset, ``reset_in`` seconds after the stubbed clock; ``past_jobs``
+    are the jobs of earlier runs by run id.
+    """
     stub = tmp_path / "stub"
     stub.mkdir(parents=True)
+    if spent:
+        (stub / "spent").write_text("".join(f"{call}\n" for call in spent), encoding="utf-8")
+    for run_id, text in (past_jobs or {}).items():
+        (stub / f"jobs-{run_id}.json").write_text(text, encoding="utf-8")
     # No runs file is a run list that cannot be read; no previous jobs file likewise.
     if runs is not None:
         (stub / "runs.json").write_text(json.dumps({"workflow_runs": runs}), encoding="utf-8")
@@ -771,6 +806,7 @@ def _run_step(
     gh = bin_dir / "gh"
     gh.write_text(_GH_STUB, encoding="utf-8", newline="\n")
     gh.chmod(0o755)
+    install_clock(bin_dir, reset_in)
     install_jq(bin_dir, _JQ["mode"])
     env = dict(os.environ)
     env.update(
@@ -792,6 +828,7 @@ def _run_step(
             "PROOF_STEP_NAME": "Upload shard coverage",
         }
     )
+    env["PATH"] = os.pathsep.join([*install_wrapper(_job(), ROOT, tmp_path, env), env["PATH"]])
     out = subprocess.run(
         ["bash", "-c", _step()["run"]],
         cwd=ROOT,
@@ -893,7 +930,8 @@ def test_a_red_run_whose_logs_cannot_be_read_is_filed_from_its_annotations(tmp_p
         15: _fixture("annotations_coverage_gate.json"),
         17: _fixture("annotations_xdist_group.json"),
     }
-    out, stub = _run_step(tmp_path, jobs=jobs, logs={}, annotations=notes)
+    first_run = [_run_row(50, "failure")]
+    out, stub = _run_step(tmp_path, jobs=jobs, logs={}, annotations=notes, runs=first_run)
     assert out.returncode == 0, out.stderr
     assert (stub / "created-title.txt").read_text(encoding="utf-8") == (
         "ci: Main is red: test/test_kas_orchestrator_memory.py::TestTheRealSessionNewRequest::"
@@ -1497,12 +1535,25 @@ def test_one_unreadable_job_of_the_previous_run_does_not_hide_the_others(tmp_pat
 
 
 @_needs_posix
-def test_an_open_issue_or_a_test_red_in_two_jobs_never_looks_back(tmp_path: Path) -> None:
+def test_an_open_issue_or_a_test_red_in_two_jobs_reads_the_run_list_and_no_earlier_run(
+    tmp_path: Path,
+) -> None:
+    """The run list says whether a red run before this one went unrecorded: one read."""
+    run_list = "api repos/example/repo/actions/workflows/7/runs?"
+    # The open issue's record holds run 900, the verdict run before this one.
     out, stub = _run_step(
-        tmp_path, jobs=ONE_JOB, logs={}, annotations=ONE_JOB_NOTES, issues=[_open_issue()]
+        tmp_path,
+        jobs=ONE_JOB,
+        logs={},
+        annotations=ONE_JOB_NOTES,
+        issues=[_open_issue()],
+        runs=PREV_RUNS,
     )
     assert out.returncode == 0, out.stderr
-    assert _wrote(stub, "edit") and _look_back_calls(stub) == []
-    out, stub = _run_step(tmp_path / "two")
+    (read,) = _look_back_calls(stub)
+    assert _wrote(stub, "edit") and read.startswith(run_list)
+    # A green run before this one: no earlier red run to count.
+    out, stub = _run_step(tmp_path / "two", runs=[_run_row(50, "failure"), _run_row(48, "success")])
     assert out.returncode == 0, out.stderr
-    assert len(_wrote(stub, "create")) == 1 and _look_back_calls(stub) == []
+    (read,) = _look_back_calls(stub)
+    assert len(_wrote(stub, "create")) == 1 and read.startswith(run_list)

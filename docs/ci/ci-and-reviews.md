@@ -238,7 +238,19 @@ Three structural facts explain most of the rest:
   run unfiled, so the log is read only for a job whose annotations cannot be
   read or, on a backend test job, name no test. A failed read says why in a
   notice and in the job summary; a read the API rate limit refused is named as
-  that, with the reset time, and ends the reading. The annotations name at most 10
+  that, with the reset time, and ends the reading. Every `gh` call of the step
+  goes through `.github/actions/gh-rate-limit` (below) with a 20-minute budget,
+  so a refused label call, issue lookup or job read waits for the reset and is
+  retried; a reset past the budget fails the call, and the run ends red having
+  written nothing or files what it had read. Nothing marks such a run. Every
+  red run that names a test reads the run list and replays the red verdict runs
+  directly before it that the open issue's record does not hold, back to the
+  first green run, the run the record holds, or 5 runs
+  (`.github/scripts/main_red_previous.py`, one job list and one annotation read
+  per failed job for each), under the same rules as a live run, so the issue
+  names the first red commit and the whole streak even when a watcher run was
+  lost to the rate limit or dropped from the queue. A replay that cannot read a
+  run counts none. The annotations name at most 10
   failing tests per job. With no issue open it files one only when a test is red
   in two failed jobs of the run (the Linux and the Windows shard that both carry
   it), so a test that fails once on one leg, which is as often a flake as a
@@ -552,7 +564,8 @@ fleet, so one `gh` call made while it is spent fails the run, although the limit
 resets within the hour. The same holds for an event-triggered check that fails
 closed and is recomputed only by the PR's next event: Fork PR Description and
 Sensitive Change Review install the wrapper too, from their default-branch
-checkout. `.github/actions/gh-rate-limit` puts a `gh` wrapper on
+checkout. So does the main-red watcher, whose lost run leaves a red main
+unrecorded until the next run of main ends. `.github/actions/gh-rate-limit` puts a `gh` wrapper on
 PATH for the rest of the job: it retries only a call whose error names a rate
 limit, at most twice, waiting for the earliest reported reset (60 s for a
 secondary limit) inside one job-wide budget (`max-wait`, 20 minutes by default).
