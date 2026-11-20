@@ -144,6 +144,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # used solely to name the offending field in the refusal, never emitted as
         # content, so this classifies a name rather than being an output boundary.
         "artifact_store/dashboard_package.py",
+        # Validator only, the same ground: a dashboard package's `widgets` refusal
+        # quotes what the author wrote (an id, a field name, a tone key), so the
+        # refusal sentence is redacted before it is raised. Nothing it returns is
+        # content; it scrubs its own error text, not an egress payload.
+        "artifact_store/dashboard_widgets.py",
         # Drives the backup redaction pass and reports what it did, but applies no
         # redactor itself: the outbound bytes are rewritten in `snapshot_redact.py`,
         # which is the registered sink. What matches the call-site scan here are the
