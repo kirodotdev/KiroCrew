@@ -35,8 +35,12 @@ a hook can reach but does not stop it running:
   there is no ``post-checkout`` to find and no directory anyone could plant one
   in.
 * A ``filter.<name>.process``/``.smudge`` driver cannot be disabled generically
-  (driver names are arbitrary), so a repo declaring one in EITHER repository
-  config scope is refused instead (:func:`_checkout_filter`).
+  (driver names are arbitrary), so the checkout never runs under the repository's
+  config: ``worktree add --no-checkout`` registers the tree and
+  :func:`~kiro_crew.worktree_populate.populate_worktree` fills it under a throwaway
+  git dir that holds only non-executing settings. A driver written after any probe
+  has nothing to run it. A repo declaring one in EITHER repository config scope is
+  still refused up front (:func:`_checkout_filter`), as the early, friendly answer.
 
 Concurrency
 -----------
@@ -65,6 +69,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 import re
@@ -84,6 +89,7 @@ from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.subprocess_utf8 import utf8_path_stdout, utf8_stdout
 from kiro_crew.validation import MAX_FOLLOWUP_BRANCH, is_valid_followup_branch
+from kiro_crew.worktree_populate import populate_worktree
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +207,7 @@ def _run_git(
     stdout_decoder: Callable[[bytes | str | None], str] = utf8_stdout,
     env: dict[str, str] | None = None,
     scan_git_stderr: bool = False,
+    private_dir: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run git with an argv list (never a shell) inside ``cwd``, OS-sandboxed.
 
@@ -210,6 +217,10 @@ def _run_git(
     the scan's one-line error as stderr; ``scan_git_stderr`` asks instead for the
     scan git's own stderr when that git refused the listing, which is how a caller
     that classifies git's reason gets git's whole line rather than a clipped one.
+    ``private_dir`` is a directory under the masked crew scratch root that this one spawn
+    (and its hook scan) may read and write, as a window inside the mask: the throwaway git
+    dir of :func:`kiro_crew.worktree_populate.populate_worktree`, which a sandboxed agent
+    can neither see nor rewrite.
 
     Routed through the ``sandboxed_spawn_argv`` chokepoint, matching
     ``git_coord.py``'s treatment of agent-influenced git: the repository is
@@ -239,9 +250,14 @@ def _run_git(
     # `core.hooksPath` override, and its name is the repository's choice, so each one git
     # can see is disabled by name (see `kiro_crew.git_config_hooks`). When the names
     # cannot be listed safely git does not run, and the call reads as a git failure.
+    spawn_argv = (
+        sandboxed_spawn_argv
+        if private_dir is None
+        else functools.partial(sandboxed_spawn_argv, extra_private_dirs=(private_dir,))
+    )
     try:
         hook_off = config_hook_disable_args_sandboxed(
-            cwd, spawn_argv=sandboxed_spawn_argv, mode=_SANDBOX_MODE, env=env
+            cwd, spawn_argv=spawn_argv, mode=_SANDBOX_MODE, env=env
         )
     except ConfigHookScanError as exc:
         own = exc.git_stderr if scan_git_stderr else None
@@ -249,7 +265,7 @@ def _run_git(
     except RuntimeError as exc:  # no sandbox backend and no explicit opt-in (scan path)
         raise SandboxUnavailable(str(exc)) from exc
     try:
-        argv, spawn_env, cleanup = sandboxed_spawn_argv(
+        argv, spawn_env, cleanup = spawn_argv(
             ["git", *_git_no_repo_code(), *hook_off, *args], mode=_SANDBOX_MODE, env=env
         )
     except RuntimeError as exc:  # no sandbox backend and no explicit opt-in
@@ -547,6 +563,12 @@ def _worktree_probe_failure_is_empty_scope(root: str) -> bool:
 
 def _checkout_filter(root: str) -> str:
     """Name of a repo-supplied content filter git would run on checkout, else "".
+
+    The follow-up card and the release-channel create do not depend on this answer:
+    they check out through :func:`~kiro_crew.worktree_populate.populate_worktree`, so it
+    is their early, friendly refusal. A caller that still runs a plain ``git worktree
+    add`` (the Bot workspace worktrees, the Slack code-channel workspace) has no other
+    guard against a driver, so it keeps its full force there.
 
     Defense in depth for the same class the ``-c`` overrides close. A
     ``.gitattributes`` entry can name a filter (``foo``) whose driver is defined
@@ -863,12 +885,23 @@ def _create_worktree_sync(root: str, branch: str) -> tuple[dict, int]:
         logger.warning("worktree create failed: %s", exc)
         return ({"error": "cannot create worktree directory", "code": "worktree_mkdir_failed"}, 500)
 
+    # `--no-checkout` registers the worktree without running a filter driver; the files
+    # are written next by `populate_worktree`, which never reads the repository's config.
+    # The branch was claimed at `base_sha` above, so that is the commit it checks out.
     try:
-        proc = _run_git(["worktree", "add", dest, branch], root)
+        proc = _run_git(["worktree", "add", "--no-checkout", dest, branch], root)
     except subprocess.TimeoutExpired:
         # A timeout can still leave a registered worktree behind.
         _cleanup_partial(root, dest, branch, claimed=True, created=True, base_sha=base_sha)
         raise
+    if proc.returncode == 0:
+        try:
+            proc = populate_worktree(_run_git, dest, base_sha)
+        except Exception:
+            # The add registered the worktree, so a populate that raised (a timeout, a
+            # missing sandbox) leaves it, and the claimed branch, behind.
+            _cleanup_partial(root, dest, branch, claimed=True, created=True, base_sha=base_sha)
+            raise
     if proc.returncode != 0:
         _cleanup_partial(root, dest, branch, claimed=True, created=True, base_sha=base_sha)
         return ({"error": _git_error(proc)}, 400)

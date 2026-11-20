@@ -372,10 +372,11 @@ back (app-kit-platform.md § Scoped frontend HTTP transport).
 the dashboard, finding the current tag by hand, and remembering to refresh it. The
 action lives in `release_worktree.py` and runs entirely in the gateway process.
 
-**Why the gateway, not the backend.** `git worktree add <tag>` reads the
+**Why the gateway, not the backend.** A plain `git worktree add <tag>` reads the
 repository's own `.git/config` and follows `include.path` during checkout, so a
 hostile config could name a `filter.<name>.smudge` driver or point `include.path`
-at a credential file. The checkout therefore has to run at the **strict** tier,
+at a credential file. The registering `worktree add` and the config-reading probes
+therefore have to run at the **strict** tier,
 with `~/.aws`, `~/.ssh` and the rest bind-masked from the git child. The sandboxed
 backend cannot provide that: a `mode="strict"` spawn from inside it is a
 nested-sandbox passthrough that re-applies only the env scrub, not the file hides.
@@ -386,8 +387,8 @@ child in the backend's namespace.
 
 **The trust boundary, in one statement.** No git child this action runs is ever
 *less* confined than an agent's own commands. The local steps — the worktree-list,
-`_checkout_filter` and promisor probes, `rev-parse`, `git worktree add --detach`, the
-HEAD readback and cleanup — run at the **strict** tier through `handlers/worktree.py`'s
+`_checkout_filter` and promisor probes, `rev-parse`, `git worktree add --no-checkout
+--detach`, the populate, the HEAD readback and cleanup — run at the **strict** tier through `handlers/worktree.py`'s
 `_run_git`, reused not re-implemented (`-c core.hooksPath=/dev/null -c
 core.fsmonitor=false`, config hooks disabled by name, `~/.aws`/`~/.ssh`/vault
 bind-masked). The two network steps — `ls-remote` and the one-tag `fetch` — run at
@@ -413,6 +414,30 @@ credential a redirected remote could reach at `standard` is one the agent's own
 `standard` commands already reach, and at `cc`/`strict` the network steps run at the
 agent's tier with git credentials withheld. The filter and promisor probes and the
 neutralizers are therefore **early, friendly refusals**, not the boundary; the tier is.
+
+**The populate reads no repository config.** `git worktree add --no-checkout --detach`
+registers the worktree and checks no file out, so no filter driver can run there. The
+files are written next by `kiro_crew.worktree_populate.populate_worktree`
+(`read-tree -u --reset <oid>`) under a throwaway git dir in the crew scratch root, passed
+to the strict spawn as a window in the scratch mask (`_run_git(private_dir=...)`) so a
+sandboxed agent can neither see nor rewrite it. Its config holds the object format and six
+non-executing settings read from the repository's effective config and each checked
+against a closed set of values: `core.symlinks`, `core.ignorecase`, `core.autocrlf`,
+`core.eol`, `core.sparseCheckout` and `core.sparseCheckoutCone`, with the sparse patterns
+git copied into the worktree's `info/sparse-checkout`. Its `objects/info/alternates` names
+the repository's object store, `GIT_INDEX_FILE` is the linked worktree's own index, and
+system and global config are off. So a `filter.<name>` driver written between the filter
+probe and the checkout is never consulted, and the probe is only the friendly refusal for a
+repository that declares one. What changes for the tree: a Git LFS file lands as its
+pointer text (the LFS filter is a driver, and none is defined), while line endings,
+symlinks and sparse-checkout come out as a plain `worktree add` makes them
+(`test_worktree_populate.py`). A populate that fails removes the worktree the add
+registered, like a failed readback; after a timeout nothing is removed and the refusal
+names the `git worktree remove -f -f` that clears it. The dashboard follow-up card's
+`_create_worktree_sync` uses the same helper, which also refuses a partial clone (a
+promisor remote is configured): the throwaway git dir names no remote to fetch missing
+blobs from, so the card answers 400 and unwinds, as the release path's `partial_clone`
+probe refuses before its fetch.
 The promisor probe refuses a **partial clone** (`partial_clone`) before the fetch: its
 filter applies to the one-tag fetch too, so the release's files would arrive only when
 `git worktree add` fetched them itself, a network step outside the two the action
