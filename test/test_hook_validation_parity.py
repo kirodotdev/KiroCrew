@@ -32,9 +32,11 @@ from kiro_crew.hooks import (
     HOOK_TIMEOUT_MAX,
     HOOK_TIMEOUT_MIN,
     ScriptHook,
+    ScriptHookResult,
     ScriptHookStore,
     _context_matches,
     _has_global_inline_flags,
+    permission_pre_tool_block,
 )
 from kiro_crew.validation import HOOK_CREATE_SCHEMA, HOOK_UPDATE_SCHEMA
 from kiro_crew.webhooks import WebhookStoreUnreadable
@@ -240,6 +242,38 @@ class TestStoreLoadResilience:
             for hook in saved
             if isinstance(hook, dict)
         )
+
+    @pytest.mark.parametrize("matcher", [["Bash", "Write"], 3, {"tool": "Bash"}])
+    def test_non_text_matcher_never_runs_and_blocks_only_pre_tool_use(
+        self, tmp_path, monkeypatch, matcher
+    ):
+        rows = [
+            {"id": "gate", "event": HOOK_EVENT_PRE_TOOL_USE, "matcher": matcher},
+            {"id": "stop", "event": HOOK_EVENT_STOP, "matcher": matcher},
+            {"id": "good", "event": HOOK_EVENT_PRE_TOOL_USE, "matcher": "Bash"},
+        ]
+        rows = [{**row, "name": row["id"], "command": "true"} for row in rows]
+        path = tmp_path / "hooks.json"
+        path.write_text(json.dumps({"hooks": rows}), encoding="utf-8")
+        ran: list[str] = []
+
+        async def fake_run(hook, *_args, **_kwargs):
+            ran.append(hook.id)
+            return ScriptHookResult(hook.id, hook.name, hook.event, exit_code=0)
+
+        monkeypatch.setattr("kiro_crew.hooks.run_script_hook", fake_run)
+        store = ScriptHookStore(tmp_path)
+
+        assert asyncio.run(permission_pre_tool_block(store, (), None, "Bash")) == (
+            f"gate: hook 'gate' has a matcher that is not text ({type(matcher).__name__}); "
+            "fix it in hooks.json"
+        )
+        for context in ("", "done"):
+            assert asyncio.run(store.fire(HOOK_EVENT_STOP, context=context)) == []
+        assert ran == ["good"]
+        store.toggle("good")
+        saved = {row["id"]: row for row in json.loads(path.read_text(encoding="utf-8"))["hooks"]}
+        assert saved["gate"]["matcher"] == matcher and saved["stop"]["matcher"] == matcher
 
     def test_unhashable_id_is_skipped_without_dropping_siblings(self, tmp_path):
         (tmp_path / "hooks.json").write_text(
