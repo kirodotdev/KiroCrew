@@ -949,6 +949,29 @@ manifest file, so an explicit refresh always retries, and the marker lives in
 `by-source/`, so the GC sweep reclaims it. A missing, expired or unreadable
 marker reads as absent and the listing fetches.
 
+A listing does not wait for slow fetches. The app page waits for the listing,
+and a cold cache costs one clone per row, so each listing sets one deadline,
+`_LISTING_MANIFEST_BUDGET` (five seconds) after its first manifest batch starts,
+and passes it to every batch it runs through `_gather_listing_manifests`: the
+seed or edition batch and the external batch together wait at most that long.
+Catalog rows never enter that queue: they already carry their copy, so they
+answer unchanged at once and are never dressed from a cache. A row still
+fetching at the deadline reads the caches `_resolve_manifest` reads, in the same
+order and whatever their age: the source's cache
+(`_read_manifest_cache(..., ignore_ttl=True)`), then the installed checkout's
+(`_read_installed_manifest_cache(..., ignore_ttl=True)`), else its minimal info.
+Its fetch keeps running in the background to fill the cache for the next
+listing. `_resolve_manifest_once` shares a running fetch, keyed on the same
+source coordinates as the cache, with any listing that asks for it, so a
+reopened page does not clone a source again. One gate per event loop keeps all
+listings together at `_MANIFEST_RESOLVE_CONCURRENCY` clones. A shared fetch
+(`_join_manifest_fetch`) holds only the row's `_slim_prewarm_row` projection
+(its `_PREWARM_ROW_FIELDS`, with a null one kept as null) and a digest of the
+whole row, and a batch past its deadline hands each row it has not settled
+to that row's shared fetch and stops. So a fetch past the listing holds none of
+the fields an index adds that no fetch reads. A fetch that hands its input back
+unchanged answers each waiter with a copy of its own whole row.
+
 A failed registry-index fetch is remembered the same way, one level up.
 `_fetch_and_cache_external_registry` writes an empty `_registry_<stem>.failed.json`
 marker beside the index cache when the fetch fails, and removes it when a fetch
