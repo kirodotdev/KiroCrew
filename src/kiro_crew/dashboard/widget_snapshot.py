@@ -170,13 +170,13 @@ async def package_in_force(slug: str, member: str) -> tuple[dict[str, Any] | Non
 def _applied_bytes(package_slug: str) -> tuple[int, str] | None:
     """An older record's bound package page, through the tab's own checks, or ``None``.
 
-    :func:`member_dashboard.applied_package_page`, shared with the agent panel's
-    snapshot; any refusal or store error is ``None``. Blocking IO.
+    :func:`~kiro_crew.dashboard.package_page.applied_package_page`, shared with the
+    agent panel's snapshot; any refusal or store error is ``None``. Blocking IO.
     """
-    from kiro_crew.dashboard.handlers import member_dashboard as md
+    from kiro_crew.dashboard.package_page import applied_package_page
 
     try:
-        return md.applied_package_page(package_slug)
+        return applied_package_page(package_slug)
     except Exception:
         logger.debug("widgets: package %r could not be read", package_slug, exc_info=True)
         return None

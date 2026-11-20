@@ -120,7 +120,7 @@ def _older_page(slug: str) -> tuple[str, int, str]:
     comes from ``dashboard_agentic.bound_package``, the one lookup the tab and the turn
     block share."""
     from kiro_crew import dashboard_agentic
-    from kiro_crew.dashboard.handlers import member_dashboard
+    from kiro_crew.dashboard import package_page
 
     package_slug = dashboard_agentic.bound_package(slug)
     if not package_slug or not dashboard_agentic.has_person_cut_version(package_slug):
@@ -128,13 +128,13 @@ def _older_page(slug: str) -> tuple[str, int, str]:
     # The tab's own checks, shared: another kind or a linked file whose bytes skip the
     # write gate, no version a person cut, or a record replaced mid-read.
     try:
-        version, content = member_dashboard.applied_package_page(package_slug)
-    except member_dashboard.PackagePageRefused as refused:
+        version, content = package_page.applied_package_page(package_slug)
+    except package_page.PackagePageRefused as refused:
         raise _NoPage(_REFUSED_PAGE[refused.reason]) from None
     return package_slug, version, content
 
 
-#: What the caller is told for each :class:`~member_dashboard.PackagePageRefused` reason.
+#: What the caller is told for each :class:`~kiro_crew.dashboard.package_page.PackagePageRefused` reason.
 _REFUSED_PAGE: dict[str, str] = {
     "not_a_package": "the page in force is not a dashboard package that can be drawn",
     "not_applied": NOT_COMPOSED,

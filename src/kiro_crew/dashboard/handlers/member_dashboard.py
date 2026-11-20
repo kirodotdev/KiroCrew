@@ -1621,47 +1621,6 @@ def applied_package_version(loaded: Any) -> int:
     return best
 
 
-class PackagePageRefused(Exception):
-    """An unpinned package has no page a reader may be shown; :attr:`reason` says why.
-
-    ``not_a_package`` (another kind, or a linked file whose bytes skip the write gate),
-    ``not_applied`` (no version a person cut) or ``replaced`` (the record changed
-    between the approval read and the versioned read).
-    """
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
-
-
-def applied_package_page(package_slug: str) -> tuple[int, str]:
-    """``(version, content)`` of the version of *package_slug* a person cut, or raise.
-
-    The page route's checks (:func:`_serve_package`) for a reader with no request: the
-    record is a stored ``kind="dashboard"`` artifact that owns its bytes, its applied
-    version is :func:`applied_package_version`, and that version is read from the same
-    record (:func:`_record_identity`). A failed check raises
-    :class:`PackagePageRefused`; a store error propagates. Blocking IO.
-    """
-    from kiro_crew.artifact_store.dashboard_package import DASHBOARD_KIND
-    from kiro_crew.artifacts import get_default_store
-
-    store = get_default_store()
-    loaded = store.get(package_slug)
-    if str(getattr(loaded, "kind", "")) != DASHBOARD_KIND or (
-        str(getattr(loaded, "source_path", "") or "")
-        and not bool(getattr(loaded, "source_copy_only", False))
-    ):
-        raise PackagePageRefused("not_a_package")
-    version = applied_package_version(loaded)
-    if version <= 0:
-        raise PackagePageRefused("not_applied")
-    applied = store.get(package_slug, version=version)
-    if _record_identity(applied) != _record_identity(loaded):
-        raise PackagePageRefused("replaced")
-    return version, applied.content or ""
-
-
 def _nothing_to_serve(slug: str, package_slug: str) -> web.Response:
     """A BOUND PACKAGE WITH NOTHING TO SERVE RENDERS NOTHING AT ALL.
 
