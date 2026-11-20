@@ -3,7 +3,8 @@
 Lets a single Kiro Crew gateway (the **hub**) manage and switch between several
 **remote** Kiro Crew instances (dev hosts, EC2, home servers) over SSH **or AWS
 SSM Session Manager** tunnels, embedding each remote dashboard as an iframe pane
-below a switcher strip. Opt-in: off by default (`instances.enabled`). The transport is
+below a switcher strip. On by default (`instances.enabled`); `false` turns it off.
+No tunnel opens until the owner adds a crew and connects it. The transport is
 per-instance (`connection_method`) — see §13.
 
 > **Naming — "Remote Crew".** The user-facing surfaces label this feature
@@ -77,8 +78,10 @@ destinations they actually use — see [Pinned crew chips](#pinned-crew-chips).
 
 **Key properties**
 
-- **Opt-in.** Nothing changes until `instances.enabled=true`, and the flag is
-  read at gateway startup, so it also needs a restart.
+- **On by default, no network until asked.** With no `instances` key the flag is
+  on, but it opens no listener and dials nothing: a tunnel opens only when the
+  owner adds a crew and connects it. `instances.enabled=false` turns it off. The
+  flag is read at gateway startup, so a change needs a restart.
 - **Owner-only.** The control plane is never reachable via Slack and requires the
   dashboard owner's identity: an unauthenticated caller gets `401`, and any other
   authenticated identity, an app token included, gets `403 owner_only`.
@@ -90,6 +93,8 @@ destinations they actually use — see [Pinned crew chips](#pinned-crew-chips).
 ---
 
 ## 2. Enabling the feature
+
+It is on by default. To turn it off (`false`), or back on after that:
 
 ```bash
 kirocrew config set instances.enabled true
@@ -486,7 +491,7 @@ cannot drift.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `instances.enabled` | `false` | Primary opt-in, read at gateway startup. Also gates the CSP `frame-src` `*.localhost` extension. |
+| `instances.enabled` | `true` | Primary switch, read at gateway startup; `false` turns the feature off. Also gates the CSP `frame-src` `*.localhost` extension. |
 | `instances.crew_reads_enabled` | `false` | Lets the **agent** read another crew's sessions through the `crew=` scope of the three session read tools (§18). A second opt-in on top of `enabled`, off by default because a peer's transcripts enter the agent's context as untrusted text. Read per call by the gateway route's gate (no restart); off, every crew read answers `403 crew_reads_disabled` before any caller is resolved or any peer is reached. The tools themselves are unchanged; only the `crew=` argument is refused. |
 | `instances.warm_set_cap` | `0` (automatic) | Max instances kept warm at once (bounds memory/sockets; each warm instance is a full dashboard SPA). `0` tracks how many crews are registered, so up to the internal ceiling no configured crew is evicted; an explicit value is honoured exactly, including one below the registered count. Negative values fall back to automatic. |
 | `instances.default_destination` | `""` | Instance id that **Send a copy to** lists first and marks as the default (§14). Served with `GET /api/instances`; resolved against the registry only when the menu renders, so an id naming no registered crew marks nothing. A folder's `default_destination_crew` overrides it. |

@@ -2,8 +2,8 @@
 
 Backs the ``/api/instances/*`` routes. Every route:
 
-* is **gated behind ``instances.enabled``** (default off) — returns 403 when
-  the feature is disabled, so toggling requires an explicit opt-in;
+* is **gated behind ``instances.enabled``** (default on) — returns 403 when
+  the feature is set off;
 * is **owner-only and never reachable via the Slack path** — a request whose
   ``X-Session-Key`` indicates a Slack origin is rejected, so chat-sharing a hub
   can never pivot into SSH control;

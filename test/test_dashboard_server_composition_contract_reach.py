@@ -817,6 +817,7 @@ _DASHBOARD_BOOT = tuple("""
     _register_unix_socket_cleanup register_agent_site_cleanup build_hardened_runner
     on_gateway_startup
     init_hook_reconciler async_safe_context_call current_context register_pre_exec_stop
+    register_pre_exec_stop
     _arm_listener_guard
     _kick_crewmate_prune _kick_pinned_order_load _kick_default_app_installs
     _kick_builtin_adoption_staging _kick_interrupted_update_sweep _kick_app_backend_backstop
@@ -839,8 +840,9 @@ _DASHBOARD_TEARDOWN = tuple("""
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""
     S:_initialize_workflow_service S:_prebuild_memory_after_preparation
+    S:_retake_hops_then_revive S:_revive_intended_instances
     S:_stt_idle_sweep
-    S:_stt_startup_prewarm T:_apply_startup_yolo T:_claimed_dashboard_slots
+    S:_stt_startup_prewarm S:_sweep_remote_closes T:_apply_startup_yolo T:_claimed_dashboard_slots
     T:_live_sibling_port T:_register_deploy_skills
     T:_take_prior_dropped_grant
     T:_write_instance_credentials T:_write_secret_file T:_write_secret_file
