@@ -491,7 +491,7 @@ every attribute value on it comes from a closed set. Histograms,
 | Sessions and turns | `session.started`, `session.idle_expired`, `subagent.spawned`, `subagent.completed`, `context.compactions`, `turn.completed`, `turn.timeout.cause` |
 | Crew sessions | `crew.session.started`, `crew.turn.started`, `crew.session.tree.depth`, `crew.session.tree.child`, `crew.session_control.calls` |
 | Work ledger and conductor mode | `work.created`, `work.item_closed`, `work.dispatches`, `work.reports`, `crew_mode.turned_on`, `crew_mode.new_chats`, `crew_mode.runs_finished`, `crew_mode.steers_per_run`, `crew_mode.worker_waits` |
-| Features | `cron.fires`, `artifact.created`, `workflow.runs`, `approval.decisions`, `autonudge.loops.started`, `autonudge.loops.stopped`, `autonudge.ticks`, `monitor.decisions`, `webhook.requests`, `memory.recalled`, `lesson.injected`, `skill.lazy_load.count`, `app.installed`, `app.updated`, `app.uninstalled`, `app.session_started`, `app.run_time`, `app.present`, `channel.message.received`, `ui.control.clicked` |
+| Features | `cron.fires`, `artifact.created`, `workflow.runs`, `approval.decisions`, `autonudge.loops.started`, `autonudge.loops.stopped`, `autonudge.ticks`, `monitor.decisions`, `webhook.requests`, `memory.recalled`, `lesson.injected`, `skill.lazy_load.count`, `app.installed`, `app.updated`, `app.uninstalled`, `app.session_started`, `app.run_time`, `app.present`, `app.opened`, `app.foreground_time`, `channel.message.received`, `ui.control.clicked` |
 | Inventory (gauges) | `inventory.crons.active`, `inventory.monitor_loops.active`, `inventory.skills.installed`, `inventory.memory.migrated`, `inventory.knowledge.documents`, `inventory.lessons`, `inventory.mcp.servers`, `inventory.config.toggle`, `inventory.probe.failures`, `inventory.members`, `inventory.voice.provider` |
 | Voice | `voice.stt.started`, `voice.stt.ended`, `voice.stt.errors`, `voice.unavailable`, `voice.tts.replies` |
 | Recommendations | `tips.feedback`, `feature_video.status`, `milestone.panel_opened`, `milestone.starter_clicked`, `milestone.reached`, `milestone.skipped`, `milestone.mark_all_done`, `milestone.notice_shown`, `milestone.features_completed` |
@@ -512,9 +512,10 @@ in-product recommendations (feature tips, the Explore panel, feature videos):
 | `kirocrew.milestone.panel_opened`, `.mark_all_done`, `.notice_shown`, `.features_completed` | `Feature` = `milestone`, `Activity` = the last name segment, plus `group` on `notice_shown` and `via` on `features_completed` |
 
 These nine are the behavioral metrics (`BEHAVIORAL_METRICS` in
-`src/kiro_crew/metrics/behavioral_metrics.py`), with six more from the features
+`src/kiro_crew/metrics/behavioral_metrics.py`), with eight more from the features
 group, `kirocrew.app.installed`, `kirocrew.app.updated`,
-`kirocrew.app.uninstalled`, `kirocrew.app.session_started`, `kirocrew.app.run_time` and `kirocrew.app.present`: `Feature` = `app`, `Activity` = the last name segment,
+`kirocrew.app.uninstalled`, `kirocrew.app.session_started`, `kirocrew.app.run_time`,
+`kirocrew.app.present`, `kirocrew.app.opened` and `kirocrew.app.foreground_time`: `Feature` = `app`, `Activity` = the last name segment,
 `Entity` (a shipped built-in's or a store app's name, else `private`),
 `entity_version` (that app's version when it is `N.N.N`, `other` for a pre-release
 or build suffix, `private` for a private app), and `via` (`store` / `default` /
@@ -526,7 +527,14 @@ rounded up, in a session an app owns, with `duration`, that turn's bucket
 (`le_10s` / `le_1m` / `le_5m` / `le_15m` / `le_1h` / `le_4h` / `gt_4h` /
 `other`); a turn with no duration adds nothing. `present` counts each installed
 app once per UTC day, with `status` (`enabled` / `disabled` / `other`) and
-`backend` (`none` / `running` / `stopped` / `other`). Each records one thing a person
+`backend` (`none` / `running` / `stopped` / `other`). `opened` carries `surface` (`page` / `popout` / `desktop` / `other`), and
+`surface` (`page` / `popout` / `other`) and `duration` (`le_10s`, `le_1m`, `le_5m`,
+`le_15m`, `le_1h`, `le_4h`, `gt_4h`, `other`) on `foreground_time`, whose value is
+the seconds an app page was visible (unit `s`, spans under 1 s not counted, one
+span cut to 24 h). `opened` and `foreground_time` count **owner views only**: the
+dashboard sends them through the owner-only `POST /api/telemetry/app-view`, so a
+non-owner's or a Shared Crew teammate's tabs add nothing, while `session.started` and the turn metrics count
+every session. Do not divide one population by the other. Each records one thing a person
 or an app did. They are exported under the instrumentation scope `kiro.crew`, so a
 collector can admit user behavior by scope without taking the inventory gauges.
 Every other metric uses the scope `kiro_crew`. `Feature` and `Activity` are
