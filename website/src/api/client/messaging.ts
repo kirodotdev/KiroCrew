@@ -9,19 +9,23 @@ import type { ClientTransport } from './transport'
 
 /** A registered Slack Code switch: its `slack.<key>` config key, the
  *  manifest feature it renders and the key the GET reports it under. The union
- *  mirrors the server's `slack_manifest.FEATURE_SCOPES`; a new switch is
+ *  mirrors the server's `slack_manifest.FEATURES`; a new switch is
  *  registered by adding its key here (and to `SLACK_CODE_SWITCHES`), and the
  *  config, save and capability fields below follow from it. */
-export type SlackCodeSwitchKey = 'agent_sessions' | 'code_channels'
+export type SlackCodeSwitchKey = 'agent_sessions' | 'code_channels' | 'slack_mcp'
 
 /** Per registered switch, the toggle as saved (`<key>`) and whether the
- *  installed app can run it (`<key>_capability`). */
+ *  installed app can run it (`<key>_capability`; absent for a manifest-only
+ *  switch such as `slack_mcp`, which the gateway runs nothing for). */
 export type SlackCodeSwitchFields =
   & { [K in SlackCodeSwitchKey]?: boolean }
   & { [K in SlackCodeSwitchKey as `${K}_capability`]?: SlackCapability }
 
 /** Slack config as returned by GET /api/slack/config (secrets masked). */
 export interface SlackConfigData extends SlackCodeSwitchFields {
+  /** Connections offers the Slack card, the only way to use what the Slack MCP
+   *  switch adds; without it the page hides that switch unless it is on. */
+  slack_mcp_card?: boolean
   connected: boolean
   connect_error: string
   configured: boolean
@@ -134,6 +138,12 @@ export interface SlackManifestChange {
   removed_events: string[]
   added_features: string[]
   removed_features: string[]
+  /** `oauth_config.scopes.user`: a bot token cannot confirm these. */
+  added_user_scopes: string[]
+  /** User scopes the switch drops from the manifest (Slack tools drops `search:read`). */
+  removed_user_scopes: string[]
+  /** `<path>: <value>` lines (`settings.is_mcp_enabled: true`); unconfirmable too. */
+  added_settings: string[]
 }
 
 /** GET /api/slack/manifest/status: the installed app vs the manifest the switches need. */

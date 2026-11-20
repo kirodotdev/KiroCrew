@@ -7761,6 +7761,7 @@
         "agent_sessions": false,
         "code_channel_dispatch": false,
         "code_channels": false,
+        "slack_mcp": false,
         "code_channel_defaults": {
           "folder": null,
           "agent": null,
@@ -8186,6 +8187,22 @@
       ],
       "label": "Code Channels",
       "help": "Let the agent open a Slack code channel for coding work: a channel that is one session, with a context bar and a diff tab. Adds features.code_channels and the code-channel scopes (code_channels:manage, chat:write.customize, canvases:write, channels:write.invites, groups:write.invites, pins:write) to the generated app manifest; an installed app needs that update and a reinstall, and the workspace must have Slack code channels enabled. Until both hold, Slack behaves as before. Off by default; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.slack_mcp",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Slack Tools For Your Agents",
+      "help": "Let the same Slack app serve Slack's MCP server, so each person can connect their agents to Slack as themselves. Adds settings.is_mcp_enabled, oauth_config.pkce_enabled and the redirect URL http://localhost:48106/callback to the generated app manifest, and replaces its user scopes with the read-only ones Slack's MCP server needs (search, history, channel and user lists, files, canvases, lists); off, the manifest is unchanged. PKCE cannot be turned off again in Slack without Slack support, the app must stay internal (not publicly distributed), each person still connects on the Slack card under Settings > Connections with the app's Client ID and Client Secret, and Slack ends those sign-ins after 30 days. The settings page shows this switch only while Connections offers the Slack card, or while it is on. The gateway runs nothing for it. Off by default; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

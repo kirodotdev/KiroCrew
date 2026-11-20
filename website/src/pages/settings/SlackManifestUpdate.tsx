@@ -62,10 +62,32 @@ const STEPS_HELP = new Set(['needs_update', 'unknown'])
 /** Install statuses whose reading includes the app's granted scopes. */
 const SCOPES_KNOWN = new Set(['up_to_date', 'needs_update', 'feature_disabled'])
 
-function StatusPill({ status }: { status: string }) {
-  const [key, variant] = STATUS_KEY[status] ?? STATUS_KEY.unknown
+/** What the status cannot see for a switch like Slack tools, then what to do
+ *  about it. *offerSave* is off while Connections offers no Slack card: nobody
+ *  could connect then, so the page must not urge the one-way save in Slack. */
+function UnconfirmableNote({ offerSave }: { offerSave: boolean }) {
   return (
-    <Badge variant={variant} data-testid="slack-manifest-status" data-status={status}>
+    <div className="flex flex-col gap-1 text-[12px] text-text" data-testid="slack-manifest-unconfirmable">
+      <p className="m-0">{i18nT('pages.settings.slackPanel.slackCode.user_lines_unverifiable')}</p>
+      {offerSave && (
+        <p className="m-0" data-testid="slack-manifest-unconfirmable-save">{i18nT('pages.settings.slackPanel.slackCode.user_lines_save')}</p>
+      )}
+    </div>
+  )
+}
+
+/** *permissionsOnly*: a saved switch adds lines no reading covers (user scopes,
+ *  app settings), so a green "Up to date" would vouch for more than was read.
+ *  The pill then names only what the check read (the bot permissions), in a
+ *  neutral tone; it never asks for the save, because no reading can tell
+ *  whether that save already happened. The note under it says so. */
+function StatusPill({ status, permissionsOnly = false }: { status: string; permissionsOnly?: boolean }) {
+  const [key, variant] = permissionsOnly && status === 'up_to_date'
+    ? (['pages.settings.slackPanel.slackCode.status_permissions_up_to_date', 'muted'] as const)
+    : STATUS_KEY[status] ?? STATUS_KEY.unknown
+  return (
+    // Wraps instead of clipping: a translated status can outgrow a 320px row.
+    <Badge variant={variant} className="max-w-full whitespace-normal" data-testid="slack-manifest-status" data-status={status}>
       {i18nT(key)}
     </Badge>
   )
@@ -76,11 +98,12 @@ function StatusPill({ status }: { status: string }) {
  *  install holds it; ``line``: in the manifest, which Slack cannot confirm
  *  (events, feature blocks, scopes it did not report); ``remove``: held but no
  *  longer asked for. */
-function Chip({ text, kind, missing }: { text: string; kind: 'add' | 'have' | 'line' | 'remove'; missing?: boolean }) {
+function Chip({ text, kind, missing, labelled = false }: { text: string; kind: 'add' | 'have' | 'line' | 'remove'; missing?: boolean; labelled?: boolean }) {
   const tone = kind === 'remove'
-    ? 'border-border text-muted line-through'
+    ? `border-border text-muted${labelled ? '' : ' line-through'}`
     : missing ? 'border-warn text-warn' : 'border-border text-text'
-  const sign = kind === 'add' ? '+ ' : kind === 'remove' ? '− ' : ''
+  // *labelled*: the text already says what happens to the line ("No longer requested: …").
+  const sign = labelled ? '' : kind === 'add' ? '+ ' : kind === 'remove' ? '− ' : ''
   return (
     <span className={`inline-flex flex-wrap items-center gap-x-1 max-w-full min-w-0 rounded border bg-bg px-1.5 py-0.5 text-[11.5px] font-mono ${tone}`}>
       {kind === 'have' && <Check size={11} className="text-ok flex-none" aria-hidden />}
@@ -96,28 +119,36 @@ function Chip({ text, kind, missing }: { text: string; kind: 'add' | 'have' | 'l
 function ChangeLines({ change, missing, scopesKnown, pending }: {
   change: SlackManifestChange; missing: Set<string>; scopesKnown: boolean; pending: boolean
 }) {
-  const rows: [string, string[], boolean][] = [
-    ['pages.settings.slackPanel.slackCode.lines_features', change.added_features.map(f => `features.${f}`), false],
-    ['pages.settings.slackPanel.slackCode.lines_scopes', change.added_scopes, true],
-    ['pages.settings.slackPanel.slackCode.lines_events', change.added_events, false],
+  // The third field: Slack reports this kind (bot scopes) to the bot token, so
+  // a chip may read as held or missing. User scopes and app settings it never
+  // reports, and their names can equal a bot scope's (channels:history), so a
+  // bot-scope reading must not mark them. The fourth field: lines the switch
+  // drops from the manifest (Slack tools drops the legacy `search:read`).
+  const rows: [string, string[], boolean, string[]][] = [
+    ['pages.settings.slackPanel.slackCode.lines_features', change.added_features.map(f => `features.${f}`), false, []],
+    ['pages.settings.slackPanel.slackCode.lines_scopes', change.added_scopes, true, []],
+    ['pages.settings.slackPanel.slackCode.lines_events', change.added_events, false, []],
+    ['pages.settings.slackPanel.slackCode.lines_user_scopes', change.added_user_scopes ?? [], false, change.removed_user_scopes ?? []],
+    ['pages.settings.slackPanel.slackCode.lines_settings', change.added_settings ?? [], false, []],
   ]
   const kindFor = (item: string, isScope: boolean): 'add' | 'have' | 'line' => {
     // "+" only for what will be added: an unsaved switch's lines, or a scope
     // Slack confirms the install lacks. A scope Slack did not report is a
     // plain line, neither held nor missing.
-    if (pending || missing.has(item)) return 'add'
+    if (pending || (isScope && missing.has(item))) return 'add'
     if (isScope && scopesKnown) return 'have'
     return 'line'
   }
   return (
     <div className="flex flex-col gap-1.5">
-      {rows.filter(([, items]) => items.length > 0).map(([labelKey, items, isScope]) => (
+      {rows.filter(([, items, , removed]) => items.length + removed.length > 0).map(([labelKey, items, isScope, removed]) => (
         // Label above the chips on a narrow screen, beside them from sm up; the
         // chip column may shrink, so a long line wraps instead of overflowing.
         <div key={labelKey} className="flex flex-col gap-0.5 sm:flex-row sm:items-start sm:gap-2" data-testid="slack-manifest-lines">
-          <span className="text-[11px] text-muted sm:w-[64px] sm:flex-none sm:pt-0.5">{i18nT(labelKey)}</span>
+          <span className="text-[11px] text-muted sm:w-[132px] sm:flex-none sm:pt-0.5">{i18nT(labelKey)}</span>
           <div className="flex flex-wrap gap-1 min-w-0">
-            {items.map(item => <Chip key={item} text={item} kind={kindFor(item, isScope)} missing={missing.has(item)} />)}
+            {items.map(item => <Chip key={item} text={item} kind={kindFor(item, isScope)} missing={isScope && missing.has(item)} />)}
+            {removed.map(item => <Chip key={`-${item}`} text={i18nT('pages.settings.slackPanel.slackCode.removed_line', { line: item })} kind="remove" labelled />)}
           </div>
         </div>
       ))}
@@ -317,12 +348,25 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
   const appManifestUrl = status && !statusQ.isError && !recheckFailed ? status.app_manifest_url : null
   const manifestUrl = appManifestUrl || SLACK_APPS
   const detailKey = STATUS_DETAIL_KEY[installStatus] ?? STATUS_DETAIL_KEY.unknown
+  // A saved switch subscribes events (the "if threads show no Stop button"
+  // line is about those; a switch the reading has no change for counts, as
+  // before), or adds lines Slack never reports to a bot token.
+  const changeOf = (f: string) => status?.feature_changes?.[f]
+  const addsEvents = savedOn.some(f => (changeOf(f)?.added_events.length ?? 1) > 0)
+  const unconfirmable = savedOn.some(f => {
+    const c = changeOf(f)
+    return !!c && (c.added_user_scopes?.length ?? 0) + (c.added_settings?.length ?? 0) > 0
+  })
+  // The reading is good but cannot vouch for such a switch: its note then sits
+  // right under the pill, in place of the "every permission" line.
+  const noteUnderPill = unconfirmable && installStatus === 'up_to_date' && !pending
   // Only a workspace without the feature is beyond a manifest update. An app
   // whose permissions are up to date may still lack an event subscription
   // (Slack does not report those, and native Stop needs one), so Copy and Open
-  // stay offered for it.
+  // stay offered for it. They stay offered too while a saved switch adds lines
+  // no reading covers (Slack tools): those may still need saving in Slack.
   const noUpdate = current && !pending && savedOn.length > 0 && leftover.length === 0
-    && installStatus === 'feature_disabled'
+    && installStatus === 'feature_disabled' && !unconfirmable
   // Agent sessions' permanent-step warning whenever the update carries it: a
   // granted assistant:write does not prove the agent view was saved (the older
   // assistant view holds that scope too), and Slack reports no features.
@@ -347,7 +391,7 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
             saved manifest, not the one on screen, so the pill says so. */}
         {pending
           ? <Badge variant="warn" data-testid="slack-manifest-status" data-status="pending">{i18nT('pages.settings.slackPanel.slackCode.status_pending')}</Badge>
-          : readingShown && !settling ? <StatusPill status={installStatus} /> : null}
+          : readingShown && !settling ? <StatusPill status={installStatus} permissionsOnly={unconfirmable} /> : null}
         {/* Its own row from the copy/open pair below: the re-check reads the
             install, the pair below acts on the manifest. */}
         <Btn onClick={() => { void recheck() }} disabled={checking} aria-busy={checking} className="ml-auto">
@@ -373,11 +417,18 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
           A reading that is not current gets no line: its status would be
           the old switch set's, and a failed check has its own notice. */}
       {current && (savedOn.length > 0 || (readingShown && installStatus === 'unknown')) && !pending && !TOKEN_ERRORS.has(installStatus) && !checkFailed(reading) && (
-        <p className="text-[12px] text-muted m-0">
-          {i18nT(detailKey, {
-            features: fmtList((reading?.install.disabled_features ?? []).map(featureLabel), { style: 'narrow' }),
-          })}
-        </p>
+        // Under a "Slack bot permissions up to date" pill, "every permission these
+        // switches need" would contradict the note that the reading does not
+        // cover this switch's lines, so that note takes the line's place.
+        noteUnderPill ? (
+          <UnconfirmableNote offerSave={data.slack_mcp_card === true} />
+        ) : (
+          <p className="text-[12px] text-muted m-0">
+            {i18nT(detailKey, {
+              features: fmtList((reading?.install.disabled_features ?? []).map(featureLabel), { style: 'narrow' }),
+            })}
+          </p>
+        )
       )}
       </div>
       {/* No hand-off: the check is retried in place with Check again, and the
@@ -397,11 +448,18 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
         </div>
       )}
 
-      {/* A fixed feature order, so a box never moves when a switch flips. */}
+      {/* A fixed feature order, so a box never moves when a switch flips. The
+          Slack tools box says what added its lines and counts the permissions
+          it lists, so it doesn't read as a second control named like the
+          switch above. */}
       {status && FEATURES.filter(f => (savedOn.includes(f) || pendingOn.includes(f)) && !!status.feature_changes?.[f]).map(f => (
         <div key={f} className="rounded-md border border-border bg-bg-elevated px-3 py-2.5 flex flex-col gap-2">
           <div className="flex items-center gap-2">
-            <span className="text-[12px] font-semibold text-text">{featureLabel(f)}</span>
+            <span className="text-[12px] font-semibold text-text">
+              {f === 'slack_mcp'
+                ? i18nT('pages.settings.slackPanel.slackCode.box_slack_mcp', { count: status.feature_changes[f].added_user_scopes?.length ?? 0 })
+                : featureLabel(f)}
+            </span>
             {pendingOn.includes(f) && <span className="text-[11px] text-muted">{i18nT('pages.settings.slackPanel.slackCode.after_save')}</span>}
           </div>
           <ChangeLines
@@ -466,10 +524,15 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
           {i18nT('pages.settings.slackPanel.slackCode.replace_warning')}
         </p>
       )}
-      {installStatus === 'up_to_date' && savedOn.length > 0 && !pending && (
+      {installStatus === 'up_to_date' && savedOn.length > 0 && !pending && addsEvents && (
         <div className="flex items-center gap-1.5 text-[12px] text-ok">
           <CheckCircle2 size={13} className="flex-none" /> {i18nT('pages.settings.slackPanel.slackCode.up_to_date_events')}
         </div>
+      )}
+      {/* User scopes and app settings (Slack MCP) are never in a bot-token
+          reading, so whatever the pill says, it does not cover them. */}
+      {unconfirmable && !pending && !noteUnderPill && (
+        <UnconfirmableNote offerSave={data.slack_mcp_card === true} />
       )}
 
       {/* Nothing to copy or open once Slack confirms no update is needed:
@@ -480,7 +543,7 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
       {!noUpdate && !pending && !stepsHeld && (
       <div className="flex items-center gap-2 flex-wrap">
         <Btn onClick={() => { void copy() }} disabled={!manifestText}>
-          {copied ? <><Check size={13} /> {i18nT('pages.settings.slackPanel.copied')}</> : i18nT('pages.settings.slackPanel.copy_manifest_yaml')}
+          {copied ? <><Check size={13} /> {i18nT('pages.settings.slackPanel.copied')}</> : i18nT('pages.settings.slackPanel.slackCode.copy_manifest')}
         </Btn>
         <a href={manifestUrl} target="_blank" rel="noopener noreferrer"
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border border-border text-text hover:bg-bg-hover transition-colors">
@@ -496,7 +559,13 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
       {copyFailed && !noUpdate && !pending && !stepsHeld && (
         <ErrorNotice variant="inline" message={i18nT('pages.settings.slackPanel.copy_manifest_failed')} onDismiss={() => setCopyFailed(false)} />
       )}
-      <p className="text-[11.5px] text-muted m-0">{i18nT('pages.settings.slackPanel.slackCode.events_unverifiable')}</p>
+      {/* The footnote is about event subscriptions. With only a switch that
+          subscribes none saved (Slack tools), its "reports an app's
+          permissions" would contradict the note that user scopes are not
+          reported, so that note stands alone. Everywhere else it shows, as before. */}
+      {!(unconfirmable && !addsEvents) && (
+        <p className="text-[11.5px] text-muted m-0" data-testid="slack-manifest-events-footnote">{i18nT('pages.settings.slackPanel.slackCode.events_unverifiable')}</p>
+      )}
     </div>
   )
 }
