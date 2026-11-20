@@ -315,7 +315,9 @@ with `meta.steer`, so it draws as the nudge chip and never as a bubble the perso
 typed; the sender names the origin, the role follows from it. A steer the turn ends
 before taking is requeued with `AUTOMATION_STEER_META` on its entry: the drain
 writes it as a `nudge` row too, and the entry drains alone, never merged into the
-person's own queued text.
+person's own queued text. Its queue card carries `meta.automationSteer` on the
+`queue_push` frame and in the slot-detail queue view, so a crewmate chat
+(`withQueuedAsBubbles`) does not draw the waiting wake as the person's bubble.
 
 The wake reaches the steer through `session_deliver.deliver`, the session-side entry
 point a non-human sender calls with its origin (`automation`, `cron`, `app`). The
