@@ -8,12 +8,12 @@ see the import block there. Plain module, never collected.
 
 from __future__ import annotations
 
-import pytest
+from conftest_guards import per_test_guard
 
 from kiro_crew.slack.client import SlackClientOps
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_options_control_state():
     """Clear the per-message OPTIONS registries between tests.
 
@@ -39,7 +39,7 @@ def _reset_options_control_state():
     outbound._LOCK_USERS.clear()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _enterprise_bypass(_floor_monkeypatch) -> None:
     """Set a default validated team_id so _route_message doesn't reject messages."""
     _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._validated_team_id", "TTEST")
@@ -47,7 +47,7 @@ def _enterprise_bypass(_floor_monkeypatch) -> None:
     _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._allowed_team_ids", {"TTEST"})
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _clean_emojis():
     """Reset _PHASE_EMOJIS to defaults before each test (suppresses local config)."""
     # Imported here, not at module level: ``kiro_crew.slack.handler`` reaches
@@ -63,7 +63,7 @@ def _clean_emojis():
     _PHASE_EMOJIS.update(original)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _clean_slack_thread_state():
     """Reset the ``handler`` module-global thread-state maps between tests.
 

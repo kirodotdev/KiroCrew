@@ -542,7 +542,9 @@ memory):
 
 - **A new autouse fixture is paid by every item.** Each one adds a slot to every test
   function's fixture closure and a setup and teardown to every test, ~280k times. Add
-  the guard to an existing autouse fixture of the same scope instead of a new name.
+  the guard to an existing autouse fixture of the same scope instead of a new name. A
+  per-test reset or pin in `test/conftest_resets.py` is a `@per_test_guard` function
+  (`test/conftest_guards.py`), which five existing autouse fixtures already run.
 - **A module-level memo of a whole-tree read lives for the worker.** An
   `lru_cache`d `(path, text)` corpus in a test module is never released: pytest keeps
   the module object for the session. Put the module in a `tree_scan_*` xdist group (the

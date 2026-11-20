@@ -253,6 +253,18 @@ def bundled_python_with_user_site(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(platform_compat, "is_bundled_interpreter", lambda: True)
 
 
+# The per-test guards run behind these fixtures; ``seal_guards`` at the end of this
+# file sorts the guards bound here into them.
+from conftest_guards import (  # noqa: E402,F401 -- bound for pytest and importers
+    _b_guards,
+    _e_guards,
+    _h_guards,
+    _j_guards,
+    _o_guards,
+    per_test_guard,
+    seal_guards,
+)
+
 # Helpers and opt-in fixtures tests import or request by name.
 from conftest_opt_in import (  # noqa: E402,F401 -- bound for pytest and importers
     absent_sysconf,
@@ -581,7 +593,7 @@ def assert_rejected_without_backtracking(
 #: where it is.
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _fresh_update_ownership(_floor_monkeypatch):
     """Give every test its own update-ownership registry, and fail one that leaks a step.
 
@@ -611,7 +623,7 @@ def _fresh_update_ownership(_floor_monkeypatch):
     assert not open_steps, f"the test left update steps open: {open_steps}"
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _krb5_keyring_check_done(_floor_monkeypatch):
     """Mark the once-per-process KEYRING ccache check as already run, for every test.
 
@@ -627,7 +639,7 @@ def _krb5_keyring_check_done(_floor_monkeypatch):
     _floor_monkeypatch.setattr(env_krb5_keyring, "_KRB5_KEYRING_CHECKED", True)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _fresh_host_unservable_backends(_floor_monkeypatch):
     """Give every test its own copy of the host's KAS-floor verdicts.
 
@@ -652,7 +664,7 @@ def _fresh_host_unservable_backends(_floor_monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _no_kiro_signin_hold(_floor_monkeypatch):
     """Start every test with the warm pool's signed-out hold released.
 
@@ -664,7 +676,7 @@ def _no_kiro_signin_hold(_floor_monkeypatch):
     _floor_monkeypatch.setattr(kiro_signin_hold, "_HELD", {})
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _fresh_mcp_oauth_provenance(_floor_monkeypatch):
     """Give every test its own record of the MCP sign-in links children sent.
 
@@ -679,7 +691,7 @@ def _fresh_mcp_oauth_provenance(_floor_monkeypatch):
     _floor_monkeypatch.setattr(mcp_oauth_provenance, "_emitted", OrderedDict())
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _no_kiro_telemetry_destination(_floor_monkeypatch):
     """Keep the built-in Kiro telemetry destination out of every test.
 
@@ -694,7 +706,7 @@ def _no_kiro_telemetry_destination(_floor_monkeypatch):
     _floor_monkeypatch.setattr(kiro_export, "_last_build_kept", False)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
     """Start every test with KAS's automatic bundle switch closed and no install state.
 
@@ -721,7 +733,7 @@ def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _kas_projection_relays_no_runner_auth_env(_floor_monkeypatch):
     """Project KAS agents without the runner's own ssh-agent socket or Kerberos cache.
 
@@ -737,7 +749,7 @@ def _kas_projection_relays_no_runner_auth_env(_floor_monkeypatch):
     _floor_monkeypatch.setattr(kas_env_launch, "inherited_auth_env", lambda _forward: {})
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _registry_governance_reachability_unknown(_floor_monkeypatch):
     """Answer "governance may reach this sign-in" unless a test says otherwise.
 
@@ -754,7 +766,7 @@ def _registry_governance_reachability_unknown(_floor_monkeypatch):
     _floor_monkeypatch.setattr(kiro_cli, "_governance_warm_running", False)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _tool_deferral_state_starts_empty(_floor_monkeypatch):
     """Start every test with no tools-list refusal on record and no PATH probe answer.
 
@@ -775,7 +787,7 @@ def _tool_deferral_state_starts_empty(_floor_monkeypatch):
     _floor_monkeypatch.setattr(kiro_cli_path_probe, "warm", lambda: None)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _config_content_check_off_unless_a_test_turns_it_on(_floor_monkeypatch):
     """Turn the config content check off for tests that do not ask for it.
 
@@ -914,7 +926,7 @@ def _windows_restrict_to_owner_stub(request, _floor_monkeypatch):
     yield
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _no_inherited_admission_service(_floor_monkeypatch):
     """Start every test without a Shared Crew admission service another test built.
 
@@ -931,7 +943,7 @@ def _no_inherited_admission_service(_floor_monkeypatch):
     yield
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _isolate_aim_skills_dir(_floor_monkeypatch):
     """Prevent SkillsLoader from discovering edition-contributed skill roots.
 
@@ -1195,7 +1207,7 @@ def pytest_internalerror(excrepr, excinfo) -> None:
     )
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_reasoning_effort_globals():
     """Snapshot + restore the process-global reasoning-effort allowlist around
     each test. The allowlist is union-only/monotonic by design (persistence
@@ -1214,7 +1226,7 @@ def _reset_reasoning_effort_globals():
         _cp._reasoning_effort_ordered = saved_ordered
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_overlay_refresher():
     """Clear the MCP broker's overlay-refresh hook after each test.
 
@@ -1227,7 +1239,7 @@ def _reset_overlay_refresher():
     overlay_refresh.set_overlay_refresher(None)
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _undetected_host_timezone():
     """Give every test a host zone that was never detected (``kiro_crew.host_timezone``).
 
@@ -1245,7 +1257,7 @@ def _undetected_host_timezone():
     host_timezone.reset_host_timezone()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_crew_workers_cache():
     """Give every test an EMPTY Crew worker list cache (``handlers.crew_workers``).
 
@@ -1261,7 +1273,7 @@ def _reset_crew_workers_cache():
     yield
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_creator_titles():
     """Give every test an EMPTY last-known-title registry (``dashboard.creator_titles``).
 
@@ -1286,7 +1298,7 @@ def _reset_creator_titles():
         _reset()
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _reset_main_spec_episode_globals():
     """Clear the unreadable-main-spec episode's process globals around each test.
 
@@ -1318,7 +1330,7 @@ def _reset_main_spec_episode_globals():
 #: below still request ``_isolation_dirs`` and resolve it up the hierarchy.
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _isolate_message_entry_cache():
     """Give every test an EMPTY ``chat_persistence`` persisted-entry cache.
 
@@ -1667,7 +1679,7 @@ def gateway_posts(request, _floor_monkeypatch):
     yield posted
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _no_leaked_interleave_hook():
     """Fail a test that INHERITED a set ``chat_handlers._test_interleave``.
 
@@ -1713,7 +1725,7 @@ _INHERITED_AGENT_MARKERS = (
 )
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _cloud_guard_ignores_the_runners_agent_markers(_floor_monkeypatch):
     """Hide the runner's own agent markers and confinement from the cloud guard.
 
@@ -1757,7 +1769,7 @@ def release_engine_installs(_floor_monkeypatch):
     yield calls
 
 
-@pytest.fixture(autouse=True)
+@per_test_guard
 def _drain_dashboard_verify_slot() -> None:
     """A verify thread that outlived its route's reply window still owns its browser
     profile; the test that started it waits for it so the profile is removed within
@@ -1812,3 +1824,6 @@ def no_ambient_kiro_api_key(monkeypatch):
     not inherit an operator's key from the shell that launched pytest.
     """
     monkeypatch.delenv("KIRO_API_KEY", raising=False)
+
+
+seal_guards(globals())

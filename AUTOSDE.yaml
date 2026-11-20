@@ -1262,7 +1262,7 @@ custom-rules:
         earlier test left. For a cached function, its arguments ARE the key:
         a value that arrives as an argument does not meet this condition.
 
-      Such a name needs, in the SAME PR, an autouse fixture in
+      Such a name needs, in the SAME PR, a `@per_test_guard` function in
       `test/conftest_resets.py` that puts it back to its cold value before and
       after every test, re-bound in `test/conftest.py`'s `from conftest_resets
       import (...)` block. Follow `_reset_subagent_not_due_memo`: look the module
