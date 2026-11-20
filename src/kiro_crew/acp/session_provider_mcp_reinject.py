@@ -153,8 +153,12 @@ async def apply_pending_mcp_reinjection(self: AcpSessionProvider) -> None:
         "session %s: MCP config changed; re-sending its projection before this turn",
         sid,
     )
+    # The reload keeps the batch kind the session was projected for.
+    from kiro_crew.agent_sdk.kas_project_hooks import person_turn_claim
+
+    person = getattr(old, "kas_folder_hooks_projected", False) is True
     try:
-        with runtime.keep_record_on_teardown(sid):
+        with runtime.keep_record_on_teardown(sid), person_turn_claim(person):
             await runtime.evict_session(sid)
             new_handle = await runtime.load_session(
                 "",

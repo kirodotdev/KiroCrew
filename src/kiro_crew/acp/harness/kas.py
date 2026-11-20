@@ -339,14 +339,16 @@ def _with_project_switch_offs(spec: dict[str, Any], project: dict[str, Any]) -> 
 def session_projects_folder_hooks(session_key: str) -> bool:
     """Whether a session keyed *session_key* projects a folder agent's own hooks.
 
-    False for a ``cron:``-keyed session, whose turns never fire them, so every
+    False for a ``cron:``-keyed session unless a person's turn claims it
+    (``kas_project_hooks.PERSON_TURN``): a scheduled turn never fires them, so every
     projection of that session (its own agent and each native sub-agent target)
-    keeps its auto-approvals; ``spec_hooks.kas_hook_checkout`` reads the same rule.
+    keeps its auto-approvals. The answer is recorded on the handle
+    (:meth:`KasHarness.record_session_projection`) for ``kas_hook_checkout``.
     """
     # Deferred: agent_sdk imports this package at load time.
-    from kiro_crew.agent_sdk.spec_hooks import CRON_SESSION_KEY_PREFIX
+    from kiro_crew.agent_sdk.kas_project_hooks import CRON_SESSION_KEY_PREFIX, PERSON_TURN
 
-    return not session_key.startswith(CRON_SESSION_KEY_PREFIX)
+    return not session_key.startswith(CRON_SESSION_KEY_PREFIX) or PERSON_TURN.get()
 
 
 def resolve_projected_spec(
@@ -511,8 +513,9 @@ def resolve_projected_spec(
         project = {**project, "prompt": kas_agents_mod._PROMPT_FILE_SCHEME + target.as_posix()}
     # ``systemPrompt`` is not dropped: it was carried as ``prompt`` above.
     honoured: tuple[str, ...] = PROJECT_SPEC_HONOURED_KEYS
-    # A cron session's projection (*project_hooks* false) keeps none: cron never
-    # fires a folder agent's own hooks, so none may withhold its auto-approvals.
+    # A scheduled-kind cron projection (*project_hooks* false) keeps none: a
+    # scheduled run never fires a folder agent's own hooks, so none may withhold
+    # its auto-approvals.
     if project_hooks and project.get("hooks"):
         from kiro_crew.project_hooks_consent import hooks_enabled
 
@@ -1165,6 +1168,10 @@ class KasHarness(MembershipHarness):
         handle.kas_auto_approved = kas_agents_mod.projected_auto_approved(
             custom_agents, active_agent
         )
+        # The batch's kind, which every turn on this session then fires and checks.
+        handle.kas_folder_hooks_projected = session_projects_folder_hooks(
+            getattr(handle, "_session_key", "")
+        )
         # The built-ins the batch kept at ``ask`` that the spec granted: the
         # session's permission requests for them are answered by Crew's gate
         # after its own checks (``spec-builtin-grant`` tier).
@@ -1532,6 +1539,7 @@ class KasHarness(MembershipHarness):
             # in the session's registry, which keeps no kiro-cli spec from disk.
             # A stub withdrawn above is off the session-level array, so a target
             # that enables that server keeps its own declaration of it.
+            gated: set[str] = set()
             targets, targets_notice = project_subagent_targets(
                 agent,
                 spec,
@@ -1544,6 +1552,7 @@ class KasHarness(MembershipHarness):
                 settings_dir=session_cwd or work_dir,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 scope_muted=scope_muted,
+                folder_gated_out=gated,
             )
             custom_agents = [*custom_agents, *targets]
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
@@ -1567,6 +1576,11 @@ class KasHarness(MembershipHarness):
             if self.agent_prompt_applied:
                 head = session_head.head_blocks(agent, spec, session_key, PROVIDER_LABEL_KAS)
                 custom_agents = session_head.with_head(custom_agents, head)
+            folder = session_cwd or work_dir
+            if gated or (folder and prompt_dir == paths_mod.project_agents_dir(folder)):
+                from kiro_crew.agent_sdk.kas_project_hooks import with_folder_pre_tool_mark
+
+                custom_agents = with_folder_pre_tool_mark(custom_agents, agent, spec, bool(gated))
             return custom_agents, snapshot, managed, apps, withdrawn, notice
 
         try:

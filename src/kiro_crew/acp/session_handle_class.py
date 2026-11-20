@@ -888,6 +888,9 @@ class AcpSessionHandle:
         # whichever a KAS mode switch moves it to ("" with no batch). A turn that
         # names no agent runs this one, so its spec hooks are this agent's.
         self.kas_projected_agent: str = ""
+        # Whether that batch projects a folder agent's own hooks
+        # (``harness.kas.session_projects_folder_hooks``).
+        self.kas_folder_hooks_projected: bool = False
         # The agent batch this session registered, so a mode switch can answer
         # what the agent it moves to auto-approves.
         self.kas_registered_agents: list[dict[str, Any]] = []

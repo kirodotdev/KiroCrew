@@ -194,6 +194,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "retire_finished_session_key": ("function", False, "6525c2a94d9c", "run_registry"),
     "run_job": ("function", False, "965a55e3568d", "run_registry"),
     "running_since": ("function", False, "987a386c5e2e", "run_registry"),
+    "run_trigger": ("function", False, "7d3f7de35812", "run_registry"),
     "set_interrupt_alert": ("function", False, "7a2c52d9ea93", "run_registry"),
     "set_refresh_callback": ("function", False, "7a2c52d9ea93", "run_registry"),
     "set_timeout_alert": ("function", False, "7a2c52d9ea93", "run_registry"),

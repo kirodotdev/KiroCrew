@@ -217,6 +217,11 @@ CREW_SPEC_DENIES_KEY = "_crewSpecDenies"
 #: gate can judge (:func:`kiro_crew.acp.kas_spec_denies.with_unjudged_denies`).
 CREW_UNJUDGED_DENIES_KEY = "_crewShellUnjudgedDenies"
 
+#: Set on the session agent's entry of a batch that kept the folder PreToolUse hooks of its
+#: agent or left out a folder sub-agent target for them (maybe one a scheduled batch leaves
+#: out for another reason too): ``kas_project_hooks.scheduled_turn_reprojects`` reads it.
+CREW_FOLDER_PRE_TOOL_KEY = "_crewFolderPreToolHooks"
+
 #: Keys of a projected ``customAgents`` entry that never reach the engine.
 CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
     {
@@ -226,6 +231,7 @@ CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
         CREW_ANSWERED_WRITES_KEY,
         CREW_SPEC_DENIES_KEY,
         CREW_UNJUDGED_DENIES_KEY,
+        CREW_FOLDER_PRE_TOOL_KEY,
         CREW_SHELL_ALLOWLIST_KEY,
         CREW_WRITE_ALLOWLIST_KEY,
         CREW_ANSWERED_PATHS_KEY,

@@ -693,6 +693,606 @@ def test_a_native_subagent_target_follows_the_sessions_cron_rule(monkeypatch, ke
     assert seen == [expected]
 
 
+# -- a person's turn in a cron tab --------------------------------------
+
+
+async def _project(checkout: Path, key: str, agent: str = "proj"):
+    """A provider over the batch a claim of *key* projects and records, of the kind
+    the ambient ``kas_project_hooks.PERSON_TURN`` mark gives it."""
+    from types import SimpleNamespace
+
+    from kiro_crew.acp.harness.kas import KasHarness
+
+    harness = KasHarness()
+    extras = await harness.session_extras(agent, work_dir=str(checkout), session_key=key)
+    handle = SimpleNamespace(_session_key=key, _bound_cwd=str(checkout))
+    harness.record_session_projection(handle, extras.custom_agents, agent)
+    provider = _kas_provider(checkout)
+    provider._session_key = key
+    provider.kas_auto_approved_capabilities = handle.kas_auto_approved
+    provider.kas_projected_agent = handle.kas_projected_agent
+    provider.kas_registered_agents = handle.kas_registered_agents
+    provider.kas_folder_hooks_projected = handle.kas_folder_hooks_projected
+    return provider
+
+
+def _batch(checkout: Path, key: str, *, person: bool, agent: str = "proj"):
+    """:func:`_project`, marked as a person's turn when *person*."""
+    import asyncio
+
+    from kiro_crew.agent_sdk.kas_project_hooks import person_turn_claim
+
+    async def build():
+        with person_turn_claim(person):
+            return await _project(checkout, key, agent)
+
+    return asyncio.run(build())
+
+
+def _folder_fired(provider) -> list[str]:
+    import asyncio
+
+    fired = asyncio.run(spec_hooks.turn_spec_hooks(provider, "proj"))
+    return [h.command for h in fired.hooks if h.spec_origin == "project"]
+
+
+class _OneSession:
+    """The session manager parts the claim helpers touch, with one live provider."""
+
+    def __init__(self, provider) -> None:
+        self.provider = provider
+        self.resets = 0
+
+    def get_provider(self, _key):
+        return self.provider
+
+    async def reset(self, _key, **_kw):
+        self.resets += 1
+        return True
+
+
+def _scheduled_claim(live, fresh):
+    """``reproject_unattended_claim`` for a scheduled fire: *live*, re-claimed as *fresh*."""
+    import asyncio
+
+    sessions = _OneSession(live)
+
+    async def claim():
+        return (fresh, False, True), None
+
+    token = spec_hooks.make_claim_token(sessions, "cron:job-1")
+    got = asyncio.run(
+        spec_hooks.reproject_unattended_claim(
+            sessions, "cron:job-1", "proj", (live, False, False), claim, token, scheduled=True
+        )
+    )
+    return got, sessions.resets
+
+
+def _defers(provider, *, pending: bool, reprojected: bool = False, trigger: str = "scheduled"):
+    import asyncio
+    from types import SimpleNamespace
+
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    async def has_pending_work_for_async(_key):
+        return pending
+
+    job = SimpleNamespace(
+        id="job-1", name="job-1", command=None, script=None, clear_carried_result=lambda: None
+    )
+    orchestrator = SimpleNamespace(
+        subagent_mgr=SimpleNamespace(has_pending_work_for_async=has_pending_work_for_async),
+        _cron_injecting={},
+        cron_svc=SimpleNamespace(run_trigger=lambda _id: trigger),
+    )
+    orchestrator._cron_key_work_pending = lambda key: GatewayOrchestrator._cron_key_work_pending(
+        orchestrator, key
+    )
+    deferred = asyncio.run(
+        GatewayOrchestrator._cron_batch_kind_defers(
+            orchestrator, job, "cron:job-1", provider, reprojected=reprojected
+        )
+    )
+    return deferred, getattr(job, "run_never_started", False)
+
+
+def test_a_persons_follow_up_in_a_cron_tab_fires_the_folder_hooks(layout):
+    import asyncio
+
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    scheduled = _batch(checkout, "cron:job-1", person=False)
+    person = _batch(checkout, "cron:job-1", person=True)
+    assert _folder_fired(person) == ["echo checkout-hook"]
+    # The folder's ``*`` PreToolUse hook covers the shell: the person's batch asks.
+    assert "shell" in scheduled.kas_auto_approved_capabilities
+    assert "shell" not in person.kas_auto_approved_capabilities
+    claimed = (person, True, False)
+    assert (
+        asyncio.run(
+            spec_hooks.reproject_claimed_session(
+                _OneSession(person), "cron:job-1", "proj", claimed, None
+            )
+        )
+        == claimed
+    )
+
+
+def test_a_scheduled_fire_after_a_persons_turn_reprojects_once(layout):
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    person = _batch(checkout, "cron:job-1", person=True)
+    scheduled = _batch(checkout, "cron:job-1", person=False)
+    assert _defers(person, pending=False) == (False, False)
+    got, resets = _scheduled_claim(person, scheduled)
+    assert (got.claimed[0], resets, got.still_stale) == (scheduled, 1, False)
+    hooks = _cron_hooks_on(scheduled, "proj")
+    assert (hooks.stale, _project_commands(hooks)) == (False, [])
+    assert "shell" in scheduled.kas_auto_approved_capabilities
+    assert _defers(scheduled, pending=False, reprojected=True) == (False, False)
+
+
+def _cron_hooks_on(provider, agent: str):
+    import asyncio
+
+    from kiro_crew.cron_service.turn_hooks import CronTurnHooks
+
+    return asyncio.run(
+        CronTurnHooks.prepare(provider, agent, "cron:job-1", "run", fresh_session=False)
+    )
+
+
+def _project_commands(hooks) -> list[str]:
+    return [h.command for h in hooks._hooks.spec.hooks if h.spec_origin == "project"]
+
+
+def test_a_scheduled_fire_waits_while_a_persons_sub_agents_run(layout):
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    person = _batch(checkout, "cron:job-1", person=True)
+    assert _defers(person, pending=True) == (True, True)
+    # A re-projection that could not land defers too, never running on the batch.
+    assert _defers(person, pending=False, reprojected=True) == (True, True)
+
+
+@pytest.mark.parametrize("person", [True, False])
+def test_an_injected_turn_fires_what_its_batch_was_projected_for(layout, person):
+    import asyncio
+
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    provider = _batch(checkout, "cron:job-1", person=person)
+    sessions = _OneSession(provider)
+    assert (
+        asyncio.run(spec_hooks.invalidate_stale_kas_session(sessions, "cron:job-1", "proj"))
+        == spec_hooks.PROJECTION_FRESH
+    )
+    assert sessions.resets == 0
+    assert _folder_fired(provider) == (["echo checkout-hook"] if person else [])
+
+
+def test_a_persons_turn_on_the_scheduled_runs_batch_neither_resets_nor_fires(layout, caplog):
+    import asyncio
+    import logging
+
+    from kiro_crew.agent_sdk.kas_project_hooks import person_turn_reprojects
+
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    scheduled = _batch(checkout, "cron:job-1", person=False)
+    sessions = _OneSession(scheduled)
+    claimed = (scheduled, False, False)
+    assert (
+        asyncio.run(spec_hooks.invalidate_stale_kas_session(sessions, "cron:job-1", "proj"))
+        == spec_hooks.PROJECTION_FRESH
+    )
+    assert (
+        asyncio.run(
+            spec_hooks.reproject_claimed_session(sessions, "cron:job-1", "proj", claimed, None)
+        )
+        == claimed
+    )
+    assert (sessions.resets, _folder_fired(scheduled)) == (0, [])
+
+    async def _answer(pending: bool) -> bool:
+        return pending
+
+    # Logged only when the folder's consented hooks are kept off by pending work.
+    for pending, reprojects, logged in ((True, False, 1), (False, True, 0)):
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="kiro_crew.agent_sdk.spec_hooks"):
+            got = asyncio.run(
+                person_turn_reprojects(scheduled, "proj", lambda p=pending: _answer(p))
+            )
+        assert (got, len(caplog.records)) == (reprojects, logged)
+    consent.set_choice(checkout, False)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="kiro_crew.agent_sdk.spec_hooks"):
+        got = asyncio.run(person_turn_reprojects(scheduled, "proj", lambda: _answer(True)))
+    assert (got, caplog.records) == (False, [])
+
+
+@pytest.mark.parametrize("choice", [True, False])
+def test_a_persons_turn_reprojects_when_the_consented_spec_cannot_be_read(layout, choice):
+    import asyncio
+
+    from kiro_crew.agent_sdk.kas_project_hooks import person_turn_reprojects
+
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    scheduled = _batch(checkout, "cron:job-1", person=False)
+    (checkout / ".kiro" / "agents" / "proj.json").write_text("{not json", encoding="utf-8")
+    consent.set_choice(checkout, choice)
+
+    async def _answer(pending: bool) -> bool:
+        return pending
+
+    got = [
+        asyncio.run(person_turn_reprojects(scheduled, "proj", lambda p=p: _answer(p)))
+        for p in (False, True)
+    ]
+    # Unreadable and consented: re-projected (fails closed) unless work is pending.
+    assert got == [choice, False]
+
+
+@pytest.mark.parametrize("person", [True, False])
+def test_a_mid_turn_switch_in_a_cron_tab_matches_a_chat_of_its_kind(layout, person):
+    import asyncio
+
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    cron = _batch(checkout, "cron:job-1", person=person)
+    asyncio.run(spec_hooks.refuse_stale_switch(cron, "proj"))
+    assert _folder_fired(cron) == (["echo checkout-hook"] if person else [])
+    if person:
+        chat = _batch(checkout, "dashboard:s1", person=False)
+        assert cron.kas_auto_approved_capabilities == chat.kas_auto_approved_capabilities
+
+
+@pytest.mark.parametrize(
+    "hooks, enabled",
+    [
+        (_HOOKS, False),
+        (None, True),
+        ({"postToolUse": [{"command": "echo p"}], "stop": [{"command": "echo s"}]}, True),
+    ],
+)
+def test_switching_kinds_never_resets_without_folder_pretooluse_coverage(layout, hooks, enabled):
+    _home, _user, checkout = layout
+    spec_path = checkout / ".kiro" / "agents" / "proj.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    if hooks is None:
+        spec.pop("hooks")
+    else:
+        spec["hooks"] = hooks
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    consent.set_choice(checkout, enabled)
+    person = _batch(checkout, "cron:job-1", person=True)
+    got, resets = _scheduled_claim(person, object())
+    assert (got.claimed[0], resets) == (person, 0)
+    assert _defers(person, pending=True) == (False, False)
+
+
+def _drop_folder_pre_tool(checkout: Path, how: str) -> None:
+    if how == "choice off":
+        consent.set_choice(checkout, False)
+        return
+    spec_path = checkout / ".kiro" / "agents" / "proj.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec.pop("hooks")
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+
+@pytest.mark.parametrize("how", ["choice off", "hook removed"])
+def test_a_scheduled_fire_reads_the_batch_record_not_todays_folder(layout, how):
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    person = _batch(checkout, "cron:job-1", person=True)
+    scheduled = _batch(checkout, "cron:job-1", person=False)
+    _drop_folder_pre_tool(checkout, how)
+    got, resets = _scheduled_claim(person, scheduled)
+    assert (got.claimed[0], resets) == (scheduled, 1)
+    assert "shell" in got.claimed[0].kas_auto_approved_capabilities
+
+
+def test_a_manual_run_on_a_persons_batch_is_never_deferred(layout):
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    person = _batch(checkout, "cron:job-1", person=True)
+    assert _defers(person, pending=True, trigger="manual") == (False, False)
+    assert _defers(person, pending=False, reprojected=True, trigger="manual") == (False, False)
+    assert _defers(person, pending=True) == (True, True)
+
+
+def test_the_mcp_reinjection_reload_keeps_the_persons_kind(layout):
+    import asyncio
+    from types import SimpleNamespace
+
+    from kiro_crew.acp.session_provider_mcp_reinject import apply_pending_mcp_reinjection
+
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    old = SimpleNamespace(
+        session_id="sid-1",
+        active_agent="proj",
+        _bound_cwd=str(checkout),
+        _crew_agent="",
+        kas_folder_hooks_projected=True,
+    )
+    seen = []
+
+    class _Runtime:
+        acp_backend = "kas"
+        _agent = "proj"
+        is_cloud_sandbox = False
+
+        def is_alive(self):
+            return True
+
+        def keep_record_on_teardown(self, _sid):
+            import contextlib
+
+            return contextlib.nullcontext()
+
+        async def evict_session(self, _sid):
+            return None
+
+        async def load_session(self, *_a, session_key, **_kw):
+            seen.append(await _project(checkout, session_key))
+            raise RuntimeError("stop after the reload's projection")
+
+    provider = SimpleNamespace(
+        _mcp_reinject_pending=True,
+        _handle=old,
+        _runtime=_Runtime(),
+        _session_key="cron:job-1",
+        _channel_id="",
+        _harness_options=None,
+        kas_memory_mode="",
+    )
+    with pytest.raises(Exception, match="could not be applied"):
+        asyncio.run(apply_pending_mcp_reinjection(provider))
+    assert [p.kas_folder_hooks_projected for p in seen] == [True]
+    assert _folder_fired(seen[0]) == ["echo checkout-hook"]
+
+
+@pytest.mark.parametrize("person", [True, False])
+def test_an_in_place_conversation_swap_keeps_the_batch_kind(layout, person):
+    import asyncio
+    from types import SimpleNamespace
+
+    from kiro_crew.acp.session_provider_new_conversation import new_conversation
+    from kiro_crew.acp.types import ACP_BACKENDS_SESSION_EVICTION
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+    assert ACP_BACKEND_KAS in ACP_BACKENDS_SESSION_EVICTION
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    seen = []
+
+    class _Runtime:
+        _work_dir = str(checkout)
+        _agent = "proj"
+
+        def is_alive(self):
+            return True
+
+        async def create_session(self, *, session_key, **_kw):
+            seen.append(await _project(checkout, session_key))
+            raise RuntimeError("stop after the swap's projection")
+
+    provider = SimpleNamespace(
+        backend=ACP_BACKEND_KAS,
+        close_leaves_mcp_servers=False,
+        _handle=SimpleNamespace(kas_folder_hooks_projected=person),
+        _runtime=_Runtime(),
+        _session_agent="proj",
+        _session_key="cron:job-1",
+        _harness_options=None,
+        memory_mode="",
+        kas_memory_mode="",
+    )
+    with pytest.raises(RuntimeError, match="swap's projection"):
+        asyncio.run(new_conversation(provider))
+    assert [p.kas_folder_hooks_projected for p in seen] == [person]
+    assert _folder_fired(seen[0]) == (["echo checkout-hook"] if person else [])
+
+
+def _lead_with_target(user: Path, target_hooks: dict | None = None) -> None:
+    """A user-level ``lead`` whose sub-agent tool may name ``proj``; with
+    *target_hooks*, a user-level ``proj`` carrying them answers that name."""
+    lead = {
+        "name": "lead",
+        "prompt": "Delegate to proj.",
+        "tools": ["fs_read", "use_subagent"],
+        "allowedTools": ["fs_read"],
+        "toolsSettings": {"subagent": {"availableAgents": ["proj"]}},
+    }
+    (user / "lead.json").write_text(json.dumps(lead), encoding="utf-8")
+    if target_hooks is not None:
+        mine = {"name": "proj", "prompt": "u", "hooks": target_hooks}
+        (user / "proj.json").write_text(json.dumps(mine), encoding="utf-8")
+
+
+def _lead_mark(provider) -> tuple[list[str], bool, bool]:
+    from kiro_crew.acp.kas_permissions import CREW_FOLDER_PRE_TOOL_KEY
+    from kiro_crew.agent_sdk.kas_project_hooks import scheduled_turn_reprojects
+
+    entries = provider.kas_registered_agents
+    lead = next(a for a in entries if a.get("id") == "lead")
+    ids = [a.get("id") for a in entries]
+    return ids, lead.get(CREW_FOLDER_PRE_TOOL_KEY) is True, scheduled_turn_reprojects(provider)
+
+
+def test_a_persons_batch_that_left_out_a_folder_target_for_its_hooks_is_marked(layout):
+    _home, user, checkout = layout
+    consent.set_choice(checkout, True)
+    _lead_with_target(user)
+    person = _batch(checkout, "cron:job-1", person=True, agent="lead")
+    scheduled = _batch(checkout, "cron:job-1", person=False, agent="lead")
+    assert _lead_mark(person) == (["lead"], True, True)
+    assert _lead_mark(scheduled) == (["lead", "proj"], False, False)
+
+
+def test_a_persons_batch_is_not_marked_for_a_user_level_targets_hooks(layout):
+    _home, user, checkout = layout
+    consent.set_choice(checkout, True)
+    _lead_with_target(user, _HOOKS)
+    person = _batch(checkout, "cron:job-1", person=True, agent="lead")
+    assert _lead_mark(person) == (["lead"], False, False)
+
+
+def test_a_persons_turn_on_a_scheduled_batch_ignores_a_folder_targets_hooks(layout):
+    """Pinned as it is today; follow-up: https://github.com/kirodotdev/KiroCrew/issues/38974."""
+    import asyncio
+
+    from kiro_crew.agent_sdk.kas_project_hooks import person_turn_reprojects
+
+    _home, user, checkout = layout
+    consent.set_choice(checkout, True)
+    _lead_with_target(user)
+    scheduled = _batch(checkout, "cron:job-1", person=False, agent="lead")
+
+    async def _idle():
+        return False
+
+    assert asyncio.run(person_turn_reprojects(scheduled, "lead", _idle)) is False
+
+
+class _ClaimState:
+    """A dashboard state whose claims project the real batch for a ``cron:`` key."""
+
+    def __init__(self, checkout: Path, live, *, pending=False) -> None:
+        import asyncio
+        from types import SimpleNamespace
+
+        self.checkout = checkout
+        self.sessions = _OneSession(live)
+        self.sessions.get_or_create = self._claim
+
+        async def has_pending_work_for_async(_key):
+            if isinstance(pending, Exception):
+                raise pending
+            return pending
+
+        self.subagents = SimpleNamespace(has_pending_work_for_async=has_pending_work_for_async)
+        self._asyncio = asyncio
+
+    async def _claim(self, key, **_kw):
+        if self.sessions.resets:
+            self.sessions.provider = await _project(self.checkout, key)
+        return self.sessions.provider, bool(self.sessions.resets), False
+
+
+def _person_claim(checkout: Path, live, *, pending=False, person=True):
+    """The dashboard's claim path for a turn on *live*: the marked claim, then the
+    person's re-projection and the ordinary stale check, as ``_turn_admit`` runs them."""
+    import asyncio
+
+    from kiro_crew.agent_sdk.kas_project_hooks import person_turn_claim
+    from kiro_crew.agent_sdk.spec_hooks_reproject import reproject_person_turn
+    from kiro_crew.dashboard.chat_turn.turn_admission import _subagents_pending
+
+    state = _ClaimState(checkout, live, pending=pending)
+
+    async def claim():
+        with person_turn_claim(person):
+            return await state.sessions.get_or_create("cron:job-1")
+
+    async def run():
+        claimed = await claim()
+        if person:
+            claimed = await reproject_person_turn(
+                state.sessions,
+                "cron:job-1",
+                "proj",
+                claimed,
+                claim,
+                lambda: _subagents_pending(state, "cron:job-1"),
+            )
+        return await spec_hooks.reproject_claimed_session(
+            state.sessions, "cron:job-1", "proj", claimed, claim
+        )
+
+    got = asyncio.run(run())
+    return got[0], state.sessions.resets
+
+
+def test_a_persons_turn_reprojects_an_idle_scheduled_batch(layout):
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    scheduled = _batch(checkout, "cron:job-1", person=False)
+    provider, resets = _person_claim(checkout, scheduled)
+    assert (resets, provider.kas_folder_hooks_projected) == (1, True)
+    assert _folder_fired(provider) == ["echo checkout-hook"]
+
+
+@pytest.mark.parametrize("pending", [True, RuntimeError("store unreadable")])
+def test_a_persons_turn_keeps_a_scheduled_batch_with_sub_agent_work(layout, pending):
+    _home, _user, checkout = layout
+    consent.set_choice(checkout, True)
+    scheduled = _batch(checkout, "cron:job-1", person=False)
+    provider, resets = _person_claim(checkout, scheduled, pending=pending)
+    assert (provider, resets, _folder_fired(provider)) == (scheduled, 0, [])
+
+
+def test_a_persons_turn_never_resets_for_a_user_level_agent_of_that_name(layout):
+    _home, user, checkout = layout
+    consent.set_choice(checkout, True)
+    (user / "proj.json").write_text(json.dumps({"name": "proj", "prompt": "u"}), encoding="utf-8")
+    scheduled = _batch(checkout, "cron:job-1", person=False)
+    assert _person_claim(checkout, scheduled) == (scheduled, 0)
+
+
+def test_a_channel_turn_is_not_a_persons_turn():
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard.chat_turn.turn_admission import _is_person_turn
+
+    def turn(user, channel):
+        return SimpleNamespace(_directive_user_origin=user, _directive_channel_origin=channel)
+
+    assert [_is_person_turn(turn(*f)) for f in ((True, False), (True, True), (False, False))] == [
+        True,
+        False,
+        False,
+    ]
+
+
+@pytest.mark.parametrize("user_row", [True, False])
+def test_the_dashboard_claim_runs_under_the_persons_mark(monkeypatch, user_row):
+    """A real dashboard turn claims its session inside ``person_turn_claim``, marked
+    as a person's only when a person typed it, and re-projects only a person's."""
+    import asyncio
+    import contextlib
+
+    from turn_harness import SlotSpec, TurnScript, run_turn
+
+    from kiro_crew.agent_sdk import kas_project_hooks, spec_hooks_reproject
+
+    marks: list[bool] = []
+    real = kas_project_hooks.person_turn_claim
+    reprojections: list[str] = []
+    real_reproject = spec_hooks_reproject.reproject_person_turn
+
+    @contextlib.contextmanager
+    def recording(person):
+        marks.append(person)
+        with real(person):
+            yield
+
+    async def reproject(sessions, key, *args, **kwargs):
+        reprojections.append(key)
+        return await real_reproject(sessions, key, *args, **kwargs)
+
+    monkeypatch.setattr(kas_project_hooks, "person_turn_claim", recording)
+    monkeypatch.setattr(spec_hooks_reproject, "reproject_person_turn", reproject)
+    record = asyncio.run(run_turn(TurnScript(user_row=user_row), slot=SlotSpec()))
+    assert record.allocations and marks and set(marks) == {user_row}
+    assert len(reprojections) == (1 if user_row else 0)
+
+
 @pytest.mark.parametrize(
     "state, saved", [("off", "turned them on"), ("on", "are off"), ("kiro_cli", "are off")]
 )
@@ -726,6 +1326,38 @@ def test_a_cut_command_row_says_it_was_cut_and_how_long_it_is():
     assert row["command"].startswith(command[: tsh._PROJECT_HOOK_COMMAND_CHARS])
     [short] = tsh._project_hook_rows((("PreToolUse", "echo hi"),))
     assert short["command"] == "echo hi"
+
+
+def _notice_rows(monkeypatch, provider) -> list[str]:
+    """The folder-hooks notice rows a new KAS session on *provider* shows."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard import chat_runner
+
+    rows: list[dict] = []
+    monkeypatch.setattr(chat_runner, "append_and_surface", lambda *_a, meta: rows.append(meta))
+    slot = SimpleNamespace()
+    asyncio.run(chat_runner._surface_kas_project_hooks(SimpleNamespace(), slot, provider, ""))
+    return [row["project_hooks"] for row in rows]
+
+
+def test_a_cron_tab_shows_no_folder_hooks_row_and_keeps_the_once_per_folder_mark(
+    layout, monkeypatch
+):
+    # The choice is made from an ordinary chat; a cron result tab only reads it.
+    home, _user, checkout = layout
+    _kiro_cli_trust(home, checkout, "workspaceTrusted: true\n")
+    person = _batch(checkout, "cron:job-1", person=True)
+    assert spec_hooks.kas_hook_checkout(person) == str(checkout)
+    assert _notice_rows(monkeypatch, person) == []
+    chat = _kas_provider(checkout)
+    chat._session_key = "dashboard:s1"
+    chat.kas_projected_agent = "proj"
+    assert _notice_rows(monkeypatch, chat) == ["kiro_cli"]
+    consent.set_choice(checkout, True)
+    assert _notice_rows(monkeypatch, _batch(checkout, "cron:job-1", person=True)) == []
+    assert _notice_rows(monkeypatch, chat) == ["on"]
 
 
 # -- a sub-agent session in another folder ----------------------------------

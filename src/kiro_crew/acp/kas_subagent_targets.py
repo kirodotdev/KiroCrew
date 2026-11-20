@@ -169,6 +169,7 @@ def project_subagent_targets(
     settings_dir: str | Path | None = None,
     forward_ssh_auth_sock: bool = False,
     scope_muted: frozenset[str] | None = None,
+    folder_gated_out: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """The entries to append to *parent*'s batch, and the notice for what is left out.
 
@@ -180,7 +181,8 @@ def project_subagent_targets(
     *settings_dir* is the directory whose ``mcp.json`` the parent's entry was
     stamped from, *work_dir* when ``None``. *forward_ssh_auth_sock* is the
     verdict the session's own entry was built with
-    (``kas_agents._project_mcp_servers``).
+    (``kas_agents._project_mcp_servers``). *folder_gated_out* gains each folder
+    target left out for the folder hooks this session's batch projects.
     """
     from kiro_crew.mcp_gateway.rewriter_spec import _named_in_tools
     from kiro_crew.subagent import spawn_allowlist
@@ -224,6 +226,7 @@ def project_subagent_targets(
                 session_hooks=session_hooks,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 scope_muted=scope_muted,
+                folder_gated_out=folder_gated_out,
             )
         except Exception:  # noqa: BLE001 - a target never costs the session
             logger.warning("sub-agent %r could not be registered", name, exc_info=True)
@@ -362,6 +365,7 @@ def _project_target(
     session_hooks: tuple[str, ...],
     forward_ssh_auth_sock: bool,
     scope_muted: frozenset[str] | None = None,
+    folder_gated_out: set[str] | None = None,
 ) -> dict[str, Any] | str:
     """*name*'s projected entry, or the reason it is not registered.
 
@@ -377,7 +381,9 @@ def _project_target(
     (:func:`_pooled_elsewhere`). *session_hooks* are the session agent's own spec
     PreToolUse matchers, whose coverage the entry withholds too. A server the spec
     switches off is excluded whole (:func:`_excluding_switched_off`).
-    *withheld_out* and *notices* gain this target's lines only once it registers.
+    *withheld_out* and *notices* gain this target's lines only once it registers;
+    *folder_gated_out* gains *name* when its folder hooks, kept because the session
+    projects them, refuse it.
     """
     from kiro_crew import agent as agent_mod
     from kiro_crew.acp.harness import kas as kas_harness
@@ -400,6 +406,7 @@ def _project_target(
     if is_mate_service_agent(name):
         return _SERVICE
     agents_dir = paths_mod.kiro_agents_dir()
+    project_hooks = kas_harness.session_projects_folder_hooks(session_key)
     try:
         agent_mod.require_fork_governance(name, work_dir)
         if agent_mod.require_fresh_derived_spec(name, work_dir) is not None:
@@ -414,7 +421,7 @@ def _project_target(
             name,
             work_dir,
             own_notices,
-            project_hooks=kas_harness.session_projects_folder_hooks(session_key),
+            project_hooks=project_hooks,
         )
     except kas_agents_mod.KasAgentSpecAbsent:
         return _NOT_FOUND
@@ -426,6 +433,9 @@ def _project_target(
         logger.warning("sub-agent %r is not registered for this session: %s", name, exc)
         return _UNUSABLE
     if _spec_pre_tool_matchers(name, spec):
+        folder = paths_mod.project_agents_dir(work_dir) if work_dir else None
+        if folder_gated_out is not None and project_hooks and prompt_dir == folder:
+            folder_gated_out.add(name)
         return _GATE_ONLY
     from kiro_crew.mate_held_rules import HeldLimitsNotApplied, held_child_spec
 
