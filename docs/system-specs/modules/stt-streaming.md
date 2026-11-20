@@ -233,7 +233,7 @@ tier is the operator's `agent.sandbox` when that is `cc` or `strict`, and
 `standard` otherwise, so it is never looser than the agent's.
 `~/.codex` is Codex's own store and is not masked, so Codex's own login keeps working.
 Codex refuses to run without real operating-system confinement even when the operator permits unsandboxed execution, which makes it unavailable on Windows.
-The decision is the provider's own predicate, `sandbox.credential_mask_applies(mode)`, which `enforce_sandbox_floor` also uses. It is read at the child's tier. Settings reads it to report `stt_codex_sandbox_unavailable`, and `CodexRpc.start` reads it again before the spawn and refuses with the same code. It is False with no backend and inside a Crew sandbox, where the nested passthrough would drop the credential mask. This PR changes no sandbox file.
+The decision is the provider's own predicate, `sandbox.credential_mask_applies(mode)`, which `enforce_sandbox_floor` also uses. It is read at the child's tier. Settings reads it to report `stt_codex_sandbox_unavailable`, and `CodexRpc.start` reads it again before the spawn and refuses with the same code. It is False with no backend and inside a Crew sandbox, where the nested passthrough would drop the credential mask.
 The environment allowlist excludes API keys and
 unrelated cloud credentials, and no sandbox policy or credential mask is widened. Every server-originated
 request is rejected. Only the following calls are allowed:
