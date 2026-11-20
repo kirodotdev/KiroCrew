@@ -3116,7 +3116,7 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.memory.recalled` | counter | `path`: `tool` / `context`; `hit` | an explicit recall after its receipt commits; each admitted turn's composition |
 | `kirocrew.lesson.injected` | counter | `hit` | each admitted turn composed with a lesson tier |
 | `kirocrew.skill.lazy_load.count` | counter | adds `skill`: a shipped skill id (nested ones by their path), `custom` or `other` | each on-demand skill body load; the duration histogram keeps `hit` alone |
-| `kirocrew.app.task.completed` | counter | `app`: a shipped built-in app id (`BUILTIN_NAMES`, its `apps/builtins/` directory name) or `private`; `outcome`: `ok` / `error` / `other` | a finished Papyrus compile (`record_app_task`) |
+| `kirocrew.app.task.completed` | counter, **deprecated** | `app`, `outcome` (kept in the manifest only) | nowhere: retired, no longer recorded. It counted Papyrus compiles; its manifest row stays `deprecated` so the name is never reused |
 | `kirocrew.app.installed` | counter | `app`: `app_public_id`, a shipped built-in's `app.json` name, the name of an app whose install record says it came from the public store (`apps/store_origin.py`, read at install, so a later delist keeps it), else `private`; `via`: `store` / `default` / `other` | the first successful `install_from_registry` of an app, after its provenance is written; `via=default` from the default-apps pass. An update is not counted |
 | `kirocrew.channel.message.received` | counter | `channel`, `admitted`, `automation` | `run_channel_turn`, once admission decides |
 | `kirocrew.ui.control.clicked` | counter | `control` (8 values) | `POST /api/telemetry/ui-control`, owner only, from the dashboard's option chips, question card and follow-up card |

@@ -8,7 +8,6 @@ counter                                        one increment per
                                                memory (``path``: tool / context)
 ``kirocrew.lesson.injected``                   admitted turn composed with a lesson
                                                tier (``hit``: a lesson went in)
-``kirocrew.app.task.completed``                unit of work an app reports finished
 ``kirocrew.app.installed``                     first install of an app from a registry
                                                (``via``: store / default)
 ``kirocrew.channel.message.received``          inbound channel message, once
@@ -27,15 +26,14 @@ list names for it). ``test/metrics/test_feature_usage.py`` and
 query, result, lesson key, skill name the operator chose, app name a third party
 chose, channel or sender id, or control text is ever an attribute.
 
-**Skill and app ids are exported only for what Kiro Crew ships.** An operator's
-own skill can be named after what they work on, so a name outside
-:data:`SHIPPED_SKILL_IDS` is one bucket, ``custom``. The same holds for apps: an
-app that is not one of :data:`OFFICIAL_APP_IDS` (the shipped built-ins) is
-``private``. Both lists are in memory at import, so neither importing this module
-nor labelling a value reads the filesystem. :func:`app_public_id`, the label of
-``kirocrew.app.installed``, also names the apps installed from the store; it reads
-a set the gateway fills off the event loop, so labelling with it reads no file
-either.
+**Skill and app ids are exported only for what Kiro Crew ships or a store
+published.** An operator's own skill can be named after what they work on, so a
+name outside :data:`SHIPPED_SKILL_IDS` is one bucket, ``custom``. That list is in
+memory at import, so neither importing this module nor labelling a skill reads the
+filesystem. :func:`app_public_id`, the label of ``kirocrew.app.installed``, names
+the shipped built-ins and the apps installed from the store, and any other app is
+``private``; it reads a set the gateway fills off the event loop, so labelling with
+it reads no file either.
 
 **Recording never changes the result of what it measures.** Every function here
 swallows its own failures after a debug log, and each call site records only
@@ -49,8 +47,6 @@ import functools
 import logging
 import re
 
-from kiro_crew.apps.builtins import BUILTIN_NAMES
-
 logger = logging.getLogger(__name__)
 
 MEMORY_RECALLED = "kirocrew.memory.recalled"
@@ -58,7 +54,6 @@ LESSON_INJECTED = "kirocrew.lesson.injected"
 #: The on-demand skill body load counter, emitted by ``skills_body_reads``. It
 #: carries the closed ``skill`` label from :func:`skill_label`.
 SKILL_LAZY_LOAD_COUNT = "kirocrew.skill.lazy_load.count"
-APP_TASK_COMPLETED = "kirocrew.app.task.completed"
 APP_INSTALLED = "kirocrew.app.installed"
 CHANNEL_MESSAGE_RECEIVED = "kirocrew.channel.message.received"
 UI_CONTROL_CLICKED = "kirocrew.ui.control.clicked"
@@ -250,26 +245,10 @@ def skill_label(name: object) -> str:
     return OTHER
 
 
-# -- app.task.completed -------------------------------------------------------
+# -- app.installed ------------------------------------------------------------
 
-
-#: Every official app id: the apps the package ships, by their ``apps/builtins/``
-#: directory name. Those names are public, so sending one discloses nothing an
-#: operator chose; any other app reports :data:`APP_PRIVATE`. Read from
-#: ``BUILTIN_NAMES`` rather than spelled out here, so this module names no app;
-#: a test holds every ``record_app_task`` call in the package to an id in it.
-OFFICIAL_APP_IDS: frozenset[str] = frozenset(BUILTIN_NAMES)
 
 APP_PRIVATE = "private"
-
-APP_TASK_OUTCOME_VALUES: tuple[str, ...] = ("ok", "error", OTHER)
-
-
-def app_label(app: object) -> str:
-    """An official app id, else ``private``."""
-    if isinstance(app, str) and app in OFFICIAL_APP_IDS:
-        return app
-    return APP_PRIVATE
 
 
 #: Every app with a public id (:mod:`kiro_crew.apps.store_origin`): the shipped
@@ -303,8 +282,7 @@ def app_public_id(app: object) -> str:
 
     Not a string is ``other``. Whether an install came from the store is read from
     its install record, so an app the store later delists keeps its id. Reads only
-    memory. Separate from :func:`app_label`, whose values
-    ``kirocrew.app.task.completed`` already sends and which stay as they are.
+    memory.
     """
     if not isinstance(app, str):
         return OTHER
@@ -319,12 +297,6 @@ APP_INSTALL_VIA_VALUES: tuple[str, ...] = ("store", "default", OTHER)
 def record_app_installed(app: object, via: object) -> None:
     """*app* was installed for the first time, asked for *via* (``store`` / ``default``)."""
     _emit(APP_INSTALLED, {"app": app_public_id(app), "via": _closed(via, APP_INSTALL_VIA_VALUES)})
-
-
-def record_app_task(app: object, outcome: object) -> None:
-    """One unit of work *app* finished with *outcome* (``ok`` / ``error``)."""
-    value = outcome if isinstance(outcome, str) and outcome in APP_TASK_OUTCOME_VALUES else OTHER
-    _emit(APP_TASK_COMPLETED, {"app": app_label(app), "outcome": value})
 
 
 # -- channel.message.received -------------------------------------------------

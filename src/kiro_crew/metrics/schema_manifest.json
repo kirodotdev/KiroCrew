@@ -35,7 +35,7 @@
       "unit": "1",
       "scope": "kiro_crew",
       "temporality": "delta",
-      "status": "active",
+      "status": "deprecated",
       "attributes": {
         "app": {},
         "outcome": {
