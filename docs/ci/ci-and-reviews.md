@@ -298,16 +298,18 @@ Three structural facts explain most of the rest:
 - **Three pull requests that fail one test the same way open a `Main may be red:`
   issue.** The `Main is red:` issue comes only after a push run on `main` ends,
   about an hour after the commit that broke it. When a same-repository pull
-  request's `CI` run (target `main`) ends `failure`, `main-red-suspect.yml` reads
-  its failing tests and, when the same node id fails with the same message start
-  (80 characters) on 3 pull requests, files one
+  request's `CI` run (target `main`) ends `failure` and names a failing test,
+  `main-red-suspect.yml` reads the newest failed runs of other pull requests and,
+  when the same node id fails with the same message start (80 characters) on 3
+  pull requests, whether or not the run that started it is one of them, files one
   `ci: Main may be red: <node id>` issue under the `main-red-suspected` label
   (`.github/scripts/main_red_suspect.py`). The 3 must have different authors and
   runs started by different accounts, each failing on its current head, none
   changing the test's file (an unreadable or cut list counts as changing it),
   with a plain `test/...py::name` or `src/...py::name` id; a fork's pull request
-  is never counted. The issue lists the tests, the 3 pull requests and the
-  oldest of their bases. It is a notice and never a skip:
+  is never counted. Every set of 3 among the runs read is tried, so the order
+  of the run list decides nothing. The issue lists the tests, the 3 pull
+  requests and the one of their bases that the other two contain. It is a notice and never a skip:
   `scripts/ci_main_red_skip.py` and `main-red-pr-notice.yml` read only the issue
   the watcher's `pick_issue` returns, and a suspected issue has another title
   prefix, another record marker and another label, so only a red push run on
@@ -316,8 +318,8 @@ Three structural facts explain most of the rest:
   a green one that ran the full backend suite and contains the recorded base
   (main was green). At most 3 are open at once and a test is in one of them
   only. It reads nothing more while a `Main is red:` issue is open, reads at
-  most the newest 10 other failed pull request runs of the last 3 hours, stops
-  when fewer than 1,500 API requests are left for the token, changes nothing on
+  most the newest 10 other failed pull request runs of the last 3 hours, reads
+  no other run when fewer than 1,500 API requests are left for the token, changes nothing on
   a pull request and cannot fail a job. It holds `actions: read`,
   `checks: read`, `contents: read`, `pull-requests: read` and `issues: write`.
   `test/test_main_red_suspect.py` pins each rule with `gh` faked.

@@ -27,6 +27,7 @@ No test starts a process or reads a clock: `gh` is a recording fake.
 
 from __future__ import annotations
 
+import itertools
 import json
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,7 @@ def _pr(
     head_repo: str = REPO,
     listed_repo: str = REPO,
     moved: bool = False,
+    windows: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """One pull request with one failed `CI` run and one failed backend test job."""
     rows = notes if notes is not None else _notes(FAILS if failures is None else failures)
@@ -106,6 +108,7 @@ def _pr(
         "head_repo": head_repo,
         "listed_repo": listed_repo,
         "moved": moved,
+        "windows": _notes(windows) if windows is not None else None,
     }
 
 
@@ -249,10 +252,15 @@ class FakeGh:
                 {"id": 200 + number, "name": "Lint", "conclusion": "failure"},
                 {"id": 300 + number, "name": "Backend Tests (3.12, 2)", "conclusion": "success"},
             ]
+            if self.prs[number]["windows"] is not None:
+                windows = {"id": 600 + number, "name": "Backend Tests (Windows)"}
+                jobs.insert(0, {**windows, "conclusion": "failure"})
             return 0, json.dumps({"jobs": jobs}), ""
         if path.startswith("check-runs/"):
-            number = int(path.split("/")[1]) - 100
-            return 0, json.dumps(self.prs[number]["notes"]), ""
+            job = int(path.split("/")[1])
+            if job > 600:
+                return 0, json.dumps(self.prs[job - 600]["windows"]), ""
+            return 0, json.dumps(self.prs[job - 100]["notes"]), ""
         if path.startswith("pulls/"):
             pr = self.prs[int(path.split("/")[1])]
             head = "f" * 40 if pr["moved"] else _head(pr["number"])
@@ -418,7 +426,6 @@ def test_a_run_that_started_from_a_forks_pull_request_opens_nothing() -> None:
     gh = FakeGh((_pr(1, "mallory", head_repo="mallory/repo"), _pr(2, "grace"), _pr(3, "edsger")))
     _detect(gh)
     assert gh.open_issues() == []
-    assert gh.reads("actions/workflows/") == [], "no other run is read for a fork's failure"
 
 
 def test_only_the_tests_all_three_fail_the_same_way_are_listed() -> None:
@@ -429,35 +436,141 @@ def test_only_the_tests_all_three_fail_the_same_way_are_listed() -> None:
     assert mod.parse_state(issue["body"])["failures"] == FAILS
 
 
-def test_the_recorded_base_is_the_oldest_of_the_three() -> None:
+def test_the_recorded_base_is_the_one_the_other_two_contain() -> None:
     prs = (_pr(1, "ada"), _pr(2, "grace", base=OLDER_BASE), _pr(3, "edsger"))
-    relations = {f"{BASE}...{OLDER_BASE}": "behind", f"{OLDER_BASE}...{BASE}": "ahead"}
-    gh = FakeGh(prs, relations=relations)
-    _detect(gh)
+    gh = FakeGh(prs, relations={f"{OLDER_BASE}...{BASE}": "ahead"})
+    api = _detect(gh)
     (issue,) = gh.open_issues()
     assert mod.parse_state(issue["body"])["base"] == OLDER_BASE
+    between_bases = [call for call in gh.reads("compare/") if "per_page" not in call]
+    assert between_bases == [f"GET compare/{OLDER_BASE}...{BASE}"]
+    assert api.relation(BASE, OLDER_BASE) == "behind", "the mirror of a read costs no read"
 
 
-def test_bases_that_are_not_one_line_of_main_open_nothing() -> None:
+def test_three_whose_bases_no_one_base_is_contained_in_open_nothing() -> None:
     gh = FakeGh((_pr(1, "ada"), _pr(2, "grace", base=OLDER_BASE), _pr(3, "edsger")))
     _detect(gh)
     assert gh.open_issues() == []
 
 
+def test_a_set_with_no_common_base_does_not_hide_one_that_has_one() -> None:
+    """Pull requests 1, 2, 3 agree and so do 1, 2, 4; only the second set shares a base."""
+    prs = (_pr(1, "ada"), _pr(2, "grace"), _pr(3, "edsger", base=OLDER_BASE), _pr(4, "barbara"))
+    gh = FakeGh(prs)
+    _detect(gh)
+    (issue,) = gh.open_issues()
+    assert mod.parse_state(issue["body"])["prs"] == [1, 2, 4]
+
+
+LINE = ["x", "y", "z"]
+
+
+def _on_a_line(older: str, newer: str) -> str | None:
+    """Compare status on the line x <- y <- z; `w` is on a branch of its own."""
+    if "w" in (older, newer):
+        return "diverged"
+    gap = LINE.index(newer) - LINE.index(older)
+    return "ahead" if gap > 0 else "behind" if gap < 0 else "identical"
+
+
 @pytest.mark.parametrize(
-    ("bases", "relations", "expected"),
+    ("bases", "expected"),
     [
-        (["x", "x", "x"], {}, "x"),
-        (["x", "y"], {("x", "y"): "ahead"}, "x"),
-        (["x", "y", "z"], {("x", "y"): "behind", ("y", "z"): "identical"}, "y"),
-        (["x", "y"], {("x", "y"): "diverged"}, None),
-        (["x", "y"], {}, None),
+        (["x", "x", "x"], "x"),
+        (["y", "z", "y"], "y"),
+        (["z", "y", "x"], "x"),
+        (["x", "w", "y"], None),
+        (["w", "w", "w"], "w"),
     ],
 )
-def test_the_oldest_base_is_found_by_comparing_and_unknown_counts_as_none(
-    bases: list[str], relations: dict[tuple[str, str], str], expected: str | None
+def test_the_common_base_is_the_same_in_whatever_order_the_bases_come(
+    bases: list[str], expected: str | None
 ) -> None:
-    assert mod.oldest_base(bases, lambda a, b: relations.get((a, b))) == expected
+    for order in itertools.permutations(bases):
+        assert mod.common_base(order, _on_a_line) == expected
+    assert mod.common_base(bases, lambda older, newer: None) == (
+        expected if len(set(bases)) == 1 else None
+    )
+
+
+# ── The verdict does not depend on order ─────────────────────────────────────
+
+
+def _filed_state(gh: FakeGh) -> dict[str, Any] | None:
+    issues = gh.open_issues()
+    assert len(issues) <= 1
+    return mod.parse_state(issues[0]["body"]) if issues else None
+
+
+def test_a_witness_that_cannot_join_does_not_block_two_that_can() -> None:
+    """Author B pushed by C comes first; the set of A, B pushed by B, and C still counts."""
+    prs = (
+        _pr(1, "ada"),
+        _pr(2, "grace", actor="edsger"),
+        _pr(3, "grace"),
+        _pr(4, "edsger"),
+    )
+    gh = FakeGh(prs)
+    _detect(gh)
+    assert _filed_state(gh)["prs"] == [1, 3, 4]
+
+
+SIX = (
+    _pr(1, "ada"),
+    _pr(2, "grace", actor="edsger"),
+    _pr(3, "grace"),
+    _pr(4, "edsger", failures={NODE: MESSAGE, "test/test_other.py::test_b": "boom"}),
+    _pr(5, "barbara", base=OLDER_BASE),
+    _pr(6, "ada", actor="hopper", changed=("test/test_widget.py",)),
+)
+
+
+def test_neither_the_list_order_nor_the_run_that_started_it_changes_what_is_filed() -> None:
+    seen = set()
+    for order in itertools.permutations(SIX):
+        for trigger in (1, 2, 3, 4, 5):
+            gh = FakeGh(order)
+            _detect(gh, trigger=trigger)
+            seen.add(json.dumps(_filed_state(gh), sort_keys=True))
+    (only,) = seen
+    assert json.loads(only)["prs"] == [1, 3, 4]
+
+
+def test_an_agreement_is_filed_by_a_run_that_is_not_part_of_it() -> None:
+    """A queued run that a newer one replaced is still counted: its failed run is read again."""
+    newer = _pr(9, "hopper", failures={"test/test_else.py::test_mine": "x"})
+    gh = FakeGh((*THREE, newer))
+    _detect(gh, trigger=9)
+    assert _filed_state(gh)["prs"] == [1, 2, 3]
+    assert gh.reads("pulls/9") == [], "a run in no group of 3 costs no pull request read"
+
+
+def test_a_test_that_fails_differently_on_two_legs_matches_on_either_message() -> None:
+    """The Linux job is read first; the message the others share is the Windows one."""
+    both = _pr(1, "ada", failures={NODE: "assert 1 == 3"}, windows=FAILS)
+    gh = FakeGh((both, _pr(2, "grace"), _pr(3, "edsger")))
+    _detect(gh)
+    assert _filed_state(gh)["failures"] == FAILS
+    for trigger in (2, 3):
+        gh = FakeGh((both, _pr(2, "grace"), _pr(3, "edsger")))
+        _detect(gh, trigger=trigger)
+        assert _filed_state(gh)["failures"] == FAILS
+
+
+def test_one_job_that_names_a_test_twice_keeps_both_messages() -> None:
+    rows = _notes({NODE: "setup failed"}) + _notes(FAILS)
+    assert mod.strict_failures([rows]) == {(NODE, "setup failed"), (NODE, MESSAGE)}
+    assert mod.strict_failures([list(reversed(rows))]) == mod.strict_failures([rows])
+
+
+def test_the_cap_of_open_issues_stops_a_run_whatever_it_would_find() -> None:
+    held = tuple(
+        _suspect_issue(40 + i, {f"test/test_held.py::test_{i}": "x"}) for i in range(mod.MAX_OPEN)
+    )
+    for order in itertools.permutations(THREE):
+        gh = FakeGh(order, issues=held)
+        _detect(gh, trigger=order[0]["number"])
+        assert sorted(issue["number"] for issue in gh.open_issues()) == [40, 41, 42]
 
 
 # ── Never a skip ─────────────────────────────────────────────────────────────
@@ -676,16 +789,27 @@ def test_a_token_near_its_rate_limit_reads_no_other_run() -> None:
 
 def test_only_the_newest_runs_are_read_and_only_their_failed_backend_jobs() -> None:
     others = tuple(
-        _pr(n, f"author-{n}", failures={"test/test_else.py::t": "x"}) for n in range(2, 30)
+        _pr(n, f"author-{n}", failures={f"test/test_else.py::test_{n}": "x"}) for n in range(2, 30)
     )
     gh = FakeGh((_pr(1, "ada"), *others))
     api = _detect(gh)
     read = sorted(int(call.split("/")[2]) for call in gh.reads("GET actions/runs/"))
     assert read == [9001] + list(range(9029 - mod.MAX_CANDIDATES + 1, 9030))
     assert all(int(call.split("/")[1]) < 200 for call in gh.reads("GET check-runs/"))
-    # A run that fails another test costs its jobs and one annotation set only.
-    assert sorted(gh.reads("pulls/")) == ["GET pulls/1"]
-    assert api.calls == 2 + 2 + 2 + 1 + 2 * mod.MAX_CANDIDATES
+    # A run that is in no group of 3 costs its jobs and one annotation set only.
+    assert gh.reads("pulls/") == [] and gh.reads("compare/") == []
+    assert api.calls == 2 + 2 + 1 + 2 * mod.MAX_CANDIDATES
+
+
+def test_a_run_beyond_the_newest_ten_is_not_read_so_its_evidence_waits() -> None:
+    """The stated limit of re-reading: what is older than the newest 10 is not counted."""
+    newer = tuple(
+        _pr(n, f"author-{n}", failures={f"test/test_else.py::test_{n}": "x"}) for n in range(20, 31)
+    )
+    gh = FakeGh((_pr(1, "ada"), _pr(2, "grace"), _pr(3, "edsger"), *newer))
+    _detect(gh, trigger=30)
+    assert gh.open_issues() == []
+    assert gh.reads("actions/runs/9001") == []
 
 
 def test_the_newest_failed_run_of_each_pull_request_is_the_one_counted() -> None:
@@ -998,17 +1122,33 @@ def test_the_rate_limit_wrapper_is_installed_before_the_script_runs() -> None:
     assert int(steps[wrapper]["with"]["max-wait"]) < _job()["timeout-minutes"] * 60 // 2
 
 
-def test_filing_runs_and_closing_runs_each_queue_and_skipped_runs_share_no_group() -> None:
+def _clauses(expression: str) -> list[str]:
+    """The `a == b` comparisons of an expression, sorted."""
+    words = " ".join(expression.replace("(", " ").replace(")", " ").split())
+    parts = [part.strip() for chunk in words.split("&&") for part in chunk.split("||")]
+    return sorted(part for part in parts if "==" in part)
+
+
+def test_only_a_run_the_job_takes_enters_a_shared_concurrency_group() -> None:
+    """GitHub keeps one queued run per group, so a run the job skips must not replace one."""
     concurrency = _load(WORKFLOW)["concurrency"]
     assert concurrency["cancel-in-progress"] is False
-    group = " ".join(str(concurrency["group"]).split())
+    group = " ".join(str(concurrency["group"]).split()).removeprefix("${{ ")
     detect, rest = group.split("&& 'main-red-suspect-detect' ||", 1)
     settle, skipped = rest.split("&& 'main-red-suspect-settle' ||", 1)
-    for leg in (detect, settle):
-        assert "github.event.workflow_run.head_repository.full_name == github.repository" in leg
-    assert "github.event.workflow_run.conclusion == 'failure'" in detect
-    assert "github.event.workflow_run.head_branch == 'main'" in settle
-    assert "github.run_id" in skipped
+    assert skipped.strip() == "format('main-red-suspect-skip-{0}', github.run_id) }}"
+
+    condition = " ".join(str(_job()["if"]).split())
+    same_repo, legs = condition.split(" && ((", 1)
+    pull_request, push = legs.split(" || (", 1)
+    assert _clauses(detect) == _clauses(same_repo + " && " + pull_request)
+    assert _clauses(settle) == _clauses(same_repo + " && " + push)
+    assert "pull_requests[0].base.ref == 'main'" in detect
+    assert "head_branch == 'main'" in settle
+    assert len(_clauses(detect)) == 4 and len(_clauses(settle)) == 6
+    # Within a leg every clause is required, apart from the three conclusions of a push run.
+    assert "||" not in detect
+    assert settle.count("||") == 2 and settle.count("conclusion ==") == 3
 
 
 def test_the_green_proof_names_are_the_watchers() -> None:

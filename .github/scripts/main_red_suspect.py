@@ -32,9 +32,12 @@ WHAT COUNTS (all of it, else nothing is written):
   read, or that GitHub cuts at 300 files, counts as "changes it".
 * The node id is a plain `test/...py::name` or `src/...py::name` id. Any other
   is not counted.
-* Their bases are commits of one line of `main`; the oldest of them is recorded.
-  A break, if there is one, is in that commit or an earlier one, so a push run
-  on `main` that contains it and passes the full backend suite closes the issue.
+* One of their bases is contained in the other two; it is recorded. A break, if
+  there is one, is in that commit or an earlier one, so a push run on `main`
+  that contains it and passes the full backend suite closes the issue.
+* Every set of 3 among the runs read is tried, lowest pull request numbers
+  first, so neither the order of the run list nor which run started this
+  decides whether an issue opens or what it says.
 
 Annotation text is whatever a pull request's tests printed. It is read as JSON,
 never placed in a shell command, cut to printable ASCII, and written only inside
@@ -43,9 +46,10 @@ names are compared and never written. Every value that reaches an API path is
 matched first.
 
 Nothing is stored between runs: each run reads the failed runs of the last
-`WINDOW_HOURS` hours again. The reads are bounded (`MAX_CANDIDATES` runs,
-`MAX_JOBS_PER_RUN` jobs each) and stop at the first agreement, and the run
-writes nothing when the token's rate limit is below `RATE_FLOOR`.
+`WINDOW_HOURS` hours again. The reads are bounded (the newest `MAX_CANDIDATES`
+other pull requests, `MAX_JOBS_PER_RUN` jobs each; a pull request is read only
+when its run is one of 3 that fail a test the same way), and the run reads no
+other run when the token's rate limit is below `RATE_FLOOR`.
 """
 
 from __future__ import annotations
@@ -53,6 +57,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import importlib.util
+import itertools
 import json
 import os
 import re
@@ -155,11 +160,18 @@ def json_values(text: str) -> list[Any]:
     return values
 
 
-def strict_failures(pages: list[Any]) -> dict[str, str]:
-    """``{node id: message start}`` of one job's annotations, plain node ids only."""
+Failures = frozenset[tuple[str, str]]
+
+
+def strict_failures(pages: list[Any]) -> set[tuple[str, str]]:
+    """``(node id, message start)`` of each failing test one job annotated, plain ids only.
+
+    Every pair is kept: a test that fails with one message on Linux and another
+    on Windows shows both, so which job was read first decides nothing.
+    """
     rows = [row for page in pages if isinstance(page, list) for row in page]
-    found = watch.parse_annotations(rows)
-    return {nodeid: message for nodeid, message in found.items() if valid_nodeid(nodeid)}
+    entries = [watch.annotation_entry(row) for row in rows]
+    return {entry for entry in entries if entry is not None and valid_nodeid(entry[0])}
 
 
 def backend_failed_jobs(pages: list[Any]) -> list[int]:
@@ -251,13 +263,13 @@ def run_of(row: Any, repo: str) -> Run | None:
 def candidate_runs(pages: list[Any], repo: str, trigger: Run) -> list[Run]:
     """The newest failed run of each other pull request, newest first, capped.
 
-    A run started by the account that started the trigger cannot add a witness.
+    Which runs these are depends on their ids alone, not on the order of the list.
     """
     newest: dict[int, Run] = {}
     for page in pages:
         for row in page.get("workflow_runs", []) if isinstance(page, dict) else []:
             run = run_of(row, repo)
-            if run is None or run.pr == trigger.pr or run.actor == trigger.actor:
+            if run is None or run.pr == trigger.pr:
                 continue
             if run.pr not in newest or run.run_id > newest[run.pr].run_id:
                 newest[run.pr] = run
@@ -288,64 +300,69 @@ def author_of(pull: Any, repo: str, run: Run) -> str | None:
 class Witness(NamedTuple):
     run: Run
     author: str
-    failures: dict[str, str]
+    failures: Failures
     changed: frozenset[str]
 
     def shows(self, nodeid: str, message: str) -> bool:
-        return self.failures.get(nodeid) == message and test_file(nodeid) not in self.changed
+        return (nodeid, message) in self.failures and test_file(nodeid) not in self.changed
 
 
-def consensus(
-    trigger: Witness, others: list[Witness]
-) -> tuple[dict[str, str], list[Witness]] | None:
-    """``(agreed failures, the witnesses)`` once ``MIN_WITNESSES`` agree, else ``None``.
+def in_a_group(named: dict[int, Failures]) -> set[int]:
+    """Ids of the runs that fail some test the same way as enough others.
 
-    The witnesses are the trigger and the first others, by pull request number,
-    that fail one of its tests the same way under a new author and a new
-    account. The agreed failures are the tests all of them fail the same way.
+    ``named`` is ``{run id: its (node id, message start) pairs}``. Only these runs can be
+    witnesses, so only their pull requests are read.
     """
-    for nodeid, message in trigger.failures.items():
-        if not trigger.shows(nodeid, message):
+    groups: dict[tuple[str, str], set[int]] = {}
+    for run_id, failures in named.items():
+        for item in failures:
+            groups.setdefault(item, set()).add(run_id)
+    return {run_id for runs in groups.values() if len(runs) >= MIN_WITNESSES for run_id in runs}
+
+
+def agreed_failures(chosen: Sequence[Witness]) -> dict[str, str]:
+    """The tests every one of ``chosen`` fails the same way, in node id order, capped."""
+    agreed: dict[str, str] = {}
+    for nodeid, message in sorted(chosen[0].failures):
+        if all(witness.shows(nodeid, message) for witness in chosen):
+            agreed.setdefault(nodeid, message)
+    return dict(list(agreed.items())[:MAX_NODEIDS])
+
+
+def agreements(witnesses: list[Witness]) -> list[tuple[Witness, ...]]:
+    """Every set of ``MIN_WITNESSES`` witnesses that counts, lowest pull request numbers first.
+
+    A set counts when its authors differ, the accounts that started its runs
+    differ, and all of it fails one test the same way. Every set is tried, so
+    which witness was read first never decides whether one is found.
+    """
+    ordered = sorted(witnesses, key=lambda witness: witness.run.pr)
+    found = []
+    for chosen in itertools.combinations(ordered, MIN_WITNESSES):
+        if len({witness.author for witness in chosen}) < MIN_WITNESSES:
             continue
-        chosen = [trigger]
-        authors, actors = {trigger.author}, {trigger.run.actor}
-        for other in sorted(others, key=lambda witness: witness.run.pr):
-            if other.author in authors or other.run.actor in actors:
-                continue
-            if not other.shows(nodeid, message):
-                continue
-            chosen.append(other)
-            authors.add(other.author)
-            actors.add(other.run.actor)
-            if len(chosen) == MIN_WITNESSES:
-                break
-        if len(chosen) < MIN_WITNESSES:
+        if len({witness.run.actor for witness in chosen}) < MIN_WITNESSES:
             continue
-        agreed = {
-            node: text
-            for node, text in trigger.failures.items()
-            if all(witness.shows(node, text) for witness in chosen)
-        }
-        return dict(list(agreed.items())[:MAX_NODEIDS]), chosen
+        if agreed_failures(chosen):
+            found.append(chosen)
+    return found
+
+
+def common_base(bases: Sequence[str], relation: Callable[[str, str], str | None]) -> str | None:
+    """The base every other base contains, or ``None`` when there is none.
+
+    ``relation(a, b)`` is the compare status of ``b`` against ``a``; `ahead` and
+    `identical` mean ``b`` contains ``a``. At most one base can be contained by
+    all the others, so the answer does not depend on the order of ``bases``.
+    """
+    distinct = sorted(set(bases))
+    for candidate in distinct:
+        if all(
+            other == candidate or relation(candidate, other) in ("ahead", "identical")
+            for other in distinct
+        ):
+            return candidate
     return None
-
-
-def oldest_base(bases: list[str], relation: Callable[[str, str], str | None]) -> str | None:
-    """The base every other base contains, or ``None`` when they are not one line.
-
-    ``relation(a, b)`` is the compare status of ``b`` against ``a``: `ahead`,
-    `behind`, `identical`, or anything else for commits that diverged.
-    """
-    oldest = bases[0]
-    for base in dict.fromkeys(bases[1:]):
-        if base == oldest:
-            continue
-        status = relation(oldest, base)
-        if status == "behind":
-            oldest = base
-        elif status not in ("ahead", "identical"):
-            return None
-    return oldest
 
 
 # -- the issue -----------------------------------------------------------------
@@ -426,7 +443,7 @@ def render_body(state: dict[str, Any], repo: str) -> str:
     ]
     lines += [
         "",
-        f"The oldest base of those pull requests is `{base[:12]}` "
+        f"The base the other two contain is `{base[:12]}` "
         f"(https://github.com/{repo}/commit/{base}). A break, if there is one, is in that "
         "commit or an earlier one.",
         "",
@@ -526,6 +543,7 @@ class Api:
         self.summary = summary
         self.calls = 0
         self.lines: list[str] = []
+        self._relations: dict[tuple[str, str], str | None] = {}
 
     def say(self, text: str, level: str = "") -> None:
         line = f"::{level}::{text}" if level else text
@@ -569,31 +587,35 @@ class Api:
         return value if isinstance(value, int) else None
 
     def relation(self, older: str, newer: str) -> str | None:
-        pages = self.get(f"how {newer[:12]} relates to {older[:12]}", f"compare/{older}...{newer}")
-        status = pages[0].get("status") if pages and isinstance(pages[0], dict) else None
-        return status if isinstance(status, str) else None
+        """The compare status of ``newer`` against ``older``; each pair is read once."""
+        if (older, newer) not in self._relations:
+            what = f"how {newer[:12]} relates to {older[:12]}"
+            pages = self.get(what, f"compare/{older}...{newer}")
+            status = pages[0].get("status") if pages and isinstance(pages[0], dict) else None
+            status = status if isinstance(status, str) else None
+            mirror = {"ahead": "behind", "behind": "ahead", "identical": "identical"}
+            self._relations[(older, newer)] = status
+            self._relations[(newer, older)] = mirror.get(status or "", status)
+        return self._relations[(older, newer)]
 
     def issues(self, label: str) -> list[Any] | None:
         return self.get(
             f"the open `{label}` issues", f"issues?state=open&labels={label}&per_page=100", True
         )
 
-    def failures(self, run_id: int) -> dict[str, str] | None:
-        """The plain failing node ids of a run's failed backend test jobs."""
+    def failures(self, run_id: int, known: set[str]) -> Failures:
+        """What a run's failed backend test jobs name, without the tests in ``known``."""
         jobs = self.get(
             f"the jobs of run {run_id}", f"actions/runs/{run_id}/jobs?per_page=100", True
         )
-        if jobs is None:
-            return None
-        found: dict[str, str] = {}
-        for job_id in backend_failed_jobs(jobs):
+        found: set[tuple[str, str]] = set()
+        for job_id in backend_failed_jobs(jobs or []):
             what = f"the annotations of job {job_id}"
             notes = self.get(what, f"check-runs/{job_id}/annotations?per_page=100")
-            for nodeid, message in strict_failures(notes or []).items():
-                found.setdefault(nodeid, message)
-        return found
+            found |= strict_failures(notes or [])
+        return frozenset(pair for pair in found if without_group(pair[0]) not in known)
 
-    def witness(self, run: Run, failures: dict[str, str]) -> Witness | None:
+    def witness(self, run: Run, failures: Failures) -> Witness | None:
         """``run`` as a witness: its author and the files its pull request changes."""
         pull = self.get(f"pull request {run.pr}", f"pulls/{run.pr}")
         author = author_of(pull[0] if pull else None, self.repo, run)
@@ -649,7 +671,13 @@ def _open_state(
 
 
 def detect(api: Api, trigger: Run, workflow_id: int, since: str) -> int:
-    """Open one suspected issue when the trigger and two other pull requests agree."""
+    """Open one suspected issue when 3 pull requests with a recent failed run agree.
+
+    The run that started this must name a failing test, which keeps the reads
+    off a lint-only failure. It need not be one of the 3: every run re-reads the
+    newest failed runs, so a run that was queued and replaced before it started
+    is still counted by the one that replaced it.
+    """
     opened = _open_state(api)
     if opened is None:
         return 0
@@ -661,22 +689,10 @@ def detect(api: Api, trigger: Run, workflow_id: int, since: str) -> int:
     if len(suspects) >= MAX_OPEN:
         api.say(f"{len(suspects)} suspected issues are open, the most kept at once.")
         return 0
-    failures = api.failures(trigger.run_id)
     known = covered(suspects)
-    failures = {
-        nodeid: message
-        for nodeid, message in (failures or {}).items()
-        if without_group(nodeid) not in known
-    }
+    failures = api.failures(trigger.run_id, known)
     if not failures:
         api.say("This run names no failing test that is not already suspected.")
-        return 0
-    first = api.witness(trigger, failures)
-    if first is None or not any(first.shows(*item) for item in failures.items()):
-        api.say(
-            "This pull request is no witness: its head moved, its changed files are unknown, "
-            "or it changes the file of every test that fails here."
-        )
         return 0
     left = api.remaining()
     if left is not None and left < RATE_FLOOR:
@@ -692,36 +708,36 @@ def detect(api: Api, trigger: Run, workflow_id: int, since: str) -> int:
     )
     if listing is None:
         return 0
-    others: list[Witness] = []
-    found = None
-    for run in candidate_runs(listing, api.repo, trigger):
-        theirs = api.failures(run.run_id)
-        if not theirs or not any(
-            node in theirs and first.shows(node, theirs[node]) for node in failures
-        ):
-            continue
-        witness = api.witness(run, theirs)
-        if witness is None:
-            continue
-        others.append(witness)
-        found = consensus(first, others)
-        if found is not None:
-            break
-    if found is None:
+    runs = [trigger, *candidate_runs(listing, api.repo, trigger)]
+    named = {trigger.run_id: failures}
+    for run in runs[1:]:
+        named[run.run_id] = api.failures(run.run_id, known)
+    grouped = in_a_group(named)
+    witnesses = []
+    for run in runs:
+        witness = api.witness(run, named[run.run_id]) if run.run_id in grouped else None
+        if witness is not None:
+            witnesses.append(witness)
+    sets = agreements(witnesses)
+    if not sets:
         api.say(
             f"No {MIN_WITNESSES} pull requests by different authors fail one test the same way."
         )
         return 0
-    agreed, witnesses = found
-    base = oldest_base([witness.run.base for witness in witnesses], api.relation)
+    chosen, base = sets[0], None
+    for chosen in sets:
+        base = common_base([witness.run.base for witness in chosen], api.relation)
+        if base is not None:
+            break
     if base is None:
-        api.say("The bases of those pull requests are not commits of one line of main.")
+        api.say("No base of those pull requests is contained in the other two.")
         return 0
+    agreed = agreed_failures(chosen)
     state = {
         "failures": agreed,
         "base": base,
-        "prs": [witness.run.pr for witness in witnesses],
-        "runs": [witness.run.run_id for witness in witnesses],
+        "prs": [witness.run.pr for witness in chosen],
+        "runs": [witness.run.run_id for witness in chosen],
     }
     # Read again just before writing: the watcher may have filed meanwhile.
     opened = _open_state(api)
