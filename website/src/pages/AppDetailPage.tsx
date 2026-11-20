@@ -67,7 +67,7 @@ import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetai
 import { actionGrant } from '../composerActions/composerActionRegistry'
 import { memoryAccessLabel, memoryRequested } from '../components/appstore/memoryAccessLabel'
 import { managerLabel, originLabel } from './appDetailPageLabels'
-import { BrowserVerbsBox, BrowserVerbsStaged, ChatLaunchBox, ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, HiddenSessionsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, browserVerbLine, knownBrowserVerbs, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
+import { BrowserVerbsBox, BrowserVerbsStaged, KiroOperationsBox, StagedCodeList, ChatLaunchBox, ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, HiddenSessionsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, browserVerbLine, knownBrowserVerbs, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
 import { trustGrants } from '../components/appstore/trustGrants'
 import { stagedGrantsOf } from './appDetailPageStagedGrants'
 // The page's parts live in sibling owners that never import this module:
@@ -115,11 +115,12 @@ export default function AppDetailPage() {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
     stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
-    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedBrowser, hasStagedGrants: hasOtherStagedGrants,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedKiroOperations, stagedBrowser, hasStagedGrants: hasOtherStagedGrants, firstKiroApproval: firstKiroOnly,
   } = stagedGrantsOf(app)
   // Bot scopes the owner has not approved wait the same way (`AppDetailBotGrants.tsx`).
   const stagedBots = stagedBotScopes(app)
   const hasStagedGrants = hasOtherStagedGrants || stagedBots.length > 0
+  const firstKiroApproval = firstKiroOnly && stagedBots.length === 0
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -352,6 +353,7 @@ export default function AppDetailPage() {
             desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
             frameSourcesGrant: installed.frameSourcesGrant,
             browserSitesGrant: installed.browserSitesGrant,
+            kiroOperationsGrant: installed.kiroOperationsGrant,
             browserGrant: installed.browserGrant,
             managed: installed.managed,
             source: installed.source,
@@ -481,6 +483,7 @@ export default function AppDetailPage() {
             desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
             frameSourcesGrant: installed.frameSourcesGrant,
             browserSitesGrant: installed.browserSitesGrant,
+            kiroOperationsGrant: installed.kiroOperationsGrant,
             browserGrant: installed.browserGrant,
             managed: installed.managed,
             source: installed.source,
@@ -1132,10 +1135,10 @@ export default function AppDetailPage() {
             <div className="text-text text-sm flex-1 min-w-0 grid gap-2">
               <span>
                 {app.enabled
-                  ? i18nT('pages.appDetailPage.grants_reconsent_notice', { name: appDisplayName(app) })
+                  ? i18nT(firstKiroApproval ? 'pages.appDetailPage.kiro_operations_first_notice' : 'pages.appDetailPage.grants_reconsent_notice', { name: appDisplayName(app) })
                   : i18nT('pages.appDetailPage.grants_reconsent_notice_disabled', { name: appDisplayName(app) })}
               </span>
-              {app.enabled && (
+              {app.enabled && !firstKiroApproval && (
                 <span className="text-[13px] text-text">{i18nT('pages.appDetailPage.grants_reconsent_keep', { name: appDisplayName(app) })}</span>
               )}
               {stagedApi.length > 0 && (
@@ -1212,16 +1215,8 @@ export default function AppDetailPage() {
                   </div>
                 </div>
               )}
-              {stagedBrowserSites.length > 0 && (
-                <div>
-                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_browser_sites')}</div>
-                  <div className="flex flex-wrap gap-1 mt-1" data-testid="staged-browser-sites">
-                    {stagedBrowserSites.map(o => (
-                      <code key={o} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{o}</code>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <StagedCodeList label={i18nT('pages.appDetailPage.grants_reconsent_browser_sites')} entries={stagedBrowserSites} testId="staged-browser-sites" />
+              <StagedCodeList label={i18nT('pages.appDetailPage.grants_reconsent_kiro_operations')} entries={stagedKiroOperations} testId="staged-kiro-operations" />
               {stagedComposerActions.length > 0 && (
                 <div>
                   <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_composer_actions')}</div>
@@ -1259,7 +1254,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources, ...stagedBrowserSites, ...stagedBrowser.map(v => browserVerbLine(v).replace(/\.$/, ''))], { style: 'narrow' })
+                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources, ...stagedBrowserSites, ...stagedKiroOperations, ...stagedBrowser.map(v => browserVerbLine(v).replace(/\.$/, ''))], { style: 'narrow' })
                 try {
                   const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1278,6 +1273,7 @@ export default function AppDetailPage() {
                     desktopCapabilities: stagedDesktopCapabilities,
                     frameSources: stagedFrameSources,
                     browserSites: stagedBrowserSites,
+                    kiroOperations: stagedKiroOperations,
                     browser: stagedBrowser,
                   })
                   setBackendRefusedMsg(appActionNotice(appDisplayName(app), result, 'enable'))
@@ -1294,7 +1290,7 @@ export default function AppDetailPage() {
               }}
               disabled={actionBusy}
             >
-              {i18nT('pages.appDetailPage.approve_new_permissions')}
+              {i18nT(firstKiroApproval ? 'pages.appDetailPage.approve_kiro_operations' : 'pages.appDetailPage.approve_new_permissions')}
             </Btn>
             )}
           </div>
@@ -1831,6 +1827,7 @@ export default function AppDetailPage() {
                 <UserSessionReachBox declared={reachVerbs(app.manifest.permissions.reachableByUserSessions)} staged={stagedUserSessionReach} />
                 <DesktopCapabilitiesBox declared={knownDesktopCapabilities(app.manifest.permissions.desktopCapabilities)} staged={stagedDesktopCapabilities} />
                 <BrowserVerbsBox declared={knownBrowserVerbs(app.manifest.permissions.browser)} staged={stagedBrowser} preview={app.browserGrant?.preview} />
+                <KiroOperationsBox grant={app.kiroOperationsGrant} />
                 {app.manifest.permissions.webhookSource === true && <WebhookSourceBox source={app.name} />}
                 <div className="flex flex-wrap gap-3 text-[12px] text-muted mt-1">
                   {app.manifest.permissions.storage && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.storage_yes')}</span>}

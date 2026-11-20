@@ -698,6 +698,12 @@ class Permissions:
     browserSites: list[str] = field(default_factory=list)  # noqa: N815
     #: ``browserSites`` present but not a list of strings. Not serialized.
     bad_browser_sites: bool = False
+    #: Kiro BFF operations the gateway may call for the app as the signed-in person,
+    #: by exact name (``apps/kiro_operations.py``). A staged grant family: an update
+    #: that adds a name waits for the owner. Validated by ``AppManifest.validate``.
+    kiroOperations: list[str] = field(default_factory=list)  # noqa: N815
+    #: ``kiroOperations`` present but not a list of strings. Not serialized.
+    bad_kiro_operations: bool = False
     #: The verbs (``"view"``, ``"read"``, ``"act"``) the app may use on the browser
     #: tabs of its own slots through ``ctx.browser`` (``apps/browser_sdk.py``). Empty =
     #: none, which is the default. Never approved by an install: the owner approves
@@ -760,6 +766,8 @@ class Permissions:
             d["desktopCapabilities"] = self.desktopCapabilities
         if self.browserSites:
             d["browserSites"] = list(self.browserSites)
+        if self.kiroOperations:
+            d["kiroOperations"] = list(self.kiroOperations)
         if self.browser:
             d["browser"] = list(self.browser)
         if self.webhookSource:
@@ -769,6 +777,26 @@ class Permissions:
         if self.exposeToApps:
             d["exposeToApps"] = self.exposeToApps
         return d
+
+    def list_errors(self) -> list[str]:
+        """Validation errors of the list-valued grants ``browserSites`` and ``kiroOperations``."""
+        # Deferred: both validators stay off an MCP server's pre-list import budget.
+        from kiro_crew.apps.browser_sites import browser_site_errors  # noqa: PLC0415
+        from kiro_crew.apps.kiro_operations import kiro_operation_errors  # noqa: PLC0415
+
+        bad = "permissions.{} must be an array of strings"
+        return [
+            *(
+                [bad.format("browserSites")]
+                if self.bad_browser_sites
+                else browser_site_errors(self.browserSites)
+            ),
+            *(
+                [bad.format("kiroOperations")]
+                if self.bad_kiro_operations
+                else kiro_operation_errors(self.kiroOperations)
+            ),
+        ]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Permissions:
@@ -793,6 +821,8 @@ class Permissions:
 
         raw_sites = data.get("browserSites", [])
         sites_ok = isinstance(raw_sites, list) and all(isinstance(e, str) for e in raw_sites)
+        raw_ops = data.get("kiroOperations", [])
+        ops_ok = isinstance(raw_ops, list) and all(isinstance(e, str) for e in raw_ops)
         return cls(
             api=_granted_list(data.get("api")),
             events=_granted_list(data.get("events")),
@@ -815,6 +845,8 @@ class Permissions:
             desktopCapabilities=declared_capabilities(data.get("desktopCapabilities")),
             browserSites=list(raw_sites) if sites_ok else [],  # noqa: N815
             bad_browser_sites=not sites_ok,
+            kiroOperations=list(raw_ops) if ops_ok else [],  # noqa: N815
+            bad_kiro_operations=not ops_ok,
             browser=browser_verbs(data.get("browser")),
             webhookSource=data.get("webhookSource") is True,  # noqa: N815
             bots=_bot_scopes(data.get("bots")),

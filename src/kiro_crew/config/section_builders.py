@@ -669,12 +669,21 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         relay_lease_url=str(section.get("relay_lease_url") or ""),
         relay_lease_credential=str(section.get("relay_lease_credential") or ""),
         relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),
+        # A value the person did not give (absent, null, empty or blank) leases from
+        # us-east-1; any value they gave must be a known Region, or the relay refuses
+        # and sends nothing.
+        relay_lease_region=_text_or_empty(section.get("relay_lease_region")),
         relay_handle_email_domains=_handle_email_domains(section.get("relay_handle_email_domains")),
         # Only the JSON boolean ``true`` turns the viewer's dev settings on: a string
         # or a number left by a hand edit keeps them off rather than reading as truthy.
         relay_viewer_enabled=section.get("relay_viewer_enabled") is True,
         **_relay_viewer_targets(section),
     )
+
+
+def _text_or_empty(raw: object) -> str:
+    """``""`` for absent or null, else the value as text, so a given ``false`` is refused."""
+    return "" if raw is None else str(raw)
 
 
 def _relay_enabled(raw: object) -> bool | None:

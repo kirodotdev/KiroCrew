@@ -104,11 +104,14 @@ export function RemoteControlCard() {
                 : i18nT('pages.settings.remoteControlCard.on')}
             </p>
           )}
-          {shown && !data.locked && !data.running && (
+          {shown && !data.locked && !data.running && !data.problem && (
             <p className="m-0 text-[13px]" role="status">
               {i18nT('pages.settings.remoteControlCard.restart_to_connect')}
             </p>
           )}
+          {/* Why config keeps the relay from starting: a restart would not help.
+              No hand-off: same reason as the read failure above. */}
+          {shown && !data.locked && !data.running && <ErrorNotice message={data.problem} />}
           {!shown && (
             <p className="m-0 text-[13px]" role="status">
               {/* Locked: `remote-control on` is refused here, so no turn-on hint. */}

@@ -11,8 +11,10 @@ its last cached copy however old.
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 import time
+import weakref
 
 import pytest
 from apps_registry_helpers import _catalog_absent  # noqa: F401 - fixture
@@ -20,7 +22,7 @@ from apps_registry_helpers import _explicit_registry_execution_admission  # noqa
 from apps_registry_helpers import unsandboxed_spawn  # noqa: F401 - fixture
 
 from kiro_crew.apps import registry
-from kiro_crew.apps.registry_pipeline import catalog
+from kiro_crew.apps.registry_pipeline import catalog, store_art
 from kiro_crew.testing.wait import await_until
 
 
@@ -330,7 +332,13 @@ async def test_a_mutated_listing_row_reaches_no_other_row(monkeypatch):
         fetch_inputs.append(entry)
         started.set()
         await release.wait()
-        row = {**entry, "displayName": "Fetched", "extra": {"tags": ["fetched"]}}
+        # ``author`` is a display field, so the merged row takes it from app.json.
+        row = {
+            **entry,
+            "author": "Kiro Crew",
+            "displayName": "Fetched",
+            "extra": {"tags": ["fetched"]},
+        }
         fetched.append(row)
         return row
 
@@ -360,12 +368,73 @@ async def test_a_mutated_listing_row_reaches_no_other_row(monkeypatch):
     first["author"] = "Mallory"
     first["extra"]["tags"].append("mutated")
 
-    assert fetch_inputs[0]["author"] == "Kiro Crew"
-    assert fetch_inputs[0].get("_index_author") == "Kiro Crew"
+    # The fetch holds only the keys it reads; ``_index_author`` comes from each
+    # listing's own entry.
+    assert set(fetch_inputs[0]) == {"name", "gitUrl"}
     assert fetched[0]["extra"] == {"tags": ["fetched"]}
     assert second["author"] == "Kiro Crew"
     assert second["extra"] == {"tags": ["fetched"]}
     assert second["verified"] is True
+
+
+class _Padding(dict):
+    """A dict an index row carries but no fetch reads; weak-referenceable."""
+
+
+@pytest.mark.asyncio
+async def test_a_fetch_past_the_budget_holds_none_of_the_rows_unused_fields(monkeypatch):
+    # An index may pad its rows with fields no fetch reads. A fetch past the budget
+    # holds only the keys it reads, and the batch lets go of the caller's rows, so
+    # the task cap bounds the bytes the background holds, not only the count.
+    failing, fetching = _external_rows(2)
+    manifest = {"displayName": "Fetched"}
+    held: list[weakref.ref] = []
+    release = asyncio.Event()
+    inputs: list[dict] = []
+
+    def _padded(row: dict) -> dict:
+        padding = _Padding(blob="x" * 100_000)
+        # ``featured`` is a registry key the merge keeps but no fetch reads.
+        featured = _Padding(blob="x" * 100_000)
+        held.extend((weakref.ref(padding), weakref.ref(featured)))
+        return {**row, "unused_metadata": padding, "featured": featured}
+
+    async def _fake_external():
+        return [_padded(failing), _padded(fetching)]
+
+    async def _slow_resolve(entry):
+        inputs.append(entry)
+        await release.wait()
+        if entry["name"] == failing["name"]:
+            return entry
+        return registry._merge_manifest(entry, manifest)
+
+    _stub_listing_sources(monkeypatch, [], _slow_resolve)
+    monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+
+    listed = {r["name"]: r for r in await _listing(registry.list_registry())}
+    assert catalog._MANIFEST_BATCHES, "the fetches past the budget must keep running"
+    assert sorted(e["name"] for e in inputs) == [failing["name"], fetching["name"]]
+    assert all("unused_metadata" not in e for e in inputs), "the fetch got the whole row"
+    assert all("featured" not in e for e in inputs), "the fetch got a key it never reads"
+    for name in (failing["name"], fetching["name"]):
+        assert listed[name]["unused_metadata"] == {"blob": "x" * 100_000}
+    gc.collect()
+    assert [ref() for ref in held] == [None] * 4, "the background held the caller's row"
+
+    release.set()
+    await _drain_background_fetches()
+    # Both fetches done, so these resolve at once and answer as before: the failed
+    # fetch the caller's own whole row, the fetched one the merge of the whole row.
+    padded = [_padded(failing), _padded(fetching)]
+    rows = await await_until(
+        asyncio.gather(*(catalog._resolve_manifest_once(dict(e)) for e in padded)),
+        what="both fetches answering",
+    )
+    assert rows[0] == padded[0]
+    assert rows[0]["unused_metadata"] is not padded[0]["unused_metadata"]
+    assert rows[1] == registry._merge_manifest(padded[1], manifest)
+    await _drain_background_fetches()
 
 
 @pytest.mark.asyncio
@@ -481,3 +550,197 @@ async def test_both_manifest_batches_share_one_listing_deadline(monkeypatch, lis
     assert second_deadline == first_deadline, "both batches must share the deadline"
     # The first batch waited for its gated fetch, so less than the budget was left.
     assert second_deadline - second_start < 0.3
+
+
+def _nested_row(row: dict, depth: int) -> dict:
+    nested: list = []
+    for _ in range(depth):
+        nested = [nested]
+    return {**row, "detectInstalled": nested}
+
+
+def _fails(call, value) -> bool:
+    try:
+        call(value)
+    except RecursionError:
+        return True
+    return False
+
+
+def _depth_past_copy_only(row: dict) -> int | None:
+    """A nesting depth that ``copy.deepcopy`` cannot copy but ``json`` encodes.
+
+    ``copy.deepcopy`` spends about two Python frames a level and ``json``'s encoder
+    about one C level, so such a depth exists where the encoder's limit is above
+    half the recursion limit; ``None`` on a platform where it is not.
+    """
+    import copy
+    import json
+    import sys
+
+    limit = sys.getrecursionlimit()
+    for depth in (limit, limit * 2, limit * 4):
+        crafted = _nested_row(row, depth)
+        if _fails(copy.deepcopy, crafted) and not _fails(json.dumps, crafted):
+            return depth
+    return None
+
+
+def _depth_past_json(row: dict) -> int:
+    """A nesting depth that ``json`` cannot encode, so the row cannot be keyed."""
+    import json
+
+    depth = 1024
+    while depth <= 1 << 17:
+        if _fails(json.dumps, _nested_row(row, depth)):
+            return depth
+        depth *= 2
+    raise AssertionError("json encoded every depth up to 2**17")
+
+
+async def _assert_the_nested_row_fails_alone(monkeypatch, depth: int, *, keyed: bool) -> None:
+    """A listing with one row nested *depth* deep answers both rows.
+
+    The nested row shows bare; when it can be *keyed* it gets its own fetch, which
+    holds none of the nested value, and otherwise it starts none. The other row's
+    fetch runs to the end in the background either way.
+    """
+    crafted, normal = _external_rows(2)
+    crafted = _nested_row(crafted, depth)
+    release = asyncio.Event()
+    inputs: list[dict] = []
+    finished: list[str] = []
+
+    async def _slow_resolve(entry):
+        inputs.append(entry)
+        await release.wait()
+        finished.append(entry["name"])
+        return {**entry, "displayName": "Fetched"}
+
+    _stub_listing_sources(monkeypatch, [crafted, normal], _slow_resolve)
+
+    listed = {r["name"]: r for r in await _listing(registry.list_registry())}
+
+    assert listed[crafted["name"]].get("detectInstalled") is None
+    assert listed[crafted["name"]]["_registry"] == "labs"
+    assert "displayName" not in listed[normal["name"]]
+    fetched = sorted([crafted["name"], normal["name"]] if keyed else [normal["name"]])
+    assert sorted(e["name"] for e in inputs) == fetched
+    assert all("detectInstalled" not in e for e in inputs), "the fetch got the nested value"
+    assert len(catalog._MANIFEST_BATCHES) == 1, "only the background fetches may stay"
+    release.set()
+    await _drain_background_fetches()
+    assert sorted(finished) == fetched
+
+
+@pytest.mark.asyncio
+async def test_a_row_nested_past_the_copy_limit_fails_alone(monkeypatch):
+    # An index row may nest a value under a registry key past the recursion limit.
+    # ``json`` encodes it, so the row gets a fetch, but ``copy.deepcopy`` cannot copy
+    # it: that row answers bare and every other row as usual. Where no depth fails
+    # the copy alone, the row is nested past ``json`` instead.
+    (row,) = _external_rows(1)
+    depth = _depth_past_copy_only(row)
+    if depth is None:
+        await _assert_the_nested_row_fails_alone(monkeypatch, _depth_past_json(row), keyed=False)
+    else:
+        await _assert_the_nested_row_fails_alone(monkeypatch, depth, keyed=True)
+
+
+@pytest.mark.asyncio
+async def test_a_row_nested_past_the_json_limit_starts_no_fetch(monkeypatch):
+    # A row ``json`` cannot encode cannot be keyed, so it starts no shared fetch and
+    # answers its fallback row, bare; every other row fetches as usual.
+    (row,) = _external_rows(1)
+    await _assert_the_nested_row_fails_alone(monkeypatch, _depth_past_json(row), keyed=False)
+
+
+@pytest.mark.asyncio
+async def test_a_row_with_null_coordinates_still_fetches(monkeypatch):
+    # Registry rows carry ``branch``, ``subdirectory`` or ``commit`` as null. Such a
+    # row still starts a background fetch, and the fetch reads those keys as None.
+    (row,) = _external_rows(1)
+    row.update(branch=None, subdirectory=None, commit=None)
+    release = asyncio.Event()
+    inputs: list[dict] = []
+
+    async def _slow_resolve(entry):
+        inputs.append(dict(entry))
+        await release.wait()
+        return {**entry, "displayName": "Fetched"}
+
+    _stub_listing_sources(monkeypatch, [row], _slow_resolve)
+
+    listed = {r["name"]: r for r in await _listing(registry.list_registry())}
+
+    assert row["name"] in listed
+    assert [e["name"] for e in inputs] == [row["name"]], "the null row must start a fetch"
+    assert {k: inputs[0][k] for k in ("branch", "subdirectory", "commit")} == dict.fromkeys(
+        ("branch", "subdirectory", "commit")
+    )
+    release.set()
+    await _drain_background_fetches()
+
+
+@pytest.mark.asyncio
+async def test_the_background_holds_at_most_the_fetch_cap(monkeypatch):
+    # A row that would start a fetch past ``_MANIFEST_FETCHES_MAX`` starts none, in
+    # the batch and at the deadline alike, and answers its fallback row.
+    rows = _external_rows(4)
+    release = asyncio.Event()
+    inputs: list[str] = []
+
+    async def _slow_resolve(entry):
+        inputs.append(entry["name"])
+        await release.wait()
+        return {**entry, "displayName": "Fetched"}
+
+    _stub_listing_sources(monkeypatch, rows, _slow_resolve)
+    monkeypatch.setattr(registry, "_MANIFEST_FETCHES_MAX", 2)
+    assert catalog._MANIFEST_FETCHES_MAX == 2, "the patch must reach catalog"
+
+    listed = {r["name"]: r for r in await _listing(registry.list_registry())}
+
+    assert set(listed) >= {r["name"] for r in rows}
+    assert all("displayName" not in listed[r["name"]] for r in rows)
+    running = [t for t in catalog._MANIFEST_FETCHES.values() if not t.done()]
+    assert len(running) == 2, "the background must hold at most the cap"
+    assert len(inputs) == 2
+    release.set()
+    await _drain_background_fetches()
+    assert sorted(inputs) == sorted(r["name"] for r in rows[:2])
+
+
+@pytest.mark.asyncio
+async def test_a_row_with_an_oversized_fetch_key_starts_no_fetch(monkeypatch):
+    # A fetch holds its fetch keys past the listing, so a row whose ``commit`` is
+    # longer than the cap starts none and answers its fallback row; a row at the
+    # cap still fetches.
+    cap = store_art._PREWARM_FIELD_MAX_LEN
+    crafted, normal = _external_rows(2)
+    crafted["commit"] = "a" * (cap + 1)
+    normal["commit"] = "b" * cap
+    release = asyncio.Event()
+    inputs: list[str] = []
+    finished: list[str] = []
+
+    async def _slow_resolve(entry):
+        inputs.append(entry["name"])
+        await release.wait()
+        finished.append(entry["name"])
+        return {**entry, "displayName": "Fetched"}
+
+    _stub_listing_sources(monkeypatch, [crafted, normal], _slow_resolve)
+
+    listed = {r["name"]: r for r in await _listing(registry.list_registry())}
+
+    assert listed[crafted["name"]]["_registry"] == "labs"
+    assert "displayName" not in listed[crafted["name"]]
+    assert "displayName" not in listed[normal["name"]]
+    assert inputs == [normal["name"]], "the oversized row must start no fetch"
+    running = [t for t in catalog._MANIFEST_FETCHES.values() if not t.done()]
+    assert len(running) == 1, "only the normal row's fetch may run"
+    release.set()
+    await _drain_background_fetches()
+    assert finished == [normal["name"]]
+    assert not catalog._MANIFEST_FETCHES

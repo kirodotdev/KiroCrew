@@ -23,8 +23,8 @@ advisory review text. Its stateless directive is validated by
 `mcp_tools.control.monitor_start`, then applied by
 `dashboard.session_directive_apply._monitor_start` through
 `autonudge_authz.authorize_and_add_nudge`. `AutoNudgeService` persists and
-schedules the loop. Those two `monitor_start` surfaces are the only callers that
-ask for the gate; the chokepoint defaults every other caller UNGATED, the generic
+schedules the loop. Those two `monitor_start` surfaces and the conductor patrol
+(`conductor_patrol`) are the only callers that ask for the gate; the chokepoint defaults every other caller UNGATED, the generic
 REST route included. Gating is the state that can silently stop work, so a caller
 that names no value resolves toward spending a turn per interval rather than toward
 a watch that deactivates itself.
@@ -492,7 +492,7 @@ what reaches the kernel as a failed tick.
 
 The PR watch is driven in-process by the gateway (`monitor_watch` or a
 `monitor_start` loop); no script asset ships for it and the babysit skill
-directory holds only its `SKILL.md`. A registered script job is refused by the
+directory holds only its `SKILL.md` and the `references/github-helper.md` guide. A registered script job is refused by the
 probe and auto-paused, as described under "There is no script-cron driver"
 above, so script-cron `Skip`/`Report`/`Done` delivery is not this watch's path.
 

@@ -2730,7 +2730,7 @@ words the schedule rows' countdowns use, so ja reads `次回は13 分後`), and
 the open-item count from the masked crew-board read (`GET /api/crew-board`,
 omitted while unread or when the slot owns no ledger, a 404 that is not
 retried). A stopped patrol replaces last/next with one phrase: "You paused
-it" (`manual` / `user_stop`), "Hit its 7 days time limit" (`runtime_budget`,
+it" (`manual` / `user_stop`), "Hit its time limit of 7 days" (`runtime_budget`,
 the limit in short unit words too), "Hit its check limit" (`cycle_cap`),
 "Stopped while waiting for your approval" (`approval_stalled` /
 `approval_stall`), "Its chat was closed" (`session_close`), and the plain

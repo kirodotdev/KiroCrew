@@ -14,7 +14,12 @@ already gone green on every lane with auto-merge armed.
 monitor_start(
   message="Check https://github.com/owner/repo/pull/123 with green_age.py "
           "--pr 123 then pr_status.py --reviewers <profile reviewer names>. "
-          "green_age 30: re-sync, run the related tests, push. Do NOT push "
+          "green_age 30: rebase and run the gates and related tests in a "
+          "throwaway detached worktree. Green: do NOT push; move the "
+          "branch to it and report it. Otherwise leave the branch "
+          "where it is, so the next cycle still reads 30. A "
+          "conflict or a red this PR causes: fix it, then push; a red also "
+          "on origin/main follows When main is red. Do NOT push "
           "while the head still has queued or in_progress runs -- wait a "
           "cycle. Then post ONE comment starting with "
           "'Rebased: main moved in' and naming the files and both bases. "
@@ -46,7 +51,9 @@ One clause above is load-bearing and easy to lose when editing this call:
 
 - **A STALE answer does not license a push into a running head, and never a
   cancel.** SKILL.md's no-push-while-runs-are-in-flight rule still holds, so
-  exit 30 waits a cycle. Cancelling the head's in-flight runs belongs to exit
+  a red re-check waits a cycle before it pushes. It ran in a throwaway
+  worktree, so the branch still sits on the published head and the next
+  cycle reads 30 again rather than a fresh 0. Cancelling the head's in-flight runs belongs to exit
   20, after a decision to change code — never to a re-sync.
 
 Keep the whole call inside the host's argument budget (**3800 characters** on

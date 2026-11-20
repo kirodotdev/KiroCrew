@@ -157,6 +157,18 @@ SECRET_URI_PREFIX = "secret://"
 #: The ``tunnel.relay_lease_credential`` value that leases with the Crew's own Kiro
 #: sign-in (a personal Crew) instead of a file or a stored secret.
 SIGN_IN_CREDENTIAL = "kiro-sign-in"
+#: The built-in lease service's Region for a Crew whose settings name none.
+DEFAULT_LEASE_REGION = "us-east-1"
+#: Why a source built with no lease URL posts nothing (``provider.py`` always passes one).
+NO_LEASE_URL = (
+    "this Crew has no lease service URL: set tunnel.relay_lease_url, or "
+    "tunnel.relay_lease_region to a Region the built-in lease service covers"
+)
+#: A hint, never a diagnosis, on a refusal for a Crew on the default Region.
+REGION_HINT = (
+    " (if this Crew's credential belongs to a Region other than us-east-1, "
+    "set tunnel.relay_lease_region)"
+)
 
 #: Error types the service refuses this Crew with, and why. An access refusal
 #: waits ``RETRY_AFTER_MAX_SECONDS``; the others stop until Remote Control restarts.
@@ -225,11 +237,12 @@ def lease_url_problem(url: str) -> Optional[str]:
 
 
 def built_in_lease_url(profile_arn: Optional[str]) -> str:
-    """The lease service a Crew calls when ``tunnel.relay_lease_url`` is empty.
+    """The lease service a personal Crew calls when ``tunnel.relay_lease_url`` is empty.
 
     It is the Kiro control plane sign-in already calls, for the region of
     *profile_arn* (the personal Crew's sign-in), from the same built-in https://
-    table. Read at each call, so building the source does no I/O.
+    table. Read at each call, so building the source does no I/O. Any other Crew is
+    handed its Region's URL when the source is built (``built_in_url``).
     """
     # Loaded here: the auth package is not imported until a call needs it.
     from kiro_crew.auth.login.control_plane import (
@@ -238,8 +251,8 @@ def built_in_lease_url(profile_arn: Optional[str]) -> str:
         profile_region,
     )
 
-    # shortcut: a Crew with no signed-in profile leases from us-east-1, as sign-in does;
-    # read the region from the crew API key if the lease service ever names one.
+    # shortcut: a personal Crew with no signed-in profile leases from us-east-1, as
+    # sign-in does; the service refuses that call until the profile is named.
     try:
         region = profile_region(profile_arn or "")
     except ControlPlaneError:
@@ -678,6 +691,7 @@ class LeaseHostTokenSource:
         profile_arn: Optional[Callable[[], Optional[str]]] = None,
         sign_in: Optional[Callable[[Optional[str]], Awaitable[Any]]] = None,
         workload: bool = False,
+        built_in_url: str = "",
     ) -> None:
         if workload:
             # The service recognizes a JWT-SVID only with no TokenType, and a
@@ -692,6 +706,9 @@ class LeaseHostTokenSource:
         # awsJson 1.0: every operation is POST / on the service's base URL. Empty
         # means the built-in one, picked at each call (built_in_lease_url).
         self._renew_url = lease_url.rstrip("/") + "/" if lease_url else ""
+        # No lease URL and no profile reader: the built-in URL for the Crew's Region;
+        # "" (a refused Region, or a source built by hand) stops every call.
+        self._built_in_url = built_in_url
         # Only a lease service on loopback may name a plaintext loopback test relay.
         self._local_test = lease_url_is_loopback(lease_url)
         # The TokenType header, or None for a sign-in that sends none.
@@ -880,6 +897,9 @@ class LeaseHostTokenSource:
             self._back_off(
                 f"the credential tunnel.relay_lease_credential names could not be read: {exc}"
             )
+        if not self._lease_url():
+            # Before the instance ID: a refused start holds no lease to release.
+            self._stop(NO_LEASE_URL)
         self._cannot_host_said = ""
         home = self._home if self._home is not None else _data_home()
         if self._instance_id is None:
@@ -941,11 +961,12 @@ class LeaseHostTokenSource:
                 "tunnel.relay_lease_token_type matches its kind (a team Crew on a crew API "
                 "key needs API_KEY, a token from an outside identity provider needs "
                 "EXTERNAL_IDP, and a Kiro sign-in leaves it empty), then restart Remote Control"
+                + self._region_hint()
             )
         kind, reason = refusal_of(payload, answered.error_type)
         named = f"{kind} {reason}" if kind and reason else (kind or f"HTTP {status}")
         message = refusal_message(payload)
-        said = f'. The service said: "{message}"' if message else ""
+        said = (f'. The service said: "{message}"' if message else "") + self._region_hint()
         if kind == _ACCESS_DENIED:
             # Access can be granted again with no change on this machine, so the
             # Crew tries again on its own, at most every 15 minutes, as the refusals
@@ -1137,9 +1158,28 @@ class LeaseHostTokenSource:
             headers["TokenType"] = self._token_type
         return headers
 
+    def _region_hint(self) -> str:
+        """:data:`REGION_HINT` for a key Crew on the default Region's built-in URL, else ``""``."""
+        from kiro_crew import workload_identity
+        from kiro_crew.auth.login.control_plane import known_control_plane_url
+
+        default = known_control_plane_url(DEFAULT_LEASE_REGION)
+        if self._renew_url or self._profile_arn is not None or self._built_in_url != default:
+            return ""
+        return "" if workload_identity.active() else REGION_HINT
+
+    def _lease_url(self) -> str:
+        """Where this call goes, or ``""``; after ``_credential()`` names a sign-in's profile."""
+        if self._renew_url:
+            return self._renew_url
+        if self._profile_arn is not None:
+            return built_in_lease_url(self._personal_profile_arn())
+        return self._built_in_url
+
     async def _post(self, credential: str, body: dict, target: str) -> "_Answered":
-        # After _credential(): a personal Crew's sign-in has named its profile by now.
-        url = self._renew_url or built_in_lease_url(self._personal_profile_arn())
+        url = self._lease_url()
+        if not url:
+            raise _Stop(NO_LEASE_URL)
         try:
             async with self._client_session().post(
                 url,

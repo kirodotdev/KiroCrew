@@ -25,7 +25,7 @@ the user made through the host; an adopted Mochi declares the defaults above as 
 shortcut's `platformAccelerators` (app-kit-platform §35, "What still runs in the shell").
 `shortcuts.js` reserves the configured chords as a plain shell owner, so the host refuses
 them to any app, an adopted Mochi included, until the built-in steps aside for it
-(#37454) and can hand them over with `{ app: true }`.
+and can hand them over with `{ app: true }`.
 
 The desktop pet keeps polling the gateway while disabled so enabling Mochi in
 the App Store takes effect without restarting the shell. Probe diagnostics are

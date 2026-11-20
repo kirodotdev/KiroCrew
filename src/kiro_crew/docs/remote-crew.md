@@ -492,6 +492,26 @@ kirocrew config set tunnel.relay_lease_credential secret://<name>
 kirocrew config set tunnel.relay_lease_token_type API_KEY
 ```
 
+The key names no Region, so the Crew leases from us-east-1. A Crew registered
+outside us-east-1 needs one more line, naming its Region (`eu-central-1` or
+`eu-west-1`):
+
+```bash
+kirocrew config set tunnel.relay_lease_region eu-central-1
+```
+
+Without that line, such a Crew's key goes to us-east-1 and the lease is refused there;
+the refusal in the log and the tunnel status suggests the setting. Set it with
+`kirocrew config set`; **Settings** shows it but does not change it. A value
+outside that list keeps Remote Control from starting, and `kirocrew
+remote-control status` says "can't start" and why, as does
+**Settings → Remote Crew**. A host with a workload identity leases from
+`tunnel.relay_lease_region` too, whether its `tunnel.relay_lease_credential` names
+its JWT-SVID file or a crew key; the profile ARN does not pick the Region.
+
+A value the person did not give (absent, null, empty or blank) leases from us-east-1;
+any value they gave must be a known Region, or the relay refuses and sends nothing.
+
 A team Crew with its key set hosts by default after the next restart, with no
 `remote-control on`: setting the key is the choice to host. A host with a workload
 identity whose `tunnel.relay_lease_credential` names its credential does too. The
