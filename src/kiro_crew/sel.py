@@ -1212,8 +1212,8 @@ class _UnavailableSecurityEventLog(SecurityEventLog):
 
     A non-critical event is dropped with one warning, the same best-effort loss
     ``log`` accepts when its writer cannot take an event on the event loop, and
-    is counted into ``dropped_events`` once the log builds. A critical event, and
-    every read or maintenance call, raises the error that stopped construction,
+    is counted into ``dropped_events`` once the log builds. A critical event, a
+    ``deny_exception`` event, and every read or maintenance call, raises the error that stopped construction,
     so a fail-closed caller still refuses.
     """
 
@@ -1232,7 +1232,9 @@ class _UnavailableSecurityEventLog(SecurityEventLog):
 
     def log(self, event: SecurityEvent, *, critical: bool = False) -> None:
         global _unavailable_warned, _unavailable_dropped
-        if critical:
+        # A deny exception is always critical: the gate grants it only with its row, so a
+        # row that cannot be written refuses the grant, as the no-write path does.
+        if critical or event.event_type == "deny_exception":
             self._raise()
         with _unavailable_lock:
             _unavailable_dropped += 1
