@@ -72,7 +72,7 @@ def helper_home(monkeypatch, tmp_path):
     # Windows ships a system `credential.helper=manager`), so this store is the
     # only helper git asks.
     cfg.write_text(
-        f'[credential]\n\thelper =\n\thelper = "store --file={store_path}"\n', encoding="utf-8"
+        f"[credential]\n\thelper =\n\thelper = \"store --file='{store_path}'\"\n", encoding="utf-8"
     )
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
     for name in ("GIT_ASKPASS", "SSH_ASKPASS"):
