@@ -295,6 +295,35 @@ Three structural facts explain most of the rest:
   Actions token filed and only that issue's checked state record; the fix line is
   rebuilt from the issue timeline, not copied from the editable body.
   `test/test_main_red_pr_notice.py` runs the step with `gh` stubbed.
+- **Three pull requests that fail one test the same way open a `Main may be red:`
+  issue.** The `Main is red:` issue comes only after a push run on `main` ends,
+  about an hour after the commit that broke it. When a same-repository pull
+  request's `CI` run (target `main`) ends `failure` and names a failing test,
+  `main-red-suspect.yml` reads the newest failed runs of other pull requests and,
+  when the same node id fails with the same message start (80 characters) on 3
+  pull requests, whether or not the run that started it is one of them, files one
+  `ci: Main may be red: <node id>` issue under the `main-red-suspected` label
+  (`.github/scripts/main_red_suspect.py`). The 3 must have different authors and
+  runs started by different accounts, each failing on its current head, none
+  changing the test's file (an unreadable or cut list counts as changing it),
+  with a plain `test/...py::name` or `src/...py::name` id; a fork's pull request
+  is never counted. Every set of 3 among the runs read is tried, so the order
+  of the run list decides nothing. The issue lists the tests, the 3 pull
+  requests and the one of their bases that the other two contain. It is a notice and never a skip:
+  `scripts/ci_main_red_skip.py` and `main-red-pr-notice.yml` read only the issue
+  the watcher's `pick_issue` returns, and a suspected issue has another title
+  prefix, another record marker and another label, so only a red push run on
+  `main` can deselect a test. A push run on `main` closes the suspected issue:
+  a red one once the `Main is red:` issue names the test (that issue tracks it),
+  a green one that ran the full backend suite and contains the recorded base
+  (main was green), and a test closed that way is not suspected again for 24
+  hours, so a flaky test does not file one issue per flake. At most 3 are open
+  at once and a test is in one of them only. It reads nothing more while a `Main is red:` issue is open, reads at
+  most the newest 10 other failed pull request runs of the last 3 hours, reads
+  no other run when fewer than 1,500 API requests are left for the token, changes nothing on
+  a pull request and cannot fail a job. It holds `actions: read`,
+  `checks: read`, `contents: read`, `pull-requests: read` and `issues: write`.
+  `test/test_main_red_suspect.py` pins each rule with `gh` faked.
 - **A pull request does not run the tests that are red on main.** The `changes`
   job of `ci.yml` reads the open `Main is red:` issue once per run
   (`scripts/ci_main_red_skip.py decide`), and every `Backend Tests` shard, Linux
@@ -2075,7 +2104,8 @@ what starts them:
   `sensitive-change-review-comment.yml`'s `rerun`, which a review starts too
   (above)
 - another workflow completing: `main-red-watch.yml`'s `watch`,
-  `main-red-pr-notice.yml`'s `notice`, `main-macos-failure-watch.yml`'s `page`
+  `main-red-pr-notice.yml`'s `notice`, `main-red-suspect.yml`'s `suspect`,
+  `main-macos-failure-watch.yml`'s `page`
   and `scheduled-failure-watch.yml`'s `surface`
 - a call from `nightly.yml`, `release.yml` or `release-lts.yml`:
   `publish-cli.yml`'s `publish-cli`, `publish-docker.yml`'s `publish-docker`,
