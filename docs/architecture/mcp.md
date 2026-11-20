@@ -243,16 +243,22 @@ same text. A fork already at `false` records nothing.
 
 ### Managed servers
 
-`agent._MANAGED_MCP_SERVERS` holds the ten servers the gateway owns end to
+`agent._MANAGED_MCP_SERVERS` holds the eleven servers the gateway owns end to
 end: the always-on `kirocrew-cron`, `kirocrew-core`, `kirocrew-guide` and
 `kirocrew-mate`, the gated `kirocrew-computer`, and the opt-in
-`kirocrew-dashboard`, `kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug` and
-`kirocrew-panel`. Every emitted or
+`kirocrew-dashboard`, `kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug`,
+`kirocrew-panel` and `kirocrew-secrets`. Every emitted or
 explicitly granted entry is refreshed on every rebuild by
-`_refresh_dynamic_fields()`, which rewrites `command`/`args` from the live
-`kirocrew` binary, strips stale remote-transport fields (`url`, `headers`) left by
-older builds, and re-pins `env.KIROCREW_HOME` to the home the gateway is actually
-running under while preserving the user's own env keys.
+`_refresh_dynamic_fields()` (through `managed_mcp.refresh_managed_servers`), which
+rewrites `command`/`args` from the live `kirocrew` binary, strips stale
+remote-transport fields (`url`, `headers`) left by older builds, and keeps the
+user's own env keys except Kiro Crew's reserved `KIROCREW_*` namespace, the
+loader and interpreter channels, the keys that move the home directory
+(`_HOME_DERIVING_ENV_KEYS`) and the keys that pick what the shim executes
+(`_LAUNCHER_EXEC_ENV_KEYS`). It then pins `env.KIROCREW_HOME` to the gateway's
+override data home when the gateway runs under one (with no override no pin is
+written), plus the cache-only policy markers on a centrally governed host
+(`_managed_mcp_env`).
 User customizations are preserved, `autoApprove` included: a list in the user's own
 MCP config survives the refresh, whoever wrote it, the owner or the agent,
 which is what `mcp.honour_auto_approve` (on by default) decides. It is worth
@@ -969,8 +975,8 @@ the sharing rows and the gateway rewriter use; otherwise it is stdio.
   artifact kiro-cli actually wrote.
 
   The KAS side has the same limit. Its entry name mirrors the engine's
-  undocumented `calculateConnectionHash` (checked against KAS 2.36.0 and
-  2.37.1). If an engine upgrade re-keys it, the name lookup misses, the answer is
+  undocumented `calculateConnectionHash` (checked against KAS 2.36.0, 2.37.1
+  and 3.5.0). If an engine upgrade re-keys it, the name lookup misses, the answer is
   `false`, and a server signed in through KAS reads "Sign-in required" until the
   mirror is corrected. `test/test_mcp_grant_kas.py` pins a recorded hash, so the
   mirror cannot change by accident, but it cannot detect an engine-side change.
@@ -1416,7 +1422,8 @@ servers join it (`config.integration_sections.MANAGED_STUB_FOLLOWERS`), so each
 is one shared backend instead of one process per session. They already need no
 launch approval (managed launch), get the per-session token from gatewayd, and
 consume the injected caller block. `kirocrew-computer` stays out (tenant-nonce
-gated), and so does `kirocrew-cron` (outside what this layer was measured on).
+gated), and so do `kirocrew-cron` and the opt-in, credential-bearing
+`kirocrew-secrets` (both outside what this layer was measured on).
 Joining the stub set mounts nothing: only
 servers a spec already declares are wrapped. An operator can turn any one off in
 MCP Management; that choice is stored as an override and survives later
@@ -2218,7 +2225,7 @@ file and a file off the record are skipped with a log line and treated as
 absent, as the agents loop treats a source its hardened reader refuses: the pass
 stays cacheable and `live_incomplete` is not set for them. The `crewmate:` prefix
 is reserved: an `~/.kiro/agents` spec whose name starts with it gets no overlay
-(skipped with a log line, fingerprint schema 12), so no ordinary session's stub
+(skipped with a log line), so no ordinary session's stub
 carries an identity that app-callback governance reads as a Bot's, and that
 session declares its servers itself. An `~/.kiro/agents`
 spec whose name is that identity is a collision, and so is one for the file id
@@ -2399,10 +2406,15 @@ inside the server's own process and is not a boundary against the app; what it m
 not do is let a Kiro Crew server out, so a handler whose code location cannot be read
 keeps the policy.
 
-`tools/call` fails **closed** on the four reasons in `_UNRESOLVED_REFUSES_CALL`
-(`mcp_shared_policy.py`): `policy_unreadable`, `identity_unattested`, `identity_unattestable`
-and `resolution_failed`. Each means "an operator exclusion may exist and this process
-could not read it". `policy_unreadable` is the gateway's `409`
+`tools/call` fails **closed** on the five reasons in `_UNRESOLVED_REFUSES_CALL`
+(`mcp_shared_policy.py`): `policy_unreadable`, `identity_unattested`, `identity_unattestable`,
+`gateway_locked` and `resolution_failed`. Each means "an operator exclusion may exist and this process
+could not read it". `gateway_locked` is an LTS gateway whose login gate is closed
+answering the read with `403 lts_gate_closed`: the policy was never consulted, and the
+403 is the gate's rather than a decision about this caller, so it is kept out of
+`policy_forbidden`. The call is refused with text saying the gateway is locked until
+Kiro is signed in, audited as `tool_policy.gateway_locked`, and not cached, so it
+clears on the first read after the gate opens. `policy_unreadable` is the gateway's `409`
 whose body carries `"code": "policy_unreadable"`: a spec for this session exists and its
 policy could not be determined. `identity_unattested` is the gateway's `409` whose body
 carries `"code": "member_identity_unavailable"`: the gateway could not establish the
@@ -2483,7 +2495,7 @@ for that caller or because refusal would be permanent rather than a window that 
 registering (a policy may exist) and for a caller the gateway can never map to an agent
 (no policy can exist); refusing denies the second class forever. `no_session_key` is
 the same gap inside the MCP process, where no agent is named at all. `policy_forbidden`
-is ANY `4xx`: the gateway answered and made a decision about this caller, which for
+is any other `4xx`: the gateway answered and made a decision about this caller, which for
 `403 member_session_unverified` is the steady state of a session claiming a private
 memory store without a verifiable proof. A boundary the gateway is enforcing is not a
 boundary it failed to read. The test is deliberately the status class and not a list of
@@ -2964,10 +2976,14 @@ requires the acknowledgement on `card.widen === true || risk === "widen"`, and a
 old signed record missing the field derives it from the capability impact on rebuild rather than
 reading it as False (`rebuild_record` skips the `widen` comparison when the record
 predates it). A setting whose VALUE is a command this machine then runs is
-`code_exec` whatever its before/after (`_CODE_EXEC_SETTINGS`, today
-`dashboard.terminal.shell`, the shell the dashboard terminal launches): a
-free-form command string has no widen/tighten direction, so the diff order is not
-consulted for it. The agent's `reason` is stored
+`code_exec` whatever its before/after (`change_card_catalog_kinds._CODE_EXEC_SETTINGS`:
+among them `dashboard.terminal.shell`, the shell the dashboard terminal launches;
+`agent.acp_backend` and `agent.kas_bundle`, the harness program a session runs;
+`session.pool_agent`, the spec warm-pool processes start with;
+`dashboard.remote_editor.host`, where the user's editor offers its SSH keys; the
+`session_environments` keys that pick the machine a session's commands run on; and
+the Strands provider, model and env keys): such a value has no widen/tighten
+direction, so the diff order is not consulted for it. The agent's `reason` is stored
 separately as plain text, and refused (`400 invalid_text`) when the
 exfiltration-URL scrubber or the credential redactor would change it
 (`guide_catalog.needs_redaction`, the same rule `guide_start`'s intro and notes
@@ -3211,7 +3227,8 @@ glob, so it auto-approves every tool the server advertises, while naming tools i
 to `hooks.on_tool_call`. `_CONDUCTOR_DASHBOARD_GRANTS` and
 `_MEMBER_DASHBOARD_GRANTS` (`agent_parts/spec_grants.py`) are the shipped examples of the individual
 form, and they differ from each other on exactly this axis: the member's list
-includes `session_send`, `session_broadcast`, `session_stop` and `session_retry` because `authorize_target` refuses a
+includes `session_send`, `session_broadcast`, `session_stop`, `session_retry` and
+`session_close` because `authorize_target` refuses a
 member caller on any session it did not create, and the conductor's withholds them
 because it has no such fence.
 
@@ -3241,6 +3258,9 @@ remove` takes one job id, and no `kirocrew cron` subcommand files a secret reque
 `kirocrew cron history` has no MCP twin: it is the operator's terminal read of the
 run store, which is bind-masked from every sandboxed agent shell, and the model
 already reads its jobs' run counts through `cron_list` with `json: true`.
+`kirocrew cron adopt` (give a job an owning chat session) and `kirocrew cron
+preview` (run a script cron locally with notifications printed) are operator
+commands with no MCP twin either.
 
 The last row is the one place a twin does not share its command's name, and it is
 a placement decision rather than an oversight. A tool in `kirocrew-core` costs
@@ -3314,7 +3334,9 @@ answers `tools/list` from):
 - **Memory recall (V1 and V2):** `memory_recall` resolves authenticated session identity
   once through `require_strict_session_key` and passes that same identity to the gateway.
   Missing identity returns the shared gate's refusal and installation diagnosis.
-  It accepts a task query,
+  It accepts a task query and the optional `kind` (`fact`, `episode`, `lesson`),
+  `since`, `until` and `as_of` filters (`memory_recall_filters.py`; a malformed
+  filter is dropped with a one-line warning rather than refusing the recall),
   never a store selector. The gateway resolves the caller's bound V1 or private V2 memory
   and returns bounded context with evidence; unavailable identity or memory
   refuses the call. The MCP response keeps each selected body once in a trusted
