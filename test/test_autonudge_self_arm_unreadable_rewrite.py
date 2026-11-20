@@ -4,9 +4,10 @@ Each entry vouches for one armed loop. Arming a new loop over a record that was
 cut off or had the wrong shape replaced it with a file holding only the new
 entry, and the old bytes were gone; a record that merely could not be opened for
 a moment (a Windows sharing violation) did the same to every other loop's entry.
-A damaged record is set aside first; an unopenable one is left alone. The arm
-call returns in every case. Windows is simulated: the maintainer checks it on
-a real host.
+A damaged record is set aside first and the arm goes ahead; an unopenable one
+is left alone and the arm raises ``OSError``, which the authorizer answers with
+its 503 (self-armed slot) or arms unrecorded (ordinary slot). Windows is
+simulated: the maintainer checks it on a real host.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ def test_arming_over_a_cut_off_record_sets_it_aside_and_starts_again() -> None:
     assert sa.is_recorded_self_arm("loop0003", "member-c") is True
 
 
-def test_arming_over_a_record_that_cannot_be_opened_keeps_the_other_entries(
+def test_arming_over_a_record_that_cannot_be_opened_refuses_and_keeps_the_other_entries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     before = _two_armed()
@@ -65,7 +66,8 @@ def test_arming_over_a_record_that_cannot_be_opened_keeps_the_other_entries(
     with monkeypatch.context() as patched:
         patched.setattr(Path, "read_bytes", read_bytes)
         patched.setattr(Path, "read_text", read_text)
-        sa.record_self_arm("loop0003", "member-c")  # returns, never raises
+        with pytest.raises(PermissionError):
+            sa.record_self_arm("loop0003", "member-c")
         assert sa.is_recorded_self_arm("loop0003", "member-c") is False
     assert sa.self_arm_record_path().read_bytes() == before
     assert sa.is_recorded_self_arm("loop0001", "member-a") is True
@@ -89,14 +91,15 @@ def test_windows_sharing_violation_is_waited_out_and_every_entry_survives(
         assert sa.is_recorded_self_arm(loop_id, slot) is True
 
 
-def test_windows_hold_that_outlasts_the_retry_keeps_the_old_record(
+def test_windows_hold_that_outlasts_the_retry_refuses_and_keeps_the_old_record(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     before = _two_armed()
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
     monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
     with read_sharing_violation(match=sa.SELF_ARM_RECORD_NAME, times=10_000) as sim:
-        sa.record_self_arm("loop0003", "member-c")
+        with pytest.raises(PermissionError):
+            sa.record_self_arm("loop0003", "member-c")
     assert sim["n"] == aw._REPLACE_MAX_ATTEMPTS
     assert sa.self_arm_record_path().read_bytes() == before
 

@@ -102,7 +102,7 @@ def _read_record(
     A record that exists but cannot be opened reads as empty, which is right for
     a reader and wrong for a writer: rewriting from ``{}`` would publish only the
     new entry over every other loop's. With *raise_unreadable* the ``OSError``
-    propagates instead, so the writer can keep the old record untouched.
+    propagates instead, so the writer leaves the old record untouched.
     """
     path = self_arm_record_path()
     try:
@@ -174,12 +174,12 @@ def record_self_arm(loop_id: str, slot_key: str, *, default_patrol: bool = False
     would be refused at every fire. Removing entries is revocation's job
     (:func:`forget_self_arm`), reached from every path a loop leaves the store
     (``AutoNudgeService.remove_sync``), so the record cannot grow past the
-    loops that were ever armed and not yet removed. A record that exists but
-    cannot be opened (after the Windows sharing retry) is left as it is and the
-    loop is not recorded; the call still returns. Raises ``OSError`` on a
-    failed write: the caller (the authorizer) treats that as fail-closed -- a
-    self-armed loop that cannot be recorded would never be allowed to fire, so
-    it must not be reported as armed.
+    loops that were ever armed and not yet removed. Raises ``OSError`` on a
+    failed write, and on a record that exists but cannot be opened (after the
+    Windows sharing retry), which is then left untouched. The caller (the
+    authorizer) treats that as fail-closed -- a self-armed loop that cannot be
+    recorded would never be allowed to fire, so it must not be reported as
+    armed.
 
     *default_patrol* records the gateway's fixed default patrol on a crewmate's
     own thread (``autonudge_authz.admits_member_default_patrol``) instead of a
@@ -191,19 +191,7 @@ def record_self_arm(loop_id: str, slot_key: str, *, default_patrol: bool = False
     if default_patrol:
         entry["default_patrol"] = True
     with _record_lock():
-        try:
-            entries = _read_record(set_aside_damaged=True, raise_unreadable=True)
-        except OSError:
-            # The record exists but would not open, even after the retry. Writing
-            # now would replace every other loop's entry with this one, so the
-            # old record stays and this loop goes unrecorded (its wakes are
-            # refused until it is armed again). The arm itself never raises.
-            logger.warning(
-                "autonudge self-arm record unreadable; not recording loop %s",
-                loop_id,
-                exc_info=True,
-            )
-            return
+        entries = _read_record(set_aside_damaged=True, raise_unreadable=True)
         entries[str(loop_id)] = entry
         _write_record(entries)
 
