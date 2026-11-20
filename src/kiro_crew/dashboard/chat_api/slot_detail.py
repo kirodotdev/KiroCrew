@@ -1262,6 +1262,14 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         if floor_reached:
             has_more = False
 
+    if slot._queue:
+        # The queue's written marks below (``written_queue_ids``) read the
+        # window's rows, which a bounded page left unloaded on a restored row:
+        # load it here, with its reads off the loop, before the snapshot tick.
+        from kiro_crew.dashboard.state import load_window_off_loop
+
+        await load_window_off_loop(slot)
+
     # Snapshot every slot field the response needs BEFORE leaving the event
     # loop: the render below runs in a worker thread, and it must not read
     # attributes the loop keeps mutating mid-turn. `messages` is already a

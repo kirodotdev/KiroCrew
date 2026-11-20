@@ -24,6 +24,7 @@ from test_mcp_resource_subscription_tools import (  # noqa: F401 -- fixtures rid
     _call,
     _clean_service,
     _record,
+    host_owner,
     recognized,
     switch,
 )
@@ -41,6 +42,7 @@ from kiro_crew.testing.wait import async_wait_until, default_timeout
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("host_owner")
 async def test_operator_remove_while_service_is_starting_is_retryable_and_never_edits_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -204,7 +206,7 @@ async def test_a_subscribe_before_the_start_has_loaded_is_retryable_and_keeps_th
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("switch", "recognized")
+@pytest.mark.usefixtures("switch", "recognized", "host_owner")
 async def test_list_and_removals_refuse_a_store_the_start_could_not_read(tmp_path: Path) -> None:
     store = ResourceSubscriptionStore(tmp_path / "subs.json")
     store.put(_record(SESSION, (URI,), ("rsub_unreadable000",)))

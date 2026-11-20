@@ -363,6 +363,10 @@ subscription.
   are removed after it (§4.9.4).
 - **Operator CLI, first version.** `kirocrew resource-subs list` and
   `kirocrew resource-subs remove <id>`. Absorbed by `kirocrew webhook sub` later.
+  `remove` reaches every session's subscriptions, so the gateway's operator route
+  admits it only from a process the kernel peer check verifies as the host owner
+  (the check `/api/token/local` mints on). The internal secret is readable in the
+  agent sandbox, and a request with no session header is not the operator.
 - **Config.** `mcp_gateway.resource_subscriptions.enabled`, default false, and
   `mcp_gateway.resource_subscriptions.max_pinned_backends`, default 16.
 

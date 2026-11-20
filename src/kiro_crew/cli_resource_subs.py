@@ -94,6 +94,18 @@ def _connection_refused(exc: BaseException) -> bool:
     return isinstance(reason, ConnectionRefusedError)
 
 
+def _refusal_detail(exc: urllib.error.HTTPError) -> str:
+    """`` (<code>): <error>`` from a refusal's JSON body, or ``""`` when it has none."""
+    try:
+        reply = json.loads(exc.read(4096))
+    except Exception:  # noqa: BLE001 - the status alone is still the answer
+        return ""
+    if not isinstance(reply, dict) or not reply.get("code"):
+        return ""
+    error = f": {reply['error']}" if reply.get("error") else ""
+    return f" ({reply['code']}){error}"
+
+
 def _ask_gateway(body: dict[str, Any]) -> Optional[dict[str, Any]]:
     """POST *body* to the operator route; ``None`` only when connection is refused.
 
@@ -101,6 +113,11 @@ def _ask_gateway(body: dict[str, Any]) -> Optional[dict[str, Any]]:
     owner-verified send (``_gateway_send``): the secret is written only after the
     peer on that connection is proven to be this install's gateway. A refused
     connection is refused before the proof runs, so the offline edit still applies.
+
+    The secret is not what lets the route act across sessions: the gateway also
+    verifies the process on the other end of this connection as the host owner,
+    from the kernel's peer identity. Run from an agent's shell or a sandbox, the
+    route answers 403 ``operator_unverified`` and this exits 1 without an edit.
     """
     from kiro_crew.cli_commands_gateway_api import _gateway_send, _peer_refusal
     from kiro_crew.config.loader import read_local_secret
@@ -123,7 +140,7 @@ def _ask_gateway(body: dict[str, Any]) -> Optional[dict[str, Any]]:
     except _peer_refusal() as exc:
         _gateway_error(f"gateway ownership not verified: {exc}")
     except urllib.error.HTTPError as exc:
-        _gateway_error(f"the gateway answered HTTP {exc.code}")
+        _gateway_error(f"the gateway answered HTTP {exc.code}{_refusal_detail(exc)}")
     except (urllib.error.URLError, OSError) as exc:
         if _connection_refused(exc):
             return None

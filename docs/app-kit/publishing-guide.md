@@ -48,7 +48,7 @@ own repo.
 
 | Field | Rules |
 |-------|-------|
-| `name` | Required. Kebab-case, matched against `^[a-z0-9]+(?:-[a-z0-9]+)*$`, unique across all apps. This is the install id and the on-disk directory name. `system` is reserved (it would shadow the `system.*` notification-channel namespace), as are `library` (the dashboard serves `/apps/library` as a static page), `registry`, `registries`, `blob`, `install` and `register` (shared `/api/apps/<name>` routes registered ahead of the per-app catch-all), and the Windows device stems `con`, `prn`, `aux`, `nul`, `com1`–`com9` and `lpt1`–`lpt9` (the name becomes a directory, and Windows resolves those inside every directory). Names that merely resemble one — `console`, `com10`, `null-app` — are fine. All are refused on every platform, so an app that installs on Linux also installs on Windows. |
+| `name` | Required. Kebab-case, matched against `^[a-z0-9]+(?:-[a-z0-9]+)*$`, unique across all apps. This is the install id and the on-disk directory name. `system` is reserved (it would shadow the `system.*` notification-channel namespace), as are `library` (the dashboard serves `/apps/library` as a static page), `registry`, `registries`, `blob`, `install`, `register` and `market` (shared `/api/apps/<name>` routes registered ahead of the per-app catch-all), and the Windows device stems `con`, `prn`, `aux`, `nul`, `com1`–`com9` and `lpt1`–`lpt9` (the name becomes a directory, and Windows resolves those inside every directory). Names that merely resemble one — `console`, `com10`, `null-app` — are fine. All are refused on every platform, so an app that installs on Linux also installs on Windows. |
 | `version` | Required. Semver (`major.minor.patch`, optionally with a pre-release or build suffix). Bump on every release. |
 | `displayName` | Required. Rendered in a fixed-width row that truncates, so keep it short. |
 | `description` | Required. Plain text, no markdown. Discover's list row shows one truncated line; the feature cards clamp to two; the detail page shows it in full. Two or three sentences is the useful range. |
@@ -660,7 +660,9 @@ installed one.
   `onInstall`. If that install fails, the old version is restored: an enabled app
   is re-registered and restarted, while a disabled app stays stopped and
   unregistered. `kirocrew app update <name> [--source <dir>]` runs the same
-  request from a terminal through a running gateway.
+  request from a terminal through a running gateway; it is not available on
+  native Windows, which has no dashboard Unix socket, so use the Update button
+  there.
 
 ## 14. Review checklist
 

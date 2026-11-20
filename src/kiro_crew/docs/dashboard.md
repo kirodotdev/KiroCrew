@@ -75,7 +75,7 @@ A board column's **Filter & manage tags** view lists the same tags. There you ca
 
 ### Settings (`/settings/*`)
 
-Settings uses tabbed panels for Overview, Import / Export, Agent Harness, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Remote Crew, Privacy, Security, Connections, Secrets, Developer, and About (which also holds the release notes). `/overview` redirects to `/settings/overview`.
+Settings uses tabbed panels for Overview, Kiro account, Import / Export, Agent Harness, Chat, Display, Voice, Notifications, Shortcuts, Skills, Messaging Channels, Browser, Computer Use, Webhooks, Remote Crew, People, Privacy, Security, Connections, Secrets, Session Environments, Developer, and About (which also holds the release notes). Kiro account shows when the build offers Kiro sign-in or has a credit reading; Webhooks and Session Environments show only with their feature preview on; People shows only while the gateway runs the Shared Crew preview. `/overview` redirects to `/settings/overview`.
 
 ### Customize (`/capabilities`)
 

@@ -473,6 +473,8 @@ kirocrew remote-control on
 kirocrew restart
 ```
 
+`kirocrew remote-control status` says whether it is on.
+
 A personal Crew needs nothing else. A Crew is personal when it sets no
 `tunnel.relay_lease_token_type` and its host has no agent workload identity. It
 holds its lease with the Crew's own Kiro

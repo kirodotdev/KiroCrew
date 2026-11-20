@@ -42,7 +42,7 @@ bands under every social platform's re-encode. Functional gradients are not
 fills and are fine: `mask-image` scroll-edge fades, loading shimmer, and the
 streaming glow. So are the shipped gradient mechanisms — the appstore gradient
 art in `components/appstore/gradient.ts` (which reads as content, not chrome)
-and the session `'gradient'` color mode. So is the **crew gradient** (`.crew-grad`, `--aim` to `--info`) on conductor mode's own surfaces -- the CONDUCTOR MODE session row, the conductor mode filter chip, the composer chip, the Crew panel's crew cards -- which the maintainer decision `docs/decisions/2026-10-28-the-crew-gradient-marks-crew-mode-surfaces.md` admits as the one mark of a chat run by a crew; it is not a style for anything else. The UX review lane
+and the session `'gradient'` color mode. So is what remains of the **crew gradient** that the maintainer decision `docs/decisions/2026-10-28-the-crew-gradient-marks-crew-mode-surfaces.md` admits as the one mark of a chat run by a crew: a purple-to-blue (`--aim` to `--info`) TEXT gradient on conductor mode's welcome title (`.conductor-mode-title-text`) and on the pressed composer chip's label, plus the transient turn-on effect (`ConductorModeEffect`), all in `src/styles/crew-mode.css`. Conductor mode's fills are flat: the ghost badge (`.crew-grad`) is a solid `--aim` disc and the current crew card (`.crew-card`) a flat `--aim` tint. The gradient is not a style for anything else. The UX review lane
 (`.github/workflows/ux-review.yml` and its fork variant) applies this rule.
 Theme blocks in `src/styles/design-tokens.css` and `src/styles/theme-palettes.css` also set a few non-color properties that are
 deliberately NOT on the allowlist: the font tokens (`--font-body`, `--mono`)
@@ -210,7 +210,7 @@ read directly. `--info` has no stored companion in the 61 — `bg-info-subtle` i
 derived in `src/tailwind-theme.css` as
 `color-mix(in srgb, var(--info) 12%, transparent)` — so `COLOR_TOKEN_MAP` derives
 `--color-background-info` the same way, from `INFO_WASH` of the resolved
-`--info`, rather than adding a 57th variable to the customization surface. One
+`--info`, rather than adding a 62nd variable to the customization surface. One
 wash, one definition: an app's info fill and the dashboard's own
 `bg-info-subtle` surfaces cannot drift into two visibly different washes of one
 hue, and `mcpAppTheme.test.ts` parses `src/tailwind-theme.css` to keep the two
@@ -235,7 +235,7 @@ allowlist.
 shell's own stacking context, strictly below the top bar (`OVERLAY_Z_MAX` in
 `src/lib/themeDecorLayer.ts`, derived from the header's z-indexes), whatever
 `zIndex` the manifest asks for — so a `fullscreen` overlay decorates the chat
-surface but never paints over the header's controls (#7377). The `topbar` asset
+surface but never paints over the header's controls. The `topbar` asset
 is the opposite by design: it is branding laid OVER the header strip and stays
 above it. The `body::before` / `body::after` idiom in `overrides.css` is not
 covered by this rule: it paints at the document root and therefore over the

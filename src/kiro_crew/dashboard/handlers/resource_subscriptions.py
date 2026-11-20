@@ -10,12 +10,16 @@ route.
   session key is read; any other caller gets a 403 ``internal_secret_required``
   (:func:`_require_internal`).
 * **Session routes.** The subscription a request touches is derived from the
-  CALLING SESSION's identity (``X-Session-Key``, vetted by
+  CALLING SESSION's identity (``X-Session-Key``, attested by the transport
+  through ``member_memory_auth.session_key_is_attested`` and vetted by
   ``_recognize_session``), never from the body, so a session can only subscribe,
   list or remove its own. An id that belongs to another session is answered
   ``not_found`` and never listed.
-* **Operator route.** Lists or removes any session's subscription for the CLI.
-  It refuses a caller that names a session, so a session cannot reach it.
+* **Operator route.** Removes any session's subscription for the CLI. It
+  refuses a caller that names a session, and admits the rest only when the
+  kernel-identified peer is verified as the host owner (the check the local
+  owner-token mint runs), because the internal secret is readable inside the
+  agent sandbox and a missing header proves nothing.
 
 Past the secret check, a refusal is a 200 carrying
 ``{"ok": false, "refused": <code>, "reason": ...}``: the code is the contract
@@ -28,6 +32,7 @@ the boot path may import it (``no-new-work-on-gateway-boot-path``).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from typing import TYPE_CHECKING, Any, Optional
@@ -37,6 +42,7 @@ from aiohttp import web
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.dashboard.handlers.cron import _recognize_session
 from kiro_crew.history import is_incognito_transcript
+from kiro_crew.member_memory_auth import session_key_is_attested
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -55,6 +61,8 @@ REFUSED_SERVER_REFUSED = "server_refused"
 REFUSED_GATEWAY_UNAVAILABLE = "gateway_unavailable"
 NOT_FOUND = "not_found"
 OPERATOR_STARTING = "starting"
+#: The operator route's 403 for a caller not verified as the host owner.
+OPERATOR_UNVERIFIED = "operator_unverified"
 
 #: Longest instruction a subscription keeps. It rides every wake, so it is bounded
 #: where it is retained.
@@ -214,6 +222,12 @@ async def _caller(request: web.Request, operation: str) -> tuple[str, Optional[w
     if sk == "dashboard:ui":
         _audit(sk, operation, "denied", "dashboard_ui")
         return "", _refused(REFUSED_IDENTITY, "a subscription belongs to a session, not the UI")
+    # A bare X-Session-Key is the caller's own word, and any holder of the
+    # internal secret can name another session's key. Attestation reads key
+    # files, so it runs off the event loop.
+    if not await asyncio.to_thread(session_key_is_attested, request, sk):
+        _audit(sk, operation, "denied", "unattested_session")
+        return "", _refused(REFUSED_IDENTITY, "this session could not be verified")
     if _is_restricted_session(state, request):
         _audit(sk, operation, "denied", "restricted_session")
         return "", _refused(
@@ -399,11 +413,36 @@ async def api_resource_unsubscribe(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "removed": subscription_id})
 
 
+async def _host_owner_verified(request: web.Request) -> bool:
+    """Whether the kernel-identified peer is an ordinary host process of the owner.
+
+    The internal secret is readable inside the agent sandbox, and leaving out
+    ``X-Session-Key`` costs nothing, so neither one says the caller is the
+    operator. This is the check ``/api/token/local`` mints an owner token on
+    (``member_memory_auth.local_owner_bootstrap_provenance``): the peer pid comes
+    from the socket, never from a header, and on Linux it must share the
+    gateway's user and mount namespaces, on macOS it must not be sandboxed. An
+    app backend is code the owner enabled, not the owner, so it is refused as the
+    mint refuses it. The check reads ``/proc`` or runs ``lsof``, so it runs off
+    the event loop.
+    """
+    from kiro_crew.executors import local_auth_executor
+    from kiro_crew.member_memory_auth import local_owner_bootstrap_provenance
+
+    provenance = await asyncio.get_running_loop().run_in_executor(
+        local_auth_executor(), local_owner_bootstrap_provenance, request
+    )
+    return provenance is not None and provenance.app is None
+
+
 async def api_resource_subscriptions_operator(request: web.Request) -> web.Response:
     """POST ``{"subscription_id"}``: remove any session's subscription.
 
     ``kirocrew resource-subs remove``. A caller naming a session is refused: this
-    route acts across sessions, which no session may do. ``running`` false tells
+    route acts across sessions, which no session may do. Leaving the session
+    header out proves nothing, so the caller must also be verified as the host
+    owner (:func:`_host_owner_verified`); the CLI is, because it runs as an
+    ordinary process on the gateway's host. ``running`` false tells
     the CLI to edit the store itself. Every answer an internal caller gets from an
     existing service says ``running`` true, including startup and not-found
     refusals.
@@ -418,6 +457,18 @@ async def api_resource_subscriptions_operator(request: web.Request) -> web.Respo
             {
                 "error": "operator route; a session cannot call it",
                 "code": "operator_only",
+                "running": service is not None,
+            },
+            status=403,
+        )
+    if not await _host_owner_verified(request):
+        _audit("unknown", "resource_subs_operator", "denied", "unverified_host_owner")
+        return web.json_response(
+            {
+                "error": "the gateway could not verify this process as the host owner; run "
+                "this command on the gateway's own host or container, not from an agent's "
+                "shell or a sandbox",
+                "code": OPERATOR_UNVERIFIED,
                 "running": service is not None,
             },
             status=403,

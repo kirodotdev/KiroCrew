@@ -293,9 +293,9 @@ report, so the Board, the sidebar count and goal-board stop showing the item as
 needing you once the approval it asked for is answered.
 `work_ledger_read` shows it in the item's events. A steer moves no field: status,
 acceptance and verdict stay where they were, and acceptance stays the evaluator's.
-A person's steer outranks the conductor's decision. The ledger write
-(`work_ledger_worker.record_person_steer_result`) is here; the way to type into a
-crew member, which calls it, lands with the Crew panel.
+A person's steer outranks the conductor's decision. It is written when your
+message reaches the crew member, whether you typed it in the side panel's steer
+box or in the crew member's own chat.
 
 ## Why `done` is a claim
 

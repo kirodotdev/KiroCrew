@@ -134,6 +134,15 @@ first later touch, on its caller's thread. `critical=True` writes are
 synchronous by design and their call sites still offload themselves when
 reached from the loop.
 
+A process that cannot build the singleton at all, such as an MCP server in a
+harness sandbox that hides `<config>/trust`, gets `_UnavailableSecurityEventLog`
+from `sel()` when construction raises `OSError`. It drops non-critical events
+with one warning and adds them to `dropped_events` once the log builds.
+`critical=True` writes, reads and maintenance calls (`recent`,
+`verify_integrity`, `prune`, `flush`) raise the construction error, and the
+startup warm logs it. The next `sel()` tries to build the log again. A
+construction error that is not an `OSError` still raises from `sel()`.
+
 Private-member authorization denials keep their typed 403 responses even when
 SEL initialization or event submission fails. Their shared denial audit resolves
 the singleton and submits the event in a worker thread, including after an

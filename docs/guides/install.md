@@ -971,11 +971,8 @@ of your own, or a distribution's, that holds the name is left untouched and is
 not stopped. Run these as your own
 account, not under `sudo`: a root shell cannot reach your user manager, and the
 commands then report `user scope: not reachable from this shell` rather than
-guessing. `service install` itself still writes a system unit — [#10813] tracks
-preferring user units at install time. Installing kirocrew onto a system-labelled
-path such as `/usr/local/bin` also avoids the problem.
-
-[#10813]: https://github.com/kirodotdev/KiroCrew/issues/10813
+guessing. `service install` itself writes a system unit. Installing kirocrew
+onto a system-labelled path such as `/usr/local/bin` also avoids the problem.
 
 ### SELinux labels on files the service writes
 
@@ -1306,11 +1303,9 @@ The `kiro-cli` backend did not answer in time. Five common causes:
    out as a service. Set the proxy variables on the unit with a
    [systemd drop-in](#setting-other-environment-variables-systemd-drop-in),
    then `sudo systemctl daemon-reload && sudo systemctl restart kirocrew`.
-   Agent sessions inherit the service environment, so this fixes them. One
-   known gap: the first-run setup gate's login probe currently filters proxy
-   variables out even when the unit carries them, so it can stay stuck on
-   "Sign in to Kiro CLI" on a proxied host — that is
-   [issue #2648](https://github.com/kirodotdev/KiroCrew/issues/2648).
+   Agent sessions inherit the service environment, so this fixes them, and the
+   first-run setup gate's sign-in probe forwards the same `HTTP_PROXY`,
+   `HTTPS_PROXY`, `NO_PROXY` and `ALL_PROXY` variables to `kiro-cli whoami`.
 
 ### Memory or knowledge search returns nothing
 

@@ -165,6 +165,34 @@ from kiro_crew.metrics.recorder import MetricsRecorder
                 "backend": "stopped",
             },
         ),
+        (
+            "kirocrew.app.opened",
+            {"app": "weather-app", "entity_version": "1.2.3", "surface": "page"},
+            {
+                "Feature": "app",
+                "Activity": "opened",
+                "Entity": "weather-app",
+                "entity_version": "1.2.3",
+                "surface": "page",
+            },
+        ),
+        (
+            "kirocrew.app.foreground_time",
+            {
+                "app": "private",
+                "entity_version": "private",
+                "surface": "popout",
+                "duration": "le_1m",
+            },
+            {
+                "Feature": "app",
+                "Activity": "foreground_time",
+                "Entity": "private",
+                "entity_version": "private",
+                "surface": "popout",
+                "duration": "le_1m",
+            },
+        ),
     ],
 )
 def test_each_metric_gets_its_shape(name, attrs, expected):

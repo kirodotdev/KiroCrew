@@ -431,7 +431,7 @@ answer like `/clear` is sent as the literal words. When no turn is running the
 steer replies `unavailable` and the typed answer is put back in the message box,
 unsent, rather than dropped.
 
-What the embed does not do today, one line each:
+What the embed does not do, one line each:
 
 - No frame stream of its own. Every row comes from the transcript read, which
   returns the newest 200 rows; "load earlier" widens that by 200 rows a press,
@@ -440,7 +440,6 @@ What the embed does not do today, one line each:
   read at once; otherwise the embed polls every 1 s while a turn runs and every
   5 s when idle. After 10 s of failed reads it backs off, up to 30 s between
   attempts.
-- No Stop control. A running turn cannot be cancelled from the embed.
 - No reasoning display. Model thinking is sent only as the `chat_thinking`
   WebSocket event, which the poll never sees.
 - Trust is a lasting grant, not a one-shot approval. Choosing Trust on an
@@ -693,8 +692,8 @@ client does not let an app choose.
 
 ### Long pastes
 
-A long paste collapses the way it does in the main chat. Text of four lines or
-more, or over 200 characters, goes into the draft as one
+A long paste collapses the way it does in the main chat. Text of three lines or
+more, or 200 characters or more, goes into the draft as one
 `[ Paste #N · M lines ]` chip instead of its full text. The chip moves and
 deletes as one unit, hovering it (or putting the caret inside it) previews the
 text, and a double-click (a tap on touch) expands it back into the draft.
@@ -1126,6 +1125,12 @@ website/src/app-sdk/protocol/
   grillMarker.ts    the `[GRILL:]` card parser (in-tree only, not exported from the package)
 ```
 
+The same directory holds four more in-tree helpers the package does not export:
+`grillWireValues.ts` (the `[GRILL:]` card's wire strings), `keepVisibleMarker.ts`
+(the `<!-- keep-visible -->` tag that keeps a mid-turn report out of the collapsed
+steps), `inlineThinking.ts` (splits an inline `<thinking>` block out of a reply) and
+`dispatchShape.ts` (whether a chip's text would run a command when sent).
+
 ### Using it from an app
 
 Apps resolve `@kirocrew/app-sdk` through the host import map, the same way they get the hooks:
@@ -1232,7 +1237,7 @@ const renderers = [{
 collapsible "worked through N steps" group **before** rows are resolved. An entry claiming either is
 still consulted, but it renders **inside** that group, and the group keeps its own summary and
 approval affordance — so you cannot yet use the registry to replace the built-in approval UI with
-your own. Substituting the group itself is not an extension point today — tracked in #2940.
+your own. Substituting the group itself is not an extension point.
 
 ### Replacing a built-in row
 
@@ -1756,7 +1761,7 @@ older than this option raises `TypeError` on the unknown keyword.
 
 ### Bot proposals (`ctx.crewmate`)
 
-> **Preview, switched off.** `ctx.crewmate` is `None` for every app, even one that declares the permission, until the dashboard view that lists an app's cards lands (#21718). The calls below describe the contract that view will switch on (`apps/crewmate_sdk.py::PREVIEW_ENABLED`).
+> **Preview, switched off.** `ctx.crewmate` is `None` for every app, even one that declares the permission, until the dashboard view that lists an app's cards ships. The calls below describe the contract that view will switch on (`apps/crewmate_sdk.py::PREVIEW_ENABLED`).
 
 Once switched on, present when the manifest declares `permissions.proposeCrewmate: true`, and `None` otherwise. The app hands core one parsed `.crewmate` bundle ([rfc-crewmate-share.md](../request-for-change/rfc-crewmate-share.md) §5.2). Core checks it and raises one `crewmate.import` change card for the owner. The app creates nothing: only the owner's press creates the crewmate.
 
@@ -1964,7 +1969,7 @@ line = await ctx.turns.run_oneshot(prompt, label="translate")
 | Call | Returns | What it does |
 |------|---------|--------------|
 | `run(key, text, *, agent="", timeout_secs=None, cancel_ack_secs=5.0)` | reply text | Send *text* to the session *key*, created on first use as *agent* (`""` is the default agent) and kept for the next call. Past `timeout_secs` the turn is cancelled (the session is reset if the agent does not acknowledge within `cancel_ack_secs`) and `asyncio.TimeoutError` is raised; the budget starts after the session is acquired |
-| `run_oneshot(prompt, *, label="oneshot")` | reply text | One call on a throwaway `<app>-<label>-<hex>` session running the tool-less `kirocrew-lite` agent, destroyed afterwards. `label` is 1-32 of `a-z 0-9 _ -` |
+| `run_oneshot(prompt, *, label="oneshot")` | reply text | One call on a throwaway `<app>-<label>-<hex>` session running the tool-less `kirocrew-lite` agent, destroyed afterwards. `label` is 1-32 of `a-z 0-9 _ -`, starting with a letter or digit |
 | `has_session(key)` | bool | Whether a live session exists for *key* |
 
 A key is `<app>-<id>`, where *id* is 1 to 400 of `A-Z a-z 0-9 . _ -`; any other key
@@ -2136,7 +2141,8 @@ stay yours. The owner sees the declaration, with the source id, at the trust pro
 
 ### Browser (`ctx.browser`)
 
-The browser tabs of your app's own chat slots (RFC #38322, step 1a). Present only
+The browser tabs of your app's own chat slots (step 1a of
+[rfc-app-sdk-browser](../request-for-change/rfc-app-sdk-browser.md)). Present only
 when the manifest declares `permissions.browser` and the owner turned on **App
 browser access** (`dashboard.feature_previews.app_browser_sdk`) in Settings >
 Developer > Feature previews; `None` otherwise, so feature-detect it:

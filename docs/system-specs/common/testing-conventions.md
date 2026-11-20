@@ -15,8 +15,8 @@ helper subdirectories that hold shared fixtures rather than tests (for
 example `test/workflows/`). What distinguishes a top-level
 `test/test_<module>.py` is not whether nested files are collected but
 the `scripts/leaf_test_scope.py` CI fast path: only `test/test_*.py`
-files count as *leaves* there (`_LEAF_NAME`, `scripts/leaf_test_scope.py`
-lines 124-127), which limits that fast path without stopping collection
+files count as *leaves* there (`_LEAF_NAME` in `scripts/leaf_test_scope.py`),
+which limits that fast path without stopping collection
 of nested files. Placement is enforced by the `testpaths-coverage` gate
 (`scripts/check_testpaths_coverage.py`). A file
 outside those roots is never collected, so it stays green by omission.
@@ -7119,8 +7119,12 @@ runs, the Windows pins by 20%. The Windows file stays at the 800 heaviest
 (1.06x held out, against 1.02x with every file) because the Windows leaf scope
 in `ci.yml` reads that file as its list of heavy files (`WINDOWS_LEAF_MAX_PINNED`);
 listing every file there would send any leaf diff of five or more files to the
-full suite. macOS, release and the reduced and leaf scopes keep pure hash
-ownership.
+full suite. Regenerate the Windows file when its shards drift apart: on 10 green
+`main` runs of 2026-11-19 and 2026-11-20, the file generated on 2026-11-19 left the
+heaviest Windows shard at a median 1.18x the mean test seconds, and a file planned
+from 9 of those runs and replayed on the one held out at 1.06x (#39955); no file
+outside the 800 took more than 30 s in any of them. macOS, release and the
+reduced and leaf scopes keep pure hash ownership.
 
 Before the Linux and Windows full-suite test step, `scripts/ci_rewrite_prewarm.py`
 writes pytest's assertion-rewrite pyc for the shard's test files (same hash and

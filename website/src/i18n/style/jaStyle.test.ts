@@ -182,6 +182,8 @@ describe('ja terminology (style/ja.md §2.1)', () => {
   const BANNED: Array<[string, string, string]> = [
     ['write access', 'ライトアクセス', '書き込みアクセス'],
     ['present', 'プレゼント', '在席'],
+    // 地元 is a person's home area; "local" here always means on this computer.
+    ['local', '地元', 'ローカル'],
   ]
 
   for (const [cue, banned, canonical] of BANNED) {

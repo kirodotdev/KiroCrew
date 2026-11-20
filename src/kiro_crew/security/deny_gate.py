@@ -1173,14 +1173,17 @@ def _deny_pattern_passes(
             whole_string_exception_match = _rules._exception_applies(
                 lower, _rules._DENY_EXCEPTIONS.get(pattern, [])
             )
-            if not whole_string_exception_match and _s3_download_narrows(
-                pattern, lower, narrow_cache, tool_name, shipped
+            if not whole_string_exception_match and (
+                _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
+                or _nc_redirect_narrows(pattern, text, shipped)
             ):
                 # Same shape as the glob exception above: a whole-string carve-out
                 # only DEFERS to Pass 2, which re-judges each segment on its own,
                 # so an embedded real invocation is still denied there.  The audit
                 # is emitted here and GATES the carve-out.
-                if _emit_deny_exception_event(tool_name, pattern, _S3_DOWNLOAD_MECHANISM):
+                if _emit_deny_exception_event(
+                    tool_name, pattern, _deny_exception_mechanism_for(pattern)
+                ):
                     whole_string_exception_match = True
             if not whole_string_exception_match:
                 if waive is not None and waive(pattern):
@@ -1247,9 +1250,11 @@ def _deny_pattern_passes(
         for view in segment_views:
             for pattern, is_regex in all_patterns:
                 if _rules._deny_pattern_matches(pattern, view, is_regex):
-                    if _rules._exception_applies(
-                        view, _rules._DENY_EXCEPTIONS.get(pattern, [])
-                    ) or _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped):
+                    if (
+                        _rules._exception_applies(view, _rules._DENY_EXCEPTIONS.get(pattern, []))
+                        or _s3_download_narrows(pattern, lower, narrow_cache, tool_name, shipped)
+                        or _nc_redirect_narrows(pattern, text, shipped)
+                    ):
                         # ``lower``, not ``view``: the s3 reading judges the WHOLE
                         # command, since a Pass 2 segment is not always a command.
                         if not _emit_deny_exception_event(
@@ -1461,7 +1466,26 @@ def _deny_exception_mechanism_for(pattern: str) -> str:
     """
     if pattern in _submodule("s3_direction")._S3_TRANSFER_PATTERNS:
         return _S3_DOWNLOAD_MECHANISM
+    if pattern == _submodule("exfil_bash")._NC_FILE_REDIRECT_PATTERN:
+        return _NC_REDIRECT_SCOPE_MECHANISM
     return "_DENY_EXCEPTIONS"
+
+
+_NC_REDIRECT_SCOPE_MECHANISM = "_NC_REDIRECT_SCOPE"
+
+
+def _nc_redirect_narrows(pattern: str, raw: str, shipped: frozenset[str]) -> bool:
+    """Whether the shipped nc file-redirect row is narrowed away on *raw*.
+
+    True only when :func:`~.exfil_bash._nc_redirect_line_allows` reads the whole
+    line and finds every input redirect in a pipeline that names no nc, so the
+    ``<`` the row matched belongs to another command. An operator's own copy of
+    the pattern is not shipped-only and keeps reading the full text.
+    """
+    exfil = _submodule("exfil_bash")
+    if pattern != exfil._NC_FILE_REDIRECT_PATTERN or pattern not in shipped:
+        return False
+    return exfil._nc_redirect_line_allows(raw)
 
 
 def _s3_download_narrows(

@@ -585,7 +585,8 @@ mutation are served by a backend plugin the edition registers with
 `src/kiro_crew/dashboard/source_providers/plugins.py` (still importable from
 `dashboard/handlers/source_providers.py`), under the same id. The
 two registries validate the same id grammar (`/^[a-z][a-z0-9_-]{0,31}$/`) and
-both refuse the built-in ids (`github`, `gitlab`, `jira`), so a descriptor can
+both refuse the built-in ids (`github`, `gitlab`, `jira`, `bitbucket_server`,
+`gerrit`; the backend also refuses `linear`), so a descriptor can
 never restyle a core provider and a payload provider id round-trips through both
 layers. A descriptor missing `parse`/`chipLabel`/`refLabel`/`capabilities`
 routes through `reportSeamCollision`.
@@ -734,8 +735,8 @@ Three surfaces send a user to the project's issue tracker, and the stock build
 points every one of them at the public GitHub repository: the top bar's **Request
 a Feature** (the hidden prompt it seeds, which tells the agent to search, label
 and file with `gh`; the copy/paste route that prompt offers; and the
-non-inference form link the `usage_limit` row shows when the plan is spent,
-#13342), the prerelease **report it** link in Settings › About, and the
+non-inference form link the `usage_limit` row shows when the plan is spent),
+the prerelease **report it** link in Settings › About, and the
 false-positive report a redaction card offers. On an edition where that
 repository is unreachable each of them dead-ends, and the agent, handed `gh`
 instructions it cannot follow, improvises a fallback nobody designed.
@@ -822,13 +823,14 @@ the shared `X-Session-Key` header, the session-expiry hooks a
 method that reads its own response calls, and `withJournaledDeadline` (a
 deadline that also records a timed-out read in the error journal). The
 route-specific parsers (`jInstancesDisabled`, `jCrewBoard`, `jSlotEnvironment`,
-`jSharedCrewPreview`, `jMembers`, `jApps` and `jConfigPending`)
+`jSharedCrewPreview`, `jMembers`, `jApps`, `jRelayViewer` and `jConfigPending`)
 are core-only and deliberately absent from `ApiTransport` above: each opts one
 specific benign denial on one core route out of the error journal (a disabled
 instances control plane's 403, a conductor with no ledger's 404 `no_ledger`, and
 the slot-environment, Shared Crew preview, members roster and config-pending reads' 403 `owner_only`
-for a caller that is not the dashboard owner, and the app list's 403
-`relay_apps_teammate` for a teammate reaching the Crew through the relay), which is not an edition's decision to make. None of them imports a
+for a caller that is not the dashboard owner, the app list's 403
+`relay_apps_teammate` for a teammate reaching the Crew through the relay, and the
+relay viewer's routine refusals of `GET /api/relay-viewer/crews`), which is not an edition's decision to make. None of them imports a
 runtime value
 from `client.ts` (the telemetry module takes the Kiro usage types defined there
 as types only), so the transport and its recovery keep one definition.
@@ -838,9 +840,10 @@ their wire types. That split is core-internal: the seam is still
 `apiTransport`, and an edition never imports a domain module.
 
 Two tests ratchet the split. A new method goes in its domain's `create*Endpoints`
-segment and joins `API_KEY_ORDER` in `ApiClient.refactor.surface.test.ts` where
-the facade spreads it; it joins `NO_SESSION_KEY` there only when it deliberately
-bypasses the request helpers. A method defined inline on the facade instead of in
+segment; `ApiClient.refactor.surface.test.ts` rebuilds the groups the facade
+spreads from the same factories and fails when a member comes from two groups or
+an inline member shadows one. The method joins `NO_SESSION_KEY` there only when it
+deliberately bypasses the request helpers. A method defined inline on the facade instead of in
 a segment joins `INLINE` in `ApiClient.refactor.facade.test.ts`.
 
 Trust boundary: the transport carries the session key. It is for the edition

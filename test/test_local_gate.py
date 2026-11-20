@@ -96,25 +96,28 @@ def test_classify_evidence_does_not_flip_frontend_only(gate) -> None:
     assert frontend and not meta and not backend
 
 
+class _GitProc:
+    def __init__(self, stdout: str = "", returncode: int = 0) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = ""
+
+
+_BASE_LOOKUPS = (["git", "merge-base"], ["git", "rev-parse"])
+
+
 def test_changed_files_keeps_both_rename_endpoints(gate, monkeypatch) -> None:
     """Renaming a real file INTO temp-screenshots/ must not hide the old
     path's bucket: ``--no-renames`` splits a rename into delete + add (the
-    same contract run_scoped_tests.py and CI's dorny/paths-filter apply), and
-    the porcelain parser keeps BOTH sides of a defensive ``old -> new`` arrow.
+    same contract run_scoped_tests.py and CI's dorny/paths-filter apply).
     """
-    class _Proc:
-        def __init__(self, stdout: str = "") -> None:
-            self.returncode = 0
-            self.stdout = stdout
-
     def fake_run(argv, **_kwargs):
-        if argv[:2] == ["git", "merge-base"]:
-            return _Proc("abc123\n")
+        if argv[:2] in _BASE_LOOKUPS:
+            return _GitProc("abc123\n")
+        assert "--no-renames" in argv, "neither git read may fold renames"
         if argv[:2] == ["git", "diff"]:
-            assert "--no-renames" in argv, "committed diff must not fold renames"
-            return _Proc("src/kiro_crew/gateway.py\n")
-        assert "--no-renames" in argv, "porcelain status must not fold renames"
-        return _Proc('R  src/kiro_crew/moved.py -> temp-screenshots/f/moved.png\n')
+            return _GitProc("src/kiro_crew/gateway.py\0")
+        return _GitProc("D  src/kiro_crew/moved.py\0A  temp-screenshots/f/moved.png\0")
 
     monkeypatch.setattr(gate.subprocess, "run", fake_run)
     paths = gate.changed_files("main")
@@ -123,6 +126,54 @@ def test_changed_files_keeps_both_rename_endpoints(gate, monkeypatch) -> None:
     assert "temp-screenshots/f/moved.png" in paths
     # And the classification consequence: the old backend path still counts.
     assert gate.classify(paths) == (False, False, True)
+
+
+def test_changed_files_reads_non_ascii_frontend_paths_verbatim(gate, monkeypatch) -> None:
+    """Git C-quotes a non-ASCII path in line output (``"website/src/f\\303\\251e.tsx"``)
+    and prints it verbatim only under ``-z``. A quoted name misses the
+    ``website/`` prefix, so a frontend-only diff would classify as backend.
+    The fake answers each read the way git does, with or without ``-z``.
+    """
+    committed, untracked = "website/src/fée.tsx", "website/src/née.test.tsx"
+
+    def c_quoted(path: str) -> str:
+        escaped = "".join(
+            ch if ch.isascii() else "".join(f"\\{byte:03o}" for byte in ch.encode())
+            for ch in path
+        )
+        return f'"{escaped}"'
+
+    def fake_run(argv, **_kwargs):
+        nul = "-z" in argv
+        if argv[:2] in _BASE_LOOKUPS:
+            return _GitProc("abc123\n")
+        if argv[:2] == ["git", "diff"]:
+            return _GitProc(f"{committed}\0" if nul else f"{c_quoted(committed)}\n")
+        return _GitProc(f"?? {untracked}\0" if nul else f"?? {c_quoted(untracked)}\n")
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    paths = gate.changed_files("main")
+    assert paths is not None
+    assert sorted(paths) == sorted([committed, untracked])
+    assert gate.classify(paths) == (True, False, False)
+
+
+@pytest.mark.parametrize("base", ["", "   ", "--output=evil", "no-such-ref"])
+def test_changed_files_refuses_a_base_that_is_not_a_commit(gate, monkeypatch, base: str) -> None:
+    """An empty base would diff ``...HEAD`` (HEAD against itself) and report
+    nothing changed; an option-shaped one would reach ``git diff`` as a flag.
+    Either must be "cannot tell" (exit 2), and no diff may run."""
+    diffs: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        if argv[:2] in _BASE_LOOKUPS:
+            return _GitProc("", returncode=1)
+        diffs.append(argv)
+        return _GitProc("")
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    assert gate.changed_files(base) is None
+    assert not [argv for argv in diffs if argv[:2] == ["git", "diff"]]
 
 
 def test_classify_mixed_diff_sets_both_flags(gate) -> None:

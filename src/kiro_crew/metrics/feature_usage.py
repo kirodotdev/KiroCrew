@@ -21,6 +21,12 @@ counter                                        one increment per
                                                adds its seconds (``duration``)
 ``kirocrew.app.present``                       installed app, once per UTC day
                                                (``status``, ``backend``)
+``kirocrew.app.opened``                        app page mounted or ``openCommand``
+                                               launched, owner views only
+                                               (``surface``)
+``kirocrew.app.foreground_time``               seconds an app page was visible,
+                                               owner views only (``surface``,
+                                               ``duration``)
 ``kirocrew.channel.message.received``          inbound channel message, once
                                                admission has decided
 ``kirocrew.ui.control.clicked``                click on an agent-rendered control
@@ -72,6 +78,8 @@ APP_UNINSTALLED = "kirocrew.app.uninstalled"
 APP_SESSION_STARTED = "kirocrew.app.session_started"
 APP_RUN_TIME = "kirocrew.app.run_time"
 APP_PRESENT = "kirocrew.app.present"
+APP_OPENED = "kirocrew.app.opened"
+APP_FOREGROUND_TIME = "kirocrew.app.foreground_time"
 CHANNEL_MESSAGE_RECEIVED = "kirocrew.channel.message.received"
 UI_CONTROL_CLICKED = "kirocrew.ui.control.clicked"
 TIPS_FEEDBACK = "kirocrew.tips.feedback"
@@ -502,6 +510,65 @@ def record_app_present(
             "backend": _closed(backend, APP_PRESENT_BACKEND_VALUES),
         },
     )
+
+
+# -- app.opened / app.foreground_time ------------------------------------------
+#
+# Both come from the owner's own dashboard tabs only, through the owner-gated
+# ``POST /api/telemetry/app-view`` (``dashboard/handlers/telemetry_app_view.py``).
+# They count owner views, unlike ``session.started`` and ``turn.completed``,
+# which count every session.
+
+#: Where an app was opened: its routed page, its pop-out window, or its
+#: ``openCommand`` launched from the Library (``desktop``).
+APP_OPENED_SURFACE_VALUES: tuple[str, ...] = ("desktop", "page", "popout", OTHER)
+
+#: Where a foreground span was measured. An ``openCommand`` app has no page here.
+APP_FOREGROUND_SURFACE_VALUES: tuple[str, ...] = ("page", "popout", OTHER)
+
+#: Longest foreground span counted, in seconds: a longer one is cut to this, so
+#: a tab left open across a weekend adds a day, not three.
+APP_FOREGROUND_MAX_SECONDS = 24 * 3600
+
+
+def record_app_opened(app: object, surface: object) -> None:
+    """The owner opened *app*'s page (``page`` / ``popout``) or launched it (``desktop``)."""
+    _emit(
+        APP_OPENED,
+        {
+            "app": app_public_id(app),
+            "entity_version": app_public_version(app),
+            "surface": _closed(surface, APP_OPENED_SURFACE_VALUES),
+        },
+    )
+
+
+def record_app_foreground(app: object, surface: object, seconds: int) -> None:
+    """*app*'s page was visible to the owner for *seconds* whole seconds.
+
+    Adds the seconds, cut to :data:`APP_FOREGROUND_MAX_SECONDS`, in the
+    :func:`app_duration_bucket` of what was added. A span under one second adds
+    nothing: it is a flicker, not a view. Never raises.
+    """
+    if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 1:
+        return
+    seconds = min(seconds, APP_FOREGROUND_MAX_SECONDS)
+    try:
+        from kiro_crew.metrics.provider import get_recorder
+
+        get_recorder().counter(
+            APP_FOREGROUND_TIME,
+            seconds,
+            unit="s",
+            attrs={
+                "app": app_public_id(app),
+                "entity_version": app_public_version(app),
+                "surface": _closed(surface, APP_FOREGROUND_SURFACE_VALUES),
+                "duration": app_duration_bucket(seconds),
+            },
+        )
+    except Exception:  # telemetry must never break the measured path
+        logger.debug("feature counter emit failed for %s", APP_FOREGROUND_TIME, exc_info=True)
 
 
 # -- channel.message.received -------------------------------------------------

@@ -352,6 +352,7 @@ Release-adjacent, deliberately outside the release path:
 | `docker-smoke.yml` | PR gate on the container contract (amd64, load-to-daemon, no push). |
 | `pages.yml` | Deploys the marketing site in `site/` to GitHub Pages on `main`, path-scoped to `site/**`. |
 | `ship-report.yml` | Daily (3am PDT) merged-PR summary to Slack. Not a release step. |
+| `build-ffmpeg-decoder.yml` | Builds the minimal audio-only ffmpeg decoder the desktop app ships, per platform; manual dispatch publishes it as its own GitHub release, which the desktop build pins by size and SHA-256. Cut once per ffmpeg bump, never on a schedule. |
 
 ## Where artifacts land
 
@@ -670,7 +671,7 @@ wheel and `kirocrew kas install`, which stays the fallback and migration path.
 
 ## The macOS trust chain
 
-`sign-and-notarize.yml`, three jobs, called with `write_feed: true` by both
+`sign-and-notarize.yml`, four jobs, called with `write_feed: true` by both
 triggers. Nothing about it is caller-specific: the trigger files carry only
 version derivation and `uses:` calls. Both triggers call it three times — once
 for the universal DMG and once per single-arch DMG (`mac_variant: arm64 | x64`,
@@ -719,8 +720,12 @@ with the matching `*-mac.zip`.
    downstream. The Apple credential is fetched from AWS Secrets Manager at
    runtime, masked, scoped to single steps in this job, and never written to
    `GITHUB_ENV`, a file, or a log.
-3. **publish** (ubuntu). Copies the gated zip and DMG to the distribution
-   bucket, writes `latest-mac.yml`, writes the legacy `latest-mac.json` bridge,
+3. **blockmap** (ubuntu, no credentials). Builds the differential-update
+   blockmap from the notarized zip with the pinned electron-builder. A failure
+   here costs that version's differential updates, not its publication.
+4. **publish** (ubuntu). Copies the gated zip and DMG to the distribution
+   bucket, writes the blockmap beside the zip when it was built from the bytes
+   the CDN serves, writes `latest-mac.yml`, writes the legacy `latest-mac.json` bridge,
    then the human `latest/KiroCrew.dmg` alias. Separate from notarize so a
    transient S3 failure retries as a two-minute ubuntu job instead of repeating
    two Apple submissions, and so the expensive macOS runner never burns minutes
@@ -861,7 +866,7 @@ on their own artifact, and the arm64 publishers go red on their missing one
 rather than skipping. `release.yml` keeps the coupling, because its run records
 the stable promotion candidate and all three arm64 Linux roles are REQUIRED in
 `scripts/release_promotion.py` -- an x64-only publish there burns immutable keys
-for a version that can never be promoted (tracked in #1030).
+for a version that can never be promoted.
 
 `SHA256SUMS` sits beside the wheel for legacy tooling, but it is only a
 corruption check. Authenticity comes from a canonical JSON artifact manifest
@@ -913,10 +918,8 @@ still succeeds.
 feed may carry `feed/<channel>/announce.json`, which the gateway reads to draw
 the About page's "Upcoming update" block (field schema and failure rules:
 [learn-cron-dashboard](../system-specs/modules/learn-cron-dashboard.md), "Upcoming
-update notice"). It is unsigned display text. Nothing writes it yet: a follow-up
-adds a step to `publish-cli.yml`, next to the manifest write, that publishes it
-from the release's changelog section ahead of the release and removes or
-replaces it once the release ships.
+update notice"). It is unsigned display text. No workflow in this repository
+writes it; without the file the gateway draws no block.
 
 Key provisioning, the `kms:GetPublicKey` + `kms:Sign` grant, and the rotation
 procedure (dual-trust, never an in-place swap, because schema v1 pins exactly
@@ -1410,8 +1413,9 @@ The publish role's OIDC trust accepts exactly two subjects: `ref:refs/heads/main
 and `environment:prod`. Release runs are tag-triggered (`ref:refs/tags/v*`),
 which is **not** trusted, so every publishing job declares `environment: prod`,
 which switches the caller's subject. This is not optional plumbing: it is why
-`publish-cli.yml`, `publish-linux.yml`, `publish-installer.yml`, and all three
-jobs in `sign-and-notarize.yml` name the environment, and why `build-windows.yml`
+`publish-cli.yml`, `publish-linux.yml`, `publish-installer.yml`, and the three
+credentialed jobs in `sign-and-notarize.yml` (`sign`, `notarize`, `publish`; the
+credential-free `blockmap` has none) name the environment, and why `build-windows.yml`
 takes `use_prod_environment` as an input rather than deriving it (inside a called
 reusable workflow the `github` context reports the *caller's* trigger and never
 `workflow_call`, so an `event_name` test would leave the environment unset on

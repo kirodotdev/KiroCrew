@@ -77,8 +77,8 @@ if a server's tools are missing in chat, check its row here first.
 ### Remote servers that need a sign-in
 
 A remote server usually answers the first request with a `401`, and that is the whole
-trigger — there is no command to run. `kiro-cli` owns the OAuth exchange and runs it
-itself, so **start a session** and watch chat: a banner appears with a lock icon, the
+trigger — there is no command to run. The harness (`kiro-cli`, or the KAS engine)
+runs the OAuth exchange itself, so **start a session** and watch chat: a banner appears with a lock icon, the
 server's name, and an **Authorize** link. The authorization URL is never printed into
 the transcript as text, so a session that mentions nothing is not a silent failure —
 the banner is where it lives.
@@ -102,7 +102,7 @@ Two other ways to authorize a remote server:
   on the entry and no browser flow happens at all. A `${VAR}` reference is resolved
   when the handshake is sent; an unresolved one stays literal, which then reads as a
   server asking for a sign-in.
-- **An operator-registered OAuth app**, for the two vendors that refuse runtime
+- **An operator-registered OAuth app**, for the vendors that refuse runtime
   registration. See [credentials](#credentials-and-what-kiro-crew-can-see) below.
 
 ### The tools appear in the next *cold* session
@@ -247,8 +247,21 @@ messaging-channel session asks only while `agent.approval_mode` is `"interactive
 
 ## Credentials, and what Kiro Crew can see
 
-`kiro-cli` owns the OAuth chain end to end. On a successful sign-in it writes two
-files into its own cache directory, keyed by a hash of the server's URL — one holding
+Who runs the OAuth chain depends on the backend and one preview:
+
+- **kiro-cli** runs it end to end on the Kiro CLI backend, and on KAS for any
+  server Kiro Crew does not sign in itself.
+- **The KAS engine** runs it on the KAS backend, and hands the result to Kiro
+  Crew to keep (below).
+- **The gateway itself** runs it for a Connections card while the **MCP sign-in
+  by Kiro Crew** preview (`dashboard.feature_previews.crew_oauth`, off by default)
+  is on and chats run on KAS: it opens the consent page, swaps the code for
+  tokens, keeps the pair in your Settings → Secrets vault, refreshes it before
+  it expires, and serves the access token to KAS chats. **Disconnect** revokes it
+  upstream and deletes the vault entry.
+
+On the Kiro CLI backend, a successful sign-in writes two
+files into kiro-cli's own cache directory, keyed by a hash of the server's URL — one holding
 the bearer and refresh token, one holding the client registration. Both survive a
 restart.
 
@@ -259,7 +272,8 @@ under `<data home>/kas/mcp-grants/`, apart from your Settings → Secrets vault.
 off, the engine holds the sign-in in memory and loses it when it exits.
 With this setting off, the badge ignores any entries left in the vault.
 
-**Kiro Crew checks whether those files exist and never opens them.** For the KAS
+**For kiro-cli and KAS grants, Kiro Crew checks whether those files exist and never
+opens them.** For the KAS
 vault it checks whether the server's entry name is listed; it opens no key file and
 decrypts nothing. That is what the "Signed in" badge reports: a sign-in happened, not
 that the token is still valid. It also means Kiro Crew can tell you neither the
@@ -271,7 +285,8 @@ grant.** The token files are keyed on the URL, not on the entry, so a later reco
 silently resumes the old grant. Use the card's **Disconnect**, or the vendor's own
 revoke page, when you mean to end access.
 
-For the two vendors needing an operator-registered app, the split is:
+For the vendors needing an operator-registered app (GitHub, Asana, the six Google
+cards and Slack), the split is:
 
 | Half | Where it goes |
 |---|---|

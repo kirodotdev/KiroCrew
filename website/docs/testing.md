@@ -62,10 +62,12 @@ bug, not proof of anything. A story file is development-only — it is excluded 
 coverage, jscpd, and the hardcoded-string gate the same way a test file is, and
 the production bundle never imports it.
 
-Stories live in `src/stories/` (one file per component, `title:
-'Primitives/<Name>'`) rather than beside `ui.tsx`, because that file is a barrel of
-two dozen primitives and one story file per barrel would collide on title. Seven
-primitives have a story; the rest do not, and nothing requires one yet. Whether
+Stories live in `src/stories/`, one file per component, rather than beside
+`ui.tsx`, because that file is a barrel of two dozen primitives and one story file
+per barrel would collide on title. A shared primitive's story is titled
+`'Primitives/<Name>'`; the other stories group by surface (`Chat/`, `App Store/`,
+`AppSdk/`, `Evidence/`). Seven primitives have a story; the rest do not, and
+nothing requires one yet. Whether
 every shared primitive must carry a story is decided by the change that makes CI
 render them — a requirement the tree does not meet has no gate behind it, so it is
 not stated here until it can be enforced.
@@ -200,7 +202,8 @@ follow the frames sent, so they mean the same on any host; commits and renders
 are printed as report only. A counter listed in a scenario's
 `report` array varies between runs on the runner by more than the tolerance; it
 is printed but never fails the job. Today that is `s1x5` selector calls, which
-follow how the five streams' frames batch into dispatches.
+follow how the five streams' frames batch into dispatches, and `s2` dispatches and
+selector calls.
 
 ## CI gates
 
@@ -218,8 +221,7 @@ follow how the five streams' frames batch into dispatches.
 - **A test file a dead fork never started is run once, on its own, and must
   pass.** With `pool: 'forks'` and `isolate: true` every test file gets a fresh
   Node process. Rarely, on Linux CI, one exits after the pool handed it a file
-  but before the file was queued, with no output of its own
-  ([#23640](https://github.com/kirodotdev/KiroCrew/issues/23640)). The shard
+  but before the file was queued, with no output of its own. The shard
   then shows one unhandled error, `[vitest-pool]: Worker forks emitted error.`
   caused by `Worker exited unexpectedly`, every reported test passes, and the
   lost file is in no count (`1005 passed (1005)` for a 1006-file shard).
@@ -550,7 +552,7 @@ floor (`engines.node >=22.12.0`), while CI runs 24 — and added two rules:
 - **`require("electron")` in a Node test process downloads the binary.** Outside
   Electron, `node_modules/electron/index.js` returns the executable path and, when
   `dist/` is absent, runs `install.js` — a network download and an extract into
-  `node_modules`. Electron 43 has no postinstall, so a fresh `npm ci` leaves `dist/`
+  `node_modules`. The `electron` package declares no postinstall, so a fresh `npm ci` leaves `dist/`
   absent and four test files raced the download concurrently ("File exists (os error
   17)"). The `test` script preloads `website/electron/test/_preload.cjs` via
   `node --require`, which sets `ELECTRON_OVERRIDE_DIST_PATH` before any source loads;
@@ -588,7 +590,7 @@ The remaining case was pure CPU (201 real sidebar rows in one synchronous render
 
 ### What eight dashboard suites found
 
-Six more CI reds (#17237) added two shapes to the ones above:
+Six more CI reds added two shapes to the ones above:
 
 - **A key sent before the listener exists.** A dialog's Escape handler, a focus
   trap's window `keydown`, or a tab's re-armed listener is installed in a PASSIVE

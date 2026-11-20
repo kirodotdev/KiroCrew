@@ -256,7 +256,7 @@ If a value's part of speech is not obvious from the key, **put it in the key**.
 A confirm string that interpolates a user-supplied name without quotes lets an
 ordinary-word name blend into the sentence: a pet named "Everything" produced
 "Reset Everything?", indistinguishable from a sentence about resetting
-everything (#4653, #4657, #4676, #4821).
+everything.
 
 **Quote the operand in every authored catalog**, using that locale's pair from
 `OPERAND_QUOTE_PAIRS` in `scripts/lib/qa-checks.mjs` (curly doubles in English,
@@ -269,7 +269,7 @@ allowlist you can forget to extend:
 - every key whose **name** matches `/confirm/i` and whose English value
   interpolates a placeholder is swept in automatically and must quote its
   operand in every catalog, **or**
-- listed in `CONFIRM_OPERAND_KEY_EXEMPTIONS` with a reason (today: the #4657
+- listed in `CONFIRM_OPERAND_KEY_EXEMPTIONS` with a reason (the
   kind-word forms, where "template" / "crew" already sit next to the name), **or**
 - interpolate **only** placeholder names in `EXEMPT_CONFIRM_PLACEHOLDER_NAMES`
   (numerals, closed-set schedule fragments, version ids, and system error
