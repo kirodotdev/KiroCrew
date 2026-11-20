@@ -4,11 +4,12 @@
 A red check should mean the pull request's own change broke something. This
 read-only report says how often it means something else:
 
-    python3 scripts/ci_red_cause_census.py --since 2026-11-20 --until 2026-11-20 \\
-        --repo kirodotdev/KiroCrew --out-dir census
+    python3 scripts/ci_red_cause_census.py --since 2026-11-20T09:00Z \\
+        --until 2026-11-20T12:00Z --repo kirodotdev/KiroCrew --out-dir census
 
-It reads every workflow's runs created in the window (both days included, UTC)
-and writes three files to ``--out-dir``:
+It reads every workflow's runs created in the window and writes three files to
+``--out-dir``. A bound is a UTC day (``2026-11-20``; as ``--until`` the whole day
+is included) or a UTC minute (``2026-11-20T09:00Z``).
 
     red-jobs.csv   one row per red job: run id, job id, workflow, job name,
                    event, head SHA, PR number, cause, and the evidence that
@@ -55,14 +56,35 @@ A busy day here is some ninety thousand runs, a thousand pages, so ``--workers``
 reads that many workflows, and that many batches of check suites, at a time (4
 by default); the rows and the counts do not depend on it.
 
-``--logs undecided`` (the default) reads the log of a job whose annotations
-name nothing; ``--logs never`` reads none, which saves a refused REST call per
-such job where the token cannot read logs. In a log only an error the job
+``--logs never`` (the default) reads no log. ``--logs undecided`` reads the log
+of a job whose annotations name nothing: one REST call a job, refused where
+the token cannot read logs, so ask for it only with a token that can. In a log
+only an error the job
 reported counts: a `##[error]` line, `gh`'s error output, a pytest `FAILED` or
 `ERROR` summary line. The Actions token cannot read a job log in
 this repository, so a job whose annotations name nothing and whose log was not
 read is classified from what is left (its conclusion, its failed step, a later
 pass) and counted in ``log_unread``.
+
+What it costs, and the guard. The census spends GitHub GraphQL points, and
+the bucket it spends is shared: a person's token has 5,000 an hour for every
+session of that account, and a workflow's token shares its pool with the rest
+of CI (#39367). One day of this repository (2026-11-19: 91,201 runs of 99
+workflows) cost 1,828 calls and 2,786 points. So:
+
+- every query reads ``rateLimit { cost remaining resetAt }``, and the census
+  stops before a call that would start with fewer than ``--reserve-points``
+  left (2,000 by default);
+- it stops after spending ``--max-points`` (1,500 by default, about half a
+  day of runs here and under a third of one hour's bucket).
+
+A census stopped either way spends nothing more. It still writes its files,
+says ``Partial`` at the top of the summary with the reason and the span of the
+runs it did read, sets ``partial`` in the JSON and exits 3 (1 is a failed
+read): its counts cover only what was read. A whole day or more belongs in a
+workflow, under the workflow's own token and after
+``.github/actions/gh-rate-limit``, read one day an hour with ``--max-points``
+raised to fit; do not spend a person's bucket on it.
 
 Annotation and log text is untrusted. It is never placed in a shell command,
 and what reaches a file is cut to printable ASCII.
@@ -97,6 +119,9 @@ CANCELLED_READ_MAX = 5
 # only, which is light enough to read this many check suites in one call.
 CANCELLED_SUITE_BATCH = 50
 DEFAULT_WORKERS = 4
+DEFAULT_RESERVE_POINTS = 2000
+DEFAULT_MAX_POINTS = 1500
+PARTIAL_EXIT = 3
 MAX_WORKERS = 8
 EVIDENCE_CHARS = 80
 ATTEMPTS = 3
@@ -122,6 +147,7 @@ RED_CONCLUSIONS = ("FAILURE", "TIMED_OUT", "STARTUP_FAILURE")
 _RED_FILTER = "[FAILURE, TIMED_OUT, STARTUP_FAILURE]"
 _REPO = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
 _DAY = re.compile(r"\d{4}-\d\d-\d\d")
+_MINUTE = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?Z")
 
 RATE_LIMIT = re.compile(
     r"api rate limit"
@@ -167,6 +193,10 @@ class CensusError(RuntimeError):
     """The census could not be taken; the message says which read failed."""
 
 
+class BudgetStop(CensusError):
+    """The next GraphQL call would spend points the census was told to leave."""
+
+
 def _load(name: str, path: Path) -> Any:
     spec = importlib.util.spec_from_file_location(name, str(path))
     if spec is None or spec.loader is None:
@@ -187,21 +217,36 @@ def evidence_text(text: str) -> str:
 # -- the window ---------------------------------------------------------------
 
 
-def parse_day(text: str) -> dt.date:
-    if _DAY.fullmatch(text) is None:
-        raise argparse.ArgumentTypeError(f"{text!r} is not a YYYY-MM-DD date")
+class Bound(NamedTuple):
+    text: str
+    at: dt.datetime
+    whole_day: bool
+
+
+def parse_bound(text: str) -> Bound:
+    """A window bound: a UTC day (``2026-11-20``) or a UTC minute (``2026-11-20T09:00Z``)."""
+    whole_day = _DAY.fullmatch(text) is not None
+    if not whole_day and _MINUTE.fullmatch(text) is None:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not a YYYY-MM-DD date or a YYYY-MM-DDTHH:MMZ time"
+        )
     try:
-        return dt.date.fromisoformat(text)
+        at = dt.datetime.fromisoformat(text if whole_day else text[:-1])
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"{text!r} is not a calendar date") from exc
+        raise argparse.ArgumentTypeError(f"{text!r} is not a calendar date or time") from exc
+    return Bound(text, at, whole_day)
 
 
-def window(since: dt.date, until: dt.date) -> tuple[str, str, int]:
-    """``(start, end, days)``: both days included, as UTC stamps GitHub's sort order shares."""
-    if until < since:
-        raise CensusError("--until is before --since")
-    end = until + dt.timedelta(days=1)
-    return f"{since.isoformat()}T00:00:00Z", f"{end.isoformat()}T00:00:00Z", (end - since).days
+def window(since: Bound, until: Bound) -> tuple[str, str, float]:
+    """``(start, end, days)`` as UTC stamps that sort the way GitHub's do.
+
+    A day given as ``--until`` is included whole; a time is where the window ends.
+    """
+    end = until.at + dt.timedelta(days=1) if until.whole_day else until.at
+    if end <= since.at:
+        raise CensusError("--until is not after --since")
+    stamp = "%Y-%m-%dT%H:%M:%SZ"
+    return since.at.strftime(stamp), end.strftime(stamp), (end - since.at).total_seconds() / 86400
 
 
 # -- what was read ------------------------------------------------------------
@@ -252,6 +297,7 @@ class Census:
     def __init__(self) -> None:
         self.rows: list[dict[str, Any]] = []
         self.runs: list[Run] = []
+        self.partial: str | None = None
         self.workflows = 0
         self.log_unread = 0
         self.logs_read = 0
@@ -388,15 +434,68 @@ def run_gh(argv: list[str]) -> tuple[int, str, str]:
 
 
 class Api:
-    """`gh api` with a count of every call made, by kind. Safe to share between threads."""
+    """`gh api` with a count of every call made, by kind. Safe to share between threads.
 
-    def __init__(self, run: GhRunner = run_gh, sleep: Callable[[float], None] = time.sleep) -> None:
+    It also keeps the GraphQL budget: ``reserve`` points are left in the
+    bucket and at most ``max_points`` are spent. Once either would be crossed,
+    every further GraphQL read raises ``BudgetStop`` and ``stopped`` says why.
+    Reads already in flight on other threads finish, so the overshoot is at
+    most one call a worker.
+    """
+
+    def __init__(
+        self,
+        run: GhRunner = run_gh,
+        sleep: Callable[[float], None] = time.sleep,
+        reserve: int = DEFAULT_RESERVE_POINTS,
+        max_points: int = DEFAULT_MAX_POINTS,
+    ) -> None:
         self._run = run
         self._sleep = sleep
         self._lock = threading.Lock()
+        self.reserve = reserve
+        self.max_points = max_points
+        self.remaining: int | None = None
+        self.reset_at = ""
+        self.stopped: str | None = None
         self.graphql_calls = 0
         self.graphql_points = 0
         self.rest_calls = 0
+
+    def _guard(self) -> None:
+        with self._lock:
+            if self.stopped is None and self.graphql_points >= self.max_points:
+                self.stopped = (
+                    f"{self.graphql_points} GraphQL points spent, "
+                    f"the --max-points of {self.max_points}"
+                )
+            if (
+                self.stopped is None
+                and self.remaining is not None
+                and self.remaining < self.reserve
+            ):
+                self.stopped = (
+                    f"{self.remaining} GraphQL points left, under the --reserve-points "
+                    f"of {self.reserve} (the bucket resets at {self.reset_at or 'an unknown time'})"
+                )
+            if self.stopped is not None:
+                raise BudgetStop(self.stopped)
+
+    def _read_budget(self, rate: Any) -> None:
+        if not isinstance(rate, dict):
+            return
+        cost, remaining, reset_at = rate.get("cost"), rate.get("remaining"), rate.get("resetAt")
+        with self._lock:
+            self.graphql_points += cost if isinstance(cost, int) else 0
+            if isinstance(remaining, int) and not isinstance(remaining, bool):
+                self.remaining = remaining
+            if isinstance(reset_at, str):
+                self.reset_at = evidence_text(reset_at)
+
+    def check_budget(self) -> None:
+        """Read the bucket (one point) and stop here if it is already under the reserve."""
+        self.graphql(BUDGET_QUERY, {})
+        self._guard()
 
     def _count(self, graphql: int = 0, points: int = 0, rest: int = 0) -> None:
         with self._lock:
@@ -425,6 +524,7 @@ class Api:
                 argv += ["-f", f"{name}={value}"]
         reason = "unknown failure"
         for attempt in range(ATTEMPTS):
+            self._guard()
             self._count(graphql=1)
             code, out, err = self._run(argv)
             try:
@@ -434,8 +534,7 @@ class Api:
             data = body.get("data") if isinstance(body, dict) else None
             errors = body.get("errors") if isinstance(body, dict) else None
             if isinstance(data, dict):
-                cost = (data.get("rateLimit") or {}).get("cost")
-                self._count(points=cost if isinstance(cost, int) else 0)
+                self._read_budget(data.get("rateLimit"))
             if code == 0 and isinstance(data, dict) and not errors:
                 return data
             reason = evidence_text(json.dumps(errors) if errors else err or f"gh exited {code}")
@@ -466,6 +565,8 @@ class Api:
         return out if code == 0 else None
 
 
+BUDGET_QUERY = "query { rateLimit { cost remaining resetAt } }"
+
 _RED_JOB_FIELDS = """
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -487,7 +588,7 @@ _PASSED_JOB_FIELDS = """
 
 RUNS_QUERY = """
 query($workflow: ID!, $after: String) {
-  rateLimit { cost }
+  rateLimit { cost remaining resetAt }
   node(id: $workflow) {
     ... on Workflow {
       runs(first: 100, after: $after, orderBy: {field: CREATED_AT, direction: DESC}) {
@@ -511,7 +612,7 @@ def suites_query(first: int) -> str:
     """The query for a batch of check suites that each hold at most ``first`` red jobs."""
     return """
 query($ids: [ID!]!) {
-  rateLimit { cost }
+  rateLimit { cost remaining resetAt }
   nodes(ids: $ids) {
     ... on CheckSuite {
       id
@@ -536,7 +637,7 @@ query($ids: [ID!]!) {
 
 CANCELLED_SUITES_QUERY = """
 query($ids: [ID!]!) {
-  rateLimit { cost }
+  rateLimit { cost remaining resetAt }
   nodes(ids: $ids) {
     ... on CheckSuite {
       id
@@ -552,7 +653,7 @@ query($ids: [ID!]!) {
 
 _SUITE_PAGE = """
 query($suite: ID!, $after: String) {
-  rateLimit { cost }
+  rateLimit { cost remaining resetAt }
   node(id: $suite) {
     ... on CheckSuite {
       page: checkRuns(first: 100, after: $after, filterBy: {checkType: ALL, conclusions: %s}) {%s
@@ -567,7 +668,7 @@ SUITE_PAGE_QUERIES = {
 
 ISSUES_QUERY = """
 query($owner: String!, $name: String!, $after: String) {
-  rateLimit { cost }
+  rateLimit { cost remaining resetAt }
   repository(owner: $owner, name: $name) {
     issues(first: 100, after: $after, labels: ["%s"], states: [OPEN, CLOSED],
            orderBy: {field: CREATED_AT, direction: DESC}) {
@@ -626,7 +727,10 @@ def read_runs(api: Api, workflow_id: str, workflow: str, start: str, end: str) -
     runs: list[Run] = []
     cursor: str | None = None
     while True:
-        data = api.graphql(RUNS_QUERY, {"workflow": workflow_id, **_after(cursor)})
+        try:
+            data = api.graphql(RUNS_QUERY, {"workflow": workflow_id, **_after(cursor)})
+        except BudgetStop:
+            return runs
         nodes, cursor = _connection((data.get("node") or {}).get("runs"), "workflow runs")
         older = False
         for node in nodes:
@@ -715,6 +819,8 @@ def _read_suites(
     passed: Passed = {}
     try:
         data = api.graphql(suites_query(first) if first else CANCELLED_SUITES_QUERY, {"ids": ids})
+    except BudgetStop:
+        return jobs, passed
     except CensusError:
         if len(ids) < 2:
             raise
@@ -731,14 +837,21 @@ def _read_suites(
         number = pulls[0].get("number") if pulls and isinstance(pulls[0], dict) else None
         if run.event == "pull_request" and isinstance(number, int):
             run = run._replace(pr=number)
-        red = _all_pages(api, run.suite_id, "red", suite.get("red")) if first else []
+        try:
+            red = _all_pages(api, run.suite_id, "red", suite.get("red")) if first else []
+        except BudgetStop:
+            return jobs, passed
         jobs += [_job(run, node) for node in red]
         cancelled = suite.get("cancelled") or {}
         if int(cancelled.get("totalCount") or 0) <= CANCELLED_READ_MAX:
             jobs += [_job(run, node) for node in cancelled.get("nodes") or []]
         if not red:
             continue
-        for node in _all_pages(api, run.suite_id, "passed", suite.get("passed")):
+        try:
+            green = _all_pages(api, run.suite_id, "passed", suite.get("passed"))
+        except BudgetStop:
+            return jobs, passed
+        for node in green:
             stamp = (str(node.get("completedAt") or ""), int(node.get("databaseId") or 0))
             passed.setdefault(passed_key(run, str(node.get("name") or "")), []).append(stamp)
     return jobs, passed
@@ -820,15 +933,27 @@ def _progress(text: str) -> None:
 
 
 def take_census(api: Api, repo: str, start: str, end: str, logs: str, workers: int = 1) -> Census:
+    """The census of ``[start, end)``, or as much of it as the GraphQL budget allowed.
+
+    The budget is read before anything is spent, and the main-red issues before
+    the runs, so a census the budget cuts short never files a broken-main job
+    under ``diff`` for want of the issue.
+    """
     census = Census()
+    try:
+        api.check_budget()
+        main_red = read_main_red(api, repo, start, end)
+    except BudgetStop as stop:
+        census.partial = str(stop)
+        return census
     workflows = list_workflows(api, repo)
     census.workflows = len(workflows)
     for runs in _each(workers, lambda row: read_runs(api, row[0], row[1], start, end), workflows):
         census.runs += runs
     _progress(f"{len(census.runs)} run(s) of {len(workflows)} workflow(s) read")
     jobs, passed = read_jobs(api, census.runs, workers)
-    main_red = read_main_red(api, repo, start, end)
     _progress(f"{len(jobs)} red or cancelled job(s) and {len(main_red)} main-red issue(s) read")
+    census.partial = api.stopped
     for job in jobs:
         if not is_red(job):
             continue
@@ -864,7 +989,7 @@ def _share(part: int, whole: int) -> float | None:
     return round(part / whole, 4) if whole else None
 
 
-def summarize(census: Census, days: int) -> dict[str, Any]:
+def summarize(census: Census, days: float) -> dict[str, Any]:
     """The three goal numbers, each with its n, and the counts behind them."""
     rows = census.rows
     by_cause = {cause: sum(row["cause"] == cause for row in rows) for cause in CAUSES}
@@ -889,7 +1014,10 @@ def summarize(census: Census, days: int) -> dict[str, Any]:
         if run.workflow == CI_WORKFLOW and run.event in ("pull_request", "push")
     }
     return {
-        "days": days,
+        "days": round(days, 4),
+        "partial": census.partial,
+        "runs_read_from": min((run.created_at for run in census.runs), default=None),
+        "runs_read_to": max((run.created_at for run in census.runs), default=None),
         "workflows": census.workflows,
         "runs": len(census.runs),
         "red_jobs": len(rows),
@@ -927,8 +1055,18 @@ def render_markdown(summary: dict[str, Any], repo: str, since: str, until: str) 
     rate = summary["rate_limit_share_of_red_jobs"]
     shard = summary["backend_shard_flaky_or_infrastructure_reds"]
     lines = [
-        f"### Red-cause census: {repo}, {since} to {until} UTC ({summary['days']} day(s))",
+        f"### Red-cause census: {repo}, {since} to {until} UTC ({summary['days']:g} day(s))",
         "",
+    ]
+    if summary["partial"]:
+        lines += [
+            f"**Partial: stopped early ({summary['partial']}). Runs read: {summary['runs']}, "
+            f"created {summary['runs_read_from'] or 'n/a'} to {summary['runs_read_to'] or 'n/a'}; "
+            "their check suites may not all have been read. The counts below cover only "
+            "what was read; they are not a census of the window.**",
+            "",
+        ]
+    lines += [
         "| Goal number | Value | n |",
         "|---|---|---|",
         f"| Red PR pushes with a job red from a broken main | {_percent(main['share'])} "
@@ -973,18 +1111,58 @@ def write_outputs(out_dir: Path, census: Census, summary: dict[str, Any], markdo
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    parser.add_argument("--since", required=True, type=parse_day, help="first day, UTC")
-    parser.add_argument("--until", required=True, type=parse_day, help="last day, UTC, included")
+    parser = argparse.ArgumentParser(
+        description=(__doc__ or "").splitlines()[0],
+        epilog=(
+            "Cost: one day of kirodotdev/KiroCrew (2026-11-19) was 1,828 GraphQL calls and "
+            "2,786 points. The bucket is shared (5,000 points an hour for every session of a "
+            "person's account), so the defaults stop early: read a few hours by hand, and run "
+            "a day or more from a workflow, under its own token and after "
+            ".github/actions/gh-rate-limit. A census the budget stopped exits "
+            f"{PARTIAL_EXIT} and marks its files partial."
+        ),
+    )
+    parser.add_argument(
+        "--since",
+        required=True,
+        type=parse_bound,
+        help="UTC start: 2026-11-20 or 2026-11-20T09:00Z",
+    )
+    parser.add_argument(
+        "--until",
+        required=True,
+        type=parse_bound,
+        help="UTC end: a day (included whole) or a time such as 2026-11-20T12:00Z",
+    )
     parser.add_argument("--repo", required=True, help="owner/name")
     parser.add_argument("--out-dir", required=True, type=Path)
-    parser.add_argument("--logs", choices=LOG_MODES, default="undecided")
+    parser.add_argument(
+        "--logs",
+        choices=LOG_MODES,
+        default="never",
+        help="undecided: read the log of a job whose annotations name nothing "
+        "(one REST call a job; needs a token that can read logs)",
+    )
     parser.add_argument(
         "--workers",
         type=int,
         choices=range(1, MAX_WORKERS + 1),
         default=DEFAULT_WORKERS,
         help="API reads made at a time",
+    )
+    parser.add_argument(
+        "--reserve-points",
+        type=int,
+        default=DEFAULT_RESERVE_POINTS,
+        help="stop before a GraphQL call that would start with fewer points left in the "
+        f"bucket (default {DEFAULT_RESERVE_POINTS})",
+    )
+    parser.add_argument(
+        "--max-points",
+        type=int,
+        default=DEFAULT_MAX_POINTS,
+        help=f"stop after spending this many GraphQL points (default {DEFAULT_MAX_POINTS}, "
+        "about half a day of runs; a full day is about 2,800)",
     )
     return parser
 
@@ -996,6 +1174,7 @@ def main(
 ) -> int:
     args = build_parser().parse_args(argv)
     api = api or Api()
+    api.reserve, api.max_points = args.reserve_points, args.max_points
     began = clock()
     try:
         if _REPO.fullmatch(args.repo) is None:
@@ -1007,12 +1186,13 @@ def main(
         status = 1
     else:
         summary = summarize(census, days)
-        since, until = args.since.isoformat(), args.until.isoformat()
-        markdown = render_markdown(summary, args.repo, since, until)
+        markdown = render_markdown(summary, args.repo, args.since.text, args.until.text)
         write_outputs(args.out_dir, census, summary, markdown)
         print(markdown)
-        status = 0
+        status = PARTIAL_EXIT if census.partial else 0
     print(f"GraphQL calls: {api.graphql_calls} ({api.graphql_points} points)")
+    if api.remaining is not None:
+        print(f"GraphQL points left: {api.remaining} (the bucket resets at {api.reset_at})")
     print(f"REST calls: {api.rest_calls}")
     print(f"Run time: {clock() - began:.1f}s")
     return status

@@ -11,7 +11,6 @@ The main-red issue body is built by the watcher's own renderer
 from __future__ import annotations
 
 import csv
-import datetime as dt
 import importlib.util
 import json
 from pathlib import Path
@@ -358,7 +357,11 @@ class FakeGh:
     """Answers `gh api ...` argv from canned pages and keeps every argv it saw."""
 
     def __init__(self, **handlers: Handler) -> None:
-        self.handlers = handlers
+        self.handlers = {
+            "budget": lambda fields: {},
+            "issues": lambda fields: issues_page(),
+            **handlers,
+        }
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.argvs: list[list[str]] = []
 
@@ -381,14 +384,16 @@ class FakeGh:
             else:
                 fields[name] = value
         query = fields["query"]
-        kind = (
-            "runs"
-            if "... on Workflow" in query
-            else (
-                "issues"
-                if "issues(" in query
-                else "suite_page" if "page: checkRuns" in query else "suites"
+        kind = next(
+            kind
+            for mark, kind in (
+                ("... on Workflow", "runs"),
+                ("issues(", "issues"),
+                ("page: checkRuns", "suite_page"),
+                ("... on CheckSuite", "suites"),
+                ("rateLimit", "budget"),
             )
+            if mark in query
         )
         self.calls.append((kind, fields))
         data = self.handlers[kind](fields)
@@ -479,15 +484,20 @@ def watcher_issue(nodeids: list[str], opened: str, closed: str | None) -> dict[s
     }
 
 
+def issues_page(*nodes: dict[str, Any]) -> dict[str, Any]:
+    return {"repository": {"issues": connection(list(nodes))}}
+
+
 def issues_of(*nodes: dict[str, Any]) -> Handler:
-    return lambda fields: {"repository": {"issues": connection(list(nodes))}}
+    return lambda fields: issues_page(*nodes)
 
 
 NO_ISSUES = issues_of()
 
 
 def census_args(out_dir: Path, *more: str) -> list[str]:
-    return ["--since", DAY, "--until", DAY, "--repo", REPO, "--out-dir", str(out_dir), *more]
+    window = ["--since", DAY, "--until", DAY, "--repo", REPO, "--out-dir", str(out_dir)]
+    return [*window, "--logs", "undecided", *more]
 
 
 def ticks(*values: float) -> Callable[[], float]:
@@ -535,9 +545,9 @@ def test_runs_are_read_by_graphql_in_pages_of_100_across_the_cursor(
     assert CENSUS.PAGE == 100
     # The red run before the window is paged past, never read as a check suite.
     assert [fields["ids"] for kind, fields in gh.calls if kind == "suites"] == [["CS_400"]]
-    assert gh.kinds() == ["workflows", "runs", "runs", "runs", "suites", "issues"]
+    assert gh.kinds() == ["budget", "issues", "workflows", "runs", "runs", "runs", "suites"]
     printed = capsys.readouterr().out
-    assert "GraphQL calls: 5 (10 points)\nREST calls: 1\nRun time: 12.5s\n" in printed
+    assert "GraphQL calls: 6 (12 points)\nREST calls: 1\nRun time: 12.5s\n" in printed
     assert "Read 200 run(s) of 1 workflow(s); 1 red job(s)." in printed
     assert [row["job_id"] for row in read_csv(tmp_path)] == ["41"]
 
@@ -847,7 +857,7 @@ def test_the_census_writes_one_row_per_red_job_and_the_three_goal_numbers(
         f"repos/{REPO}/actions/jobs/{job_id}/logs" for job_id in (104, 111, 123)
     ]
     assert summary["log_unread"] == 3
-    assert (api.graphql_calls, api.rest_calls) == (4, 4)
+    assert (api.graphql_calls, api.rest_calls) == (5, 4)
 
     printed = capsys.readouterr().out
     markdown = (tmp_path / "summary.md").read_text(encoding="utf-8")
@@ -861,7 +871,7 @@ def test_the_census_writes_one_row_per_red_job_and_the_three_goal_numbers(
     assert "per day | 4.0 (1 flaky + 3 infrastructure) | 6 red backend shard jobs, 4.0 pushes" in (
         markdown
     )
-    assert "GraphQL calls: 4 (8 points)\nREST calls: 4\nRun time: 1.0s\n" in printed
+    assert "GraphQL calls: 5 (10 points)\nREST calls: 4\nRun time: 1.0s\n" in printed
 
 
 def test_a_job_with_no_readable_log_and_no_annotations_is_counted_never_dropped(
@@ -974,22 +984,197 @@ def test_only_the_linux_and_windows_shard_jobs_count_as_backend_shards(
     assert (CENSUS.BACKEND_SHARD.fullmatch(name) is not None) is shard
 
 
-def test_the_window_includes_both_days() -> None:
-    since, until = dt.date(2026, 11, 20), dt.date(2026, 12, 3)
+def test_a_day_given_as_until_is_included_whole() -> None:
+    since, until = CENSUS.parse_bound("2026-11-20"), CENSUS.parse_bound("2026-12-03")
     assert CENSUS.window(since, until) == ("2026-11-20T00:00:00Z", "2026-12-04T00:00:00Z", 14)
     assert CENSUS.window(since, since)[2] == 1
     with pytest.raises(CENSUS.CensusError):
         CENSUS.window(until, since)
 
 
-@pytest.mark.parametrize("text", ["2026-11-20T00:00:00Z", "20261120", "2026-13-01", "today"])
-def test_a_window_bound_that_is_not_a_date_is_refused(
+def test_a_window_can_be_a_few_hours() -> None:
+    since, until = CENSUS.parse_bound("2026-11-20T09:00Z"), CENSUS.parse_bound("2026-11-20T12:00Z")
+    assert CENSUS.window(since, until) == ("2026-11-20T09:00:00Z", "2026-11-20T12:00:00Z", 0.125)
+    with_seconds = CENSUS.parse_bound("2026-11-20T12:00:30Z")
+    assert CENSUS.window(since, with_seconds)[1] == "2026-11-20T12:00:30Z"
+    with pytest.raises(CENSUS.CensusError, match="not after"):
+        CENSUS.window(since, since)
+
+
+def test_a_few_hours_are_scaled_to_a_day_in_the_per_day_number(tmp_path: Path) -> None:
+    gh = FakeGh(
+        workflows=workflows_page("CI"),
+        runs=runs_pages({None: connection([run_node(10, f"{DAY}T10:00:00Z", red=1)])}),
+        suites=suites_of(
+            {
+                "CS_10": (
+                    connection([check_run(101, "Backend Tests (3.12, 2)", notes=[SHUTDOWN_NOTE])]),
+                    connection([]),
+                )
+            }
+        ),
+    )
+    args = ["--since", f"{DAY}T09:00Z", "--until", f"{DAY}T12:00Z", "--repo", REPO]
+    assert CENSUS.main([*args, "--out-dir", str(tmp_path)], api=api_for(gh), clock=ticks(0, 1)) == 0
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["days"] == 0.125
+    assert summary["backend_shard_flaky_or_infrastructure_reds"]["per_day"] == 8.0
+    assert summary["backend_shard_flaky_or_infrastructure_reds"]["pushes_per_day"] == 8.0
+    markdown = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert f"{DAY}T09:00Z to {DAY}T12:00Z UTC (0.125 day(s))" in markdown
+
+
+@pytest.mark.parametrize("text", ["2026-11-20T09Z", "20261120", "2026-13-01", "2026-11-20T25:00Z"])
+def test_a_window_bound_that_is_not_a_date_or_time_is_refused(
     text: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with pytest.raises(SystemExit) as stop:
         CENSUS.main(["--since", text, "--until", DAY, "--repo", REPO, "--out-dir", str(tmp_path)])
     assert stop.value.code == 2
     assert "date" in capsys.readouterr().err
+
+
+# -- the GraphQL budget -------------------------------------------------------
+
+
+def bucket(remaining: int, cost: int = 1) -> dict[str, Any]:
+    return {"rateLimit": {"cost": cost, "remaining": remaining, "resetAt": "2026-11-20T11:00:00Z"}}
+
+
+def test_a_bucket_already_under_the_reserve_spends_one_point_and_stops(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = FakeGh(budget=lambda fields: bucket(1999))
+
+    status = CENSUS.main(census_args(tmp_path), api=api_for(gh), clock=ticks(0.0, 1.0))
+
+    assert status == CENSUS.PARTIAL_EXIT == 3
+    assert gh.kinds() == ["budget"]
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["partial"] == (
+        "1999 GraphQL points left, under the --reserve-points of 2000 "
+        "(the bucket resets at 2026-11-20T11:00:00Z)"
+    )
+    assert summary["red_jobs"] == 0
+    printed = capsys.readouterr().out
+    assert "**Partial: stopped early (1999 GraphQL points left" in printed
+    assert "GraphQL calls: 1 (1 points)\n" in printed
+    assert "GraphQL points left: 1999 (the bucket resets at 2026-11-20T11:00:00Z)" in printed
+    assert read_csv(tmp_path) == []
+
+
+def test_the_reserve_can_be_lowered_by_flag(tmp_path: Path) -> None:
+    gh = FakeGh(
+        budget=lambda fields: bucket(1999),
+        workflows=workflows_page("CI"),
+        runs=runs_pages({None: connection([])}),
+    )
+    args = census_args(tmp_path, "--reserve-points", "1000")
+    assert CENSUS.main(args, api=api_for(gh), clock=ticks(0.0, 1.0)) == 0
+    assert gh.kinds() == ["budget", "issues", "workflows", "runs"]
+    assert json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))["partial"] is None
+
+
+def two_pages_then_a_red_run(first_page: dict[str, Any]) -> FakeGh:
+    newest = [run_node(1000 + at, f"{DAY}T23:{at % 60:02d}:00Z") for at in range(100)]
+    red = (connection([check_run(41, notes=[failing()])]), connection([]))
+    return FakeGh(
+        workflows=workflows_page("CI"),
+        runs=lambda fields: {
+            **(first_page if fields.get("after") is None else {}),
+            "node": {
+                "runs": (
+                    connection(newest, "CUR1")
+                    if fields.get("after") is None
+                    else connection([run_node(400, f"{DAY}T04:00:00Z", red=1)])
+                )
+            },
+        },
+        suites=suites_of({"CS_400": red}),
+    )
+
+
+def test_a_bucket_that_falls_under_the_reserve_mid_census_keeps_what_was_read(
+    tmp_path: Path,
+) -> None:
+    gh = two_pages_then_a_red_run(bucket(1990))
+
+    status = CENSUS.main(census_args(tmp_path), api=api_for(gh), clock=ticks(0.0, 1.0))
+
+    assert status == CENSUS.PARTIAL_EXIT
+    # The second page of runs, and every check suite, is never asked for.
+    assert gh.kinds() == ["budget", "issues", "workflows", "runs"]
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["runs"] == 100
+    assert summary["partial"].startswith("1990 GraphQL points left")
+    assert (summary["runs_read_from"], summary["runs_read_to"]) == (
+        f"{DAY}T23:00:00Z",
+        f"{DAY}T23:59:00Z",
+    )
+    assert f"Runs read: 100, created {DAY}T23:00:00Z to {DAY}T23:59:00Z" in (
+        tmp_path / "summary.md"
+    ).read_text(encoding="utf-8")
+    assert "they are not a census of the window" in (tmp_path / "summary.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_max_points_stops_the_census_with_partial_results(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = two_pages_then_a_red_run({})
+    args = census_args(tmp_path, "--max-points", "6")
+
+    status = CENSUS.main(args, api=api_for(gh), clock=ticks(0.0, 1.0))
+
+    # Two points a call: the bucket read, the issues and one page of runs spend the six.
+    assert status == CENSUS.PARTIAL_EXIT
+    assert gh.kinds() == ["budget", "issues", "workflows", "runs"]
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["partial"] == "6 GraphQL points spent, the --max-points of 6"
+    assert "GraphQL calls: 3 (6 points)\n" in capsys.readouterr().out
+
+
+def test_a_budget_stop_while_reading_check_suites_keeps_the_jobs_already_read() -> None:
+    red = (connection([check_run(1)]), connection([]))
+    gh = FakeGh(suites=suites_of({f"CS_{at}": red for at in range(25)}))
+    api = CENSUS.Api(run=gh, sleep=lambda seconds: None, max_points=4)
+    jobs, _passed = CENSUS.read_jobs(api, [run_of(run_id=at) for at in range(25)])
+    assert [job.run.run_id for job in jobs] == list(range(20))
+    assert api.stopped == "4 GraphQL points spent, the --max-points of 4"
+
+
+def test_nothing_is_spent_after_the_stop() -> None:
+    gh = FakeGh(runs=runs_pages({None: connection([], None)}))
+    api = CENSUS.Api(run=gh, sleep=lambda seconds: None, max_points=2)
+    api.graphql(CENSUS.RUNS_QUERY, {"workflow": "W_CI"})
+    for _ in range(3):
+        with pytest.raises(CENSUS.BudgetStop):
+            api.graphql(CENSUS.RUNS_QUERY, {"workflow": "W_CI"})
+    assert CENSUS.read_runs(api, "W_CI", "CI", f"{DAY}T00:00:00Z", "2026-11-21T00:00:00Z") == []
+    assert (len(gh.argvs), api.graphql_calls, api.graphql_points) == (1, 1, 2)
+
+
+def test_the_defaults_leave_most_of_a_shared_bucket_alone() -> None:
+    assert (CENSUS.DEFAULT_RESERVE_POINTS, CENSUS.DEFAULT_MAX_POINTS) == (2000, 1500)
+    api = CENSUS.Api(run=FakeGh())
+    assert (api.reserve, api.max_points) == (2000, 1500)
+    for query in (
+        CENSUS.BUDGET_QUERY,
+        CENSUS.RUNS_QUERY,
+        CENSUS.suites_query(5),
+        CENSUS.CANCELLED_SUITES_QUERY,
+        CENSUS.ISSUES_QUERY,
+        *CENSUS.SUITE_PAGE_QUERIES.values(),
+    ):
+        assert "rateLimit { cost remaining resetAt }" in query
+    args = CENSUS.build_parser().parse_args(
+        ["--since", DAY, "--until", DAY, "--repo", REPO, "--out-dir", "out"]
+    )
+    assert (args.logs, args.reserve_points, args.max_points) == ("never", 2000, 1500)
+    text = CENSUS.build_parser().format_help()
+    for said in ("--reserve-points", "--max-points", "2,786", "gh-rate-limit"):
+        assert said in " ".join(text.split())
 
 
 # -- the API wrapper ----------------------------------------------------------
@@ -1019,7 +1204,7 @@ def test_a_read_that_keeps_failing_ends_the_census_with_the_counts_printed(
     assert status == 1
     captured = capsys.readouterr()
     assert "GraphQL read failed" in captured.err
-    assert "GraphQL calls: 3 (0 points)\nREST calls: 1\nRun time: 3.0s\n" in captured.out
+    assert "GraphQL calls: 5 (4 points)\nREST calls: 1\nRun time: 3.0s\n" in captured.out
     assert not (tmp_path / "red-jobs.csv").exists()
 
 
