@@ -668,6 +668,38 @@ class TestRecursiveForceRmFloor:
         rm_floor._rm_wipe_targets(command)
         assert calls <= 4 * 20 + 2
 
+    @pytest.mark.parametrize("n", [1_000, 2_000])
+    def test_an_fd_prefix_check_reads_only_the_segment_tail(self, n):
+        """Each redirection's fd-prefix check reads a bounded tail of the segment, so a
+        line of many ``<<`` stays linear; counted element reads, not a clock (as above)."""
+        from collections.abc import MutableSequence
+
+        from kiro_crew.security import rm_floor
+
+        class _Counted(MutableSequence):
+            def __init__(self, items):
+                self.items, self.reads = items, 0
+
+            def __getitem__(self, index):
+                self.reads += 1
+                return self.items[index]
+
+            def __setitem__(self, index, value):
+                self.items[index] = value
+
+            def __delitem__(self, index):
+                del self.items[index]
+
+            def __len__(self):
+                return len(self.items)
+
+            def insert(self, index, value):
+                self.items.insert(index, value)
+
+        seg = _Counted(["(", "(", *(["1", " <<"] * n), "1"])
+        assert rm_floor._pull_trailing_fd_prefix(seg) == ""  # type: ignore[arg-type]
+        assert seg.reads <= 8  # 3 measured: the two tail elements and one slice
+
     def test_the_floor_reports_the_catalog_row(self):
         reason = is_denied("rm -fr /")
         assert reason is not None

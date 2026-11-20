@@ -43,24 +43,38 @@ _PRINTERS = frozenset({"echo", "printf"})  # a pipe stage whose own words are wh
 _SUBST = _commands.SUBST  # a substitution: may expand to nothing, unlike a literal ``\0``
 #: an unquoted parameter (``$x``, ``${…}``, ``$1``): an unset one expands to nothing
 _PARAM_RE = re.compile(r"\$(?:\{[^}]*\}|[A-Za-z_]\w*|[0-9@*#?$!-])")
-#: A STANDALONE fd prefix (a bare number or ``{name}``) directly before a redirection
-#: operator: ``2>`` and ``{fd}>`` redirect fd 2 / a named fd, but the ``2`` in
-#: ``/tmp/2>x`` is part of the path, so the prefix counts only at a word boundary.
-_FD_PREFIX_RE = re.compile(r"(?:^|(?<=[\s\x00]))(?:\{[A-Za-z_]\w*\}|\d+)\Z")
 
 
 def _pull_trailing_fd_prefix(seg: "list[str]") -> str:
     """Remove and return a standalone fd prefix at the end of *seg*, else ``""``.
 
     Keeps ``2>``/``{fd}>`` as one redirection word rather than splitting the fd
-    number off as its own word (which would be read as the program).
+    number off as its own word (which would be read as the program). It counts only
+    as a whole word (the ``2`` in ``/tmp/2>x`` is part of the path), so only the last
+    word is read and a segment of many redirections stays linear.
     """
-    joined = "".join(seg)
-    match = _FD_PREFIX_RE.search(joined)
-    if match is None:
+    end, head = len(seg), ""
+    while end:
+        text = seg[end - 1]
+        cut = len(text)
+        while cut and not (text[cut - 1].isspace() or text[cut - 1] == "\x00"):
+            cut -= 1
+        if cut:
+            head = text[cut:]
+            break
+        end -= 1
+    word = head + "".join(seg[end:])
+    name = word[1:-1] if word[:1] == "{" and word[-1:] == "}" else ""  # ``{fd}``
+    if not word.isdecimal() and not (
+        name[:1].isascii()
+        and (name[:1].isalpha() or name[:1] == "_")
+        and all(c.isalnum() or c == "_" for c in name)
+    ):
         return ""
-    seg[:] = [joined[: match.start()]]
-    return joined[match.start() :]
+    del seg[end:]
+    if head:
+        seg[end - 1] = text[:cut]
+    return word
 
 
 def _can_fire(command: str) -> bool:
