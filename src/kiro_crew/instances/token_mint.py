@@ -33,6 +33,7 @@ from kiro_crew.instances.constants import (
     MINT_TIMEOUT_CEILING_SECS,
     TTL_PATTERN,
 )
+from kiro_crew.instances.ssh_tunnel_manager_child_text import _strip_benign_ssh_noise
 from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.security import redact
 
@@ -694,8 +695,11 @@ async def mint_remote_token(
     stderr = stderr_b.decode("utf-8", "replace").strip()
     # stderr is proxy-controlled (WSSH banner etc.); redact credentials/exfil URLs
     # before surfacing it in an exception that may reach logs/status. The token
-    # only ever appears on stdout, never stderr.
-    safe_stderr = redact(stderr) if stderr else ""
+    # only ever appears on stdout, never stderr. ssh's benign advisory lines
+    # (known-hosts, post-quantum KEX) go first, as on the tunnel's exit path, so
+    # they cannot stand in for the real reason.
+    shown_stderr = _strip_benign_ssh_noise(stderr)
+    safe_stderr = redact(shown_stderr) if shown_stderr else ""
 
     if proc.returncode != 0:
         # stderr may carry the "binary not found" diagnostic — safe to log; it
@@ -784,7 +788,7 @@ async def run_remote_kirocrew(
     except asyncio.TimeoutError:
         await kill_and_reap(proc)
         return -1, f"timed out after {timeout_secs}s"
-    err = err_b.decode("utf-8", "replace").strip()
+    err = _strip_benign_ssh_noise(err_b.decode("utf-8", "replace"))
     # Proxy-controlled stderr (e.g. a WSSH banner) can carry credential-looking
     # text or exfil URLs; redact before returning since callers surface this tail.
     safe_err = redact(err) if err else ""
