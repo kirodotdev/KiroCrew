@@ -145,13 +145,32 @@ def _substitution_reaches_self(text_lower: str) -> bool:
     return False
 
 
+# A backslash before a path-name character: on Windows PowerShell runs the line, and
+# there it separates path components (``C:\Windows\System32\OpenSSH\ssh.exe``,
+# ``.\ssh.exe``) instead of escaping the next character as POSIX shell rules do.
+_PATH_SEPARATOR_BACKSLASH_RE = re.compile(r"\\(?=[\w.?*\[-])")
+
+
+def _with_backslash_path_separators(text: str) -> str:
+    """*text* with each backslash before a path-name character read as ``/``.
+
+    The tokenizer drops an unquoted backslash and keeps a quoted one, and the program
+    basename splits on ``/`` only, so neither reading isolates ``ssh.exe`` at the end of
+    a Windows path. A backslash before a quote, a blank, a separator or another
+    backslash is left as written, so the quoting the tokenizer reads is unchanged.
+    """
+    return _PATH_SEPARATOR_BACKSLASH_RE.sub("/", text)
+
+
 def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bool:
     """:func:`_is_ssh_to_self` on *text_lower*, on each quoted assignment script in it,
     read whole (the separator mask would turn a script's own separators into data),
     and on each substitution body bash runs in it or in those scripts. Either the
     quote-aware reading or main's splice reading (*_MAIN_READING*) of the line refusing
-    refuses; the bodies are judged once, in the quote-aware reading. *raw_text* is the
-    command as submitted, for the wrapper option words of the line itself."""
+    refuses, and so does the line read with Windows path backslashes as ``/``
+    (:func:`_with_backslash_path_separators`); the bodies are judged once, in the
+    quote-aware reading. *raw_text* is the command as submitted, for the wrapper option
+    words of the line itself."""
     scripts = _quoted_assignment_scripts(text_lower)
     if _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
         map(_is_ssh_to_self, scripts)
@@ -161,8 +180,16 @@ def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bo
         return True
     token = _MAIN_READING.set(True)
     try:
-        return _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
+        if _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
             map(_is_ssh_to_self, scripts)
-        )
+        ):
+            return True
     finally:
         _MAIN_READING.reset(token)
+    # shortcut: only the line itself gets the path reading, not its quoted scripts or
+    # substitution bodies; widen it if a Windows path in a nested payload is reported.
+    path_text = _with_backslash_path_separators(text_lower)
+    if path_text == text_lower:
+        return False
+    path_raw = None if raw_text is None else _with_backslash_path_separators(raw_text)
+    return _is_ssh_to_self(path_text, own_line=True, raw_text=path_raw)

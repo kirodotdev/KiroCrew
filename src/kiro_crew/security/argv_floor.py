@@ -285,10 +285,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _unmask_separators,
     )
     from kiro_crew.security.argv_floor_ssh_bodies import (  # noqa: F401
+        _PATH_SEPARATOR_BACKSLASH_RE,
         _line_may_name_ssh_verb,
         _live_substitutions,
         _reaches_self_over_ssh,
         _substitution_reaches_self,
+        _with_backslash_path_separators,
     )
     from kiro_crew.security.argv_floor_ssh_gate import (  # noqa: F401
         _GATE_WORD_SEPARATORS,
